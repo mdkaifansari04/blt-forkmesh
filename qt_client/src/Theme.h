@@ -578,6 +578,10 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 12px;
     color: #6e7681; font-size: 11px;
 }
+#emailVerifiedBadge {
+    background-color: #0f2a1a; border: 1px solid #238636; border-radius: 10px;
+    color: #3fb950; padding: 2px 8px; font-size: 11px; font-weight: 700;
+}
 #networkLog {
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
@@ -1551,6 +1555,10 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #avatarPreview {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px;
     color: #8c959f; font-size: 11px;
+}
+#emailVerifiedBadge {
+    background-color: #dafbe1; border: 1px solid #2da44e; border-radius: 10px;
+    color: #1a7f37; padding: 2px 8px; font-size: 11px; font-weight: 700;
 }
 #networkLog {
     background-color: #ffffff; border: none;

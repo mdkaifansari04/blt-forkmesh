@@ -205,6 +205,7 @@ public:
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
+    void testResetNetworkLog();
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
@@ -276,6 +277,7 @@ public:
     void testStopRepoHosts() { stopRepoHosts(); }
     void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
+    QString testRepoGitDir() const { return repoGitDir(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
     void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
     {
@@ -463,6 +465,10 @@ private:
                                 int *status);
     QJsonObject getAccountSync(const QString &leaf, int *status);
     QString accountOwner() const; // the registered account name (repo namespace)
+    void applyAccountEmailVerified(const QString &accountName, bool verified);
+    bool accountEmailVerified(const QString &accountName) const;
+    QString settingsAccountName() const;
+    void refreshSettingsEmailVerifiedBadge();
     // The owner a repo is published/browsed under on the website. Must match the
     // owner the live host tunnel registers with, or the website can't find the
     // host. Mirrors the fallback used when publishing.
@@ -2273,6 +2279,8 @@ private:
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
+    QLabel *m_settingsEmailLabel = nullptr;
+    QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
     QPlainTextEdit *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
@@ -2539,6 +2547,11 @@ private:
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
+    // Sit beside the Fix button (adhoc #56): one dropdown picks the agent/provider
+    // (Claude / OpenAI / Claude Code), the other the model it runs. The button then
+    // resolves with whatever the two combos currently show.
+    QComboBox *m_branchFixAgentCombo = nullptr;
+    QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
