@@ -1372,10 +1372,17 @@ void MainWindow::deleteAllMergedAgentSessions()
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
-                                        const QString &branch)
+                                        const QString &branch,
+                                        const QString &baseArg)
 {
-    const QString base = repoDefaultBranch(repoBranches());
-    if (worktreePath.isEmpty() || branch.isEmpty() || branch == base)
+    // Prefer the base branch the caller named. Only fall back to the open repo
+    // detail's default when none was given: repoDefaultBranch()/repoBranches() read
+    // m_repoDetailIndex, which from the agent detail page isn't necessarily this
+    // session's repo — there it came back empty and the merge ran as `git merge ""`
+    // and silently failed, which is why "Update from main" never worked there
+    // (adhoc #28). Bail on an empty base rather than attempting that broken merge.
+    const QString base = baseArg.isEmpty() ? repoDefaultBranch(repoBranches()) : baseArg;
+    if (worktreePath.isEmpty() || branch.isEmpty() || base.isEmpty() || branch == base)
         return;
     if (!QDir(worktreePath).exists()) {
         setRepoDetailNotice("That worktree's folder is gone.", true);
