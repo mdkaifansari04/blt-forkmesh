@@ -891,6 +891,7 @@ void MainWindow::startVoiceTranscription(bool finalPass)
     // On the final pass any early-out must restore the idle prompt state, since
     // recording has already stopped and nothing else will.
     auto finishIdle = [this] {
+        hideVoiceTranscribeSpinner();
         if (m_voiceTargetEdit)
             m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
         m_voiceInsertPos = -1;
@@ -923,8 +924,12 @@ void MainWindow::startVoiceTranscription(bool finalPass)
         return;
     m_voiceLastTranscribeSize = wavSize;
 
-    if (finalPass)
+    if (finalPass) {
         m_voiceTargetEdit->setPlaceholderText("transcribing\xE2\x80\xA6");
+        // Recording has stopped but whisper/Parakeet is still running — ring the mic
+        // so the wait reads as active transcription, not a dead button.
+        showVoiceTranscribeSpinner();
+    }
 
     // whisper.cpp writes "<base>.txt" with -otxt -of <base>; reading the file is
     // more robust than parsing stdout (which also carries timing logs). Clear any
@@ -968,6 +973,7 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                     return;
                 }
 
+                hideVoiceTranscribeSpinner();
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);
@@ -1069,6 +1075,37 @@ void MainWindow::stopVoiceLevelMeter()
         m_voiceLevelMeter->setValue(0);
         m_voiceLevelMeter->setVisible(false);
     }
+}
+
+// Ring the active mic with a rotating processing circle while a released clip is
+// still being transcribed, so the wait after letting go reads as "still working".
+// The spinner is a sibling overlay of the mic, sized a touch larger so the ring
+// sits around the glyph; it's reparented onto whichever mic started the capture
+// (footer prompt or a comment composer) and re-centred each time it's shown.
+void MainWindow::showVoiceTranscribeSpinner()
+{
+    QPushButton *btn = m_voiceActiveButton;
+    if (!btn || !btn->parentWidget())
+        return;
+    if (!m_voiceTranscribeSpinner)
+        m_voiceTranscribeSpinner = new RingSpinner(btn->parentWidget());
+    QWidget *sp = m_voiceTranscribeSpinner;
+    if (sp->parentWidget() != btn->parentWidget())
+        sp->setParent(btn->parentWidget());
+    const QRect bg = btn->geometry();
+    const int pad = 3;
+    const int d = qMax(bg.width(), bg.height()) + 2 * pad;
+    QRect r(0, 0, d, d);
+    r.moveCenter(bg.center());
+    sp->setGeometry(r);
+    sp->raise();
+    sp->show();
+}
+
+void MainWindow::hideVoiceTranscribeSpinner()
+{
+    if (m_voiceTranscribeSpinner)
+        m_voiceTranscribeSpinner->hide();
 }
 
 void MainWindow::updateFooterGitIdentity()
