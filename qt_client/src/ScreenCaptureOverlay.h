@@ -51,7 +51,8 @@ private slots:
 
 private:
     ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr);
-    QRect selectionRect() const;
+    QRect selectionRect() const;            // widget-local marquee rect
+    QRect captureRect() const;              // selection in virtual-desktop coords
     void beginCapture(const QRect &sel);    // hides overlay, then grabs the region
     QImage grabViaScreens(const QRect &sel);// X11/macOS: live composite + crop
     void grabViaPortal(const QRect &sel);   // Wayland: XDG portal (async)
