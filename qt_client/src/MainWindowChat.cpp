@@ -1206,11 +1206,55 @@ void MainWindow::updateFooterDiagnostics()
                                       (1024 * 1024));
     }
 #endif
-    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5 "); // 🖥
-    if (cpuPct >= 0)
-        txt += QStringLiteral("CPU %1%%  ").arg(cpuPct, 0, 'f', 0);
-    if (rssMb >= 0)
-        txt += QStringLiteral("MEM %1\xE2\x80\xAFMB").arg(rssMb);
+    // Feed the three moving sparklines. CPU is this process's busy fraction of
+    // one core (the /proc/self/stat figure above); memory and disk are the
+    // host's used fraction, so all three plot on a 0..100% scale (adhoc #17).
+    const QString dash = QString::fromUtf8("\xE2\x80\x94"); // em dash
+    if (auto *cpu = static_cast<ResourceSparkline *>(m_cpuChart)) {
+        cpu->addSample(cpuPct >= 0 ? cpuPct : 0.0, 100.0,
+                       cpuPct >= 0 ? QStringLiteral("%1%").arg(cpuPct, 0, 'f', 0)
+                                   : dash);
+        QString tip = QStringLiteral("CPU used by this app");
+        if (rssMb >= 0)
+            tip += QStringLiteral(" \xC2\xB7 %1\xE2\x80\xAFMB resident").arg(rssMb);
+        cpu->setToolTip(tip);
+    }
+    if (auto *mem = static_cast<ResourceSparkline *>(m_memChart)) {
+        const qint64 total = SystemStats::totalMemoryBytes();
+        const qint64 avail = SystemStats::availableMemoryBytes();
+        double pct = -1.0;
+        if (total > 0 && avail >= 0 && avail <= total)
+            pct = 100.0 * double(total - avail) / double(total);
+        mem->addSample(pct >= 0 ? pct : 0.0, 100.0,
+                       pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0) : dash);
+        mem->setToolTip(
+            total > 0
+                ? QStringLiteral("Host memory in use: %1 of %2")
+                      .arg(SystemStats::formatBytes(total - avail),
+                           SystemStats::formatBytes(total))
+                : QStringLiteral("Host memory in use"));
+    }
+    if (auto *disk = static_cast<ResourceSparkline *>(m_diskChart)) {
+        const QString path = QDir::homePath();
+        const qint64 total = SystemStats::diskTotalBytes(path);
+        const qint64 free = SystemStats::diskFreeBytes(path);
+        double pct = -1.0;
+        if (total > 0 && free >= 0 && free <= total)
+            pct = 100.0 * double(total - free) / double(total);
+        disk->addSample(pct >= 0 ? pct : 0.0, 100.0,
+                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0) : dash);
+        disk->setToolTip(
+            total > 0
+                ? QStringLiteral("Drive space in use: %1 of %2 (%3 free)")
+                      .arg(SystemStats::formatBytes(total - free),
+                           SystemStats::formatBytes(total),
+                           SystemStats::formatBytes(free))
+                : QStringLiteral("Drive space in use"));
+    }
+
+    // The footer button keeps only the UI-stall badge now that CPU/MEM live in
+    // the charts; the 🖥 glyph stays as the labelled click target.
+    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5"); // 🖥
     if (m_stallCount > 0)
         txt += QString::fromUtf8("  \xE2\x9A\xA0 %1 stall%2")
                    .arg(m_stallCount)
