@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 208
 title: when there are changes show a small numbedr above the comimts tab
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 32
