@@ -5,7 +5,7 @@ title: on the mirror nodes show memory use / available and CPU levels also show 
 status: open
 labels: [Partial]
 milestone: 
-priority: 71
+priority: 45
 progress: 15
 assignees: []
 createdAt: 1782487573397

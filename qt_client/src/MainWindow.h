@@ -1625,7 +1625,8 @@ private:
     // appears beside the prompt box. Clicking it records from the microphone;
     // clicking again stops and transcribes the audio into the prompt locally.
     void toggleVoiceCapture();
-    void transcribeVoiceCapture();
+    void startVoiceTranscription(bool finalPass);
+    void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
@@ -2211,13 +2212,19 @@ private:
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
-    // installed. While recording, m_voiceRecordProc captures a temp WAV which is
-    // transcribed by m_voiceTranscribeProc when recording stops.
+    // installed. While recording, m_voiceRecordProc captures a temp WAV which
+    // m_voiceTranscribeProc transcribes — once when recording stops, and live on
+    // m_voiceLiveTimer ticks so dictated words appear in the prompt box as you
+    // talk. m_voiceInsertPos/Len mark the span those live passes own so each
+    // refresh replaces only the dictation, never the user's own text.
     QPushButton *m_quickAddMicButton = nullptr;
     QProcess *m_voiceRecordProc = nullptr;
     QProcess *m_voiceTranscribeProc = nullptr;
+    QTimer *m_voiceLiveTimer = nullptr;
     QString m_voiceWavPath;
     bool m_voiceRecording = false;
+    int m_voiceInsertPos = -1;
+    int m_voiceInsertLen = 0;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;
@@ -3269,6 +3276,13 @@ private:
     // selects this issue (the next one in the list) once the table is rebuilt, so
     // closing an issue advances to the next instead of lingering on it (adhoc #249).
     int m_selectIssueOnReload = -1;
+    // Content signature (issues/ subtree oid + repo path) of the data the issue
+    // list was last built from. reloadIssues() fires on every push/sync — i.e.
+    // every agent commit — but a code-only commit doesn't touch issues/, so this
+    // lets it skip re-reading git and tearing down/rebuilding the issue rows when
+    // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
+    // aimed at a row or the search box). Empty = "unknown", never skip.
+    QString m_issuesLoadedSig;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.

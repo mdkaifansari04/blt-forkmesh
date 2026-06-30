@@ -5,7 +5,7 @@ title: on the pr detail show conflict file details on the conversation page abov
 status: open
 labels: [Partial]
 milestone: 
-priority: 44
+priority: 10
 progress: 15
 assignees: []
 createdAt: 1782422425326

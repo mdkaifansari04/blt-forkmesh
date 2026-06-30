@@ -607,8 +607,10 @@ void MainWindow::toggleVoiceCapture()
         return;
 
     // Second click while recording: stop. The recorder finalizes the WAV on
-    // SIGTERM; transcription is kicked off from its finished handler.
+    // SIGTERM; the final transcription is kicked off from its finished handler.
     if (m_voiceRecording) {
+        if (m_voiceLiveTimer)
+            m_voiceLiveTimer->stop();
         if (m_voiceRecordProc && m_voiceRecordProc->state() != QProcess::NotRunning)
             m_voiceRecordProc->terminate();
         return;
@@ -642,6 +644,8 @@ void MainWindow::toggleVoiceCapture()
     connect(proc, &QProcess::finished, this,
             [this, proc](int, QProcess::ExitStatus) {
                 m_voiceRecording = false;
+                if (m_voiceLiveTimer)
+                    m_voiceLiveTimer->stop();
                 if (m_voiceRecordProc == proc)
                     m_voiceRecordProc = nullptr;
                 const QString err =
@@ -655,10 +659,12 @@ void MainWindow::toggleVoiceCapture()
                     if (!err.isEmpty())
                         logSystem("Microphone capture failed: " + err.right(200));
                     m_issueQuickAdd->setPlaceholderText("enter prompt");
+                    m_voiceInsertPos = -1;
+                    m_voiceInsertLen = 0;
                     QFile::remove(m_voiceWavPath);
                     return;
                 }
-                transcribeVoiceCapture();
+                startVoiceTranscription(/*finalPass=*/true);
             });
     connect(proc, &QProcess::errorOccurred, this,
             [this, proc](QProcess::ProcessError err) {
@@ -680,6 +686,21 @@ void MainWindow::toggleVoiceCapture()
         return;
     }
     m_voiceRecording = true;
+    // Anchor the live-dictation span at the cursor so each refresh replaces only
+    // the words we've inserted, leaving whatever the user typed alone.
+    m_voiceInsertPos = m_issueQuickAdd->textCursor().position();
+    m_voiceInsertLen = 0;
+    // Re-transcribe the growing clip on a timer so dictated words show up while
+    // you're still talking (whisper-cli isn't streaming, so this re-runs over the
+    // whole capture and replaces the span each pass). The final pass on stop is
+    // authoritative; a flaky partial read just leaves the preview as-is.
+    if (!m_voiceLiveTimer) {
+        m_voiceLiveTimer = new QTimer(this);
+        m_voiceLiveTimer->setInterval(2200);
+        connect(m_voiceLiveTimer, &QTimer::timeout, this,
+                [this] { startVoiceTranscription(/*finalPass=*/false); });
+    }
+    m_voiceLiveTimer->start();
     // A red broadcast glyph makes the "recording now" state unmistakable. Tinted
     // directly (not via setOcticon) so it stays red regardless of the button's
     // normal icon colour; updateVoiceInputButton() restores the idle mic.
@@ -690,75 +711,148 @@ void MainWindow::toggleVoiceCapture()
     m_issueQuickAdd->setPlaceholderText("listening\xE2\x80\xA6 click the mic to stop");
 }
 
-// Run whisper.cpp over the just-recorded WAV and drop the transcript into the
-// prompt box. Implemented here (rather than via toggle) so the chain reads
-// top-to-bottom: record -> stop -> transcribe -> insert.
-void MainWindow::transcribeVoiceCapture()
+// Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
+// box. Called both live (finalPass=false, while the clip is still growing) and
+// once after recording stops (finalPass=true, authoritative). Only one pass runs
+// at a time: a live tick yields to an in-flight pass; the final pass preempts a
+// still-running live tick so the box always ends on the full transcript.
+void MainWindow::startVoiceTranscription(bool finalPass)
 {
     if (!m_issueQuickAdd)
         return;
+    if (m_voiceTranscribeProc &&
+        m_voiceTranscribeProc->state() != QProcess::NotRunning) {
+        if (!finalPass)
+            return; // a pass is already running; skip this live tick
+        m_voiceTranscribeProc->kill();
+        m_voiceTranscribeProc->waitForFinished(200);
+    }
+
+    // On the final pass any early-out must restore the idle prompt state, since
+    // recording has already stopped and nothing else will.
+    auto finishIdle = [this] {
+        m_issueQuickAdd->setPlaceholderText("enter prompt");
+        if (m_quickAddMicButton)
+            m_quickAddMicButton->setEnabled(true);
+        m_voiceInsertPos = -1;
+        m_voiceInsertLen = 0;
+        QFile::remove(m_voiceWavPath);
+    };
+
     const QString binary = whisperBinaryPath();
     const QString model = whisperModelPath();
     if (binary.isEmpty() || !QFileInfo::exists(model)) {
-        m_issueQuickAdd->setPlaceholderText("enter prompt");
-        QFile::remove(m_voiceWavPath);
+        if (finalPass)
+            finishIdle();
+        return;
+    }
+    // Need more than a bare WAV header to be worth transcribing (a live tick can
+    // fire before the recorder has captured anything).
+    if (!QFileInfo::exists(m_voiceWavPath) ||
+        QFileInfo(m_voiceWavPath).size() < 4096) {
+        if (finalPass)
+            finishIdle();
         return;
     }
 
-    m_issueQuickAdd->setPlaceholderText("transcribing\xE2\x80\xA6");
-    if (m_quickAddMicButton)
-        m_quickAddMicButton->setEnabled(false);
+    if (finalPass) {
+        m_issueQuickAdd->setPlaceholderText("transcribing\xE2\x80\xA6");
+        if (m_quickAddMicButton)
+            m_quickAddMicButton->setEnabled(false);
+    }
 
     // whisper.cpp writes "<base>.txt" with -otxt -of <base>; reading the file is
-    // more robust than parsing stdout (which also carries timing logs).
+    // more robust than parsing stdout (which also carries timing logs). Clear any
+    // prior pass's file first so we never read a stale transcript.
     const QString base = m_voiceWavPath + QStringLiteral(".out");
     const QString wav = m_voiceWavPath;
+    QFile::remove(base + QStringLiteral(".txt"));
     auto *proc = new QProcess(this);
     m_voiceTranscribeProc = proc;
     connect(proc, &QProcess::finished, this,
-            [this, proc, base, wav](int exitCode, QProcess::ExitStatus) {
+            [this, proc, base, wav, finalPass](int exitCode, QProcess::ExitStatus) {
                 const QString err =
                     QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 if (m_voiceTranscribeProc == proc)
                     m_voiceTranscribeProc = nullptr;
-                if (m_quickAddMicButton)
-                    m_quickAddMicButton->setEnabled(true);
-                m_issueQuickAdd->setPlaceholderText("enter prompt");
 
                 QString text;
                 QFile txt(base + QStringLiteral(".txt"));
                 if (txt.open(QIODevice::ReadOnly))
                     text = QString::fromUtf8(txt.readAll());
+                QFile::remove(base + QStringLiteral(".txt"));
                 // whisper marks silence with "[BLANK_AUDIO]"; collapse whitespace.
                 text.remove(QStringLiteral("[BLANK_AUDIO]"));
                 text = text.simplified();
+                // Drop whisper's silence hallucinations ("you", "thank you", …)
+                // when the clip was effectively quiet, so an unspoken capture
+                // doesn't type a stray word into the prompt.
+                if (!text.isEmpty() && isWhisperSilenceHallucination(text) &&
+                    wavPeakAmplitude(wav) < kVoiceSpokeThreshold)
+                    text.clear();
 
-                QFile::remove(wav);
-                QFile::remove(base + QStringLiteral(".txt"));
-
-                if (exitCode != 0 && text.isEmpty()) {
-                    logSystem("Transcription failed" +
-                              (err.isEmpty() ? QString()
-                                             : ": " + err.right(200)));
+                if (!finalPass) {
+                    // Live preview: only show real words; ignore empty/suppressed
+                    // results so the partial transcript doesn't flicker.
+                    if (!text.isEmpty())
+                        applyVoiceTranscript(text, /*finalPass=*/false);
                     return;
                 }
-                if (text.isEmpty())
-                    return;
-                // Insert at the cursor, adding a leading space if the box already
-                // has text so dictated words don't run into what's there.
-                QString prefix;
-                if (!m_issueQuickAdd->toPlainText().isEmpty() &&
-                    !m_issueQuickAdd->textCursor().atStart())
-                    prefix = QStringLiteral(" ");
-                m_issueQuickAdd->insertPlainText(prefix + text);
-                m_issueQuickAdd->setFocus();
+
+                if (m_quickAddMicButton)
+                    m_quickAddMicButton->setEnabled(true);
+                m_issueQuickAdd->setPlaceholderText("enter prompt");
+                QFile::remove(wav);
+                applyVoiceTranscript(text, /*finalPass=*/true);
+                if (text.isEmpty() && exitCode != 0)
+                    logSystem("Transcription failed" +
+                              (err.isEmpty() ? QString() : ": " + err.right(200)));
+                else if (text.isEmpty())
+                    logSystem("No speech detected \xE2\x80\x94 check that your "
+                              "microphone is capturing audio.");
             });
     // Read the transcript from "<base>.txt" (-otxt) rather than stdout, so this
     // doesn't depend on console flags that vary across whisper.cpp versions.
     proc->start(binary, {QStringLiteral("-m"), model, QStringLiteral("-f"), wav,
                          QStringLiteral("-nt"), QStringLiteral("-otxt"),
                          QStringLiteral("-of"), base});
+}
+
+// Replace the live-dictation span [m_voiceInsertPos, +m_voiceInsertLen] with
+// `text`, so successive (live or final) passes update the same words instead of
+// piling up. A leading space is added when the dictation follows existing text so
+// words don't run together. On the final pass the span is released.
+void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
+{
+    if (!m_issueQuickAdd || m_voiceInsertPos < 0) {
+        if (finalPass) {
+            m_voiceInsertPos = -1;
+            m_voiceInsertLen = 0;
+        }
+        return;
+    }
+    const QString full = m_issueQuickAdd->toPlainText();
+    const int start = qBound(0, m_voiceInsertPos, full.size());
+    const int end = qBound(start, start + m_voiceInsertLen, full.size());
+
+    QString prefix;
+    if (start > 0 && start <= full.size() && !full.at(start - 1).isSpace())
+        prefix = QStringLiteral(" ");
+    const QString ins = text.isEmpty() ? QString() : prefix + text;
+
+    QTextCursor cur = m_issueQuickAdd->textCursor();
+    cur.setPosition(start);
+    cur.setPosition(end, QTextCursor::KeepAnchor);
+    cur.insertText(ins);
+    m_voiceInsertLen = ins.size();
+
+    if (finalPass) {
+        m_voiceInsertPos = -1;
+        m_voiceInsertLen = 0;
+        m_issueQuickAdd->setTextCursor(cur);
+        m_issueQuickAdd->setFocus();
+    }
 }
 
 void MainWindow::updateFooterGitIdentity()
