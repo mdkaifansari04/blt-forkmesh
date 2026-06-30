@@ -2695,6 +2695,8 @@ private:
     QPushButton *m_pullImportButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
     QWidget *m_pullDetail = nullptr;
+    QPushButton *m_pullHideDetailButton = nullptr;
+    bool m_pullDetailHidden = false;
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
     QLabel *m_pullMergeStatus = nullptr; // conflict / ready-to-merge banner
