@@ -1642,6 +1642,12 @@ private:
     // bar beside the mic so you can see audio is coming in while you talk.
     void updateVoiceLevelMeter();
     void stopVoiceLevelMeter();
+    // Settings "Test mic" (adhoc #14): record from the chosen mic and drive a level
+    // bar so you can confirm the device is captured before relying on dictation.
+    // Independent of whisper — purely a microphone check.
+    void toggleMicTest();
+    void updateMicTestMeter();
+    void stopMicTest();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
     void refreshWhisperStatus();
@@ -2252,6 +2258,16 @@ private:
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
+    // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
+    // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
+    // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
+    QPushButton *m_voiceTestMicButton = nullptr;
+    QProgressBar *m_voiceTestMeter = nullptr;
+    QProcess *m_voiceTestProc = nullptr;
+    QTimer *m_voiceTestTimer = nullptr;
+    QString m_voiceTestWavPath;
+    qint64 m_voiceTestPos = 0;
+    bool m_voiceTestRecording = false;
     // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
     // recalls the last prompt sent so it can be fired again. Newest entry last;
     // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1
