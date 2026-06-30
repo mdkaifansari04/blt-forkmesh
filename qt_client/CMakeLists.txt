@@ -1,11 +1,28 @@
 cmake_minimum_required(VERSION 3.16)
 project(ForkMesh VERSION 0.5.22 LANGUAGES CXX)
 
-# The version stamped into the binary. Defaults to the project() version above,
-# but the release workflow overrides it with -DFORKMESH_VERSION=<tag> so the
-# published artifact reports the release tag it was cut from (see
+# The version stamped into the binary. It tracks the project() version above on
+# every configure, so bumping that line (e.g. cutting a release) immediately
+# updates the version the app reports — including the window title — even when an
+# existing build dir is reconfigured in place by the in-app quick-update. The
+# release workflow can still pin an exact tag with -DFORKMESH_VERSION_OVERRIDE=<tag>
+# so the published artifact reports the release tag it was cut from (see
 # .forkmesh/release.yml).
-set(FORKMESH_VERSION "${PROJECT_VERSION}" CACHE STRING "Version stamped into the binary")
+#
+# FORKMESH_VERSION itself must NOT be a CACHE variable: a cached default is
+# written once at the first configure and never overwritten on later configures
+# (set(... CACHE ...) leaves an existing cache entry alone), so a reused build
+# dir would keep baking the original version into the binary and the title would
+# keep showing the old version after a release. The override is a separate cache
+# variable, and dereferencing FORKMESH_VERSION below reads this normal variable,
+# which shadows any stale FORKMESH_VERSION left in an older build dir's cache.
+set(FORKMESH_VERSION_OVERRIDE "" CACHE STRING
+    "Pin the version stamped into the binary (release workflow); empty tracks project()")
+if(FORKMESH_VERSION_OVERRIDE)
+    set(FORKMESH_VERSION "${FORKMESH_VERSION_OVERRIDE}")
+else()
+    set(FORKMESH_VERSION "${PROJECT_VERSION}")
+endif()
 
 # Baked into the binaries: shown in the UI, and the quick-update button uses
 # the source dir to git pull + rebuild when running from a checkout.
