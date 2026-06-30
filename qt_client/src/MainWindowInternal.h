@@ -30,6 +30,7 @@
 #include "RepoSecurity.h"
 #include "ServerNode.h"
 #include "SystemStats.h"
+#include "AgentStore.h"
 #include "Theme.h"
 
 #include <QAction>
@@ -182,6 +183,169 @@ QString mirrorHeadBranch(const QString &mirrorPath);
 QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
 QString actionStatusText(const QString &status);
 QColor actionStatusColor(const QString &status);
+void logStartup(const QString &phase);
+void beginRestartLog();
+void logRestart(const QString &phase);
+
+
+// --- Shared display helpers: diff rendering, agent status, reference links,
+// and SCM AI models. Defined in MainWindowShared.cpp; used by several panels.
+struct DiffFileEntry {
+    QString path;
+    QString anchor;
+    int adds = 0;
+    int dels = 0;
+    QString status = QStringLiteral("modified"); // added/deleted/modified/renamed
+    // A binary file (`git diff --binary` emits a "GIT binary patch" literal/delta
+    // block, or a plain "Binary files … differ" line): its payload is not a text
+    // diff, so the renderers show a placeholder row and the header shows "BIN"
+    // instead of +/- counts.
+    bool binary = false;
+};
+QString diffStyleSheet(int fontPt = 12);
+QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
+                       const QString &dir, const QString &base, const QString &head,
+                       const QString &anchorFile = QString(),
+                       const QHash<QString, QString> &lineNotes = {},
+                       const QSet<QString> &viewedFiles = {});
+bool diffSplitPref();
+void setDiffSplitPref(bool split);
+QString diffStickyStyleSheet(int fontPt);
+QString diffStickyPathHtml(const QString &path);
+QString agentCostText(double usd);
+QString agentStatusText(const QString &status);
+QColor agentStatusColor(const QString &status);
+bool agentSessionActive(const AgentSession *s);
+QString solanaDisplayCurrency();
+QIcon agentStatusOcticon(const AgentSession &s, int px = 13);
+QString linkifyIssueRefs(const QString &escaped);
+QString linkifyReferenceLine(const QString &line);
+class DiffFileNavigator : public QObject
+{
+public:
+    DiffFileNavigator(QTextBrowser *diff, QListWidget *list, int anchorRole,
+                      QObject *parent)
+        : QObject(parent), m_diff(diff), m_list(list), m_anchorRole(anchorRole)
+    {
+        m_sticky = new QLabel(m_diff->viewport());
+        m_sticky->setObjectName(QStringLiteral("diffStickyHeader"));
+        m_sticky->setTextFormat(Qt::RichText);
+        m_sticky->hide();
+        QObject::connect(m_diff->verticalScrollBar(), &QScrollBar::valueChanged,
+                         this, [this] {
+                             if (!m_ignoreScroll)
+                                 refresh(/*syncSelection=*/true);
+                         });
+        QObject::connect(m_list, &QListWidget::currentItemChanged, this,
+                         [this](QListWidgetItem *it, QListWidgetItem *) {
+                             if (!it)
+                                 return;
+                             const QString anchor = it->data(m_anchorRole).toString();
+                             if (anchor.isEmpty())
+                                 return;
+                             // Jump the diff to the file's header, aligned to the top.
+                             // Suppress the scroll that fires so it can't re-select.
+                             m_ignoreScroll = true;
+                             m_diff->scrollToAnchor(anchor);
+                             m_ignoreScroll = false;
+                             refresh(/*syncSelection=*/false);
+                         });
+    }
+
+    // Recompute the file-header positions after the diff HTML was (re)rendered.
+    // `files` is the same in-order list used to fill the file list, so anchors map
+    // a span back to its row.
+    void rebuild(const QList<DiffFileEntry> &files, int fontPt)
+    {
+        m_sticky->setStyleSheet(diffStickyStyleSheet(fontPt));
+        m_spans.clear();
+        QTextDocument *doc = m_diff->document();
+        int idx = 0;
+        for (QTextBlock b = doc->begin(); b.isValid() && idx < files.size();
+             b = b.next()) {
+            const int at = b.text().indexOf(files.at(idx).path);
+            if (at >= 0) {
+                m_spans.append({b.position() + at, files.at(idx).path,
+                                files.at(idx).anchor});
+                ++idx;
+            }
+        }
+        refresh(/*syncSelection=*/false);
+    }
+
+private:
+    struct Span {
+        int pos;
+        QString path;
+        QString anchor;
+    };
+
+    void refresh(bool syncSelection)
+    {
+        if (m_spans.isEmpty() || m_diff->verticalScrollBar()->value() <= 0) {
+            m_sticky->hide();
+            return;
+        }
+        const int top = m_diff->cursorForPosition(QPoint(2, 2)).position();
+        const Span *cur = nullptr;
+        for (const Span &s : m_spans) {
+            if (s.pos <= top)
+                cur = &s;
+            else
+                break;
+        }
+        if (!cur) {
+            m_sticky->hide();
+            return;
+        }
+        if (syncSelection)
+            selectByAnchor(cur->anchor);
+        m_sticky->setText(diffStickyPathHtml(cur->path));
+        m_sticky->setGeometry(0, 0, m_diff->viewport()->width(),
+                              m_sticky->sizeHint().height());
+        m_sticky->show();
+        m_sticky->raise();
+    }
+
+    void selectByAnchor(const QString &anchor)
+    {
+        for (int i = 0; i < m_list->count(); ++i) {
+            if (m_list->item(i)->data(m_anchorRole).toString() != anchor)
+                continue;
+            if (m_list->currentRow() != i) {
+                QSignalBlocker block(m_list);
+                m_list->setCurrentRow(i);
+            }
+            return;
+        }
+    }
+
+    QTextBrowser *m_diff = nullptr;
+    QListWidget *m_list = nullptr;
+    QLabel *m_sticky = nullptr;
+    int m_anchorRole = Qt::UserRole;
+    bool m_ignoreScroll = false;
+    QList<Span> m_spans;
+};
+// Models offered for inline commit-message / X-post generation, with per-million
+// token pricing so the realised cost can be shown after each call.
+struct ScmAiModel {
+    const char *provider; // "claude" | "openai"
+    const char *id;
+    const char *label;
+    double inPerM;
+    double outPerM;
+    bool estimated; // pricing is approximate (OpenAI)
+};
+const ScmAiModel kScmAiModels[] = {
+    {"claude", "claude-opus-4-8", "Claude Opus 4.8", 5.0, 25.0, false},
+    {"claude", "claude-sonnet-4-6", "Claude Sonnet 4.6", 3.0, 15.0, false},
+    {"claude", "claude-haiku-4-5", "Claude Haiku 4.5", 1.0, 5.0, false},
+    {"openai", "gpt-4.1", "OpenAI GPT-4.1", 2.0, 8.0, true},
+    {"openai", "gpt-4.1-mini", "OpenAI GPT-4.1 mini", 0.40, 1.60, true},
+    {"openai", "gpt-4.1-nano", "OpenAI GPT-4.1 nano", 0.10, 0.40, true},
+};
+const int kScmAiModelCount = int(sizeof(kScmAiModels) / sizeof(kScmAiModels[0]));
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.

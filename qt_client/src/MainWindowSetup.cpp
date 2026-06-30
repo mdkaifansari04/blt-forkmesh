@@ -1,0 +1,2305 @@
+// MainWindowSetup: MainWindow feature methods, split out of MainWindow.cpp.
+// Onboarding & session: setup page, account/node registration, chat-history persistence, and the quick-update flow.
+//
+// These are MainWindow member functions defined in their own translation unit;
+// the class itself is declared in MainWindow.h. Shared helpers live in
+// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+#include "MainWindow.h"
+#include "MainWindowInternal.h"
+#include "TerminalWidget.h"
+
+#include "ActionFile.h"
+#include "ActionRunner.h"
+#include "ClaudeAgentScript.h"
+#include "ClaudeIdeBridge.h"
+#include "ClaudeStreamSession.h"
+#include "ClaudeTranscriptView.h"
+#include "ScrollJumpButtons.h"
+#include "CommitCommentStore.h"
+#include "StallWatchdog.h"
+#include "IssueBurnup.h"
+#include "QrCode.h"
+#include "ReferenceLinks.h"
+
+#include "MarkdownEditor.h"
+#include "MessageRow.h"
+#include "PullReviewModel.h"
+#include "RepoHost.h"
+#include "RepoSecurity.h"
+#include "ServerNode.h"
+#include "SystemStats.h"
+#include "Theme.h"
+
+#include <QAction>
+#include <QApplication>
+#include <QBuffer>
+#include <QButtonGroup>
+#include <QCheckBox>
+#include <QClipboard>
+#include <QCloseEvent>
+#include <QCryptographicHash>
+#include <QComboBox>
+#include <QCompleter>
+#include <QCoreApplication>
+#include <QDate>
+#include <QDateTime>
+#include <QLocale>
+#include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QDirIterator>
+#include <QElapsedTimer>
+#include <QFileDialog>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileInfo>
+#include <QMimeData>
+#include <QFontDatabase>
+#include <QFormLayout>
+#include <QFrame>
+#include <QGraphicsOpacityEffect>
+#include <QGridLayout>
+#include <QGuiApplication>
+#include <QStandardPaths>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QWidgetAction>
+#include <QEnterEvent>
+#include <QMessageBox>
+#include <QMimeDatabase>
+#include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSslSocket>
+#include <QSslError>
+#include <QImage>
+#include <QKeyEvent>
+#include <QHelpEvent>
+#include <QToolTip>
+#include <QConicalGradient>
+#include <QLinearGradient>
+#include <QPainter>
+#include <QPainterPath>
+#include <QRadialGradient>
+#include <QRadioButton>
+#include <QShortcut>
+#include <QTreeWidgetItem>
+#include <QtMath>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QPropertyAnimation>
+#include <QRandomGenerator>
+#include <QEventLoop>
+#include <QFileSystemWatcher>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QProgressBar>
+#include <QTextCursor>
+#include <QTimeZone>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QRegularExpressionValidator>
+#include <QSaveFile>
+#include <QScreen>
+#include <QScopedValueRollback>
+#include <QScrollArea>
+#include <QSet>
+#include <QScrollBar>
+#include <QSettings>
+#include <QSignalBlocker>
+#include <QSize>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStringListModel>
+#include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleHints>
+#include <QSyntaxHighlighter>
+#include <QAbstractItemView>
+#include <QHeaderView>
+#include <QTableWidget>
+#include <QTabWidget>
+#include <QTextBrowser>
+#include <QTextBlock>
+#include <QTextDocument>
+#include <QTextEdit>
+#include <QTemporaryDir>
+#include <QTemporaryFile>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QSystemTrayIcon>
+#include <QSvgRenderer>
+#include <QScopeGuard>
+#include <QThread>
+#include <QTimer>
+#include <QUrl>
+#include <QUrlQuery>
+#include <QUuid>
+#include <QWindow>
+#include <QVBoxLayout>
+
+#include <algorithm>
+#include <functional>
+#include <memory>
+
+#ifndef Q_OS_WIN
+#include <csignal>
+#include <pwd.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
+#ifndef FORKMESH_VERSION
+#define FORKMESH_VERSION "dev"
+#endif
+#ifndef FORKMESH_SOURCE_DIR
+#define FORKMESH_SOURCE_DIR ""
+#endif
+
+using namespace forkmesh::ui;
+
+// ----------------------------------------------------------- chat persistence
+
+QString MainWindow::chatHistoryKey() const
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size())
+        return {};
+    const ServerConfig &s = m_servers.at(m_activeServer);
+    const QByteArray seed = (s.url + "\n" + s.room).toUtf8();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(seed, QCryptographicHash::Sha256).toHex());
+}
+
+QString MainWindow::chatHistoryPath() const
+{
+    const QString key = chatHistoryKey();
+    if (key.isEmpty())
+        return {};
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/chat_history/" + key + ".json";
+}
+
+QString MainWindow::avatarCachePath(const QString &peerId) const
+{
+    if (peerId.isEmpty())
+        return {};
+    // Node ids are base64url, so hash to a filesystem-safe, fixed-length name.
+    const QString file = QString::fromLatin1(
+        QCryptographicHash::hash(peerId.toUtf8(), QCryptographicHash::Sha256)
+            .toHex());
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/avatars/" + file + ".png";
+}
+
+void MainWindow::loadCachedAvatars()
+{
+    // Restore avatars saved on previous sessions so message rows and profiles
+    // keep their picture before (or without) the peer re-broadcasting it. The
+    // file name is a hash of the node id, so each .png stores the id inside it
+    // in a small header line we wrote at save time.
+    const QString dir = QStandardPaths::writableLocation(
+                            QStandardPaths::AppDataLocation) +
+                        "/avatars";
+    QDir d(dir);
+    if (!d.exists())
+        return;
+    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
+    for (const QFileInfo &fi : files) {
+        QFile f(fi.absoluteFilePath());
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QByteArray data = f.readAll();
+        f.close();
+        // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
+        const int nl = data.indexOf('\n');
+        if (nl <= 0)
+            continue;
+        const QString peerId = QString::fromUtf8(data.left(nl));
+        QPixmap pixmap;
+        if (peerId.isEmpty() || !pixmap.loadFromData(data.mid(nl + 1)))
+            continue;
+        if (!m_avatars.contains(peerId))
+            m_avatars.insert(peerId, pixmap);
+    }
+}
+
+void MainWindow::saveChatHistory()
+{
+    const QString path = chatHistoryPath();
+    if (path.isEmpty())
+        return;
+
+    QJsonObject conversations;
+    for (auto it = m_history.constBegin(); it != m_history.constEnd(); ++it) {
+        QJsonArray arr;
+        const QList<ChatMessage> &msgs = it.value();
+        // Keep the file bounded: only the most recent messages per conversation.
+        const int first = std::max(0, int(msgs.size()) - 1000);
+        for (int i = first; i < msgs.size(); ++i) {
+            const ChatMessage &m = msgs.at(i);
+            QJsonObject obj{{"id", m.id},
+                            {"senderId", m.senderId},
+                            {"senderName", m.senderName},
+                            {"text", m.text},
+                            {"ts", m.timestampMs},
+                            {"self", m.self},
+                            {"edited", m.edited},
+                            {"deleted", m.deleted}};
+            if (m.hasFile()) {
+                obj.insert("fileName", m.fileName);
+                obj.insert("fileMime", m.fileMime);
+                // Inline small attachments so they survive a restart.
+                if (m.fileData.size() <= 512 * 1024)
+                    obj.insert("fileData",
+                               QString::fromLatin1(m.fileData.toBase64()));
+            }
+            arr.append(obj);
+        }
+        if (!arr.isEmpty())
+            conversations.insert(it.key(), arr);
+    }
+
+    QJsonArray openDms;
+    for (const QString &peer : std::as_const(m_openDms))
+        openDms.append(peer);
+    QJsonObject dmNames;
+    for (auto it = m_dmNames.constBegin(); it != m_dmNames.constEnd(); ++it)
+        dmNames.insert(it.key(), it.value());
+
+    const QJsonObject root{{"current", m_currentConversation},
+                           {"openDms", openDms},
+                           {"dmNames", dmNames},
+                           {"conversations", conversations}};
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+void MainWindow::loadChatHistory()
+{
+    const QString path = chatHistoryPath();
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+
+    const QJsonObject conversations = root.value("conversations").toObject();
+    for (auto it = conversations.constBegin(); it != conversations.constEnd(); ++it) {
+        const QString conversation = it.key();
+        QList<ChatMessage> &dest = m_history[conversation];
+        for (const QJsonValue &v : it.value().toArray()) {
+            const QJsonObject obj = v.toObject();
+            ChatMessage m;
+            m.id = obj.value("id").toString();
+            m.conversation = conversation;
+            m.senderId = obj.value("senderId").toString();
+            m.senderName = obj.value("senderName").toString();
+            m.text = obj.value("text").toString();
+            m.timestampMs = obj.value("ts").toVariant().toLongLong();
+            m.self = obj.value("self").toBool();
+            m.edited = obj.value("edited").toBool();
+            m.deleted = obj.value("deleted").toBool();
+            m.fileName = obj.value("fileName").toString();
+            m.fileMime = obj.value("fileMime").toString();
+            if (obj.contains("fileData"))
+                m.fileData = QByteArray::fromBase64(
+                    obj.value("fileData").toString().toLatin1());
+            if (!m.id.isEmpty()) {
+                if (m_historyIds.contains(m.id))
+                    continue;
+                m_historyIds.insert(m.id);
+            }
+            dest.append(m);
+        }
+    }
+
+    // Restore the open DM tabs and their display names.
+    const QJsonObject dmNames = root.value("dmNames").toObject();
+    for (auto it = dmNames.constBegin(); it != dmNames.constEnd(); ++it)
+        m_dmNames.insert(it.key(), it.value().toString());
+    for (const QJsonValue &v : root.value("openDms").toArray()) {
+        const QString peer = v.toString();
+        if (!peer.isEmpty() && !m_openDms.contains(peer))
+            m_openDms.append(peer);
+    }
+    refreshDmList();
+
+    // Reopen the last conversation so history is visible immediately.
+    const QString current = root.value("current").toString();
+    if (!current.isEmpty() && current != m_currentConversation &&
+        m_history.contains(current)) {
+        switchConversation(current);
+    } else if (!m_currentConversation.isEmpty()) {
+        // History often loads *after* the relay has already selected a channel
+        // (e.g. #general). switchConversation() no-ops when the target is the
+        // current conversation, which left the view empty until you switched
+        // away and back. Re-render the open conversation so the just-loaded
+        // history shows up on first load.
+        rebuildConversationView();
+    }
+}
+
+void MainWindow::scheduleChatSave()
+{
+    if (!m_chatSaveTimer) {
+        m_chatSaveTimer = new QTimer(this);
+        m_chatSaveTimer->setSingleShot(true);
+        connect(m_chatSaveTimer, &QTimer::timeout, this,
+                &MainWindow::saveChatHistory);
+    }
+    m_chatSaveTimer->start(1500);
+}
+
+// ---------------------------------------------------------------- setup page
+
+QWidget *MainWindow::buildSetupPage()
+{
+    auto *page = new QWidget;
+
+    auto *card = new QWidget;
+    card->setObjectName("setupCard");
+    card->setFixedWidth(420);
+
+    auto *title = new QLabel("<span style='color:#22c55e'>Fork</span>Mesh");
+    title->setObjectName("appTitle");
+    title->setAlignment(Qt::AlignHCenter);
+    auto *subtitle = new QLabel(
+        "Pick a name and join the mesh \xE2\x80\x94 preserve code, mirror repos, and chat.");
+    subtitle->setObjectName("appSubtitle");
+    subtitle->setAlignment(Qt::AlignHCenter);
+    subtitle->setWordWrap(true);
+    auto *versionLabel = new QLabel("v" FORKMESH_VERSION);
+    versionLabel->setObjectName("versionLabel");
+    versionLabel->setAlignment(Qt::AlignHCenter);
+
+    m_nameEdit = new QLineEdit;
+    m_nameEdit->setPlaceholderText("Pick a name (e.g. ada-lovelace)");
+    m_nameEdit->setMaxLength(63);
+    m_nameEdit->setText(savedProfileName());
+    // Only allow characters a node name can contain, so spaces and symbols can't
+    // be typed or pasted in the first place (validated again on submit).
+    m_nameEdit->setValidator(new QRegularExpressionValidator(
+        QRegularExpression(QStringLiteral("[A-Za-z0-9-]*")), m_nameEdit));
+    auto *nameHint = new QLabel(
+        "Your name on the mesh \xE2\x80\x94 letters, numbers and hyphens, no spaces.");
+    nameHint->setObjectName("modeHint");
+    nameHint->setWordWrap(true);
+    // Payout Solana address is no longer collected on first run — it is set later
+    // from Settings once the user is logged in. The widget is kept (hidden) as a
+    // data-holder so the profile/settings sync and session start paths that read
+    // it keep working unchanged.
+    m_solanaEdit = new QLineEdit(card);
+    m_solanaEdit->setMaxLength(64);
+    m_solanaEdit->setText(savedSolanaAddress());
+    m_solanaEdit->hide();
+    // The node's public key is no longer surfaced on the welcome screen (it kept
+    // the first run feeling technical). The label is kept as a hidden data-holder
+    // so the code that fills it after identity load keeps working unchanged.
+    m_pubkeyLabel = new QLabel("Ed25519 public key: generating...");
+    m_pubkeyLabel->setObjectName("modeHint");
+    m_pubkeyLabel->setWordWrap(true);
+    m_pubkeyLabel->hide();
+
+    // Relay server: users only ever see the host (e.g. "forkmesh.com"). The full
+    // wss:// API/room URL is assembled in code (canonicalServerUrl). The field is
+    // pre-filled with the default host and styled muted ("greyed out") to signal
+    // that most people can leave it alone — but it stays editable for anyone
+    // self-hosting a relay.
+    auto *serverLabel = new QLabel("Relay server");
+    serverLabel->setObjectName("modeHint");
+    m_serverUrlEdit = new QLineEdit;
+    m_serverUrlEdit->setPlaceholderText(serverHostDisplay(kDefaultServerUrl));
+    m_serverUrlEdit->setMaxLength(2048);
+    m_serverUrlEdit->setObjectName("relayHostEdit");
+    const QString savedServerUrl = QSettings().value(kServerUrlSetting).toString().trimmed();
+    const bool legacyWorkersDevUrl = QUrl(savedServerUrl).host().endsWith(
+        QStringLiteral(".workers.dev"));
+    const QString effectiveServerUrl =
+        savedServerUrl.isEmpty() || savedServerUrl == kLocalServerUrl ||
+                legacyWorkersDevUrl
+            ? kDefaultServerUrl
+            : savedServerUrl;
+    m_serverUrlEdit->setText(serverHostDisplay(effectiveServerUrl));
+
+    // The default repository room is fixed so every node converges on the same
+    // shared rooms (issue #116). It is no longer shown on the setup screen — the
+    // widget is kept as a hidden data-holder so the multi-server config and the
+    // session start path keep working unchanged. It always holds the default.
+    m_roomNameEdit = new QLineEdit(card);
+    m_roomNameEdit->setMaxLength(80);
+    m_roomNameEdit->setText(kDefaultRoomName);
+    m_roomNameEdit->setReadOnly(true);
+    m_roomNameEdit->hide();
+
+    auto *mainnodeHint = new QLabel(
+        "Mainnodes relay encrypted repository-room ciphertext only.");
+    mainnodeHint->setObjectName("modeHint");
+
+    m_setupError = new QLabel;
+    m_setupError->setWordWrap(true);
+    m_setupError->setStyleSheet("color:#ff6b6b; background:transparent;");
+    m_setupError->hide();
+
+    auto *startButton = new QPushButton("Start ForkMesh node");
+    startButton->setObjectName("primaryButton");
+    startButton->setMinimumHeight(40);
+
+    // "Join the network (donate)" was removed from first run — joining/donating
+    // now happens in-app after starting, mirroring the website flow (browse first,
+    // then sign up). The Quick update button is likewise gone from this screen;
+    // its widgets are kept (hidden) so runQuickUpdate()/setUpdateStatus() — which
+    // are also reachable from the in-app rebuild path — keep functioning.
+    m_updateButton = new QPushButton(card);
+    m_updateButton->hide();
+    m_updateStatus = new QLabel(card);
+    m_updateStatus->setObjectName("modeHint");
+    m_updateStatus->setWordWrap(true);
+    m_updateStatus->setAlignment(Qt::AlignHCenter);
+    m_updateStatus->hide();
+
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(28, 28, 28, 28);
+    cardLayout->setSpacing(10);
+    cardLayout->addWidget(title);
+    cardLayout->addWidget(subtitle);
+    cardLayout->addWidget(versionLabel);
+    cardLayout->addSpacing(14);
+    cardLayout->addWidget(m_nameEdit);
+    cardLayout->addWidget(nameHint);
+    cardLayout->addSpacing(8);
+    cardLayout->addWidget(serverLabel);
+    cardLayout->addWidget(m_serverUrlEdit);
+    cardLayout->addWidget(mainnodeHint);
+    cardLayout->addSpacing(8);
+    cardLayout->addWidget(m_setupError);
+    cardLayout->addSpacing(10);
+    cardLayout->addWidget(startButton);
+
+    auto *setupContent = new QWidget;
+    auto *setupContentLayout = new QVBoxLayout(setupContent);
+    setupContentLayout->addStretch();
+    setupContentLayout->addWidget(card, 0, Qt::AlignHCenter);
+    setupContentLayout->addStretch();
+
+    auto *setupScroll = new QScrollArea;
+    setupScroll->setWidgetResizable(true);
+    setupScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setupScroll->setFrameShape(QFrame::NoFrame);
+    // Let the setup card scroll in short windows instead of fixing window height.
+    setupScroll->setMinimumHeight(0);
+    setupScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    setupScroll->setWidget(setupContent);
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(setupScroll);
+
+    connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);
+    connect(m_nameEdit, &QLineEdit::returnPressed, this, &MainWindow::startSession);
+    connect(m_nameEdit, &QLineEdit::textEdited, this, [this](const QString &name) {
+        // Live-lowercase so the name reads exactly as it will register, and clear
+        // any stale validation error as soon as the user starts fixing it.
+        const QString lower = name.toLower();
+        if (lower != name) {
+            const int pos = m_nameEdit->cursorPosition();
+            QSignalBlocker block(m_nameEdit);
+            m_nameEdit->setText(lower);
+            m_nameEdit->setCursorPosition(pos);
+        }
+        if (m_setupError)
+            m_setupError->hide();
+        saveProfileName(lower);
+    });
+    // The field holds a bare host; persist the canonical full relay URL so every
+    // other consumer (which expects a complete wss:// URL) keeps working.
+    connect(m_serverUrlEdit, &QLineEdit::textEdited, this, [](const QString &host) {
+        QSettings().setValue(kServerUrlSetting, canonicalServerUrl(host));
+    });
+
+    return page;
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testSetSetupInputs(const QString &name, const QString &solana)
+{
+    if (m_nameEdit)
+        m_nameEdit->setText(name);
+    if (m_solanaEdit)
+        m_solanaEdit->setText(solana);
+    QSettings().setValue(kSolanaSetting, solana.trimmed());
+}
+
+int MainWindow::testStackIndex() const
+{
+    return m_stack ? m_stack->currentIndex() : -1;
+}
+
+QString MainWindow::testSavedSolanaAddress() const
+{
+    return QSettings().value(kSolanaSetting).toString().trimmed();
+}
+
+bool MainWindow::testColumnsBecomeResizable()
+{
+    // Mirror a real data table's header: a Stretch flex column, two
+    // content-fitted columns, and a Fixed button column.
+    QTableWidget table(0, 4);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionResizeMode(0, QHeaderView::Stretch);
+    header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(3, QHeaderView::Fixed);
+    makeColumnsResizable(&table);
+
+    // Nothing changes until real rows populate the table.
+    if (header->sectionResizeMode(1) != QHeaderView::ResizeToContents ||
+        header->sectionResizeMode(2) != QHeaderView::ResizeToContents)
+        return false;
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("flex")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("short")));
+    table.setItem(0, 2,
+                  new QTableWidgetItem(QStringLiteral("a much wider cell value")));
+    table.setItem(0, 3, new QTableWidgetItem(QStringLiteral("x")));
+    // The snapshot/switch is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    const bool flexUntouched = header->sectionResizeMode(0) == QHeaderView::Stretch;
+    const bool fixedUntouched = header->sectionResizeMode(3) == QHeaderView::Fixed;
+    const bool col1Draggable = header->sectionResizeMode(1) == QHeaderView::Interactive;
+    const bool col2Draggable = header->sectionResizeMode(2) == QHeaderView::Interactive;
+    // The fitted widths survive the switch, so the wider column stays wider.
+    const bool widthsPreserved = header->sectionSize(2) > header->sectionSize(1);
+    return flexUntouched && fixedUntouched && col1Draggable && col2Draggable &&
+           widthsPreserved;
+}
+
+bool MainWindow::testMarginResize()
+{
+    // Mirror the issue table: a leading content column, a Stretch flex column
+    // (Title), then several content-fitted columns that become draggable.
+    QTableWidget table(0, 5);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
+    header->setSectionResizeMode(1, QHeaderView::Stretch);          // Title (flex)
+    for (int i = 2; i < 5; ++i)
+        header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(&table);
+    table.resize(900, 200);
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("1")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("a flexible title")));
+    table.setItem(0, 2, new QTableWidgetItem(QStringLiteral("status value")));
+    table.setItem(0, 3,
+                  new QTableWidgetItem(QStringLiteral("a wider neighbour cell")));
+    table.setItem(0, 4, new QTableWidgetItem(QStringLiteral("tail value")));
+    // The snapshot/switch is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    // Drag column 2's divider wider. Like moving a margin, the width comes
+    // straight out of its right-hand neighbour (column 3) — column 4 and the
+    // far-off Stretch column 1 are left alone, so the divider tracks the cursor.
+    const int before3 = header->sectionSize(3);
+    const int before4 = header->sectionSize(4);
+    const int delta = 24;
+    header->resizeSection(2, header->sectionSize(2) + delta);
+    QApplication::processEvents();
+
+    const bool neighborGaveWidth = header->sectionSize(3) == before3 - delta;
+    const bool tailUntouched = header->sectionSize(4) == before4;
+    const bool stretchUntouched =
+        header->sectionResizeMode(1) == QHeaderView::Stretch;
+    return neighborGaveWidth && tailUntouched && stretchUntouched;
+}
+
+bool MainWindow::testMarginResizeAfterMove()
+{
+    // Three draggable content columns. Once the user reorders them, resizing
+    // one must still trade with whatever column now sits to its right visually.
+    QTableWidget table(0, 3);
+    QHeaderView *header = table.horizontalHeader();
+    header->setSectionsMovable(true);
+    for (int i = 0; i < 3; ++i)
+        header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    makeColumnsResizable(&table);
+    table.resize(600, 200);
+
+    table.insertRow(0);
+    table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("alpha value")));
+    table.setItem(0, 1, new QTableWidgetItem(QStringLiteral("beta value")));
+    table.setItem(0, 2, new QTableWidgetItem(QStringLiteral("gamma value")));
+    // The snapshot/switch to Interactive is deferred to the next event-loop turn.
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    // Move logical column 0 to the far right: visual order becomes 1, 2, 0.
+    header->moveSection(header->visualIndex(0), 2);
+
+    // Dragging logical column 1 (now leftmost) wider must pull width from
+    // logical column 2 — its new visual right-hand neighbour — not from the
+    // logical-next column 2 by accident or from the far-right moved column.
+    const int before2 = header->sectionSize(2);
+    const int before0 = header->sectionSize(0);
+    const int delta = 20;
+    header->resizeSection(1, header->sectionSize(1) + delta);
+    QApplication::processEvents();
+
+    const bool visualNeighborGaveWidth = header->sectionSize(2) == before2 - delta;
+    const bool movedColumnUntouched = header->sectionSize(0) == before0;
+    return visualNeighborGaveWidth && movedColumnUntouched;
+}
+
+bool MainWindow::testAgentColumnsMovable() const
+{
+    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
+}
+
+QString MainWindow::testQuickAddAgentProvider() const
+{
+    return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
+                                   : QString();
+}
+
+QString MainWindow::testIssueAgentProvider() const
+{
+    return m_issueAgentProvider ? m_issueAgentProvider->currentData().toString()
+                                : QString();
+}
+
+QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
+{
+    if (!m_worktreesTable)
+        return QString();
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+        if (b && b->data(Qt::UserRole).toString() == branch) {
+            if (QTableWidgetItem *ab = m_worktreesTable->item(row, 3))
+                return ab->text();
+        }
+    }
+    return QString();
+}
+
+QString MainWindow::testWorktreeBranchLabel() const
+{
+    return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
+}
+
+QString MainWindow::testArrowOnWorktrees(bool down)
+{
+    if (!m_worktreesTable)
+        return QString();
+    m_worktreesTable->setFocus();
+    const Qt::Key key = down ? Qt::Key_Down : Qt::Key_Up;
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QApplication::sendEvent(m_worktreesTable, &press);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QApplication::sendEvent(m_worktreesTable, &release);
+    QApplication::processEvents();
+    const int row = m_worktreesTable->currentRow();
+    QTableWidgetItem *b = row >= 0 ? m_worktreesTable->item(row, 0) : nullptr;
+    return b ? b->data(Qt::UserRole).toString() : QString();
+}
+
+void MainWindow::testClickRepoDetailTab(int id)
+{
+    if (!m_repoDetailTabs)
+        return;
+    if (QAbstractButton *b = m_repoDetailTabs->button(id))
+        b->click(); // emits idClicked(id) -> the same path a real click takes
+}
+
+bool MainWindow::testWorktreesTableHasKeyboardFocus() const
+{
+    return m_worktreesTable && m_worktreesTable->window() &&
+           m_worktreesTable->window()->focusWidget() == m_worktreesTable;
+}
+
+bool MainWindow::testReleasesTableHasKeyboardFocus() const
+{
+    return m_releasesTable && m_releasesTable->window() &&
+           m_releasesTable->window()->focusWidget() == m_releasesTable;
+}
+
+bool MainWindow::testMirrorNodesTableHasKeyboardFocus() const
+{
+    return m_mirrorNodesTable && m_mirrorNodesTable->window() &&
+           m_mirrorNodesTable->window()->focusWidget() == m_mirrorNodesTable;
+}
+
+QString MainWindow::testBranchWorktreePath(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+                return wt->text();
+        }
+    }
+    return QString();
+}
+
+QString MainWindow::testBranchAttachmentText(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
+                return attach->text();
+        }
+    }
+    return QString();
+}
+
+bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
+                return !attach->icon().isNull();
+        }
+    }
+    return false;
+}
+
+int MainWindow::testClickBranchAgentCell(const QString &branch)
+{
+    if (!m_branchesTable)
+        return -1;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        if (name && name->text() == branch) {
+            // Fire the same signal a real click on the Issue / Agent cell would,
+            // so the production cellClicked handler runs (adhoc #258).
+            emit m_branchesTable->cellClicked(row, 4);
+            break;
+        }
+    }
+    return m_selectedAgentSessionId;
+}
+
+QStringList MainWindow::testBranchRowOrder() const
+{
+    QStringList names;
+    if (!m_branchesTable)
+        return names;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+            names << name->text();
+    }
+    return names;
+}
+
+void MainWindow::testSetDefaultAgentProvider(const QString &provider)
+{
+    if (!m_defaultAgentProviderCombo)
+        return;
+    // Drive it like a user picking the value so the connected slot persists the
+    // setting and re-seeds the live pickers.
+    const int index = m_defaultAgentProviderCombo->findData(provider);
+    m_defaultAgentProviderCombo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+int MainWindow::testAddPublishedRepository(const QString &owner, const QString &name,
+                                           const QString &mirrorPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.mirrorPath = mirrorPath;
+    repo.publishToNetwork = true;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+
+int MainWindow::testAddLocalRepository(const QString &owner, const QString &name,
+                                       const QString &localPath)
+{
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.localPath = localPath;
+    m_repositories.append(repo);
+    return m_repositories.size() - 1;
+}
+
+bool MainWindow::testOpenRepository(int index)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    openRepoDetail(index);
+    return true;
+}
+
+QString MainWindow::testRepoDefaultBranch() const
+{
+    return repoDefaultBranch(repoBranches());
+}
+
+bool MainWindow::testShowRepoIssuesTab()
+{
+    if (!m_repoDetailStack || m_repoDetailStack->count() <= 2)
+        return false;
+    m_repoDetailStack->setCurrentIndex(2); // Issues
+    if (m_repoDetailTabs) {
+        if (QAbstractButton *b = m_repoDetailTabs->button(2))
+            b->setChecked(true);
+    }
+    return true;
+}
+
+void MainWindow::testShowPublishBar(bool on)
+{
+    if (m_repoPushButton) {
+        if (on) {
+            m_repoPushButton->setText(QStringLiteral("Sync changes"));
+            m_repoPushButton->setEnabled(true);
+            positionRepoPushButton(); // floats it above the Commits tab
+        }
+        m_repoPushButton->setVisible(on);
+    }
+    if (m_repoPublishBar)
+        m_repoPublishBar->setVisible(on);
+}
+
+int MainWindow::testRepoTabContentTop()
+{
+    return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;
+}
+#endif
+
+void MainWindow::startSession()
+{
+    // Picking a name is the very first thing on first run — we don't quietly
+    // assign a generated one and drop the user into an anonymous "browse" mode.
+    // Validate the name explicitly (rather than silently rewriting it) so spaces
+    // or an odd first/last character are surfaced instead of mangled.
+    const QString raw = m_nameEdit->text().trimmed().toLower();
+    if (raw.isEmpty()) {
+        m_setupError->setText("Pick a name to get started.");
+        m_setupError->show();
+        m_nameEdit->setFocus();
+        return;
+    }
+    if (!isValidNodeName(raw)) {
+        m_setupError->setText(
+            "That name won't work — use lowercase letters, numbers and hyphens "
+            "(no spaces), starting with a letter.");
+        m_setupError->show();
+        m_nameEdit->setFocus();
+        return;
+    }
+    const QString name = raw; // validated; no rewriting needed
+    m_nameEdit->setText(name);
+    saveProfileName(name);
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        m_setupError->setText(m_profileIdentity.errorString());
+        m_setupError->show();
+        return;
+    }
+
+    // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
+    // needs only a node name. Crypto is strictly opt-in and lives behind the
+    // "Get paid to mirror" button on the node profile — we never gate entry on
+    // an account or a Solana address here. We still attempt a silent, dialog-free
+    // auth so a returning node that already owns an active account keeps its
+    // hosting/payout privileges; a brand-new node simply starts unauthenticated.
+#ifdef FORKMESH_WINDOW_TESTS
+    // Tests pin the auth state directly and bypass the server start, so skip the
+    // real silent-auth network round-trip here.
+    if (!m_testBypassServerStart)
+        authenticateSilently(name);
+#else
+    authenticateSilently(name);
+#endif
+
+    if (m_serverUrlEdit->text().trimmed().isEmpty())
+        m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
+
+    saveSolanaAddress(m_solanaEdit->text().trimmed());
+    if (m_accountAuthenticated && m_accountName != name) {
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
+    }
+    m_accountName = name;
+    QSettings().setValue(kAccountNameSetting, name);
+
+    m_roomNameEdit->setText(kDefaultRoomName); // fixed shared room (read-only)
+    m_setupError->hide();
+    m_userName = name;
+#ifdef FORKMESH_WINDOW_TESTS
+    if (m_testBypassServerStart) {
+        m_stack->setCurrentIndex(1);
+        return;
+    }
+#endif
+    persistProfile();
+    m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
+
+    // Seed the Settings section's profile controls and the avatar nav button
+    // (which now stands in for the old settings gear).
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_userName);
+    setSettingsAvatar(m_userAvatar);
+    updateAvatarButton();
+
+    // Reset chat state.
+    m_channels.clear();
+    m_currentConversation.clear();
+    m_history.clear();
+    m_historyIds.clear();
+    m_visibleRows.clear();
+    m_reactions.clear();
+    m_avatars.clear();
+    m_dmNames.clear();
+    m_openDms.clear();
+    m_unread.clear();
+    m_unreadCounts.clear();
+    m_typing.clear();
+    m_typingConversation.clear();
+    m_typingStopTimer->stop();
+    m_channelList->clear();
+    m_dmList->clear();
+    rebuildConversationView();
+
+    const QString fullServerUrl = canonicalServerUrl(m_serverUrlEdit->text());
+    QSettings().setValue(kServerUrlSetting, fullServerUrl);
+    QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
+    persistEditsToActiveServer();
+    const QUrl url(fullServerUrl);
+    auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
+                                  kDefaultRoomName,
+                                  m_solanaEdit->text().trimmed(), this);
+    attachBackend(server);
+    if (!server->start())
+        return;
+
+    if (m_backend) {
+        if (m_connectedAtMs <= 0)
+            m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
+        // Stay quiet about node connections while the initial roster settles, so
+        // a restart doesn't fire an alert for every node that is already online.
+        m_nodeAlertGraceUntilMs =
+            QDateTime::currentMSecsSinceEpoch() + 12000;
+        // Broadcast the generated face avatar when no custom avatar is set, so
+        // peers always see a unique, identifiable face for this node.
+        m_backend->setAvatar(effectiveAvatar());
+        // Fixed shared channels for the whole network — no per-repo rooms. Every
+        // node joins the same #general and #random over the one encrypted room.
+        m_backend->addChannel(QStringLiteral("general"));
+        m_backend->addChannel(QStringLiteral("random"));
+        logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
+        const QJsonObject signedProfile =
+            m_profileIdentity.signedProfile(m_userName,
+                                            m_userName,
+                                            m_solanaEdit->text());
+        const QString profileBytes = QString::fromUtf8(
+            QJsonDocument(signedProfile).toJson(QJsonDocument::Compact));
+        logSystem("Identity: signed profile for " +
+                  m_profileIdentity.shortPublicKey() + " (" +
+                  QString::number(profileBytes.toUtf8().size()) + " bytes).");
+        m_stack->setCurrentIndex(1);
+        showSection(0); // land on the Home overview after connecting
+        updateBreadcrumb();
+        updateSolanaNotice();
+        // Restore locally-saved chat history for this server/room so past
+        // conversations are visible right away (deduped against any replay).
+        loadCachedAvatars();
+        loadChatHistory();
+        // Serve already-mirrored repos live to the web for this session.
+        startRepoHosts();
+        // Heartbeat so an active, online node stays eligible for the reward
+        // split. The server ignores it unless the account is active.
+        if (!m_heartbeatTimer) {
+            m_heartbeatTimer = new QTimer(this);
+            m_heartbeatTimer->setInterval(60000);
+            connect(m_heartbeatTimer, &QTimer::timeout, this,
+                    &MainWindow::sendNodeHeartbeat);
+        }
+        m_heartbeatTimer->start();
+        sendNodeHeartbeat();
+    }
+}
+
+// ---- Account / node registration (staged join + reward heartbeat) ----------
+
+void MainWindow::sendNodeHeartbeat()
+{
+    const QString name = m_accountName.isEmpty()
+                             ? QSettings().value(kAccountNameSetting).toString().trimmed()
+                             : m_accountName;
+    if (name.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).toUtf8();
+    const QString solana = savedSolanaAddress();
+    const QJsonObject body{{"nodeName", name}, {"solana", solana}, {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("heartbeat"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        // The server tells us whether this node is an admin; if so, start
+        // watching for newly-joined users that need email verification.
+        const bool wasAdmin = m_isAdmin;
+        m_isAdmin = resp.value("isAdmin").toBool();
+        // Admin status is learned after the initial nav render, so refresh the
+        // top-bar name once when it flips to show/hide the crown — without the
+        // balance re-query the heartbeat path otherwise avoids.
+        if (m_isAdmin != wasAdmin && m_navNodeName) {
+            const QString name = accountNameFromInput(m_userName, QString());
+            const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
+            m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
+            m_navNodeName->setToolTip(
+                m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
+        }
+        if (m_isAdmin) {
+            if (!m_adminPollTimer) {
+                m_adminPollTimer = new QTimer(this);
+                m_adminPollTimer->setInterval(90000);
+                connect(m_adminPollTimer, &QTimer::timeout, this,
+                        &MainWindow::pollPendingUsers);
+            }
+            if (!m_adminPollTimer->isActive()) {
+                m_adminPollTimer->start();
+                pollPendingUsers();
+            }
+        }
+        // The nav balance is deliberately NOT refreshed on every heartbeat:
+        // hitting Solana RPC + the price API each minute is wasteful. Instead the
+        // server reports this node's wallet balance in the heartbeat reply and
+        // flags when it grew since the last beat (a donation). Only then do we
+        // refresh the displayed balance (which also fires the disbursement
+        // notification). Other refreshes happen on startup / address changes.
+        if (resp.value(QStringLiteral("donationReceived")).toBool())
+            updateNavSolanaBalance();
+    });
+}
+
+void MainWindow::pollPendingUsers()
+{
+    if (!m_isAdmin)
+        return;
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-pending-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-pending");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (!resp.value("ok").toBool())
+            return;
+        QStringList current, fresh;
+        for (const QJsonValue &v : resp.value("pending").toArray()) {
+            const QString name = v.toObject().value("name").toString();
+            if (name.isEmpty())
+                continue;
+            current.append(name);
+            if (!m_seenPendingUsers.contains(name))
+                fresh.append(name);
+        }
+        m_seenPendingUsers = current;
+        if (fresh.isEmpty())
+            return;
+        const QString msg =
+            QStringLiteral("%1 new user(s) joined and need email verification:\n\n%2")
+                .arg(fresh.size())
+                .arg(fresh.join(", "));
+        if (notifyEnabled(kNewUserAlertSetting) && m_trayIcon &&
+            QSystemTrayIcon::supportsMessages())
+            m_trayIcon->showMessage("ForkMesh — new user", msg,
+                                    QSystemTrayIcon::Information, 8000);
+        if (QMessageBox::information(this, "New user joined",
+                                     msg + "\n\nReview and verify now?",
+                                     QMessageBox::Yes | QMessageBox::No) ==
+            QMessageBox::Yes)
+            showAdminVerifyDialog();
+    });
+}
+
+void MainWindow::showAdminVerifyDialog()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-pending-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-pending");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    const QJsonArray pending = resp.value("pending").toArray();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Verify new users");
+    dialog.resize(480, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(
+        "New users awaiting manual email verification (placeholder until an "
+        "email service such as Amazon SES is connected):"));
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget;
+    auto *rows = new QVBoxLayout(inner);
+    if (pending.isEmpty())
+        rows->addWidget(new QLabel("<i>No users awaiting verification.</i>"));
+    for (const QJsonValue &v : pending) {
+        const QJsonObject obj = v.toObject();
+        const QString name = obj.value("name").toString();
+        const QString email = obj.value("email").toString();
+        if (name.isEmpty())
+            continue;
+        auto *row = new QHBoxLayout;
+        auto *label = new QLabel(
+            QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>%2</span>")
+                .arg(name.toHtmlEscaped(), email.toHtmlEscaped()));
+        label->setTextFormat(Qt::RichText);
+        row->addWidget(label, 1);
+        auto *btn = new QPushButton("Verify email");
+        btn->setObjectName("ghostButton");
+        btn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(btn);
+        rows->addLayout(row);
+        connect(btn, &QPushButton::clicked, &dialog, [this, name, btn]() {
+            btn->setEnabled(false);
+            btn->setText(adminVerifyEmail(name) ? "Verified \xE2\x9C\x93" : "Failed");
+        });
+    }
+    rows->addStretch();
+    scroll->setWidget(inner);
+    layout->addWidget(scroll, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+bool MainWindow::adminVerifyEmail(const QString &target)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || target.isEmpty() || !m_profileIdentity.isValid())
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-verify-email-v1\n" + node + "\n" + target + "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-verify-email",
+        QJsonObject{{"node", node}, {"target", target}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    if (status == 200 && resp.value("ok").toBool()) {
+        m_seenPendingUsers.removeAll(target);
+        logSystem("Admin: verified email for " + target);
+        return true;
+    }
+    return false;
+}
+
+QString MainWindow::accountOwner() const
+{
+    if (!m_accountName.isEmpty())
+        return m_accountName;
+    const QString stored = QSettings().value(kAccountNameSetting).toString();
+    if (!stored.isEmpty())
+        return stored;
+    return accountNameFromInput(m_userName, QStringLiteral("owner"));
+}
+
+bool MainWindow::hasActiveAccountSession() const
+{
+    return m_accountAuthenticated && m_accountTier == QStringLiteral("active");
+}
+
+QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
+{
+    const QString account = accountOwner();
+    return account.isEmpty() ? repoSegment(repo.owner, QStringLiteral("owner"))
+                             : account;
+}
+
+QUrl MainWindow::accountsApiUrl(const QString &leaf) const
+{
+    QUrl url = catalogApiUrl(); // same host, http(s) scheme
+    url.setPath(QStringLiteral("/api/accounts/") + leaf);
+    url.setQuery(QString());
+    return url;
+}
+
+QJsonObject MainWindow::postAccountSync(const QString &leaf,
+                                        const QJsonObject &body, int *status)
+{
+    QNetworkRequest request(accountsApiUrl(leaf));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (status)
+        *status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray data = reply->readAll();
+    reply->deleteLater();
+    return QJsonDocument::fromJson(data).object();
+}
+
+QJsonObject MainWindow::getAccountSync(const QString &leaf, int *status)
+{
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(accountsApiUrl(leaf)));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (status)
+        *status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray data = reply->readAll();
+    reply->deleteLater();
+    return QJsonDocument::fromJson(data).object();
+}
+
+QUrl MainWindow::catalogListUrl()
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repositories"));
+    url.setQuery(QString());
+    // When this node has a registered account identity, sign a short-lived listing
+    // token so the relay also returns our own private repos (hidden from the public
+    // catalog). Anonymous callers still receive the public-only list.
+    const QString viewer = accountOwner();
+    if (m_profileIdentity.isValid() && !viewer.isEmpty()) {
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-catalog-view-v1\n" + viewer + "\n" + ts).toUtf8();
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("viewer"), viewer);
+        query.addQueryItem(QStringLiteral("ts"), ts);
+        query.addQueryItem(QStringLiteral("sig"),
+                           m_profileIdentity.signData(canonical));
+        url.setQuery(query);
+    }
+    return url;
+}
+
+QJsonArray MainWindow::fetchCatalogRepos()
+{
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(catalogListUrl()));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    return obj.value("repositories").toArray();
+}
+
+int MainWindow::fetchNodesOnline()
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/network/stats"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    return obj.value("hosts").toInt();
+}
+
+void MainWindow::mirrorCatalogRepo(const QString &owner, const QString &name,
+                                   const QString &cloneUrl, bool isPrivate)
+{
+    if (owner.isEmpty() || name.isEmpty() || cloneUrl.isEmpty())
+        return;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &r = m_repositories.at(i);
+        if (r.owner != owner || r.name != name)
+            continue;
+        if (r.previewOnly) {
+            mirrorPreviewRepository(i);
+            return;
+        }
+        return; // already mirroring this repo
+    }
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.cloneUrl = cloneUrl;
+    repo.publishToNetwork = true;
+    // A private repo discovered via the authenticated catalog — one we own, or
+    // one shared with us (issue #9) — must keep its private flag so clone/fetch
+    // attaches a view token (the owner's, or our grantee share token).
+    repo.isPrivate = isPrivate;
+    // Mirrored repos (cloned from another node) start with actions off; the user
+    // can opt in per repo on the Settings/Actions tab.
+    repo.actionsEnabled = false;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                      repoSegment(owner, QStringLiteral("owner")) + "-" +
+                      repoSegment(name, QStringLiteral("repository")) + ".git";
+    m_repositories.append(repo);
+    saveRepositories();
+    if (m_backend)
+        m_backend->addChannel(repositoryChannel(repo));
+    refreshRepositoryList();
+    logSystem("Mirroring " + owner + "/" + name + " from " + cloneUrl);
+    syncRepository(m_repositories.size() - 1);
+}
+
+QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) const
+{
+    const QString safeOwner = repoSegment(owner, QStringLiteral("owner"));
+    const QString safeName = repoSegment(name, QStringLiteral("repository"));
+    if (safeOwner.isEmpty() || safeName.isEmpty())
+        return QString();
+    // Catalog records published by local nodes omit cloneUrl; the repo is still
+    // reachable through the mainnode's git smart-HTTP route, which forwards to
+    // whichever client is currently hosting it.
+    QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+    url.setPath(QStringLiteral("/") + safeOwner + QLatin1Char('/') + safeName);
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url.toString();
+}
+
+void MainWindow::ensureFlagshipRepo()
+{
+    if (!m_networkAccess)
+        return;
+    // Already mirroring the ForkMesh project repo — nothing to bootstrap.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        if (!repo.previewOnly &&
+            repo.name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0)
+            return;
+
+    const QJsonArray repos = fetchCatalogRepos();
+    QString owner, cloneUrl;
+    bool ownerLive = false;
+    for (const QJsonValue &v : repos) {
+        const QJsonObject r = v.toObject();
+        if (r.value("name").toString().compare(QStringLiteral("forkmesh"),
+                                               Qt::CaseInsensitive) != 0)
+            continue;
+        const QString candidateOwner = r.value("owner").toString();
+        if (candidateOwner.isEmpty())
+            continue;
+        QString candidateUrl = r.value("cloneUrl").toString().trimmed();
+        if (candidateUrl.isEmpty())
+            candidateUrl = hostedCloneUrl(candidateOwner, QStringLiteral("forkmesh"));
+        if (candidateUrl.isEmpty())
+            continue;
+        const bool live = r.value("liveHost").toBool();
+        // Prefer a live host; otherwise keep the first usable entry as a fallback.
+        if (live || owner.isEmpty()) {
+            owner = candidateOwner;
+            cloneUrl = candidateUrl;
+            ownerLive = live;
+        }
+        if (live)
+            break;
+    }
+    if (owner.isEmpty() || cloneUrl.isEmpty())
+        return;
+    if (!ownerLive)
+        logSystem("No live ForkMesh host right now; mirroring " + owner +
+                  "/forkmesh anyway so it appears once a host comes online.");
+    mirrorCatalogRepo(owner, QStringLiteral("forkmesh"), cloneUrl);
+}
+
+bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &solana)
+{
+#ifdef FORKMESH_WINDOW_TESTS
+    if (m_testUseAccountFlowResult) {
+        ++m_testEnsureNodeAccountCalls;
+        if (m_testAccountFlowResult) {
+            m_accountAuthenticated = true;
+            m_accountName = accountName;
+            m_accountTier = QStringLiteral("active");
+            m_accountSolanaVerified = true;
+        }
+        Q_UNUSED(solana);
+        return m_testAccountFlowResult;
+    }
+#endif
+    Q_UNUSED(solana);
+    if (m_accountAuthenticated && m_accountName == accountName)
+        return true;
+    if (!isValidNodeName(accountName)) {
+        QMessageBox::warning(this, "Join the network",
+                             "Choose a valid node name first (lowercase letters, "
+                             "numbers and hyphens; start with a letter).");
+        return false;
+    }
+
+    if (authenticateSilently(accountName))
+        return true;
+
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(accountName, &status);
+    // An active account owned by a different key — fall back to password login
+    // (universal cross-device access).
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == "active")
+        return runLoginFlow(accountName);
+
+    // New (or unfinished) account: run the staged join (reserve → donate →
+    // set credentials).
+    return runSignupFlow(accountName, solana);
+}
+
+// Silent (no dialogs, no signup) authentication: the app is authenticated when
+// this node already holds the key registered to an active account. The node key —
+// not a password — is what the relay verifies for hosting/publishing, so this can
+// run on launch without prompting. Returns false (quietly) when it can't confirm.
+bool MainWindow::authenticateSilently(const QString &accountName)
+{
+    if (m_accountAuthenticated && m_accountName == accountName)
+        return true;
+    if (!isValidNodeName(accountName))
+        return false;
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(accountName, &status);
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == "active" &&
+        lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
+        QSettings().setValue(kAuthedAccountSetting, accountName);
+        return true;
+    }
+    // If the relay is unreachable, trust a previously authenticated marker so a
+    // returning user can still open the app shell offline. When the relay is
+    // reachable, do not treat a password-login cache as signed hosting auth unless
+    // the server pubkey matched above. Publishing and heartbeat require this
+    // desktop's Ed25519 key, not just an email/password session.
+    const bool cachedHere =
+        QSettings().value(kAuthedAccountSetting).toString() == accountName;
+    if (cachedHere && status == 0) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
+        return true;
+    }
+    return false;
+}
+
+// POST /api/accounts/login — log in by email (+ optional TOTP).
+bool MainWindow::verifyTotpLogin(const QString &email,
+                                 const QString &password, const QString &totp,
+                                 const QString &accountName)
+{
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "login",
+        QJsonObject{{"email", email}, {"password", password},
+                    {"totp", totp},
+                    {"pubkey", m_profileIdentity.publicKey()}},
+        &status);
+    if (status == 200 && resp.value("ok").toBool()) {
+        m_accountAuthenticated = true;
+        m_accountName = resp.value("nodeName").toString(accountName);
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true; // joined = active network member
+        // Remember that this machine successfully authenticated this account so
+        // the next launch opens straight onto the app shell. Without this a
+        // password (cross-device) login — where the node key does NOT own the
+        // account — fails silent auth on every restart and is sent back to the
+        // login screen even with correct credentials.
+        QSettings().setValue(kAuthedAccountSetting, m_accountName);
+        return true;
+    }
+    const QString err = resp.value("error").toString();
+    QMessageBox::warning(this, "Log in",
+                         err == "bad_totp"
+                             ? "Incorrect authenticator code."
+                             // The relay returns one generic code for a bad
+                             // email/password/unknown account so attackers can't
+                             // tell which accounts exist.
+                             : err == "invalid_credentials"
+                                   ? "Incorrect email or password."
+                             : err == "too_many_attempts"
+                                   ? "Too many failed attempts. Wait a few minutes "
+                                     "and try again."
+                             : err == "pubkey_mismatch"
+                                   ? "This account is already bound to another "
+                                     "desktop key. Use that device or rotate the "
+                                     "account key before publishing from here."
+                                         : "Login failed" +
+                                               (err.isEmpty() ? QString() : ": " + err) +
+                                               ".");
+    return false;
+}
+
+bool MainWindow::runLoginFlow(const QString &accountName)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Log in to " + accountName);
+    auto *form = new QFormLayout(&dialog);
+    form->addRow(new QLabel("Log in with your email and password to join the network."));
+    auto *emailEdit = new QLineEdit;
+    emailEdit->setPlaceholderText("you@example.com");
+    auto *passEdit = new QLineEdit;
+    passEdit->setEchoMode(QLineEdit::Password);
+    auto *totpEdit = new QLineEdit;
+    totpEdit->setPlaceholderText("6-digit code (only if you enabled 2FA)");
+    totpEdit->setMaxLength(6);
+    form->addRow("Email", emailEdit);
+    form->addRow("Password", passEdit);
+    form->addRow("2FA code", totpEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText("Log in");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    while (dialog.exec() == QDialog::Accepted) {
+        const QString email = emailEdit->text().trimmed();
+        if (!email.contains('@')) {
+            QMessageBox::warning(this, "Log in", "Enter a valid email.");
+            continue;
+        }
+        if (verifyTotpLogin(email, passEdit->text(), totpEdit->text().trimmed(),
+                            accountName))
+            return true;
+    }
+    if (m_setupError) {
+        m_setupError->setText("Account login is required to join the network.");
+        m_setupError->show();
+    }
+    return false;
+}
+
+// In-app join — joining the network is free. The only thing required is a public
+// node name: it's reserved against this device's Ed25519 key and immediately
+// activated (no donation, no email/password). Cross-device email/password login
+// can be added later. Returns true once the account is active.
+bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
+{
+    Q_UNUSED(solana);
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        QMessageBox::warning(this, "Join the network", m_profileIdentity.errorString());
+        return false;
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName("signupWizard");
+    dialog.setWindowTitle("Join ForkMesh");
+    dialog.setModal(true);
+    dialog.setMinimumWidth(440);
+
+    auto *outer = new QVBoxLayout(&dialog);
+    outer->setContentsMargins(28, 24, 28, 24);
+    outer->setSpacing(8);
+
+    auto *titleLabel = new QLabel("Choose your public node name");
+    titleLabel->setObjectName("wizardTitle");
+    titleLabel->setWordWrap(true);
+    outer->addWidget(titleLabel);
+    outer->addSpacing(4);
+
+    auto *nameEdit = new QLineEdit;
+    nameEdit->setMaxLength(63);
+    nameEdit->setPlaceholderText("ada-lovelace");
+    nameEdit->setText(accountName);
+    auto *hint = new QLabel;
+    hint->setObjectName("modeHint");
+    hint->setWordWrap(true);
+    auto *joinBtn = new QPushButton("Join ForkMesh");
+    joinBtn->setObjectName("primaryButton");
+    joinBtn->setMinimumHeight(38);
+    outer->addWidget(nameEdit);
+    outer->addWidget(hint);
+    outer->addSpacing(4);
+    outer->addWidget(joinBtn);
+
+    bool joined = false;
+
+    auto styleHint = [](QLabel *h, const QString &text, const char *color) {
+        h->setText(text);
+        h->setStyleSheet(color ? QStringLiteral("color:%1; background:transparent;")
+                                     .arg(QString::fromUtf8(color))
+                               : QStringLiteral("background:transparent;"));
+    };
+    styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a letter. "
+                    "This name is public, and joining is free.", nullptr);
+
+    // Debounced availability check so the Join button only lights up for a free
+    // name (the reserve below is still the authority, but this avoids a round-trip
+    // failure for obviously-taken names).
+    auto *availTimer = new QTimer(&dialog);
+    availTimer->setSingleShot(true);
+    availTimer->setInterval(350);
+    connect(nameEdit, &QLineEdit::textChanged, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        joinBtn->setEnabled(false);
+        if (v.isEmpty()) {
+            styleHint(hint, "This name is public, and joining is free.", nullptr);
+            return;
+        }
+        if (!isValidNodeName(v)) {
+            styleHint(hint, "Use lowercase letters, numbers and hyphens; start "
+                            "with a letter.", "#f85149");
+            return;
+        }
+        styleHint(hint, "Checking availability…", nullptr);
+        availTimer->start();
+    });
+    connect(availTimer, &QTimer::timeout, this, [=]() {
+        const QString v = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(v))
+            return;
+        int status = 0;
+        const QJsonObject look = getAccountSync(v, &status);
+        if (status == 0) { // relay unreachable: allow continuing
+            styleHint(hint, "Couldn't check availability — you can still continue.",
+                      nullptr);
+            joinBtn->setEnabled(true);
+            return;
+        }
+        if (look.value("exists").toBool() && !look.value("available").toBool()) {
+            styleHint(hint, "That name is already taken — try another.", "#f85149");
+            joinBtn->setEnabled(false);
+        } else {
+            styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
+                                .arg(v), "#3fb950");
+            joinBtn->setEnabled(true);
+        }
+    });
+
+    // Reserve the name (binding it to this device key), then activate it for free
+    // by finalizing with no email/password. Both calls are signed with the local
+    // identity; the finalize signature covers an empty email segment, matching the
+    // relay's canonical string for a key-bound, credential-less join.
+    auto doJoin = [&]() {
+        const QString name = nameEdit->text().trimmed().toLower();
+        if (!isValidNodeName(name))
+            return;
+        joinBtn->setEnabled(false);
+        joinBtn->setText("Joining…");
+
+        const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray rcanon =
+            ("forkmesh-reserve-v1\n" + name + "\n" + rts).toUtf8();
+        int rstatus = 0;
+        const QJsonObject rresp = postAccountSync(
+            "reserve",
+            QJsonObject{{"nodeName", name},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", rts},
+                        {"sig", m_profileIdentity.signData(rcanon)}},
+            &rstatus);
+        if (!rresp.value("ok").toBool()) {
+            joinBtn->setText("Join ForkMesh");
+            joinBtn->setEnabled(true);
+            styleHint(hint, "Could not reserve that name — it may be taken. "
+                            "Try another.", "#f85149");
+            return;
+        }
+
+        const QString fts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray fcanon =
+            ("forkmesh-finalize-v1\n" + name + "\n\n" + fts).toUtf8();
+        int fstatus = 0;
+        const QJsonObject fresp = postAccountSync(
+            "finalize",
+            QJsonObject{{"nodeName", name},
+                        {"email", QString()},
+                        {"password", QString()},
+                        {"pubkey", m_profileIdentity.publicKey()},
+                        {"ts", fts},
+                        {"sig", m_profileIdentity.signData(fcanon)}},
+            &fstatus);
+        joinBtn->setText("Join ForkMesh");
+        joinBtn->setEnabled(true);
+        if (fstatus != 201 || !fresp.value("ok").toBool()) {
+            styleHint(hint, "Could not join right now. Please try again.", "#f85149");
+            return;
+        }
+        m_accountAuthenticated = true;
+        m_accountName = name;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true; // joined = active network member
+        QSettings().setValue(kAuthedAccountSetting, name);
+        joined = true;
+        dialog.accept();
+    };
+    connect(joinBtn, &QPushButton::clicked, this, doJoin);
+    connect(nameEdit, &QLineEdit::returnPressed, this, [&]() {
+        if (joinBtn->isEnabled())
+            doJoin();
+    });
+
+    // A valid name supplied on the previous screen can join straight away, so let
+    // the button start enabled instead of forcing the user to retype.
+    joinBtn->setEnabled(isValidNodeName(accountName));
+
+    dialog.exec();
+    if (joined) {
+        // Don't block the launch behind a modal "OK" — return immediately so the
+        // caller can open the app, then flash the confirmation as a non-blocking
+        // toast on the next event-loop tick.
+        QTimer::singleShot(0, this, [this] {
+            flashMessage(QString::fromUtf8(
+                "You\xE2\x80\x99re in \xE2\x80\x94 your node is registered."));
+        });
+        return true;
+    }
+    if (m_setupError) {
+        m_setupError->setText("Joining was cancelled. You can keep using ForkMesh "
+                              "for free, or join again any time.");
+        m_setupError->show();
+    }
+    return false;
+}
+
+void MainWindow::verifyWallet()
+{
+    // Repurposed: the "join / verify" button now drives the staged join flow,
+    // which both registers the account and marks it an active network member.
+    const QString name = accountOwner();
+    if (name.isEmpty()) {
+        QMessageBox::information(this, "Join the network",
+                                 "Set your node name on the setup screen first.");
+        return;
+    }
+    if (ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed() : QString())) {
+        if (m_profileEligibility)
+            m_profileEligibility->setText(
+                QString::fromUtf8("<span style='color:#3fb950'>Active "
+                               "\xC2\xB7 network member</span>"));
+        // Verified now: hide the "verify your wallet" banner.
+        updateSolanaNotice();
+    }
+}
+
+void MainWindow::persistProfile()
+{
+    const QString name = accountNameFromInput(m_nameEdit->text(), m_userName);
+    m_nameEdit->setText(name);
+    saveProfileName(name);
+    saveSolanaAddress(m_solanaEdit->text().trimmed());
+    updateNavSolanaBalance();
+}
+
+// --------------------------------------------------------------- quick update
+
+void MainWindow::showUpdateLog()
+{
+    if (!m_updateLogDialog) {
+        m_updateLogDialog = new QDialog(this);
+        m_updateLogDialog->setWindowTitle(QStringLiteral("Updating ForkMesh"));
+        m_updateLogDialog->resize(780, 480);
+        auto *intro = new QLabel(QStringLiteral(
+            "Live update log. The app relaunches automatically once the rebuild "
+            "finishes; if a step fails this window stays open so you can read "
+            "exactly what went wrong."));
+        intro->setObjectName("statusLine");
+        intro->setWordWrap(true);
+        m_updateLog = new QPlainTextEdit;
+        m_updateLog->setReadOnly(true);
+        m_updateLog->setObjectName("actionLog");
+        m_updateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+        m_updateLog->setMaximumBlockCount(50000);
+        applyLogFont(m_updateLog);
+        new AgentLogHighlighter(m_updateLog->document());
+        auto *copyBtn = new QPushButton(QStringLiteral("Copy log"));
+        copyBtn->setObjectName("ghostButton");
+        copyBtn->setCursor(Qt::PointingHandCursor);
+        connect(copyBtn, &QPushButton::clicked, this, [this] {
+            if (!m_updateLog)
+                return;
+            QApplication::clipboard()->setText(m_updateLog->toPlainText());
+            flashMessage(QStringLiteral("Update log copied to clipboard."));
+        });
+        auto *closeBtn = new QPushButton(QStringLiteral("Close"));
+        closeBtn->setObjectName("ghostButton");
+        closeBtn->setCursor(Qt::PointingHandCursor);
+        connect(closeBtn, &QPushButton::clicked, m_updateLogDialog, &QDialog::hide);
+        auto *row = new QHBoxLayout;
+        row->addStretch();
+        row->addWidget(copyBtn);
+        row->addWidget(closeBtn);
+        auto *lay = new QVBoxLayout(m_updateLogDialog);
+        lay->addWidget(intro);
+        lay->addWidget(m_updateLog, 1);
+        lay->addLayout(row);
+    }
+    m_updateLog->clear();
+    // The full window no longer pops up on its own: progress streams onto the
+    // footer one-liner (appendUpdateLog mirrors each line there). The user can
+    // click that line to open this window, and a failure re-opens it
+    // automatically (see setUpdateStatus) so the error is never missed.
+    appendUpdateLog(QStringLiteral("==> ForkMesh update started\n"));
+}
+
+void MainWindow::appendUpdateLog(const QString &text)
+{
+    if (!m_updateLog || text.isEmpty())
+        return;
+    m_updateLog->moveCursor(QTextCursor::End);
+    m_updateLog->insertPlainText(text);
+    m_updateLog->moveCursor(QTextCursor::End);
+    // Mirror the newest meaningful line onto the footer one-liner. Walk back from
+    // the last block so partial chunks (which can end mid-line) still surface a
+    // complete, non-empty line of live output.
+    for (QTextBlock b = m_updateLog->document()->lastBlock(); b.isValid();
+         b = b.previous()) {
+        const QString line = b.text().trimmed();
+        if (!line.isEmpty()) {
+            setFooterUpdateLine(line);
+            break;
+        }
+    }
+}
+
+void MainWindow::styleFooterUpdateLog()
+{
+    if (!m_footerUpdateLog)
+        return;
+    // Theme-aware so the strip reads on either canvas (it carries its own inline
+    // sheet, not the global one). Tint the text by the current line's tone: red
+    // for failures ("!!"/"ERROR"), the accent for phase headers ("==>"/"$ "),
+    // muted body grey otherwise.
+    const bool dark = currentThemeIsDark();
+    // Tone is driven by the message body, so skip any leading
+    // "yyyy-MM-dd HH:mm:ss  " stamp (position 10 is the date/time space) before
+    // matching the narrative markers.
+    const QString &raw = m_footerUpdateLineRaw;
+    const QString clean = (raw.size() >= 21 && raw.at(10) == QLatin1Char(' '))
+                              ? raw.mid(21)
+                              : raw;
+    QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    if (clean.startsWith(QStringLiteral("!!")) ||
+        clean.startsWith(QStringLiteral("ERROR")))
+        colour = dark ? QStringLiteral("#ff6b6b") : QStringLiteral("#cf222e");
+    else if (clean.startsWith(QStringLiteral("==>")) ||
+             clean.startsWith(QStringLiteral("$ ")))
+        colour = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString border = dark ? QStringLiteral("#21262d") : QStringLiteral("#d0d7de");
+    const QString canvas = dark ? QStringLiteral("#0d1117") : QStringLiteral("#f6f8fa");
+    const QString hover = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+    m_footerUpdateLog->setStyleSheet(
+        QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
+                       "border-top:1px solid %2;background:%3;"
+                       "font-family:monospace;font-size:11px;padding:3px 12px;"
+                       "text-align:left;}"
+                       "QPushButton#footerUpdateLog:hover{color:%4;}")
+            .arg(colour, border, canvas, hover));
+}
+
+void MainWindow::setFooterUpdateLine(const QString &line)
+{
+    if (!m_footerUpdateLog)
+        return;
+    const QString clean = line.trimmed();
+    if (clean.isEmpty())
+        return;
+    m_footerUpdateLineRaw = clean;
+    m_footerUpdateLog->show();
+    styleFooterUpdateLog();
+    // Elide the visible strip to a single line that fits the current width so a
+    // long compiler line never stretches the window, but expose the full,
+    // untruncated log line in the tooltip so it's always readable on hover.
+    m_footerUpdateLog->setToolTip(
+        clean + QStringLiteral("\n\nClick to open the full log."));
+    const QFontMetrics fm(m_footerUpdateLog->font());
+    const int avail = qMax(40, m_footerUpdateLog->width() - 28);
+    m_footerUpdateLog->setText(fm.elidedText(clean, Qt::ElideRight, avail));
+}
+
+void MainWindow::setUpdateStatus(const QString &status, bool isError)
+{
+    logRestart(isError ? QStringLiteral("ERROR: %1").arg(status) : status);
+    // Mirror the phase into the live log as a narrative header ("==>" / "!!"),
+    // which AgentLogHighlighter colourises.
+    appendUpdateLog((isError ? QStringLiteral("!! ") : QStringLiteral("==> ")) + status +
+                    QStringLiteral("\n"));
+    // A failure is the one case the footer one-liner isn't enough for: re-open the
+    // full window so the user can read exactly what went wrong.
+    if (isError && m_updateLogDialog) {
+        m_updateLogDialog->show();
+        m_updateLogDialog->raise();
+        m_updateLogDialog->activateWindow();
+    }
+    QLabel *label = m_buildStatusLabel ? m_buildStatusLabel : m_updateStatus;
+    if (!label)
+        return;
+    label->setStyleSheet(isError ? "color:#ff6b6b; background:transparent;"
+                                  : "color:#9ca3af; background:transparent;");
+    label->setText(status);
+    label->show();
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) const
+{
+    return quickUpdatePullArguments(clientDir);
+}
+
+QStringList MainWindow::testBuildAndPreviewSteps(const QString &gitDir,
+                                                 const QString &previewDir,
+                                                 const QString &clientDir,
+                                                 const QString &buildDir,
+                                                 const QString &commit,
+                                                 bool haveWorktree) const
+{
+    QStringList lines;
+    for (const PullPreviewStep &step :
+         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
+                          haveWorktree, /*jobs=*/4))
+        lines << (QStringList{step.program} + step.args).join(QLatin1Char(' '));
+    return lines;
+}
+#endif
+
+void MainWindow::runUpdateStep(const QString &program, const QStringList &arguments,
+                               const QString &workingDir,
+                               std::function<void()> onSuccess,
+                               std::function<void()> onFailure)
+{
+    const QString commandLine = (QStringList{program} + arguments).join(QLatin1Char(' '));
+    logRestart(QStringLiteral("run: %1").arg(commandLine));
+    // Echo the exact command and its working directory into the live log, then
+    // stream the process's merged stdout+stderr as it runs.
+    appendUpdateLog(QStringLiteral("\n$ %1\n  (in %2)\n").arg(commandLine, workingDir));
+    QElapsedTimer stepTimer;
+    stepTimer.start();
+    auto *process = new QProcess(this);
+    process->setWorkingDirectory(workingDir);
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    // Keep a bounded copy of the output so a failure can surface its tail in the
+    // status label even though the full detail is already in the log window.
+    auto output = std::make_shared<QString>();
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, output] {
+        const QString chunk = QString::fromUtf8(process->readAllStandardOutput());
+        output->append(chunk);
+        if (output->size() > 200000)
+            *output = output->right(200000);
+        appendUpdateLog(chunk);
+    });
+    connect(process, &QProcess::finished, this,
+            [this, process, stepTimer, commandLine, onSuccess, onFailure, output](
+                int exitCode, QProcess::ExitStatus) {
+                const QString tail = QString::fromUtf8(process->readAllStandardOutput());
+                if (!tail.isEmpty()) {
+                    output->append(tail);
+                    appendUpdateLog(tail);
+                }
+                process->deleteLater();
+                logRestart(QStringLiteral("done in %1ms (exit %2): %3")
+                               .arg(stepTimer.elapsed())
+                               .arg(exitCode)
+                               .arg(commandLine));
+                appendUpdateLog(QString::fromUtf8("\xE2\x80\x94 finished in %1ms (exit %2)\n")
+                                    .arg(stepTimer.elapsed())
+                                    .arg(exitCode));
+                if (exitCode != 0) {
+                    if (onFailure) {
+                        onFailure();
+                        return;
+                    }
+                    stopRefreshSpin();
+                    stopRestartSpin();
+                    setUpdateStatus("Update failed: " + output->trimmed().right(300), true);
+                    if (m_buildButton)
+                        m_buildButton->setEnabled(true);
+                    return;
+                }
+                onSuccess();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, stepTimer, commandLine] {
+        stopRefreshSpin();
+        stopRestartSpin();
+        logRestart(QStringLiteral("failed to start after %1ms: %2")
+                       .arg(stepTimer.elapsed())
+                       .arg(commandLine));
+        setUpdateStatus("Update failed: could not run " + process->program(), true);
+        process->deleteLater();
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+    });
+    process->start(program, arguments);
+}
+
+void MainWindow::runQuickUpdate()
+{
+    beginRestartLog();
+    showUpdateLog();
+    logRestart(QStringLiteral("quick update started"));
+    saveProfileName(m_nameEdit->text());
+    m_buildButton = m_updateButton;
+    m_buildStatusLabel = m_updateStatus;
+    m_updateButton->setEnabled(false);
+    const QString clientDir = updateClientDir();
+
+    if (QDir(clientDir).exists("CMakeLists.txt")) {
+        setUpdateStatus("Pulling the latest version...");
+        runUpdateStep("git", quickUpdatePullArguments(clientDir), clientDir,
+                      [this, clientDir] { buildAndRelaunch(clientDir); });
+    } else {
+        // No checkout anywhere (binary installed without one): clone a fresh
+        // copy into the app data directory and update from there from now on.
+        const QString repoDir = QFileInfo(clientDir).absolutePath(); // .../src
+        QDir().mkpath(QFileInfo(repoDir).absolutePath());
+        setUpdateStatus("Downloading the latest version...");
+        runUpdateStep("git", {"clone", "--depth", "1", kRepoUrl, repoDir},
+                      QFileInfo(repoDir).absolutePath(),
+                      [this, clientDir] { buildAndRelaunch(clientDir); });
+    }
+}
+
+void MainWindow::runUpdateStepUser(const QString &program,
+                                   const QStringList &arguments,
+                                   const QString &workingDir,
+                                   std::function<void()> onSuccess,
+                                   std::function<void()> onFailure)
+{
+    if (m_updateAsUser.isEmpty()) {
+        runUpdateStep(program, arguments, workingDir, std::move(onSuccess),
+                      std::move(onFailure));
+        return;
+    }
+    // Run the command as the invoking non-root user so files it writes are owned
+    // by them and land under their home, never under /root.
+    QStringList wrapped{"-u", m_updateAsUser, "-H", program};
+    wrapped += arguments;
+    runUpdateStep("sudo", wrapped, workingDir, std::move(onSuccess),
+                  std::move(onFailure));
+}
+
+void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUser,
+                                  const QString &relaunchPath, const QString &buildType)
+{
+    m_updateAsUser = asUser;
+    const QString appPath = relaunchPath.isEmpty()
+                                ? QCoreApplication::applicationFilePath()
+                                : relaunchPath;
+    const QString buildDir = clientDir + "/build";
+    setUpdateStatus("Configuring...");
+    runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
+                      clientDir, [this, buildDir, appPath] {
+        setUpdateStatus("Rebuilding...");
+        runUpdateStepUser("cmake",
+                          {"--build", buildDir, "-j",
+                           QString::number(QThread::idealThreadCount())},
+                          buildDir, [this, buildDir, appPath] {
+            const QString built = builtExecutablePath(buildDir);
+            installAndRelaunch(built, appPath);
+        });
+    });
+}
+
+void MainWindow::installAndRelaunch(const QString &built, const QString &appPath)
+{
+    if (!m_updateAsUser.isEmpty()) {
+        // Install and relaunch as the user so the binary is theirs, not root's.
+        const QString binDir = QFileInfo(appPath).absolutePath();
+        const QString script =
+            QStringLiteral("mkdir -p %1 && cp -f %2 %3 && chmod 0755 %3")
+                .arg(shellSingleQuote(binDir), shellSingleQuote(built),
+                     shellSingleQuote(appPath));
+        setUpdateStatus("Installing for " + m_updateAsUser + "...");
+        runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
+                      QDir::tempPath(), [this, appPath] {
+            setUpdateStatus("Relaunching...");
+            const QString user = m_updateAsUser;
+            QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
+            logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
+            QCoreApplication::quit();
+        });
+        return;
+    }
+
+    // In-process update: replace the running binary over its own path (the
+    // running inode stays valid) and relaunch directly.
+    if (QFileInfo(built).canonicalFilePath() !=
+        QFileInfo(appPath).canonicalFilePath()) {
+        QFile::remove(appPath);
+        if (!QFile::copy(built, appPath)) {
+            setUpdateStatus("Update failed: could not replace " + appPath, true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
+        QFile::setPermissions(appPath,
+                              QFile::ReadOwner | QFile::WriteOwner |
+                              QFile::ExeOwner | QFile::ReadGroup |
+                              QFile::ExeGroup | QFile::ReadOther |
+                              QFile::ExeOther);
+    }
+    setUpdateStatus("Relaunching...");
+    QProcess::startDetached(appPath, {});
+    logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
+    QCoreApplication::quit();
+}
+
+QString MainWindow::resolveInstallCloneUrl()
+{
+    if (!m_networkAccess)
+        return QString();
+    // Ask the mainnode which node is currently hosting a live forkmesh mirror,
+    // then build the hosted git URL the installer would clone from.
+    QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+    url.setPath(QStringLiteral("/api/install-source"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+    const QString node = obj.value("node").toString().trimmed();
+    const QString repo = obj.value("repo").toString(QStringLiteral("forkmesh")).trimmed();
+    if (node.isEmpty() || repo.isEmpty())
+        return QString();
+    QUrl clone = catalogApiUrl();
+    clone.setPath(QStringLiteral("/") + node + QLatin1Char('/') + repo);
+    clone.setQuery(QString());
+    clone.setFragment(QString());
+    return clone.toString();
+}
+
+void MainWindow::updateRebuildRestart()
+{
+    beginRestartLog();
+    showUpdateLog();
+    logRestart(QStringLiteral("update, rebuild & restart started"));
+    m_buildButton = m_rebuildButton;
+    m_buildStatusLabel = m_rebuildStatus;
+
+    // Under sudo, target the invoking user's home so nothing is written to /root.
+    const QString user = invokingNonRootUser();
+    const QString home = user.isEmpty() ? QString() : homeForUser(user);
+    const QString clientDir =
+        user.isEmpty() ? updateClientDir() : clientDirUnderHome(home);
+    const QString relaunchPath =
+        user.isEmpty() ? QCoreApplication::applicationFilePath()
+                       : (home + QStringLiteral("/.local/bin/forkmesh"));
+    // Build steps and the relaunch run as the user when we are root under sudo.
+    m_updateAsUser = user;
+
+    if (m_rebuildButton)
+        m_rebuildButton->setEnabled(false);
+    flashMessage(QStringLiteral("Updating ForkMesh from the install mirror..."));
+    setUpdateStatus(user.isEmpty()
+                        ? QStringLiteral("Finding an online ForkMesh mirror...")
+                        : QStringLiteral("Finding an online ForkMesh mirror "
+                                         "(installing for %1)...").arg(user));
+
+    const QString installUrl = resolveInstallCloneUrl();
+    if (installUrl.isEmpty()) {
+        m_updateAsUser.clear();
+        setUpdateStatus("No online ForkMesh mirror is available right now. "
+                        "Try again shortly.",
+                        true);
+        flashMessage("No online ForkMesh mirror is available right now.", true);
+        stopRestartSpin();
+        if (m_rebuildButton)
+            m_rebuildButton->setEnabled(true);
+        return;
+    }
+
+    const QString repoDir = QFileInfo(clientDir).absolutePath(); // .../src
+    const bool haveCheckout = QDir(repoDir).exists(QStringLiteral(".git"));
+
+    // Clean re-clone from the live mirror, used both when there is no existing
+    // checkout and as the fallback when a fast-forward pull fails (the local
+    // checkout has diverged from the mirror, or the old origin is unreachable).
+    auto recloneFromMirror = [this, installUrl, repoDir, clientDir, user,
+                              relaunchPath] {
+        const QString parent = QFileInfo(repoDir).absolutePath();
+        runUpdateStepUser("mkdir", {"-p", parent}, QDir::tempPath(),
+                          [this, installUrl, repoDir, parent, clientDir, user,
+                           relaunchPath] {
+            // Drop the stale checkout so `git clone` can recreate it in place.
+            runUpdateStepUser("rm", {"-rf", repoDir}, parent,
+                              [this, installUrl, repoDir, parent, clientDir, user,
+                               relaunchPath] {
+                runUpdateStepUser("git",
+                                  {"clone", "--depth", "1", installUrl, repoDir},
+                                  parent, [this, clientDir, user, relaunchPath] {
+                    buildAndRelaunch(clientDir, user, relaunchPath);
+                });
+            });
+        });
+    };
+
+    if (haveCheckout) {
+        setUpdateStatus("Pulling a fresh copy from " + installUrl + "...");
+        // Repoint origin at the freshly resolved live mirror, then fast-forward.
+        runUpdateStepUser("git", {"-C", repoDir, "remote", "set-url", "origin",
+                                  installUrl},
+                          repoDir, [this, repoDir, clientDir, user, relaunchPath,
+                                    installUrl, recloneFromMirror] {
+            runUpdateStepUser("git", {"-C", repoDir, "pull", "--ff-only"}, repoDir,
+                              [this, clientDir, user, relaunchPath] {
+                buildAndRelaunch(clientDir, user, relaunchPath);
+            }, [this, installUrl, recloneFromMirror] {
+                // A diverged or unreachable mirror cannot be fast-forwarded; fall
+                // back to a clean re-clone from the current live mirror.
+                setUpdateStatus("Could not fast-forward; re-cloning a fresh copy "
+                                "from " + installUrl + "...");
+                recloneFromMirror();
+            });
+        });
+    } else {
+        setUpdateStatus("Downloading a fresh copy from " + installUrl + "...");
+        recloneFromMirror();
+    }
+}
+
