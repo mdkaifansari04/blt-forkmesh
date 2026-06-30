@@ -5,7 +5,7 @@ title: have all tables be adjustable width for the columns
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 52
+priority: 22
 progress: 5
 assignees: []
 createdAt: 1782430766132
