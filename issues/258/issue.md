@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 258
 title: when i deleted a file from the pr it removed almost everything I think we need to instead edit the diff more carefully
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 6
