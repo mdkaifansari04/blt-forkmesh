@@ -5,7 +5,7 @@ title: when I click to add to the discussion it does not click
 status: open
 labels: [Partial]
 milestone: 
-priority: 67
+priority: 7
 progress: 20
 assignees: []
 createdAt: 1782487418815
