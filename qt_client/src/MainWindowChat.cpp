@@ -414,6 +414,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddImageButton, &QPushButton::clicked, this,
             &MainWindow::attachQuickAddImage);
     updateQuickAddImageButton();
+
+    // Mic: dictate the prompt with the locally-installed whisper.cpp. Hidden
+    // until whisper.cpp is downloaded from Settings (updateVoiceInputButton()).
+    m_quickAddMicButton = new QPushButton;
+    m_quickAddMicButton->setObjectName("ghostButton");
+    m_quickAddMicButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddMicButton, "mic", 16);
+    connect(m_quickAddMicButton, &QPushButton::clicked, this,
+            &MainWindow::toggleVoiceCapture);
     // "No issue" on by default (issue #79): the common quick-add path is firing a
     // coding agent straight from the typed prompt, not filing an issue.
     m_quickAddNoIssue->setChecked(true);
@@ -506,6 +515,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->setSpacing(8);
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(m_quickAddCharCount);
+    quickAddRow->addWidget(m_quickAddMicButton);
     quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
@@ -567,7 +577,187 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(twitterButton, &QPushButton::clicked, this, [] {
         QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
     });
+    updateVoiceInputButton();
     return dock;
+}
+
+// Show the mic only once whisper.cpp is installed; reset its idle look. Called
+// when the bar is built and again after a successful install from Settings.
+void MainWindow::updateVoiceInputButton()
+{
+    if (!m_quickAddMicButton)
+        return;
+    m_quickAddMicButton->setVisible(whisperInstalled());
+    if (m_voiceRecording)
+        return;
+    setOcticon(m_quickAddMicButton, "mic", 16);
+    m_quickAddMicButton->setStyleSheet(QString());
+    m_quickAddMicButton->setToolTip(
+        QStringLiteral("Speak your prompt \xE2\x80\x94 click to record, click again "
+                       "to transcribe with whisper.cpp."));
+}
+
+// Toggle dictation: first click records from the mic to a temp WAV; the second
+// click stops recording and runs whisper.cpp, inserting the text into the prompt
+// box. All work is async (QProcess) so the UI never blocks.
+void MainWindow::toggleVoiceCapture()
+{
+    if (!m_quickAddMicButton || !m_issueQuickAdd)
+        return;
+
+    // Second click while recording: stop. The recorder finalizes the WAV on
+    // SIGTERM; transcription is kicked off from its finished handler.
+    if (m_voiceRecording) {
+        if (m_voiceRecordProc && m_voiceRecordProc->state() != QProcess::NotRunning)
+            m_voiceRecordProc->terminate();
+        return;
+    }
+
+    if (!whisperInstalled()) {
+        updateVoiceInputButton();
+        return;
+    }
+    // Don't start a fresh recording while the previous clip is still transcribing.
+    if (m_voiceTranscribeProc &&
+        m_voiceTranscribeProc->state() != QProcess::NotRunning)
+        return;
+
+    m_voiceWavPath =
+        QDir(QDir::tempPath())
+            .filePath(QStringLiteral("forkmesh-voice-%1.wav")
+                          .arg(QDateTime::currentMSecsSinceEpoch()));
+    const AudioRecorderCommand rec = audioRecorderFor(m_voiceWavPath);
+    if (rec.program.isEmpty()) {
+        logSystem(
+            "Voice input needs a microphone recorder. Install one of: arecord "
+            "(alsa-utils), parecord (pulseaudio-utils) or ffmpeg.");
+        m_issueQuickAdd->setPlaceholderText(
+            "no recorder found (install arecord / parecord / ffmpeg)");
+        return;
+    }
+
+    auto *proc = new QProcess(this);
+    m_voiceRecordProc = proc;
+    connect(proc, &QProcess::finished, this,
+            [this, proc](int, QProcess::ExitStatus) {
+                m_voiceRecording = false;
+                if (m_voiceRecordProc == proc)
+                    m_voiceRecordProc = nullptr;
+                const QString err =
+                    QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                proc->deleteLater();
+                updateVoiceInputButton();
+                // The recorder may have failed to open the device at all (no
+                // WAV, or just a header) — don't bother transcribing then.
+                if (!QFileInfo::exists(m_voiceWavPath) ||
+                    QFileInfo(m_voiceWavPath).size() < 1024) {
+                    if (!err.isEmpty())
+                        logSystem("Microphone capture failed: " + err.right(200));
+                    m_issueQuickAdd->setPlaceholderText("enter prompt");
+                    QFile::remove(m_voiceWavPath);
+                    return;
+                }
+                transcribeVoiceCapture();
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc](QProcess::ProcessError err) {
+                // Only FailedToStart skips finished(); other errors (a crash) still
+                // emit finished, which owns cleanup. Avoid double-deleting here.
+                if (err != QProcess::FailedToStart || m_voiceRecordProc != proc)
+                    return;
+                m_voiceRecording = false;
+                m_voiceRecordProc = nullptr;
+                proc->deleteLater();
+                updateVoiceInputButton();
+                logSystem("Could not start the microphone recorder.");
+                m_issueQuickAdd->setPlaceholderText("enter prompt");
+            });
+
+    proc->start(rec.program, rec.args);
+    if (!proc->waitForStarted(3000)) {
+        // errorOccurred handles cleanup; nothing more to do here.
+        return;
+    }
+    m_voiceRecording = true;
+    // A red broadcast glyph makes the "recording now" state unmistakable. Tinted
+    // directly (not via setOcticon) so it stays red regardless of the button's
+    // normal icon colour; updateVoiceInputButton() restores the idle mic.
+    m_quickAddMicButton->setIcon(themedOcticon("broadcast", QColor("#f85149"), 16));
+    m_quickAddMicButton->setIconSize(QSize(16, 16));
+    m_quickAddMicButton->setToolTip(
+        QStringLiteral("Recording\xE2\x80\xA6 click to stop and transcribe."));
+    m_issueQuickAdd->setPlaceholderText("listening\xE2\x80\xA6 click the mic to stop");
+}
+
+// Run whisper.cpp over the just-recorded WAV and drop the transcript into the
+// prompt box. Implemented here (rather than via toggle) so the chain reads
+// top-to-bottom: record -> stop -> transcribe -> insert.
+void MainWindow::transcribeVoiceCapture()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString binary = whisperBinaryPath();
+    const QString model = whisperModelPath();
+    if (binary.isEmpty() || !QFileInfo::exists(model)) {
+        m_issueQuickAdd->setPlaceholderText("enter prompt");
+        QFile::remove(m_voiceWavPath);
+        return;
+    }
+
+    m_issueQuickAdd->setPlaceholderText("transcribing\xE2\x80\xA6");
+    if (m_quickAddMicButton)
+        m_quickAddMicButton->setEnabled(false);
+
+    // whisper.cpp writes "<base>.txt" with -otxt -of <base>; reading the file is
+    // more robust than parsing stdout (which also carries timing logs).
+    const QString base = m_voiceWavPath + QStringLiteral(".out");
+    const QString wav = m_voiceWavPath;
+    auto *proc = new QProcess(this);
+    m_voiceTranscribeProc = proc;
+    connect(proc, &QProcess::finished, this,
+            [this, proc, base, wav](int exitCode, QProcess::ExitStatus) {
+                const QString err =
+                    QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                proc->deleteLater();
+                if (m_voiceTranscribeProc == proc)
+                    m_voiceTranscribeProc = nullptr;
+                if (m_quickAddMicButton)
+                    m_quickAddMicButton->setEnabled(true);
+                m_issueQuickAdd->setPlaceholderText("enter prompt");
+
+                QString text;
+                QFile txt(base + QStringLiteral(".txt"));
+                if (txt.open(QIODevice::ReadOnly))
+                    text = QString::fromUtf8(txt.readAll());
+                // whisper marks silence with "[BLANK_AUDIO]"; collapse whitespace.
+                text.remove(QStringLiteral("[BLANK_AUDIO]"));
+                text = text.simplified();
+
+                QFile::remove(wav);
+                QFile::remove(base + QStringLiteral(".txt"));
+
+                if (exitCode != 0 && text.isEmpty()) {
+                    logSystem("Transcription failed" +
+                              (err.isEmpty() ? QString()
+                                             : ": " + err.right(200)));
+                    return;
+                }
+                if (text.isEmpty())
+                    return;
+                // Insert at the cursor, adding a leading space if the box already
+                // has text so dictated words don't run into what's there.
+                QString prefix;
+                if (!m_issueQuickAdd->toPlainText().isEmpty() &&
+                    !m_issueQuickAdd->textCursor().atStart())
+                    prefix = QStringLiteral(" ");
+                m_issueQuickAdd->insertPlainText(prefix + text);
+                m_issueQuickAdd->setFocus();
+            });
+    // Read the transcript from "<base>.txt" (-otxt) rather than stdout, so this
+    // doesn't depend on console flags that vary across whisper.cpp versions.
+    proc->start(binary, {QStringLiteral("-m"), model, QStringLiteral("-f"), wav,
+                         QStringLiteral("-nt"), QStringLiteral("-otxt"),
+                         QStringLiteral("-of"), base});
 }
 
 void MainWindow::updateFooterGitIdentity()

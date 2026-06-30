@@ -1617,6 +1617,15 @@ private:
     void queueQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Voice input: when whisper.cpp is installed (from Settings) a mic button
+    // appears beside the prompt box. Clicking it records from the microphone;
+    // clicking again stops and transcribes the audio into the prompt locally.
+    void toggleVoiceCapture();
+    void transcribeVoiceCapture();
+    void updateVoiceInputButton();
+    // Settings: download, build and provision whisper.cpp for local dictation.
+    void installWhisperCpp();
+    void refreshWhisperStatus();
     // Quick-add prompt history (adhoc #200): remember each sent prompt and let
     // Up/Down walk back through them in the footer bar. direction < 0 is Up
     // (older), > 0 is Down (newer); returns true when the key was consumed.
@@ -2196,6 +2205,20 @@ private:
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
+    // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
+    // installed. While recording, m_voiceRecordProc captures a temp WAV which is
+    // transcribed by m_voiceTranscribeProc when recording stops.
+    QPushButton *m_quickAddMicButton = nullptr;
+    QProcess *m_voiceRecordProc = nullptr;
+    QProcess *m_voiceTranscribeProc = nullptr;
+    QString m_voiceWavPath;
+    bool m_voiceRecording = false;
+    // The whisper.cpp download/build process kicked off from Settings; kept on the
+    // window so closing Settings mid-install doesn't kill it.
+    QProcess *m_whisperInstallProc = nullptr;
+    QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
+    QPushButton *m_whisperInstallButton = nullptr;
+    QComboBox *m_whisperModelCombo = nullptr;
     // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
     // recalls the last prompt sent so it can be fired again. Newest entry last;
     // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1
