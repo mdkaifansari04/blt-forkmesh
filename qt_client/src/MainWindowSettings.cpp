@@ -818,6 +818,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_varsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_varsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_varsTable->setMaximumHeight(160);
+    makeColumnsResizable(m_varsTable); // spreadsheet-style draggable columns (#263)
 
     auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
     auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
