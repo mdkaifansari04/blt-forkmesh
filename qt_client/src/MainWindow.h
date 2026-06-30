@@ -1650,6 +1650,10 @@ private:
     void stopMicTest();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
+    // Settings: provision NVIDIA Parakeet (a local Python env) for dictation.
+    void installParakeet();
+    // Install whichever engine the Settings selector currently points at.
+    void installVoiceEngine();
     void refreshWhisperStatus();
     // Quick-add prompt history (adhoc #200): remember each sent prompt and let
     // Up/Down walk back through them in the footer bar. direction < 0 is Up
@@ -2257,6 +2261,12 @@ private:
     QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
+    // Voice engine selector + Parakeet provisioning (the option to use Parakeet
+    // instead of whisper.cpp). m_parakeetInstallProc is the venv/pip build, kept on
+    // the window so closing Settings mid-install doesn't kill it.
+    QComboBox *m_voiceEngineCombo = nullptr;
+    QComboBox *m_parakeetModelCombo = nullptr;
+    QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
