@@ -1617,6 +1617,10 @@ private:
     void queueQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Screenshot button (next to the rebuild/restart button): drops a full-screen
+    // overlay so you can drag a rectangle anywhere on the computer, then queues the
+    // captured region as a quick-add attachment.
+    void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. Clicking it records from the microphone;
     // clicking again stops and transcribes the audio into the prompt locally.
@@ -2084,6 +2088,7 @@ private:
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
