@@ -383,6 +383,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDiff->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
+    registerDiffView(m_pullDiff);
 
     auto *diffSplit = new QSplitter(Qt::Horizontal);
     diffSplit->setChildrenCollapsible(false);
@@ -1275,6 +1276,7 @@ void MainWindow::showPull(int number)
         m_pullFiles->setCurrentRow(0);
     else {
         m_pullDiff->setPlainText("(no changes)");
+        m_pullDiff->setProperty("fm_diffSource", QString()); // not a rendered diff
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
     }
     renderPullCommits(*found);
@@ -1307,7 +1309,39 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
-// +/- zoom: change the diff viewer text size and re-render what's on screen.
+// Property holding a diff view's last-set source HTML, so a font-size change can
+// re-render it in place at the new size without re-running its renderer (#254).
+static const char *kDiffSourceProp = "fm_diffSource";
+
+// Track a diff viewer for the shared text-size zoom: the +/- buttons and
+// Ctrl+wheel re-render every registered view at the new size (issue #254).
+void MainWindow::registerDiffView(QTextEdit *view)
+{
+    if (!view || m_diffViews.contains(view))
+        return;
+    m_diffViews.append(view);
+    if (view->toolTip().isEmpty())
+        view->setToolTip(QStringLiteral("Ctrl+scroll to change the text size"));
+    view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
+    connect(view, &QObject::destroyed, this, [this](QObject *o) {
+        m_diffViews.removeAll(static_cast<QTextEdit *>(o));
+    });
+}
+
+// Set a diff viewer's HTML, remembering the source so adjustDiffFont can later
+// re-render it at a new text size. Use this for every diff viewer's content so
+// the zoom works everywhere (issue #254).
+void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
+{
+    if (!view)
+        return;
+    view->setProperty(kDiffSourceProp, html);
+    view->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    view->setHtml(html);
+}
+
+// +/- or Ctrl+wheel zoom: change the diff text size and re-render every diff
+// viewer that currently shows a diff, in place, at the new size (issue #254).
 void MainWindow::adjustDiffFont(int delta)
 {
     const int next = qBound(8, m_diffFontPt + delta, 28);
@@ -1315,9 +1349,22 @@ void MainWindow::adjustDiffFont(int delta)
         return;
     m_diffFontPt = next;
     QSettings().setValue(kDiffFontPtSetting, m_diffFontPt);
-    if (m_pullDiff && m_pullFiles && m_pullFiles->currentItem())
-        renderPullDiff(m_pullFiles->currentItem()->data(Qt::UserRole).toString());
-    m_scmDiffCache.clear(); // other diff views re-render at the new size next time
+    const QString css = diffStyleSheet(m_diffFontPt);
+    for (QTextEdit *view : m_diffViews) {
+        if (!view || view->document()->isEmpty())
+            continue;
+        const QString src = view->property(kDiffSourceProp).toString();
+        if (src.isEmpty())
+            continue; // plain text (e.g. "(no changes)") -- nothing to re-scale
+        QScrollBar *vbar = view->verticalScrollBar();
+        const int scroll = vbar ? vbar->value() : 0;
+        view->document()->setDefaultStyleSheet(css);
+        view->setHtml(src);
+        if (vbar)
+            vbar->setValue(scroll);
+    }
+    m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
+    m_scmDiffCache.clear();      // re-render any cached SCM diff at the new size
 }
 
 void MainWindow::renderPullDiff(const QString &filePath)
@@ -1458,8 +1505,7 @@ void MainWindow::renderPullDiff(const QString &filePath)
         return;
     m_pullDiffRenderKey = key;
 
-    m_pullDiff->document()->setDefaultStyleSheet(styleSheet);
-    m_pullDiff->setHtml(body);
+    setDiffHtml(m_pullDiff, body);
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)
