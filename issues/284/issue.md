@@ -7,7 +7,7 @@ labels: [Partial]
 milestone: 
 priority: 20
 progress: 20
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782487517730
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
