@@ -12,7 +12,7 @@ createdAt: 1782349505941
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 2.00
-bountyAddress: 
+bountyAddress: CeJEUGuctKMwyUb6QsqYJoPRcqh78Pwg1HXk1yQFDdUo
 bountyStatus: open
 type: open
 id: open-207
