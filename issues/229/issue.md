@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 229
 title: have insights show the number of contributors in the tab
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 28
