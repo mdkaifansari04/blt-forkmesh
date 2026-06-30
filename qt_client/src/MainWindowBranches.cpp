@@ -8,9 +8,35 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QComboBox>
 #include <QTimer>
 
 using namespace forkmesh::ui;
+
+// Refill the "Fix with agent" model dropdown for the agent/provider the sibling
+// combo currently shows (adhoc #56). Item data is the model id passed straight to
+// fixBranchConflictsWithAgent; the API providers fall back to their low-cost
+// default on an empty value, Claude Code's empty entry leaves the CLI's default.
+static void fillBranchFixModels(QComboBox *combo, const QString &provider)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    if (provider == QLatin1String("claude-code")) {
+        combo->addItem(QStringLiteral("Default model"), QString());
+        combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+        combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+        combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    } else if (provider == QLatin1String("openai")) {
+        combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
+        combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
+        combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));
+    } else { // claude API
+        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
+        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6"));
+        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
+    }
+}
 
 // ---- Branches panel --------------------------------------------------------
 
@@ -1785,58 +1811,65 @@ QWidget *MainWindow::buildBranchesTab()
     });
 
     // Fix with agent: only relevant when the selected branch conflicts with base,
-    // so updateBranchDetailActions() hides it otherwise.
+    // so updateBranchDetailActions() hides it otherwise. The button now resolves
+    // straight away (no menu); the agent and model are chosen in the two dropdowns
+    // beside it (adhoc #56).
     m_branchFixButton = new QPushButton("Fix with agent");
     m_branchFixButton->setObjectName("ghostButton");
     m_branchFixButton->setProperty("buttonSize", "sm");
     m_branchFixButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
-    auto *fixMenu = new QMenu(m_branchFixButton);
-    // Each provider is a submenu of model choices (adhoc #60); picking a model
-    // passes it through to fixBranchConflictsWithAgent, which uses it instead of
-    // the provider's hardcoded default. The first entry is that default.
-    auto addFixProvider =
-        [this, fixMenu](const QString &title, const QString &provider,
-                        const QList<QPair<QString, QString>> &models) -> QAction * {
-        auto *sub = new QMenu(title, fixMenu);
-        for (const QPair<QString, QString> &entry : models) {
-            const QString model = entry.second;
-            QAction *act = sub->addAction(entry.first);
-            connect(act, &QAction::triggered, this, [this, provider, model] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch, provider, model);
-            });
-        }
-        return fixMenu->addMenu(sub);
-    };
-    QAction *fixClaude = addFixProvider(
-        QStringLiteral("Fix with Claude"), QStringLiteral("claude"),
-        {{QStringLiteral("Claude Haiku 4.5"), QStringLiteral("claude-haiku-4-5")},
-         {QStringLiteral("Claude Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6")},
-         {QStringLiteral("Claude Opus 4.8"), QStringLiteral("claude-opus-4-8")}});
-    QAction *fixOpenAi = addFixProvider(
-        QStringLiteral("Fix with OpenAI"), QStringLiteral("openai"),
-        {{QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano")},
-         {QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini")},
-         {QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1")}});
-    QAction *fixClaudeCode = addFixProvider(
-        QStringLiteral("Fix with Claude Code"), QStringLiteral("claude-code"),
-        {{QStringLiteral("Default model"), QString()},
-         {QStringLiteral("Opus"), QStringLiteral("opus")},
-         {QStringLiteral("Sonnet"), QStringLiteral("sonnet")},
-         {QStringLiteral("Haiku"), QStringLiteral("haiku")}});
-    // Bold the user's configured default agent (Settings -> Agents) so the dropdown
-    // makes the default choice obvious; refresh on open in case it changed.
-    auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
+    connect(m_branchFixButton, &QPushButton::clicked, this, [this] {
+        if (m_branchDiffBranch.isEmpty())
+            return;
+        const QString provider = m_branchFixAgentCombo
+                                     ? m_branchFixAgentCombo->currentData().toString()
+                                     : QStringLiteral("claude");
+        const QString model = m_branchFixModelCombo
+                                  ? m_branchFixModelCombo->currentData().toString()
+                                  : QString();
+        fixBranchConflictsWithAgent(m_branchDiffBranch, provider, model);
+    });
+
+    // Agent dropdown: which provider resolves the conflicts. Data values match the
+    // strings fixBranchConflictsWithAgent expects ("claude" is the Claude API).
+    m_branchFixAgentCombo = new QComboBox;
+    m_branchFixAgentCombo->setObjectName("issueControlSm");
+    m_branchFixAgentCombo->setCursor(Qt::PointingHandCursor);
+    m_branchFixAgentCombo->setToolTip("Which agent resolves the conflicts");
+    m_branchFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
+    m_branchFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
+    m_branchFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+                                   QStringLiteral("claude-code"));
+    m_branchFixAgentCombo->hide();
+    // Start on the user's configured default agent (Settings -> Agents). That
+    // setting stores the Claude API as "claude-api"; the combo uses "claude".
+    {
         const QString def = defaultAgentProvider();
-        fixMenu->setDefaultAction(def == QLatin1String("claude-code") ? fixClaudeCode
-                                  : def == QLatin1String("claude-api") ? fixClaude
-                                                                       : fixOpenAi);
-    };
-    highlightDefaultFix();
-    connect(fixMenu, &QMenu::aboutToShow, fixMenu, highlightDefaultFix);
-    m_branchFixButton->setMenu(fixMenu);
+        const QString want = def == QLatin1String("claude-api")
+                                 ? QStringLiteral("claude")
+                                 : def;
+        const int idx = m_branchFixAgentCombo->findData(want);
+        m_branchFixAgentCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+
+    // Model dropdown: refilled to match the selected agent (e.g. Opus / Sonnet /
+    // Haiku for Claude).
+    m_branchFixModelCombo = new QComboBox;
+    m_branchFixModelCombo->setObjectName("issueControlSm");
+    m_branchFixModelCombo->setCursor(Qt::PointingHandCursor);
+    m_branchFixModelCombo->setToolTip("Which model the agent uses");
+    m_branchFixModelCombo->hide();
+    fillBranchFixModels(m_branchFixModelCombo,
+                        m_branchFixAgentCombo->currentData().toString());
+    connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (m_branchFixAgentCombo && m_branchFixModelCombo)
+                    fillBranchFixModels(
+                        m_branchFixModelCombo,
+                        m_branchFixAgentCombo->currentData().toString());
+            });
 
     m_branchPrButton = new QPushButton("Create PR");
     m_branchPrButton->setObjectName("ghostButton");
@@ -1870,6 +1903,8 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->addWidget(m_branchMergeEditorButton);
     detailBar->addWidget(m_branchPullButton);
     detailBar->addWidget(m_branchFixButton);
+    detailBar->addWidget(m_branchFixAgentCombo);
+    detailBar->addWidget(m_branchFixModelCombo);
     detailBar->addWidget(m_branchPrButton);
     detailBar->addWidget(m_branchMergeButton);
     auto *diffPane = new QWidget;
@@ -2646,13 +2681,22 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                     .arg(base, branch));
     }
 
-    // Fix with agent: shown only when the selected branch conflicts with base.
+    // Fix with agent: shown only when the selected branch conflicts with base. The
+    // agent/model dropdowns travel with the button.
     m_branchFixButton->setVisible(hasConflict);
     m_branchFixButton->setEnabled(hasConflict && writable);
     m_branchFixButton->setToolTip(
-        QStringLiteral("Let a low-cost model merge %1 into %2 and resolve the "
+        QStringLiteral("Let the chosen agent merge %1 into %2 and resolve the "
                        "conflicts \xE2\x80\x94 watch it on the Agents tab")
             .arg(base, branch));
+    if (m_branchFixAgentCombo) {
+        m_branchFixAgentCombo->setVisible(hasConflict);
+        m_branchFixAgentCombo->setEnabled(hasConflict && writable);
+    }
+    if (m_branchFixModelCombo) {
+        m_branchFixModelCombo->setVisible(hasConflict);
+        m_branchFixModelCombo->setEnabled(hasConflict && writable);
+    }
 
     // Create PR from this branch into base.
     const bool canPr = writable && !isBase;
