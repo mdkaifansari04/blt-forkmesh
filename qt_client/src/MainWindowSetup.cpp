@@ -1381,8 +1381,10 @@ bool MainWindow::authenticateSilently(const QString &accountName)
 // POST /api/accounts/login — log in by email (+ optional TOTP).
 bool MainWindow::verifyTotpLogin(const QString &email,
                                  const QString &password, const QString &totp,
-                                 const QString &accountName)
+                                 const QString &accountName, bool *fatal)
 {
+    if (fatal)
+        *fatal = false;
     int status = 0;
     const QJsonObject resp = postAccountSync(
         "login",
@@ -1404,6 +1406,12 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         return true;
     }
     const QString err = resp.value("error").toString();
+    // A pubkey mismatch is unrecoverable from here: the account is already bound to
+    // a different desktop key, so retyping the (correct) email/password can never
+    // log in on this device. Flag it so runLoginFlow stops re-opening the dialog
+    // instead of trapping the user in an endless re-prompt loop.
+    if (fatal)
+        *fatal = (err == "pubkey_mismatch");
     QMessageBox::warning(this, "Log in",
                          err == "bad_totp"
                              ? "Incorrect authenticator code."
@@ -1452,9 +1460,14 @@ bool MainWindow::runLoginFlow(const QString &accountName)
             QMessageBox::warning(this, "Log in", "Enter a valid email.");
             continue;
         }
+        bool fatal = false;
         if (verifyTotpLogin(email, passEdit->text(), totpEdit->text().trimmed(),
-                            accountName))
+                            accountName, &fatal))
             return true;
+        // Unrecoverable failure (e.g. this account is bound to another device key):
+        // re-prompting can't help, so stop here instead of re-opening the dialog.
+        if (fatal)
+            break;
     }
     if (m_setupError) {
         m_setupError->setText("Account login is required to join the network.");
