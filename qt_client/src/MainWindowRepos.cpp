@@ -2625,6 +2625,7 @@ void MainWindow::onProfileNameChanged(const QString &name)
     migrateReposForProfileName(oldOwner, trimmed);
     if (m_backend)
         m_backend->setUserName(trimmed);
+    refreshSettingsEmailVerifiedBadge();
     refreshRepositoryList();
     logSystem("Name changed to " + trimmed + ".");
 }
@@ -2653,6 +2654,7 @@ void MainWindow::logout()
     m_seenPendingUsers.clear();
     m_accountName.clear();
     QSettings().remove(kAccountNameSetting);
+    refreshSettingsEmailVerifiedBadge();
     leaveSession();
 }
 
