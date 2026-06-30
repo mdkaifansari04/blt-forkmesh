@@ -1011,9 +1011,12 @@ private:
     // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
     // once up front); async=false removes the worktree synchronously so a batch of
     // deletes runs one git worktree-remove at a time rather than racing.
+    // deferRefresh=true skips the trailing agent/issue UI reload so a batch caller
+    // (deleteAllMergedAgentSessions) can rebuild the table once at the end instead of
+    // once per branch — repeated rebuilds mid-batch flickered the Status column blank.
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
                                       const QString &branch, bool confirm = true,
-                                      bool async = true);
+                                      bool async = true, bool deferRefresh = false);
     // Batch counterpart to "Delete all": wipe the worktree, branch and session of
     // every merged agent session in the open repo after one confirmation (adhoc
     // #235).
