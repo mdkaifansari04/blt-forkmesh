@@ -2346,6 +2346,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionsTable->setShowGrid(false);
     m_actionsTable->setWordWrap(false);
     m_actionsTable->setAlternatingRowColors(true);
+    makeColumnsResizable(m_actionsTable); // spreadsheet-style draggable columns (#263)
     m_actionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_actionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_actionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
