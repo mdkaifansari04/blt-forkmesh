@@ -1840,8 +1840,33 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     }
     if (publishedWebsite.isEmpty() && index == m_repoDetailIndex)
         publishedWebsite = m_repoInfo.website;
+    // Node facts the live Mirror nodes view shows per node (latest commit, issue
+    // count, platform, version, node id). Published alongside the mirror so those
+    // columns stay populated for a node that's offline or only intermittently in
+    // the room — otherwise a catalog-backed row falls back to em-dashes for
+    // everything but sync time and size (adhoc #56). The HEAD/issue figures mirror
+    // the live advert (setMirroredRepos); platform/version/id come from our own
+    // roster entry (the same values makeMessage broadcasts).
+    const QString headBranch = mirrorHeadBranch(repo.mirrorPath);
+    const QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
+    const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
+    QString selfPlatform, selfVersion, selfNodeId;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (member.self) {
+            selfPlatform = member.platform;
+            selfVersion = member.version;
+            selfNodeId = member.id;
+            break;
+        }
+    }
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
+                         {"commit", headCommit},
+                         {"branch", headBranch},
+                         {"issueCount", QString::number(issueCount)},
+                         {"platform", selfPlatform},
+                         {"version", selfVersion},
+                         {"nodeId", selfNodeId},
                          {"description", repo.description},
                          {"website", publishedWebsite},
                          {"cloneUrl", repo.cloneUrl},
@@ -2600,6 +2625,7 @@ void MainWindow::onProfileNameChanged(const QString &name)
     migrateReposForProfileName(oldOwner, trimmed);
     if (m_backend)
         m_backend->setUserName(trimmed);
+    refreshSettingsEmailVerifiedBadge();
     refreshRepositoryList();
     logSystem("Name changed to " + trimmed + ".");
 }
@@ -2628,6 +2654,7 @@ void MainWindow::logout()
     m_seenPendingUsers.clear();
     m_accountName.clear();
     QSettings().remove(kAccountNameSetting);
+    refreshSettingsEmailVerifiedBadge();
     leaveSession();
 }
 

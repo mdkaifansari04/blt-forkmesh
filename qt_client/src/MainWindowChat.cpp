@@ -3728,9 +3728,11 @@ void MainWindow::updateChatButton()
                 total > 99 ? QStringLiteral("99+") : QString::number(total);
             m_chatUnreadBadge->setText(text);
             // Size to the text (a circle for one digit, a pill for more) and pin
-            // to the button's top-right corner.
+            // to the button's top-right corner. The padding has to clear the 1px
+            // border on each side and leave a little slack so the centred digits
+            // aren't clipped on the sides.
             const int w = qMax(15, m_chatUnreadBadge->fontMetrics()
-                                       .horizontalAdvance(text) + 8);
+                                       .horizontalAdvance(text) + 12);
             m_chatUnreadBadge->resize(w, 15);
             m_chatUnreadBadge->move(qMax(0, m_chatButton->width() - w), 0);
             m_chatUnreadBadge->show();

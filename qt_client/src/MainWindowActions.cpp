@@ -1339,7 +1339,11 @@ void MainWindow::positionActionStrip()
         const qint64 started = box->property("startedAtMs").toLongLong();
         const qint64 elapsedS =
             started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
-        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 22;
+        // Width that always fits the name: the text advance plus the box chrome
+        // (9px QSS padding + 1px border on each side = 20px) and a few extra
+        // pixels of slack so bold glyphs — which fontMetrics tends to slightly
+        // under-measure — don't get clipped at the edges.
+        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 28;
         const int boxW = qBound(base, base + static_cast<int>(elapsedS) * 2, 380);
         box->setFixedWidth(boxW);
         time->setText(fmtElapsed(elapsedS));

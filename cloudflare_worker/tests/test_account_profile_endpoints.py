@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Account signup/profile endpoint contracts.
+
+These are source-level contract checks because src/entry.py depends on the
+Workers Python JS runtime. They keep the product decision explicit: signup is a
+simple email/password/name flow, and Solana payout address management lives in
+the dashboard profile flow after account creation.
+"""
+from pathlib import Path
+
+ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+QT_MAIN = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.cpp"
+QT_TEXT = QT_MAIN.read_text(encoding="utf-8") if QT_MAIN.exists() else ""
+
+
+def test_worker_exposes_simple_signup_endpoint():
+    assert 'url.path == "/api/accounts/signup" and method == "POST"' in ENTRY_TEXT
+    assert "async def _account_signup" in ENTRY_TEXT
+    assert 'data.get("nodeName", "")' in ENTRY_TEXT
+    assert 'data.get("email", "")' in ENTRY_TEXT
+    assert 'data.get("password", "")' in ENTRY_TEXT
+
+
+def test_signup_endpoint_is_not_the_solana_payment_flow():
+    signup_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_signup"):
+        ENTRY_TEXT.index("async def _account_reserve")
+    ]
+    assert "donation_address" not in signup_body
+    assert "donation_required_lamports" not in signup_body
+    assert "SOLANA_RE" not in signup_body
+    assert 'rec["status"] = "active"' in signup_body
+    assert 'rec["email_verified"] = bool(rec.get("email_verified", False))' in signup_body
+
+
+def test_worker_exposes_password_authenticated_profile_endpoint_for_wallet_and_verification():
+    assert 'url.path == "/api/accounts/profile" and method == "POST"' in ENTRY_TEXT
+    assert "async def _account_profile" in ENTRY_TEXT
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _login_locked_until")
+    ]
+    assert 'data.get("password", "")' in profile_body
+    assert 'verify_password(password' in profile_body
+    assert 'data.get("solana", "")' in profile_body
+    assert 'resendVerification' in profile_body
+    assert '_send_verification_email' in profile_body
+
+
+def test_worker_profile_contract_includes_avatar_updates():
+    public_payload_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_public_payload"):
+        ENTRY_TEXT.index("def _donation_expiry_fields")
+    ]
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _login_locked_until")
+    ]
+    heartbeat_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_heartbeat"):
+        ENTRY_TEXT.index("async def _account_treasury_address")
+    ]
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+
+    assert '"avatarPng": rec.get("avatar_png", "")' in public_payload_body
+    assert '"avatarUpdatedAt": rec.get("avatar_updated_at", 0)' in public_payload_body
+    assert 'data.get("avatarPng", "")' in profile_body
+    assert 'rec["avatar_png"] = avatar_png' in profile_body
+    assert 'data.get("avatarPng", "")' in heartbeat_body
+    assert 'rec["avatar_png"] = avatar_png' in heartbeat_body
+    assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
+
+
+def test_qt_client_publishes_effective_avatar_with_signed_heartbeat():
+    heartbeat_body = QT_TEXT[
+        QT_TEXT.index("void MainWindow::sendNodeHeartbeat()"):
+        QT_TEXT.index("void MainWindow::pollPendingUsers")
+    ]
+
+    assert "effectiveAvatar().toBase64()" in heartbeat_body
+    assert '{"avatarPng", avatarPng}' in heartbeat_body
+
+
+def test_profile_endpoint_supports_verified_node_rename_and_hard_delete():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _login_locked_until")
+    ]
+    login_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_login"):
+        ENTRY_TEXT.index("def _random_bytes")
+    ]
+
+    assert 'data.get("newNodeName", "")' in profile_body
+    assert 'data.get("deleteAccount")' in profile_body
+    assert 'email_not_verified' in profile_body
+    assert 'node_name_taken' in profile_body
+    assert '_rename_account_namespace(env, name_bi, rec, new_name)' in profile_body
+    assert '_delete_account_namespace(env, name_bi, rec)' in profile_body
+    assert '"accountDeleted": True' in profile_body
+    assert '"account_disabled"' in login_body
+
+
+def test_hard_delete_removes_account_identity_and_owned_namespace_state():
+    assert "async def _delete_account_namespace" in ENTRY_TEXT
+    assert "async def _delete_repo_namespace" in ENTRY_TEXT
+    delete_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _delete_bounties_namespace"):
+        ENTRY_TEXT.index("async def _account_public_payload")
+    ]
+
+    for required in (
+        "SELECT key_bi, data FROM repositories WHERE owner_bi=?",
+        "DELETE FROM repo_shares WHERE repo_bi=?",
+        "DELETE FROM repo_shares WHERE grantee_bi=?",
+        "DELETE FROM issue_inbox WHERE repo_bi=?",
+        "DELETE FROM pull_inbox WHERE repo_bi=?",
+        "DELETE FROM commit_inbox WHERE repo_bi=?",
+        "DELETE FROM discussion_inbox WHERE repo_bi=?",
+        "DELETE FROM host_presence WHERE repo_bi=?",
+        "DELETE FROM clone_rr WHERE repo_bi=?",
+        "DELETE FROM repo_first_hosted WHERE repo_bi=?",
+        "DELETE FROM issue_bounty WHERE bounty_bi=?",
+        "DELETE FROM chat_history WHERE room_key LIKE ?",
+        "DELETE FROM funds_received WHERE scope='project' AND key=?",
+        "DELETE FROM catalog_rate WHERE owner_bi=?",
+        "DELETE FROM account_presence WHERE name_bi=?",
+        "DELETE FROM pending_verifications WHERE name_bi=?",
+        "DELETE FROM notifications WHERE recipient_bi=?",
+        "DELETE FROM login_attempts WHERE id_bi=?",
+        "DELETE FROM accounts WHERE name_bi=?",
+        "edge_cache_delete(CATALOG_CACHE_KEY)",
+    ):
+        assert required in delete_body
+
+
+def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
+    assert "async def _rename_account_namespace" in ENTRY_TEXT
+    assert "async def _move_repo_namespace" in ENTRY_TEXT
+    assert "async def _save_account_full" in ENTRY_TEXT
+
+    save_full_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _save_account_full"):
+        ENTRY_TEXT.index("async def _move_repo_shares")
+    ]
+    assert "INSERT INTO accounts" in save_full_body
+    shares_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _move_repo_shares"):
+        ENTRY_TEXT.index("async def _move_bounties_namespace")
+    ]
+    assert "SELECT grantee_bi, data, ts FROM repo_shares WHERE repo_bi=?" in shares_body
+    bounty_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _move_bounties_namespace"):
+        ENTRY_TEXT.index("async def _move_chat_history_namespace")
+    ]
+    assert "SELECT bounty_bi, data FROM issue_bounty" in bounty_body
+    chat_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _move_chat_history_namespace"):
+        ENTRY_TEXT.index("async def _move_repo_namespace")
+    ]
+    assert "SELECT room_key, msg_id, ts, body FROM chat_history WHERE room_key LIKE ?" in chat_body
+
+    rename_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _rename_account_namespace"):
+        ENTRY_TEXT.index("async def _account_profile")
+    ]
+
+    for required in (
+        "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
+        "DELETE FROM accounts WHERE name_bi=?",
+        "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
+        "UPDATE pending_verifications SET name_bi=? WHERE name_bi=?",
+        "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
+        "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
+        "edge_cache_delete(CATALOG_CACHE_KEY)",
+    ):
+        assert required in rename_body
+
+    repo_move_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _move_repo_namespace"):
+        ENTRY_TEXT.index("async def _rename_account_namespace")
+    ]
+
+    for required in (
+        "SELECT key_bi, data, is_private FROM repositories WHERE owner_bi=?",
+        'rec["owner"] = new_owner',
+        "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE pull_inbox SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE commit_inbox SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE discussion_inbox SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE host_presence SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE clone_rr SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE repo_first_hosted SET repo_bi=? WHERE repo_bi=?",
+        "UPDATE funds_received SET key=?, name=? WHERE scope='project' AND key=?",
+    ):
+        assert required in repo_move_body
+
+
+if __name__ == "__main__":
+    for test in (
+        test_worker_exposes_simple_signup_endpoint,
+        test_signup_endpoint_is_not_the_solana_payment_flow,
+        test_worker_exposes_password_authenticated_profile_endpoint_for_wallet_and_verification,
+        test_worker_profile_contract_includes_avatar_updates,
+        test_qt_client_publishes_effective_avatar_with_signed_heartbeat,
+        test_profile_endpoint_supports_verified_node_rename_and_hard_delete,
+        test_hard_delete_removes_account_identity_and_owned_namespace_state,
+        test_namespace_rename_moves_account_repo_and_repo_scoped_state,
+    ):
+        test()
+        print("PASS", test.__name__)

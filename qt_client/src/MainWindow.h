@@ -205,6 +205,7 @@ public:
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
+    void testResetNetworkLog();
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
@@ -276,6 +277,7 @@ public:
     void testStopRepoHosts() { stopRepoHosts(); }
     void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
+    QString testRepoGitDir() const { return repoGitDir(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
     void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
     {
@@ -463,6 +465,10 @@ private:
                                 int *status);
     QJsonObject getAccountSync(const QString &leaf, int *status);
     QString accountOwner() const; // the registered account name (repo namespace)
+    void applyAccountEmailVerified(const QString &accountName, bool verified);
+    bool accountEmailVerified(const QString &accountName) const;
+    QString settingsAccountName() const;
+    void refreshSettingsEmailVerifiedBadge();
     // The owner a repo is published/browsed under on the website. Must match the
     // owner the live host tunnel registers with, or the website can't find the
     // host. Mirrors the fallback used when publishing.
@@ -1339,6 +1345,14 @@ private:
     // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
+    // Stream the next batch of queued per-file diff blocks into the branch diff
+    // view off the event loop (progressive render of a large commit/branch diff,
+    // adhoc #51). `gen` is the render generation it belongs to: a stale batch from
+    // a superseded scope selection bails. Reschedules itself until drained.
+    void appendBranchDiffBlocks(int gen);
+    // Rebuild the sticky-bar file-span map from whatever is currently in the
+    // branch diff document (called once a streamed render has fully landed).
+    void rebuildBranchDiffSpans();
     // Open the selected branch's working directory in VSCodium: its dedicated
     // worktree if it has one, otherwise the repo's main checkout.
     void openBranchInCodium(const QString &branch);
@@ -1363,7 +1377,10 @@ private:
     void pullBaseIntoAllBranches();
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
-    void fixBranchConflictsWithAgent(const QString &branch, const QString &provider);
+    // `model` (adhoc #60) picks which model the chosen provider runs as; empty
+    // falls back to the provider's low-cost default.
+    void fixBranchConflictsWithAgent(const QString &branch, const QString &provider,
+                                     const QString &model = QString());
     void promptNewBranch();
     void deleteBranch(const QString &branch);
     // The branch listed next to `branch` in the Branches table (the row below it,
@@ -1583,7 +1600,6 @@ private:
     void setRepoBranch(const QString &branch);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
-    void checkoutRepoBranch(const QString &branch); // guarded real checkout
     void createAndCheckoutBranch();          // "Create new branch…"
     QString currentRef() const;
     QString repoGitDir() const;
@@ -2269,6 +2285,8 @@ private:
     // Settings section widgets
     QLineEdit *m_settingsNameEdit = nullptr;
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
+    QLabel *m_settingsEmailLabel = nullptr;
+    QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
     QPlainTextEdit *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
@@ -2515,6 +2533,17 @@ private:
     QString m_branchDiffViewedContext;
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
+    // Progressive-render state for a large branch/commit diff: it is split into
+    // per-file HTML blocks and appended a batch at a time off the event loop so
+    // the GUI thread never blocks laying it all out at once (adhoc #51; same
+    // freeze the cap in issue #187 guarded against). m_branchDiffRenderGen is
+    // bumped on every render so a queued batch from a superseded scope selection
+    // bails instead of writing into the now-current diff. m_branchDiffFilePaths
+    // holds the ordered file paths so the sticky-bar span map can be rebuilt once
+    // the whole diff has landed.
+    QStringList m_branchDiffPendingBlocks;
+    QStringList m_branchDiffFilePaths;
+    int m_branchDiffRenderGen = 0;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
@@ -2524,6 +2553,11 @@ private:
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
+    // Sit beside the Fix button (adhoc #56): one dropdown picks the agent/provider
+    // (Claude / OpenAI / Claude Code), the other the model it runs. The button then
+    // resolves with whatever the two combos currently show.
+    QComboBox *m_branchFixAgentCombo = nullptr;
+    QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
@@ -3092,6 +3126,12 @@ private:
     // the plain placeholder rebuild so the panel stops flashing between the two
     // views on every transcript turn (adhoc #260).
     int m_agentDiffRenderedSession = -1;
+    // The HTML last handed to m_agentDiffView->setHtml() for that session. The
+    // Files-changed diff re-renders on a 400ms timer for every transcript burst
+    // while an agent streams; re-running QTextEdit::setHtml() when the rendered
+    // diff is byte-identical just re-freezes the UI for seconds with no visible
+    // change, so we skip the setHtml when this matches.
+    QString m_agentDiffLastHtml;
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
