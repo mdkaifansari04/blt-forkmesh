@@ -1375,18 +1375,15 @@ inline void enableHoverRowHighlight(QAbstractItemView *view)
     blankSelectionBand(view);
 }
 
-// Outlines the SELECTED row in green with a transparent fill, instead of the
-// solid green selection band. Each cell paints its own slice: top + bottom
+// Slices a 1px row outline in `color` across this single cell: top + bottom
 // edges always, plus the left/right end caps on the first/last *visible* column
-// (visual order, so it follows reordered headers). One free helper so the
-// row-wide delegate and the per-column scanner delegate draw an identical
-// outline and the seam between them is invisible.
-inline void paintRowSelectionBorder(QPainter *painter,
-                                    const QStyleOptionViewItem &option,
-                                    const QModelIndex &index)
+// (visual order, so it follows reordered headers). One free helper so every
+// delegate that outlines a row -- selected (green), failed (red), the per-column
+// scanner -- draws an identical outline and the seam between cells is invisible.
+inline void paintRowBorder(QPainter *painter,
+                           const QStyleOptionViewItem &option,
+                           const QModelIndex &index, const QColor &color)
 {
-    if (!(option.state & QStyle::State_Selected))
-        return;
     bool drawLeft = index.column() == 0;
     bool drawRight = true;
     if (const auto *table = qobject_cast<const QTableView *>(option.widget)) {
@@ -1406,7 +1403,7 @@ inline void paintRowSelectionBorder(QPainter *painter,
     const QRect r = option.rect;
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, false);
-    painter->setPen(QPen(QColor(46, 160, 67), 1)); // #2ea043, the brand green
+    painter->setPen(QPen(color, 1));
     painter->drawLine(r.topLeft(), r.topRight());
     painter->drawLine(QPoint(r.left(), r.bottom()), QPoint(r.right(), r.bottom()));
     if (drawLeft)
@@ -1414,6 +1411,17 @@ inline void paintRowSelectionBorder(QPainter *painter,
     if (drawRight)
         painter->drawLine(QPoint(r.right(), r.top()), QPoint(r.right(), r.bottom()));
     painter->restore();
+}
+
+// Outlines the SELECTED row in green with a transparent fill, instead of the
+// solid green selection band.
+inline void paintRowSelectionBorder(QPainter *painter,
+                                    const QStyleOptionViewItem &option,
+                                    const QModelIndex &index)
+{
+    if (!(option.state & QStyle::State_Selected))
+        return;
+    paintRowBorder(painter, option, index, QColor(46, 160, 67)); // #2ea043 green
 }
 
 // HoverRowDelegate variant that drops the light-green mouse-hover row tint while
@@ -1426,6 +1434,26 @@ public:
         : HoverRowDelegate(view)
     {
         m_hoverFill = false; // agents list: no mouse-hover row tint (issue #184)
+    }
+};
+
+// Outlines a failed Action run in red right in the runs list, so a failure (e.g.
+// a Cloudflare deploy that errored out) stands out on the run itself instead of
+// in a banner pinned across the top of the tab (adhoc #62). A row is flagged via
+// ActionFailedRole on its first-column item; the red outline is sliced per cell
+// like the green selection border and survives selection, since it draws on top.
+class ActionFailureBorderDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    static constexpr int ActionFailedRole = Qt::UserRole + 1;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+        if (index.sibling(index.row(), 0).data(ActionFailedRole).toBool())
+            paintRowBorder(painter, option, index, QColor(0xf8, 0x51, 0x49)); // red
     }
 };
 
