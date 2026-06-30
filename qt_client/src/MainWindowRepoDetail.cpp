@@ -730,6 +730,17 @@ QWidget *MainWindow::buildRepoEditorPage()
     m_repoFileTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_repoFileTree, &QWidget::customContextMenuRequested, this,
             &MainWindow::showRepoFileTreeMenu);
+    // Single-click a folder to expand/collapse it; single-click a file to
+    // open it in an editable tab on the right.
+    connect(m_repoFileTree, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (!item)
+                    return;
+                if (item->data(0, Qt::UserRole + 1).toBool())
+                    item->setExpanded(!item->isExpanded());
+                else
+                    openRepoFile(item->data(0, Qt::UserRole).toString());
+            });
     // Double-click a file to open it in an editable tab on the right.
     connect(m_repoFileTree, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem *item, int) {
