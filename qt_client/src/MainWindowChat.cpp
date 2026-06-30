@@ -422,6 +422,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     setOcticon(m_quickAddImageButton, "paperclip", 16);
     connect(m_quickAddImageButton, &QPushButton::clicked, this,
             &MainWindow::attachQuickAddImage);
+    // Strip of attachment chips beside the paperclip: each shows a thumbnail and a
+    // little "x" to remove that one image. Hidden until something is attached.
+    m_quickAddAttachStrip = new QWidget;
+    m_quickAddAttachStrip->setObjectName("quickAddAttachStrip");
+    auto *attachStripRow = new QHBoxLayout(m_quickAddAttachStrip);
+    attachStripRow->setContentsMargins(0, 0, 0, 0);
+    attachStripRow->setSpacing(4);
+    m_quickAddAttachStrip->setVisible(false);
     updateQuickAddImageButton();
 
     // Mic: dictate the prompt with the locally-installed whisper.cpp. Hidden
@@ -542,6 +550,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddMicButton);
     quickAddRow->addWidget(m_voiceLevelMeter);
     quickAddRow->addWidget(m_quickAddImageButton);
+    quickAddRow->addWidget(m_quickAddAttachStrip);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
     quickAddRow->addWidget(m_quickAddAssignAgent);
@@ -1791,9 +1800,9 @@ void MainWindow::updateNavRebuildButton()
             QSettings().value(kShowRebuildButtonSetting, false).toBool());
 }
 
-// Screenshot button: drop a full-screen overlay, let the user drag a rectangle
-// anywhere on the computer (capture on press, send on release), then save the
-// region to a temp PNG and queue it as the next quick-add attachment.
+// Screenshot button: drop a transparent overlay (the live desktop stays visible),
+// let the user drag a dotted rectangle anywhere on the computer, then grab that
+// region on release and save it to a temp PNG queued as the next attachment.
 void MainWindow::captureScreenRegion()
 {
     ScreenCaptureOverlay *overlay = ScreenCaptureOverlay::begin();
