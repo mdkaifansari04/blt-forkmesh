@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 279
 title: on the branches page show if they have a worktree, linked pr and / or a linked issue and make the table with expaded more on first load so we see all text
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 9
