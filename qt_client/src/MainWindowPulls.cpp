@@ -1861,7 +1861,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
         QByteArray out;
         if (runGitCapture(dir,
-                          {"log", "--no-merges", "--date=short",
+                          {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
                            "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad",
                            pr.base + ".." + pr.head},
                           &out, nullptr) &&
@@ -1871,9 +1871,11 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 const QStringList f = line.split(QLatin1Char('\x1f'));
                 if (f.size() < 5)
                     continue;
+                // Show the commit date and time on the row (issue #275); the
+                // tooltip keeps the full timestamp for hover detail.
                 auto *item = new QListWidgetItem(
-                    QString::fromUtf8("%1  %2 \xC2\xB7 %3")
-                        .arg(f.at(1), f.at(2), f.at(3)));
+                    QString::fromUtf8("%1  %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                        .arg(f.at(1), f.at(2), f.at(3), f.at(4)));
                 item->setData(Qt::UserRole, f.at(0));
                 item->setToolTip(f.at(4));
                 m_pullCommitsList->addItem(item);
@@ -1894,10 +1896,25 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
         const auto flush = [&] {
             if (subject.isEmpty() && author.isEmpty())
                 return;
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1 \xC2\xB7 %2")
-                    .arg(subject.isEmpty() ? QStringLiteral("(no subject)") : subject,
-                         author.isEmpty() ? QStringLiteral("unknown") : author));
+            // The mbox Date: header is RFC 2822; reformat to a compact date+time
+            // so the row carries it like the local-log path above (issue #275),
+            // falling back to the raw header if it doesn't parse.
+            QString when = date;
+            const QDateTime dt = QDateTime::fromString(date, Qt::RFC2822Date);
+            if (dt.isValid())
+                when = dt.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+            const QString text =
+                when.isEmpty()
+                    ? QString::fromUtf8("%1 \xC2\xB7 %2")
+                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
+                                                 : subject,
+                               author.isEmpty() ? QStringLiteral("unknown") : author)
+                    : QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 %3")
+                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
+                                                 : subject,
+                               author.isEmpty() ? QStringLiteral("unknown") : author,
+                               when);
+            auto *item = new QListWidgetItem(text);
             item->setToolTip(date);
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             m_pullCommitsList->addItem(item);
