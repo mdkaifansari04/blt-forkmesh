@@ -1183,7 +1183,11 @@ void MainWindow::ensureActionStrip()
     // just above the Actions tab without being clipped to the tab button.
     m_actionStrip = new QWidget(page);
     m_actionStrip->setObjectName("actionStrip");
-    m_actionStrip->setAttribute(Qt::WA_TransparentForMouseEvents);
+    // The strip and its rows must stay hit-testable: Qt skips a
+    // WA_TransparentForMouseEvents widget *and its whole subtree* when picking a
+    // click receiver, which would swallow the clicks the per-run boxes rely on
+    // (see updateActionStrip). The strip paints nothing of its own, so an opaque
+    // overlay here looks identical while letting the bars act as live links.
     auto *col = new QVBoxLayout(m_actionStrip);
     col->setContentsMargins(0, 0, 0, 0);
     col->setSpacing(4);
@@ -1234,7 +1238,6 @@ void MainWindow::updateActionStrip()
             // Each run is one row: a bordered name box that grows to the right,
             // with its elapsed time sitting just outside the box on the right.
             auto *row = new QWidget;
-            row->setAttribute(Qt::WA_TransparentForMouseEvents);
             auto *h = new QHBoxLayout(row);
             h->setContentsMargins(0, 0, 0, 0);
             h->setSpacing(8);
@@ -1262,10 +1265,9 @@ void MainWindow::updateActionStrip()
             time->setStyleSheet("#actionStripTime{color:#000;background:transparent;"
                                 "font-size:11px;}");
 
-            // Unlike the strip/row (which stay click-through), the box and its
-            // timer are live links: clicking either jumps to this run's output.
-            // They tag themselves with the run id and let MainWindow's event
-            // filter handle the click.
+            // The box and its timer are live links: clicking either jumps to
+            // this run's output. They tag themselves with the run id and let
+            // MainWindow's event filter handle the click.
             for (QLabel *hit : {box, time}) {
                 hit->setProperty("actionRunId", r->id);
                 hit->setCursor(Qt::PointingHandCursor);
