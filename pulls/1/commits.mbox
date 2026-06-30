@@ -1,0 +1,417 @@
+From 1c0f5f9cbf4f8d89bd1ad9778912f29688e0a03e Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 30 Jun 2026 19:18:01 +0530
+Subject: [PATCH] feat: add profile appearance controls
+
+---
+ cloudflare_worker/public/dashboard.html       | 127 +++++++-----------
+ cloudflare_worker/public/dashboard.js         |  26 ----
+ cloudflare_worker/public/dashboard/index.html | 127 +++++++-----------
+ .../tests/test_dashboard_landing_migration.py |  21 ++-
+ 4 files changed, 121 insertions(+), 180 deletions(-)
+
+diff --git a/cloudflare_worker/public/dashboard.html b/cloudflare_worker/public/dashboard.html
+index 1f59f55d..c4344227 100644
+--- a/cloudflare_worker/public/dashboard.html
++++ b/cloudflare_worker/public/dashboard.html
+@@ -638,15 +638,6 @@
+ 	                <i data-lucide="user-cog" class="w-3.5 h-3.5"></i>
+ 	                Profile
+ 	              </button>
+-              <button
+-                data-appearance-settings-button
+-                type="button"
+-                role="menuitem"
+-                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+-              >
+-                <i data-lucide="palette" class="w-3.5 h-3.5"></i>
+-                Appearance
+-              </button>
+ 	              <button
+ 	                data-logout-button
+ 	                type="button"
+@@ -1107,6 +1098,58 @@
+                 </div>
+ 
+                 <aside class="grid gap-5 content-start min-w-0">
++                  <section data-profile-appearance-panel class="rounded-lg border border-border bg-card overflow-hidden">
++                    <div class="border-b border-border px-4 py-3">
++                      <h2 class="text-sm font-semibold text-foreground">Appearance</h2>
++                      <p class="mt-1 text-xs text-muted-foreground">Choose the dashboard theme for this device.</p>
++                    </div>
++                    <div class="grid gap-3 p-4">
++                      <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Dashboard theme">
++                        <button
++                          data-appearance-theme="dark"
++                          type="button"
++                          role="radio"
++                          aria-checked="true"
++                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
++                        >
++                          <span class="flex items-center justify-between gap-2">
++                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
++                              <i data-lucide="moon" class="h-3.5 w-3.5"></i>
++                              Dark
++                            </span>
++                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
++                          </span>
++                          <span class="grid gap-1.5">
++                            <span class="h-2 rounded-full bg-secondary"></span>
++                            <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
++                            <span class="h-6 rounded-md border border-border bg-card"></span>
++                          </span>
++                        </button>
++                        <button
++                          data-appearance-theme="light"
++                          type="button"
++                          role="radio"
++                          aria-checked="false"
++                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
++                        >
++                          <span class="flex items-center justify-between gap-2">
++                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
++                              <i data-lucide="sun" class="h-3.5 w-3.5"></i>
++                              Light
++                            </span>
++                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
++                          </span>
++                          <span class="grid gap-1.5">
++                            <span class="h-2 rounded-full bg-secondary"></span>
++                            <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
++                            <span class="h-6 rounded-md border border-border bg-card"></span>
++                          </span>
++                        </button>
++                      </div>
++                      <p data-appearance-theme-status aria-live="polite" class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
++                    </div>
++                  </section>
++
+                   <section class="rounded-lg border border-destructive/30 bg-card overflow-hidden">
+                     <div class="border-b border-destructive/30 px-4 py-3">
+                       <h2 class="text-sm font-semibold text-foreground">Danger zone</h2>
+@@ -1407,72 +1450,6 @@
+ 	      </div>
+ 	    </div>
+ 
+-    <div
+-      data-appearance-modal
+-      class="hidden fixed inset-0 z-[90] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+-      role="dialog"
+-      aria-modal="true"
+-      aria-labelledby="appearanceModalTitle"
+-    >
+-      <button data-appearance-modal-backdrop type="button" aria-label="Close appearance settings" class="absolute inset-0 cursor-default"></button>
+-      <div class="relative z-10 w-full max-w-md overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+-        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+-          <div class="min-w-0">
+-            <h2 id="appearanceModalTitle" class="text-sm font-semibold text-foreground">Appearance</h2>
+-            <p class="mt-0.5 text-xs text-muted-foreground">Choose how the dashboard looks on this device.</p>
+-          </div>
+-          <button data-appearance-modal-close type="button" aria-label="Close appearance settings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+-            <i data-lucide="x" class="h-4 w-4"></i>
+-          </button>
+-        </div>
+-        <div class="grid gap-4 p-4">
+-          <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Dashboard theme">
+-            <button
+-              data-appearance-theme="dark"
+-              type="button"
+-              role="radio"
+-              aria-checked="true"
+-              class="grid min-h-28 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+-            >
+-              <span class="flex items-center justify-between gap-2">
+-                <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
+-                  <i data-lucide="moon" class="h-3.5 w-3.5"></i>
+-                  Dark
+-                </span>
+-                <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+-              </span>
+-              <span class="grid gap-1.5">
+-                <span class="h-2 rounded-full bg-secondary"></span>
+-                <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
+-                <span class="h-7 rounded-md border border-border bg-card"></span>
+-              </span>
+-            </button>
+-            <button
+-              data-appearance-theme="light"
+-              type="button"
+-              role="radio"
+-              aria-checked="false"
+-              class="grid min-h-28 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+-            >
+-              <span class="flex items-center justify-between gap-2">
+-                <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
+-                  <i data-lucide="sun" class="h-3.5 w-3.5"></i>
+-                  Light
+-                </span>
+-                <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+-              </span>
+-              <span class="grid gap-1.5">
+-                <span class="h-2 rounded-full bg-secondary"></span>
+-                <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
+-                <span class="h-7 rounded-md border border-border bg-card"></span>
+-              </span>
+-            </button>
+-          </div>
+-          <p data-appearance-theme-status class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
+-        </div>
+-      </div>
+-    </div>
+-
+     <div
+       id="notificationModal"
+       class="hidden fixed inset-0 z-[80] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+index e42c38d4..ab4f80b9 100644
+--- a/cloudflare_worker/public/dashboard.js
++++ b/cloudflare_worker/public/dashboard.js
+@@ -97,17 +97,6 @@
+     applyDashboardTheme(nextTheme);
+   }
+ 
+-  function setAppearanceModalOpen(open) {
+-    const modal = $("[data-appearance-modal]");
+-    if (!modal) return;
+-    modal.classList.toggle("hidden", !open);
+-    modal.classList.toggle("flex", open);
+-    if (open) {
+-      const theme = applyDashboardTheme(readDashboardTheme());
+-      window.setTimeout(() => $(`[data-appearance-theme="${theme}"]`)?.focus(), 0);
+-    }
+-  }
+-
+   function writeSession(nextSession) {
+     state.session = nextSession;
+     try {
+@@ -3029,20 +3018,6 @@
+       return;
+     }
+ 
+-    const appearanceSettings = event.target.closest("[data-appearance-settings-button]");
+-    if (appearanceSettings) {
+-      $("[data-profile-popover]")?.classList.add("hidden");
+-      $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
+-      closeMobileDrawers();
+-      setAppearanceModalOpen(true);
+-      return;
+-    }
+-
+-    if (event.target.closest("[data-appearance-modal-close], [data-appearance-modal-backdrop]")) {
+-      setAppearanceModalOpen(false);
+-      return;
+-    }
+-
+     const appearanceThemeButton = event.target.closest("[data-appearance-theme]");
+     if (appearanceThemeButton) {
+       saveDashboardTheme(appearanceThemeButton.dataset.appearanceTheme);
+@@ -3309,7 +3284,6 @@
+     const typingTarget = event.target?.matches?.("input, textarea, select, [contenteditable='true']");
+ 	    if (event.key === "Escape") {
+ 	      setProfileModalOpen(false);
+-	      setAppearanceModalOpen(false);
+ 	      setNotificationDropdownOpen(false);
+ 	      setNotificationModalOpen(false);
+ 	      closeRepoBranchMenus();
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+index 1f59f55d..c4344227 100644
+--- a/cloudflare_worker/public/dashboard/index.html
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -638,15 +638,6 @@
+ 	                <i data-lucide="user-cog" class="w-3.5 h-3.5"></i>
+ 	                Profile
+ 	              </button>
+-              <button
+-                data-appearance-settings-button
+-                type="button"
+-                role="menuitem"
+-                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+-              >
+-                <i data-lucide="palette" class="w-3.5 h-3.5"></i>
+-                Appearance
+-              </button>
+ 	              <button
+ 	                data-logout-button
+ 	                type="button"
+@@ -1107,6 +1098,58 @@
+                 </div>
+ 
+                 <aside class="grid gap-5 content-start min-w-0">
++                  <section data-profile-appearance-panel class="rounded-lg border border-border bg-card overflow-hidden">
++                    <div class="border-b border-border px-4 py-3">
++                      <h2 class="text-sm font-semibold text-foreground">Appearance</h2>
++                      <p class="mt-1 text-xs text-muted-foreground">Choose the dashboard theme for this device.</p>
++                    </div>
++                    <div class="grid gap-3 p-4">
++                      <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Dashboard theme">
++                        <button
++                          data-appearance-theme="dark"
++                          type="button"
++                          role="radio"
++                          aria-checked="true"
++                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
++                        >
++                          <span class="flex items-center justify-between gap-2">
++                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
++                              <i data-lucide="moon" class="h-3.5 w-3.5"></i>
++                              Dark
++                            </span>
++                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
++                          </span>
++                          <span class="grid gap-1.5">
++                            <span class="h-2 rounded-full bg-secondary"></span>
++                            <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
++                            <span class="h-6 rounded-md border border-border bg-card"></span>
++                          </span>
++                        </button>
++                        <button
++                          data-appearance-theme="light"
++                          type="button"
++                          role="radio"
++                          aria-checked="false"
++                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
++                        >
++                          <span class="flex items-center justify-between gap-2">
++                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
++                              <i data-lucide="sun" class="h-3.5 w-3.5"></i>
++                              Light
++                            </span>
++                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
++                          </span>
++                          <span class="grid gap-1.5">
++                            <span class="h-2 rounded-full bg-secondary"></span>
++                            <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
++                            <span class="h-6 rounded-md border border-border bg-card"></span>
++                          </span>
++                        </button>
++                      </div>
++                      <p data-appearance-theme-status aria-live="polite" class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
++                    </div>
++                  </section>
++
+                   <section class="rounded-lg border border-destructive/30 bg-card overflow-hidden">
+                     <div class="border-b border-destructive/30 px-4 py-3">
+                       <h2 class="text-sm font-semibold text-foreground">Danger zone</h2>
+@@ -1407,72 +1450,6 @@
+ 	      </div>
+ 	    </div>
+ 
+-    <div
+-      data-appearance-modal
+-      class="hidden fixed inset-0 z-[90] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+-      role="dialog"
+-      aria-modal="true"
+-      aria-labelledby="appearanceModalTitle"
+-    >
+-      <button data-appearance-modal-backdrop type="button" aria-label="Close appearance settings" class="absolute inset-0 cursor-default"></button>
+-      <div class="relative z-10 w-full max-w-md overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+-        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+-          <div class="min-w-0">
+-            <h2 id="appearanceModalTitle" class="text-sm font-semibold text-foreground">Appearance</h2>
+-            <p class="mt-0.5 text-xs text-muted-foreground">Choose how the dashboard looks on this device.</p>
+-          </div>
+-          <button data-appearance-modal-close type="button" aria-label="Close appearance settings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+-            <i data-lucide="x" class="h-4 w-4"></i>
+-          </button>
+-        </div>
+-        <div class="grid gap-4 p-4">
+-          <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Dashboard theme">
+-            <button
+-              data-appearance-theme="dark"
+-              type="button"
+-              role="radio"
+-              aria-checked="true"
+-              class="grid min-h-28 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+-            >
+-              <span class="flex items-center justify-between gap-2">
+-                <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
+-                  <i data-lucide="moon" class="h-3.5 w-3.5"></i>
+-                  Dark
+-                </span>
+-                <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+-              </span>
+-              <span class="grid gap-1.5">
+-                <span class="h-2 rounded-full bg-secondary"></span>
+-                <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
+-                <span class="h-7 rounded-md border border-border bg-card"></span>
+-              </span>
+-            </button>
+-            <button
+-              data-appearance-theme="light"
+-              type="button"
+-              role="radio"
+-              aria-checked="false"
+-              class="grid min-h-28 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+-            >
+-              <span class="flex items-center justify-between gap-2">
+-                <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
+-                  <i data-lucide="sun" class="h-3.5 w-3.5"></i>
+-                  Light
+-                </span>
+-                <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+-              </span>
+-              <span class="grid gap-1.5">
+-                <span class="h-2 rounded-full bg-secondary"></span>
+-                <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
+-                <span class="h-7 rounded-md border border-border bg-card"></span>
+-              </span>
+-            </button>
+-          </div>
+-          <p data-appearance-theme-status class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
+-        </div>
+-      </div>
+-    </div>
+-
+     <div
+       id="notificationModal"
+       class="hidden fixed inset-0 z-[80] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+index dac0b500..8b243d82 100644
+--- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
++++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+@@ -210,25 +210,38 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
+     for marker in (
+         'data-dashboard-theme',
+         'meta name="color-scheme" content="light dark"',
+-        "data-appearance-settings-button",
+-        "data-appearance-modal",
++        "data-profile-appearance-panel",
+         "data-appearance-theme",
+         "data-appearance-theme-status",
+         "forkmesh.dashboard.theme",
+     ):
+         assert marker in dashboard
+ 
++    profile_view = dashboard[
++        dashboard.index('data-view="profile"') : dashboard.index('data-view="chat"')
++    ]
++    assert "data-profile-appearance-panel" in profile_view
++    assert "data-appearance-theme" in profile_view
++
++    profile_popover = dashboard[
++        dashboard.index("data-profile-popover") : dashboard.index("data-profile-toggle")
++    ]
++    assert "data-appearance-settings-button" not in profile_popover
++
+     for marker in (
+         "function readDashboardTheme()",
+         "function applyDashboardTheme(theme)",
+-        "function setAppearanceModalOpen(open)",
+         "forkmesh.dashboard.theme",
+         "[data-appearance-theme]",
+     ):
+         assert marker in dashboard_js
+ 
++    assert "function setAppearanceModalOpen(open)" not in dashboard_js
++    assert "data-appearance-settings-button" not in dashboard_js
++    assert "data-appearance-modal" not in dashboard
++
+     for page in (landing, login):
+-        assert "data-appearance-modal" not in page
++        assert "data-profile-appearance-panel" not in page
+         assert "data-appearance-theme" not in page
+         assert "forkmesh.dashboard.theme" not in page
+ 
+-- 
+2.50.1 (Apple Git-155)
+
