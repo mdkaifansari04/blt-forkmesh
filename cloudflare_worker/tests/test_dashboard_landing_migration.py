@@ -124,7 +124,9 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "function renderRepoDetail",
         "loadRepositoryTree(repo",
         "loadRepositoryBlob(repo",
-        "loadRepoCollection(repo, \"issues\"",
+        # Issues load from the repo's git tree so the Open-by-default state
+        # filter (issue #270) has real published issues to work with.
+        "loadRepoIssues(repo)",
         "loadRepoCollection(repo, \"pulls\"",
         "loadRepoCollection(repo, \"discussions\"",
         "loadRepoMirrors(repo)",
