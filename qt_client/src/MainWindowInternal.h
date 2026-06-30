@@ -93,6 +93,7 @@
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <QRadialGradient>
 #include <QRadioButton>
 #include <QShortcut>
@@ -762,6 +763,121 @@ private:
     QString m_fiveHourReset; // "resets in ..." text for the 5-hour window
     QString m_weeklyReset;   // "resets in ..." text for the weekly window
     QString m_stats; // per-session token/cost line, shown under the gauges
+};
+
+// A tiny moving line chart for one system resource (CPU, memory or disk). New
+// per-second samples push in from the right and scroll the history left, so the
+// recent load is visible at a glance; the current figure prints beside the
+// label. Replaces the static "CPU x% MEM y MB" footer text (adhoc #17). Kept
+// header-only (no Q_OBJECT) like the other Internal.h mini-charts; the click
+// hook is a std::function so a left-click can still open the stall dialog.
+class ResourceSparkline : public QWidget
+{
+public:
+    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr)
+        : QWidget(parent), m_label(label)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(82, 30);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    // Append one reading. `value` is plotted on a fixed 0..`maxValue` scale so
+    // the curve's height is comparable across samples (auto-scaling would turn a
+    // near-flat disk trace into noise); `valueText` is the figure shown beside
+    // the label.
+    void addSample(double value, double maxValue, const QString &valueText)
+    {
+        m_max = maxValue > 0 ? maxValue : 100.0;
+        m_value = valueText;
+        m_history.append(value);
+        while (m_history.size() > kMaxPoints)
+            m_history.removeFirst();
+        update();
+    }
+
+    std::function<void()> onClicked; // invoked on a left-click
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f = font();
+        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.5));
+        p.setFont(f);
+        const QFontMetrics fm(f);
+
+        // Left column: the resource label over its current value.
+        const int textW = qMax(fm.horizontalAdvance(m_label),
+                               fm.horizontalAdvance(m_value)) + 4;
+        QColor lab = palette().color(QPalette::WindowText);
+        lab.setAlpha(150);
+        p.setPen(lab);
+        p.drawText(QRect(0, 0, textW, height() / 2),
+                   Qt::AlignVCenter | Qt::AlignLeft, m_label);
+        QColor val = palette().color(QPalette::WindowText);
+        val.setAlpha(225);
+        p.setPen(val);
+        p.drawText(QRect(0, height() / 2, textW, height() - height() / 2),
+                   Qt::AlignVCenter | Qt::AlignLeft, m_value);
+
+        // Right: the sparkline track, with the most recent sample at its right
+        // edge so the curve scrolls left as new readings arrive.
+        const QRectF area(textW + 2, 3, width() - textW - 4, height() - 6);
+        QColor track = palette().color(QPalette::WindowText);
+        track.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(track);
+        p.drawRoundedRect(area, 2, 2);
+        if (m_history.size() < 2)
+            return;
+        const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
+        const double step = area.width() / double(kMaxPoints - 1);
+        const int n = m_history.size();
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x = area.right() - (n - 1 - i) * step;
+            const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
+            curve << QPointF(x, area.bottom() - norm * area.height());
+        }
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(55);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+    }
+
+private:
+    static QColor gaugeColor(double pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: pegged
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting busy
+        return QColor("#3fb950");     // green: light load
+    }
+
+    static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
+    QString m_label;
+    QString m_value;
+    double m_max = 100.0;
+    QVector<double> m_history;
 };
 
 // Tiny spinning-radar dish + latency readout shown just left of the relay name.
