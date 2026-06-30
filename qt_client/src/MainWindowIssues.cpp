@@ -458,6 +458,8 @@ QWidget *MainWindow::buildIssuesSection()
     auto *commentButtonRow = new QHBoxLayout;
     commentButtonRow->setContentsMargins(0, 0, 0, 0);
     commentButtonRow->addWidget(m_issueAttachButton, 0, Qt::AlignLeft);
+    // Speak the comment with the voice engine, just like the footer prompt mic.
+    commentButtonRow->addWidget(makeVoiceButton(m_issueComposer), 0, Qt::AlignLeft);
     commentButtonRow->addStretch();
     commentButtonRow->addWidget(m_issueAskAiButton);
     commentButtonRow->addWidget(m_issueVoteButton);

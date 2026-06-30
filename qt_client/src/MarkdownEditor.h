@@ -36,6 +36,11 @@ public:
 
     void setPlaceholderText(const QString &text);
     void focusEditor();
+    // The underlying source text box, so voice dictation (MainWindow) can insert
+    // a transcript straight into the markdown the user is writing. showWriteArea()
+    // flips back from the preview tab so dictated words are visible as they land.
+    QPlainTextEdit *sourceEdit() const { return m_source; }
+    void showWriteArea();
     void addImageFile(const QString &path);
     void clearPendingAttachments();
 

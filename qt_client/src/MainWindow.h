@@ -1649,6 +1649,14 @@ private:
     // the prompt locally.
     void startVoiceCapture();
     void stopVoiceCapture();
+    // Press-to-talk dictation into an arbitrary text box (the footer prompt or any
+    // comment composer). `button` is the mic that was pressed, so its icon swaps to
+    // red while recording and the transcript lands in `target`.
+    void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
+    // Build a reusable push-to-talk mic bound to a comment composer; it speaks into
+    // the composer's source editor and is registered so updateVoiceInputButton()
+    // keeps its visibility/idle look in sync with the voice-engine install state.
+    QPushButton *makeVoiceButton(MarkdownEditor *composer);
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
@@ -2261,6 +2269,15 @@ private:
     // talk. m_voiceInsertPos/Len mark the span those live passes own so each
     // refresh replaces only the dictation, never the user's own text.
     QPushButton *m_quickAddMicButton = nullptr;
+    // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
+    // is the box the current capture writes into and m_voiceActiveButton the mic that
+    // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
+    // the target's own placeholder, restored when dictation ends. m_voiceButtons holds
+    // every comment-composer mic so updateVoiceInputButton() can sync their visibility.
+    QPlainTextEdit *m_voiceTargetEdit = nullptr;
+    QPushButton *m_voiceActiveButton = nullptr;
+    QString m_voiceIdlePlaceholder;
+    QList<QPushButton *> m_voiceButtons;
     QProcess *m_voiceRecordProc = nullptr;
     QProcess *m_voiceTranscribeProc = nullptr;
     QTimer *m_voiceLiveTimer = nullptr;
