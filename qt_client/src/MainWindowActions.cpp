@@ -364,7 +364,17 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         run.workflowContent = content;
         run.commit = commit;
         run.ref = ref;
+        // A release the owner explicitly drafted from the "Draft a release →
+        // Publish release" dialog is a deliberate, already-authorized action on
+        // their own repo, so its build/publish workflow runs without a separate
+        // approval step. Otherwise the tag is created but the artifact never
+        // gets built: the run sits silently in AwaitingApproval whenever
+        // release.yml's content differs from the last-approved copy (e.g. after
+        // the workflow itself is edited), so the published binary keeps lagging
+        // the latest tag. Only promptNewRelease passes the Release trigger —
+        // pushed/PR workflows still go through approval.
         const bool approved =
+            trigger == WorkflowTrigger::Release ||
             ActionStore::isApproved(run.repoKey(), path, content);
         run.status =
             approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
