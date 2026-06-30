@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 270
 title: on the website only show open issues by default
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 21
