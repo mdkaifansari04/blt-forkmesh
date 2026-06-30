@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 269
 title: show on the agent detail page if we hit our session limit and update the status bar in the top top nav usage to show it
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 41
