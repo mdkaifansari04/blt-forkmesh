@@ -892,6 +892,27 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         runGitCapture(dir, {"merge-base", "--is-ancestor", branch, "HEAD"}, nullptr,
                       nullptr);
     if (merged && !hasConflicts && branchInBase) {
+        // adhoc #23: an agent's branch just landed in the base branch, so close any
+        // issue attached to the session(s) that produced it — mirroring the
+        // PR-merge flow's closeIssuesLinkedFromPull. Read the attachments now, while
+        // the sessions are still around (the deleteAgent teardown below removes
+        // them), and whether or not we delete them so a plain "Merge into main" also
+        // resolves the issue.
+        if (!branch.isEmpty()
+            && m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+            const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+            QList<int> attachedIssues;
+            for (const AgentSession &s : std::as_const(m_agentSessions)) {
+                if (s.owner == repo.owner && s.name == repo.name
+                    && s.branchName == branch && s.issueNumber > 0
+                    && !attachedIssues.contains(s.issueNumber))
+                    attachedIssues.append(s.issueNumber);
+            }
+            closeIssuesForMerge(
+                attachedIssues,
+                QStringLiteral("Closed by merged branch \"%1\".").arg(branch),
+                QStringLiteral("merged branch \"%1\"").arg(branch));
+        }
         // The branch is now in main, so the worktree has served its purpose — clean
         // it up (silently; the merge was already confirmed). Delete the branch too:
         // its work is preserved in the merge commit, so leaving it behind only
