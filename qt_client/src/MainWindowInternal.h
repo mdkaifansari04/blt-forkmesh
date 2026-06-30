@@ -778,7 +778,7 @@ public:
         : QWidget(parent), m_label(label)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(82, 30);
+        setFixedSize(kSide, kSide); // a little button-sized square
         setCursor(Qt::PointingHandCursor);
     }
 
@@ -810,28 +810,51 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Rounded card so each chart reads as its own little square.
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(20);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawRoundedRect(box, 4, 4);
+
+        // A header font that shrinks until the label and value both fit on one
+        // line, so neither is clipped however the app's base font is sized.
         QFont f = font();
-        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.5));
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
+        const double avail = width() - 6;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            const QFontMetrics fm(f);
+            if (fm.horizontalAdvance(m_label) + fm.horizontalAdvance(m_value) +
+                    4 <=
+                avail)
+                break;
+        }
+        f.setPointSizeF(pt);
         p.setFont(f);
         const QFontMetrics fm(f);
+        const int headH = fm.height();
 
-        // Left column: the resource label over its current value.
-        const int textW = qMax(fm.horizontalAdvance(m_label),
-                               fm.horizontalAdvance(m_value)) + 4;
+        // Header: the resource label (left, dim) and its current value (right,
+        // in the load colour) share the top line; the chart gets the rest.
         QColor lab = palette().color(QPalette::WindowText);
         lab.setAlpha(150);
         p.setPen(lab);
-        p.drawText(QRect(0, 0, textW, height() / 2),
+        p.drawText(QRectF(3, 1, width() - 6, headH),
                    Qt::AlignVCenter | Qt::AlignLeft, m_label);
-        QColor val = palette().color(QPalette::WindowText);
-        val.setAlpha(225);
-        p.setPen(val);
-        p.drawText(QRect(0, height() / 2, textW, height() - height() / 2),
-                   Qt::AlignVCenter | Qt::AlignLeft, m_value);
+        const double lastPct =
+            m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
+        p.setPen(gaugeColor(lastPct));
+        p.drawText(QRectF(3, 1, width() - 6, headH),
+                   Qt::AlignVCenter | Qt::AlignRight, m_value);
 
-        // Right: the sparkline track, with the most recent sample at its right
-        // edge so the curve scrolls left as new readings arrive.
-        const QRectF area(textW + 2, 3, width() - textW - 4, height() - 6);
+        // The sparkline track fills the area below the header, with the most
+        // recent sample at its right edge so the curve scrolls left over time.
+        const QRectF area(3, headH + 2, width() - 6, height() - headH - 5);
+        if (area.height() < 2)
+            return;
         QColor track = palette().color(QPalette::WindowText);
         track.setAlpha(28);
         p.setPen(Qt::NoPen);
@@ -873,6 +896,7 @@ private:
         return QColor("#3fb950");     // green: light load
     }
 
+    static constexpr int kSide = 40;      // button-sized square (w == h)
     static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
     QString m_label;
     QString m_value;
