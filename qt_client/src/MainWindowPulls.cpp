@@ -3885,12 +3885,6 @@ void MainWindow::aiFixRunClaudeCode()
     promptQuoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     promptQuoted = QLatin1Char('\'') + promptQuoted + QLatin1Char('\'');
     QString command = claudeCodeCommandSetting();
-    // Pass the model the user picked in the "Fix with agent" dropdown (adhoc #60)
-    // through to the CLI as --model. The alias ("opus"/"sonnet"/"haiku") is added
-    // before the prompt redirection so it stays ahead of any trailing `< file`;
-    // an empty model leaves the CLI on its own default.
-    if (!m_aiFix->model.isEmpty())
-        command += QStringLiteral(" --model ") + m_aiFix->model;
     if (command.contains(QStringLiteral("{promptFile}")))
         command.replace(QStringLiteral("{promptFile}"), promptQuoted);
     else

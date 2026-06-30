@@ -88,8 +88,7 @@ void HeadlessConsole::printBanner()
 void HeadlessConsole::printHelp()
 {
     m_out << "Commands:\n"
-             "  status              node, account, connection, peers, repos,\n"
-             "                      pulls/discussions/branches/commits, load\n"
+             "  status              node, account, connection, peers, repos, load\n"
              "  peers               list known nodes in the mesh\n"
              "  repos               list local repositories\n"
              "  mirrors             repos this node mirrors / serves + cpu & memory\n"

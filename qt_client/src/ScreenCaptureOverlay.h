@@ -24,9 +24,7 @@ class QPaintEvent;
 // directly off the screens. On Wayland direct grabs return an all-black image
 // (the security model forbids it), so we route through the XDG Desktop Portal's
 // Screenshot interface instead and crop the returned desktop image — which is why
-// the grab can complete asynchronously. As a safety net, a direct grab that comes
-// back uniformly black (e.g. an XWayland session we couldn't pin as Wayland) also
-// falls back to the portal rather than handing back a black screenshot.
+// the grab can complete asynchronously.
 class ScreenCaptureOverlay : public QWidget
 {
     Q_OBJECT
@@ -56,7 +54,6 @@ private:
     QRect selectionRect() const;            // widget-local marquee rect
     QRect captureRect() const;              // selection in virtual-desktop coords
     void beginCapture(const QRect &sel);    // hides overlay, then grabs the region
-    QImage compositeScreens();              // X11/macOS: live composite of all screens
     QImage grabViaScreens(const QRect &sel);// X11/macOS: live composite + crop
     void grabViaPortal(const QRect &sel);   // Wayland: XDG portal (async)
     QImage cropDesktop(const QImage &full, const QRect &sel) const;
