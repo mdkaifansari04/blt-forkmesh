@@ -1039,6 +1039,12 @@ private:
                            const QString &source);
     void applyIssueFilesCount(int issueNumber, int count, const QString &source);
     QHash<int, int> m_issueFilesChangedCounts; // issue number -> files changed
+    // Small rounded avatar for an issue assignee (or assigned agent), shown to
+    // the left of the title in the issue list. Deterministic per name (a
+    // procedural face, matching the contributor avatars) and cached so a full
+    // table rebuild stays cheap.
+    QIcon issueAssigneeAvatar(const QString &name);
+    QHash<QString, QIcon> m_assigneeAvatarCache; // assignee name -> avatar icon
     // IDE extension integration (see ide_extension/). Detection polls the
     // extension's heartbeat file; startIssueInIde drops it a task request.
     bool ideExtensionActive(QString *ideName = nullptr) const;

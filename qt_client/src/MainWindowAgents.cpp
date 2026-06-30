@@ -3065,6 +3065,15 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
             reloadAgents();
             return 0;
         }
+        // Reflect the assignment in the Assignee field too: add the agent's name
+        // so the issue shows who is working it (and its avatar in the list). A
+        // best-effort follow-up — the agent is already running if this fails.
+        const QString agentName = agentProviderName(provider);
+        if (!issue.assignees.contains(agentName)) {
+            QStringList assignees = issue.assignees;
+            assignees << agentName;
+            issueStore.setAssignees(issue.number, assignees);
+        }
     }
 
     const int sessionId = session.id;
