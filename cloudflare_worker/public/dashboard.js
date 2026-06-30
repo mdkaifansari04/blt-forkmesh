@@ -383,6 +383,130 @@
     }
   }
 
+  function setRepoTabCount(tab, value) {
+    const badge = $(`[data-dashboard-repo-tab-count="${tab}"]`);
+    if (!badge) return;
+    if (Number.isFinite(value)) {
+      badge.textContent = String(value);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
+
+  // The repo root tree reply bundles per-tab tallies (issue #93), so the badges
+  // fill from that one request instead of a probe per counter. The Issues badge
+  // is owned by loadRepoIssues, which counts the open issues for the default view.
+  function applyServedCounts(counts) {
+    if (!counts || typeof counts !== "object") return;
+    setRepoTabCount("pulls", Number(counts.pulls));
+    setRepoTabCount("discussions", Number(counts.discussions));
+  }
+
+  // Parse the leading "---\nkey: value\n---" frontmatter block of an issue.md.
+  function parseFrontmatter(content) {
+    const out = {};
+    if (!content) return out;
+    const lines = String(content).split("\n");
+    if (lines[0].trim() !== "---") return out;
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === "---") break;
+      const idx = lines[i].indexOf(":");
+      if (idx < 0) continue;
+      out[lines[i].slice(0, idx).trim()] = lines[i].slice(idx + 1).trim();
+    }
+    return out;
+  }
+
+  // Issues default to the Open view; Closed and All are opt-in (issue #270).
+  const issuesView = { token: 0, items: [], filter: "open" };
+
+  function renderRepoIssues() {
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    const visible = issuesView.items.filter((issue) => {
+      if (issuesView.filter === "all") return true;
+      if (issuesView.filter === "open") return issue.status === "open";
+      return issue.status !== "open";
+    });
+    if (!visible.length) {
+      const note =
+        issuesView.filter === "open"
+          ? "No open issues. Switch to All to see closed ones."
+          : issuesView.filter === "closed"
+            ? "No closed issues."
+            : "No issues have been filed for this repository yet.";
+      container.innerHTML = `<div class="py-3 text-sm text-muted-foreground">${note}</div>`;
+      return;
+    }
+    container.innerHTML = visible.map((issue) => {
+      const closed = issue.status !== "open";
+      return `
+        <button type="button" data-dashboard-blob-path="issues/${issue.number}/issue.md" class="flex w-full items-center gap-3 border-t border-border py-3 text-left transition-colors hover:bg-secondary/40">
+          <span class="h-2 w-2 shrink-0 rounded-full ${closed ? "bg-muted-foreground" : "bg-primary"}"></span>
+          <span class="min-w-0 flex-1 truncate text-sm text-foreground">#${issue.number} ${escapeHtml(issue.title)}</span>
+          <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${closed ? "text-muted-foreground" : "text-primary"}">${closed ? "Closed" : "Open"}</span>
+        </button>`;
+    }).join("");
+  }
+
+  function setIssueFilter(filter) {
+    issuesView.filter = filter;
+    $$("[data-dashboard-issue-filter]").forEach((button) => {
+      const active = button.dataset.dashboardIssueFilter === filter;
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.classList.toggle("bg-secondary", active);
+      button.classList.toggle("text-foreground", active);
+      button.classList.toggle("text-muted-foreground", !active);
+    });
+    renderRepoIssues();
+  }
+
+  // List the repo's published issues from its git issues/ folder, defaulting to
+  // the Open view. issue.md frontmatter carries the current status (the owner
+  // rewrites it as later -status.md events land), so one blob per issue suffices.
+  async function loadRepoIssues(repo) {
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    const token = ++issuesView.token;
+    issuesView.items = [];
+    issuesView.filter = "open";
+    container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading...</div>';
+    let entries;
+    try {
+      const data = await fetchJson(`${repoApiBase(repo)}/tree?path=${encodeURIComponent("issues")}`);
+      entries = Array.isArray(data.entries) ? data.entries : [];
+    } catch (_) {
+      if (token !== issuesView.token) return;
+      container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">No live host is serving this repository\'s issues right now.</div>';
+      return;
+    }
+    const numbers = entries
+      .filter((entry) => entry.type === "tree" && /^\d+$/.test(entry.name))
+      .map((entry) => parseInt(entry.name, 10))
+      .sort((a, b) => b - a);
+    if (!numbers.length) {
+      if (token !== issuesView.token) return;
+      setRepoTabCount("issues", 0);
+      container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">No issues have been filed for this repository yet.</div>';
+      return;
+    }
+    const items = await Promise.all(numbers.map(async (number) => {
+      try {
+        const blob = await fetchJson(`${repoApiBase(repo)}/blob?path=${encodeURIComponent(`issues/${number}/issue.md`)}`);
+        const fm = parseFrontmatter(blob.content || blob.text || "");
+        return { number, title: fm.title || `Issue #${number}`, status: fm.status || "open" };
+      } catch (_) {
+        return { number, title: `Issue #${number}`, status: "open" };
+      }
+    }));
+    if (token !== issuesView.token) return;
+    issuesView.items = items;
+    // The Issues badge tracks open issues, matching the default Open view (issue #270).
+    setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
+    renderRepoIssues();
+  }
+
   async function loadRepoCollection(repo, kind, containerSelector) {
     const container = $(containerSelector);
     if (!container) return;
@@ -414,6 +538,7 @@
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = data.mirrors || [];
+      setRepoTabCount("mirrors", mirrors.length);
       if (!mirrors.length) {
         container.innerHTML = '<div class="py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
         return;
@@ -429,7 +554,7 @@
   }
 
   function loadRepoFeaturePanels(repo) {
-    loadRepoCollection(repo, "issues", "[data-repo-issues]");
+    loadRepoIssues(repo);
     loadRepoCollection(repo, "pulls", "[data-repo-pulls]");
     loadRepoCollection(repo, "discussions", "[data-repo-discussions]");
     loadRepoMirrors(repo);
@@ -453,14 +578,14 @@
             <a href="${escapeHtml(cloneUrl(repo))}" class="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">Open clean URL<i data-lucide="external-link" class="h-3.5 w-3.5"></i></a>
           </div>
           <div class="mt-6 flex flex-wrap gap-2 border-b border-border pb-2" role="tablist">
-            ${["code", "issues", "pulls", "discussions", "mirrors"].map((tab) => `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${tab === "code" ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}">${tab === "pulls" ? "Pulls" : tab[0].toUpperCase() + tab.slice(1)}</button>`).join("")}
+            ${["code", "issues", "pulls", "discussions", "mirrors"].map((tab) => `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" class="inline-flex items-center rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${tab === "code" ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}">${tab === "pulls" ? "Pulls" : tab[0].toUpperCase() + tab.slice(1)}<span data-dashboard-repo-tab-count="${tab}" class="ml-1.5 inline-flex items-center justify-center rounded-full bg-secondary px-1.5 text-[10px] font-mono text-muted-foreground" hidden></span></button>`).join("")}
           </div>
           <section data-dashboard-repo-tab-panel="code">
             <div class="mt-4 text-xs text-muted-foreground" data-repo-breadcrumb></div>
             <div class="mt-3 rounded-lg border border-border bg-background px-4"><div class="flex items-center justify-between py-3"><span class="text-xs font-medium text-foreground">Code</span><span class="text-[10px] text-muted-foreground font-mono">live host</span></div><div data-repo-tree></div></div>
             <div data-repo-blob class="hidden"></div>
           </section>
-          <section data-dashboard-repo-tab-panel="issues" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Issues</div><div data-repo-issues></div></div></section>
+          <section data-dashboard-repo-tab-panel="issues" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="flex items-center justify-between gap-3 py-3"><span class="text-xs font-medium text-foreground">Issues</span><div class="issue-filter inline-flex items-center gap-1" role="group" aria-label="Issue state">${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${stateName === "open" ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}</div></div><div data-repo-issues></div></div></section>
           <section data-dashboard-repo-tab-panel="pulls" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Pull requests</div><div data-repo-pulls></div></div></section>
           <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Discussions and comments</div><div data-repo-discussions></div></div></section>
           <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 rounded-lg border border-border bg-background px-4"><div class="py-3 text-xs font-medium text-foreground">Mirrors</div><div data-repo-mirrors></div></div></section>
@@ -629,6 +754,30 @@
     if (openButton) {
       const repo = findRepository(openButton.dataset.dashboardOpenRepo);
       if (repo) renderRepoDetail(repo);
+    }
+
+    const repoTabButton = event.target.closest("[data-dashboard-repo-tab]");
+    if (repoTabButton) {
+      setRepoTab(repoTabButton.dataset.dashboardRepoTab);
+      return;
+    }
+
+    const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
+    if (issueFilterButton) {
+      setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter);
+      return;
+    }
+
+    const treePathButton = event.target.closest("[data-dashboard-tree-path]");
+    if (treePathButton && state.selectedRepo) {
+      loadRepositoryTree(state.selectedRepo, treePathButton.dataset.dashboardTreePath || "");
+      return;
+    }
+
+    const blobPathButton = event.target.closest("[data-dashboard-blob-path]");
+    if (blobPathButton && state.selectedRepo) {
+      loadRepositoryBlob(state.selectedRepo, blobPathButton.dataset.dashboardBlobPath || "");
+      return;
     }
 
     const copyButton = event.target.closest("[data-dashboard-copy]");
