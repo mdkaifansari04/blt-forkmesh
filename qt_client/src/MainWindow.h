@@ -785,6 +785,14 @@ private:
     void editCurrentPullFile();         // edit the selected file on the PR's branch
     void deleteCurrentPullFile();       // delete the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
+    // Close each still-open issue in `numbers` as resolved by a just-merged change,
+    // posting `comment` into the issue thread and logging it as closed "via" `via`
+    // (e.g. "pull request #5" or 'branch "fix-x"'). Refreshes the issue list and
+    // counters when anything changed, and returns the numbers actually closed so
+    // callers can word their own status message. Shared by the pull-request merge
+    // (closeIssuesLinkedFromPull) and the worktree/branch merge flows (adhoc #23).
+    QList<int> closeIssuesForMerge(const QList<int> &numbers,
+                                   const QString &comment, const QString &via);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
@@ -2260,6 +2268,13 @@ private:
     bool m_voiceRecording = false;
     int m_voiceInsertPos = -1;
     int m_voiceInsertLen = 0;
+    // Smoothness guards for the live preview: m_voiceLastTranscribeSize is the WAV
+    // size at the last transcription pass so a tick is skipped when no new audio was
+    // captured (no point reloading whisper to redo the same clip); m_voiceLastPreview
+    // is the text the box currently shows so an unchanged result doesn't re-insert
+    // and churn the cursor.
+    qint64 m_voiceLastTranscribeSize = 0;
+    QString m_voiceLastPreview;
     // Live input-level meter shown beside the mic while recording. m_voiceLevelTimer
     // samples the fresh tail of the WAV every ~80 ms; m_voiceLevelPos tracks the byte
     // offset already metered so each tick only reads the newly-captured samples.
