@@ -361,6 +361,17 @@ public:
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
     int testClickBranchAgentCell(const QString &branch);
+    // issue #291: when an agent task's worktree/PR lands in the base branch the
+    // session is flagged "merged" on its Status column and detail page. Drive the
+    // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
+    // take) for `branch`, then read back the rendered Status-cell text and the
+    // persisted merged flag, so a test can prove the note appears.
+    bool testMarkAgentBranchMerged(const QString &branch)
+    {
+        return markAgentSessionsMerged(0, branch);
+    }
+    QString testAgentStatusCellText(int sessionId) const;
+    bool testAgentSessionMerged(int sessionId) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
