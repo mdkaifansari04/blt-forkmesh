@@ -252,6 +252,47 @@ QWidget *MainWindow::buildSettingsSection()
     idePoll->start();
     refreshIdeStatus();
 
+    // Voice input: download & build whisper.cpp for local, offline speech-to-text
+    // so the prompt box can be dictated. Once installed a mic appears beside the
+    // prompt (see updateVoiceInputButton()).
+    auto *voiceLabel = new QLabel("VOICE INPUT");
+    voiceLabel->setObjectName("sectionLabel");
+    auto *voiceHint = new QLabel(
+        "Download and build whisper.cpp to speak your prompts. It runs entirely "
+        "on this machine \xE2\x80\x94 no audio leaves your computer. Building needs "
+        "git, cmake and a C++ compiler; a click-to-record mic then appears next to "
+        "the prompt box.");
+    voiceHint->setObjectName("statusLine");
+    voiceHint->setWordWrap(true);
+    m_whisperModelCombo = new QComboBox;
+    m_whisperModelCombo->addItem(QStringLiteral("Tiny (fastest, ~75 MB)"),
+                                 QStringLiteral("tiny.en"));
+    m_whisperModelCombo->addItem(QStringLiteral("Base (recommended, ~142 MB)"),
+                                 QStringLiteral("base.en"));
+    m_whisperModelCombo->addItem(QStringLiteral("Small (most accurate, ~466 MB)"),
+                                 QStringLiteral("small.en"));
+    m_whisperModelCombo->setToolTip(
+        "Which Whisper model to download. Larger models are more accurate but "
+        "slower to transcribe.");
+    {
+        const int mi = m_whisperModelCombo->findData(whisperModelName());
+        m_whisperModelCombo->setCurrentIndex(mi >= 0 ? mi : 1);
+    }
+    m_whisperInstallButton = new QPushButton;
+    m_whisperInstallButton->setObjectName("ghostButton");
+    m_whisperInstallButton->setCursor(Qt::PointingHandCursor);
+    connect(m_whisperInstallButton, &QPushButton::clicked, this,
+            &MainWindow::installWhisperCpp);
+    m_whisperStatusLabel = new QLabel(this);
+    m_whisperStatusLabel->setObjectName("statusLine");
+    m_whisperStatusLabel->setWordWrap(true);
+    auto *voiceRow = new QHBoxLayout;
+    voiceRow->setSpacing(8);
+    voiceRow->addWidget(m_whisperModelCombo);
+    voiceRow->addWidget(m_whisperInstallButton);
+    voiceRow->addStretch();
+    refreshWhisperStatus();
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -885,6 +926,11 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);
     agentsCol->addWidget(ideStatus);
+    agentsCol->addSpacing(6);
+    agentsCol->addWidget(voiceLabel);
+    agentsCol->addWidget(voiceHint);
+    agentsCol->addLayout(voiceRow);
+    agentsCol->addWidget(m_whisperStatusLabel);
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
 
@@ -1344,6 +1390,140 @@ void MainWindow::allowFirewall()
     });
     // pkexec shows a graphical password prompt and runs the command as root.
     process->start("pkexec", {"sh", "-c", m_firewallPrivilegedCommand});
+}
+
+// ------------------------------------------------------------- voice input
+
+// Reflect whether whisper.cpp is installed (or installing) on the Settings
+// button + status line. Safe to call even when the Settings widgets don't exist.
+void MainWindow::refreshWhisperStatus()
+{
+    const bool installing =
+        m_whisperInstallProc &&
+        m_whisperInstallProc->state() != QProcess::NotRunning;
+    if (m_whisperInstallButton) {
+        m_whisperInstallButton->setEnabled(!installing);
+        m_whisperInstallButton->setText(
+            installing ? QStringLiteral("Installing\xE2\x80\xA6")
+                       : whisperInstalled() ? QStringLiteral("Reinstall")
+                                            : QStringLiteral("Download & install"));
+    }
+    if (m_whisperModelCombo)
+        m_whisperModelCombo->setEnabled(!installing);
+    if (m_whisperStatusLabel && !installing) {
+        if (whisperInstalled())
+            m_whisperStatusLabel->setText(
+                QString::fromUtf8("\xE2\x97\x8F Installed (%1 model). A mic now sits "
+                                  "next to the prompt box.")
+                    .arg(whisperModelName()));
+        else
+            m_whisperStatusLabel->setText("Not installed.");
+    }
+}
+
+// Clone (or update), build, and fetch a model for whisper.cpp, streaming the
+// build log to the live network log. On success the mic button appears next to
+// the prompt. Runs as a detached-from-Settings QProcess so closing Settings
+// doesn't abort the build.
+void MainWindow::installWhisperCpp()
+{
+    if (m_whisperInstallProc &&
+        m_whisperInstallProc->state() != QProcess::NotRunning)
+        return; // already running
+
+    const QString dir = whisperDir();
+    const QString model = m_whisperModelCombo
+                              ? m_whisperModelCombo->currentData().toString()
+                              : whisperModelName();
+    // Persist the choices now so detection (whisperDir/whisperModelName) lines up
+    // with what this build produces.
+    QSettings().setValue(kWhisperDirSetting, dir);
+    QSettings().setValue(kWhisperModelSetting, model);
+
+    // One self-contained build script. Idempotent: re-running pulls the latest,
+    // rebuilds, and re-fetches the model only if missing.
+    static const char *kScript = R"sh(
+set -e
+DIR="$1"; MODEL="$2"
+mkdir -p "$DIR"
+if [ -d "$DIR/.git" ]; then
+  echo "Updating whisper.cpp in $DIR"
+  git -C "$DIR" pull --ff-only || true
+else
+  echo "Cloning whisper.cpp into $DIR"
+  git clone --depth 1 https://github.com/ggerganov/whisper.cpp "$DIR"
+fi
+cd "$DIR"
+echo "Building whisper.cpp (this can take a few minutes)"
+cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build build --config Release -j
+if [ ! -f "models/ggml-$MODEL.bin" ]; then
+  echo "Downloading model $MODEL"
+  sh ./models/download-ggml-model.sh "$MODEL"
+fi
+echo "whisper.cpp ready"
+)sh";
+
+    auto *proc = new QProcess(this);
+    m_whisperInstallProc = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    logSystem("Installing whisper.cpp for voice input\xE2\x80\xA6");
+    refreshWhisperStatus();
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        const QString out = QString::fromUtf8(proc->readAllStandardOutput());
+        for (const QString &line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.isEmpty())
+                continue;
+            if (m_whisperStatusLabel)
+                m_whisperStatusLabel->setText(trimmed.right(160));
+        }
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc, model](int exitCode, QProcess::ExitStatus status) {
+                proc->deleteLater();
+                if (m_whisperInstallProc == proc)
+                    m_whisperInstallProc = nullptr;
+                const bool ok = exitCode == 0 &&
+                                status == QProcess::NormalExit && whisperInstalled();
+                if (ok) {
+                    logSystem("whisper.cpp installed \xE2\x80\x94 voice input ready.");
+                    if (m_whisperStatusLabel)
+                        m_whisperStatusLabel->setText(
+                            QString::fromUtf8("\xE2\x97\x8F Installed (%1 model). A "
+                                              "mic now sits next to the prompt box.")
+                                .arg(model));
+                } else {
+                    logSystem("whisper.cpp install failed (exit " +
+                              QString::number(exitCode) +
+                              "). Check that git, cmake and a C++ compiler are "
+                              "installed.");
+                    if (m_whisperStatusLabel)
+                        m_whisperStatusLabel->setText(
+                            "Install failed. Ensure git, cmake and a C++ compiler "
+                            "are installed, then try again.");
+                }
+                refreshWhisperStatus();
+                updateVoiceInputButton();
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc](QProcess::ProcessError err) {
+                // finished() handles every error except FailedToStart (where the
+                // process never ran and finished is not emitted).
+                if (err != QProcess::FailedToStart || m_whisperInstallProc != proc)
+                    return;
+                m_whisperInstallProc = nullptr;
+                proc->deleteLater();
+                logSystem("Could not start the whisper.cpp build (sh not found?).");
+                if (m_whisperStatusLabel)
+                    m_whisperStatusLabel->setText("Could not start the build process.");
+                refreshWhisperStatus();
+            });
+
+    proc->start(QStringLiteral("sh"),
+                {QStringLiteral("-c"), QString::fromLatin1(kScript),
+                 QStringLiteral("sh"), dir, model});
 }
 
 // -------------------------------------------------------------- diagnostics
