@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 265
 title: make it so that when you click on the worktree in the agent session header that it goes to that worktree in the worktrees section
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 15

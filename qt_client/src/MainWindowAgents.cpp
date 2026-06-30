@@ -184,7 +184,7 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 12;
+static constexpr int kAgentActivityColumn = 11;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -387,7 +387,7 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 13);
+    m_agentTable = new QTableWidget(0, 12);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
@@ -405,7 +405,7 @@ QWidget *MainWindow::buildAgentsTab()
     // they used to be crammed into the Status text and now get their own columns.
     // "Diff" (issue #170) is a compact files-changed + branch ahead/behind badge.
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "Turns", "Time", "PR", "Cost", "Tokens",
+        {"#", "Issue", "Agent", "Status", "Turns", "Time", "Cost", "Tokens",
          "Speed", "Updated", "Diff", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -2142,41 +2142,11 @@ void MainWindow::refreshAgentTable()
         auto *runTime = new SortTableWidgetItem;
         applyAgentTimeCell(runTime, session);
         m_agentTable->setItem(row, 5, runTime);
-        // PR column: number plus the PR's current status (open/merged/closed),
-        // looked up from the loaded pulls and colored to match the Pulls tab.
-        QString prText;
-        QColor prColor;
-        if (session.prNumber > 0) {
-            QString prStatus;
-            for (const PullRequest &pr : std::as_const(m_currentPulls)) {
-                if (pr.number == session.prNumber) {
-                    prStatus = pr.status;
-                    break;
-                }
-            }
-            if (!prStatus.isEmpty()) {
-                prText = QStringLiteral("#%1 ").arg(session.prNumber) +
-                         QString::fromUtf8("\xC2\xB7 ") + prStatus;
-                prColor = QColor(prStatus == QLatin1String("merged") ? "#a371f7"
-                                 : prStatus == QLatin1String("closed")
-                                     ? "#f85149"
-                                     : "#3fb950");
-            } else {
-                prText = QStringLiteral("#%1").arg(session.prNumber);
-            }
-        } else {
-            prText = session.createPr ? QStringLiteral("Requested")
-                                      : QStringLiteral("-");
-        }
-        auto *prItem = new QTableWidgetItem(prText);
-        if (prColor.isValid())
-            prItem->setForeground(prColor);
-        m_agentTable->setItem(row, 6, prItem);
         auto *cost = new QTableWidgetItem;
         cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
         cost->setData(Qt::UserRole, session.costUsd);
         cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
-        m_agentTable->setItem(row, 7, cost);
+        m_agentTable->setItem(row, 6, cost);
         // Live token usage, refreshed in place as the session streams (see
         // updateAgentTokenCell). Sort by the raw number, not the formatted text.
         auto *tokens = new QTableWidgetItem;
@@ -2185,13 +2155,13 @@ void MainWindow::refreshAgentTable()
                         toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
         tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
-        m_agentTable->setItem(row, 8, tokens);
+        m_agentTable->setItem(row, 7, tokens);
         // Speed column: the token throughput with the service over the task,
         // derived from the token total and the run duration (see
         // applyAgentSpeedCell). Sorts on the raw rate via SortTableWidgetItem.
         auto *speed = new SortTableWidgetItem;
         applyAgentSpeedCell(speed, session, toks);
-        m_agentTable->setItem(row, 9, speed);
+        m_agentTable->setItem(row, 8, speed);
         // "Updated" column: when the session was last touched — created,
         // started, finished or merged, whichever is most recent — shown as a
         // friendly "x ago" string. The tooltip carries the full timestamp, and
@@ -2206,13 +2176,13 @@ void MainWindow::refreshAgentTable()
         if (updatedMs > 0)
             updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
                                     .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 10, updated);
+        m_agentTable->setItem(row, 9, updated);
         // Diff column (issue #170): files changed + branch ahead/behind, computed
         // once per session and memoised (see agentDiffStat). Sorts on file count.
         auto *diff = new SortTableWidgetItem;
         applyAgentDiffCell(diff, agentDiffStat(session, agentGitDir, agentBase),
                            agentBase);
-        m_agentTable->setItem(row, 11, diff);
+        m_agentTable->setItem(row, 10, diff);
         // Night-rider light: a custom-painted scanner that sweeps while this
         // session streams raw output. AgentScannerDelegate looks the animation
         // state up by the sessionId stashed here in Qt::UserRole.
@@ -3081,11 +3051,13 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     reloadAgents();
     reloadIssues();
     if (!quiet) {
+        // Stay on the issue detail page after assigning — the inline notice
+        // confirms the session was created; jumping to the Agents tab yanked the
+        // user away from the issue they were reading (adhoc #8).
         setIssueInlineNotice(
             QStringLiteral("Assigned %1 session #%2.")
                 .arg(agentProviderName(provider))
                 .arg(sessionId));
-        switchToAgentsTab(sessionId);
     }
     processAgentQueue();
     return sessionId;
@@ -4889,10 +4861,10 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 8);
+        QTableWidgetItem *cell = m_agentTable->item(r, 7);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 8, cell);
+            m_agentTable->setItem(r, 7, cell);
         }
         cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
@@ -4900,7 +4872,7 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         // real time while the agent streams — agentEffectiveDurationMs measures
         // a running session against the wall clock, so this recomputes the live
         // rate from the freshly-bumped token total.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 8))
             if (const AgentSession *s = findAgentSession(sessionId))
                 applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
@@ -4928,10 +4900,10 @@ void MainWindow::updateAgentCostCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 7);
+        QTableWidgetItem *cell = m_agentTable->item(r, 6);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 7, cell);
+            m_agentTable->setItem(r, 6, cell);
         }
         cell->setData(Qt::DisplayRole, agentCostText(s->costUsd));
         cell->setData(Qt::UserRole, s->costUsd);
@@ -4960,7 +4932,7 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
         if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
             applyAgentTimeCell(runTime, *s);
         // Speed needs both the token total and the now-known run duration.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 8))
             applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }
