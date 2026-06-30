@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 293
 title: show in the worktree list time ago column
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 78
