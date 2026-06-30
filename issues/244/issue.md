@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 244
 title: have the ability to send images in the agent prompt area
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 27
