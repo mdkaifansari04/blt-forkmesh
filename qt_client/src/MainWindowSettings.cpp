@@ -76,6 +76,14 @@ QWidget *MainWindow::buildSettingsSection()
     form->setSpacing(8);
     form->addRow("Name", m_settingsNameEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
+    m_settingsEmailLabel = new QLabel("Email");
+    m_settingsEmailVerifiedBadge = new QLabel;
+    m_settingsEmailVerifiedBadge->setObjectName("emailVerifiedBadge");
+    m_settingsEmailVerifiedBadge->setAlignment(Qt::AlignCenter);
+    m_settingsEmailVerifiedBadge->setSizePolicy(QSizePolicy::Fixed,
+                                                QSizePolicy::Fixed);
+    form->addRow(m_settingsEmailLabel, m_settingsEmailVerifiedBadge);
+    refreshSettingsEmailVerifiedBadge();
     form->addRow("Avatar", avatarRow);
 
     auto *startupLabel = new QLabel("STARTUP");
@@ -2139,6 +2147,16 @@ void MainWindow::rebuildLogFilterButtons()
     }
     m_logFilterRow->addStretch();
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testResetNetworkLog()
+{
+    m_networkLog.clear();
+    m_networkLogDiskLines = 0;
+    QFile::remove(networkLogPath());
+    rebuildNetworkLogView();
+}
+#endif
 
 void MainWindow::rebuildNetworkLogView()
 {

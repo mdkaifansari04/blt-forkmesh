@@ -1928,6 +1928,8 @@ const QString kRoomNameSetting = QStringLiteral("server/room");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
 const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
+const QString kEmailVerifiedSettingPrefix =
+    QStringLiteral("account/emailVerified/");
 const QString kServersArray = QStringLiteral("servers/items");
 const QString kActiveServerSetting = QStringLiteral("servers/active");
 const QString kDefaultRoomName = QStringLiteral("general");
@@ -1948,6 +1950,11 @@ inline QString savedSolanaAddress()
 inline void saveSolanaAddress(const QString &address)
 {
     QSettings().setValue(kSolanaSetting, address.trimmed());
+}
+
+inline QString emailVerifiedSettingKey(const QString &accountName)
+{
+    return kEmailVerifiedSettingPrefix + accountName.trimmed().toLower();
 }
 const QString kPreviewCacheRootSetting = QStringLiteral("repositories/previewCacheRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");

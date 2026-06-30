@@ -799,6 +799,7 @@ void MainWindow::startSession()
     }
     m_accountName = name;
     QSettings().setValue(kAccountNameSetting, name);
+    refreshSettingsEmailVerifiedBadge();
 
     m_roomNameEdit->setText(kDefaultRoomName); // fixed shared room (read-only)
     m_setupError->hide();
@@ -1124,6 +1125,45 @@ QString MainWindow::accountOwner() const
     return accountNameFromInput(m_userName, QStringLiteral("owner"));
 }
 
+QString MainWindow::settingsAccountName() const
+{
+    if (!m_accountName.trimmed().isEmpty())
+        return m_accountName.trimmed().toLower();
+    const QString authed =
+        QSettings().value(kAuthedAccountSetting).toString().trimmed().toLower();
+    if (!authed.isEmpty())
+        return authed;
+    return QSettings().value(kAccountNameSetting).toString().trimmed().toLower();
+}
+
+bool MainWindow::accountEmailVerified(const QString &accountName) const
+{
+    const QString normalized = accountName.trimmed().toLower();
+    return !normalized.isEmpty() &&
+           QSettings().value(emailVerifiedSettingKey(normalized), false).toBool();
+}
+
+void MainWindow::applyAccountEmailVerified(const QString &accountName, bool verified)
+{
+    const QString normalized = accountName.trimmed().toLower();
+    if (!normalized.isEmpty() && verified)
+        QSettings().setValue(emailVerifiedSettingKey(normalized), true);
+    refreshSettingsEmailVerifiedBadge();
+}
+
+void MainWindow::refreshSettingsEmailVerifiedBadge()
+{
+    if (!m_settingsEmailVerifiedBadge)
+        return;
+    const bool verified = accountEmailVerified(settingsAccountName());
+    m_settingsEmailVerifiedBadge->setText(QStringLiteral("Email is verified"));
+    m_settingsEmailVerifiedBadge->setToolTip(
+        QStringLiteral("This account's email has been verified."));
+    m_settingsEmailVerifiedBadge->setVisible(verified);
+    if (m_settingsEmailLabel)
+        m_settingsEmailLabel->setVisible(verified);
+}
+
 bool MainWindow::hasActiveAccountSession() const
 {
     return m_accountAuthenticated && m_accountTier == QStringLiteral("active");
@@ -1384,6 +1424,8 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
         QSettings().setValue(kAuthedAccountSetting, accountName);
+        applyAccountEmailVerified(accountName,
+                                  lookup.value("emailVerified").toBool());
         return true;
     }
     // If the relay is unreachable, trust a previously authenticated marker so a
@@ -1398,6 +1440,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        refreshSettingsEmailVerifiedBadge();
         return true;
     }
     return false;
@@ -1428,6 +1471,8 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // account — fails silent auth on every restart and is sent back to the
         // login screen even with correct credentials.
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
+        applyAccountEmailVerified(m_accountName,
+                                  resp.value("emailVerified").toBool());
         return true;
     }
     const QString err = resp.value("error").toString();
