@@ -1,0 +1,71 @@
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index cf0ed1fc..af02ea36 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -3373,8 +3373,8 @@ private:
+     QPushButton *m_issueListNewButton = nullptr;
+     QPushButton *m_issueSyncButton = nullptr;
+     QPushButton *m_issuePrioritizeButton = nullptr;
+-    // Agent picker sitting next to "Prioritize from README" so the run can use
+-    // any provider, not just the saved default. Seeded from the default agent.
++    // Agent picker sitting next to "Analyze completeness". Prioritize from
++    // README always uses the saved default agent.
+     QComboBox *m_issuePrioritizeAgentCombo = nullptr;
+     bool m_prioritizeInFlight = false;
+     // Adhoc #139: "Analyze completeness" button next to "Prioritize from README".
+diff --git a/qt_client/src/MainWindowIssues.cpp b/qt_client/src/MainWindowIssues.cpp
+index 3eb21289..86c6f27c 100644
+--- a/qt_client/src/MainWindowIssues.cpp
++++ b/qt_client/src/MainWindowIssues.cpp
+@@ -162,8 +162,8 @@ QWidget *MainWindow::buildIssuesSection()
+     connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
+             &MainWindow::prioritizeIssuesFromReadme);
+ 
+-    // Agent picker next to the button so a run can target any provider, not just
+-    // the saved default. Seeded from the default agent (Settings -> Agents).
++    // Agent picker for the completeness check. "Prioritize from README" always
++    // uses the saved default agent (Settings -> Agents).
+     m_issuePrioritizeAgentCombo = new QComboBox;
+     m_issuePrioritizeAgentCombo->setObjectName("issueControlSm");
+     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("OpenAI API"),
+@@ -174,8 +174,8 @@ QWidget *MainWindow::buildIssuesSection()
+                                          QStringLiteral("claude-code"));
+     selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
+     m_issuePrioritizeAgentCombo->setToolTip(
+-        "Agent that ranks/reviews the issues. Defaults to your default agent "
+-        "(Settings \xE2\x86\x92 Agents).");
++        "Agent used for Analyze completeness. Prioritize from README uses your "
++        "default agent from Settings \xE2\x86\x92 Agents.");
+ 
+     // Adhoc #139: sibling of "Prioritize from README" that, instead of ranking,
+     // asks the same picked agent to judge how complete/actionable each open issue
+@@ -193,7 +193,7 @@ QWidget *MainWindow::buildIssuesSection()
+             &MainWindow::analyzeIssueCompleteness);
+ 
+     // Place them right after the "Issues" heading, ahead of the view-tab toggles:
+-    // prioritize, then completeness, then the shared agent picker.
++    // prioritize, then completeness, then the completeness agent picker.
+     headingRow->insertWidget(1, m_issuePrioritizeButton);
+     headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
+     headingRow->insertWidget(2, m_issueCompletenessButton);
+@@ -4933,12 +4933,9 @@ void MainWindow::prioritizeIssuesFromReadme()
+     if (readme.size() > 8000)
+         readme = readme.left(8000) + QStringLiteral("\n\n[README truncated]");
+ 
+-    // Use the agent picked in the dropdown next to the button; fall back to the
+-    // saved default agent when the picker isn't built yet.
+-    const QString provider = m_issuePrioritizeAgentCombo
+-                                 ? m_issuePrioritizeAgentCombo->currentData()
+-                                       .toString()
+-                                 : defaultAgentProvider();
++    // Issue #286: README-based prioritization is driven by the saved default
++    // agent. The prompt itself is editable in Settings -> Agents.
++    const QString provider = defaultAgentProvider();
+     const bool claude = agentIsClaudeProvider(provider);
+     const bool claudeCode = provider == QLatin1String("claude-code");
+     // "Claude Code" (issue #294) authenticates with the claude.ai subscription
+@@ -6643,4 +6640,3 @@ QString MainWindow::selfNodeStats() const
+            formatDuration(totalMs) +
+            (key.isEmpty() ? QString() : " \xC2\xB7 key " + key);
+ }
+-

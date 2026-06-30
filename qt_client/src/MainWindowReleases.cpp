@@ -23,7 +23,7 @@ namespace {
 // ActionRunner::landVersionHeader AFTER a build node finished publishing the
 // binary, which (a) left the tagged commit reading the previous version and
 // (b) never happened at all if no build node ran. The release.yml workflow's
-// in-worktree sed and -DFORKMESH_VERSION stamp still cover the published binary;
+// in-worktree sed and -DFORKMESH_VERSION_OVERRIDE stamp still cover the published binary;
 // landVersionHeader becomes a no-op once the header is already in sync here.
 //
 // Only a clean MAJOR.MINOR.PATCH tag bumps the header; a pre-release (-rc1) or
