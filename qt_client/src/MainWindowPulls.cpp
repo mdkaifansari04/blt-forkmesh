@@ -10,6 +10,16 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+// Item-data roles for the PR commits list (renderPullCommits). kCommitShaRole is
+// the openable full SHA (the commit resolves in the local repo); kCommitCopyShaRole
+// is a copy-only SHA for cross-node commits not present locally, so right-click can
+// still copy them without making the row open a missing commit.
+constexpr int kCommitShaRole = Qt::UserRole;
+constexpr int kCommitMessageRole = Qt::UserRole + 1;
+constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
+} // namespace
+
 // ---- Pull requests ---------------------------------------------------------
 
 QWidget *MainWindow::buildPullsTab()
@@ -406,7 +416,7 @@ QWidget *MainWindow::buildPullsTab()
     enableHoverRowHighlight(m_pullCommitsList); // green outline selection (issue #252)
     connect(m_pullCommitsList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
-                const QString sha = item ? item->data(Qt::UserRole).toString()
+                const QString sha = item ? item->data(kCommitShaRole).toString()
                                          : QString();
                 if (sha.isEmpty())
                     return;
@@ -415,6 +425,38 @@ QWidget *MainWindow::buildPullsTab()
                 if (m_repoDetailStack)
                     m_repoDetailStack->setCurrentIndex(1);
                 showCommit(sha);
+            });
+    // Right-click a commit to copy its full hash or message — the row only shows
+    // the abbreviated hash, so this is how the full SHA gets out (issue #46).
+    m_pullCommitsList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_pullCommitsList, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                QListWidgetItem *item = m_pullCommitsList->itemAt(pos);
+                if (!item)
+                    return;
+                QString sha = item->data(kCommitShaRole).toString();
+                if (sha.isEmpty())
+                    sha = item->data(kCommitCopyShaRole).toString();
+                const QString message = item->data(kCommitMessageRole).toString();
+                QMenu menu(m_pullCommitsList);
+                QAction *copyHash =
+                    sha.isEmpty() ? nullptr
+                                  : menu.addAction(QStringLiteral("Copy commit hash"));
+                QAction *copyMessage =
+                    message.isEmpty()
+                        ? nullptr
+                        : menu.addAction(QStringLiteral("Copy commit message"));
+                if (!copyHash && !copyMessage)
+                    return;
+                QAction *chosen =
+                    menu.exec(m_pullCommitsList->viewport()->mapToGlobal(pos));
+                if (chosen && chosen == copyHash) {
+                    QApplication::clipboard()->setText(sha);
+                    flashMessage("Commit hash copied.");
+                } else if (chosen && chosen == copyMessage) {
+                    QApplication::clipboard()->setText(message);
+                    flashMessage("Commit message copied.");
+                }
             });
 
     // ---- Checks page: action runs for this PR's commits + a manual trigger.
@@ -1950,26 +1992,90 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     // PRs are patch-based; list the commits on the head branch since the base
     // when both refs resolve in this repo. Otherwise show a single synthetic row.
     bool listed = false;
+    // Resolve which repo this PR belongs to, so each commit row can carry the
+    // result of any action (CI) runs whose pushed commit matches it (issue #46).
+    QString repoOwner, repoName;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        repoName = m_repositories.at(m_repoDetailIndex).name;
+    }
+    // Most significant action status across the runs for one commit SHA: a failure
+    // outranks a run still going, which outranks a queued/pending run, which
+    // outranks a plain success. Empty when no run targeted this commit.
+    const auto checkStatusFor = [&](const QString &sha) -> QString {
+        if (sha.isEmpty() || repoOwner.isEmpty())
+            return QString();
+        const auto rank = [](const QString &s) {
+            if (s == ActionStatus::Failed || s == ActionStatus::Rejected ||
+                s == ActionStatus::Cancelled)
+                return 4;
+            if (s == ActionStatus::Running)
+                return 3;
+            if (s == ActionStatus::Queued || s == ActionStatus::AwaitingApproval)
+                return 2;
+            if (s == ActionStatus::Success)
+                return 1;
+            return 0;
+        };
+        QString best;
+        int bestRank = 0;
+        for (const ActionRun &run : std::as_const(m_actionRuns)) {
+            if (run.owner != repoOwner || run.name != repoName || run.commit != sha)
+                continue;
+            if (const int r = rank(run.status); r > bestRank) {
+                bestRank = r;
+                best = run.status;
+            }
+        }
+        return best;
+    };
+    // Leading glyph that conveys a commit's check result at a glance.
+    const auto checkGlyph = [](const QString &status) -> QString {
+        if (status == ActionStatus::Success)
+            return QString::fromUtf8("\xE2\x9C\x93 "); // check mark
+        if (status == ActionStatus::Failed || status == ActionStatus::Rejected ||
+            status == ActionStatus::Cancelled)
+            return QString::fromUtf8("\xE2\x9C\x97 "); // ballot X
+        if (status == ActionStatus::Running)
+            return QString::fromUtf8("\xE2\x97\x8F "); // filled circle
+        if (status == ActionStatus::Queued || status == ActionStatus::AwaitingApproval)
+            return QString::fromUtf8("\xE2\x97\x8B "); // hollow circle
+        return QString();
+    };
     if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
         QByteArray out;
         if (runGitCapture(dir,
                           {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
-                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad",
+                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad\x1f%ct",
                            pr.base + ".." + pr.head},
                           &out, nullptr) &&
             !out.trimmed().isEmpty()) {
             for (const QString &line :
                  QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts)) {
                 const QStringList f = line.split(QLatin1Char('\x1f'));
-                if (f.size() < 5)
+                if (f.size() < 6)
                     continue;
-                // Show the commit date and time on the row (issue #275); the
-                // tooltip keeps the full timestamp for hover detail.
-                auto *item = new QListWidgetItem(
-                    QString::fromUtf8("%1  %2 \xC2\xB7 %3 \xC2\xB7 %4")
-                        .arg(f.at(1), f.at(2), f.at(3), f.at(4)));
-                item->setData(Qt::UserRole, f.at(0));
-                item->setToolTip(f.at(4));
+                const QString &sha = f.at(0);
+                // Relative "x ago" from the committer timestamp, alongside the
+                // absolute date+time (issue #275) the row already carried.
+                const QString rel = formatShortRelativeTime(f.at(5).toLongLong());
+                const QString status = checkStatusFor(sha);
+                QString text = checkGlyph(status);
+                text += QString::fromUtf8("%1  %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                            .arg(f.at(1), f.at(2), f.at(3), f.at(4));
+                if (!rel.isEmpty())
+                    text += QString::fromUtf8(" \xC2\xB7 %1 ago").arg(rel);
+                auto *item = new QListWidgetItem(text);
+                item->setData(kCommitShaRole, sha);
+                item->setData(kCommitMessageRole, f.at(2));
+                // Tooltip: full SHA, author + full timestamp, and the check result.
+                QString tip = QString::fromUtf8("%1\n%2 committed %3")
+                                  .arg(sha, f.at(3), f.at(4));
+                if (!rel.isEmpty())
+                    tip += QString::fromUtf8(" (%1 ago)").arg(rel);
+                if (!status.isEmpty())
+                    tip += QString::fromUtf8("\nChecks: %1").arg(actionStatusText(status));
+                item->setToolTip(tip);
                 m_pullCommitsList->addItem(item);
                 listed = true;
             }
@@ -1980,10 +2086,10 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
     // its original author/date/subject — parse those so attribution still shows.
     if (!listed && !pr.commits.isEmpty()) {
         static const QRegularExpression boundary(
-            QStringLiteral("^From [0-9a-f]{7,40} "));
+            QStringLiteral("^From ([0-9a-f]{7,40}) "));
         static const QRegularExpression patchTag(
             QStringLiteral("^\\[PATCH[^\\]]*\\]\\s*"));
-        QString author, subject, date;
+        QString author, subject, date, sha;
         bool inHeaders = false;
         const auto flush = [&] {
             if (subject.isEmpty() && author.isEmpty())
@@ -1992,32 +2098,51 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
             // so the row carries it like the local-log path above (issue #275),
             // falling back to the raw header if it doesn't parse.
             QString when = date;
+            qint64 committedSecs = 0;
             const QDateTime dt = QDateTime::fromString(date, Qt::RFC2822Date);
-            if (dt.isValid())
+            if (dt.isValid()) {
                 when = dt.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-            const QString text =
-                when.isEmpty()
-                    ? QString::fromUtf8("%1 \xC2\xB7 %2")
-                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
-                                                 : subject,
-                               author.isEmpty() ? QStringLiteral("unknown") : author)
-                    : QString::fromUtf8("%1 \xC2\xB7 %2 \xC2\xB7 %3")
-                          .arg(subject.isEmpty() ? QStringLiteral("(no subject)")
-                                                 : subject,
-                               author.isEmpty() ? QStringLiteral("unknown") : author,
-                               when);
+                committedSecs = dt.toSecsSinceEpoch();
+            }
+            const QString rel =
+                committedSecs > 0 ? formatShortRelativeTime(committedSecs) : QString();
+            const QString subj =
+                subject.isEmpty() ? QStringLiteral("(no subject)") : subject;
+            const QString auth = author.isEmpty() ? QStringLiteral("unknown") : author;
+            const QString status = checkStatusFor(sha);
+            QString text = checkGlyph(status);
+            text += subj + QString::fromUtf8(" \xC2\xB7 ") + auth;
+            if (!when.isEmpty())
+                text += QString::fromUtf8(" \xC2\xB7 ") + when;
+            if (!rel.isEmpty())
+                text += QString::fromUtf8(" \xC2\xB7 %1 ago").arg(rel);
             auto *item = new QListWidgetItem(text);
-            item->setToolTip(date);
+            // The commit isn't on this node, so the row can't open it — but the
+            // signed mbox still carries its SHA, so right-click can copy it.
+            if (!sha.isEmpty())
+                item->setData(kCommitCopyShaRole, sha);
+            item->setData(kCommitMessageRole, subj);
+            QString tip = sha.isEmpty() ? QString() : sha + QLatin1Char('\n');
+            tip += QString::fromUtf8("%1 committed %2")
+                       .arg(auth, when.isEmpty() ? date : when);
+            if (!rel.isEmpty())
+                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
+            if (!status.isEmpty())
+                tip += QString::fromUtf8("\nChecks: %1").arg(actionStatusText(status));
+            item->setToolTip(tip);
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             m_pullCommitsList->addItem(item);
             listed = true;
             author.clear();
             subject.clear();
             date.clear();
+            sha.clear();
         };
         for (const QString &line : pr.commits.split('\n')) {
-            if (boundary.match(line).hasMatch()) {
+            if (const QRegularExpressionMatch m = boundary.match(line);
+                m.hasMatch()) {
                 flush();
+                sha = m.captured(1);
                 inHeaders = true;
                 continue;
             }
@@ -3769,6 +3894,11 @@ void MainWindow::aiFixRunClaudeCode()
     m_aiFix->process = process;
     process->setProcessChannelMode(QProcess::MergedChannels);
     process->setWorkingDirectory(m_aiFix->workTree);
+    // The prompt is delivered in argv (or redirected from the prompt file inside
+    // the command itself), so this run never reads our stdin. Point stdin at the
+    // null device so `claude` doesn't sit waiting on an empty, never-closed stdin
+    // pipe for 3s and emit a "no stdin data received" warning before proceeding.
+    process->setStandardInputFile(QProcess::nullDevice());
 
     // Claude Code authenticates through its own login; strip any inherited API key
     // so it never silently uses a stale/foreign one, and widen PATH to the usual
