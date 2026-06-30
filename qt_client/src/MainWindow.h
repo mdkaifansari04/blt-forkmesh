@@ -3230,6 +3230,7 @@ private:
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
     QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
+    QPushButton *m_agentVoiceButton = nullptr;    // composer mic : voice dictation (adhoc #29)
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
     void addFilesToAgentPrompt();
