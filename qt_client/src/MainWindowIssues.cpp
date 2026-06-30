@@ -1181,6 +1181,21 @@ void MainWindow::refreshIssuesRepoCombo()
     reloadIssues();
 }
 
+QIcon MainWindow::issueAssigneeAvatar(const QString &name)
+{
+    const QString key = name.trimmed();
+    if (key.isEmpty())
+        return QIcon();
+    auto it = m_assigneeAvatarCache.constFind(key);
+    if (it != m_assigneeAvatarCache.constEnd())
+        return it.value();
+    // A deterministic procedural face keyed by the lower-cased name, matching the
+    // contributor avatars elsewhere so the same person reads consistently.
+    QIcon icon(roundedAvatar(forkMeshAvatarPng(key.toLower()), 18));
+    m_assigneeAvatarCache.insert(key, icon);
+    return icon;
+}
+
 void MainWindow::reloadIssues()
 {
     if (!m_issueTable)
@@ -1708,7 +1723,15 @@ void MainWindow::refreshIssueList()
         numItem->setData(Qt::DisplayRole, issue.number);
         numItem->setData(Qt::UserRole, issue.number); // lookup key
         m_issueTable->setItem(row, 0, numItem);
-        m_issueTable->setItem(row, 1, new QTableWidgetItem(issue.title));
+        // Title, prefixed with the assignee's avatar (just the picture, between
+        // the # column and the title text). Hovering it names who is assigned.
+        auto *titleItem = new QTableWidgetItem(issue.title);
+        if (!issue.assignees.isEmpty()) {
+            titleItem->setIcon(issueAssigneeAvatar(issue.assignees.first()));
+            titleItem->setToolTip(
+                QStringLiteral("Assigned to %1").arg(issue.assignees.join(", ")));
+        }
+        m_issueTable->setItem(row, 1, titleItem);
 
         auto *priority = new SortTableWidgetItem(
             issue.priority > 0 ? QString::number(issue.priority)
