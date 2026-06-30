@@ -953,9 +953,14 @@ QWidget *MainWindow::buildAgentsTab()
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri < 0)
             return;
+        // Resolve the base from the session itself (not the open repo detail) so the
+        // merge targets this session's base branch even when another repo's detail
+        // is on screen (adhoc #28).
         updateWorktreeFromMain(
             worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
-            s->branchName);
+            s->branchName, agentMergeBase(*s));
+        // The merge changed the branch's diff vs main — redraw the Files-changed tab.
+        refreshAgentFilesPanel(m_selectedAgentSessionId);
     });
     m_agentMergeButton = new QPushButton("Merge into main");
     m_agentMergeButton->setObjectName("primaryButton");
@@ -5214,29 +5219,24 @@ QString MainWindow::sessionBaseBranch(int sessionId)
     return QString();
 }
 
-// Resolve the commit a session's diff is measured *from*. Diffing against the
-// raw base commit captured at run start over-counts: agents routinely merge the
-// base branch *into* their branch (the "Update from main" action, or a fork that
-// already carried recent main), and then `git diff <baseRef>` reports every file
-// that landed on main since the fork as a change of *this* session. The branch's
-// real net change is its diff from the merge-base of the base branch and HEAD, so
-// prefer that and fall back to the captured base commit when the base branch is
-// unknown or unresolvable (issue #183).
+// Resolve what a session's diff is measured *from*. The Files-changed tab must
+// show exactly what the branch link's destination shows — the Worktrees/Branches
+// detail view diffs the worktree against the *live* base branch tip (`git diff
+// <base>`, see showWorktreeDiff). So return the base branch name and let `git
+// diff <base>` resolve its current tip too. Diffing against merge-base(base, HEAD)
+// instead made this page disagree with that view every time the base branch moved
+// on after the fork — "it always shows something different" (adhoc #28). Diffing
+// against the live tip still avoids the #183 over-count: once the branch has main
+// merged in, `git diff <base>` cancels main's own changes and leaves only this
+// branch's net change. Fall back to the captured base commit only when the session
+// never recorded a base branch, so a diff still renders.
 QString MainWindow::sessionDiffBase(int sessionId, const QString &dir)
 {
-    const QString baseRef = sessionBaseRef(sessionId);
+    Q_UNUSED(dir);
     const QString baseBranch = sessionBaseBranch(sessionId);
-    if (!dir.isEmpty() && !baseBranch.isEmpty()) {
-        QByteArray out;
-        if (runGitCapture(dir, {QStringLiteral("merge-base"), baseBranch,
-                                QStringLiteral("HEAD")},
-                          &out, nullptr)) {
-            const QString mb = QString::fromUtf8(out).trimmed();
-            if (!mb.isEmpty())
-                return mb;
-        }
-    }
-    return baseRef;
+    if (!baseBranch.isEmpty())
+        return baseBranch;
+    return sessionBaseRef(sessionId);
 }
 
 // Render the session's diff into the Files-changed tab's viewer, rebuild the file
