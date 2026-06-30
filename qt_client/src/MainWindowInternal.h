@@ -950,15 +950,22 @@ public:
 
     bool isEmpty() const { return m_dots.isEmpty(); }
 
-    // Width needed to show every dot, used to size the floating overlay above the
-    // Mirror nodes tab. Capped so a large mesh can't stretch the band; paintEvent
-    // already stops drawing once it runs out of room.
+    // Width needed to show the dots, used to size the floating overlay above the
+    // Mirror nodes tab. At most kMaxDots dots are drawn; any beyond collapse into
+    // a "+N" tally, whose label width is added here. Capped so a large mesh can't
+    // stretch the band; paintEvent already stops drawing once it runs out of room.
     int preferredWidth() const
     {
         if (m_dots.isEmpty())
             return 0;
-        const qreal last = (kRadius + 2.0) + (m_dots.size() - 1) * kSpacing;
-        return qMin(240, int(last + kRadius + 4.0));
+        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
+        const qreal last = (kRadius + 2.0) + (shown - 1) * kSpacing;
+        qreal w = last + kRadius + 4.0;
+        if (m_dots.size() > shown)
+            w += fontMetrics().horizontalAdvance(
+                     QStringLiteral("+%1").arg(m_dots.size() - shown)) +
+                 6.0;
+        return qMin(240, int(w));
     }
 
 protected:
@@ -991,7 +998,10 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         const qreal cy = height() / 2.0;
         qreal x = kRadius + 2.0;
-        for (const Dot &d : m_dots) {
+        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
+        int drawn = 0;
+        for (int i = 0; i < shown; ++i) {
+            const Dot &d = m_dots.at(i);
             const QColor base =
                 d.online ? QColor("#3fb950") : QColor("#484f58");
             QColor col = base;
@@ -1010,9 +1020,21 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(col);
             p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            ++drawn;
             x += kSpacing;
             if (x > width() - kRadius)
                 break; // ran out of room; the table still lists every node
+        }
+        // Beyond kMaxDots, collapse the remaining nodes into a "+N" tally rather
+        // than drawing a dot each — a 100-node mesh otherwise paints a wall of
+        // dots (issue #306). The table below still lists every node.
+        const int hidden = m_dots.size() - drawn;
+        if (hidden > 0) {
+            p.setPen(QColor("#8b949e"));
+            p.drawText(
+                QRectF(x - kRadius + 2.0, 0, width() - (x - kRadius), height()),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                QStringLiteral("+%1").arg(hidden));
         }
     }
 
@@ -1025,12 +1047,15 @@ private:
 
     static constexpr qreal kRadius = 5.0;
     static constexpr qreal kSpacing = 15.0;
+    static constexpr int kMaxDots = 10; // most-recent dots; rest become "+N"
 
     const Dot *dotAt(const QPoint &pos) const
     {
         const qreal cy = height() / 2.0;
         qreal x = kRadius + 2.0;
-        for (const Dot &d : m_dots) {
+        const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
+        for (int i = 0; i < shown; ++i) {
+            const Dot &d = m_dots.at(i);
             const qreal dx = pos.x() - x;
             const qreal dy = pos.y() - cy;
             if (dx * dx + dy * dy <= (kRadius + 3.0) * (kRadius + 3.0))
@@ -1846,6 +1871,11 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+// The shared welcome room and the per-identity flag that records whether this
+// node has already posted its one-time "just joined" greeting there (issue #192).
+const QString kWelcomeChannel = QStringLiteral("#welcome");
+const QString kWelcomeAnnouncedSettingPrefix =
+    QStringLiteral("chat/welcomeAnnounced/");
 
 // True when a notification category is enabled. Default false: notifications are
 // off until the user turns them on, so a fresh install is silent.
