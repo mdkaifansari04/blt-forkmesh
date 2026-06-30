@@ -432,9 +432,13 @@ private:
     // it appears in the Repos list without first walking the full join flow.
     void ensureFlagshipRepo();
     // Log in by email (+ optional TOTP). accountName is only used as a fallback
-    // node name if the server response omits one.
+    // node name if the server response omits one. If *fatal is non-null it is set
+    // true when the failure is unrecoverable (the same credentials can never
+    // succeed from this device, e.g. the account is bound to another key), so the
+    // caller can stop re-prompting instead of looping the login dialog forever.
     bool verifyTotpLogin(const QString &email, const QString &password,
-                         const QString &totp, const QString &accountName);
+                         const QString &totp, const QString &accountName,
+                         bool *fatal = nullptr);
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
@@ -1623,6 +1627,10 @@ private:
     void queueQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Screenshot button (next to the rebuild/restart button): drops a full-screen
+    // overlay so you can drag a rectangle anywhere on the computer, then queues the
+    // captured region as a quick-add attachment.
+    void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. Clicking it records from the microphone;
     // clicking again stops and transcribes the audio into the prompt locally.
@@ -1630,6 +1638,10 @@ private:
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
+    // Live mic-level meter (adhoc #10): sample the growing capture and drive the
+    // bar beside the mic so you can see audio is coming in while you talk.
+    void updateVoiceLevelMeter();
+    void stopVoiceLevelMeter();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
     void refreshWhisperStatus();
@@ -2086,6 +2098,7 @@ private:
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
@@ -2226,12 +2239,19 @@ private:
     bool m_voiceRecording = false;
     int m_voiceInsertPos = -1;
     int m_voiceInsertLen = 0;
+    // Live input-level meter shown beside the mic while recording. m_voiceLevelTimer
+    // samples the fresh tail of the WAV every ~80 ms; m_voiceLevelPos tracks the byte
+    // offset already metered so each tick only reads the newly-captured samples.
+    QProgressBar *m_voiceLevelMeter = nullptr;
+    QTimer *m_voiceLevelTimer = nullptr;
+    qint64 m_voiceLevelPos = 0;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;
     QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
+    QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
     // Shell-style history for the footer quick-add bar (adhoc #200): pressing Up
     // recalls the last prompt sent so it can be fired again. Newest entry last;
     // m_quickAddHistoryIndex is the entry currently shown while navigating, or -1
@@ -3194,6 +3214,9 @@ private:
     QTimer *m_issueAiTypingTimer = nullptr;
     MarkdownEditor *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
+    // Twin of m_issueNewButton pinned to the top of the issue-list pane so "New
+    // issue" is reachable without first selecting an issue (adhoc #11).
+    QPushButton *m_issueListNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issuePrioritizeButton = nullptr;
     // Agent picker sitting next to "Prioritize from README" so the run can use
@@ -3277,6 +3300,13 @@ private:
     // selects this issue (the next one in the list) once the table is rebuilt, so
     // closing an issue advances to the next instead of lingering on it (adhoc #249).
     int m_selectIssueOnReload = -1;
+    // Content signature (issues/ subtree oid + repo path) of the data the issue
+    // list was last built from. reloadIssues() fires on every push/sync — i.e.
+    // every agent commit — but a code-only commit doesn't touch issues/, so this
+    // lets it skip re-reading git and tearing down/rebuilding the issue rows when
+    // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
+    // aimed at a row or the search box). Empty = "unknown", never skip.
+    QString m_issuesLoadedSig;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
     // Node profile panel widgets + the node it currently shows.

@@ -59,9 +59,19 @@ QWidget *MainWindow::buildIssuesSection()
     issueTabGroup->addButton(milestonesTab, 1);
     issueTabGroup->addButton(labelsTab, 2);
     issueTabGroup->addButton(boardTab, 3);
+    // A second "New issue" button at the top of the list pane so filing an issue
+    // doesn't require first selecting one to reach the button in the detail header
+    // (adhoc #11). Shares promptNewIssue and the same enable/disable rule.
+    m_issueListNewButton = new QPushButton("New issue");
+    m_issueListNewButton->setObjectName("primaryButton");
+    m_issueListNewButton->setProperty("buttonSize", "sm");
+    m_issueListNewButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueListNewButton, "plus", 16);
+
     auto *headingRow = new QHBoxLayout;
     headingRow->setContentsMargins(0, 0, 0, 0);
     headingRow->addWidget(heading);
+    headingRow->addWidget(m_issueListNewButton);
     headingRow->addStretch();
     headingRow->addWidget(issuesTab);
     headingRow->addWidget(boardTab);
@@ -1038,6 +1048,8 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLabelsTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) { editIssueLabelDefinition(row); });
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
+    connect(m_issueListNewButton, &QPushButton::clicked, this,
+            &MainWindow::promptNewIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
     connect(issueBurnupButton, &QPushButton::clicked, this,
@@ -1198,12 +1210,23 @@ void MainWindow::reloadIssues()
         if (m_issueLabelsTable)
             m_issueLabelsTable->setRowCount(0);
         m_currentIssueNumber = -1;
+        m_issuesLoadedSig.clear(); // force a full reload when a repo reopens
         renderIssueThread(Issue());
         updateIssueActionState();
         updateRepoIssueCount();
         return;
     }
     const IssueStore store = issueStoreForCurrentRepo();
+    // Skip re-reading git and rebuilding the table when issues/ is byte-for-byte
+    // unchanged since the last load (the common case: this fires on every push, but
+    // a code-only commit doesn't touch issues/). Tearing the rows down and back up
+    // mid-interaction drops the click/keystroke the user aimed at a row or the
+    // search box, which is what made the app feel unresponsive. Filter changes call
+    // refreshIssueList() directly, so they still re-filter the live data.
+    const QString sig = store.contentSignature();
+    if (!sig.isEmpty() && sig == m_issuesLoadedSig)
+        return;
+    m_issuesLoadedSig = sig;
     m_currentIssues = store.loadAll();
     m_currentLabels = store.loadLabels();
     m_currentMilestones = store.loadMilestones();
@@ -3003,6 +3026,8 @@ void MainWindow::updateIssueActionState()
     // sync back. Only the owner drains the inbox, so Sync stays writable-only.
     if (m_issueNewButton)
         m_issueNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
+    if (m_issueListNewButton)
+        m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
     if (m_issueTitleEditButton)
