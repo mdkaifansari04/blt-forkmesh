@@ -81,23 +81,10 @@ void applyAgentTurnsCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setToolTip(QStringLiteral("Conversation turns this agent ran"));
 }
 
-// Fill the Time cell — the agent's wall-clock run time, in whole seconds to match
-// the figure the CLI prints. Sorts on the raw millisecond value.
-void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
-{
-    cell->setData(Qt::DisplayRole,
-                  s.durationMs > 0
-                      ? QStringLiteral("%1s").arg(s.durationMs / 1000)
-                      : QStringLiteral("-"));
-    cell->setData(kTableSortRole, static_cast<qlonglong>(s.durationMs));
-    cell->setToolTip(QStringLiteral("Wall-clock time this agent ran"));
-}
-
-// Effective run duration for the throughput figure. The Speed cell is only shown
-// while a session is running, so the live path matters most: measure against the
-// wall clock from the session's start so the figure ticks up as tokens stream in.
-// The CLI-reported active run time (durationMs) and the start→finish span are kept
-// as fallbacks for any caller that needs a duration for a finished session.
+// Effective run duration for the Time/Speed figures. While a session is running
+// the live path matters most: measure against the wall clock from the session's
+// start so the figure ticks up as the run proceeds. Once finished, prefer the
+// CLI-reported active run time (durationMs), falling back to the start→finish span.
 qint64 agentEffectiveDurationMs(const AgentSession &s)
 {
     if (s.durationMs > 0)
@@ -110,6 +97,22 @@ qint64 agentEffectiveDurationMs(const AgentSession &s)
             return now - s.startedAtMs;
     }
     return 0;
+}
+
+// Fill the Time cell — the agent's wall-clock run time in whole seconds. For a
+// running agent this is the live elapsed time since it started (issue #245), kept
+// ticking by the agents-tab spin timer, so the figure climbs while it works; a
+// finished agent shows the CLI's final run time. Sorts on the raw millisecond value.
+void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
+{
+    const qint64 ms = agentEffectiveDurationMs(s);
+    cell->setData(Qt::DisplayRole,
+                  ms > 0 ? QStringLiteral("%1s").arg(ms / 1000)
+                         : QStringLiteral("-"));
+    cell->setData(kTableSortRole, static_cast<qlonglong>(ms));
+    cell->setToolTip(s.status == AgentStatus::Running
+                         ? QStringLiteral("Time elapsed since this agent started")
+                         : QStringLiteral("Wall-clock time this agent ran"));
 }
 
 // Fill the Speed cell — the throughput at which this agent exchanged tokens with
@@ -2481,19 +2484,9 @@ void MainWindow::refreshAgentMergeState()
     m_agentMergeStateRefreshing = false;
 }
 
-// HTML for a branch name that, when clicked in the agent session header, opens
-// the branch's row in the Branches tab (handled by m_agentMeta's linkActivated
-// -> switchToBranch). Plain (un-escaped) when there's no branch.
-static QString branchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return QStringLiteral(
-               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
-        .arg(href, branch.toHtmlEscaped());
-}
+// branchLinkHtml() — the clickable branch-name builder used here for the agent
+// session header — now lives in MainWindowInternal.h so the pull-request header
+// and other branch displays can render the same "open in Branches" link (#204).
 
 // HTML for a worktree location shown next to the branch in the agent session
 // header. Clicking it opens the branch's row in the Worktrees tab (handled by
@@ -4805,6 +4798,11 @@ void MainWindow::animateRunningAgentIcons()
             continue;
         if (QTableWidgetItem *cell = m_agentTable->item(r, 3))
             cell->setIcon(icon);
+        // Keep the Time column's live elapsed figure ticking for running rows
+        // (issue #245) — this timer already visits exactly the running sessions,
+        // so refresh the cell here rather than spinning up a second timer.
+        if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
+            applyAgentTimeCell(runTime, *s);
     }
 }
 
