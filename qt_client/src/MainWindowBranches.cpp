@@ -1984,7 +1984,12 @@ void MainWindow::loadBranchesPanel()
     if (!dir.isEmpty()) {
         QByteArray wtOut;
         if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
-            const QString mainPath = QDir(dir).absolutePath();
+            // Compare canonical paths so a symlinked checkout root (e.g. /tmp on
+            // some platforms) doesn't make the main worktree look like a separate
+            // branch worktree; fall back to the absolute path if it can't resolve.
+            QString mainPath = QFileInfo(dir).canonicalFilePath();
+            if (mainPath.isEmpty())
+                mainPath = QDir(dir).absolutePath();
             QString currentPath;
             for (const QString &raw :
                  QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
@@ -1995,8 +2000,11 @@ void MainWindow::loadBranchesPanel()
                     const QString br =
                         line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
                                                       QString());
+                    QString canonicalPath = QFileInfo(currentPath).canonicalFilePath();
+                    if (canonicalPath.isEmpty())
+                        canonicalPath = QDir(currentPath).absolutePath();
                     if (!br.isEmpty() && !currentPath.isEmpty()
-                        && QDir(currentPath).absolutePath() != mainPath)
+                        && canonicalPath != mainPath)
                         branchWorktrees.insert(br, currentPath);
                 }
             }
