@@ -794,8 +794,20 @@ void MainWindow::loadMirrorNodesPanel()
                     ? QStringLiteral("Online now")
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
             m_mirrorNodesTable->setItem(row, 0, nameItem);
-            m_mirrorNodesTable->setItem(
-                row, 1, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            // Latest commit: the publishing node mirrors its served HEAD into the
+            // catalog record, so even an offline node shows its commit (adhoc #56).
+            const QString catCommit = m.value("commit").toString();
+            QString catCommitText = QString::fromUtf8("\xE2\x80\x94");
+            if (!catCommit.isEmpty()) {
+                catCommitText = catCommit.left(10);
+                const QString catBranch = m.value("branch").toString();
+                if (!catBranch.isEmpty())
+                    catCommitText += "  (" + catBranch + ")";
+            }
+            auto *catCommitItem = new QTableWidgetItem(catCommitText);
+            if (!catCommit.isEmpty())
+                catCommitItem->setToolTip(catCommit);
+            m_mirrorNodesTable->setItem(row, 1, catCommitItem);
             const qint64 syncedSecs = qint64(m.value("lastSync").toDouble()) / 1000;
             auto *syncedItem = new SortTableWidgetItem(
                 syncedSecs > 0 ? formatShortRelativeTime(syncedSecs) + " ago"
@@ -816,18 +828,46 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
-            // Catalog-only mirrors aren't live in the room, so we don't have their
-            // advertised issue count or resource telemetry: those columns stay
-            // unknown (em-dash), like the other catalog-derived rows.
-            m_mirrorNodesTable->setItem(
-                row, 4, new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            // Issues / platform / version / node id: also mirrored into the catalog
+            // record by the publishing node, so they show for an offline node too
+            // (adhoc #56). Only the live CPU/RAM/disk telemetry (cols 5-7) stays
+            // unknown for catalog rows — it's broadcast per heartbeat, never stored.
+            const int catIssues = m.value("issueCount").toInt(-1);
+            auto *catIssuesItem = new SortTableWidgetItem(
+                catIssues >= 0 ? QString::number(catIssues)
+                               : QString::fromUtf8("\xE2\x80\x94"));
+            catIssuesItem->setData(kTableSortRole, double(catIssues));
+            catIssuesItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (catIssues >= 0)
+                catIssuesItem->setToolTip(QString::fromUtf8("Mirroring %1 issue%2")
+                                              .arg(catIssues)
+                                              .arg(catIssues == 1 ? "" : "s"));
+            m_mirrorNodesTable->setItem(row, 4, catIssuesItem);
             for (int col : {5, 6, 7})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
-            for (int col : {8, 9, 10})
-                m_mirrorNodesTable->setItem(
-                    row, col,
-                    new QTableWidgetItem(QString::fromUtf8("\xE2\x80\x94")));
+            const QString catPlatform = m.value("platform").toString();
+            m_mirrorNodesTable->setItem(
+                row, 8,
+                new QTableWidgetItem(catPlatform.isEmpty()
+                                         ? QString::fromUtf8("\xE2\x80\x94")
+                                         : catPlatform));
+            const QString catVersion = m.value("version").toString();
+            m_mirrorNodesTable->setItem(
+                row, 9,
+                new QTableWidgetItem(catVersion.isEmpty()
+                                         ? QString::fromUtf8("\xE2\x80\x94")
+                                         : catVersion));
+            const QString catId = m.value("id").toString();
+            auto *catIdItem = new QTableWidgetItem(
+                catId.isEmpty()
+                    ? QString::fromUtf8("\xE2\x80\x94")
+                    : catId.left(12) + (catId.size() > 12
+                                            ? QString::fromUtf8("\xE2\x80\xA6")
+                                            : QString()));
+            if (!catId.isEmpty())
+                catIdItem->setToolTip(catId);
+            m_mirrorNodesTable->setItem(row, 10, catIdItem);
             ++count;
         }
     }

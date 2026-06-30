@@ -990,6 +990,10 @@ def build_repo_mirrors_payload(
         behind = bool(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
         )
+        try:
+            issue_count = int(rec.get("issueCount"))
+        except (TypeError, ValueError):
+            issue_count = -1
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1003,6 +1007,14 @@ def build_repo_mirrors_payload(
             "cloneAvailable": online,
             "sizeBytes": size_bytes,
             "source": str(rec.get("source") or "").strip(),
+            # Node facts the publishing node mirrored into its catalog record, so the
+            # Mirror nodes view fills these columns even for an offline node (adhoc #56).
+            "commit": str(rec.get("commit") or "").strip(),
+            "branch": str(rec.get("branch") or "").strip(),
+            "issueCount": issue_count,
+            "platform": str(rec.get("platform") or "").strip(),
+            "version": str(rec.get("version") or "").strip(),
+            "id": str(rec.get("nodeId") or "").strip(),
         })
 
     mirrors.sort(
@@ -1943,6 +1955,15 @@ def safe_catalog_record(data):
         # card. Falls back to the repo name on the website when absent.
         "rootCommit": clean_string(data.get("rootCommit", ""), 64),
         "source": clean_string(data.get("source", "local-node"), 40),
+        # Node facts mirrored from the publishing node's live advert, so the Mirror
+        # nodes view can show latest commit / issues / platform / version / id for a
+        # node even while it's offline (adhoc #56). Point-in-time, like sizeBytes.
+        "commit": clean_string(data.get("commit", ""), 64),
+        "branch": clean_string(data.get("branch", ""), 120),
+        "issueCount": clean_string(data.get("issueCount", ""), 12),
+        "platform": clean_string(data.get("platform", ""), 16),
+        "version": clean_string(data.get("version", ""), 32),
+        "nodeId": clean_string(data.get("nodeId", ""), 64),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
         # Owner-signed fingerprint of the repo's served refs (sha256 over the
