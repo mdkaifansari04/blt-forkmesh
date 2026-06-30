@@ -207,6 +207,19 @@ int main(int argc, char *argv[])
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        settingsDir.path());
 
+    // Isolate app-data writes (QStandardPaths::AppDataLocation, e.g. the agent
+    // session store) into a temp dir so the suite never touches the developer's
+    // real ~/.local/share and stays idempotent across runs — issue #291's merge
+    // flag is persisted via AgentStore, so a re-run must not see the prior run's
+    // sessions. AppDataLocation reads XDG_DATA_HOME at call time on Linux, so set
+    // it before QApplication (and thus before MainWindow's initAgents()).
+    QTemporaryDir dataDir;
+    if (!dataDir.isValid()) {
+        qCritical("FAIL: could not create temporary data directory");
+        return 1;
+    }
+    qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
+
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     app.setOrganizationName("ForkMeshTests");
@@ -1047,6 +1060,51 @@ int main(int argc, char *argv[])
         check(MainWindow::looperPickNext(allClaimed, none) == nullptr,
               QStringLiteral("looper finds nothing when all open issues are "
                              "assigned"));
+    }
+
+    // issue #291: when an agent task's worktree or PR is merged into the base
+    // branch, the session must be flagged "merged" on both the agent list's Status
+    // column and its detail page. Inject a finished session on a branch, drive the
+    // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
+    // run), and confirm the Status cell flips from the run status to "merged".
+    {
+        AgentSession mergeSession;
+        mergeSession.id = 2910;
+        mergeSession.owner = QStringLiteral("me");
+        mergeSession.name = QStringLiteral("mergerepo");
+        mergeSession.branchName = QStringLiteral("agent/issue-291-merge-note");
+        mergeSession.issueNumber = 291;
+        mergeSession.issueTitle = QStringLiteral("note a task merging into main");
+        mergeSession.baseBranch = QStringLiteral("main");
+        mergeSession.status = AgentStatus::Success;
+        window.testAddAgentSession(mergeSession);
+
+        // Before the merge the Status cell shows the run status, not "merged".
+        check(window.testAgentStatusCellText(2910) == QStringLiteral("Success") &&
+                  !window.testAgentSessionMerged(2910),
+              QString("a finished agent session is not flagged merged until its "
+                      "worktree/PR lands (issue #291, cell = %1)")
+                  .arg(window.testAgentStatusCellText(2910)));
+
+        // Merging the session's branch into the base flags it.
+        check(window.testMarkAgentBranchMerged(
+                  QStringLiteral("agent/issue-291-merge-note")),
+              QStringLiteral("merging an agent task's branch flags its session "
+                             "(issue #291)"));
+
+        // The Status column now reads "merged" and the flag is persisted, so both
+        // the list and the detail page surface the note.
+        check(window.testAgentSessionMerged(2910) &&
+                  window.testAgentStatusCellText(2910) == QStringLiteral("merged"),
+              QString("a merged agent task reads \"merged\" on its status column "
+                      "(issue #291, cell = %1)")
+                  .arg(window.testAgentStatusCellText(2910)));
+
+        // A branch with no attached session must not be flagged.
+        check(!window.testMarkAgentBranchMerged(
+                  QStringLiteral("agent/issue-291-unrelated")),
+              QStringLiteral("merging an unrelated branch flags no agent session "
+                             "(issue #291)"));
     }
 
     stopChildProcesses(window);
