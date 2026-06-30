@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 276
 title: fix icon / avatar display on PR detail page
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 14
