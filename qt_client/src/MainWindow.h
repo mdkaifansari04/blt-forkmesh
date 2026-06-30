@@ -1577,7 +1577,6 @@ private:
     void setRepoBranch(const QString &branch);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
-    void checkoutRepoBranch(const QString &branch); // guarded real checkout
     void createAndCheckoutBranch();          // "Create new branch…"
     QString currentRef() const;
     QString repoGitDir() const;
