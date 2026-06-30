@@ -4,7 +4,7 @@ number: 17
 title: Assets: add dashboard Helvetica regular weights and Solana icon
 base: main
 head: kaif/split-full-relay-20260701-000610/assets-helvetica-core-regular
-status: open
+status: merged
 ts: 1782844686788
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -21,4 +21,3 @@ Validation gate: none
 Payload mode: patch-only 4-field.
 This split is intentionally independent from the other rescue PRs; it was rebuilt from origin/main, not stacked.
 commits.mbox is omitted to avoid duplicating binary asset bytes in the Worker inbox payload.
-
