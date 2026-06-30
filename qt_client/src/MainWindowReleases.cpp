@@ -1015,7 +1015,14 @@ void MainWindow::promptNewRelease()
     // and commit it BEFORE tagging, so the tagged commit declares the release
     // version and the app reports it. Lands even when no build node is online to
     // run the release workflow; the workflow's landVersionHeader then no-ops.
-    if (bumpQtVersionForRelease(dir, tag))
+    // Only when releasing the checked-out branch's tip, so the bump commit
+    // advances the ref the tag will point at instead of landing on an unrelated
+    // branch (the target can differ from what's checked out).
+    QByteArray headBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headBranch,
+                      nullptr) &&
+        QString::fromUtf8(headBranch).trimmed() == targetRef &&
+        bumpQtVersionForRelease(dir, tag))
         logSystem(
             QStringLiteral("Bumped ForkMesh version header to match %1.").arg(tag));
 
