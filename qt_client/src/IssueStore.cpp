@@ -559,7 +559,7 @@ IssueEvent eventFromFrontMatter(const FrontMatter &fm)
 
 // ---- Loading ---------------------------------------------------------------
 
-QList<Issue> IssueStore::loadAll(QString *error) const
+QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &tick) const
 {
     if (!canWrite())
         return loadFromMirror(error);
@@ -575,6 +575,11 @@ QList<Issue> IssueStore::loadAll(QString *error) const
         Issue issue;
         if (readIssueFile(number, issue) && !issue.isDeleted())
             issues.append(issue);
+        // readIssueFile opens issue.md plus every event file; across a big repo
+        // (hundreds of issues, thousands of files) this loop blocks the GUI long
+        // enough to trip the stall watchdog. Let an interactive caller pump.
+        if (tick)
+            tick();
     }
     std::sort(issues.begin(), issues.end(),
               [](const Issue &a, const Issue &b) { return a.number < b.number; });
