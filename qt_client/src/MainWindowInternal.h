@@ -959,7 +959,7 @@ public:
         if (m_dots.isEmpty())
             return 0;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
-        const qreal last = (kRadius + 2.0) + (shown - 1) * kSpacing;
+        const qreal last = kLeftInset + (shown - 1) * kSpacing;
         qreal w = last + kRadius + 4.0;
         if (m_dots.size() > shown)
             w += fontMetrics().horizontalAdvance(
@@ -997,7 +997,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         const qreal cy = height() / 2.0;
-        qreal x = kRadius + 2.0;
+        qreal x = kLeftInset;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
         int drawn = 0;
         for (int i = 0; i < shown; ++i) {
@@ -1048,11 +1048,16 @@ private:
     static constexpr qreal kRadius = 5.0;
     static constexpr qreal kSpacing = 15.0;
     static constexpr int kMaxDots = 10; // most-recent dots; rest become "+N"
+    // Centre x of the first dot. The strip floats just above the Mirror nodes
+    // tab, anchored at that tab's left edge, so inset the dots to line the
+    // leftmost one up over the tab's icon: #repoTab has 10px left padding and a
+    // 16px octicon, putting the icon centre at 10 + 8 = 18 (adhoc #21).
+    static constexpr qreal kLeftInset = 18.0;
 
     const Dot *dotAt(const QPoint &pos) const
     {
         const qreal cy = height() / 2.0;
-        qreal x = kRadius + 2.0;
+        qreal x = kLeftInset;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
         for (int i = 0; i < shown; ++i) {
             const Dot &d = m_dots.at(i);
