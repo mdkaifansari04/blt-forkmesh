@@ -94,7 +94,7 @@ jobs:
           jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
           cmake -S qt_client -B qt_client/build-release \
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
-            ${version:+-DFORKMESH_VERSION="$version"}
+            ${version:+-DFORKMESH_VERSION_OVERRIDE="$version"}
           cmake --build qt_client/build-release -j"$jobs"
 
           # Locate the produced executable (a bare binary on Linux/Windows, a
