@@ -739,7 +739,13 @@ private:
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
     void renderPullDiff(const QString &filePath);
-    void adjustDiffFont(int delta); // +/- diff text-size zoom
+    void adjustDiffFont(int delta); // +/- diff text-size zoom (issue #254)
+    // Register a diff viewer so it shares the text-size zoom: tracks it for the
+    // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
+    void registerDiffView(QTextEdit *view);
+    // Set a diff viewer's HTML, remembering the source so a later font-size
+    // change can re-render it in place without re-running its renderer.
+    void setDiffHtml(QTextEdit *view, const QString &html);
     // Step the Files-changed view through every change: first the open file's
     // hunks, then on to the next/previous file. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
@@ -2765,6 +2771,9 @@ private:
     // whenever the widget is set to something other than a rendered diff.
     QString m_pullDiffRenderKey;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
+    // Every diff viewer registered for shared text-size zoom (issue #254), so a
+    // +/- click or Ctrl+wheel can re-render them all at the new size.
+    QList<QTextEdit *> m_diffViews;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
