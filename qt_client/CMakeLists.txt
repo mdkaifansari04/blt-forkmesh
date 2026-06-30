@@ -90,6 +90,20 @@ set(FORKMESH_APP_SOURCES
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowShared.cpp
+    src/MainWindowSetup.cpp
+    src/MainWindowChat.cpp
+    src/MainWindowIssues.cpp
+    src/MainWindowSourceControl.cpp
+    src/MainWindowDiscussions.cpp
+    src/MainWindowPulls.cpp
+    src/MainWindowAgents.cpp
+    src/MainWindowIde.cpp
+    src/MainWindowBranches.cpp
+    src/MainWindowReleases.cpp
+    src/MainWindowSettings.cpp
+    src/MainWindowMessages.cpp
+    src/MainWindowRepos.cpp
+    src/MainWindowActions.cpp
     src/MainWindowCoves.cpp
     src/HeadlessConsole.h
     src/HeadlessConsole.cpp

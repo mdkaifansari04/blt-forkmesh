@@ -105,7 +105,7 @@ class QProcess;
 class QTemporaryDir;
 class QVBoxLayout;
 class QHBoxLayout;
-class DiffFileNavigator; // file-list <-> diff-view sync on a "Files changed" tab
+namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
@@ -2848,7 +2848,7 @@ private:
     QTabWidget *m_agentDetailTabs = nullptr;
     int m_agentFilesTabIndex = -1;               // tab index of "Files changed"
     QTextBrowser *m_agentDiffView = nullptr;     // diff viewer in the files tab
-    DiffFileNavigator *m_agentDiffNav = nullptr; // sticky header + scroll<->select
+    forkmesh::ui::DiffFileNavigator *m_agentDiffNav = nullptr; // sticky header + scroll<->select
     QLabel *m_agentFilesChangedSummary = nullptr; // "N files changed" line
     QLabel *m_agentCommitsHeading = nullptr;     // "Commits" heading over the list
     QListWidget *m_agentCommitsList = nullptr;   // this branch's commits, ahead of base
@@ -3203,7 +3203,7 @@ private:
     int m_issueFilesTabIndex = -1;                // tab index of "Files changed"
     QListWidget *m_issueFilesList = nullptr;      // changed files in the linked diff
     QTextBrowser *m_issueDiffView = nullptr;      // diff viewer in the files tab
-    DiffFileNavigator *m_issueDiffNav = nullptr;  // sticky header + scroll<->select
+    forkmesh::ui::DiffFileNavigator *m_issueDiffNav = nullptr;  // sticky header + scroll<->select
     QLabel *m_issueFilesChangedSummary = nullptr; // "N files changed" line
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
