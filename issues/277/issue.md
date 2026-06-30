@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 277
 title: on actions runs have a button to clear the run history
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 42
