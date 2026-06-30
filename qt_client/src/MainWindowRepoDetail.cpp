@@ -1,5 +1,7 @@
-// MainWindowIde: MainWindow feature methods, split out of MainWindow.cpp.
-// Claude Code IDE-extension integration.
+// MainWindowRepoDetail: MainWindow feature methods, split out of MainWindow.cpp.
+// The repository detail view: file browser, overview/about, code search,
+// navigation history, the commits list + commit detail/diff, and the Claude
+// Code IDE-extension integration that opens repo content in the editor.
 //
 // These are MainWindow member functions defined in their own translation unit;
 // the class itself is declared in MainWindow.h. Shared helpers live in
@@ -6359,3 +6361,1475 @@ bool MainWindow::repoHasWorkingTree() const
            QDir(repo.localPath).exists(".git");
 }
 
+
+
+// ---- Repo-detail & commits UI builders (moved from MainWindowIssues) ----
+
+// ---- Repo detail (files + issues tabs) -------------------------------------
+
+QWidget *MainWindow::buildRepoDetailSection()
+{
+    auto *page = new QWidget;
+
+    // --- GitHub-style header: title + Public badge, action buttons on the right.
+    // The repo identity and public/private state now live in the top-bar repo
+    // dropdown, so the old "owner/name  Public" header is omitted here. The label
+    // is still created (hidden) because other code sets its text.
+    m_repoHeaderTitle = new QLabel("Repository");
+    m_repoHeaderTitle->setObjectName("repoHeaderTitle");
+    m_repoHeaderTitle->setTextFormat(Qt::RichText);
+    m_repoHeaderTitle->hide();
+
+    auto *notifyButton = new QPushButton("Notify");
+    notifyButton->setObjectName("repoAction");
+    notifyButton->setToolTip("Notifications");
+    setOcticon(notifyButton, "bell", 16);
+    m_forkButton = new QPushButton("Fork 0");
+    m_mirrorButton = new QPushButton("Mirror 1");
+    m_sourceButton = new QPushButton("Source");
+    // Open-in-browser link, mirroring the relay switcher's open button: takes
+    // the active repo to its page on the mainnode website.
+    m_repoOpenButton = new QPushButton("Open");
+    for (QPushButton *b :
+         {notifyButton, m_forkButton, m_mirrorButton, m_sourceButton,
+          m_repoOpenButton}) {
+        b->setObjectName("repoAction");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_forkButton, "repo-forked", 16);
+    setOcticon(m_mirrorButton, "sync", 16);
+    setOcticon(m_sourceButton, "code", 16);
+    setOcticon(m_repoOpenButton, "link", 16);
+    m_repoOpenButton->setToolTip("Open this repository on the web");
+    connect(m_repoOpenButton, &QPushButton::clicked, this,
+            &MainWindow::openRepositoryWebsite);
+    m_mirrorButton->setToolTip("Mirror status and actions");
+    m_forkButton->setToolTip("Fork this repository into a local folder");
+    m_sourceButton->setToolTip("Download or use this repository's local remote");
+    m_mirrorMenu = new QMenu(m_mirrorButton);
+    m_sourceMenu = new QMenu(m_sourceButton);
+    m_mirrorButton->setMenu(m_mirrorMenu);
+    m_sourceButton->setMenu(m_sourceMenu);
+    // Fork is a direct action, not a menu: clicking it asks where (which local
+    // folder) to fork the repo into, then creates the fork there.
+    connect(m_forkButton, &QPushButton::clicked, this,
+            &MainWindow::forkCurrentRepo);
+    connect(m_mirrorMenu, &QMenu::aboutToShow, this,
+            &MainWindow::updateRepoActionMenus);
+    connect(m_sourceMenu, &QMenu::aboutToShow, this,
+            &MainWindow::updateRepoActionMenus);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(16, 12, 16, 4);
+    headerRow->setSpacing(8);
+    // Left cluster (Code / Chat / Notifications / Settings) is filled in later by
+    // buildBreadcrumb, which creates those buttons and adds them here so they sit
+    // on the same line as the repo actions, below the Solana notice.
+    m_repoHeaderLeft = new QHBoxLayout;
+    m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
+    m_repoHeaderLeft->setSpacing(8);
+    headerRow->addLayout(m_repoHeaderLeft);
+    headerRow->addStretch();
+    headerRow->addWidget(notifyButton);
+    headerRow->addWidget(m_forkButton);
+    headerRow->addWidget(m_mirrorButton);
+    headerRow->addWidget(m_sourceButton);
+    headerRow->addWidget(m_repoOpenButton);
+
+    m_repoDetailNotice = new QLabel;
+    m_repoDetailNotice->setObjectName("repoInlineNotice");
+    m_repoDetailNotice->setWordWrap(true);
+    m_repoDetailNotice->hide();
+
+    auto *metaBand = new QWidget;
+    metaBand->setObjectName("repoDetailMeta");
+    m_repoDetailStatus = new QLabel;
+    m_repoDetailStatus->setObjectName("statusLine");
+    m_repoDetailStatus->setWordWrap(true);
+    m_repoDetailStatus->setTextFormat(Qt::RichText);
+
+    auto *metaLayout = new QVBoxLayout(metaBand);
+    metaLayout->setContentsMargins(16, 4, 16, 8);
+    metaLayout->setSpacing(6);
+    metaLayout->addWidget(m_repoDetailStatus);
+    // Served/clone counts and hosted-since/last-sync now live in the node
+    // profile panel, so this band stays hidden in the repo view.
+    metaBand->hide();
+
+    // --- Tab bar (GitHub order; Commits gets its own tab).
+    struct TabDef {
+        const char *label;
+        const char *icon;
+    };
+    // Note: existing pages are index-addressed in several places (idClicked,
+    // switchTo*). Branches/Releases are appended after Insights so those indices
+    // stay valid. Chat is no longer here — it's a top-level section.
+    const QList<TabDef> tabs = {{"Code", "code"},
+                                {"Commits", "git-branch"},
+                                {"Issues", "issue-opened"},
+                                {"Agents", "terminal"},
+                                {"Pull requests", "git-pull-request"},
+                                {"Discussions", "comment"},
+                                {"Actions", "workflow"},
+                                {"Security and quality", "shield-check"},
+                                {"Insights", "graph"},
+                                {"Branches", "repo-forked"},
+                                {"Worktrees", "file-directory"},
+                                {"Releases", "tag"},
+                                {"Mirror nodes", "server"},
+                                {"Settings", "gear"}};
+    m_repoDetailTabs = new QButtonGroup(this);
+    m_repoDetailTabs->setExclusive(true);
+    auto *tabRow = new QHBoxLayout;
+    tabRow->setContentsMargins(12, 0, 12, 0);
+    tabRow->setSpacing(2);
+    for (int i = 0; i < tabs.size(); ++i) {
+        const TabDef tab = tabs.at(i);
+        auto *b = new QPushButton(QString::fromLatin1(tab.label));
+        b->setObjectName("repoTab");
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        setOcticon(b, QString::fromLatin1(tab.icon), 16);
+        if (i == 0)
+            b->setChecked(true);
+        if (i == 0)
+            m_repoCodeTab = b; // visible pill next to Commits; also shows repo size
+        if (i == 1)
+            m_repoCommitsTab = b;
+        if (i == 2)
+            m_repoIssuesTab = b; // keep a handle for the Issues (N) badge; the
+                                 // looper toggle floats just above this tab
+                                 // (adhoc #130, created below).
+        if (i == 3) {
+            m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
+            // Purple braille snake overlaid at the tab's right edge while an agent
+            // runs; kept separate so "Agents (N)" stays its normal colour.
+            m_agentSnake = new QLabel(b);
+            m_agentSnake->setObjectName("agentSnake");
+            m_agentSnake->setAlignment(Qt::AlignCenter);
+            m_agentSnake->setAttribute(Qt::WA_TransparentForMouseEvents);
+            m_agentSnake->setStyleSheet(
+                "#agentSnake{color:#a371f7;background:transparent;}");
+            m_agentSnake->hide();
+        }
+        if (i == 4)
+            m_repoPullsTab = b;
+        if (i == 5)
+            m_repoDiscussionsTab = b;
+        if (i == 6)
+            m_repoActionsTab = b; // handle for the Actions (N) badge
+        if (i == 9)
+            m_repoBranchesTab = b; // handle for the Branches (N) badge
+        if (i == 10)
+            m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
+        if (i == 12)
+            m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
+        m_repoDetailTabs->addButton(b, i);
+        tabRow->addWidget(b);
+    }
+    tabRow->addStretch();
+    auto *tabBar = new QWidget;
+    tabBar->setObjectName("repoTabBar");
+    tabBar->setLayout(tabRow);
+
+    // The integrity-pin warning ("clones are being rejected — reset the pin") no
+    // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
+    // the top-bar notification toast (see showPinWarning), where its "Reset
+    // integrity pin" and "Why?" actions are clickable links.
+
+    m_repoPushButton = new QPushButton(this);
+    m_repoPushButton->setObjectName("primaryButton");
+    m_repoPushButton->setCursor(Qt::PointingHandCursor);
+    m_repoPushButton->hide();
+    m_repoPushButton->setStyleSheet(
+        QStringLiteral("QPushButton#primaryButton{padding:3px 10px;font-size:12px;}"));
+    setOcticon(m_repoPushButton, "sync", 14);
+    connect(m_repoPushButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+    // The "Sync changes" button floats in the band just above the Commits tab
+    // (see positionRepoPushButton) rather than living in the tab row: it's an
+    // overlay raised one above the tabs, so showing/hiding it as sync state
+    // changes never reflows the tab content below — that shift is what read as the
+    // whole view "resizing" on small screens, most visibly on Mirror nodes.
+    m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
+
+    // Issue-looper toggle (adhoc #130): a compact switch floating in the band
+    // just above the Issues tab, mirroring how the Sync button floats over
+    // Commits. It both shows the loop's state and toggles it, so the loop is
+    // controllable and visible from any tab without an in-page banner. Created
+    // parented to the window; positionLooperToggle reparents it onto the page.
+    auto *looperToggle = new LooperToggle(this);
+    looperToggle->hide();
+    looperToggle->setOnClick([this] { toggleIssueLooper(); });
+    // Clicking the "#N" itself jumps to the agent currently working that issue
+    // instead of toggling the loop (adhoc #134).
+    looperToggle->setOnNumberClick([this] {
+        int sessionId = m_looperSessionId;
+        if (sessionId <= 0 && m_looperCurrentIssue > 0)
+            if (const AgentSession *s =
+                    latestAgentSessionForIssue(m_looperCurrentIssue))
+                sessionId = s->id;
+        if (sessionId > 0)
+            switchToAgentsTab(sessionId);
+    });
+    m_looperToggle = looperToggle;
+
+    // Live mirror-activity dots floating just above the Mirror nodes tab (adhoc
+    // #197): one dot per active node, flashing green for a served clone and
+    // orange for codebase browsing. Like the looper toggle over Issues it's an
+    // overlay, so it shows from any tab and never reflows the page; the old
+    // in-page "Live ›" row was dropped in its favour. Created parented to the
+    // window; positionMirrorActivityStrip reparents it onto the page.
+    auto *mirrorStrip = new MirrorActivityStrip(this);
+    mirrorStrip->setToolTip(QStringLiteral(
+        "Active nodes mirroring this repo. A dot flashes green when its node "
+        "serves a clone, orange when it serves codebase browsing."));
+    mirrorStrip->hide();
+    m_mirrorActivityStrip = mirrorStrip;
+
+    // --- Inner stack: one page per tab.
+    m_repoDetailStack = new QStackedWidget;
+    m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
+    m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
+    m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
+    m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
+    m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
+    m_repoDetailStack->addWidget(buildDiscussionsTab());                 // 5 Discussions
+    m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 6 Actions
+    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 7 Security and quality
+    m_insightsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildInsightsTab());                    // 8
+    m_branchesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildBranchesTab());                    // 9 Branches
+    m_worktreesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildWorktreesTab());                   // 10 Worktrees
+    m_releasesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildReleasesTab());                    // 11 Releases
+    m_mirrorNodesTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 12 Mirror nodes
+    m_settingsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 13 Settings
+    // Chat is no longer part of the repo hierarchy: it's a top-level section
+    // (m_sectionStack index 2), reached from the always-visible nav.
+    m_chatStackIndex = -1;
+    // Record onto the Back / Forward trail whenever the visible repo tab changes,
+    // by click or programmatically (opening a pull/issue jumps to its tab), so
+    // every such move is a step the arrows can return to. Debounced and guarded
+    // against replays, so it coalesces a repo-open's tab churn into one entry.
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
+    connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        m_repoDetailStack->setCurrentIndex(id);
+        if (id == 2) {
+            // Opening Issues: clear any filter the user left set on a prior visit
+            // (status/label/milestone/search) so the full list shows again.
+            resetIssueFilters();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                // Drain this repo's inbox now (owner-only) so incoming issues from
+                // other nodes show immediately instead of next poll tick.
+                drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        }
+        if (id == 1) {
+            // The repo's commits were already loaded when it opened, so a tab
+            // click usually rebuilds an identical 300-row table (4 git
+            // subprocesses + per-row widgets). Skip that when nothing changed.
+            //
+            // Run inline, this whole block (git status + the openMostRecentCommit
+            // diff read) blocks before the tab can paint — setCurrentIndex(1)
+            // above only queues the paint, which can't process until this slot
+            // returns, so the Commits page stays blank (still showing the prior
+            // tab) for the delay, then snaps in. Defer to the next event-loop tick
+            // like the Agents tab below: the tab paints first, then the work runs
+            // (openMostRecentCommit shows its own spinner across the diff read).
+            QTimer::singleShot(0, this, [this] {
+                if (commitsListIsCurrent()) {
+                    // The commit list may be current, but the working tree can
+                    // still have moved (an agent staged/edited files) — always
+                    // rescan the changes panel so it's fresh on tab open.
+                    refreshSourceControl();
+                } else {
+                    loadCommits();
+                }
+                // Land on the newest commit's change view, not an empty list.
+                openMostRecentCommit();
+            });
+        }
+        else if (id == 3) {
+            // issue #289: reloadAgents() shells two git reads per session to
+            // compute Diff cells, blocking the GUI thread for a beat. Run inline
+            // it delays the tab's repaint — setCurrentIndex(3) above only queues
+            // a paint event, which can't process until this slot returns, so the
+            // Agents page visibly appears only *after* the git work ("slight lag"
+            // switching from Issues). Defer to the next event-loop tick: the tab
+            // paints first (the table keeps its prior rows), then the reload runs.
+            // Load pulls first so the agents list can show each session's PR
+            // status (open/merged/closed) from m_currentPulls.
+            QTimer::singleShot(0, this, [this] {
+                reloadPulls();
+                reloadAgents();
+            });
+        }
+        else if (id == 4) {
+            reloadPulls();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        }
+        else if (id == 5) {
+            reloadDiscussions();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                drainDiscussionsInboxFor(m_repositories.at(m_repoDetailIndex), false);
+        }
+        else if (id == 6)
+            refreshRepoActions();
+        else if (id == 7)
+            refreshRepoSecurity();
+        else if (id == 8)
+            loadRepoInsights();
+        else if (id == m_branchesTabIndex)
+            loadBranchesPanel();
+        else if (id == m_worktreesTabIndex)
+            loadWorktreesPanel();
+        else if (id == m_releasesTabIndex)
+            loadReleasesPanel();
+        else if (id == m_mirrorNodesTabIndex)
+            loadMirrorNodesPanel();
+        else if (id == m_settingsTabIndex)
+            refreshRepoSettings();
+        // Hand keyboard focus to the new tab's list so the user can arrow through
+        // its rows right away instead of having to click a row first.
+        focusRepoDetailTable(id);
+    });
+
+    // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
+    m_repoDetailStack->setCurrentIndex(0);
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addLayout(headerRow);
+    layout->addWidget(m_repoDetailNotice);
+    layout->addWidget(metaBand);
+    layout->addWidget(tabBar);
+    layout->addWidget(m_repoDetailStack, 1);
+    return page;
+}
+
+
+QWidget *MainWindow::buildRepoCommitsTab()
+{
+    m_commitsStack = new QStackedWidget;
+
+    // --- Page 0: the commit list.
+    auto *listPage = new QWidget;
+    m_commitsTable = new QTableWidget(0, 9);
+    m_commitsTable->setObjectName("commitsList");
+    enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
+    m_commitsTable->setHorizontalHeaderLabels(
+        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
+    m_commitsTable->verticalHeader()->setVisible(false);
+    m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    // Extended selection so several commits can be picked (Ctrl/Shift-click) and
+    // turned into a summary message / X post; a plain click still opens the diff.
+    m_commitsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_commitsTable->setShowGrid(false);
+    m_commitsTable->setWordWrap(false);
+    m_commitsTable->setSortingEnabled(true);
+    m_commitsTable->setToolTip("Click a column header to sort");
+    m_commitsTable->setTextElideMode(Qt::ElideRight);
+    // Fixed default column widths instead of ResizeToContents: the latter
+    // rescans every row on each resize, which makes dragging the splitter
+    // beside a 300-row table choppy. Interactive sections stay smooth.
+    QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
+    commitHeader->setHighlightSections(false);
+    commitHeader->setSectionResizeMode(QHeaderView::Interactive);
+    // Commit column (index 2) is wider so the short hash — plus the leading
+    // "▲" unsynced marker — isn't clipped.
+    const int commitColWidths[kCommitSummaryCol] = {150, 72, 120, 60, 66, 66};
+    for (int i = 0; i < kCommitSummaryCol; ++i) {
+        commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
+        commitHeader->resizeSection(i, commitColWidths[i]);
+    }
+    commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
+    // Trailing action column: a fixed, narrow slot for the per-row delete button.
+    commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
+    commitHeader->resizeSection(kCommitActionCol, 38);
+    // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
+    // moved to the far left so it reads like a git log graph. Its width is
+    // recomputed per load once the lane count is known (see loadCommits).
+    commitHeader->setSectionResizeMode(kCommitGraphCol, QHeaderView::Fixed);
+    commitHeader->resizeSection(kCommitGraphCol, 24);
+    commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
+    m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
+                                             new CommitGraphDelegate(m_commitsTable));
+    // Most recent first: sort by the Date column (which sorts on the raw commit
+    // timestamp), matching git-log order so the graph lanes line up.
+    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
+    connect(m_commitsTable, &QTableWidget::cellClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
+                if (item)
+                    showCommit(item->data(Qt::UserRole).toString());
+            });
+    // Arrow-key navigation: when the current row changes (e.g. via Up/Down keys),
+    // load and display the newly selected commit so the diff view stays in sync.
+    connect(m_commitsTable, &QTableWidget::currentCellChanged, this,
+            [this](int row, int, int prevRow, int) {
+                if (row == prevRow || row < 0)
+                    return;
+                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
+                if (item)
+                    showCommit(item->data(Qt::UserRole).toString());
+            });
+    // Banner above the list flagging local commits that haven't reached the
+    // network mirror yet (the rows themselves are tagged in the Commit column).
+    m_commitsListPage = listPage;
+    m_commitsUnsyncedBanner = new QLabel(listPage);
+    m_commitsUnsyncedBanner->setObjectName("statusLine");
+    m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
+    m_commitsUnsyncedBanner->setWordWrap(true);
+    // A card background sets the note apart from the rows beneath it.
+    m_commitsUnsyncedBanner->setStyleSheet(
+        "#statusLine {"
+        "  background-color: rgba(210,153,34,0.16);"
+        "  border: 1px solid rgba(210,153,34,0.55);"
+        "  border-radius: 6px;"
+        "  padding: 6px 10px;"
+        "}");
+    // Fade-out animation: when the unsynced count drops to zero the note doesn't
+    // blink out, it eases away (InCubic stays opaque, then drops) so it lingers
+    // and stays readable a moment longer.
+    m_commitsBannerOpacity = new QGraphicsOpacityEffect(m_commitsUnsyncedBanner);
+    m_commitsBannerOpacity->setOpacity(1.0);
+    m_commitsUnsyncedBanner->setGraphicsEffect(m_commitsBannerOpacity);
+    m_commitsBannerFade = new QPropertyAnimation(m_commitsBannerOpacity,
+                                                 "opacity", this);
+    m_commitsBannerFade->setDuration(1500);
+    m_commitsBannerFade->setEasingCurve(QEasingCurve::InCubic);
+    connect(m_commitsBannerFade, &QPropertyAnimation::finished, this, [this] {
+        if (m_commitsUnsyncedBanner)
+            m_commitsUnsyncedBanner->hide();
+    });
+    m_commitsUnsyncedBanner->hide();
+
+    // Search box: type a hash (full or abbreviated) or words from the message to
+    // filter the list; clearing it shows every commit again.
+    m_commitSearch = new QLineEdit;
+    m_commitSearch->setObjectName("issueSearch"); // reuse the search-field styling
+    m_commitSearch->setClearButtonEnabled(true);
+    m_commitSearch->setPlaceholderText(
+        "Search commits by hash, message, or author\xE2\x80\xA6");
+    connect(m_commitSearch, &QLineEdit::textChanged, this,
+            &MainWindow::filterCommits);
+
+    // Refresh: force a full rebuild that re-checks which commits are still
+    // waiting to sync. Switching away and back skips the rebuild when nothing
+    // changed, so this is the explicit way to re-scan after a commit/publish.
+    m_commitsRefreshButton = new QPushButton("Refresh");
+    m_commitsRefreshButton->setObjectName("ghostButton");
+    m_commitsRefreshButton->setCursor(Qt::PointingHandCursor);
+    // Idle icon drawn by refreshPixmap (angle 0) so the spinning state is the
+    // same glyph rotating, not a different icon swapping in.
+    m_commitsRefreshButton->setIcon(
+        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+    m_commitsRefreshButton->setToolTip(
+        "Reload the commit list and re-check which commits are waiting to sync");
+    connect(m_commitsRefreshButton, &QPushButton::clicked, this, [this] {
+        startCommitsRefreshSpin();
+        // Defer the (synchronous) git + table rebuild one event-loop turn: the
+        // click returns immediately so the button feels responsive and the
+        // spinner paints before the reload briefly blocks the UI thread.
+        QTimer::singleShot(0, this, [this] {
+            loadCommits();
+            // The reload is near-instant, so stop on a short delay: that lets the
+            // spinner actually rotate a few frames as confirmation. The list is
+            // already rebuilt and interactive by now, so this tail is feedback,
+            // not blocking latency.
+            QTimer::singleShot(250, this, [this] { stopCommitsRefreshSpin(); });
+        });
+    });
+
+    // Turn the multi-selected commits into a shareable summary / X post.
+    m_commitsGenerateButton = new QPushButton("Generate post");
+    m_commitsGenerateButton->setObjectName("ghostButton");
+    m_commitsGenerateButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsGenerateButton, "broadcast", 16);
+    m_commitsGenerateButton->setToolTip(
+        "Select one or more commits (Ctrl/Shift-click), then draft a release note "
+        "and an X/Twitter post from them");
+    connect(m_commitsGenerateButton, &QPushButton::clicked, this,
+            &MainWindow::generatePostFromSelectedCommits);
+
+    // Current-branch indicator + switcher: shows the checked-out branch and opens
+    // a dropdown to check out another branch (or create one), like a git client.
+    m_commitsBranchButton = new QPushButton("main");
+    m_commitsBranchButton->setObjectName("ghostButton");
+    m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
+    m_commitsBranchButton->setToolTip("Current branch — click to switch or create one");
+    setOcticon(m_commitsBranchButton, "git-branch", 16);
+
+    auto *searchRow = new QHBoxLayout;
+    searchRow->setSpacing(8);
+    searchRow->addWidget(m_commitsBranchButton);
+    searchRow->addWidget(m_commitSearch, 1);
+    searchRow->addWidget(m_commitsGenerateButton);
+    searchRow->addWidget(m_commitsRefreshButton);
+
+    // Infinite scroll: when the list reaches the bottom and older history remains,
+    // deepen the window and rebuild (loadMoreCommits preserves the scroll spot).
+    connect(m_commitsTable->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int value) {
+                if (!m_commitsTable)
+                    return;
+                QScrollBar *sb = m_commitsTable->verticalScrollBar();
+                if (m_commitsHasMore && !m_commitsLoadingMore && sb->maximum() > 0 &&
+                    value >= sb->maximum() - 2)
+                    QTimer::singleShot(0, this, [this] { loadMoreCommits(); });
+            });
+
+    auto *listLayout = new QVBoxLayout(listPage);
+    listLayout->setContentsMargins(16, 12, 16, 16);
+    // The unsynced banner sits in normal flow between the search row and the
+    // table: as a real laid-out widget it pushes the rows down instead of
+    // floating over them, so it can never hide the very (newest, top) commits it
+    // flags. When hidden it collapses to zero height and the table reclaims it.
+    listLayout->addLayout(searchRow);
+    listLayout->addWidget(m_commitsUnsyncedBanner);
+    listLayout->addWidget(m_commitsTable);
+
+    // --- Page 1: the GitHub-style commit diff view.
+    auto *detailPage = new QWidget;
+
+    auto *backButton = new QPushButton("Commits");
+    backButton->setObjectName("ghostButton");
+    backButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(backButton, "arrow-left", 16);
+    connect(backButton, &QPushButton::clicked, this, &MainWindow::showCommitList);
+
+    // Prev/Next walk the commit list (newest first): Prev = newer, Next = older.
+    m_commitPrevButton = new QPushButton("Prev");
+    m_commitNextButton = new QPushButton("Next");
+    for (QPushButton *b : {m_commitPrevButton, m_commitNextButton}) {
+        b->setObjectName("ghostButton");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_commitPrevButton, "chevron-down", 16);
+    setOcticon(m_commitNextButton, "chevron-right", 16);
+    m_commitPrevButton->setToolTip("Show the previous (newer) commit");
+    m_commitNextButton->setToolTip("Show the next (older) commit");
+    auto goToCommitRow = [this](int row) {
+        if (!m_commitsTable || row < 0 || row >= m_commitsTable->rowCount())
+            return;
+        QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
+        if (it)
+            showCommit(it->data(Qt::UserRole).toString());
+    };
+    connect(m_commitPrevButton, &QPushButton::clicked, this,
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1); });
+    connect(m_commitNextButton, &QPushButton::clicked, this,
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1); });
+
+    m_commitTitle = new QLabel;
+    m_commitTitle->setObjectName("repoHeaderTitle");
+    m_commitTitle->setTextFormat(Qt::RichText);
+    m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // Copy a forkmesh:// permalink to this commit (issue #154): pasted into a
+    // comment it renders as a link back here via autolinkReferences().
+    auto *commitCopyLinkButton = new QPushButton("Copy link");
+    commitCopyLinkButton->setObjectName("ghostButton");
+    commitCopyLinkButton->setCursor(Qt::PointingHandCursor);
+    commitCopyLinkButton->setToolTip(
+        "Copy a link to this commit you can paste into an issue or PR comment");
+    setOcticon(commitCopyLinkButton, "copy", 16);
+    connect(commitCopyLinkButton, &QPushButton::clicked, this, [this] {
+        copyReferenceLink(QStringLiteral("commit"), m_currentCommitHash);
+    });
+
+    m_commitDownloadButton = new QPushButton("Download patch");
+    m_commitDownloadButton->setObjectName("ghostButton");
+    m_commitDownloadButton->setCursor(Qt::PointingHandCursor);
+    m_commitDownloadButton->setToolTip(
+        "Save this commit as a .patch file you can re-import as a pull request");
+    setOcticon(m_commitDownloadButton, "download", 16);
+    connect(m_commitDownloadButton, &QPushButton::clicked, this,
+            &MainWindow::downloadCommitPatch);
+
+    // Drop the shown commit from history (same rewrite as the per-row button in
+    // the list, but reachable from the diff view). Enabled only where there's a
+    // working tree to rewrite; showCommit keeps that in sync.
+    m_commitDeleteButton = new QPushButton("Delete commit");
+    m_commitDeleteButton->setObjectName("ghostButton");
+    m_commitDeleteButton->setCursor(Qt::PointingHandCursor);
+    m_commitDeleteButton->setToolTip(
+        "Remove this commit from history (rewrites the branch and replays the "
+        "later commits onto its parent)");
+    setOcticon(m_commitDeleteButton, "trash", 16);
+    connect(m_commitDeleteButton, &QPushButton::clicked, this,
+            [this] { deleteCommit(m_currentCommitHash); });
+
+    // Undo the shown commit without rewriting history: record a new commit that
+    // reverses its changes (git revert). Like delete, needs a working tree to
+    // commit into; showCommit keeps the enabled state in sync.
+    m_commitRevertButton = new QPushButton("Restore commit");
+    m_commitRevertButton->setObjectName("ghostButton");
+    m_commitRevertButton->setCursor(Qt::PointingHandCursor);
+    m_commitRevertButton->setToolTip(
+        "Undo this commit by committing the reverse of its changes (history is "
+        "kept)");
+    setOcticon(m_commitRevertButton, "history", 16);
+    connect(m_commitRevertButton, &QPushButton::clicked, this,
+            [this] { revertCommit(m_currentCommitHash); });
+
+    // Switch between unified and side-by-side (split) diff rendering. The choice
+    // is a shared, persisted preference (see diffSplitPref) used by both the
+    // commit and pull-request diff views.
+    m_commitSplitButton = new QPushButton;
+    m_commitSplitButton->setObjectName("ghostButton");
+    m_commitSplitButton->setCursor(Qt::PointingHandCursor);
+    m_commitSplitButton->setCheckable(true);
+    m_commitSplitButton->setChecked(diffSplitPref());
+    setOcticon(m_commitSplitButton, "diff", 16);
+    updateDiffSplitButton(m_commitSplitButton);
+    connect(m_commitSplitButton, &QPushButton::clicked, this, [this](bool on) {
+        setDiffSplitPref(on);
+        updateDiffSplitButton(m_commitSplitButton);
+        updateDiffSplitButton(m_pullSplitButton);
+        if (m_pullSplitButton)
+            m_pullSplitButton->setChecked(on);
+        if (!m_currentCommitHash.isEmpty())
+            showCommit(m_currentCommitHash);
+    });
+
+    auto *navCol = new QVBoxLayout;
+    navCol->setContentsMargins(0, 0, 0, 0);
+    navCol->setSpacing(4);
+    navCol->addWidget(backButton, 0, Qt::AlignRight);
+    auto *prevNextRow = new QHBoxLayout;
+    prevNextRow->setContentsMargins(0, 0, 0, 0);
+    prevNextRow->setSpacing(4);
+    prevNextRow->addStretch();
+    prevNextRow->addWidget(m_commitSplitButton);
+    prevNextRow->addWidget(commitCopyLinkButton);
+    prevNextRow->addWidget(m_commitDownloadButton);
+    prevNextRow->addWidget(m_commitDeleteButton);
+    prevNextRow->addWidget(m_commitRevertButton);
+    prevNextRow->addWidget(m_commitPrevButton);
+    prevNextRow->addWidget(m_commitNextButton);
+    navCol->addLayout(prevNextRow);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->addWidget(m_commitTitle, 1, Qt::AlignTop);
+    headerRow->addLayout(navCol);
+
+    m_commitMessage = new QLabel;
+    m_commitMessage->setObjectName("commitMessage");
+    m_commitMessage->setWordWrap(true);
+    m_commitMessage->setTextFormat(Qt::RichText);
+    m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                             Qt::LinksAccessibleByMouse);
+    // "#123" references in the message are rendered as ref: links and open
+    // issues first. PR/comment bodies use typed Markdown reference links.
+    connect(m_commitMessage, &QLabel::linkActivated, this,
+            [this](const QString &href) {
+                if (href.startsWith(QStringLiteral("ref:")))
+                    openCommitReference(href.mid(4).toInt());
+            });
+
+    m_commitMeta = new QLabel;
+    m_commitMeta->setObjectName("statusLine");
+    m_commitMeta->setTextFormat(Qt::RichText);
+    m_commitMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_commitFilesSummary = new QLabel;
+    m_commitFilesSummary->setObjectName("sectionLabel");
+    m_commitFilesSummary->setTextFormat(Qt::RichText);
+
+    // Left: changed-files list (click to scroll the diff to that file).
+    auto *filesPane = new QWidget;
+    filesPane->setMinimumWidth(200);
+    filesPane->setMaximumWidth(300);
+    m_commitFileList = new QListWidget;
+    m_commitFileList->setObjectName("commitFileList");
+    connect(m_commitFileList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *item, QListWidgetItem *) {
+                if (item && m_commitDiffView)
+                    m_commitDiffView->scrollToAnchor(
+                        item->data(Qt::UserRole).toString());
+            });
+    // Small spinner that sits just after the "N files changed" heading while
+    // showCommit reads + renders the diff, so a slow commit shows progress here
+    // instead of freezing. Hidden until a load starts.
+    m_commitDiffSpinner = new BusySpinner(filesPane);
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *filesSummaryRow = new QHBoxLayout;
+    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
+    filesSummaryRow->setSpacing(6);
+    filesSummaryRow->addWidget(m_commitFilesSummary);
+    filesSummaryRow->addWidget(m_commitDiffSpinner);
+    filesSummaryRow->addStretch();
+
+    auto *filesLayout = new QVBoxLayout(filesPane);
+    filesLayout->setContentsMargins(0, 0, 8, 0);
+    filesLayout->setSpacing(6);
+    filesLayout->addLayout(filesSummaryRow);
+    filesLayout->addWidget(m_commitFileList, 1);
+
+    // Right: the unified diff for the whole commit.
+    m_commitDiffView = new QTextBrowser;
+    m_commitDiffView->setObjectName("commitDiffView");
+    m_commitDiffView->setOpenExternalLinks(false);
+
+    auto *split = new QSplitter(Qt::Horizontal);
+    split->addWidget(filesPane);
+    split->addWidget(m_commitDiffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+
+    // --- Per-commit conversation: comment thread + composer.
+    m_commitThreadContainer = new QWidget;
+    m_commitThreadLayout = new QVBoxLayout(m_commitThreadContainer);
+    m_commitThreadLayout->setContentsMargins(0, 0, 0, 0);
+    m_commitThreadLayout->setSpacing(10);
+    m_commitThreadLayout->addStretch();
+    auto *commitThreadScroll = new QScrollArea;
+    commitThreadScroll->setWidgetResizable(true);
+    commitThreadScroll->setWidget(m_commitThreadContainer);
+    commitThreadScroll->setObjectName("issuePageScroll");
+    commitThreadScroll->setFrameShape(QFrame::NoFrame);
+    m_commitComposer = new MarkdownEditor;
+    m_commitComposer->setPlaceholderText("Leave a comment on this commit\xE2\x80\xA6");
+    m_commitComposer->setMinimumHeight(80);
+    m_commitCommentButton = new QPushButton("Comment");
+    m_commitCommentButton->setObjectName("ghostButton");
+    m_commitCommentButton->setProperty("buttonSize", "sm");
+    m_commitCommentButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitCommentButton, "comment", 16);
+    connect(m_commitCommentButton, &QPushButton::clicked, this,
+            &MainWindow::submitCommitComment);
+    auto *commitComposerButtons = new QHBoxLayout;
+    commitComposerButtons->setContentsMargins(0, 0, 0, 0);
+    commitComposerButtons->addStretch();
+    commitComposerButtons->addWidget(m_commitCommentButton);
+    auto *commitConversation = new QWidget;
+    auto *commitConversationLayout = new QVBoxLayout(commitConversation);
+    commitConversationLayout->setContentsMargins(0, 0, 0, 0);
+    commitConversationLayout->setSpacing(8);
+    commitConversationLayout->addWidget(commitThreadScroll, 1);
+    commitConversationLayout->addWidget(m_commitComposer);
+    commitConversationLayout->addLayout(commitComposerButtons);
+
+    auto *commitVSplit = new QSplitter(Qt::Vertical);
+    commitVSplit->setChildrenCollapsible(false);
+    commitVSplit->addWidget(split);
+    commitVSplit->addWidget(commitConversation);
+    commitVSplit->setStretchFactor(0, 3);
+    commitVSplit->setStretchFactor(1, 2);
+    commitVSplit->setSizes({440, 240});
+
+    auto *detailLayout = new QVBoxLayout(detailPage);
+    detailLayout->setContentsMargins(16, 12, 16, 16);
+    detailLayout->setSpacing(8);
+    detailLayout->addLayout(headerRow);
+    detailLayout->addWidget(m_commitMessage);
+    detailLayout->addWidget(m_commitMeta);
+    detailLayout->addWidget(commitVSplit, 1);
+
+    // Right side: a placeholder until a commit is picked, then the diff view.
+    // The commit list (listPage) stays visible in the left splitter pane the
+    // whole time, so clicking a commit no longer hides it.
+    auto *placeholder = new QLabel("Select a commit to view its diff.");
+    placeholder->setObjectName("statusLine");
+    placeholder->setAlignment(Qt::AlignCenter);
+    m_commitsStack->addWidget(placeholder); // 0
+    m_commitsStack->addWidget(detailPage);  // 1
+
+    auto *outerSplit = new QSplitter(Qt::Horizontal);
+    outerSplit->addWidget(listPage);
+    outerSplit->addWidget(m_commitsStack);
+    // #123: open the commit list to half the window width on first load so its
+    // columns aren't clipped (the right pane is just a placeholder until a commit
+    // is selected). Equal stretch factors keep it ~50/50 at any window width — a
+    // zero stretch on the list otherwise handed all the extra space on a wide
+    // window to the placeholder and left the list clipped. Still draggable.
+    outerSplit->setStretchFactor(0, 1);
+    outerSplit->setStretchFactor(1, 1);
+    outerSplit->setSizes({1000, 1000});
+
+    // New top panel: a VSCode-style Source Control view for the working tree
+    // (compose strip + changes tree + diff), sitting above the committed-history
+    // UI (list | diff) in a vertical split.
+    auto *scmPanel = buildSourceControlPanel();
+    auto *commitsVSplit = new QSplitter(Qt::Vertical);
+    commitsVSplit->setChildrenCollapsible(false);
+    commitsVSplit->addWidget(scmPanel);
+    commitsVSplit->addWidget(outerSplit);
+    commitsVSplit->setStretchFactor(0, 2);
+    commitsVSplit->setStretchFactor(1, 3);
+    commitsVSplit->setSizes({320, 520});
+
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(commitsVSplit);
+    return page;
+}
+
+
+
+// ---- Repo-detail loading / file-search infra (moved from MainWindowReleases) ----
+
+void MainWindow::loadFileSearchIndex()
+{
+    if (!m_fileCompleter)
+        return;
+    QStringList paths;
+    const QString dir = repoGitDir();
+    QByteArray out;
+    if (!dir.isEmpty() &&
+        runGitCapture(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()}, &out,
+                      nullptr)) {
+        for (const QByteArray &record : out.split('\0'))
+            if (!record.isEmpty())
+                paths << QString::fromUtf8(record);
+    }
+    m_fileCompleter->setModel(new QStringListModel(paths, m_fileCompleter));
+}
+
+void MainWindow::loadAboutSidebar()
+{
+    // This panel fires several synchronous git reads back to back — `ls-tree`,
+    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
+    // that walks every commit. On a large history those add up to multiple
+    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
+    // so do the reads under a keep-alive scope: waitForGit() then polls in short
+    // slices and pumps the event loop, keeping the window responsive (and the
+    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
+    GitKeepAlive keepAlive;
+
+    const QString dir = repoGitDir();
+    const RepositoryRecord *repo =
+        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+            ? &m_repositories.at(m_repoDetailIndex)
+            : nullptr;
+
+    if (m_aboutEditButton) {
+        const bool editable = repoHasWorkingTree();
+        m_aboutEditButton->setEnabled(editable);
+        m_aboutEditButton->setToolTip(
+            editable
+                ? QStringLiteral("Edit repository details")
+                : QStringLiteral("Open a local working copy to edit repository details"));
+    }
+
+    // About text + website.
+    if (m_aboutText) {
+        QString text = m_repoInfo.about.isEmpty()
+                           ? (repo ? repo->description : QString())
+                           : m_repoInfo.about;
+        if (text.isEmpty())
+            text = "<span style='color:#8b949e'>No description.</span>";
+        else
+            text = text.toHtmlEscaped();
+        if (!m_repoInfo.website.isEmpty())
+            text += QStringLiteral("<br><a href=\"%1\">%1</a>")
+                        .arg(m_repoInfo.website.toHtmlEscaped());
+        m_aboutText->setText(text);
+    }
+    // Topics as chips.
+    if (m_aboutTopics) {
+        QStringList chips;
+        for (const QString &t : m_repoInfo.topics)
+            chips << "<span style='background:#1f6feb33; color:#58a6ff; "
+                     "border-radius:9px; padding:1px 8px;'>" +
+                         t.toHtmlEscaped() + "</span>";
+        m_aboutTopics->setText(chips.join(" "));
+        m_aboutTopics->setVisible(!chips.isEmpty());
+    }
+
+    // Community files: surface README / LICENSE / CONTRIBUTING / … as links that
+    // open the file in the overview. Match the repo root case-insensitively.
+    if (m_aboutFiles) {
+        QStringList roots;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"ls-tree", "--name-only", currentRef()}, &out,
+                          nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString t = line.trimmed();
+                if (!t.isEmpty())
+                    roots << t;
+            }
+        }
+        // label, octicon, set of accepted base-name prefixes (lowercase).
+        const struct {
+            const char *label;
+            const char *icon;
+            QStringList prefixes;
+        } wanted[] = {
+            {"README", "repo", {"readme"}},
+            {"License", "shield-check", {"license", "licence", "copying"}},
+            {"Contributing", "people", {"contributing"}},
+            {"Code of Conduct", "comment", {"code_of_conduct"}},
+            {"Security", "lock", {"security"}},
+        };
+        QStringList links;
+        for (const auto &w : wanted) {
+            QString match;
+            for (const QString &f : std::as_const(roots)) {
+                const QString base = f.section('.', 0, 0).toLower();
+                if (w.prefixes.contains(base)) {
+                    match = f;
+                    break;
+                }
+            }
+            if (match.isEmpty())
+                continue;
+            links << QStringLiteral(
+                         "<a href=\"%1\" style='color:#58a6ff; text-decoration:none'>"
+                         "%2%3</a>")
+                         .arg(match.toHtmlEscaped(),
+                              octiconMarkup(w.icon, 13, QColor("#58a6ff")),
+                              QString::fromUtf8("&nbsp;") + QString(w.label));
+        }
+        m_aboutFiles->setText(links.join(QString::fromUtf8("&nbsp;&nbsp; ")));
+        m_aboutFiles->setVisible(!links.isEmpty());
+    }
+
+    // Latest release: newest tag by creation date.
+    if (m_releaseHeader && m_releaseRow) {
+        QString tag, when;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate", "--count=1",
+                           "--format=%(refname:short)%09%(creatordate:relative)",
+                           "refs/tags"},
+                          &out, nullptr)) {
+            const QString line = QString::fromUtf8(out).trimmed();
+            const int tab = line.indexOf('\t');
+            if (tab > 0) {
+                tag = line.left(tab).trimmed();
+                when = line.mid(tab + 1).trimmed();
+            } else if (!line.isEmpty()) {
+                tag = line;
+            }
+        }
+        const bool has = !tag.isEmpty();
+        m_releaseHeader->setVisible(has);
+        m_releaseRow->setVisible(has);
+        if (has) {
+            QString row =
+                QStringLiteral("<a href=\"#releases\" style='color:#58a6ff; "
+                               "text-decoration:none'>%1<span style='background:"
+                               "#238636; color:#fff; border-radius:9px; "
+                               "padding:1px 8px; font-weight:600'>%2</span></a>")
+                    .arg(octiconMarkup("tag", 14, QColor("#3fb950")) +
+                             QString::fromUtf8("&nbsp;"),
+                         tag.toHtmlEscaped());
+            if (!when.isEmpty())
+                row += QStringLiteral(
+                           "<br><span style='color:#8b949e'>released %1</span>")
+                           .arg(when.toHtmlEscaped());
+            m_releaseRow->setText(row);
+        }
+    }
+
+    // Languages: aggregate blob sizes per language.
+    if (m_langBar && m_langLegend) {
+        QHash<QString, qint64> bytesByLang;
+        qint64 total = 0;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"ls-tree", "-r", "-l", currentRef()}, &out, nullptr)) {
+            for (const QByteArray &record : out.split('\n')) {
+                const int tab = record.indexOf('\t');
+                if (tab < 0)
+                    continue;
+                const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+                if (meta.size() < 4)
+                    continue;
+                bool ok = false;
+                const qint64 size = QString::fromUtf8(meta.at(3)).toLongLong(&ok);
+                if (!ok || size <= 0)
+                    continue;
+                const QString name = QString::fromUtf8(record.mid(tab + 1));
+                const QString lang = languageForFile(name);
+                if (lang.isEmpty())
+                    continue;
+                bytesByLang[lang] += size;
+                total += size;
+            }
+        }
+        QList<QPair<QString, qint64>> langs;
+        for (auto it = bytesByLang.constBegin(); it != bytesByLang.constEnd(); ++it)
+            langs.append({it.key(), it.value()});
+        std::sort(langs.begin(), langs.end(),
+                  [](const auto &a, const auto &b) { return a.second > b.second; });
+
+        QString legend;
+        const int shown = qMin(5, int(langs.size()));
+        for (int i = 0; i < shown && total > 0; ++i) {
+            const double pct = 100.0 * langs.at(i).second / total;
+            const QString color = languageColor(langs.at(i).first);
+            // Keep each "● Name 12.3%" entry on one line (all non-breaking
+            // spaces); only the trailing normal space between entries may wrap.
+            legend += QString::fromUtf8(
+                          "<span style='color:%1'>\xE2\x97\x8F</span>&nbsp;"
+                          "<span style='color:#c9d1d9'>%2</span>&nbsp;"
+                          "<span style='color:#8b949e'>%3%</span>&nbsp;&nbsp; ")
+                          .arg(color, langs.at(i).first.toHtmlEscaped(),
+                               QString::number(pct, 'f', 1));
+        }
+        m_langBar->setScaledContents(true);
+        m_langBar->setPixmap(languageBarPixmap(langs, total, shown, 600, 12));
+        m_langLegend->setText(legend.isEmpty()
+                                  ? "<span style='color:#8b949e'>No code yet.</span>"
+                                  : legend);
+    }
+
+    // Contributors from git shortlog, each shown as a deterministic avatar
+    // generated from their email (falling back to name) — gravatar-style.
+    if (m_contributorsRow && m_contributorsHeader) {
+        struct Contrib {
+            QString name;
+            QString email;
+            int count;
+        };
+        QList<Contrib> contribs;
+        QByteArray out;
+        // -e includes the email; lines look like "  12\tName <email>".
+        // Merge commits are counted (no --no-merges) so each tooltip's
+        // "N commits" is that author's true commit total — matching what
+        // `git shortlog -sne` / `git log --author` report — rather than
+        // silently dropping every merge they performed.
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"shortlog", "-sne", "--all"}, &out,
+                          nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString t = line.trimmed();
+                if (t.isEmpty())
+                    continue;
+                const int tab = t.indexOf('\t');
+                if (tab < 0)
+                    continue;
+                QString who = t.mid(tab + 1).trimmed();
+                QString email;
+                const int lt = who.lastIndexOf('<');
+                const int gt = who.lastIndexOf('>');
+                if (lt >= 0 && gt > lt) {
+                    email = who.mid(lt + 1, gt - lt - 1).trimmed();
+                    who = who.left(lt).trimmed();
+                }
+                contribs.append({who, email, t.left(tab).toInt()});
+            }
+        }
+        m_contributorsHeader->setText(
+            QStringLiteral("CONTRIBUTORS %1").arg(formatCount(contribs.size())));
+
+        // Round a source PNG into a rounded-rect avatar (rendered at 2x for
+        // crisp hi-dpi edges) so contributors read as soft tiles rather than
+        // hard squares. Falls back to the original bytes if decoding fails.
+        auto rounded = [](QByteArray src, int px) -> QByteArray {
+            QPixmap p;
+            if (!p.loadFromData(src, "PNG") || p.isNull())
+                return src;
+            const int s = px * 2;
+            const QPixmap scaled = p.scaled(s, s, Qt::KeepAspectRatioByExpanding,
+                                            Qt::SmoothTransformation);
+            QPixmap out(s, s);
+            out.fill(Qt::transparent);
+            QPainter painter(&out);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            QPainterPath path;
+            path.addRoundedRect(0, 0, s, s, s * 0.28, s * 0.28);
+            painter.setClipPath(path);
+            painter.drawPixmap(0, 0, scaled);
+            painter.end();
+            QByteArray result;
+            QBuffer buf(&result);
+            buf.open(QIODevice::WriteOnly);
+            out.save(&buf, "PNG");
+            return result;
+        };
+
+        // Embed each avatar as an inline base64 PNG so it renders in rich text.
+        auto avatarTag = [this, &rounded](const Contrib &c, int px) {
+            const QString custom = m_repoInfo.contributorAvatars.value(c.name);
+            QByteArray png;
+            QPixmap fromFile;
+            if (!custom.isEmpty() && fromFile.load(custom)) {
+                QBuffer buf(&png);
+                buf.open(QIODevice::WriteOnly);
+                fromFile.save(&buf, "PNG");
+            } else {
+                const QString seed =
+                    c.email.isEmpty() ? c.name.toLower() : c.email.toLower();
+                png = forkMeshAvatarPng(seed);
+            }
+            png = rounded(png, px);
+            const QString tip = (c.name + QString::fromUtf8(" \xC2\xB7 ") +
+                                 QString::number(c.count) + " commits")
+                                    .toHtmlEscaped();
+            return QStringLiteral(
+                       "<img src='data:image/png;base64,%1' width='%2' "
+                       "height='%2' title='%3'>")
+                .arg(QString::fromLatin1(png.toBase64()))
+                .arg(px)
+                .arg(tip);
+        };
+
+        QString html;
+        const int shown = qMin(12, int(contribs.size()));
+        for (int i = 0; i < shown; ++i)
+            html += avatarTag(contribs.at(i), 28) +
+                    QString::fromUtf8("&nbsp;&nbsp;");
+        if (contribs.size() > shown)
+            html += QStringLiteral(
+                        "<span style='color:#8b949e'>&nbsp;+%1</span>")
+                        .arg(contribs.size() - shown);
+        m_contributorsRow->setText(html.isEmpty()
+                                       ? "<span style='color:#8b949e'>None yet.</span>"
+                                       : html);
+    }
+}
+
+void MainWindow::spinRefreshButton(QPushButton *button)
+{
+    if (!button || button->property("fmSpinning").toBool())
+        return;
+    button->setProperty("fmSpinning", true);
+    const int size = button->iconSize().width() > 0 ? button->iconSize().width() : 16;
+    const QIcon original = button->icon();
+    auto *timer = new QTimer(button);
+    auto angle = std::make_shared<int>(0);
+    connect(timer, &QTimer::timeout, button, [button, angle, size] {
+        *angle = (*angle + 30) % 360;
+        button->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+    });
+    timer->start(60);
+    // These refreshes are synchronous (or fire-and-forget), so a brief spin is
+    // enough to acknowledge the click; then restore the button's own icon.
+    QTimer::singleShot(650, button, [button, timer, original] {
+        timer->stop();
+        timer->deleteLater();
+        button->setIcon(original);
+        button->setProperty("fmSpinning", false);
+    });
+}
+
+void MainWindow::addRefreshSpin(QPushButton *button)
+{
+    if (!button)
+        return;
+    connect(button, &QPushButton::clicked, this,
+            [this, button] { spinRefreshButton(button); });
+}
+
+void MainWindow::startButtonSpin(QPushButton *button)
+{
+    if (!button || button->property("fmSpinning").toBool())
+        return;
+    button->setProperty("fmSpinning", true);
+    button->setProperty("fmSpinIcon", QVariant::fromValue(button->icon()));
+    const int size = button->iconSize().width() > 0 ? button->iconSize().width() : 16;
+    auto *timer = new QTimer(button);
+    timer->setObjectName(QStringLiteral("fmSpinTimer"));
+    auto angle = std::make_shared<int>(0);
+    connect(timer, &QTimer::timeout, button, [button, angle, size] {
+        *angle = (*angle + 30) % 360;
+        button->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+    });
+    timer->start(60);
+}
+
+void MainWindow::stopButtonSpin(QPushButton *button)
+{
+    if (!button || !button->property("fmSpinning").toBool())
+        return;
+    if (auto *timer = button->findChild<QTimer *>(QStringLiteral("fmSpinTimer"))) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    button->setIcon(button->property("fmSpinIcon").value<QIcon>());
+    button->setProperty("fmSpinning", false);
+}
+
+void MainWindow::startRestartSpin(QPushButton *button)
+{
+    if (!button)
+        return;
+    stopRestartSpin();
+    m_restartSpinButton = button;
+    startButtonSpin(button);
+}
+
+void MainWindow::stopRestartSpin()
+{
+    if (!m_restartSpinButton)
+        return;
+    stopButtonSpin(m_restartSpinButton);
+    m_restartSpinButton = nullptr;
+}
+
+void MainWindow::startRefreshSpin()
+{
+    if (!m_refreshButton)
+        return;
+    if (!m_refreshSpinTimer) {
+        m_refreshSpinTimer = new QTimer(this);
+        connect(m_refreshSpinTimer, &QTimer::timeout, this, [this] {
+            m_refreshAngle = (m_refreshAngle + 30) % 360;
+            m_refreshButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary), m_refreshAngle, 22)));
+        });
+    }
+    m_refreshSpinTimer->start(60);
+}
+
+void MainWindow::stopRefreshSpin()
+{
+    if (m_refreshSpinTimer)
+        m_refreshSpinTimer->stop();
+    if (m_refreshButton)
+        m_refreshButton->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
+}
+
+void MainWindow::startCommitsRefreshSpin()
+{
+    if (!m_commitsRefreshButton)
+        return;
+    if (!m_commitsRefreshSpinTimer) {
+        m_commitsRefreshSpinTimer = new QTimer(this);
+        connect(m_commitsRefreshSpinTimer, &QTimer::timeout, this, [this] {
+            m_commitsRefreshAngle = (m_commitsRefreshAngle + 30) % 360;
+            if (m_commitsRefreshButton)
+                m_commitsRefreshButton->setIcon(QIcon(refreshPixmap(
+                    QColor(Theme::kTextTertiary), m_commitsRefreshAngle, 16)));
+        });
+    }
+    m_commitsRefreshSpinTimer->start(60);
+}
+
+void MainWindow::stopCommitsRefreshSpin()
+{
+    if (m_commitsRefreshSpinTimer)
+        m_commitsRefreshSpinTimer->stop();
+    m_commitsRefreshAngle = 0;
+    if (m_commitsRefreshButton)
+        m_commitsRefreshButton->setIcon(
+            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+}
+
+void MainWindow::startCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->show();
+}
+
+void MainWindow::stopCommitDiffSpin()
+{
+    if (m_commitDiffSpinner)
+        m_commitDiffSpinner->hide();
+}
+
+void MainWindow::startNodeSwitchSpin()
+{
+    if (!m_nodeMenuButton)
+        return;
+    if (!m_nodeSwitchSpinTimer) {
+        m_nodeSwitchSpinTimer = new QTimer(this);
+        connect(m_nodeSwitchSpinTimer, &QTimer::timeout, this, [this] {
+            m_nodeSwitchAngle = (m_nodeSwitchAngle + 30) % 360;
+            m_nodeMenuButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                                    m_nodeSwitchAngle, 16)));
+        });
+    }
+    m_nodeSwitchSpinTimer->start(60);
+
+    // Indeterminate loading bar pinned just below the node button for the length
+    // of the (potentially multi-second) switch. Parented to the node button's
+    // container so it floats over the bar without disturbing the layout.
+    if (!m_nodeSwitchProgress) {
+        m_nodeSwitchProgress =
+            new QProgressBar(m_nodeMenuButton->parentWidget());
+        m_nodeSwitchProgress->setObjectName("nodeSwitchProgress");
+        m_nodeSwitchProgress->setRange(0, 0); // busy / indeterminate
+        m_nodeSwitchProgress->setTextVisible(false);
+        m_nodeSwitchProgress->setFixedHeight(3);
+        m_nodeSwitchProgress->hide();
+    }
+    positionNodeSwitchProgress();
+    m_nodeSwitchProgress->show();
+    m_nodeSwitchProgress->raise();
+}
+
+void MainWindow::positionNodeSwitchProgress()
+{
+    if (!m_nodeSwitchProgress || !m_nodeMenuButton)
+        return;
+    QWidget *parent = m_nodeSwitchProgress->parentWidget();
+    if (!parent)
+        return;
+    const QPoint topLeft = m_nodeMenuButton->mapTo(
+        parent, QPoint(0, m_nodeMenuButton->height() + 1));
+    m_nodeSwitchProgress->setGeometry(topLeft.x(), topLeft.y(),
+                                      m_nodeMenuButton->width(), 3);
+}
+
+void MainWindow::stopNodeSwitchSpin()
+{
+    if (m_nodeSwitchSpinTimer)
+        m_nodeSwitchSpinTimer->stop();
+    if (m_nodeSwitchProgress)
+        m_nodeSwitchProgress->hide();
+    // Restore the node button's normal label + OS/online badge icon.
+    updateNodeSwitcher();
+}
+
+void MainWindow::startRepoSwitchSpin()
+{
+    if (!m_repoMenuButton)
+        return;
+    if (!m_repoSwitchSpinTimer) {
+        m_repoSwitchSpinTimer = new QTimer(this);
+        connect(m_repoSwitchSpinTimer, &QTimer::timeout, this, [this] {
+            m_repoSwitchAngle = (m_repoSwitchAngle + 30) % 360;
+            m_repoMenuButton->setIcon(
+                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                                    m_repoSwitchAngle, 16)));
+        });
+    }
+    m_repoMenuButton->setIcon(
+        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+    m_repoSwitchSpinTimer->start(60);
+}
+
+void MainWindow::stopRepoSwitchSpin()
+{
+    if (m_repoSwitchSpinTimer)
+        m_repoSwitchSpinTimer->stop();
+    // Clear the spinner icon; the repo button shows just its label + count.
+    if (m_repoMenuButton)
+        m_repoMenuButton->setIcon(QIcon());
+    updateRepoSwitcher();
+}
+
+void MainWindow::openRepoDetailDeferred(int repoIndex)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
+    // Already open: just surface its view, no reload.
+    if (repoIndex == m_repoDetailIndex && !m_repoDetailLoading) {
+        showSection(0);
+        return;
+    }
+    // Coalesce duplicate requests for the same repo (refreshRepositoryList can
+    // fire repeatedly while repos sync in) so we don't stack deferred loads.
+    if (m_repoOpenPending == repoIndex)
+        return;
+    m_repoOpenPending = repoIndex;
+    // Paint busy feedback immediately, then run the heavy synchronous load on the
+    // next event-loop turn so the dropdown closes and the spinner shows first.
+    startRepoSwitchSpin();
+    showLoadStatus(QStringLiteral("Opening repository…"));
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+    QTimer::singleShot(0, this, [this, repoIndex] {
+        m_repoOpenPending = -1;
+        QElapsedTimer timer;
+        timer.start();
+        // m_repoLoadActive lets nodeSwitchStep narrate this load too (it otherwise
+        // only speaks during node switches); openRepoDetail's steps update the pill.
+        m_repoLoadActive = true;
+        openRepoDetail(repoIndex);
+        m_repoLoadActive = false;
+        finishLoadStepTiming(); // log the final step's duration
+        stopRepoSwitchSpin();
+        QApplication::restoreOverrideCursor();
+        // Confirm the result where the user is looking: a brief toast for a slow
+        // open, otherwise just retire the progress pill.
+        const qint64 ms = timer.elapsed();
+        if (ms > 500 && repoIndex >= 0 && repoIndex < m_repositories.size()) {
+            const RepositoryRecord &r = m_repositories.at(repoIndex);
+            flashMessage(QStringLiteral("Opened %1/%2 in %3 ms.")
+                             .arg(r.owner, r.name)
+                             .arg(ms));
+        } else if (m_loadStatusShowing) {
+            dismissTopMessage();
+        }
+    });
+}
+
+void MainWindow::nodeSwitchStep(const QString &what)
+{
+    // Narrate a repo-load step, but only while a user-driven load is in flight —
+    // a node switch (m_nodeSwitching) or opening a repo (m_repoLoadActive).
+    // openRepoDetail is also called on startup, which shouldn't spam the user.
+    // Show the step in the top bar and log it, then yield to the event loop —
+    // user input excluded so a click can't re-enter the load — so the spinner
+    // keeps animating and each step appears as the work happens.
+    if (!m_nodeSwitching && !m_repoLoadActive)
+        return;
+    // Close out the previous step in the log with how long it took, so the user
+    // gets a real-time, timed breakdown of where a switch spends its time (and
+    // the slow step is obvious at a glance) rather than a wall of equal-looking
+    // lines. The duration is appended to the just-finished step, not this one.
+    if (!m_loadStepName.isEmpty() && m_loadStepTimer.isValid())
+        logSystem(QStringLiteral("  - %1 (%2 ms)")
+                      .arg(m_loadStepName)
+                      .arg(m_loadStepTimer.elapsed()));
+    showLoadStatus(what);
+    QString plain = what;
+    plain.replace(QChar(0x2026), QStringLiteral("..."));
+    m_loadStepName = plain;
+    m_loadStepTimer.restart();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+// Flush the final (still-running) narration step to the log with its duration.
+// Called when a node switch / repo open finishes, since nodeSwitchStep only logs
+// a step's timing when the *next* step starts — the last step has no successor.
+void MainWindow::finishLoadStepTiming()
+{
+    if (!m_loadStepName.isEmpty() && m_loadStepTimer.isValid())
+        logSystem(QStringLiteral("  - %1 (%2 ms)")
+                      .arg(m_loadStepName)
+                      .arg(m_loadStepTimer.elapsed()));
+    m_loadStepName.clear();
+    m_loadStepTimer.invalidate();
+}
+
+void MainWindow::showLoadStatus(const QString &what)
+{
+    if (!m_topMessage || what.isEmpty())
+        return;
+    m_topMessageRaw = what;
+    // Blue, persistent progress pill — distinct from the green success / red
+    // error toast — naming the current step. The node/repo button spinner and the
+    // node-switch bar convey motion; this conveys *what* is happening.
+    m_topMessage->setText(
+        QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
+            .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
+                 what.toHtmlEscaped()));
+    m_topMessage->setWordWrap(false);
+    m_topMessage->show();
+    m_loadStatusShowing = true;
+    m_topMessageElided = false;
+    m_topMessageExpanded = false;
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop(); // don't let it fade out mid-load
+    if (m_topMessageOverlay)
+        m_topMessageOverlay->hide(); // drop any leftover expanded panel
+    if (m_topMessageExpand)
+        m_topMessageExpand->hide();
+    if (m_topMessageCopy)
+        m_topMessageCopy->hide();
+    if (m_topMessageClose)
+        m_topMessageClose->hide();
+}
