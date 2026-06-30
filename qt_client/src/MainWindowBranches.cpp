@@ -8,6 +8,8 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QTimer>
+
 using namespace forkmesh::ui;
 
 // ---- Branches panel --------------------------------------------------------
@@ -16,6 +18,28 @@ using namespace forkmesh::ui;
 // loadBranchesPanel can probe each branch for merge conflicts.
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
+
+// Split rendered diff HTML into its self-contained per-file blocks. Each file's
+// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
+// and ends before the next one, so these chunks can be streamed into the view a
+// few at a time instead of laid out in one blocking pass (adhoc #51). Any
+// preamble before the first anchor rides along with the first block.
+static QStringList splitDiffFileBlocks(const QString &html)
+{
+    static const QString marker = QStringLiteral("<a name=\"file-");
+    int pos = html.indexOf(marker);
+    if (pos < 0)
+        return {html}; // no per-file anchors (e.g. an empty/notice body)
+    QStringList blocks;
+    if (pos > 0)
+        blocks.append(html.left(pos)); // preamble before the first file (if any)
+    while (pos >= 0) {
+        const int next = html.indexOf(marker, pos + marker.size());
+        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        pos = next;
+    }
+    return blocks;
+}
 
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
@@ -2747,6 +2771,9 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
+    // Supersede any progressive render still streaming in from a prior scope.
+    ++m_branchDiffRenderGen;
+    m_branchDiffPendingBlocks.clear();
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         m_branchFileList->clear();
@@ -2757,11 +2784,26 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     const QSet<QString> viewed = loadDiffViewed(viewedContext);
     const QString html = renderDiffHtml(patch, files, dir, base, m_branchDiffBranch,
                                         QString(), QHash<QString, QString>(), viewed);
-    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays
-    // it all out on the UI thread, freezing it for many seconds (issue #187).
-    // Past a sane size, show the changed-files list with a notice instead.
-    constexpr int kMaxDiffHtmlChars = 1'000'000;
-    if (html.size() > kMaxDiffHtmlChars) {
+    m_branchDiffFilePaths.clear();
+    for (const DiffFileEntry &f : files)
+        m_branchDiffFilePaths.append(f.path);
+
+    // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
+    // and lays it all out on the GUI thread at once, freezing the window for
+    // seconds (issue #187). Rather than refuse to render a large commit, split it
+    // into per-file blocks and stream them in: paint enough to fill the viewport
+    // now (so the commit shows immediately), then append the rest a batch at a
+    // time off the event loop, keeping the window responsive while it fills in
+    // (adhoc #51). A truly pathological diff (a huge generated/vendored file) is
+    // still refused past a hard ceiling, to stay mindful of memory.
+    constexpr int kStreamDiffHtmlChars = 1'000'000;  // stream, don't block, above this
+    constexpr int kMaxDiffHtmlChars = 8'000'000;     // refuse entirely above this
+    constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
+    if (html.isEmpty()) {
+        m_branchDiffView->setHtml(
+            QStringLiteral("<p style='color:#8b949e'>%1</p>")
+                .arg(emptyMessage.toHtmlEscaped()));
+    } else if (html.size() > kMaxDiffHtmlChars) {
         m_branchDiffView->setHtml(
             QStringLiteral(
                 "<p style='color:#d29922'>This diff is too large to render here "
@@ -2769,12 +2811,17 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                 "your editor.</p>")
                 .arg(files.size())
                 .arg(files.size() == 1 ? "" : "s"));
+    } else if (html.size() > kStreamDiffHtmlChars) {
+        QStringList blocks = splitDiffFileBlocks(html);
+        QString firstChunk;
+        while (!blocks.isEmpty() &&
+               (firstChunk.isEmpty() || firstChunk.size() < kFirstPaintChars))
+            firstChunk += blocks.takeFirst();
+        m_branchDiffView->setHtml(firstChunk);
+        m_branchDiffPendingBlocks = blocks;
+        appendBranchDiffBlocks(m_branchDiffRenderGen);
     } else {
-        m_branchDiffView->setHtml(
-            html.isEmpty()
-                ? QStringLiteral("<p style='color:#8b949e'>%1</p>")
-                      .arg(emptyMessage.toHtmlEscaped())
-                : html);
+        m_branchDiffView->setHtml(html);
     }
 
     // Changed-files list: a status-coloured row per file; click to scroll the
@@ -2810,19 +2857,59 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         fitFileListToWidestEntry(m_branchFileList);
     }
 
-    // Record each file header's position so the sticky bar can name the file
-    // currently scrolled into view. Walk the document's blocks (cheap and
-    // layout-free) rather than QTextDocument::find(), whose cursor positioning
-    // forces a full synchronous layout of the entire diff — that alone froze the
-    // UI for seconds on large branch diffs (issue #187).
+    // Map each file header to its document position for the sticky bar. When the
+    // diff is being streamed in (above), only the first blocks are in the document
+    // now; appendBranchDiffBlocks() rebuilds the full map once the last batch
+    // lands. Either way this covers whatever is currently shown.
+    rebuildBranchDiffSpans();
+}
+
+// Stream the next queued batch of per-file diff blocks into the branch diff view,
+// then reschedule until the queue drains (see renderBranchDiffPatch). A batch
+// from a superseded scope selection (m_branchDiffRenderGen bumped) bails.
+void MainWindow::appendBranchDiffBlocks(int gen)
+{
+    if (gen != m_branchDiffRenderGen || !m_branchDiffView)
+        return;
+    if (m_branchDiffPendingBlocks.isEmpty()) {
+        rebuildBranchDiffSpans(); // every file is in the document now
+        return;
+    }
+    QTimer::singleShot(0, this, [this, gen] {
+        if (gen != m_branchDiffRenderGen || !m_branchDiffView)
+            return;
+        constexpr int kAppendBatchChars = 400'000;
+        QString batch;
+        while (!m_branchDiffPendingBlocks.isEmpty() &&
+               (batch.isEmpty() || batch.size() < kAppendBatchChars))
+            batch += m_branchDiffPendingBlocks.takeFirst();
+        // Append at the document's end via a private cursor so the user's current
+        // scroll position is left untouched as the rest fills in below.
+        QTextCursor cur(m_branchDiffView->document());
+        cur.movePosition(QTextCursor::End);
+        cur.insertHtml(batch);
+        appendBranchDiffBlocks(gen);
+    });
+}
+
+// Rebuild the sticky-bar file-span map from whatever is currently in the branch
+// diff document. Walk the document's blocks (cheap and layout-free) rather than
+// QTextDocument::find(), whose cursor positioning forces a full synchronous
+// layout of the entire diff — that alone froze the UI for seconds (issue #187).
+void MainWindow::rebuildBranchDiffSpans()
+{
+    if (!m_branchDiffView)
+        return;
+    m_branchDiffFileSpans.clear();
     QTextDocument *spanDoc = m_branchDiffView->document();
     int fileIdx = 0;
     for (QTextBlock block = spanDoc->begin();
-         block.isValid() && fileIdx < files.size(); block = block.next()) {
-        const int at = block.text().indexOf(files.at(fileIdx).path);
+         block.isValid() && fileIdx < m_branchDiffFilePaths.size();
+         block = block.next()) {
+        const int at = block.text().indexOf(m_branchDiffFilePaths.at(fileIdx));
         if (at >= 0) {
             m_branchDiffFileSpans.append(
-                qMakePair(block.position() + at, files.at(fileIdx).path));
+                qMakePair(block.position() + at, m_branchDiffFilePaths.at(fileIdx)));
             ++fileIdx;
         }
     }
