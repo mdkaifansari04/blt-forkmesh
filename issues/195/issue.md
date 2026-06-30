@@ -5,7 +5,7 @@ title: globally if you click on a commit hash it should bring you to that commit
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 28
+priority: 5
 progress: 10
 assignees: []
 createdAt: 1782347014981

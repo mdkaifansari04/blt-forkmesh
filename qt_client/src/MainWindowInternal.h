@@ -4436,6 +4436,74 @@ inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
     return {};
 }
 
+// Peak amplitude (0..1, fraction of full scale) of a 16-bit mono PCM WAV, or -1
+// if the file can't be parsed. Used to tell speech from a silent capture: whisper
+// invents words ("you", "thank you") when fed silence, so a near-zero peak means
+// "nothing was said" no matter what whisper printed. Tolerates a partially-written
+// file (data length over-declared by a still-running recorder) by clamping to EOF.
+inline double wavPeakAmplitude(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return -1.0;
+    const QByteArray d = f.readAll();
+    if (d.size() < 44 || !d.startsWith("RIFF") || d.mid(8, 4) != "WAVE")
+        return -1.0;
+    // Walk RIFF chunks to the "data" payload (normally right after "fmt ").
+    int pos = 12, dataOff = -1;
+    qint64 dataLen = 0;
+    while (pos + 8 <= d.size()) {
+        const quint32 sz = quint8(d[pos + 4]) | (quint8(d[pos + 5]) << 8) |
+                           (quint8(d[pos + 6]) << 16) |
+                           (quint32(quint8(d[pos + 7])) << 24);
+        if (d.mid(pos, 4) == "data") {
+            dataOff = pos + 8;
+            dataLen = sz;
+            break;
+        }
+        pos += 8 + int(sz) + (sz & 1);
+    }
+    if (dataOff < 0)
+        return -1.0;
+    qint64 end = d.size();
+    if (dataLen > 0)
+        end = qMin<qint64>(end, dataOff + dataLen);
+    int peak = 0;
+    const uchar *b = reinterpret_cast<const uchar *>(d.constData());
+    for (qint64 i = dataOff; i + 1 < end; i += 2) {
+        const qint16 s = qint16(quint16(b[i]) | (quint16(b[i + 1]) << 8));
+        peak = qMax(peak, qAbs(int(s)));
+    }
+    return double(peak) / 32768.0;
+}
+
+// Below this peak (≈ -34 dBFS) a clip is treated as silence rather than speech.
+inline constexpr double kVoiceSpokeThreshold = 0.02;
+
+// whisper.cpp hallucinates a handful of stock phrases out of silence/near-silence
+// ("you", "thank you", "thanks for watching", …). When one of those is the ENTIRE
+// transcript it's almost certainly noise, not a dictated prompt, so we drop it
+// rather than typing a stray word into the box.
+inline bool isWhisperSilenceHallucination(const QString &textIn)
+{
+    QString norm;
+    for (const QChar c : textIn)
+        if (c.isLetter() || c == QLatin1Char(' '))
+            norm.append(c.toLower());
+    norm = norm.simplified();
+    static const QStringList kStock = {
+        QStringLiteral("you"),
+        QStringLiteral("thank you"),
+        QStringLiteral("thank you very much"),
+        QStringLiteral("thanks for watching"),
+        QStringLiteral("thanks for watching the video"),
+        QStringLiteral("please subscribe"),
+        QStringLiteral("bye"),
+        QStringLiteral("bye bye"),
+    };
+    return kStock.contains(norm);
+}
+
 // Widen a changed-files list so its longest entry opens fully visible instead of
 // being elided, capped so an unusually long path doesn't crowd out the diff. Only
 // the minimum width is set, so the user can still drag the panel wider.

@@ -1183,12 +1183,23 @@ void MainWindow::reloadIssues()
         if (m_issueLabelsTable)
             m_issueLabelsTable->setRowCount(0);
         m_currentIssueNumber = -1;
+        m_issuesLoadedSig.clear(); // force a full reload when a repo reopens
         renderIssueThread(Issue());
         updateIssueActionState();
         updateRepoIssueCount();
         return;
     }
     const IssueStore store = issueStoreForCurrentRepo();
+    // Skip re-reading git and rebuilding the table when issues/ is byte-for-byte
+    // unchanged since the last load (the common case: this fires on every push, but
+    // a code-only commit doesn't touch issues/). Tearing the rows down and back up
+    // mid-interaction drops the click/keystroke the user aimed at a row or the
+    // search box, which is what made the app feel unresponsive. Filter changes call
+    // refreshIssueList() directly, so they still re-filter the live data.
+    const QString sig = store.contentSignature();
+    if (!sig.isEmpty() && sig == m_issuesLoadedSig)
+        return;
+    m_issuesLoadedSig = sig;
     m_currentIssues = store.loadAll();
     m_currentLabels = store.loadLabels();
     m_currentMilestones = store.loadMilestones();
