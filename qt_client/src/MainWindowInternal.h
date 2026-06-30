@@ -3972,6 +3972,70 @@ private:
     int m_angle = 0;
 };
 
+// A thin rotating "processing ring" meant to encircle a small widget it's overlaid
+// on. Used to ring the mic button while a just-recorded clip is still being
+// transcribed after the button was released (adhoc #18), so the wait reads as
+// "still working", not "nothing happened". A faint full track shows the circle and a
+// brighter arc sweeps around it. Self-animating: the timer only runs while the
+// spinner is visible (see show/hideEvent), so a hidden one is free. Drawn with a
+// translucent background and transparent to mouse events so the widget beneath stays
+// visible and clickable.
+class RingSpinner : public QWidget
+{
+public:
+    explicit RingSpinner(QWidget *parent = nullptr,
+                         const QColor &color = QColor("#58a6ff"))
+        : QWidget(parent), m_color(color)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(40);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 8) % 360;
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const double pen = 2.0;
+        const double inset = pen / 2.0 + 1.0;
+        const QRectF box(inset, inset, width() - 2 * inset, height() - 2 * inset);
+        // Faint full track so the ring always reads as a complete circle...
+        QPen track(QColor(m_color.red(), m_color.green(), m_color.blue(), 60));
+        track.setWidthF(pen);
+        p.setPen(track);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(box);
+        // ...with a brighter arc sweeping around it. Qt arc angles are in 1/16°
+        // counter-clockwise, so negating m_angle makes the sweep run clockwise.
+        QPen arc(m_color);
+        arc.setWidthF(pen);
+        arc.setCapStyle(Qt::RoundCap);
+        p.setPen(arc);
+        p.drawArc(box, -m_angle * 16, 100 * 16);
+    }
+
+private:
+    QTimer *m_timer = nullptr;
+    QColor m_color;
+    int m_angle = 0;
+};
+
 // Compact "issue looper" toggle that floats just above the Issues tab (adhoc
 // #130). It is both the control and the indicator: a small on/off switch and
 // the open issue currently being worked ("#124") — clicking that "#N" jumps to
