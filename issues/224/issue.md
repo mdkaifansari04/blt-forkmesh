@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 224
 title: on agents page have a button to delete all merged and closed agents
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 30
