@@ -1947,6 +1947,10 @@ inline void saveSolanaAddress(const QString &address)
 }
 const QString kPreviewCacheRootSetting = QStringLiteral("repositories/previewCacheRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
+// Persisted "node taken offline by the user" flag (reward heartbeat + repo
+// serving paused). Persisted so a deliberately-offline node stays offline across
+// restarts rather than silently resuming reward collection.
+const QString kNodeOfflineSetting = QStringLiteral("stats/nodeOffline");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 // Show a desktop alert when a push lands on one of this node's mirrors.
 const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
