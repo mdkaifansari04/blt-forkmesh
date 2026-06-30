@@ -524,6 +524,23 @@ private:
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateRepoPushButton();   // show pending local commits for the open repo
+    // Git-derived inputs to the "Sync changes" button. Computing them shells several
+    // rev-list/rev-parse subprocesses on the working copy + served mirror, so it runs
+    // off the GUI thread (computeRepoPushState) and the result is painted back on the
+    // main thread (applyRepoPushButtonState) — see updateRepoPushButton.
+    struct RepoPushState {
+        bool valid = false;       // repo has a local working tree (.git)
+        bool relay = false;       // publishes to a served mirror / ForkMesh relay
+        int unpublished = 0;      // commits not yet folded into the served mirror
+        int behind = 0;           // incoming commits to pull (drives the ⇅ arrow)
+        bool hasUpstream = false; // tracks a real upstream remote (non-relay)
+        int ahead = 0;            // commits ahead of that upstream
+        QString upstreamRef;      // the @{upstream} name (for the non-relay tooltip)
+    };
+    // Thread-safe (reads only the passed-in record + free git helpers + QSettings);
+    // never touches m_repositories or a widget, so it is safe to run on a worker.
+    RepoPushState computeRepoPushState(const RepositoryRecord &repo) const;
+    void applyRepoPushButtonState(int index, const RepoPushState &state);
     void pushCurrentRepoUpstream();
     // Integrity pin: sha256 over the canonical heads+tags advertisement of a bare
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
@@ -1672,6 +1689,11 @@ private:
     // bar beside the mic so you can see audio is coming in while you talk.
     void updateVoiceLevelMeter();
     void stopVoiceLevelMeter();
+    // Processing ring shown around the active mic while a released clip is still
+    // being transcribed (adhoc #18): show encircles m_voiceActiveButton, hide
+    // removes it when the final transcription pass settles.
+    void showVoiceTranscribeSpinner();
+    void hideVoiceTranscribeSpinner();
     // Settings "Test mic" (adhoc #14): record from the chosen mic and drive a level
     // bar so you can confirm the device is captured before relying on dictation.
     // Independent of whisper — purely a microphone check.
@@ -2315,6 +2337,11 @@ private:
     QProgressBar *m_voiceLevelMeter = nullptr;
     QTimer *m_voiceLevelTimer = nullptr;
     qint64 m_voiceLevelPos = 0;
+    // A rotating "processing ring" (RingSpinner) overlaid around the active mic
+    // button while a released clip is still being transcribed, so the post-release
+    // wait reads as "still transcribing". Created lazily and reparented onto whichever
+    // mic started the capture; shown/positioned by showVoiceTranscribeSpinner().
+    QWidget *m_voiceTranscribeSpinner = nullptr;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;
@@ -2354,6 +2381,13 @@ private:
     QLabel *m_footerGitIdentity = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
+    // Live one-per-second moving sparklines for CPU, host memory and disk
+    // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
+    // QWidget* and poked via static_cast since ResourceSparkline is private to
+    // MainWindowChat.cpp.
+    QWidget *m_cpuChart = nullptr;
+    QWidget *m_memChart = nullptr;
+    QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;
     int m_stallCount = 0;
@@ -3460,6 +3494,13 @@ private:
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
     QSet<int> m_pushingRepos;
+    // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
+    // paint the "Sync changes" button instantly from cache (e.g. flip to "Syncing
+    // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
+    RepoPushState m_pushState;
+    int m_pushStateIndex = -1;        // repo index m_pushState describes (-1 = none)
+    bool m_pushStateInFlight = false; // a recompute worker is currently running
+    bool m_pushStatePending = false;  // another recompute was requested mid-flight
     // "owner/name" of repos whose @mention scan is running on a worker thread, so
     // a second sync/inbox drain doesn't kick a duplicate scan (and double-notify)
     // while the first is still loading issues/PRs off the UI thread.
