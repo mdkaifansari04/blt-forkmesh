@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ScreenCaptureOverlay.h"
 
 using namespace forkmesh::ui;
 
@@ -423,6 +424,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     setOcticon(m_quickAddMicButton, "mic", 16);
     connect(m_quickAddMicButton, &QPushButton::clicked, this,
             &MainWindow::toggleVoiceCapture);
+    // Live input-level meter (adhoc #10): a thin bar beside the mic that fills
+    // with the incoming audio level while recording, so you can see the mic is
+    // actually picking you up. Hidden until recording starts.
+    m_voiceLevelMeter = new QProgressBar;
+    m_voiceLevelMeter->setObjectName("voiceLevelMeter");
+    m_voiceLevelMeter->setRange(0, 100);
+    m_voiceLevelMeter->setValue(0);
+    m_voiceLevelMeter->setTextVisible(false);
+    m_voiceLevelMeter->setFixedSize(48, 12);
+    m_voiceLevelMeter->setToolTip("Live microphone input level");
+    m_voiceLevelMeter->setStyleSheet(
+        "QProgressBar#voiceLevelMeter{border:1px solid #30363d;border-radius:3px;"
+        "background:#0d1117;}"
+        "QProgressBar#voiceLevelMeter::chunk{background:#3fb950;border-radius:2px;}");
+    m_voiceLevelMeter->setVisible(false);
     // "No issue" on by default (issue #79): the common quick-add path is firing a
     // coding agent straight from the typed prompt, not filing an issue.
     m_quickAddNoIssue->setChecked(true);
@@ -516,6 +532,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_issueQuickAdd, 1);
     quickAddRow->addWidget(m_quickAddCharCount);
     quickAddRow->addWidget(m_quickAddMicButton);
+    quickAddRow->addWidget(m_voiceLevelMeter);
     quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(quickAddSendButton);
     quickAddRow->addWidget(m_quickAddNoIssue);
@@ -610,6 +627,7 @@ void MainWindow::toggleVoiceCapture()
     if (m_voiceRecording) {
         if (m_voiceLiveTimer)
             m_voiceLiveTimer->stop();
+        stopVoiceLevelMeter();
         if (m_voiceRecordProc && m_voiceRecordProc->state() != QProcess::NotRunning)
             m_voiceRecordProc->terminate();
         return;
@@ -645,6 +663,7 @@ void MainWindow::toggleVoiceCapture()
                 m_voiceRecording = false;
                 if (m_voiceLiveTimer)
                     m_voiceLiveTimer->stop();
+                stopVoiceLevelMeter();
                 if (m_voiceRecordProc == proc)
                     m_voiceRecordProc = nullptr;
                 const QString err =
@@ -673,6 +692,9 @@ void MainWindow::toggleVoiceCapture()
                     return;
                 m_voiceRecording = false;
                 m_voiceRecordProc = nullptr;
+                if (m_voiceLiveTimer)
+                    m_voiceLiveTimer->stop();
+                stopVoiceLevelMeter();
                 proc->deleteLater();
                 updateVoiceInputButton();
                 logSystem("Could not start the microphone recorder.");
@@ -695,11 +717,27 @@ void MainWindow::toggleVoiceCapture()
     // authoritative; a flaky partial read just leaves the preview as-is.
     if (!m_voiceLiveTimer) {
         m_voiceLiveTimer = new QTimer(this);
-        m_voiceLiveTimer->setInterval(2200);
+        // Re-transcribe roughly every 1.5 s so dictated words land in the box
+        // soon after they're spoken without re-running whisper too aggressively.
+        m_voiceLiveTimer->setInterval(1500);
         connect(m_voiceLiveTimer, &QTimer::timeout, this,
                 [this] { startVoiceTranscription(/*finalPass=*/false); });
     }
     m_voiceLiveTimer->start();
+    // Drive the live input-level meter from the growing capture. A short interval
+    // keeps the bar feeling responsive; m_voiceLevelPos starts at the data chunk.
+    m_voiceLevelPos = 0;
+    if (!m_voiceLevelTimer) {
+        m_voiceLevelTimer = new QTimer(this);
+        m_voiceLevelTimer->setInterval(80);
+        connect(m_voiceLevelTimer, &QTimer::timeout, this,
+                &MainWindow::updateVoiceLevelMeter);
+    }
+    if (m_voiceLevelMeter) {
+        m_voiceLevelMeter->setValue(0);
+        m_voiceLevelMeter->setVisible(true);
+    }
+    m_voiceLevelTimer->start();
     // A red broadcast glyph makes the "recording now" state unmistakable. Tinted
     // directly (not via setOcticon) so it stays red regardless of the button's
     // normal icon colour; updateVoiceInputButton() restores the idle mic.
@@ -851,6 +889,40 @@ void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
         m_voiceInsertLen = 0;
         m_issueQuickAdd->setTextCursor(cur);
         m_issueQuickAdd->setFocus();
+    }
+}
+
+// Sample the freshly-captured tail of the WAV and drive the meter beside the mic.
+// Peaks are scaled with a square root so ordinary speech (well below full scale)
+// still moves the bar visibly; the value snaps up on a louder sample (attack) and
+// eases back down (release) so the meter reads like a real level indicator rather
+// than flickering.
+void MainWindow::updateVoiceLevelMeter()
+{
+    if (!m_voiceLevelMeter)
+        return;
+    const double peak = wavLevelSince(m_voiceWavPath, &m_voiceLevelPos);
+    const int cur = m_voiceLevelMeter->value();
+    int next;
+    if (peak < 0.0) {
+        next = qMax(0, cur - 14); // no new audio: decay toward silence
+    } else {
+        const int target =
+            int(qBound(0.0, qSqrt(peak) * 135.0, 100.0));
+        next = target >= cur ? target : qMax(target, cur - 14);
+    }
+    if (next != cur)
+        m_voiceLevelMeter->setValue(next);
+}
+
+// Freeze and hide the input-level meter once recording stops.
+void MainWindow::stopVoiceLevelMeter()
+{
+    if (m_voiceLevelTimer)
+        m_voiceLevelTimer->stop();
+    if (m_voiceLevelMeter) {
+        m_voiceLevelMeter->setValue(0);
+        m_voiceLevelMeter->setVisible(false);
     }
 }
 
@@ -1593,6 +1665,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
+    // Square screenshot button beside the rebuild/restart button: drag a region
+    // anywhere on screen and it lands in the prompt as an attachment.
+    m_navScreenshotButton = new QPushButton;
+    m_navScreenshotButton->setObjectName("topNavButton");
+    m_navScreenshotButton->setCursor(Qt::PointingHandCursor);
+    m_navScreenshotButton->setToolTip(
+        QString::fromUtf8("Screenshot a region \xE2\x80\x94 drag a square anywhere on "
+                          "screen and it's attached to your prompt"));
+    setOcticon(m_navScreenshotButton, "screen-full", 14);
+    connect(m_navScreenshotButton, &QPushButton::clicked, this,
+            &MainWindow::captureScreenRegion);
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -1666,7 +1750,9 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addStretch();
-    // Right-aligned so it sits under the top-right avatar.
+    // Right-aligned so they sit under the top-right avatar; the screenshot button
+    // sits just left of the rebuild/restart button.
+    navRow->addWidget(m_navScreenshotButton);
     navRow->addWidget(m_navRebuildButton);
     layout->addLayout(navRow);
     // Home/Code is the initial section, so show its nav button selected up front.
@@ -1687,6 +1773,29 @@ void MainWindow::updateNavRebuildButton()
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(
             QSettings().value(kShowRebuildButtonSetting, false).toBool());
+}
+
+// Screenshot button: drop a full-screen overlay, let the user drag a rectangle
+// anywhere on the computer (capture on press, send on release), then save the
+// region to a temp PNG and queue it as the next quick-add attachment.
+void MainWindow::captureScreenRegion()
+{
+    ScreenCaptureOverlay *overlay = ScreenCaptureOverlay::begin();
+    if (!overlay) {
+        logSystem("Couldn't grab the screen for a region screenshot.");
+        return;
+    }
+    connect(overlay, &ScreenCaptureOverlay::captured, this,
+            [this](const QImage &image) {
+                const QString path = saveNewAgentPromptImage(image);
+                if (path.isEmpty()) {
+                    logSystem("Couldn't save the screenshot.");
+                    return;
+                }
+                queueQuickAddImage(path);
+                if (m_issueQuickAdd)
+                    m_issueQuickAdd->setFocus();
+            });
 }
 
 void MainWindow::updateConnectionStatus()

@@ -1891,6 +1891,9 @@ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
 // was fetched (tiny.en/base.en/small.en).
 const QString kWhisperDirSetting = QStringLiteral("voice/whisperDir");
 const QString kWhisperModelSetting = QStringLiteral("voice/whisperModel");
+// Which microphone the recorder captures from (adhoc #10). Empty == the system
+// default; otherwise a recorder-specific device id from voiceInputDevices().
+const QString kVoiceInputDeviceSetting = QStringLiteral("voice/inputDevice");
 // When on, a successful "Merge to main" automatically runs "Pull <base> into
 // all" so every other branch catches up with the just-merged work (adhoc #250).
 const QString kBranchAutoPullAllSetting =
@@ -4410,27 +4413,114 @@ struct AudioRecorderCommand {
     QStringList args;
 };
 
+// Which of the supported CLI recorders is installed, in the same priority order
+// audioRecorderFor() picks (arecord > parecord > ffmpeg), or empty if none is.
+// Kept separate so the Settings mic-picker enumerates devices for the same tool
+// that will actually capture.
+inline QString preferredAudioRecorder()
+{
+    for (const char *p : {"arecord", "parecord", "ffmpeg"})
+        if (!QStandardPaths::findExecutable(QString::fromLatin1(p)).isEmpty())
+            return QString::fromLatin1(p);
+    return QString();
+}
+
+// Available microphone/input devices for the installed recorder, as
+// {display label, device id} pairs. The id is what audioRecorderFor() hands the
+// recorder (-D for arecord / -i for ffmpeg-alsa, --device= for parecord); an empty
+// id means "system default". Best-effort: returns just the default entry when the
+// listing command is missing or unparseable.
+inline QList<QPair<QString, QString>> voiceInputDevices()
+{
+    QList<QPair<QString, QString>> out;
+    out.append({QStringLiteral("System default"), QString()});
+    const QString tool = preferredAudioRecorder();
+    auto runCmd = [](const QString &prog, const QStringList &args) -> QString {
+        if (QStandardPaths::findExecutable(prog).isEmpty())
+            return QString();
+        QProcess p;
+        p.start(prog, args);
+        if (!p.waitForFinished(3000))
+            return QString();
+        return QString::fromUtf8(p.readAllStandardOutput());
+    };
+    if (tool == QLatin1String("parecord")) {
+        // PulseAudio/PipeWire capture sources via pactl; skip the ".monitor"
+        // loopbacks (those tap output, not a mic).
+        const QString listing =
+            runCmd(QStringLiteral("pactl"),
+                   {QStringLiteral("list"), QStringLiteral("short"),
+                    QStringLiteral("sources")});
+        const QStringList lines =
+            listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            const QStringList cols = line.split(QLatin1Char('\t'), Qt::SkipEmptyParts);
+            if (cols.size() < 2)
+                continue;
+            const QString name = cols.at(1);
+            if (name.endsWith(QStringLiteral(".monitor")))
+                continue;
+            out.append({name, name});
+        }
+    } else if (tool == QLatin1String("arecord") || tool == QLatin1String("ffmpeg")) {
+        // ALSA capture devices from `arecord -l`:
+        //   "card X: ID [Friendly Name], device Y: ... [...]"
+        const QString listing =
+            runCmd(QStringLiteral("arecord"), {QStringLiteral("-l")});
+        static const QRegularExpression re(QStringLiteral(
+            "card (\\d+): \\S+ \\[([^\\]]*)\\], device (\\d+):"));
+        QRegularExpressionMatchIterator it = re.globalMatch(listing);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            const QString card = m.captured(1);
+            const QString dev = m.captured(3);
+            const QString cardName = m.captured(2).trimmed();
+            // plughw converts whatever the card offers to our 16 kHz mono S16_LE.
+            const QString id = QStringLiteral("plughw:%1,%2").arg(card, dev);
+            QString label = cardName.isEmpty() ? id : cardName;
+            if (dev != QLatin1String("0"))
+                label += QStringLiteral(" (device %1)").arg(dev);
+            out.append({label, id});
+        }
+    }
+    return out;
+}
+
 inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
 {
     auto have = [](const char *p) {
         return !QStandardPaths::findExecutable(QString::fromLatin1(p)).isEmpty();
     };
-    if (have("arecord"))
-        return {QStringLiteral("arecord"),
-                {QStringLiteral("-q"), QStringLiteral("-f"), QStringLiteral("S16_LE"),
-                 QStringLiteral("-c"), QStringLiteral("1"), QStringLiteral("-r"),
-                 QStringLiteral("16000"), QStringLiteral("-t"), QStringLiteral("wav"),
-                 outWav}};
-    if (have("parecord"))
-        return {QStringLiteral("parecord"),
-                {QStringLiteral("--rate=16000"), QStringLiteral("--channels=1"),
-                 QStringLiteral("--format=s16le"),
-                 QStringLiteral("--file-format=wav"), outWav}};
+    // The mic chosen in Settings (empty == the recorder's own default device).
+    const QString device =
+        QSettings().value(kVoiceInputDeviceSetting).toString().trimmed();
+    if (have("arecord")) {
+        QStringList args = {QStringLiteral("-q"), QStringLiteral("-f"),
+                            QStringLiteral("S16_LE"), QStringLiteral("-c"),
+                            QStringLiteral("1"), QStringLiteral("-r"),
+                            QStringLiteral("16000"), QStringLiteral("-t"),
+                            QStringLiteral("wav")};
+        if (!device.isEmpty())
+            args << QStringLiteral("-D") << device;
+        args << outWav;
+        return {QStringLiteral("arecord"), args};
+    }
+    if (have("parecord")) {
+        QStringList args = {QStringLiteral("--rate=16000"),
+                            QStringLiteral("--channels=1"),
+                            QStringLiteral("--format=s16le"),
+                            QStringLiteral("--file-format=wav")};
+        if (!device.isEmpty())
+            args << (QStringLiteral("--device=") + device);
+        args << outWav;
+        return {QStringLiteral("parecord"), args};
+    }
     if (have("ffmpeg"))
         return {QStringLiteral("ffmpeg"),
                 {QStringLiteral("-loglevel"), QStringLiteral("error"),
                  QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("alsa"),
-                 QStringLiteral("-i"), QStringLiteral("default"),
+                 QStringLiteral("-i"),
+                 device.isEmpty() ? QStringLiteral("default") : device,
                  QStringLiteral("-ar"), QStringLiteral("16000"),
                  QStringLiteral("-ac"), QStringLiteral("1"), outWav}};
     return {};
@@ -4479,6 +4569,56 @@ inline double wavPeakAmplitude(const QString &path)
 
 // Below this peak (≈ -34 dBFS) a clip is treated as silence rather than speech.
 inline constexpr double kVoiceSpokeThreshold = 0.02;
+
+// Live-meter helper: peak amplitude (0..1) of the PCM samples appended to a
+// growing 16-bit mono WAV since byte offset *pos, advancing *pos to the new end.
+// On the first call (*pos < 44) the RIFF header is parsed to locate the data
+// chunk; thereafter it just reads forward from where it left off, so each meter
+// tick only scans freshly-captured audio. Returns -1 when there are no new
+// samples yet or the file can't be read.
+inline double wavLevelSince(const QString &path, qint64 *pos)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return -1.0;
+    const qint64 size = f.size();
+    qint64 start = *pos;
+    if (start < 44) {
+        const QByteArray head = f.read(qMin<qint64>(size, 4096));
+        if (head.size() < 44 || !head.startsWith("RIFF") || head.mid(8, 4) != "WAVE")
+            return -1.0;
+        int p = 12, dataOff = -1;
+        while (p + 8 <= head.size()) {
+            const quint32 sz = quint8(head[p + 4]) | (quint8(head[p + 5]) << 8) |
+                               (quint8(head[p + 6]) << 16) |
+                               (quint32(quint8(head[p + 7])) << 24);
+            if (head.mid(p, 4) == "data") {
+                dataOff = p + 8;
+                break;
+            }
+            p += 8 + int(sz) + (sz & 1);
+        }
+        if (dataOff < 0)
+            return -1.0;
+        start = dataOff;
+    }
+    if (start >= size) {
+        *pos = start;
+        return -1.0;
+    }
+    if (!f.seek(start))
+        return -1.0;
+    const QByteArray chunk = f.readAll();
+    const int n = chunk.size() & ~1; // whole 16-bit samples only
+    int peak = 0;
+    const uchar *b = reinterpret_cast<const uchar *>(chunk.constData());
+    for (int i = 0; i + 1 < n; i += 2) {
+        const qint16 s = qint16(quint16(b[i]) | (quint16(b[i + 1]) << 8));
+        peak = qMax(peak, qAbs(int(s)));
+    }
+    *pos = start + n;
+    return double(peak) / 32768.0;
+}
 
 // whisper.cpp hallucinates a handful of stock phrases out of silence/near-silence
 // ("you", "thank you", "thanks for watching", …). When one of those is the ENTIRE
