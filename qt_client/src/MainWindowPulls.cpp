@@ -1709,18 +1709,25 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     // issue timeline. Peer avatars are broadcast over chat and cached in
     // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
     // our own avatar may not be in that cache yet, so fall back to
-    // effectiveAvatar() for our own cards. Unknown peers keep the initials.
+    // effectiveAvatar() for our own cards. Authors we have no real picture for
+    // (peers and agents whose avatar hasn't been broadcast) get the deterministic
+    // procedural face used for contributor and assignee avatars, keyed by their
+    // pubkey, so every PR card shows an avatar instead of bare initials.
+    QPixmap authorAvatar;
     if (!authorId.isEmpty()) {
-        QPixmap authorAvatar;
         const QPixmap cached = m_avatars.value(authorId);
         if (!cached.isNull())
             authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
         else if (authorId == m_profileIdentity.publicKey())
             authorAvatar = roundedAvatar(effectiveAvatar(), 36);
-        if (!authorAvatar.isNull()) {
-            avatar->setText(QString());
-            avatar->setPixmap(authorAvatar);
-        }
+    }
+    if (authorAvatar.isNull()) {
+        const QString seed = authorId.isEmpty() ? who.toLower() : authorId;
+        authorAvatar = roundedAvatar(forkMeshAvatarPng(seed), 36);
+    }
+    if (!authorAvatar.isNull()) {
+        avatar->setText(QString());
+        avatar->setPixmap(authorAvatar);
     }
     rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
