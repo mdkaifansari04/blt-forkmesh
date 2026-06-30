@@ -877,18 +877,32 @@ void MainWindow::startSession()
         // conversations are visible right away (deduped against any replay).
         loadCachedAvatars();
         loadChatHistory();
-        // Serve already-mirrored repos live to the web for this session.
-        startRepoHosts();
-        // Heartbeat so an active, online node stays eligible for the reward
-        // split. The server ignores it unless the account is active.
-        if (!m_heartbeatTimer) {
-            m_heartbeatTimer = new QTimer(this);
-            m_heartbeatTimer->setInterval(60000);
-            connect(m_heartbeatTimer, &QTimer::timeout, this,
-                    &MainWindow::sendNodeHeartbeat);
+        // Honour a node the user previously parked offline: stay connected for
+        // chat, but don't serve repos or send the reward heartbeat until they
+        // flip the top-bar toggle back on.
+        if (m_nodeOffline) {
+            // The uptime clock shouldn't run while offline.
+            if (m_connectedAtMs > 0) {
+                m_totalConnectionMs +=
+                    QDateTime::currentMSecsSinceEpoch() - m_connectedAtMs;
+                m_connectedAtMs = 0;
+                QSettings().setValue(kConnectionTotalSetting, m_totalConnectionMs);
+            }
+        } else {
+            // Serve already-mirrored repos live to the web for this session.
+            startRepoHosts();
+            // Heartbeat so an active, online node stays eligible for the reward
+            // split. The server ignores it unless the account is active.
+            if (!m_heartbeatTimer) {
+                m_heartbeatTimer = new QTimer(this);
+                m_heartbeatTimer->setInterval(60000);
+                connect(m_heartbeatTimer, &QTimer::timeout, this,
+                        &MainWindow::sendNodeHeartbeat);
+            }
+            m_heartbeatTimer->start();
+            sendNodeHeartbeat();
         }
-        m_heartbeatTimer->start();
-        sendNodeHeartbeat();
+        updateNodeOnlineControls();
     }
 }
 

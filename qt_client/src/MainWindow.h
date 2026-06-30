@@ -557,6 +557,12 @@ private:
     void updateChatButton();       // refresh the top-bar chat unread indicator
     bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
+    // Take this node online / offline from the top-bar toggle. Offline stops the
+    // reward heartbeat and live repo serving (so the node stops collecting
+    // rewards) while leaving the user in the app; online resumes both.
+    void setNodeOffline(bool offline);
+    // Refresh the top-bar reward toggle, status line and "online Xh" uptime.
+    void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
     // Refresh the footer's centered git-identity label for the open repo.
@@ -2058,6 +2064,15 @@ private:
     // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
     // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
+    // Reward-availability cluster in the top-right (next to the balance): a toggle
+    // that takes this node offline (stops serving + the reward heartbeat), a clear
+    // "available for rewards" / "offline · not collecting rewards" status line, and
+    // a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a node
+    // the user deliberately took offline stays offline across restarts.
+    QPushButton *m_nodeOnlineToggle = nullptr;
+    QLabel *m_nodeRewardStatus = nullptr;
+    QLabel *m_nodeUptimeLabel = nullptr;
+    bool m_nodeOffline = false;
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).
