@@ -423,6 +423,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     }
 
     m_homeRoster = visibleMembers;
+    // Now that the room link is live (a roster only arrives once connected), a
+    // brand-new node greets the shared #welcome room — once, ever (issue #192).
+    maybeAnnounceWelcome();
     refreshChatMembers();
     // The members list is gone (nodes are the members); keep DM tab titles in
     // sync with renamed/rediscovered nodes.
@@ -449,6 +452,30 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // waiting for the next heartbeat/auto-sync.
     if (!firstRoster)
         syncMirrorsBehindRoster();
+}
+
+void MainWindow::maybeAnnounceWelcome()
+{
+    // Self-announce, not peer-detect: only the joining node posts, so the room
+    // gets exactly one "X joined" line instead of one per node that saw them.
+    // The greeting is broadcast (and stored in room history for later joiners),
+    // so even an empty network keeps a record of who arrived.
+    if (m_welcomeAnnounced || !m_backend)
+        return;
+    const QString id = m_profileIdentity.publicKey();
+    if (id.isEmpty())
+        return;
+    QSettings settings;
+    const QString key = kWelcomeAnnouncedSettingPrefix + id;
+    if (settings.value(key, false).toBool()) {
+        m_welcomeAnnounced = true; // greeted in an earlier run; don't repeat
+        return;
+    }
+    settings.setValue(key, true);
+    m_welcomeAnnounced = true;
+    m_backend->sendChat(
+        kWelcomeChannel,
+        QString::fromUtf8("\xF0\x9F\x91\x8B Just joined ForkMesh \xE2\x80\x94 hello!"));
 }
 
 void MainWindow::refreshChatMembers()
