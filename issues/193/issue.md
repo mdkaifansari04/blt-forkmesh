@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 193
 title: make a chekcbox in settings to auto sync  new issues (if clean)
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 36
