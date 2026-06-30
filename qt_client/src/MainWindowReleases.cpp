@@ -1128,6 +1128,23 @@ void MainWindow::promptNewRelease()
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         if (repo.actionsEnabled) {
+            // The tag (and any version-bump commit) was just created in the
+            // working copy, but queueWorkflowsForCommit reads the .forkmesh/
+            // workflows AND resolves the commit from the served bare mirror — and
+            // ActionRunner later checks that commit out of the mirror too. The
+            // periodic mirror sync hasn't caught up yet, so without copying the new
+            // tag across first the release tag exists but ls-tree finds no workflow
+            // at the (mirror-absent) commit ("nothing to run") and the build never
+            // runs. Fetch the new heads+tags straight from the working copy into
+            // the mirror (the same refspecs syncRepository uses) so the tagged
+            // commit and its workflow files are present before we queue the build.
+            if (!repo.mirrorPath.trimmed().isEmpty() && dir != repo.mirrorPath &&
+                QDir(repo.mirrorPath).exists())
+                runGitCapture(repo.mirrorPath,
+                              {QStringLiteral("fetch"), dir,
+                               QStringLiteral("+refs/heads/*:refs/heads/*"),
+                               QStringLiteral("+refs/tags/*:refs/tags/*")},
+                              nullptr, nullptr);
             QByteArray tip;
             if (runGitCapture(dir, {"rev-parse", "--verify", tag + "^{commit}"},
                               &tip, nullptr) &&
