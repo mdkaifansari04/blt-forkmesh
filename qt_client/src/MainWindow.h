@@ -1254,8 +1254,13 @@ private:
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
     // Merge the default branch into a worktree's branch, run inside that worktree,
-    // so it picks up the latest from main without leaving its folder.
-    void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // so it picks up the latest from main without leaving its folder. baseArg lets a
+    // caller name the base branch explicitly; callers that leave it empty fall back
+    // to the open repo detail's default branch. The agent detail page must pass it,
+    // since its session's repo isn't necessarily the one open in the detail view
+    // (adhoc #28).
+    void updateWorktreeFromMain(const QString &worktreePath, const QString &branch,
+                                const QString &baseArg = QString());
     // Open the shared merge editor over the worktree's currently-unmerged files
     // (a conflicted merge in progress), letting the user resolve and commit them.
     // Reused by "Update from main" when it conflicts and by the detail panel's
