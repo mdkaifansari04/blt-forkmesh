@@ -1321,6 +1321,8 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    // Open a release's full notes + the diff since the previous release.
+    void showReleaseDetail(const QString &tag);
     QWidget *buildMirrorNodesTab();
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
@@ -1664,6 +1666,11 @@ private:
     // bar beside the mic so you can see audio is coming in while you talk.
     void updateVoiceLevelMeter();
     void stopVoiceLevelMeter();
+    // Processing ring shown around the active mic while a released clip is still
+    // being transcribed (adhoc #18): show encircles m_voiceActiveButton, hide
+    // removes it when the final transcription pass settles.
+    void showVoiceTranscribeSpinner();
+    void hideVoiceTranscribeSpinner();
     // Settings "Test mic" (adhoc #14): record from the chosen mic and drive a level
     // bar so you can confirm the device is captured before relying on dictation.
     // Independent of whisper — purely a microphone check.
@@ -2298,6 +2305,11 @@ private:
     QProgressBar *m_voiceLevelMeter = nullptr;
     QTimer *m_voiceLevelTimer = nullptr;
     qint64 m_voiceLevelPos = 0;
+    // A rotating "processing ring" (RingSpinner) overlaid around the active mic
+    // button while a released clip is still being transcribed, so the post-release
+    // wait reads as "still transcribing". Created lazily and reparented onto whichever
+    // mic started the capture; shown/positioned by showVoiceTranscribeSpinner().
+    QWidget *m_voiceTranscribeSpinner = nullptr;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;

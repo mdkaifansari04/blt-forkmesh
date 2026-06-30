@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 205
 title: make the branches page load better with the table expanded to see everything
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 17

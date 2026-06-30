@@ -1821,13 +1821,20 @@ QWidget *MainWindow::buildBranchesTab()
     split->addWidget(m_branchesTable);
     split->addWidget(filesPane);
     split->addWidget(diffPane);
-    split->setStretchFactor(0, 0);
+    // Let the branches table share the window's extra width with the diff pane
+    // rather than staying pinned narrow while only the diff grew. The old 0/0/1
+    // factors sent every extra pixel to the diff, so on a wide window the table
+    // stayed cramped and its Branch/Worktree columns clipped — you had to drag the
+    // divider to read the full list. Now the table grows too (factor 1), the file
+    // list stays compact (0), and the table keeps showing everything as the window
+    // widens (#205).
+    split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
     split->setStretchFactor(2, 1);
-    // Open the branches list to ~half the page so the (stretching) Branch column
-    // shows full branch titles plus every status/agent column without clipping;
-    // the first divider lands at ~50% (adhoc #193).
-    split->setSizes({850, 200, 650});
+    // Open the branches list expanded — the table takes the larger share so every
+    // column (Branch, Status, Updated, Worktree, Issue/Agent, actions) is visible
+    // at a glance without dragging the divider (#205; was ~50% per adhoc #193).
+    split->setSizes({1100, 200, 600});
     layout->addWidget(split, 1);
     return page;
 }
