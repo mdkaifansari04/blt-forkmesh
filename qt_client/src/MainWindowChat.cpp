@@ -1715,15 +1715,15 @@ void MainWindow::probeRelayLatency()
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
             radar->setLatency(static_cast<int>(elapsed));
-            // Back online: relax to the once-a-minute cadence (issue #179).
-            if (m_relayLatencyTimer && m_relayLatencyTimer->interval() != 60 * 1000)
-                m_relayLatencyTimer->start(60 * 1000);
         } else {
             radar->setUnreachable();
-            // Offline: re-probe every second until the relay answers again so
-            // the radar clears its red alert promptly (issue #179).
-            if (m_relayLatencyTimer)
-                m_relayLatencyTimer->start(1000);
+            // The relay dropped. Drop any pooled keep-alive connection so the
+            // next probe dials a fresh socket: otherwise QNetworkAccessManager
+            // can keep reusing the now-dead connection and the radar never
+            // clears even after we're back online. The steady once-a-minute
+            // timer keeps re-probing while offline so it reconnects on its own.
+            if (m_networkAccess)
+                m_networkAccess->clearConnectionCache();
         }
     });
 }
