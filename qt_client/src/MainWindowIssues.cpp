@@ -932,6 +932,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDiffView->setObjectName("diffView");
     m_issueDiffView->setOpenExternalLinks(false);
     m_issueDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    registerDiffView(m_issueDiffView);
     // DiffFileNavigator is created lazily on first render (complete type in scope).
 
     auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
@@ -4209,6 +4210,18 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (QWindow *handle = windowHandle(); handle && handle->isExposed())
             QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
         return QMainWindow::eventFilter(obj, event); // never consume expose
+    }
+    // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
+    // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
+    if (event->type() == QEvent::Wheel &&
+        (static_cast<QWheelEvent *>(event)->modifiers() & Qt::ControlModifier)) {
+        for (QTextEdit *view : m_diffViews) {
+            if (view && obj == view->viewport()) {
+                adjustDiffFont(
+                    static_cast<QWheelEvent *>(event)->angleDelta().y() > 0 ? 1 : -1);
+                return true;
+            }
+        }
     }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
