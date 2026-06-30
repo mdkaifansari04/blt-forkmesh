@@ -178,23 +178,35 @@ QString agentCostText(double usd)
     return QStringLiteral("$%1").arg(usd, 0, 'f', 2);
 }
 
-// Turn "#123" references in an already-HTML-escaped commit message into links
-// the detail view resolves to the matching issue / pull request. Operating on
-// escaped text keeps the digits/'#' intact while leaving the rest untouched.
+// Turn references in an already-HTML-escaped commit message into links the detail
+// view resolves: "#123" → the matching issue / pull request, and a bare commit SHA
+// (7-40 hex with at least one a-f letter, so plain decimal numbers are left alone)
+// → that commit via showCommit. Both kinds are matched in one pass so a SHA can't
+// match inside a generated href; operating on escaped text keeps the digits/'#'/hex
+// intact while leaving the rest untouched.
 QString linkifyIssueRefs(const QString &escaped)
 {
-    static const QRegularExpression re(QStringLiteral("#(\\d+)"));
+    static const QRegularExpression re(QStringLiteral(
+        "#(\\d+)|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
     QString out;
     int last = 0;
     auto it = re.globalMatch(escaped);
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
         out += escaped.mid(last, m.capturedStart() - last);
-        const QString num = m.captured(1);
-        out += QStringLiteral(
-                   "<a href=\"ref:%1\" style=\"color:#58a6ff;text-decoration:none\">"
-                   "#%1</a>")
-                   .arg(num);
+        if (!m.captured(1).isEmpty()) {
+            const QString num = m.captured(1);
+            out += QStringLiteral(
+                       "<a href=\"ref:%1\" style=\"color:#58a6ff;text-decoration:none\">"
+                       "#%1</a>")
+                       .arg(num);
+        } else {
+            const QString sha = m.captured(2);
+            out += QStringLiteral(
+                       "<a href=\"commit:%1\" style=\"color:#58a6ff;text-decoration:none\">"
+                       "%1</a>")
+                       .arg(sha);
+        }
         last = m.capturedEnd();
     }
     out += escaped.mid(last);
