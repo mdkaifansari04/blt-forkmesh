@@ -432,9 +432,13 @@ private:
     // it appears in the Repos list without first walking the full join flow.
     void ensureFlagshipRepo();
     // Log in by email (+ optional TOTP). accountName is only used as a fallback
-    // node name if the server response omits one.
+    // node name if the server response omits one. If *fatal is non-null it is set
+    // true when the failure is unrecoverable (the same credentials can never
+    // succeed from this device, e.g. the account is bound to another key), so the
+    // caller can stop re-prompting instead of looping the login dialog forever.
     bool verifyTotpLogin(const QString &email, const QString &password,
-                         const QString &totp, const QString &accountName);
+                         const QString &totp, const QString &accountName,
+                         bool *fatal = nullptr);
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
