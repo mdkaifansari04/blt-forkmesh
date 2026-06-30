@@ -174,6 +174,7 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeDiffView->setObjectName("diffView");
     m_worktreeDiffView->setOpenExternalLinks(false);
     m_worktreeDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    registerDiffView(m_worktreeDiffView);
 
     // Detail pane: a toolbar with a prominent "Merge into main" for the selected
     // worktree, over its diff. Mirrors the per-row button but is reachable while
@@ -714,7 +715,6 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     }
     if (m_worktreeFilesSummary)
         m_worktreeFilesSummary->clear();
-    m_worktreeDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
 
     const QString base = repoDefaultBranch(repoBranches());
     // Remember the selected worktree and (de)activate the detail buttons: only a
@@ -790,11 +790,11 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     const QString html =
         renderDiffHtml(QString::fromUtf8(out), files, repoGitDir(), base, branch,
                        QString(), QHash<QString, QString>(), QSet<QString>());
-    m_worktreeDiffView->setHtml(
-        html.isEmpty()
-            ? QStringLiteral("<p style='color:#8b949e'>No changes vs %1.</p>")
-                  .arg(base.toHtmlEscaped())
-            : html);
+    setDiffHtml(m_worktreeDiffView,
+                html.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>No changes vs %1.</p>")
+                          .arg(base.toHtmlEscaped())
+                    : html);
     if (m_worktreeFilesSummary)
         m_worktreeFilesSummary->setText(QStringLiteral("%1 file%2 changed")
                                             .arg(files.size())
@@ -1712,6 +1712,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDiffView->setLineWrapMode(QTextEdit::NoWrap);
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
+    registerDiffView(m_branchDiffView);
     // Sticky header naming the file currently scrolled into view.
     m_branchDiffSticky = new QLabel(m_branchDiffView->viewport());
     m_branchDiffSticky->setObjectName("diffStickyHeader");
@@ -2808,7 +2809,6 @@ void MainWindow::showBranchDiff(const QString &branch)
     }
     if (m_branchFilesSummary)
         m_branchFilesSummary->clear();
-    m_branchDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
         m_branchDiffView->clear();
@@ -2816,7 +2816,7 @@ void MainWindow::showBranchDiff(const QString &branch)
     }
     const QString base = repoDefaultBranch(repoBranches());
     if (branch == base) {
-        m_branchDiffView->setHtml(
+        setDiffHtml(m_branchDiffView,
             QStringLiteral("<p style='color:#8b949e'>%1 is the default branch.</p>")
                 .arg(branch.toHtmlEscaped()));
         return;
@@ -2904,7 +2904,7 @@ void MainWindow::renderBranchScopeDiff()
         viewedContext = QStringLiteral("branch/") + branch + QStringLiteral("/wt");
         emptyMessage = QStringLiteral("No uncommitted changes.");
         if (work.isEmpty() || !runGitCapture(work, {"diff", "HEAD"}, &out, &err)) {
-            m_branchDiffView->setHtml(
+            setDiffHtml(m_branchDiffView,
                 QStringLiteral("<p style='color:#8b949e'>No uncommitted changes.</p>"));
             return;
         }
@@ -2925,7 +2925,7 @@ void MainWindow::renderBranchScopeDiff()
             QStringLiteral("branch/") + branch + QStringLiteral("/commit/") + hash;
         emptyMessage = QStringLiteral("This commit has no file changes.");
         if (!runGitCapture(dir, {"show", "--format=", hash}, &out, &err)) {
-            m_branchDiffView->setHtml(
+            setDiffHtml(m_branchDiffView,
                 QStringLiteral("<p style='color:#f85149'>Could not show %1: %2</p>")
                     .arg(hash.left(8).toHtmlEscaped(), err.toHtmlEscaped()));
             return;
@@ -2935,7 +2935,7 @@ void MainWindow::renderBranchScopeDiff()
         emptyMessage = QStringLiteral("No changes between %1 and %2.")
                            .arg(branch, base);
         if (!runGitCapture(dir, {"diff", base + ".." + branch}, &out, &err)) {
-            m_branchDiffView->setHtml(
+            setDiffHtml(m_branchDiffView,
                 QStringLiteral("<p style='color:#f85149'>Could not diff %1: %2</p>")
                     .arg(branch.toHtmlEscaped(), err.toHtmlEscaped()));
             return;
@@ -2981,11 +2981,11 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     constexpr int kMaxDiffHtmlChars = 8'000'000;     // refuse entirely above this
     constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
     if (html.isEmpty()) {
-        m_branchDiffView->setHtml(
+        setDiffHtml(m_branchDiffView,
             QStringLiteral("<p style='color:#8b949e'>%1</p>")
                 .arg(emptyMessage.toHtmlEscaped()));
     } else if (html.size() > kMaxDiffHtmlChars) {
-        m_branchDiffView->setHtml(
+        setDiffHtml(m_branchDiffView,
             QStringLiteral(
                 "<p style='color:#d29922'>This diff is too large to render here "
                 "(%1 file%2). Use the changed-files list, or view the branch in "
@@ -2998,11 +2998,16 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         while (!blocks.isEmpty() &&
                (firstChunk.isEmpty() || firstChunk.size() < kFirstPaintChars))
             firstChunk += blocks.takeFirst();
+        // A streamed diff is assembled incrementally; don't let a
+        // Ctrl+wheel zoom re-render a partial copy (issue #254).
+        m_branchDiffView->setProperty("fm_diffSource", QString());
+        m_branchDiffView->document()->setDefaultStyleSheet(
+            diffStyleSheet(m_diffFontPt));
         m_branchDiffView->setHtml(firstChunk);
         m_branchDiffPendingBlocks = blocks;
         appendBranchDiffBlocks(m_branchDiffRenderGen);
     } else {
-        m_branchDiffView->setHtml(html);
+        setDiffHtml(m_branchDiffView, html);
     }
 
     // Changed-files list: a status-coloured row per file; click to scroll the
