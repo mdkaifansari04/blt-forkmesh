@@ -618,23 +618,32 @@ QWidget *MainWindow::buildNetworkLogDock()
     return dock;
 }
 
-// Show the mic only once whisper.cpp is installed; reset its idle look. Called
-// when the bar is built and again after a successful install from Settings.
+// Show the mic only once a voice engine is installed; reset its idle look. Called
+// when the bar is built and again after a successful install from Settings. Also
+// syncs the comment-composer mics (m_voiceButtons), which share the same engine.
 void MainWindow::updateVoiceInputButton()
 {
-    if (!m_quickAddMicButton)
-        return;
-    m_quickAddMicButton->setVisible(voiceInputReady());
-    if (m_voiceRecording)
-        return;
-    setOcticon(m_quickAddMicButton, "mic", 16);
-    m_quickAddMicButton->setStyleSheet(QString());
-    const QString engine = voiceEngine() == QStringLiteral("parakeet")
-                               ? QStringLiteral("Parakeet")
-                               : QStringLiteral("whisper.cpp");
-    m_quickAddMicButton->setToolTip(
-        QStringLiteral("Speak your prompt \xE2\x80\x94 hold to record, release "
-                       "to transcribe with whisper.cpp."));
+    const bool ready = voiceInputReady();
+    if (m_quickAddMicButton) {
+        m_quickAddMicButton->setVisible(ready);
+        // Leave the mic currently recording on its red broadcast glyph.
+        if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
+            setOcticon(m_quickAddMicButton, "mic", 16);
+            m_quickAddMicButton->setStyleSheet(QString());
+            m_quickAddMicButton->setToolTip(QStringLiteral(
+                "Speak your prompt \xE2\x80\x94 hold to record, release "
+                "to transcribe."));
+        }
+    }
+    for (QPushButton *b : m_voiceButtons) {
+        if (!b)
+            continue;
+        b->setVisible(ready);
+        if (m_voiceRecording && m_voiceActiveButton == b)
+            continue;
+        setOcticon(b, "mic", 16);
+        b->setStyleSheet(QString());
+    }
 }
 
 // Push-to-talk dictation: pressing the mic button records from the mic to a temp
@@ -654,10 +663,41 @@ void MainWindow::stopVoiceCapture()
         m_voiceRecordProc->terminate();
 }
 
-// Press-and-hold to begin recording (see stopVoiceCapture for the release path).
+// Footer prompt mic: press-and-hold to dictate into the quick-add box.
 void MainWindow::startVoiceCapture()
 {
-    if (!m_quickAddMicButton || !m_issueQuickAdd)
+    startVoiceCaptureFor(m_issueQuickAdd, m_quickAddMicButton);
+}
+
+// Build a push-to-talk mic for a comment composer and remember it so the voice
+// engine's install state keeps its visibility/idle look in sync. Holding it speaks
+// into the composer's source editor (switching back to the write tab first so the
+// dictated words are visible); releasing stops and transcribes.
+QPushButton *MainWindow::makeVoiceButton(MarkdownEditor *composer)
+{
+    auto *btn = new QPushButton;
+    btn->setObjectName("ghostButton");
+    btn->setCursor(Qt::PointingHandCursor);
+    setOcticon(btn, "mic", 16);
+    btn->setToolTip(QStringLiteral(
+        "Speak your comment \xE2\x80\x94 hold to record, release to transcribe."));
+    btn->setVisible(voiceInputReady());
+    connect(btn, &QPushButton::pressed, this, [this, composer, btn] {
+        if (!m_voiceRecording && composer)
+            composer->showWriteArea();
+        startVoiceCaptureFor(composer ? composer->sourceEdit() : nullptr, btn);
+    });
+    connect(btn, &QPushButton::released, this, &MainWindow::stopVoiceCapture);
+    m_voiceButtons.append(btn);
+    return btn;
+}
+
+// Press-and-hold to begin recording into `target` (see stopVoiceCapture for the
+// release path). `target` may be the footer prompt or any comment composer's
+// editor; `button` is the mic that was pressed.
+void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button)
+{
+    if (!button || !target)
         return;
 
     // Already recording (e.g. a stray second press): nothing to start.
@@ -673,6 +713,12 @@ void MainWindow::startVoiceCapture()
         m_voiceTranscribeProc->state() != QProcess::NotRunning)
         return;
 
+    // Remember which box this capture writes into and the box's own placeholder,
+    // so status messages can be restored to it (not a hard-coded "enter prompt").
+    m_voiceTargetEdit = target;
+    m_voiceActiveButton = button;
+    m_voiceIdlePlaceholder = target->placeholderText();
+
     m_voiceWavPath =
         QDir(QDir::tempPath())
             .filePath(QStringLiteral("forkmesh-voice-%1.wav")
@@ -684,12 +730,12 @@ void MainWindow::startVoiceCapture()
             "Voice input needs ffmpeg to capture the microphone. Install it "
             "(macOS: \"brew install ffmpeg\"; Windows: ffmpeg.org) and make sure "
             "it's on your PATH.");
-        m_issueQuickAdd->setPlaceholderText("no recorder found (install ffmpeg)");
+        target->setPlaceholderText("no recorder found (install ffmpeg)");
 #else
         logSystem(
             "Voice input needs a microphone recorder. Install one of: arecord "
             "(alsa-utils), parecord (pulseaudio-utils) or ffmpeg.");
-        m_issueQuickAdd->setPlaceholderText(
+        target->setPlaceholderText(
             "no recorder found (install arecord / parecord / ffmpeg)");
 #endif
         return;
@@ -715,7 +761,8 @@ void MainWindow::startVoiceCapture()
                     QFileInfo(m_voiceWavPath).size() < 1024) {
                     if (!err.isEmpty())
                         logSystem("Microphone capture failed: " + err.right(200));
-                    m_issueQuickAdd->setPlaceholderText("enter prompt");
+                    if (m_voiceTargetEdit)
+                        m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                     m_voiceInsertPos = -1;
                     m_voiceInsertLen = 0;
                     QFile::remove(m_voiceWavPath);
@@ -737,7 +784,8 @@ void MainWindow::startVoiceCapture()
                 proc->deleteLater();
                 updateVoiceInputButton();
                 logSystem("Could not start the microphone recorder.");
-                m_issueQuickAdd->setPlaceholderText("enter prompt");
+                if (m_voiceTargetEdit)
+                    m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
             });
 
     proc->start(rec.program, rec.args);
@@ -748,7 +796,7 @@ void MainWindow::startVoiceCapture()
     m_voiceRecording = true;
     // Anchor the live-dictation span at the cursor so each refresh replaces only
     // the words we've inserted, leaving whatever the user typed alone.
-    m_voiceInsertPos = m_issueQuickAdd->textCursor().position();
+    m_voiceInsertPos = target->textCursor().position();
     m_voiceInsertLen = 0;
     // Re-transcribe the growing clip on a timer so dictated words show up while
     // you're still talking (whisper-cli isn't streaming, so this re-runs over the
@@ -767,29 +815,31 @@ void MainWindow::startVoiceCapture()
         }
         m_voiceLiveTimer->start();
     }
-    // Drive the live input-level meter from the growing capture. A short interval
-    // keeps the bar feeling responsive; m_voiceLevelPos starts at the data chunk.
+    // Drive the live input-level meter from the growing capture. The meter lives
+    // in the footer next to the prompt mic, so only animate it for that mic; a
+    // comment mic just turns red while recording.
     m_voiceLevelPos = 0;
-    if (!m_voiceLevelTimer) {
-        m_voiceLevelTimer = new QTimer(this);
-        m_voiceLevelTimer->setInterval(80);
-        connect(m_voiceLevelTimer, &QTimer::timeout, this,
-                &MainWindow::updateVoiceLevelMeter);
+    if (button == m_quickAddMicButton) {
+        if (!m_voiceLevelTimer) {
+            m_voiceLevelTimer = new QTimer(this);
+            m_voiceLevelTimer->setInterval(80);
+            connect(m_voiceLevelTimer, &QTimer::timeout, this,
+                    &MainWindow::updateVoiceLevelMeter);
+        }
+        if (m_voiceLevelMeter) {
+            m_voiceLevelMeter->setValue(0);
+            m_voiceLevelMeter->setVisible(true);
+        }
+        m_voiceLevelTimer->start();
     }
-    if (m_voiceLevelMeter) {
-        m_voiceLevelMeter->setValue(0);
-        m_voiceLevelMeter->setVisible(true);
-    }
-    m_voiceLevelTimer->start();
     // A red broadcast glyph makes the "recording now" state unmistakable. Tinted
     // directly (not via setOcticon) so it stays red regardless of the button's
     // normal icon colour; updateVoiceInputButton() restores the idle mic.
-    m_quickAddMicButton->setIcon(themedOcticon("broadcast", QColor("#f85149"), 16));
-    m_quickAddMicButton->setIconSize(QSize(16, 16));
-    m_quickAddMicButton->setToolTip(
+    button->setIcon(themedOcticon("broadcast", QColor("#f85149"), 16));
+    button->setIconSize(QSize(16, 16));
+    button->setToolTip(
         QStringLiteral("Recording\xE2\x80\xA6 release to stop and transcribe."));
-    m_issueQuickAdd->setPlaceholderText(
-        "listening\xE2\x80\xA6 release the mic to stop");
+    target->setPlaceholderText("listening\xE2\x80\xA6 release the mic to stop");
 }
 
 // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
@@ -799,7 +849,7 @@ void MainWindow::startVoiceCapture()
 // still-running live tick so the box always ends on the full transcript.
 void MainWindow::startVoiceTranscription(bool finalPass)
 {
-    if (!m_issueQuickAdd)
+    if (!m_voiceTargetEdit)
         return;
     if (m_voiceTranscribeProc &&
         m_voiceTranscribeProc->state() != QProcess::NotRunning) {
@@ -812,9 +862,10 @@ void MainWindow::startVoiceTranscription(bool finalPass)
     // On the final pass any early-out must restore the idle prompt state, since
     // recording has already stopped and nothing else will.
     auto finishIdle = [this] {
-        m_issueQuickAdd->setPlaceholderText("enter prompt");
-        if (m_quickAddMicButton)
-            m_quickAddMicButton->setEnabled(true);
+        if (m_voiceTargetEdit)
+            m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
+        if (m_voiceActiveButton)
+            m_voiceActiveButton->setEnabled(true);
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
         QFile::remove(m_voiceWavPath);
@@ -838,9 +889,9 @@ void MainWindow::startVoiceTranscription(bool finalPass)
     }
 
     if (finalPass) {
-        m_issueQuickAdd->setPlaceholderText("transcribing\xE2\x80\xA6");
-        if (m_quickAddMicButton)
-            m_quickAddMicButton->setEnabled(false);
+        m_voiceTargetEdit->setPlaceholderText("transcribing\xE2\x80\xA6");
+        if (m_voiceActiveButton)
+            m_voiceActiveButton->setEnabled(false);
     }
 
     // whisper.cpp writes "<base>.txt" with -otxt -of <base>; reading the file is
@@ -882,9 +933,10 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                     return;
                 }
 
-                if (m_quickAddMicButton)
-                    m_quickAddMicButton->setEnabled(true);
-                m_issueQuickAdd->setPlaceholderText("enter prompt");
+                if (m_voiceActiveButton)
+                    m_voiceActiveButton->setEnabled(true);
+                if (m_voiceTargetEdit)
+                    m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);
                 applyVoiceTranscript(text, /*finalPass=*/true);
                 if (text.isEmpty() && exitCode != 0)
@@ -915,14 +967,14 @@ void MainWindow::startVoiceTranscription(bool finalPass)
 // words don't run together. On the final pass the span is released.
 void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
 {
-    if (!m_issueQuickAdd || m_voiceInsertPos < 0) {
+    if (!m_voiceTargetEdit || m_voiceInsertPos < 0) {
         if (finalPass) {
             m_voiceInsertPos = -1;
             m_voiceInsertLen = 0;
         }
         return;
     }
-    const QString full = m_issueQuickAdd->toPlainText();
+    const QString full = m_voiceTargetEdit->toPlainText();
     const int start = qBound(0, m_voiceInsertPos, full.size());
     const int end = qBound(start, start + m_voiceInsertLen, full.size());
 
@@ -931,7 +983,7 @@ void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
         prefix = QStringLiteral(" ");
     const QString ins = text.isEmpty() ? QString() : prefix + text;
 
-    QTextCursor cur = m_issueQuickAdd->textCursor();
+    QTextCursor cur = m_voiceTargetEdit->textCursor();
     cur.setPosition(start);
     cur.setPosition(end, QTextCursor::KeepAnchor);
     cur.insertText(ins);
@@ -940,8 +992,8 @@ void MainWindow::applyVoiceTranscript(const QString &text, bool finalPass)
     if (finalPass) {
         m_voiceInsertPos = -1;
         m_voiceInsertLen = 0;
-        m_issueQuickAdd->setTextCursor(cur);
-        m_issueQuickAdd->setFocus();
+        m_voiceTargetEdit->setTextCursor(cur);
+        m_voiceTargetEdit->setFocus();
     }
 }
 
