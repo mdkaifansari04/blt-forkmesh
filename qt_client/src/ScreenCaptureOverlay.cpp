@@ -124,7 +124,21 @@ void ScreenCaptureOverlay::popOverrideCursor()
 
 QRect ScreenCaptureOverlay::selectionRect() const
 {
+    // Widget-local rect, used to paint the marquee under the live cursor.
     return QRect(m_origin, m_current).normalized();
+}
+
+QRect ScreenCaptureOverlay::captureRect() const
+{
+    // The grab/crop works in virtual-desktop coordinates (the snapshot's origin
+    // is m_virtualGeom.topLeft()), so map the drag through the overlay's *actual*
+    // on-screen position instead of assuming widget-local already equals
+    // virtual-desktop-relative. A bypass-WM surface isn't always placed exactly at
+    // the virtual-desktop origin; mapToGlobal absorbs any such offset so the
+    // captured pixels line up with what the marquee framed.
+    const QPoint a = mapToGlobal(m_origin) - m_virtualGeom.topLeft();
+    const QPoint b = mapToGlobal(m_current) - m_virtualGeom.topLeft();
+    return QRect(a, b).normalized();
 }
 
 void ScreenCaptureOverlay::paintEvent(QPaintEvent *)
@@ -180,7 +194,9 @@ void ScreenCaptureOverlay::mouseReleaseEvent(QMouseEvent *event)
         finish(QImage()); // a click without a real drag is a cancel
         return;
     }
-    beginCapture(sel);
+    // Grab in virtual-desktop coordinates so the snapshot lines up with the
+    // marquee regardless of where the bypass-WM overlay actually landed.
+    beginCapture(captureRect());
 }
 
 void ScreenCaptureOverlay::beginCapture(const QRect &sel)
