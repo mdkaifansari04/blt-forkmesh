@@ -10,6 +10,82 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+
+// Bake a release tag's version into the Qt client's source version — the
+// project(ForkMesh VERSION X.Y.Z ...) line in qt_client/CMakeLists.txt that
+// every "ForkMesh v" FORKMESH_VERSION display reads — and commit it, so cutting
+// release vX.Y.Z immediately updates the version the app reports.
+//
+// Called BEFORE the release tag is created (see promptNewRelease), so the
+// tagged commit itself declares the release version: building straight from the
+// tag reports X.Y.Z. Previously the header was only bumped by
+// ActionRunner::landVersionHeader AFTER a build node finished publishing the
+// binary, which (a) left the tagged commit reading the previous version and
+// (b) never happened at all if no build node ran. The release.yml workflow's
+// in-worktree sed and -DFORKMESH_VERSION stamp still cover the published binary;
+// landVersionHeader becomes a no-op once the header is already in sync here.
+//
+// Only a clean MAJOR.MINOR.PATCH tag bumps the header; a pre-release (-rc1) or
+// non-semver tag is left alone so the source version never jumps ahead to a
+// version that hasn't shipped. Returns true when a bump was committed.
+bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
+{
+    if (workTree.isEmpty())
+        return false;
+    QString version = tag.trimmed();
+    if (version.startsWith(QLatin1Char('v')))
+        version = version.mid(1);
+    static const QRegularExpression semver(
+        QStringLiteral("\\A[0-9]+\\.[0-9]+\\.[0-9]+\\z"));
+    if (!semver.match(version).hasMatch())
+        return false;
+
+    const QString rel = QStringLiteral("qt_client/CMakeLists.txt");
+
+    // Don't touch a header the user is already editing — a path-scoped commit
+    // would otherwise sweep their pending edits in with the version bump.
+    QByteArray pending;
+    if (!runGitCapture(workTree, {"status", "--porcelain", "--", rel}, &pending,
+                       nullptr) ||
+        !QString::fromUtf8(pending).trimmed().isEmpty())
+        return false;
+
+    QFile file(workTree + QLatin1Char('/') + rel);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    QString text = QString::fromUtf8(file.readAll());
+    file.close();
+
+    // The version sits on a single line: project(ForkMesh VERSION X.Y.Z ...).
+    static const QRegularExpression versionLine(
+        QStringLiteral("^(project\\(ForkMesh VERSION )([0-9]+\\.[0-9]+\\.[0-9]+)"),
+        QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch m = versionLine.match(text);
+    if (!m.hasMatch() || m.captured(2) == version)
+        return false; // header missing here, or already at the release version
+
+    text.replace(m.capturedStart(2), m.capturedLength(2), version);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return false;
+    const bool wrote = file.write(text.toUtf8()) >= 0;
+    file.close();
+    if (!wrote)
+        return false;
+
+    // Commit just the version header, under the same release-bot identity
+    // ActionRunner uses when it lands release metadata.
+    return runGitCapture(
+        workTree,
+        {"-c", QStringLiteral("user.email=actions@forkmesh.local"), "-c",
+         QStringLiteral("user.name=ForkMesh Actions"), "commit", "-m",
+         QStringLiteral("release: bump version header to %1").arg(version), "--",
+         rel},
+        nullptr, nullptr);
+}
+
+} // namespace
+
 // ---- Releases panel --------------------------------------------------------
 
 QWidget *MainWindow::buildReleasesTab()
@@ -934,6 +1010,21 @@ void MainWindow::promptNewRelease()
         message = tag;
     if (!notes.isEmpty())
         message += "\n\n" + notes;
+
+    // Stamp the released version into the Qt client's committed version header
+    // and commit it BEFORE tagging, so the tagged commit declares the release
+    // version and the app reports it. Lands even when no build node is online to
+    // run the release workflow; the workflow's landVersionHeader then no-ops.
+    // Only when releasing the checked-out branch's tip, so the bump commit
+    // advances the ref the tag will point at instead of landing on an unrelated
+    // branch (the target can differ from what's checked out).
+    QByteArray headBranch;
+    if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headBranch,
+                      nullptr) &&
+        QString::fromUtf8(headBranch).trimmed() == targetRef &&
+        bumpQtVersionForRelease(dir, tag))
+        logSystem(
+            QStringLiteral("Bumped ForkMesh version header to match %1.").arg(tag));
 
     // Annotated tag so the release notes live in the repo's git history.
     QString err;
