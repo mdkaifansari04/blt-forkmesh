@@ -93,6 +93,7 @@
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <QRadialGradient>
 #include <QRadioButton>
 #include <QShortcut>
@@ -398,6 +399,22 @@ const QLatin1String kPullLinkScheme("forkmesh-pull:");
 // was started from an issue, its "#N" reference links to that issue's tab in the
 // session's repo (adhoc #138). Shared by the link builder and its handler.
 const QLatin1String kIssueLinkScheme("forkmesh-issue:");
+
+// HTML for a branch name that, when clicked, opens that branch's row in the
+// Branches tab (handlers route kBranchLinkScheme -> MainWindow::switchToBranch).
+// Shared across the agent header, the pull-request header and anywhere else a
+// branch name is shown, so "click a branch anywhere → open it in Branches" works
+// uniformly (issue #204). Plain (un-escaped) when there's no branch.
+inline QString branchLinkHtml(const QString &branch)
+{
+    if (branch.isEmpty())
+        return QString();
+    const QString href = kBranchLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, branch.toHtmlEscaped());
+}
 
 // Per-repository about/catalog metadata lives under ForkMesh's own metadata dir
 // instead of the project root.
@@ -748,6 +765,145 @@ private:
     QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
+// A tiny moving line chart for one system resource (CPU, memory or disk). New
+// per-second samples push in from the right and scroll the history left, so the
+// recent load is visible at a glance; the current figure prints beside the
+// label. Replaces the static "CPU x% MEM y MB" footer text (adhoc #17). Kept
+// header-only (no Q_OBJECT) like the other Internal.h mini-charts; the click
+// hook is a std::function so a left-click can still open the stall dialog.
+class ResourceSparkline : public QWidget
+{
+public:
+    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr)
+        : QWidget(parent), m_label(label)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(kSide, kSide); // a little button-sized square
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    // Append one reading. `value` is plotted on a fixed 0..`maxValue` scale so
+    // the curve's height is comparable across samples (auto-scaling would turn a
+    // near-flat disk trace into noise); `valueText` is the figure shown beside
+    // the label.
+    void addSample(double value, double maxValue, const QString &valueText)
+    {
+        m_max = maxValue > 0 ? maxValue : 100.0;
+        m_value = valueText;
+        m_history.append(value);
+        while (m_history.size() > kMaxPoints)
+            m_history.removeFirst();
+        update();
+    }
+
+    std::function<void()> onClicked; // invoked on a left-click
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onClicked)
+            onClicked();
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Rounded card so each chart reads as its own little square.
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(20);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawRoundedRect(box, 4, 4);
+
+        // A header font that shrinks until the label and value both fit on one
+        // line, so neither is clipped however the app's base font is sized.
+        QFont f = font();
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
+        const double avail = width() - 6;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            const QFontMetrics fm(f);
+            if (fm.horizontalAdvance(m_label) + fm.horizontalAdvance(m_value) +
+                    4 <=
+                avail)
+                break;
+        }
+        f.setPointSizeF(pt);
+        p.setFont(f);
+        const QFontMetrics fm(f);
+        const int headH = fm.height();
+
+        // Header: the resource label (left, dim) and its current value (right,
+        // in the load colour) share the top line; the chart gets the rest.
+        QColor lab = palette().color(QPalette::WindowText);
+        lab.setAlpha(150);
+        p.setPen(lab);
+        p.drawText(QRectF(3, 1, width() - 6, headH),
+                   Qt::AlignVCenter | Qt::AlignLeft, m_label);
+        const double lastPct =
+            m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
+        p.setPen(gaugeColor(lastPct));
+        p.drawText(QRectF(3, 1, width() - 6, headH),
+                   Qt::AlignVCenter | Qt::AlignRight, m_value);
+
+        // The sparkline track fills the area below the header, with the most
+        // recent sample at its right edge so the curve scrolls left over time.
+        const QRectF area(3, headH + 2, width() - 6, height() - headH - 5);
+        if (area.height() < 2)
+            return;
+        QColor track = palette().color(QPalette::WindowText);
+        track.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(track);
+        p.drawRoundedRect(area, 2, 2);
+        if (m_history.size() < 2)
+            return;
+        const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
+        const double step = area.width() / double(kMaxPoints - 1);
+        const int n = m_history.size();
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x = area.right() - (n - 1 - i) * step;
+            const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
+            curve << QPointF(x, area.bottom() - norm * area.height());
+        }
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(55);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+    }
+
+private:
+    static QColor gaugeColor(double pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: pegged
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting busy
+        return QColor("#3fb950");     // green: light load
+    }
+
+    static constexpr int kSide = 40;      // button-sized square (w == h)
+    static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
+    QString m_label;
+    QString m_value;
+    double m_max = 100.0;
+    QVector<double> m_history;
+};
+
 // Tiny spinning-radar dish + latency readout shown just left of the relay name.
 // The dish always sweeps (a continuously rotating wedge) so the relay looks
 // "alive"; a one-minute probe feeds in the round-trip time, which renders as
@@ -959,7 +1115,7 @@ public:
         if (m_dots.isEmpty())
             return 0;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
-        const qreal last = (kRadius + 2.0) + (shown - 1) * kSpacing;
+        const qreal last = kLeftInset + (shown - 1) * kSpacing;
         qreal w = last + kRadius + 4.0;
         if (m_dots.size() > shown)
             w += fontMetrics().horizontalAdvance(
@@ -997,7 +1153,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         const qreal cy = height() / 2.0;
-        qreal x = kRadius + 2.0;
+        qreal x = kLeftInset;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
         int drawn = 0;
         for (int i = 0; i < shown; ++i) {
@@ -1048,11 +1204,16 @@ private:
     static constexpr qreal kRadius = 5.0;
     static constexpr qreal kSpacing = 15.0;
     static constexpr int kMaxDots = 10; // most-recent dots; rest become "+N"
+    // Centre x of the first dot. The strip floats just above the Mirror nodes
+    // tab, anchored at that tab's left edge, so inset the dots to line the
+    // leftmost one up over the tab's icon: #repoTab has 10px left padding and a
+    // 16px octicon, putting the icon centre at 10 + 8 = 18 (adhoc #21).
+    static constexpr qreal kLeftInset = 18.0;
 
     const Dot *dotAt(const QPoint &pos) const
     {
         const qreal cy = height() / 2.0;
-        qreal x = kRadius + 2.0;
+        qreal x = kLeftInset;
         const int shown = qMin<qsizetype>(m_dots.size(), kMaxDots);
         for (int i = 0; i < shown; ++i) {
             const Dot &d = m_dots.at(i);
@@ -3957,6 +4118,70 @@ protected:
 private:
     QTimer *m_timer = nullptr;
     int m_size;
+    int m_angle = 0;
+};
+
+// A thin rotating "processing ring" meant to encircle a small widget it's overlaid
+// on. Used to ring the mic button while a just-recorded clip is still being
+// transcribed after the button was released (adhoc #18), so the wait reads as
+// "still working", not "nothing happened". A faint full track shows the circle and a
+// brighter arc sweeps around it. Self-animating: the timer only runs while the
+// spinner is visible (see show/hideEvent), so a hidden one is free. Drawn with a
+// translucent background and transparent to mouse events so the widget beneath stays
+// visible and clickable.
+class RingSpinner : public QWidget
+{
+public:
+    explicit RingSpinner(QWidget *parent = nullptr,
+                         const QColor &color = QColor("#58a6ff"))
+        : QWidget(parent), m_color(color)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(40);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_angle = (m_angle + 8) % 360;
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const double pen = 2.0;
+        const double inset = pen / 2.0 + 1.0;
+        const QRectF box(inset, inset, width() - 2 * inset, height() - 2 * inset);
+        // Faint full track so the ring always reads as a complete circle...
+        QPen track(QColor(m_color.red(), m_color.green(), m_color.blue(), 60));
+        track.setWidthF(pen);
+        p.setPen(track);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(box);
+        // ...with a brighter arc sweeping around it. Qt arc angles are in 1/16°
+        // counter-clockwise, so negating m_angle makes the sweep run clockwise.
+        QPen arc(m_color);
+        arc.setWidthF(pen);
+        arc.setCapStyle(Qt::RoundCap);
+        p.setPen(arc);
+        p.drawArc(box, -m_angle * 16, 100 * 16);
+    }
+
+private:
+    QTimer *m_timer = nullptr;
+    QColor m_color;
     int m_angle = 0;
 };
 

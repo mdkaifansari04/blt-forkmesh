@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 248
 title: make the merge graph look nicer
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 25
