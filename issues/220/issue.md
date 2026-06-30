@@ -5,7 +5,7 @@ title: show the time on the when column in workflows and have the width of the t
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 53
+priority: 18
 progress: 5
 assignees: []
 createdAt: 1782354120269

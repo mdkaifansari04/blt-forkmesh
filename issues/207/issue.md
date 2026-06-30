@@ -5,7 +5,7 @@ title: on the commit page next to delete commit have a button to restore commit 
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 22
+priority: 33
 progress: 5
 assignees: []
 createdAt: 1782349505941
