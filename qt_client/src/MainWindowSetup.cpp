@@ -813,6 +813,7 @@ void MainWindow::startSession()
 
     // Reset chat state.
     m_channels.clear();
+    m_welcomeAnnounced = false; // re-evaluate the one-time greeting for this identity
     m_currentConversation.clear();
     m_history.clear();
     m_historyIds.clear();
@@ -853,8 +854,10 @@ void MainWindow::startSession()
         // peers always see a unique, identifiable face for this node.
         m_backend->setAvatar(effectiveAvatar());
         // Fixed shared channels for the whole network — no per-repo rooms. Every
-        // node joins the same #general and #random over the one encrypted room.
+        // node joins the same #general, #welcome and #random over the one
+        // encrypted room (#welcome carries new-node join greetings, issue #192).
         m_backend->addChannel(QStringLiteral("general"));
+        m_backend->addChannel(QStringLiteral("welcome"));
         m_backend->addChannel(QStringLiteral("random"));
         logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
         const QJsonObject signedProfile =

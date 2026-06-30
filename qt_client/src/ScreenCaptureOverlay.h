@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QPixmap>
+#include <QImage>
 #include <QPoint>
 #include <QRect>
 #include <QWidget>
@@ -9,21 +9,22 @@ class QMouseEvent;
 class QKeyEvent;
 class QPaintEvent;
 
-// A full-virtual-desktop overlay for region screenshots. Freezes a snapshot of
-// every screen, then dims it and lets the user drag a rectangle anywhere on the
-// computer: press starts the selection, drag rubber-bands it, release captures
-// that region and emits captured(). Esc / right-click cancels.
+// A full-virtual-desktop overlay for region screenshots. It stays transparent so
+// the live desktop shows through — the cursor becomes a crosshair "snippet" tool
+// and the only thing drawn is a dotted marquee around the drag. Press starts the
+// selection, drag rubber-bands it, release hides the overlay and grabs just that
+// region. Esc / right-click cancels.
 //
 // Spans the union of all screen geometries (so it works on multi-monitor setups)
-// and bypasses the window manager so nothing repositions it. The snapshot is
-// taken before the overlay is shown, so the dimming layer never ends up in the
-// capture.
+// and bypasses the window manager so nothing repositions it. Nothing dims or
+// freezes the screen: the capture is grabbed live on release, after the overlay
+// hides, so neither the marquee nor a dim layer can bleed into it.
 class ScreenCaptureOverlay : public QWidget
 {
     Q_OBJECT
 public:
-    // Grabs the whole virtual desktop and shows the overlay. Returns nullptr if
-    // nothing could be grabbed. The widget deletes itself once it emits.
+    // Shows the overlay over the whole virtual desktop. Returns nullptr if there
+    // are no screens. The widget deletes itself once it emits.
     static ScreenCaptureOverlay *begin();
 
 signals:
@@ -38,13 +39,13 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    ScreenCaptureOverlay(const QPixmap &shot, const QRect &virtualGeom,
-                         qreal dpr);
+    ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr);
     QRect selectionRect() const;
+    QImage grabSelection(const QRect &sel); // hides overlay, grabs live region
     void finish(const QImage &image);
 
-    QPixmap m_shot;          // frozen snapshot of the whole virtual desktop
-    qreal m_dpr = 1.0;       // device-pixel ratio the snapshot was grabbed at
+    QRect m_virtualGeom;     // union of all screen geometries, in logical coords
+    qreal m_dpr = 1.0;       // device-pixel ratio to grab/crop the snapshot at
     QPoint m_origin;         // drag start, in widget (logical) coords
     QPoint m_current;        // latest drag point, in widget (logical) coords
     bool m_dragging = false;
