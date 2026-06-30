@@ -4315,6 +4315,7 @@ QWidget *MainWindow::buildHostsSection()
     m_hostsTable->horizontalHeader()->setStretchLastSection(false);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_hostsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_hostsTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a saved host reloads its server info into the install
     // form so the installer can be re-run. The password is never stored on
     // disk, so it is left blank for the user to re-enter.
@@ -4430,6 +4431,7 @@ QWidget *MainWindow::buildRelaysSection()
     for (int c = 1; c < 4; ++c)
         m_relaysTable->horizontalHeader()->setSectionResizeMode(
             c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_relaysTable); // spreadsheet-style draggable columns (#263)
     // Double-clicking a relay opens its website in the browser.
     connect(m_relaysTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) { openServerWebsite(row); });

@@ -1428,59 +1428,6 @@ public:
     }
 };
 
-// Makes a draggable column's divider behave like dragging a boundary/margin: the
-// width it gains (or loses) is taken from (or handed to) its immediate right-hand
-// neighbour, so the divider tracks the cursor and the rest of the table holds
-// still. Without this, a header that has a Stretch (flex) column sitting to the
-// LEFT of the dragged divider keeps the total width constant by shrinking that
-// far-off Stretch column instead — so the divider snaps back and distant columns
-// jump, which feels broken. A re-entrancy guard stops our own compensating resize
-// from recursing; a Stretch column to the right is left to absorb naturally.
-inline void installMarginResize(QHeaderView *header)
-{
-    auto busy = std::make_shared<bool>(false);
-    QObject::connect(
-        header, &QHeaderView::sectionResized, header,
-        [header, busy](int logicalIndex, int oldSize, int newSize) {
-            if (*busy)
-                return; // our own neighbour resize, below
-            // Only react to user-draggable columns; ignore the Stretch column's
-            // automatic recompute on window resize.
-            if (header->sectionResizeMode(logicalIndex) != QHeaderView::Interactive)
-                return;
-            const int delta = newSize - oldSize;
-            if (delta == 0)
-                return;
-            // Trade the change with the next visible Interactive column to the
-            // right. We walk in *visual* order (not logical) so the divider keeps
-            // tracking the cursor even after the user has dragged columns into a
-            // new order. If a Stretch column comes first, leave it — it already
-            // absorbs the change and the divider still tracks the cursor.
-            int neighbor = -1;
-            for (int v = header->visualIndex(logicalIndex) + 1; v < header->count();
-                 ++v) {
-                const int logical = header->logicalIndex(v);
-                if (header->isSectionHidden(logical))
-                    continue;
-                const QHeaderView::ResizeMode mode =
-                    header->sectionResizeMode(logical);
-                if (mode == QHeaderView::Stretch)
-                    return;
-                if (mode == QHeaderView::Interactive) {
-                    neighbor = logical;
-                    break;
-                }
-            }
-            if (neighbor < 0)
-                return; // nothing to the right to trade with
-            const int minW = qMax(1, header->minimumSectionSize());
-            const int neighborNew = qMax(minW, header->sectionSize(neighbor) - delta);
-            *busy = true;
-            header->resizeSection(neighbor, neighborNew);
-            *busy = false;
-        });
-}
-
 // RAII guard that suspends a widget's repaints for a bulk table rebuild, so
 // clearing the rows and inserting/populating them fires a single repaint when
 // the guard goes out of scope instead of one per row. Without it, inserting
@@ -1511,15 +1458,17 @@ private:
     bool m_was = true;
 };
 
-// Lets the user drag-resize a table's columns while keeping their content-fitted
-// starting widths. Qt's ResizeToContents header mode auto-sizes a column but
-// locks the divider so it can't be dragged; this leaves the existing per-column
-// modes in place for the initial layout, then — once real rows have populated —
-// snapshots each ResizeToContents column's fitted width and switches it to
-// Interactive so it becomes draggable. Stretch and Fixed columns are left as the
-// caller configured them (Stretch keeps absorbing window-resize slack; Fixed
-// button columns stay put). Drags then move the divider like a margin via
-// installMarginResize(). Call once after the header has been configured.
+// Gives a table's columns standard-spreadsheet drag behaviour (issue #263): every
+// divider drags independently, resizing only its own column while the columns to
+// its right simply shift over (a horizontal scrollbar appears if they overflow),
+// just like Excel/Sheets. Qt's auto-sizing header modes fight this -- a Stretch or
+// stretch-last column silently absorbs a neighbour's drag (so the divider snaps
+// back and distant columns jump, which feels broken), and ResizeToContents locks
+// the divider entirely. So once real rows have populated, this snapshots each
+// auto-sized column's current width and switches it to Interactive: ResizeToContents
+// columns keep their fitted width, the flex/Stretch column keeps the width it had
+// stretched to, and stretch-last is turned off. Fixed button columns are left
+// exactly as the caller set them. Call once after the header has been configured.
 inline void makeColumnsResizable(QTableWidget *table)
 {
     if (!table || !table->model())
@@ -1535,17 +1484,23 @@ inline void makeColumnsResizable(QTableWidget *table)
             // Defer to the next event-loop turn so the snapshot reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
             QTimer::singleShot(0, table, [header]() {
+                // The last column may auto-fill via stretchLastSection rather than
+                // a per-section Stretch mode; capture that before turning it off.
+                const bool stretchLast = header->stretchLastSection();
+                const int last = header->count() - 1;
+                header->setStretchLastSection(false);
                 for (int i = 0; i < header->count(); ++i) {
-                    if (header->sectionResizeMode(i) != QHeaderView::ResizeToContents)
-                        continue;
+                    const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
+                    const bool autosized =
+                        mode == QHeaderView::ResizeToContents ||
+                        mode == QHeaderView::Stretch || (stretchLast && i == last);
+                    if (!autosized)
+                        continue; // leave Fixed button columns untouched
                     const int w = header->sectionSize(i);
                     header->setSectionResizeMode(i, QHeaderView::Interactive);
                     if (w > 0)
                         header->resizeSection(i, w);
                 }
-                // Wire up margin-style dragging only after the snapshot resizes
-                // above, so they don't trip the neighbour-compensation handler.
-                installMarginResize(header);
             });
         });
 }

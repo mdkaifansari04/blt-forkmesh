@@ -421,20 +421,23 @@ bool MainWindow::testColumnsBecomeResizable()
     QApplication::processEvents();
     QApplication::processEvents();
 
-    const bool flexUntouched = header->sectionResizeMode(0) == QHeaderView::Stretch;
+    // Spreadsheet semantics: the flex/Stretch column also becomes draggable
+    // (frozen at the width it had stretched to); only Fixed button columns stay.
+    const bool flexDraggable = header->sectionResizeMode(0) == QHeaderView::Interactive;
     const bool fixedUntouched = header->sectionResizeMode(3) == QHeaderView::Fixed;
     const bool col1Draggable = header->sectionResizeMode(1) == QHeaderView::Interactive;
     const bool col2Draggable = header->sectionResizeMode(2) == QHeaderView::Interactive;
     // The fitted widths survive the switch, so the wider column stays wider.
     const bool widthsPreserved = header->sectionSize(2) > header->sectionSize(1);
-    return flexUntouched && fixedUntouched && col1Draggable && col2Draggable &&
+    return flexDraggable && fixedUntouched && col1Draggable && col2Draggable &&
            widthsPreserved;
 }
 
-bool MainWindow::testMarginResize()
+bool MainWindow::testSpreadsheetResize()
 {
     // Mirror the issue table: a leading content column, a Stretch flex column
-    // (Title), then several content-fitted columns that become draggable.
+    // (Title), then several content-fitted columns. After makeColumnsResizable
+    // every column is independently draggable, like a spreadsheet.
     QTableWidget table(0, 5);
     QHeaderView *header = table.horizontalHeader();
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
@@ -455,26 +458,30 @@ bool MainWindow::testMarginResize()
     QApplication::processEvents();
     QApplication::processEvents();
 
-    // Drag column 2's divider wider. Like moving a margin, the width comes
-    // straight out of its right-hand neighbour (column 3) — column 4 and the
-    // far-off Stretch column 1 are left alone, so the divider tracks the cursor.
+    // Every column, including the former Stretch flex column, is now draggable.
+    const bool flexDraggable =
+        header->sectionResizeMode(1) == QHeaderView::Interactive;
+
+    // Drag column 2's divider wider. Like a spreadsheet, only column 2 grows; the
+    // columns to its right keep their widths and simply shift over (no neighbour
+    // silently donates width), so the table gets wider overall.
+    const int before2 = header->sectionSize(2);
     const int before3 = header->sectionSize(3);
     const int before4 = header->sectionSize(4);
     const int delta = 24;
-    header->resizeSection(2, header->sectionSize(2) + delta);
+    header->resizeSection(2, before2 + delta);
     QApplication::processEvents();
 
-    const bool neighborGaveWidth = header->sectionSize(3) == before3 - delta;
+    const bool draggedGrew = header->sectionSize(2) == before2 + delta;
+    const bool neighborUntouched = header->sectionSize(3) == before3;
     const bool tailUntouched = header->sectionSize(4) == before4;
-    const bool stretchUntouched =
-        header->sectionResizeMode(1) == QHeaderView::Stretch;
-    return neighborGaveWidth && tailUntouched && stretchUntouched;
+    return flexDraggable && draggedGrew && neighborUntouched && tailUntouched;
 }
 
-bool MainWindow::testMarginResizeAfterMove()
+bool MainWindow::testSpreadsheetResizeAfterMove()
 {
-    // Three draggable content columns. Once the user reorders them, resizing
-    // one must still trade with whatever column now sits to its right visually.
+    // Three draggable content columns. Reordering them must not change the
+    // spreadsheet rule: resizing one column never disturbs the others' widths.
     QTableWidget table(0, 3);
     QHeaderView *header = table.horizontalHeader();
     header->setSectionsMovable(true);
@@ -494,18 +501,19 @@ bool MainWindow::testMarginResizeAfterMove()
     // Move logical column 0 to the far right: visual order becomes 1, 2, 0.
     header->moveSection(header->visualIndex(0), 2);
 
-    // Dragging logical column 1 (now leftmost) wider must pull width from
-    // logical column 2 — its new visual right-hand neighbour — not from the
-    // logical-next column 2 by accident or from the far-right moved column.
+    // Dragging logical column 1 wider grows only column 1; both other columns
+    // (its visual neighbour and the moved column) keep their widths and shift.
+    const int before1 = header->sectionSize(1);
     const int before2 = header->sectionSize(2);
     const int before0 = header->sectionSize(0);
     const int delta = 20;
-    header->resizeSection(1, header->sectionSize(1) + delta);
+    header->resizeSection(1, before1 + delta);
     QApplication::processEvents();
 
-    const bool visualNeighborGaveWidth = header->sectionSize(2) == before2 - delta;
+    const bool draggedGrew = header->sectionSize(1) == before1 + delta;
+    const bool neighborUntouched = header->sectionSize(2) == before2;
     const bool movedColumnUntouched = header->sectionSize(0) == before0;
-    return visualNeighborGaveWidth && movedColumnUntouched;
+    return draggedGrew && neighborUntouched && movedColumnUntouched;
 }
 
 bool MainWindow::testAgentColumnsMovable() const
