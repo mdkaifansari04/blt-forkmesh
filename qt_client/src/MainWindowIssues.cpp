@@ -59,9 +59,19 @@ QWidget *MainWindow::buildIssuesSection()
     issueTabGroup->addButton(milestonesTab, 1);
     issueTabGroup->addButton(labelsTab, 2);
     issueTabGroup->addButton(boardTab, 3);
+    // A second "New issue" button at the top of the list pane so filing an issue
+    // doesn't require first selecting one to reach the button in the detail header
+    // (adhoc #11). Shares promptNewIssue and the same enable/disable rule.
+    m_issueListNewButton = new QPushButton("New issue");
+    m_issueListNewButton->setObjectName("primaryButton");
+    m_issueListNewButton->setProperty("buttonSize", "sm");
+    m_issueListNewButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_issueListNewButton, "plus", 16);
+
     auto *headingRow = new QHBoxLayout;
     headingRow->setContentsMargins(0, 0, 0, 0);
     headingRow->addWidget(heading);
+    headingRow->addWidget(m_issueListNewButton);
     headingRow->addStretch();
     headingRow->addWidget(issuesTab);
     headingRow->addWidget(boardTab);
@@ -1038,6 +1048,8 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLabelsTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int) { editIssueLabelDefinition(row); });
     connect(m_issueNewButton, &QPushButton::clicked, this, &MainWindow::promptNewIssue);
+    connect(m_issueListNewButton, &QPushButton::clicked, this,
+            &MainWindow::promptNewIssue);
     connect(m_issueSyncButton, &QPushButton::clicked, this,
             &MainWindow::syncIssuesInbox);
     connect(issueBurnupButton, &QPushButton::clicked, this,
@@ -2991,6 +3003,8 @@ void MainWindow::updateIssueActionState()
     // sync back. Only the owner drains the inbox, so Sync stays writable-only.
     if (m_issueNewButton)
         m_issueNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
+    if (m_issueListNewButton)
+        m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
     if (m_issueTitleEditButton)
