@@ -150,6 +150,8 @@ void MarkdownEditor::setPlaceholderText(const QString &text)
 
 void MarkdownEditor::focusEditor() { m_source->setFocus(); }
 
+void MarkdownEditor::showWriteArea() { showWrite(); }
+
 void MarkdownEditor::addImageFile(const QString &path)
 {
     if (path.isEmpty() || !isImagePath(path))

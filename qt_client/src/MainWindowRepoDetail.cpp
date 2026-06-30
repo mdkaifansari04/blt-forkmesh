@@ -7056,6 +7056,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
             &MainWindow::submitCommitComment);
     auto *commitComposerButtons = new QHBoxLayout;
     commitComposerButtons->setContentsMargins(0, 0, 0, 0);
+    // Speak the comment with the voice engine, just like the footer prompt mic.
+    commitComposerButtons->addWidget(makeVoiceButton(m_commitComposer), 0, Qt::AlignLeft);
     commitComposerButtons->addStretch();
     commitComposerButtons->addWidget(m_commitCommentButton);
     auto *commitConversation = new QWidget;
