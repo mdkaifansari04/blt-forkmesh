@@ -97,7 +97,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowDiscussions.cpp
     src/MainWindowPulls.cpp
     src/MainWindowAgents.cpp
-    src/MainWindowIde.cpp
+    src/MainWindowRepoDetail.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
     src/MainWindowSettings.cpp
