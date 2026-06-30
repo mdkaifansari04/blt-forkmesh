@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMenu>
 #include <QProcess>
 #include <QSemaphore>
@@ -819,6 +820,50 @@ int main(int argc, char *argv[])
                   .arg(seeded.testQuickAddAgentProvider(),
                        seeded.testIssueAgentProvider()));
         stopChildProcesses(seeded);
+    }
+
+    // A previously verified email should be obvious from Settings > General >
+    // Profile, even on a later launch where the desktop only has the cached
+    // account marker.
+    {
+        QSettings settings;
+        const QString nodeKey = QStringLiteral("account/nodeName");
+        const QString authedKey = QStringLiteral("account/authedName");
+        const QString verifiedKey =
+            QStringLiteral("account/emailVerified/verified-node");
+        const bool hadNode = settings.contains(nodeKey);
+        const bool hadAuthed = settings.contains(authedKey);
+        const bool hadVerified = settings.contains(verifiedKey);
+        const QVariant oldNode = settings.value(nodeKey);
+        const QVariant oldAuthed = settings.value(authedKey);
+        const QVariant oldVerified = settings.value(verifiedKey);
+
+        settings.setValue(nodeKey, QStringLiteral("verified-node"));
+        settings.setValue(authedKey, QStringLiteral("verified-node"));
+        settings.setValue(verifiedKey, true);
+
+        MainWindow verified;
+        verified.show();
+        QApplication::processEvents();
+        QLabel *badge =
+            verified.findChild<QLabel *>(QStringLiteral("emailVerifiedBadge"));
+        check(badge && !badge->isHidden() &&
+                  badge->text() == QStringLiteral("Email is verified"),
+              QStringLiteral("settings profile shows the cached email-verified badge"));
+        stopChildProcesses(verified);
+
+        if (hadNode)
+            settings.setValue(nodeKey, oldNode);
+        else
+            settings.remove(nodeKey);
+        if (hadAuthed)
+            settings.setValue(authedKey, oldAuthed);
+        else
+            settings.remove(authedKey);
+        if (hadVerified)
+            settings.setValue(verifiedKey, oldVerified);
+        else
+            settings.remove(verifiedKey);
     }
 
     // Issue #203: quick-adding an issue without assigning it to an agent should
