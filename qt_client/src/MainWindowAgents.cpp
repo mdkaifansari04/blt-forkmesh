@@ -1205,7 +1205,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentVoiceButton->setCursor(Qt::PointingHandCursor);
     m_agentVoiceButton->setFixedWidth(32);
     setOcticon(m_agentVoiceButton, "mic", 16);
-    m_agentVoiceButton->setToolTip(QStringLiteral(
+    m_agentVoiceButton->setToolTip(QString::fromUtf8(
         "Speak your message \xE2\x80\x94 hold to record, release to transcribe."));
     m_agentVoiceButton->setVisible(voiceInputReady());
     connect(m_agentVoiceButton, &QPushButton::pressed, this,
