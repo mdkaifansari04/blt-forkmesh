@@ -21,6 +21,14 @@
 #include <algorithm>
 #include <atomic>
 
+// Free helper from MainWindowShared.cpp (forkmesh::ui), linked into the window
+// test via ${FORKMESH_APP_SOURCES}. Linkifies references in a commit message.
+namespace forkmesh {
+namespace ui {
+QString linkifyIssueRefs(const QString &escaped);
+}
+} // namespace forkmesh
+
 namespace {
 
 int failures = 0;
@@ -829,6 +837,24 @@ int main(int argc, char *argv[])
                   QStringLiteral("see forkmesh://pull/o/r/7.")) ==
                   QStringLiteral("see <forkmesh://pull/o/r/7>."),
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+    }
+
+    // issue #195: a commit SHA mentioned in a commit message body becomes a
+    // commit: link the detail view navigates to via showCommit, so clicking a
+    // commit hash brings you to that commit. "#123" still resolves to issue/PR.
+    {
+        check(forkmesh::ui::linkifyIssueRefs(QStringLiteral("reverts a1b2c3d4 now")) ==
+                  QStringLiteral("reverts <a href=\"commit:a1b2c3d4\" "
+                                 "style=\"color:#58a6ff;text-decoration:none\">"
+                                 "a1b2c3d4</a> now"),
+              QStringLiteral("commit message linkifies a SHA into a commit: link (#195)"));
+        check(forkmesh::ui::linkifyIssueRefs(QStringLiteral("fixes #42")) ==
+                  QStringLiteral("fixes <a href=\"ref:42\" "
+                                 "style=\"color:#58a6ff;text-decoration:none\">#42</a>"),
+              QStringLiteral("commit message still linkifies #123 into a ref: link"));
+        check(forkmesh::ui::linkifyIssueRefs(QStringLiteral("build 1234567 ok")) ==
+                  QStringLiteral("build 1234567 ok"),
+              QStringLiteral("commit message leaves a plain number (no a-f) untouched"));
     }
 
     // adhoc #191: the issue looper (and per-issue agent assignment) must work on

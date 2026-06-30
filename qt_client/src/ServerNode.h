@@ -159,7 +159,9 @@ private:
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
 
-    QStringList m_channels{"#general", "#random"};
+    // #welcome is the shared greeting room every node joins; a brand-new node
+    // posts a one-time hello there so the network sees who joined (issue #192).
+    QStringList m_channels{"#general", "#welcome", "#random"};
     QHash<QString, Peer> m_peers;
     QHash<QString, QList<QJsonObject>> m_channelHistory;
     QHash<QString, QString> m_messageConversation;

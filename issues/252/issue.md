@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 252
 title: on the pr detail show conflict file details on the conversation page above the comment section and show in the list if a pr is conflicted with small icon
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 10
