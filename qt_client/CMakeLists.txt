@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.3 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.17 LANGUAGES CXX)
 
 # The version stamped into the binary. Defaults to the project() version above,
 # but the release workflow overrides it with -DFORKMESH_VERSION=<tag> so the
