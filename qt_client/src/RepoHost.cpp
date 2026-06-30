@@ -9,6 +9,7 @@
 #include <QRegularExpression>
 #include <QRandomGenerator>
 #include <QSslSocket>
+#include <QSet>
 #include <QTcpSocket>
 #include <QTimer>
 
@@ -45,6 +46,22 @@ bool isSafeRepoPath(const QString &path)
             return false;
     }
     return true;
+}
+
+QString displayBranchNameForRef(const QString &ref)
+{
+    if (ref.startsWith(QLatin1String("refs/heads/")))
+        return ref.mid(QStringLiteral("refs/heads/").size());
+    if (!ref.startsWith(QLatin1String("refs/remotes/")))
+        return QString();
+    const QString remotePath = ref.mid(QStringLiteral("refs/remotes/").size());
+    const int slash = remotePath.indexOf(QLatin1Char('/'));
+    if (slash <= 0)
+        return QString();
+    const QString name = remotePath.mid(slash + 1);
+    if (name.isEmpty() || name == QLatin1String("HEAD"))
+        return QString();
+    return name;
 }
 
 // A release asset's content address: exactly 64 lowercase hex characters.
@@ -365,6 +382,7 @@ void RepoHost::handleRequest(const QJsonObject &request)
     const QString reqId = request.value("reqId").toString();
     const QString op = request.value("op").toString();
     const QString path = request.value("path").toString();
+    const QString branch = request.value("ref").toString();
     if (reqId.isEmpty())
         return;
 
@@ -384,10 +402,14 @@ void RepoHost::handleRequest(const QJsonObject &request)
                                 : QStringLiteral("browse tree '%1'").arg(path);
     else if (op == "blob")
         action = QStringLiteral("view file '%1'").arg(path);
+    else if (op == "raw-blob")
+        action = QStringLiteral("stream raw file '%1'").arg(path);
     else if (op == "commits")
         action = QStringLiteral("commit history");
     else if (op == "commit")
         action = QStringLiteral("view commit %1").arg(path);
+    else if (op == "branches")
+        action = QStringLiteral("list branches");
     else if (op == "release-blob")
         action = QStringLiteral("download release asset %1").arg(path);
     else
@@ -417,18 +439,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
         streamReleaseBlob(reqId, path);
         return;
     }
+    if (op == "raw-blob") {
+        streamRawBlob(reqId, path, branch);
+        return;
+    }
 
     QJsonObject reply;
     if (!isSafeRepoPath(path)) {
         reply = QJsonObject{{"ok", false}, {"error", "bad_path"}};
     } else if (op == "tree") {
-        reply = buildTreeReply(path);
+        reply = buildTreeReply(path, branch);
     } else if (op == "blob") {
-        reply = buildBlobReply(path);
+        reply = buildBlobReply(path, branch);
     } else if (op == "commits") {
-        reply = buildCommitsReply();
+        reply = buildCommitsReply(branch);
     } else if (op == "commit") {
         reply = buildCommitReply(path); // path carries the commit hash
+    } else if (op == "branches") {
+        reply = buildBranchesReply();
     } else {
         reply = QJsonObject{{"ok", false}, {"error", "bad_op"}};
     }
@@ -521,6 +549,27 @@ void RepoHost::streamReleaseBlob(const QString &reqId, const QString &sha256)
     sendGitEnd(reqId, true, QString());
 }
 
+void RepoHost::streamRawBlob(const QString &reqId, const QString &path, const QString &branch)
+{
+    if (path.isEmpty() || !isSafeRepoPath(path)) {
+        sendGitEnd(reqId, false, QStringLiteral("bad_path"));
+        return;
+    }
+    const QString ref = refForBranch(branch);
+    if (ref.isEmpty()) {
+        sendGitEnd(reqId, false, QStringLiteral("not_found"));
+        return;
+    }
+    const QString object = ref + ":" + path;
+    QByteArray typeOutput;
+    if (!runGit(m_mirrorPath, {"cat-file", "-t", object}, typeOutput) ||
+        QString::fromUtf8(typeOutput).trimmed() != QStringLiteral("blob")) {
+        sendGitEnd(reqId, false, QStringLiteral("not_found"));
+        return;
+    }
+    runGitStream(reqId, {"-C", m_mirrorPath, "cat-file", "-p", ref + ":" + path}, QByteArray());
+}
+
 void RepoHost::sendGitChunk(const QString &reqId, const QByteArray &data)
 {
     if (data.isEmpty())
@@ -554,20 +603,94 @@ QString RepoHost::baseRef() const
     if (runGit(m_mirrorPath, {"rev-parse", "--verify", "-q", "HEAD"}, output) &&
         !output.trimmed().isEmpty())
         return QStringLiteral("HEAD");
-    if (runGit(m_mirrorPath,
-               {"for-each-ref", "--format=%(refname)", "--count=1",
-                "refs/heads/"},
-               output)) {
-        const QString ref = QString::fromUtf8(output).trimmed();
-        if (!ref.isEmpty())
-            return ref;
+    for (const QString &refsRoot :
+         {QStringLiteral("refs/heads/"), QStringLiteral("refs/remotes/")}) {
+        if (runGit(m_mirrorPath,
+                   {"for-each-ref", "--format=%(refname)", "--count=1", refsRoot},
+                   output)) {
+            const QString ref = QString::fromUtf8(output).trimmed();
+            if (!ref.isEmpty())
+                return ref;
+        }
     }
     return QString();
 }
 
-QJsonObject RepoHost::buildTreeReply(const QString &path) const
+QStringList RepoHost::branchRefCandidates(const QString &branch) const
 {
-    const QString ref = baseRef();
+    const QString raw = branch.trimmed();
+    if (raw.isEmpty() || raw.contains(QChar('\0')))
+        return {};
+    if (raw.startsWith(QLatin1String("refs/heads/")) ||
+        raw.startsWith(QLatin1String("refs/remotes/")))
+        return {raw};
+
+    QStringList refs{QStringLiteral("refs/heads/%1").arg(raw),
+                     QStringLiteral("refs/remotes/%1").arg(raw)};
+    QByteArray output;
+    if (runGit(m_mirrorPath, {"for-each-ref", "--format=%(refname)", "refs/remotes/"},
+               output)) {
+        for (const QByteArray &line : output.split('\n')) {
+            const QString ref = QString::fromUtf8(line).trimmed();
+            if (!ref.isEmpty() && displayBranchNameForRef(ref) == raw && !refs.contains(ref))
+                refs.append(ref);
+        }
+    }
+    return refs;
+}
+
+QString RepoHost::refForBranch(const QString &branch) const
+{
+    if (branch.trimmed().isEmpty())
+        return baseRef();
+    QByteArray output;
+    for (const QString &ref : branchRefCandidates(branch)) {
+        if (runGit(m_mirrorPath,
+                   {"rev-parse", "--verify", "-q", ref + QStringLiteral("^{commit}")},
+                   output))
+            return QString::fromUtf8(output).trimmed();
+    }
+    return QString();
+}
+
+QJsonObject RepoHost::buildBranchesReply() const
+{
+    QByteArray output;
+    QString gitErr;
+    if (!runGit(m_mirrorPath,
+                {"for-each-ref", "--sort=refname",
+                 "--format=%(refname)%x1f%(objectname)%x1f%(committerdate:iso8601)",
+                 "refs/heads/", "refs/remotes/"},
+                output, &gitErr)) {
+        return {{"ok", false}, {"error", gitErr.isEmpty() ? "branches_failed" : gitErr}};
+    }
+
+    QJsonArray branches;
+    QSet<QString> seen;
+    for (const QByteArray &record : output.split('\n')) {
+        if (record.trimmed().isEmpty())
+            continue;
+        const QList<QByteArray> fields = record.split('\x1f');
+        if (fields.isEmpty())
+            continue;
+        const QString ref = QString::fromUtf8(fields.value(0)).trimmed();
+        const QString name = displayBranchNameForRef(ref);
+        if (name.isEmpty())
+            continue;
+        if (seen.contains(name))
+            continue;
+        seen.insert(name);
+        branches.append(QJsonObject{
+            {"name", name},
+            {"commit", QString::fromUtf8(fields.value(1)).trimmed()},
+            {"updatedAt", QString::fromUtf8(fields.value(2)).trimmed()}});
+    }
+    return {{"ok", true}, {"branches", branches}};
+}
+
+QJsonObject RepoHost::buildTreeReply(const QString &path, const QString &branch) const
+{
+    const QString ref = refForBranch(branch);
     if (ref.isEmpty())
         return {{"ok", false}, {"error", "empty_repo"}};
     const QString treeish = path.isEmpty() ? ref : ref + ":" + path;
@@ -616,11 +739,11 @@ QJsonObject RepoHost::buildRootCounts(const QString &ref) const
         {"commits", commits}};
 }
 
-QJsonObject RepoHost::buildBlobReply(const QString &path) const
+QJsonObject RepoHost::buildBlobReply(const QString &path, const QString &branch) const
 {
     if (path.isEmpty())
         return {{"ok", false}, {"error", "not_found"}};
-    const QString ref = baseRef();
+    const QString ref = refForBranch(branch);
     if (ref.isEmpty())
         return {{"ok", false}, {"error", "not_found"}};
     QByteArray output;
@@ -646,9 +769,9 @@ QJsonObject RepoHost::buildBlobReply(const QString &path) const
     return reply;
 }
 
-QJsonObject RepoHost::buildCommitsReply() const
+QJsonObject RepoHost::buildCommitsReply(const QString &branch) const
 {
-    const QString ref = baseRef();
+    const QString ref = refForBranch(branch);
     if (ref.isEmpty())
         return {{"ok", false}, {"error", "empty_repo"}};
     QByteArray output;
