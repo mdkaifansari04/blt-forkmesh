@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 222
 title: when the issue count changes on other nodes after an update have an animation that happens
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 31

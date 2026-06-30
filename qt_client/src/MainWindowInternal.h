@@ -779,7 +779,7 @@ public:
         : QWidget(parent), m_label(label)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(82, 30);
+        setFixedSize(kSide, kSide); // a little button-sized square
         setCursor(Qt::PointingHandCursor);
     }
 
@@ -811,28 +811,51 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Rounded card so each chart reads as its own little square.
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(20);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawRoundedRect(box, 4, 4);
+
+        // A header font that shrinks until the label and value both fit on one
+        // line, so neither is clipped however the app's base font is sized.
         QFont f = font();
-        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.5));
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
+        const double avail = width() - 6;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            const QFontMetrics fm(f);
+            if (fm.horizontalAdvance(m_label) + fm.horizontalAdvance(m_value) +
+                    4 <=
+                avail)
+                break;
+        }
+        f.setPointSizeF(pt);
         p.setFont(f);
         const QFontMetrics fm(f);
+        const int headH = fm.height();
 
-        // Left column: the resource label over its current value.
-        const int textW = qMax(fm.horizontalAdvance(m_label),
-                               fm.horizontalAdvance(m_value)) + 4;
+        // Header: the resource label (left, dim) and its current value (right,
+        // in the load colour) share the top line; the chart gets the rest.
         QColor lab = palette().color(QPalette::WindowText);
         lab.setAlpha(150);
         p.setPen(lab);
-        p.drawText(QRect(0, 0, textW, height() / 2),
+        p.drawText(QRectF(3, 1, width() - 6, headH),
                    Qt::AlignVCenter | Qt::AlignLeft, m_label);
-        QColor val = palette().color(QPalette::WindowText);
-        val.setAlpha(225);
-        p.setPen(val);
-        p.drawText(QRect(0, height() / 2, textW, height() - height() / 2),
-                   Qt::AlignVCenter | Qt::AlignLeft, m_value);
+        const double lastPct =
+            m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
+        p.setPen(gaugeColor(lastPct));
+        p.drawText(QRectF(3, 1, width() - 6, headH),
+                   Qt::AlignVCenter | Qt::AlignRight, m_value);
 
-        // Right: the sparkline track, with the most recent sample at its right
-        // edge so the curve scrolls left as new readings arrive.
-        const QRectF area(textW + 2, 3, width() - textW - 4, height() - 6);
+        // The sparkline track fills the area below the header, with the most
+        // recent sample at its right edge so the curve scrolls left over time.
+        const QRectF area(3, headH + 2, width() - 6, height() - headH - 5);
+        if (area.height() < 2)
+            return;
         QColor track = palette().color(QPalette::WindowText);
         track.setAlpha(28);
         p.setPen(Qt::NoPen);
@@ -874,6 +897,7 @@ private:
         return QColor("#3fb950");     // green: light load
     }
 
+    static constexpr int kSide = 40;      // button-sized square (w == h)
     static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
     QString m_label;
     QString m_value;
@@ -1405,59 +1429,6 @@ public:
     }
 };
 
-// Makes a draggable column's divider behave like dragging a boundary/margin: the
-// width it gains (or loses) is taken from (or handed to) its immediate right-hand
-// neighbour, so the divider tracks the cursor and the rest of the table holds
-// still. Without this, a header that has a Stretch (flex) column sitting to the
-// LEFT of the dragged divider keeps the total width constant by shrinking that
-// far-off Stretch column instead — so the divider snaps back and distant columns
-// jump, which feels broken. A re-entrancy guard stops our own compensating resize
-// from recursing; a Stretch column to the right is left to absorb naturally.
-inline void installMarginResize(QHeaderView *header)
-{
-    auto busy = std::make_shared<bool>(false);
-    QObject::connect(
-        header, &QHeaderView::sectionResized, header,
-        [header, busy](int logicalIndex, int oldSize, int newSize) {
-            if (*busy)
-                return; // our own neighbour resize, below
-            // Only react to user-draggable columns; ignore the Stretch column's
-            // automatic recompute on window resize.
-            if (header->sectionResizeMode(logicalIndex) != QHeaderView::Interactive)
-                return;
-            const int delta = newSize - oldSize;
-            if (delta == 0)
-                return;
-            // Trade the change with the next visible Interactive column to the
-            // right. We walk in *visual* order (not logical) so the divider keeps
-            // tracking the cursor even after the user has dragged columns into a
-            // new order. If a Stretch column comes first, leave it — it already
-            // absorbs the change and the divider still tracks the cursor.
-            int neighbor = -1;
-            for (int v = header->visualIndex(logicalIndex) + 1; v < header->count();
-                 ++v) {
-                const int logical = header->logicalIndex(v);
-                if (header->isSectionHidden(logical))
-                    continue;
-                const QHeaderView::ResizeMode mode =
-                    header->sectionResizeMode(logical);
-                if (mode == QHeaderView::Stretch)
-                    return;
-                if (mode == QHeaderView::Interactive) {
-                    neighbor = logical;
-                    break;
-                }
-            }
-            if (neighbor < 0)
-                return; // nothing to the right to trade with
-            const int minW = qMax(1, header->minimumSectionSize());
-            const int neighborNew = qMax(minW, header->sectionSize(neighbor) - delta);
-            *busy = true;
-            header->resizeSection(neighbor, neighborNew);
-            *busy = false;
-        });
-}
-
 // RAII guard that suspends a widget's repaints for a bulk table rebuild, so
 // clearing the rows and inserting/populating them fires a single repaint when
 // the guard goes out of scope instead of one per row. Without it, inserting
@@ -1488,15 +1459,19 @@ private:
     bool m_was = true;
 };
 
-// Lets the user drag-resize a table's columns while keeping their content-fitted
-// starting widths. Qt's ResizeToContents header mode auto-sizes a column but
-// locks the divider so it can't be dragged; this leaves the existing per-column
-// modes in place for the initial layout, then — once real rows have populated —
-// snapshots each ResizeToContents column's fitted width and switches it to
-// Interactive so it becomes draggable. Stretch and Fixed columns are left as the
-// caller configured them (Stretch keeps absorbing window-resize slack; Fixed
-// button columns stay put). Drags then move the divider like a margin via
-// installMarginResize(). Call once after the header has been configured.
+// Gives a table's columns standard-spreadsheet drag behaviour (issue #263): every
+// divider drags independently, resizing only its own column while the columns to
+// its right simply shift over (a horizontal scrollbar appears if they overflow),
+// just like Excel/Sheets. Qt's auto-sizing header modes fight this -- a Stretch or
+// stretch-last column silently absorbs a neighbour's drag (so the divider snaps
+// back and distant columns jump, which feels broken), and ResizeToContents locks
+// the divider entirely. So once real rows have populated, this fits each auto-sized
+// column to the width of its widest data and switches it to Interactive:
+// ResizeToContents and Stretch/stretch-last columns alike are sized to their content
+// (a Stretch column would otherwise keep only the width it was stretched to fill,
+// which can be narrower than its content and elide the text), and stretch-last is
+// turned off. Fixed button columns are left exactly as the caller set them. Call
+// once after the header has been configured.
 inline void makeColumnsResizable(QTableWidget *table)
 {
     if (!table || !table->model())
@@ -1509,20 +1484,28 @@ inline void makeColumnsResizable(QTableWidget *table)
             if (*done)
                 return;
             *done = true;
-            // Defer to the next event-loop turn so the snapshot reflects the
+            // Defer to the next event-loop turn so the fit reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
-            QTimer::singleShot(0, table, [header]() {
+            QTimer::singleShot(0, table, [table, header]() {
+                // The last column may auto-fill via stretchLastSection rather than
+                // a per-section Stretch mode; capture that before turning it off.
+                const bool stretchLast = header->stretchLastSection();
+                const int last = header->count() - 1;
+                header->setStretchLastSection(false);
                 for (int i = 0; i < header->count(); ++i) {
-                    if (header->sectionResizeMode(i) != QHeaderView::ResizeToContents)
-                        continue;
-                    const int w = header->sectionSize(i);
+                    const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
+                    const bool autosized =
+                        mode == QHeaderView::ResizeToContents ||
+                        mode == QHeaderView::Stretch || (stretchLast && i == last);
+                    if (!autosized)
+                        continue; // leave Fixed button columns untouched
+                    // Switch to draggable Interactive, then expand the column to
+                    // the width of its widest cell (or header label) so nothing is
+                    // elided. A Stretch column otherwise reports only the width it
+                    // was stretched to fill, which can be narrower than its data.
                     header->setSectionResizeMode(i, QHeaderView::Interactive);
-                    if (w > 0)
-                        header->resizeSection(i, w);
+                    table->resizeColumnToContents(i);
                 }
-                // Wire up margin-style dragging only after the snapshot resizes
-                // above, so they don't trip the neighbour-compensation handler.
-                installMarginResize(header);
             });
         });
 }
@@ -1969,6 +1952,10 @@ inline void saveSolanaAddress(const QString &address)
 }
 const QString kPreviewCacheRootSetting = QStringLiteral("repositories/previewCacheRoot");
 const QString kConnectionTotalSetting = QStringLiteral("stats/connectionTotalMs");
+// Persisted "node taken offline by the user" flag (reward heartbeat + repo
+// serving paused). Persisted so a deliberately-offline node stays offline across
+// restarts rather than silently resuming reward collection.
+const QString kNodeOfflineSetting = QStringLiteral("stats/nodeOffline");
 const QString kThemeSetting = QStringLiteral("app/theme"); // system | dark | light
 // Show a desktop alert when a push lands on one of this node's mirrors.
 const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
@@ -4412,6 +4399,34 @@ public:
         return qMax(42, 14 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits);
     }
 
+    // Markdown files can be flipped between source and a rendered preview from a
+    // tiny toolbar toggle (see MainWindow::toggleRepoFileMarkdownPreview). The
+    // rendered view is an overlay child so this editor — and all the
+    // save / commit / history wiring keyed off the tab widget — stays put.
+    bool markdownPreviewVisible() const
+    {
+        return m_markdownPreview && m_markdownPreview->isVisible();
+    }
+
+    void setMarkdownPreviewVisible(bool on)
+    {
+        if (!on) {
+            if (m_markdownPreview)
+                m_markdownPreview->hide();
+            return;
+        }
+        if (!m_markdownPreview) {
+            m_markdownPreview = new QTextBrowser(this);
+            m_markdownPreview->setObjectName("markdownPreview");
+            m_markdownPreview->setOpenExternalLinks(true);
+            m_markdownPreview->setFrameShape(QFrame::NoFrame);
+        }
+        m_markdownPreview->setMarkdown(toPlainText());
+        m_markdownPreview->setGeometry(contentsRect());
+        m_markdownPreview->show();
+        m_markdownPreview->raise();
+    }
+
     void lineNumberAreaPaintEvent(QPaintEvent *event)
     {
         const bool dark = currentThemeIsDark();
@@ -4445,6 +4460,8 @@ protected:
         const QRect cr = contentsRect();
         m_lineNumberArea->setGeometry(
             QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+        if (m_markdownPreview && m_markdownPreview->isVisible())
+            m_markdownPreview->setGeometry(cr);
     }
 
     void changeEvent(QEvent *event) override
@@ -4489,6 +4506,7 @@ private:
     }
 
     CodeLineNumberArea *m_lineNumberArea = nullptr;
+    QTextBrowser *m_markdownPreview = nullptr; // lazy rendered-markdown overlay
 };
 
 inline CodeLineNumberArea::CodeLineNumberArea(CodePreviewEditor *editor)

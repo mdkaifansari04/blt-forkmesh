@@ -1148,7 +1148,7 @@ bool MainWindow::localBranchExists(const QString &repoPath,
 // the open detail view; agent sessions are matched by branch.
 void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
                                               const QString &branch, bool confirm,
-                                              bool async)
+                                              bool async, bool deferRefresh)
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -1228,7 +1228,8 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     // why) before touching the worktree so nothing is half-deleted.
     for (int id : std::as_const(agentIds)) {
         if (!deleteStoredAgentSession(id)) {
-            reloadAgents();
+            if (!deferRefresh)
+                reloadAgents();
             return;
         }
     }
@@ -1288,17 +1289,23 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
         }
     }
 
-    if (!agentIds.isEmpty()) {
-        reloadAgents();
-        reloadIssues();
-        refreshIssueList();
-        updateIssueActionState();
-    }
-    if (closedIssues > 0) {
-        updateRepoIssueCount();
-        flashMessage(closedIssues == 1
-                         ? QStringLiteral("Closed the linked issue.")
-                         : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
+    // A batch caller (deferRefresh) rebuilds the agents/issues UI once after the whole
+    // run, so skip the per-branch reload here — doing it every iteration tore down and
+    // rebuilt the agents table repeatedly, flickering the Status column blank.
+    if (!deferRefresh) {
+        if (!agentIds.isEmpty()) {
+            reloadAgents();
+            reloadIssues();
+            refreshIssueList();
+            updateIssueActionState();
+        }
+        if (closedIssues > 0) {
+            updateRepoIssueCount();
+            flashMessage(
+                closedIssues == 1
+                    ? QStringLiteral("Closed the linked issue.")
+                    : QStringLiteral("Closed %1 linked issues.").arg(closedIssues));
+        }
     }
 }
 
@@ -1345,21 +1352,37 @@ void MainWindow::deleteAllMergedAgentSessions()
     // list, then delete: each call below reloads m_agentSessions, but we iterate
     // the branch snapshot captured here, so that churn can't disturb the loop.
     // confirm=false skips the per-item dialog; async=false so the removes run one
-    // at a time instead of racing concurrent `git worktree remove`s.
+    // at a time instead of racing concurrent `git worktree remove`s; deferRefresh=true
+    // so the agents/issues UI is rebuilt once below rather than once per branch — the
+    // repeated mid-batch rebuilds flickered the Status column blank ("turns blank over
+    // here"). The single refresh at the end keeps the table smooth.
     for (const QString &branch : std::as_const(branches)) {
         const QString wt = worktreePathForBranch(repoPath, branch);
-        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false, /*async=*/false);
+        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false, /*async=*/false,
+                                     /*deferRefresh=*/true);
     }
+    reloadAgents();
+    reloadIssues();
+    refreshIssueList();
+    updateIssueActionState();
+    updateRepoIssueCount();
     flashMessage(QStringLiteral("Deleted %1 merged agent session%2.")
                      .arg(sessionCount)
                      .arg(sessionCount == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::updateWorktreeFromMain(const QString &worktreePath,
-                                        const QString &branch)
+                                        const QString &branch,
+                                        const QString &baseArg)
 {
-    const QString base = repoDefaultBranch(repoBranches());
-    if (worktreePath.isEmpty() || branch.isEmpty() || branch == base)
+    // Prefer the base branch the caller named. Only fall back to the open repo
+    // detail's default when none was given: repoDefaultBranch()/repoBranches() read
+    // m_repoDetailIndex, which from the agent detail page isn't necessarily this
+    // session's repo — there it came back empty and the merge ran as `git merge ""`
+    // and silently failed, which is why "Update from main" never worked there
+    // (adhoc #28). Bail on an empty base rather than attempting that broken merge.
+    const QString base = baseArg.isEmpty() ? repoDefaultBranch(repoBranches()) : baseArg;
+    if (worktreePath.isEmpty() || branch.isEmpty() || base.isEmpty() || branch == base)
         return;
     if (!QDir(worktreePath).exists()) {
         setRepoDetailNotice("That worktree's folder is gone.", true);
@@ -2902,15 +2925,8 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
-    if (QMessageBox::question(
-            this, QStringLiteral("Pull from %1").arg(base),
-            QStringLiteral("Merge %1 into %2 to bring it up to date?\n\n"
-                           "%2 is %3 commit(s) behind %1.")
-                .arg(base, branch)
-                .arg(behind),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
-        return;
-
+    // The user invoked this deliberately (the Pull button is only enabled when
+    // the branch is behind), so skip the confirmation and update straight away.
     QByteArray headOut;
     QString currentBranch;
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))

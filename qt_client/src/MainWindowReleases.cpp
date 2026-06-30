@@ -269,6 +269,7 @@ void MainWindow::loadReleasesPanel()
     }
 
     int count = 0;
+    QString currentTag;
     QByteArray out;
     if (!dir.isEmpty() &&
         runGitCapture(dir,
@@ -287,6 +288,10 @@ void MainWindow::loadReleasesPanel()
             const QString tag = f.value(0).trimmed();
             if (tag.isEmpty())
                 continue;
+            // Tags are sorted newest-first, so the first one is the current
+            // release shown at the top of the panel header (issue #226).
+            if (currentTag.isEmpty())
+                currentTag = tag;
             const int row = m_releasesTable->rowCount();
             m_releasesTable->insertRow(row);
             auto *tagItem = new QTableWidgetItem(tag);
@@ -339,11 +344,20 @@ void MainWindow::loadReleasesPanel()
             ++count;
         }
     }
-    if (m_releasesSummary)
-        m_releasesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 release%2")
-                .arg(count)
-                .arg(count == 1 ? "" : "s"));
+    // Header reads "Releases  <current tag> (N)" — the current release number on
+    // top, then how many releases there are in parentheses to the right (#226).
+    if (m_releasesSummary) {
+        if (count == 0)
+            m_releasesSummary->setText(QString());
+        else if (currentTag.isEmpty())
+            m_releasesSummary->setText(QStringLiteral("(%1)").arg(count));
+        else
+            m_releasesSummary->setText(
+                QStringLiteral("%1 (%2)").arg(currentTag).arg(count));
+    }
+    if (m_repoReleasesTab)
+        m_repoReleasesTab->setText(
+            QStringLiteral("Releases (%1)").arg(formatCount(count)));
     if (count == 0) {
         m_releasesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(

@@ -316,9 +316,10 @@ int main(int argc, char *argv[])
                              "worktree is reused (#214)"));
     }
 
-    // Issue #263: data-table columns are user-resizable — ResizeToContents
-    // columns flip to draggable Interactive once rows arrive, keeping their
-    // fitted widths, while Stretch and Fixed columns are left as configured.
+    // Issue #263: data-table columns are user-resizable — every auto-sized column
+    // (ResizeToContents and the Stretch flex column) flips to draggable Interactive
+    // once rows arrive, keeping its width, while Fixed button columns are left as
+    // configured.
     check(window.testColumnsBecomeResizable(),
           QStringLiteral("data-table content columns become drag-resizable"));
 
@@ -346,19 +347,19 @@ int main(int argc, char *argv[])
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code"));
 
-    // Issue #268: dragging a column divider resizes like moving a margin — the
-    // width comes from the immediate neighbour, not a far-off Stretch column, so
-    // the divider tracks the cursor instead of snapping back.
-    check(window.testMarginResize(),
-          QStringLiteral("column drag trades width with its neighbour"));
+    // Issue #263: dragging a column divider behaves like a spreadsheet — only the
+    // dragged column resizes and the columns to its right shift over, instead of a
+    // neighbour or far-off Stretch column silently donating the width.
+    check(window.testSpreadsheetResize(),
+          QStringLiteral("column drag resizes only that column (spreadsheet)"));
 
     // Issue #33: the agents list lets the user drag column headers into a new
-    // order, and resizing afterwards still trades width with the visual
-    // neighbour so the divider keeps tracking the cursor.
+    // order, and resizing afterwards still follows the spreadsheet rule so other
+    // columns keep their widths.
     check(window.testAgentColumnsMovable(),
           QStringLiteral("agents list column headers are draggable/reorderable"));
-    check(window.testMarginResizeAfterMove(),
-          QStringLiteral("column drag trades with visual neighbour after a move"));
+    check(window.testSpreadsheetResizeAfterMove(),
+          QStringLiteral("column drag leaves others untouched after a move"));
 
     window.testEnableSessionStartBypass(true);
 
@@ -513,6 +514,44 @@ int main(int argc, char *argv[])
                   .arg(shown)
                   .arg(realized)
                   .arg(onScreen));
+
+    // Issue #207: the commit detail page must expose a restore/revert action
+    // beside the destructive delete-history action.
+    {
+        window.resize(1100, 800);
+        window.testClickRepoDetailTab(1); // Commits
+        QElapsedTimer commitTimer;
+        commitTimer.start();
+        QPushButton *deleteCommit = nullptr;
+        QPushButton *restoreCommit = nullptr;
+        while (commitTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            deleteCommit = findButtonStartingWith(window, "Delete commit");
+            restoreCommit = findButtonStartingWith(window, "Restore commit");
+            if (deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window))
+                break;
+        }
+        bool adjacent = false;
+        bool restoreOnScreen = false;
+        if (deleteCommit && restoreCommit) {
+            const QPoint deleteTopLeft = deleteCommit->mapTo(&window, QPoint(0, 0));
+            const QPoint restoreTopLeft = restoreCommit->mapTo(&window, QPoint(0, 0));
+            adjacent = restoreTopLeft.y() == deleteTopLeft.y() &&
+                       restoreTopLeft.x() >= deleteTopLeft.x() + deleteCommit->width();
+            restoreOnScreen = restoreTopLeft.x() >= 0 &&
+                              restoreTopLeft.x() + restoreCommit->width() <=
+                                  window.width();
+        }
+        check(deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window) &&
+                  adjacent && restoreOnScreen,
+              QString("commit restore button is visible beside delete "
+                      "(delete=%1 restore=%2 visible=%3 adjacent=%4 onScreen=%5)")
+                  .arg(deleteCommit != nullptr)
+                  .arg(restoreCommit != nullptr)
+                  .arg(restoreCommit && restoreCommit->isVisibleTo(&window))
+                  .arg(adjacent)
+                  .arg(restoreOnScreen));
+    }
     }
 
     window.resize(480, 420);
@@ -780,6 +819,39 @@ int main(int argc, char *argv[])
                   .arg(seeded.testQuickAddAgentProvider(),
                        seeded.testIssueAgentProvider()));
         stopChildProcesses(seeded);
+    }
+
+    // Issue #203: quick-adding an issue without assigning it to an agent should
+    // land the user on that new issue — its detail pane opens automatically,
+    // just as the assign-an-agent path jumps straight to the new session.
+    {
+        QTemporaryDir quickAddRepo;
+        if (initGitRepo(quickAddRepo)) {
+            MainWindow qaWindow;
+            qaWindow.show();
+            QApplication::processEvents();
+            const int idx = qaWindow.testAddLocalRepository(
+                "me", "qarepo", quickAddRepo.path());
+            qaWindow.testOpenRepository(idx);
+            qaWindow.testShowRepoIssuesTab();
+            QApplication::processEvents();
+
+            // With no issue open yet the detail pane is collapsed; quick-adding
+            // one (no agent) must reveal it on the freshly-created issue.
+            const bool hiddenBefore = !qaWindow.testIssueDetailVisible();
+            const int number = qaWindow.testQuickAddIssueNoAgent(
+                QStringLiteral("Land me on the detail pane"));
+            QApplication::processEvents();
+
+            check(hiddenBefore && number > 0 && qaWindow.testIssueDetailVisible(),
+                  QString("quick-add without an agent opens the new issue's "
+                          "detail pane (hiddenBefore=%1 number=%2 visible=%3) "
+                          "(#203)")
+                      .arg(hiddenBefore)
+                      .arg(number)
+                      .arg(qaWindow.testIssueDetailVisible()));
+            stopChildProcesses(qaWindow);
+        }
     }
 
     // Issue #287: the headless "mirrors" view leads with this node's own CPU and
