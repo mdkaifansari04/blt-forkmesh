@@ -399,6 +399,22 @@ const QLatin1String kPullLinkScheme("forkmesh-pull:");
 // session's repo (adhoc #138). Shared by the link builder and its handler.
 const QLatin1String kIssueLinkScheme("forkmesh-issue:");
 
+// HTML for a branch name that, when clicked, opens that branch's row in the
+// Branches tab (handlers route kBranchLinkScheme -> MainWindow::switchToBranch).
+// Shared across the agent header, the pull-request header and anywhere else a
+// branch name is shown, so "click a branch anywhere → open it in Branches" works
+// uniformly (issue #204). Plain (un-escaped) when there's no branch.
+inline QString branchLinkHtml(const QString &branch)
+{
+    if (branch.isEmpty())
+        return QString();
+    const QString href = kBranchLinkScheme +
+                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
+    return QStringLiteral(
+               "<a href=\"%1\" style=\"color:#58a6ff;text-decoration:none\">%2</a>")
+        .arg(href, branch.toHtmlEscaped());
+}
+
 // Per-repository about/catalog metadata lives under ForkMesh's own metadata dir
 // instead of the project root.
 const QLatin1String kRepoInfoPath(".forkmesh/info.json");
