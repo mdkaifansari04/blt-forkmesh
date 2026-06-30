@@ -5,7 +5,7 @@ title: show the time on the commits list in pr detail
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 32
+priority: 11
 progress: 5
 assignees: []
 createdAt: 1782485773301

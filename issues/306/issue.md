@@ -5,7 +5,7 @@ title: UI: bad ui in the mirror tab
 status: open
 labels: []
 milestone: 
-priority: 25
+priority: 2
 progress: 0
 assignees: []
 createdAt: 1782758766690
