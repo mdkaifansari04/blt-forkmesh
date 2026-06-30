@@ -1621,7 +1621,8 @@ private:
     // appears beside the prompt box. Clicking it records from the microphone;
     // clicking again stops and transcribes the audio into the prompt locally.
     void toggleVoiceCapture();
-    void transcribeVoiceCapture();
+    void startVoiceTranscription(bool finalPass);
+    void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
@@ -2206,13 +2207,19 @@ private:
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
-    // installed. While recording, m_voiceRecordProc captures a temp WAV which is
-    // transcribed by m_voiceTranscribeProc when recording stops.
+    // installed. While recording, m_voiceRecordProc captures a temp WAV which
+    // m_voiceTranscribeProc transcribes — once when recording stops, and live on
+    // m_voiceLiveTimer ticks so dictated words appear in the prompt box as you
+    // talk. m_voiceInsertPos/Len mark the span those live passes own so each
+    // refresh replaces only the dictation, never the user's own text.
     QPushButton *m_quickAddMicButton = nullptr;
     QProcess *m_voiceRecordProc = nullptr;
     QProcess *m_voiceTranscribeProc = nullptr;
+    QTimer *m_voiceLiveTimer = nullptr;
     QString m_voiceWavPath;
     bool m_voiceRecording = false;
+    int m_voiceInsertPos = -1;
+    int m_voiceInsertLen = 0;
     // The whisper.cpp download/build process kicked off from Settings; kept on the
     // window so closing Settings mid-install doesn't kill it.
     QProcess *m_whisperInstallProc = nullptr;
