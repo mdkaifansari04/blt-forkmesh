@@ -747,15 +747,18 @@ void MainWindow::startVoiceCapture()
     // the words we've inserted, leaving whatever the user typed alone.
     m_voiceInsertPos = m_issueQuickAdd->textCursor().position();
     m_voiceInsertLen = 0;
+    m_voiceLastTranscribeSize = 0;
+    m_voiceLastPreview.clear();
     // Re-transcribe the growing clip on a timer so dictated words show up while
     // you're still talking (whisper-cli isn't streaming, so this re-runs over the
     // whole capture and replaces the span each pass). The final pass on stop is
     // authoritative; a flaky partial read just leaves the preview as-is.
     if (!m_voiceLiveTimer) {
         m_voiceLiveTimer = new QTimer(this);
-        // Re-transcribe roughly every 1.5 s so dictated words land in the box
-        // soon after they're spoken without re-running whisper too aggressively.
-        m_voiceLiveTimer->setInterval(1500);
+        // Re-transcribe roughly every second so dictated words land in the box soon
+        // after they're spoken. Ticks where the clip hasn't grown are skipped in
+        // startVoiceTranscription(), so this stays cheap while you pause.
+        m_voiceLiveTimer->setInterval(1000);
         connect(m_voiceLiveTimer, &QTimer::timeout, this,
                 [this] { startVoiceTranscription(/*finalPass=*/false); });
     }
@@ -822,12 +825,20 @@ void MainWindow::startVoiceTranscription(bool finalPass)
     }
     // Need more than a bare WAV header to be worth transcribing (a live tick can
     // fire before the recorder has captured anything).
-    if (!QFileInfo::exists(m_voiceWavPath) ||
-        QFileInfo(m_voiceWavPath).size() < 4096) {
+    const qint64 wavSize =
+        QFileInfo::exists(m_voiceWavPath) ? QFileInfo(m_voiceWavPath).size() : 0;
+    if (wavSize < 4096) {
         if (finalPass)
             finishIdle();
         return;
     }
+    // Live ticks: skip when the clip hasn't grown by ~a quarter second of audio
+    // (16 kHz mono 16-bit ≈ 32 KB/s) since the last pass. Re-running whisper over
+    // an unchanged clip just reloads the model to redo identical work, which is the
+    // main source of jank while the speaker pauses. The final pass always runs.
+    if (!finalPass && wavSize - m_voiceLastTranscribeSize < 8192)
+        return;
+    m_voiceLastTranscribeSize = wavSize;
 
     if (finalPass) {
         m_issueQuickAdd->setPlaceholderText("transcribing\xE2\x80\xA6");
@@ -868,9 +879,12 @@ void MainWindow::startVoiceTranscription(bool finalPass)
 
                 if (!finalPass) {
                     // Live preview: only show real words; ignore empty/suppressed
-                    // results so the partial transcript doesn't flicker.
-                    if (!text.isEmpty())
+                    // results and ones identical to what's already shown so the
+                    // partial transcript doesn't flicker or churn the cursor.
+                    if (!text.isEmpty() && text != m_voiceLastPreview) {
+                        m_voiceLastPreview = text;
                         applyVoiceTranscript(text, /*finalPass=*/false);
+                    }
                     return;
                 }
 
@@ -888,9 +902,16 @@ void MainWindow::startVoiceTranscription(bool finalPass)
             });
     // Read the transcript from "<base>.txt" (-otxt) rather than stdout, so this
     // doesn't depend on console flags that vary across whisper.cpp versions.
+    // Speed flags keep dictation snappy: greedy decode (-bs 1), no temperature
+    // fallback (-nf, which otherwise re-decodes "hard" segments several times), and
+    // most of the box's cores (-t) while leaving one for the UI so the app stays
+    // smooth during transcription.
+    const int threads = qBound(2, QThread::idealThreadCount() - 1, 8);
     proc->start(binary, {QStringLiteral("-m"), model, QStringLiteral("-f"), wav,
                          QStringLiteral("-nt"), QStringLiteral("-otxt"),
-                         QStringLiteral("-of"), base});
+                         QStringLiteral("-of"), base, QStringLiteral("-bs"),
+                         QStringLiteral("1"), QStringLiteral("-nf"),
+                         QStringLiteral("-t"), QString::number(threads)});
 }
 
 // Replace the live-dictation span [m_voiceInsertPos, +m_voiceInsertLen] with
