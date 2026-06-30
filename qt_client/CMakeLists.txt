@@ -22,6 +22,13 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
 find_package(OpenSSL REQUIRED)
 
+# On Linux the screen-region capture must go through the XDG Desktop Portal
+# (direct grabs return black under Wayland), which needs Qt's D-Bus module.
+# Other platforms grab the screen directly, so it's a Linux-only dependency.
+if(UNIX AND NOT APPLE)
+    find_package(Qt6 6.4 REQUIRED COMPONENTS DBus)
+endif()
+
 set(FORKMESH_APP_SOURCES
     resources/icons.qrc
     src/PlatformLogFilter.h
@@ -121,6 +128,9 @@ target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSS
 # libutil (macOS provides it in libSystem, so no extra link there).
 if(UNIX AND NOT APPLE)
     target_link_libraries(forkmesh PRIVATE util)
+    # XDG Desktop Portal screenshot path (see ScreenCaptureOverlay).
+    target_link_libraries(forkmesh PRIVATE Qt6::DBus)
+    target_compile_definitions(forkmesh PRIVATE FORKMESH_HAVE_PORTAL)
     # Export symbols so the StallWatchdog's backtrace_symbols() resolves function
     # names (not just addresses) when it samples a frozen UI thread.
     target_link_options(forkmesh PRIVATE -rdynamic)
@@ -192,7 +202,8 @@ if(FORKMESH_BUILD_TESTS)
     )
     target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
     if(UNIX AND NOT APPLE)
-        target_link_libraries(forkmesh-window-tests PRIVATE util)
+        target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
+        target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
     if(APPLE)
