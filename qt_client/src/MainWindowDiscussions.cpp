@@ -118,6 +118,8 @@ QWidget *MainWindow::buildDiscussionsTab()
     setOcticon(m_discussionCommentButton, "comment", 16);
     auto *composerButtons = new QHBoxLayout;
     composerButtons->setContentsMargins(0, 0, 0, 0);
+    // Speak the comment with the voice engine, just like the footer prompt mic.
+    composerButtons->addWidget(makeVoiceButton(m_discussionComposer), 0, Qt::AlignLeft);
     composerButtons->addStretch();
     composerButtons->addWidget(m_discussionCommentButton);
 

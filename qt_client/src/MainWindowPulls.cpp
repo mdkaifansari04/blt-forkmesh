@@ -503,6 +503,8 @@ QWidget *MainWindow::buildPullsTab()
             [this] { submitPullReview(QStringLiteral("changes_requested")); });
     auto *composerButtons = new QHBoxLayout;
     composerButtons->setContentsMargins(0, 0, 0, 0);
+    // Speak the comment with the voice engine, just like the footer prompt mic.
+    composerButtons->addWidget(makeVoiceButton(m_pullComposer), 0, Qt::AlignLeft);
     composerButtons->addStretch();
     composerButtons->addWidget(m_pullRequestChangesButton);
     composerButtons->addWidget(m_pullApproveButton);
