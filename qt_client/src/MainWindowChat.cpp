@@ -624,11 +624,14 @@ void MainWindow::updateVoiceInputButton()
 {
     if (!m_quickAddMicButton)
         return;
-    m_quickAddMicButton->setVisible(whisperInstalled());
+    m_quickAddMicButton->setVisible(voiceInputReady());
     if (m_voiceRecording)
         return;
     setOcticon(m_quickAddMicButton, "mic", 16);
     m_quickAddMicButton->setStyleSheet(QString());
+    const QString engine = voiceEngine() == QStringLiteral("parakeet")
+                               ? QStringLiteral("Parakeet")
+                               : QStringLiteral("whisper.cpp");
     m_quickAddMicButton->setToolTip(
         QStringLiteral("Speak your prompt \xE2\x80\x94 hold to record, release "
                        "to transcribe with whisper.cpp."));
@@ -661,7 +664,7 @@ void MainWindow::startVoiceCapture()
     if (m_voiceRecording)
         return;
 
-    if (!whisperInstalled()) {
+    if (!voiceInputReady()) {
         updateVoiceInputButton();
         return;
     }
@@ -752,17 +755,21 @@ void MainWindow::startVoiceCapture()
     // Re-transcribe the growing clip on a timer so dictated words show up while
     // you're still talking (whisper-cli isn't streaming, so this re-runs over the
     // whole capture and replaces the span each pass). The final pass on stop is
-    // authoritative; a flaky partial read just leaves the preview as-is.
-    if (!m_voiceLiveTimer) {
-        m_voiceLiveTimer = new QTimer(this);
-        // Re-transcribe roughly every second so dictated words land in the box soon
-        // after they're spoken. Ticks where the clip hasn't grown are skipped in
-        // startVoiceTranscription(), so this stays cheap while you pause.
-        m_voiceLiveTimer->setInterval(1000);
-        connect(m_voiceLiveTimer, &QTimer::timeout, this,
-                [this] { startVoiceTranscription(/*finalPass=*/false); });
+    // authoritative; a flaky partial read just leaves the preview as-is. Parakeet
+    // reloads its model on every invocation (seconds), so live ticks would thrash —
+    // it transcribes once, on stop, only.
+    if (voiceEngine() != QStringLiteral("parakeet")) {
+        if (!m_voiceLiveTimer) {
+            m_voiceLiveTimer = new QTimer(this);
+            // Re-transcribe roughly every second so dictated words land in the box
+            // soon after they're spoken. Ticks where the clip hasn't grown are
+            // skipped in startVoiceTranscription(), so this stays cheap while you pause.
+            m_voiceLiveTimer->setInterval(1000);
+            connect(m_voiceLiveTimer, &QTimer::timeout, this,
+                    [this] { startVoiceTranscription(/*finalPass=*/false); });
+        }
+        m_voiceLiveTimer->start();
     }
-    m_voiceLiveTimer->start();
     // Drive the live input-level meter from the growing capture. A short interval
     // keeps the bar feeling responsive; m_voiceLevelPos starts at the data chunk.
     m_voiceLevelPos = 0;
@@ -816,9 +823,10 @@ void MainWindow::startVoiceTranscription(bool finalPass)
         QFile::remove(m_voiceWavPath);
     };
 
-    const QString binary = whisperBinaryPath();
-    const QString model = whisperModelPath();
-    if (binary.isEmpty() || !QFileInfo::exists(model)) {
+    const bool parakeet = voiceEngine() == QStringLiteral("parakeet");
+    if (parakeet ? !parakeetInstalled()
+                 : (whisperBinaryPath().isEmpty() ||
+                    !QFileInfo::exists(whisperModelPath()))) {
         if (finalPass)
             finishIdle();
         return;
@@ -900,18 +908,26 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                     logSystem("No speech detected \xE2\x80\x94 check that your "
                               "microphone is capturing audio.");
             });
-    // Read the transcript from "<base>.txt" (-otxt) rather than stdout, so this
-    // doesn't depend on console flags that vary across whisper.cpp versions.
-    // Speed flags keep dictation snappy: greedy decode (-bs 1), no temperature
-    // fallback (-nf, which otherwise re-decodes "hard" segments several times), and
-    // most of the box's cores (-t) while leaving one for the UI so the app stays
-    // smooth during transcription.
-    const int threads = qBound(2, QThread::idealThreadCount() - 1, 8);
-    proc->start(binary, {QStringLiteral("-m"), model, QStringLiteral("-f"), wav,
-                         QStringLiteral("-nt"), QStringLiteral("-otxt"),
-                         QStringLiteral("-of"), base, QStringLiteral("-bs"),
-                         QStringLiteral("1"), QStringLiteral("-nf"),
-                         QStringLiteral("-t"), QString::number(threads)});
+    // Both engines write the transcript to "<base>.txt"; reading the file is more
+    // robust than parsing stdout. whisper.cpp produces it via -otxt -of <base>;
+    // Parakeet's transcribe.py is handed the exact path to write.
+    if (parakeet) {
+        proc->start(parakeetPython(),
+                    {parakeetScriptPath(), wav, base + QStringLiteral(".txt"),
+                     parakeetModelName()});
+    } else {
+        // Speed flags keep dictation snappy: greedy decode (-bs 1), no temperature
+        // fallback (-nf, which otherwise re-decodes "hard" segments several times),
+        // and most of the box's cores (-t) while leaving one for the UI so the app
+        // stays smooth during transcription.
+        const int threads = qBound(2, QThread::idealThreadCount() - 1, 8);
+        proc->start(whisperBinaryPath(),
+                    {QStringLiteral("-m"), whisperModelPath(), QStringLiteral("-f"),
+                     wav, QStringLiteral("-nt"), QStringLiteral("-otxt"),
+                     QStringLiteral("-of"), base, QStringLiteral("-bs"),
+                     QStringLiteral("1"), QStringLiteral("-nf"), QStringLiteral("-t"),
+                     QString::number(threads)});
+    }
 }
 
 // Replace the live-dictation span [m_voiceInsertPos, +m_voiceInsertLen] with

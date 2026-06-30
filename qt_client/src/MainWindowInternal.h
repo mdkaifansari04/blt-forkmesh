@@ -1871,6 +1871,11 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+// The shared welcome room and the per-identity flag that records whether this
+// node has already posted its one-time "just joined" greeting there (issue #192).
+const QString kWelcomeChannel = QStringLiteral("#welcome");
+const QString kWelcomeAnnouncedSettingPrefix =
+    QStringLiteral("chat/welcomeAnnounced/");
 
 // True when a notification category is enabled. Default false: notifications are
 // off until the user turns them on, so a fresh install is silent.
@@ -1916,6 +1921,12 @@ const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
 // was fetched (tiny.en/base.en/small.en).
 const QString kWhisperDirSetting = QStringLiteral("voice/whisperDir");
 const QString kWhisperModelSetting = QStringLiteral("voice/whisperModel");
+// Which speech-to-text engine the mic uses: "whisper" (whisper.cpp, the default)
+// or "parakeet" (NVIDIA Parakeet via a local Python env). The Parakeet model name
+// picks which checkpoint the runner pulls (parakeet-mlx on Apple Silicon, NeMo
+// elsewhere).
+const QString kVoiceEngineSetting = QStringLiteral("voice/engine");
+const QString kParakeetModelSetting = QStringLiteral("voice/parakeetModel");
 // Which microphone the recorder captures from (adhoc #10). Empty == the system
 // default; otherwise a recorder-specific device id from voiceInputDevices().
 const QString kVoiceInputDeviceSetting = QStringLiteral("voice/inputDevice");
@@ -4428,6 +4439,65 @@ inline QString whisperBinaryPath()
 inline bool whisperInstalled()
 {
     return !whisperBinaryPath().isEmpty() && QFileInfo::exists(whisperModelPath());
+}
+
+// ---- voice input (Parakeet) helpers -----------------------------------------
+// Which speech engine the mic uses. Defaults to whisper.cpp; "parakeet" opts into
+// the NVIDIA Parakeet runner provisioned from Settings.
+inline QString voiceEngine()
+{
+    const QString e =
+        QSettings().value(kVoiceEngineSetting).toString().trimmed().toLower();
+    return e == QStringLiteral("parakeet") ? QStringLiteral("parakeet")
+                                           : QStringLiteral("whisper");
+}
+
+// Parakeet is run from a self-contained Python venv (parakeet-mlx on Apple
+// Silicon, NeMo elsewhere) living in the app's local-data dir, alongside the
+// transcribe.py wrapper the installer drops there.
+inline QString parakeetDir()
+{
+    const QString base =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    return QDir(base.isEmpty() ? QDir::homePath() : base)
+        .filePath(QStringLiteral("parakeet"));
+}
+
+inline QString parakeetPython()
+{
+    const QDir dir(parakeetDir());
+#if defined(Q_OS_WIN)
+    return dir.filePath(QStringLiteral("venv/Scripts/python.exe"));
+#else
+    return dir.filePath(QStringLiteral("venv/bin/python"));
+#endif
+}
+
+inline QString parakeetScriptPath()
+{
+    return QDir(parakeetDir()).filePath(QStringLiteral("transcribe.py"));
+}
+
+// Which Parakeet checkpoint to load. A bare name is mapped to the right HF repo by
+// transcribe.py (mlx-community/… for MLX, nvidia/… for NeMo).
+inline QString parakeetModelName()
+{
+    const QString stored =
+        QSettings().value(kParakeetModelSetting).toString().trimmed();
+    return stored.isEmpty() ? QStringLiteral("parakeet-tdt-0.6b-v2") : stored;
+}
+
+inline bool parakeetInstalled()
+{
+    return QFileInfo::exists(parakeetPython()) &&
+           QFileInfo::exists(parakeetScriptPath());
+}
+
+// Whether the currently-selected voice engine is provisioned and ready to use.
+inline bool voiceInputReady()
+{
+    return voiceEngine() == QStringLiteral("parakeet") ? parakeetInstalled()
+                                                       : whisperInstalled();
 }
 
 // A CLI audio recorder + the args to capture 16 kHz mono 16-bit WAV (what

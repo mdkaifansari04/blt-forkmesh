@@ -785,6 +785,14 @@ private:
     void editCurrentPullFile();         // edit the selected file on the PR's branch
     void deleteCurrentPullFile();       // delete the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
+    // Close each still-open issue in `numbers` as resolved by a just-merged change,
+    // posting `comment` into the issue thread and logging it as closed "via" `via`
+    // (e.g. "pull request #5" or 'branch "fix-x"'). Refreshes the issue list and
+    // counters when anything changed, and returns the numbers actually closed so
+    // callers can word their own status message. Shared by the pull-request merge
+    // (closeIssuesLinkedFromPull) and the worktree/branch merge flows (adhoc #23).
+    QList<int> closeIssuesForMerge(const QList<int> &numbers,
+                                   const QString &comment, const QString &via);
     // After a merge, mint the escrow deposit address and show the funding QR for
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
@@ -1656,6 +1664,10 @@ private:
     void stopMicTest();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
+    // Settings: provision NVIDIA Parakeet (a local Python env) for dictation.
+    void installParakeet();
+    // Install whichever engine the Settings selector currently points at.
+    void installVoiceEngine();
     void refreshWhisperStatus();
     // Quick-add prompt history (adhoc #200): remember each sent prompt and let
     // Up/Down walk back through them in the footer bar. direction < 0 is Up
@@ -1862,6 +1874,10 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
+    // Post this node's one-time "just joined" greeting to the shared #welcome
+    // room. Only a brand-new identity announces (gated by a per-identity setting),
+    // so the network sees a single join line with no per-peer duplicates (#192).
+    void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
     // ("@<peerId>").
@@ -2271,6 +2287,12 @@ private:
     QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
+    // Voice engine selector + Parakeet provisioning (the option to use Parakeet
+    // instead of whisper.cpp). m_parakeetInstallProc is the venv/pip build, kept on
+    // the window so closing Settings mid-install doesn't kill it.
+    QComboBox *m_voiceEngineCombo = nullptr;
+    QComboBox *m_parakeetModelCombo = nullptr;
+    QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
@@ -3388,6 +3410,9 @@ private:
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;
+    // True once this node has posted (or confirmed it already posted) its one-time
+    // #welcome greeting this run, so the per-roster check stays cheap (issue #192).
+    bool m_welcomeAnnounced = false;
     // Catalog-backed mirror list (issue #223): the worker's /mirrors payload for
     // the repo group currently shown in the mirror-nodes panel, merged in so a
     // mirror that isn't live in the chat room is still listed for the owner.
