@@ -1930,11 +1930,43 @@ void MainWindow::loadBranchesPanel()
     const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
     const bool writable = repoHasWorkingTree();
 
-    if (m_branchesSummary)
+    // Remote-tracking branches (refs/remotes/*): the branches other nodes / the
+    // relay have published, which `git branch` (local heads only, via
+    // repoBranches()) leaves out. The list should show every branch in the repo,
+    // including these refs, under their full ref-qualified name (adhoc #55).
+    // Rendered read-only after the local branches below. Skip each remote's
+    // symbolic */HEAD pointer and the bare remote name (e.g. "origin"), which
+    // aren't branches; a remote-tracking ref is always "<remote>/<branch>".
+    QStringList remoteBranches;
+    if (!dir.isEmpty()) {
+        QByteArray rout;
+        if (runGitCapture(dir,
+                          {"for-each-ref", "--sort=-committerdate",
+                           "--format=%(refname:short)", "refs/remotes/"},
+                          &rout, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(rout).split('\n', Qt::SkipEmptyParts)) {
+                const QString ref = line.trimmed();
+                if (ref.isEmpty() || !ref.contains(u'/') ||
+                    ref.endsWith(QLatin1String("/HEAD")))
+                    continue;
+                if (!remoteBranches.contains(ref))
+                    remoteBranches.append(ref);
+            }
+        }
+    }
+
+    if (m_branchesSummary) {
+        const QString def = base.isEmpty() ? QStringLiteral("none") : base;
+        const QString total =
+            remoteBranches.isEmpty()
+                ? QString::number(branches.size())
+                : QString::fromUtf8("%1 local \xC2\xB7 %2 remote")
+                      .arg(branches.size())
+                      .arg(remoteBranches.size());
         m_branchesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 total \xC2\xB7 default: %2")
-                .arg(branches.size())
-                .arg(base.isEmpty() ? "none" : base));
+            QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 default: %2").arg(total, def));
+    }
 
     // Branch commit timestamps in one batch: spawning a `git log -1` per branch
     // (below) blocked the UI thread for ~2s on repos with many branches because
@@ -1946,7 +1978,7 @@ void MainWindow::loadBranchesPanel()
         if (runGitCapture(dir,
                           {"for-each-ref",
                            "--format=%(refname:short) %(committerdate:unix)",
-                           "refs/heads/"},
+                           "refs/heads/", "refs/remotes/"},
                           &times, nullptr)) {
             for (const QString &line :
                  QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
@@ -2176,6 +2208,34 @@ void MainWindow::loadBranchesPanel()
         // column edge (the action row already carries an 8px right margin).
         m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
 
+    // Remote-tracking branches, listed read-only under their full ref-qualified
+    // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
+    // in the repo, not just the local heads (adhoc #55). No ahead/behind probe or
+    // row actions here: these aren't checked out locally and a repo can carry
+    // hundreds of them, so each row stays cheap — just the name and last-commit
+    // time. Clicking one still renders its diff vs the default branch.
+    for (const QString &branch : remoteBranches) {
+        const int row = m_branchesTable->rowCount();
+        m_branchesTable->insertRow(row);
+
+        auto *name = new QTableWidgetItem(branch);
+        name->setIcon(themedOcticon("repo-forked", QColor("#8b949e"), 14));
+        name->setForeground(QColor("#8b949e"));
+        name->setToolTip(QStringLiteral("Remote-tracking branch %1").arg(branch));
+        m_branchesTable->setItem(row, 0, name);
+
+        auto *statusItem = new QTableWidgetItem(QStringLiteral("Remote"));
+        statusItem->setForeground(QColor("#8b949e"));
+        m_branchesTable->setItem(row, 1, statusItem);
+
+        m_branchesTable->setItem(
+            row, 2,
+            new QTableWidgetItem(
+                formatShortRelativeTime(branchTimes.value(branch, 0))));
+        m_branchesTable->setItem(row, 3, new QTableWidgetItem);
+        m_branchesTable->setItem(row, 4, new QTableWidgetItem);
+    }
+
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
     if (m_branchPullAllButton) {
@@ -2208,7 +2268,7 @@ void MainWindow::loadBranchesPanel()
                             .arg(base));
     }
 
-    if (branches.isEmpty()) {
+    if (m_branchesTable->rowCount() == 0) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
@@ -2221,7 +2281,8 @@ void MainWindow::loadBranchesPanel()
     // Re-select the row the user was viewing (falling back to the checked-out
     // branch) so rebuilding the table doesn't leave the diff pane blank.
     QString target = previouslyViewed;
-    if (target.isEmpty() || !branches.contains(target))
+    if (target.isEmpty() ||
+        (!branches.contains(target) && !remoteBranches.contains(target)))
         target = selected;
     for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
         QTableWidgetItem *it = m_branchesTable->item(r, 0);
