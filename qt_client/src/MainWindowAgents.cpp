@@ -2269,6 +2269,33 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
     return nullptr;
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
+// issue #291: read back the Status-column text the agent list renders for a
+// session — "merged" once its worktree/PR lands in the base branch, otherwise the
+// run status — so a window test can prove the merge note reaches the list. Goes
+// through applyAgentStatusCell (the same painter the live table uses) rather than
+// duplicating its logic.
+QString MainWindow::testAgentStatusCellText(int sessionId) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id == sessionId) {
+            QTableWidgetItem item;
+            applyAgentStatusCell(&item, s);
+            return item.text();
+        }
+    }
+    return QString();
+}
+
+bool MainWindow::testAgentSessionMerged(int sessionId) const
+{
+    for (const AgentSession &s : m_agentSessions)
+        if (s.id == sessionId)
+            return s.merged;
+    return false;
+}
+#endif
+
 const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) const
 {
     if (issueNumber <= 0)
