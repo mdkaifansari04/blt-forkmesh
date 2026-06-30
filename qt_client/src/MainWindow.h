@@ -1386,6 +1386,12 @@ private:
     bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
                                QString *error = nullptr);
     void loadCommits();
+    // Fill the Files/+/− columns of the commit list from `git log --numstat`,
+    // which diffs every commit in the window and is the slow part of a load. Runs
+    // deferred (after loadCommits has painted the rows) so the list itself appears
+    // instantly; `loadGen` tags it against m_commitsLoadGen so a fast follow-up
+    // reload discards a stale fill landing late.
+    void fillCommitStats(int loadGen);
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
     void loadMoreCommits();
@@ -2368,6 +2374,10 @@ private:
     // that advances the mirror (without moving the local tip) must invalidate the
     // cached list — otherwise it keeps showing stale markers.
     QString m_commitsLoadedMirrorTip;
+    // Bumped on every loadCommits() so a still-pending background stat fill (see
+    // fillCommitStats) from a superseded load drops itself instead of writing
+    // mismatched Files/+/− counts into the new rows.
+    int m_commitsLoadGen = 0;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
