@@ -3177,7 +3177,10 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
             return;
         }
         setOcticon(m_repoPushButton, "sync", 14);
-        m_repoPushButton->setText(QString::fromUtf8("Sync changes") + arrow(unpublished, behind));
+        // Surface the pending count right on the button — a small number above the
+        // Commits tab — instead of hiding it in the tooltip (issue #208).
+        m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(unpublished)
+                                  + arrow(unpublished, behind));
         m_repoPushButton->setToolTip(
             QStringLiteral("Sync %1 local commit%2 from %3/%4 with your served "
                            "mirror%5")
@@ -3201,7 +3204,9 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
     // direction arrow — ⇅ when there's also incoming to pull. The count and target
     // move to the tooltip; pushCurrentRepoUpstream still does the push.
     setOcticon(m_repoPushButton, "sync", 14);
-    m_repoPushButton->setText(QString::fromUtf8("Sync changes") + arrow(ahead, behind));
+    // Show the pending commit count on the button itself (issue #208).
+    m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(ahead)
+                              + arrow(ahead, behind));
     m_repoPushButton->setToolTip(
         QStringLiteral("Sync %1 local commit%2 from %3/%4 to %5%6")
             .arg(ahead)
