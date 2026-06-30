@@ -3101,6 +3101,12 @@ private:
     // the plain placeholder rebuild so the panel stops flashing between the two
     // views on every transcript turn (adhoc #260).
     int m_agentDiffRenderedSession = -1;
+    // The HTML last handed to m_agentDiffView->setHtml() for that session. The
+    // Files-changed diff re-renders on a 400ms timer for every transcript burst
+    // while an agent streams; re-running QTextEdit::setHtml() when the rendered
+    // diff is byte-identical just re-freezes the UI for seconds with no visible
+    // change, so we skip the setHtml when this matches.
+    QString m_agentDiffLastHtml;
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
