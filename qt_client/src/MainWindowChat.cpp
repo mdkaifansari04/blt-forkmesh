@@ -430,8 +430,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddMicButton->setObjectName("ghostButton");
     m_quickAddMicButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddMicButton, "mic", 16);
-    connect(m_quickAddMicButton, &QPushButton::clicked, this,
-            &MainWindow::toggleVoiceCapture);
+    // Push-to-talk: hold the button to record, release to stop and transcribe.
+    connect(m_quickAddMicButton, &QPushButton::pressed, this,
+            &MainWindow::startVoiceCapture);
+    connect(m_quickAddMicButton, &QPushButton::released, this,
+            &MainWindow::stopVoiceCapture);
     // Live input-level meter (adhoc #10): a thin bar beside the mic that fills
     // with the incoming audio level while recording, so you can see the mic is
     // actually picking you up. Hidden until recording starts.
@@ -618,28 +621,36 @@ void MainWindow::updateVoiceInputButton()
     setOcticon(m_quickAddMicButton, "mic", 16);
     m_quickAddMicButton->setStyleSheet(QString());
     m_quickAddMicButton->setToolTip(
-        QStringLiteral("Speak your prompt \xE2\x80\x94 click to record, click again "
+        QStringLiteral("Speak your prompt \xE2\x80\x94 hold to record, release "
                        "to transcribe with whisper.cpp."));
 }
 
-// Toggle dictation: first click records from the mic to a temp WAV; the second
-// click stops recording and runs whisper.cpp, inserting the text into the prompt
-// box. All work is async (QProcess) so the UI never blocks.
-void MainWindow::toggleVoiceCapture()
+// Push-to-talk dictation: pressing the mic button records from the mic to a temp
+// WAV; releasing it stops recording and runs whisper.cpp, inserting the text into
+// the prompt box. All work is async (QProcess) so the UI never blocks.
+//
+// Release while recording: stop. The recorder finalizes the WAV on SIGTERM; the
+// final transcription is kicked off from its finished handler.
+void MainWindow::stopVoiceCapture()
+{
+    if (!m_voiceRecording)
+        return;
+    if (m_voiceLiveTimer)
+        m_voiceLiveTimer->stop();
+    stopVoiceLevelMeter();
+    if (m_voiceRecordProc && m_voiceRecordProc->state() != QProcess::NotRunning)
+        m_voiceRecordProc->terminate();
+}
+
+// Press-and-hold to begin recording (see stopVoiceCapture for the release path).
+void MainWindow::startVoiceCapture()
 {
     if (!m_quickAddMicButton || !m_issueQuickAdd)
         return;
 
-    // Second click while recording: stop. The recorder finalizes the WAV on
-    // SIGTERM; the final transcription is kicked off from its finished handler.
-    if (m_voiceRecording) {
-        if (m_voiceLiveTimer)
-            m_voiceLiveTimer->stop();
-        stopVoiceLevelMeter();
-        if (m_voiceRecordProc && m_voiceRecordProc->state() != QProcess::NotRunning)
-            m_voiceRecordProc->terminate();
+    // Already recording (e.g. a stray second press): nothing to start.
+    if (m_voiceRecording)
         return;
-    }
 
     if (!whisperInstalled()) {
         updateVoiceInputButton();
@@ -760,8 +771,9 @@ void MainWindow::toggleVoiceCapture()
     m_quickAddMicButton->setIcon(themedOcticon("broadcast", QColor("#f85149"), 16));
     m_quickAddMicButton->setIconSize(QSize(16, 16));
     m_quickAddMicButton->setToolTip(
-        QStringLiteral("Recording\xE2\x80\xA6 click to stop and transcribe."));
-    m_issueQuickAdd->setPlaceholderText("listening\xE2\x80\xA6 click the mic to stop");
+        QStringLiteral("Recording\xE2\x80\xA6 release to stop and transcribe."));
+    m_issueQuickAdd->setPlaceholderText(
+        "listening\xE2\x80\xA6 release the mic to stop");
 }
 
 // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
