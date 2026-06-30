@@ -1011,9 +1011,12 @@ private:
     // confirm=false skips the per-item dialog (the batch "Delete all merged" asks
     // once up front); async=false removes the worktree synchronously so a batch of
     // deletes runs one git worktree-remove at a time rather than racing.
+    // deferRefresh=true skips the trailing agent/issue UI reload so a batch caller
+    // (deleteAllMergedAgentSessions) can rebuild the table once at the end instead of
+    // once per branch — repeated rebuilds mid-batch flickered the Status column blank.
     void deleteWorktreeBranchAndAgent(const QString &worktreePath,
                                       const QString &branch, bool confirm = true,
-                                      bool async = true);
+                                      bool async = true, bool deferRefresh = false);
     // Batch counterpart to "Delete all": wipe the worktree, branch and session of
     // every merged agent session in the open repo after one confirmation (adhoc
     // #235).
@@ -1278,8 +1281,13 @@ private:
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
     // Merge the default branch into a worktree's branch, run inside that worktree,
-    // so it picks up the latest from main without leaving its folder.
-    void updateWorktreeFromMain(const QString &worktreePath, const QString &branch);
+    // so it picks up the latest from main without leaving its folder. baseArg lets a
+    // caller name the base branch explicitly; callers that leave it empty fall back
+    // to the open repo detail's default branch. The agent detail page must pass it,
+    // since its session's repo isn't necessarily the one open in the detail view
+    // (adhoc #28).
+    void updateWorktreeFromMain(const QString &worktreePath, const QString &branch,
+                                const QString &baseArg = QString());
     // Open the shared merge editor over the worktree's currently-unmerged files
     // (a conflicted merge in progress), letting the user resolve and commit them.
     // Reused by "Update from main" when it conflicts and by the detail panel's
@@ -2444,6 +2452,7 @@ private:
     QVBoxLayout *m_actionStripCol = nullptr;
     QList<int> m_actionStripIds; // running run ids currently shown (skip rebuilds)
     QPushButton *m_repoMirrorsTab = nullptr; // handle for the Mirror nodes (N) badge
+    QPushButton *m_repoReleasesTab = nullptr; // handle for the Releases (N) badge
     QPushButton *m_repoBranchesTab = nullptr; // handle for the Branches (N) badge
     QStackedWidget *m_repoDetailStack = nullptr;
     int m_chatStackIndex = -1; // index of the Chat page in m_repoDetailStack
@@ -3233,6 +3242,7 @@ private:
     QPlainTextEdit *m_agentPromptEdit = nullptr;
     QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
     QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
+    QPushButton *m_agentVoiceButton = nullptr;    // composer mic : voice dictation (adhoc #29)
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
     void addFilesToAgentPrompt();

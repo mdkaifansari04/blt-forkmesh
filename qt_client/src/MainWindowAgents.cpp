@@ -953,9 +953,14 @@ QWidget *MainWindow::buildAgentsTab()
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri < 0)
             return;
+        // Resolve the base from the session itself (not the open repo detail) so the
+        // merge targets this session's base branch even when another repo's detail
+        // is on screen (adhoc #28).
         updateWorktreeFromMain(
             worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
-            s->branchName);
+            s->branchName, agentMergeBase(*s));
+        // The merge changed the branch's diff vs main — redraw the Files-changed tab.
+        refreshAgentFilesPanel(m_selectedAgentSessionId);
     });
     m_agentMergeButton = new QPushButton("Merge into main");
     m_agentMergeButton->setObjectName("primaryButton");
@@ -1128,6 +1133,11 @@ QWidget *MainWindow::buildAgentsTab()
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
             return;
+        // Clear the composer up front, before dispatching: the send paths below
+        // can pump the event loop (transcript repaint, session restart), and
+        // clearing only afterwards sometimes left the just-sent prompt stuck in
+        // the input box (adhoc #29). Empty it now so it's added and gone at once.
+        m_agentPromptEdit->clear();
         if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
             s && s->running()) {
             // Steer the live Claude Code transcript session: record the turn in
@@ -1169,7 +1179,6 @@ QWidget *MainWindow::buildAgentsTab()
                         .arg(prompt));
             continueSelectedAgentSession();
         }
-        m_agentPromptEdit->clear();
     });
 
     // Composer accessory controls: add-files (+), a slash-command menu, and the
@@ -1189,6 +1198,26 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSlashButton->setToolTip("Insert a slash command");
     connect(m_agentSlashButton, &QPushButton::clicked, this,
             &MainWindow::showAgentSlashMenu);
+
+    // Voice dictation mic (adhoc #29): hold to record, release to transcribe into
+    // the message box. Reuses the footer's whisper.cpp pipeline — including the
+    // circle spinner (RingSpinner) that rings the mic while the clip transcribes
+    // and the live input-level meter — so the composer dictates just like the
+    // footer prompt and comment composers. Shown only once a voice engine is
+    // installed; m_voiceButtons keeps its visibility in sync (updateVoiceInputButton).
+    m_agentVoiceButton = new QPushButton;
+    m_agentVoiceButton->setObjectName("ghostButton");
+    m_agentVoiceButton->setCursor(Qt::PointingHandCursor);
+    m_agentVoiceButton->setFixedWidth(32);
+    setOcticon(m_agentVoiceButton, "mic", 16);
+    m_agentVoiceButton->setToolTip(QString::fromUtf8(
+        "Speak your message \xE2\x80\x94 hold to record, release to transcribe."));
+    m_agentVoiceButton->setVisible(voiceInputReady());
+    connect(m_agentVoiceButton, &QPushButton::pressed, this,
+            [this] { startVoiceCaptureFor(m_agentPromptEdit, m_agentVoiceButton); });
+    connect(m_agentVoiceButton, &QPushButton::released, this,
+            &MainWindow::stopVoiceCapture);
+    m_voiceButtons.append(m_agentVoiceButton);
 
     m_agentAutoModeCombo = new QComboBox;
     m_agentAutoModeCombo->setObjectName("agentAutoMode");
@@ -1245,6 +1274,7 @@ QWidget *MainWindow::buildAgentsTab()
     composerBtns->setSpacing(6);
     composerBtns->addWidget(m_agentAddFilesButton);
     composerBtns->addWidget(m_agentSlashButton);
+    composerBtns->addWidget(m_agentVoiceButton);
     composerBtns->addWidget(m_agentAutoModeCombo);
     composerBtns->addWidget(m_agentModelCombo);
     composerBtns->addStretch(1);
@@ -5189,29 +5219,24 @@ QString MainWindow::sessionBaseBranch(int sessionId)
     return QString();
 }
 
-// Resolve the commit a session's diff is measured *from*. Diffing against the
-// raw base commit captured at run start over-counts: agents routinely merge the
-// base branch *into* their branch (the "Update from main" action, or a fork that
-// already carried recent main), and then `git diff <baseRef>` reports every file
-// that landed on main since the fork as a change of *this* session. The branch's
-// real net change is its diff from the merge-base of the base branch and HEAD, so
-// prefer that and fall back to the captured base commit when the base branch is
-// unknown or unresolvable (issue #183).
+// Resolve what a session's diff is measured *from*. The Files-changed tab must
+// show exactly what the branch link's destination shows — the Worktrees/Branches
+// detail view diffs the worktree against the *live* base branch tip (`git diff
+// <base>`, see showWorktreeDiff). So return the base branch name and let `git
+// diff <base>` resolve its current tip too. Diffing against merge-base(base, HEAD)
+// instead made this page disagree with that view every time the base branch moved
+// on after the fork — "it always shows something different" (adhoc #28). Diffing
+// against the live tip still avoids the #183 over-count: once the branch has main
+// merged in, `git diff <base>` cancels main's own changes and leaves only this
+// branch's net change. Fall back to the captured base commit only when the session
+// never recorded a base branch, so a diff still renders.
 QString MainWindow::sessionDiffBase(int sessionId, const QString &dir)
 {
-    const QString baseRef = sessionBaseRef(sessionId);
+    Q_UNUSED(dir);
     const QString baseBranch = sessionBaseBranch(sessionId);
-    if (!dir.isEmpty() && !baseBranch.isEmpty()) {
-        QByteArray out;
-        if (runGitCapture(dir, {QStringLiteral("merge-base"), baseBranch,
-                                QStringLiteral("HEAD")},
-                          &out, nullptr)) {
-            const QString mb = QString::fromUtf8(out).trimmed();
-            if (!mb.isEmpty())
-                return mb;
-        }
-    }
-    return baseRef;
+    if (!baseBranch.isEmpty())
+        return baseBranch;
+    return sessionBaseRef(sessionId);
 }
 
 // Render the session's diff into the Files-changed tab's viewer, rebuild the file

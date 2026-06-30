@@ -6497,6 +6497,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoBranchesTab = b; // handle for the Branches (N) badge
         if (i == 10)
             m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
+        if (i == 11)
+            m_repoReleasesTab = b; // handle for the Releases (N) badge
         if (i == 12)
             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
         m_repoDetailTabs->addButton(b, i);
