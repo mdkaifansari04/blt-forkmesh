@@ -1333,6 +1333,14 @@ private:
     // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
+    // Stream the next batch of queued per-file diff blocks into the branch diff
+    // view off the event loop (progressive render of a large commit/branch diff,
+    // adhoc #51). `gen` is the render generation it belongs to: a stale batch from
+    // a superseded scope selection bails. Reschedules itself until drained.
+    void appendBranchDiffBlocks(int gen);
+    // Rebuild the sticky-bar file-span map from whatever is currently in the
+    // branch diff document (called once a streamed render has fully landed).
+    void rebuildBranchDiffSpans();
     // Open the selected branch's working directory in VSCodium: its dedicated
     // worktree if it has one, otherwise the repo's main checkout.
     void openBranchInCodium(const QString &branch);
@@ -2509,6 +2517,17 @@ private:
     QString m_branchDiffViewedContext;
     QLabel *m_branchDiffSticky = nullptr;
     QList<QPair<int, QString>> m_branchDiffFileSpans;
+    // Progressive-render state for a large branch/commit diff: it is split into
+    // per-file HTML blocks and appended a batch at a time off the event loop so
+    // the GUI thread never blocks laying it all out at once (adhoc #51; same
+    // freeze the cap in issue #187 guarded against). m_branchDiffRenderGen is
+    // bumped on every render so a queued batch from a superseded scope selection
+    // bails instead of writing into the now-current diff. m_branchDiffFilePaths
+    // holds the ordered file paths so the sticky-bar span map can be rebuilt once
+    // the whole diff has landed.
+    QStringList m_branchDiffPendingBlocks;
+    QStringList m_branchDiffFilePaths;
+    int m_branchDiffRenderGen = 0;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
