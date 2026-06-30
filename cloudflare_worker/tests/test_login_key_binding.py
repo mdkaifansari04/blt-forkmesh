@@ -85,6 +85,20 @@ def _login_harness(rec):
     async def _is_admin(_env, _name):
         return False
 
+    async def _account_public_payload(_env, account):
+        solana = account.get("solana", "")
+        return {
+            "ok": True,
+            "nodeName": account.get("name", ""),
+            "email": account.get("email", ""),
+            "status": account.get("status", "active"),
+            "pubkey": account.get("pubkey", ""),
+            "emailVerified": bool(account.get("email_verified")),
+            "isAdmin": False,
+            "solana": solana,
+            "hasPayoutAddress": bool(solana),
+        }
+
     handler = _load_account_login(
         {
             "blind_index": blind_index,
@@ -100,6 +114,7 @@ def _login_harness(rec):
             "_login_clear": _login_clear,
             "_save_account": _save_account,
             "_is_admin": _is_admin,
+            "_account_public_payload": _account_public_payload,
             "json_response": _json_response,
         }
     )

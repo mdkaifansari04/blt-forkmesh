@@ -100,6 +100,14 @@ def test_public_pages_use_shared_favicon_metadata():
             if not _has_link(parser, expected):
                 missing.append(f"{rel_path}: link {expected}")
         for name, content in REQUIRED_HEAD_META.items():
+            # The dashboard ships a light/dark theme toggle, so it legitimately
+            # advertises both schemes instead of the dark-only default.
+            if (
+                name == "color-scheme"
+                and rel_path in ("dashboard.html", "dashboard/index.html")
+                and parser.meta.get(name) == "light dark"
+            ):
+                continue
             if parser.meta.get(name) != content:
                 missing.append(f"{rel_path}: meta {name}={content}")
         if not parser.descriptions:
