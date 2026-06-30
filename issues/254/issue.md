@@ -5,7 +5,7 @@ title: have a text size increase / decrease on the diff views on commits prs wok
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 43
+priority: 24
 progress: 5
 assignees: []
 createdAt: 1782425252067
