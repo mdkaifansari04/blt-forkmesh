@@ -6703,6 +6703,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
     m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
                                              new CommitGraphDelegate(m_commitsTable));
+    // Freeze the Summary flex column to a draggable width once rows arrive, so
+    // every column drags independently like a spreadsheet (#263); the Fixed graph
+    // and action columns are left as-is.
+    makeColumnsResizable(m_commitsTable);
     // Most recent first: sort by the Date column (which sorts on the raw commit
     // timestamp), matching git-log order so the graph lanes line up.
     m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
