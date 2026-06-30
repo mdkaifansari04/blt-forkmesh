@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 245
 title: show the time elapsed for each agent in the list as well as token count
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 26
 progress: 5
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782362656438
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode

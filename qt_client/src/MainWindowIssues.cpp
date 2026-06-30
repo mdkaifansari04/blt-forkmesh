@@ -2694,6 +2694,35 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueComposer->focusEditor();
             setIssueInlineNotice("Quoted into the comment box.");
         });
+        // Comments can be deleted (the description/open event is removed by
+        // deleting the whole issue, handled elsewhere). Deletion appends a
+        // signed delete event that folds the comment out everywhere and syncs
+        // to peers; the text stays in git history.
+        if (writable && !isOpen) {
+            menu->addSeparator();
+            QAction *deleteComment = menu->addAction("Delete comment");
+            connect(deleteComment, &QAction::triggered, this, [this, num, eid]() {
+                if (QMessageBox::question(
+                        this, QStringLiteral("Delete comment"),
+                        QStringLiteral(
+                            "Delete this comment? It will be hidden everywhere "
+                            "and the deletion syncs to peers; the comment stays "
+                            "in git history."),
+                        QMessageBox::Yes | QMessageBox::No,
+                        QMessageBox::No) != QMessageBox::Yes)
+                    return;
+                IssueStore store = issueStoreForCurrentRepo();
+                QString error;
+                if (!store.deleteEvent(num, eid, &error)) {
+                    setIssueInlineNotice(
+                        error.isEmpty() ? "Could not delete the comment." : error,
+                        true);
+                    return;
+                }
+                setIssueInlineNotice("Comment deleted.");
+                reloadIssues();
+            });
+        }
         if (writable) {
             auto *editButton = new QPushButton(headerBox);
             editButton->setObjectName("issueActionButton");
