@@ -5,14 +5,36 @@
 
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
-  let nodeName = "";
   let nameOk = false;
+  let availTimer = null;
 
-  function showStep(id) {
-    for (const el of document.querySelectorAll(".step")) {
-      el.classList.toggle("active", el.id === id);
-    }
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  const form = $("#signup-form");
+  const nameInput = $("#node-name");
+  const emailInput = $("#acct-email");
+  const passwordInput = $("#acct-pass");
+  const termsAgree = $("#terms-agree");
+  const createButton = $("#signup-create");
+  const nameHint = $("#name-hint");
+  const signupHint = $("#signup-hint");
+
+  function setNameHint(text, cls) {
+    nameHint.textContent = text;
+    nameHint.className = "hint" + (cls ? " " + cls : "");
+  }
+
+  function setSignupHint(text, cls) {
+    signupHint.textContent = text || "";
+    signupHint.className = "hint" + (cls ? " " + cls : "");
+  }
+
+  function validEmail(value) {
+    return /.+@.+\..+/.test(value);
+  }
+
+  function updateCreateState() {
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    createButton.disabled = !(nameOk && validEmail(email) && password.length >= 8 && termsAgree.checked);
   }
 
   async function api(path, options) {
@@ -25,123 +47,111 @@
     return { ok: res.ok, status: res.status, body };
   }
 
-  // --- Step 1: node name -----------------------------------------------------
-  const nameInput = $("#node-name");
-  const nameHint = $("#name-hint");
-  const nameContinue = $("#name-continue");
-  const termsAgree = $("#terms-agree");
-  let availTimer = null;
-
-  function setHint(text, cls) {
-    nameHint.textContent = text;
-    nameHint.className = "hint" + (cls ? " " + cls : "");
-  }
-
-  // Continue is enabled only when the name is valid/available and the user has
-  // agreed to the Terms and Privacy.
-  function updateContinue() {
-    nameContinue.disabled = !(nameOk && termsAgree.checked);
+  function storeSession(body) {
+    try {
+      localStorage.setItem("forkmesh.session", JSON.stringify({
+        nodeName: body.nodeName,
+        email: body.email,
+        status: body.status,
+        pubkey: body.pubkey,
+        emailVerified: Boolean(body.emailVerified),
+        isAdmin: Boolean(body.isAdmin),
+        hasPayoutAddress: Boolean(body.hasPayoutAddress),
+        at: Date.now(),
+      }));
+      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";
+    } catch (_) {}
   }
 
   function validateName() {
     const value = nameInput.value.trim().toLowerCase();
+    nameInput.value = value;
     nameOk = false;
-    updateContinue();
+    updateCreateState();
     if (!value) {
-      setHint("Lowercase letters, numbers and hyphens. Start with a letter, end with a letter or number. This name is public.", "");
+      setNameHint("Lowercase letters, numbers and hyphens. Start with a letter, end with a letter or number. This name is public.", "");
       return;
     }
     if (!NAME_RE.test(value)) {
-      setHint("Use lowercase letters, numbers and hyphens - start with a letter, end with a letter or number, no spaces or underscores.", "bad");
+      setNameHint("Use lowercase letters, numbers and hyphens - start with a letter, end with a letter or number, no spaces or underscores.", "bad");
       return;
     }
-    setHint("Checking availability…", "");
+    setNameHint("Checking availability…", "");
     clearTimeout(availTimer);
-    availTimer = setTimeout(() => checkAvailability(value), 350);
+    availTimer = setTimeout(() => checkAvailability(value), 300);
   }
 
   async function checkAvailability(value) {
-    if (!isLive) { setHint("Looks good (preview).", "good"); nameOk = true; updateContinue(); return; }
+    if (!isLive) {
+      setNameHint("Looks good (preview).", "good");
+      nameOk = true;
+      updateCreateState();
+      return;
+    }
     try {
       const { body } = await api("/api/accounts/" + encodeURIComponent(value));
       if (body.exists && body.available === false) {
-        setHint("That name is already taken - try another.", "bad");
+        setNameHint("That name is already taken - try another.", "bad");
         nameOk = false;
       } else {
-        setHint("“" + value + "” is available.", "good");
+        setNameHint("“" + value + "” is available.", "good");
         nameOk = true;
       }
     } catch (_) {
-      setHint("Couldn’t check availability - you can still continue.", "");
+      setNameHint("Couldn’t check availability - you can still create the account.", "");
       nameOk = true;
     }
-    updateContinue();
+    updateCreateState();
   }
 
-  async function reserveName() {
-    const value = nameInput.value.trim().toLowerCase();
-    if (!NAME_RE.test(value) || !termsAgree.checked) return;
-    nameContinue.disabled = true;
-    nameContinue.textContent = "Reserving…";
-    const { ok, body } = await api("/api/accounts/reserve", {
-      method: "POST",
-      body: JSON.stringify({ nodeName: value }),
-    });
-    nameContinue.textContent = "Continue";
-    if (!ok) {
-      setHint(body.error === "node_name_taken"
-        ? "That name was just taken - try another."
-        : "Could not reserve that name. Please try again.", "bad");
-      nameContinue.disabled = false;
+  async function createAccount(event) {
+    event.preventDefault();
+    const nodeName = nameInput.value.trim().toLowerCase();
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    setSignupHint("", "");
+    if (!NAME_RE.test(nodeName)) {
+      setNameHint("Choose a valid node name first.", "bad");
       return;
     }
-    nodeName = value;
-    showStep("step-account");
-  }
-
-  // --- Step 2: create account ------------------------------------------------
-  async function createAccount() {
-    const email = $("#acct-email").value.trim();
-    const password = $("#acct-pass").value;
-    const hint = $("#acct-hint");
-    if (!/.+@.+\..+/.test(email)) {
-      hint.textContent = "Enter a valid email address.";
-      hint.className = "hint bad";
+    if (!validEmail(email)) {
+      setSignupHint("Enter a valid email address.", "bad");
       return;
     }
     if (password.length < 8) {
-      hint.textContent = "Password must be at least 8 characters.";
-      hint.className = "hint bad";
+      setSignupHint("Password must be at least 8 characters.", "bad");
       return;
     }
-    const btn = $("#acct-create");
-    btn.disabled = true;
-    btn.textContent = "Creating…";
-    const { ok, body } = await api("/api/accounts/finalize", {
+    if (!termsAgree.checked) {
+      setSignupHint("Accept the Terms and Privacy policy to continue.", "bad");
+      return;
+    }
+
+    createButton.disabled = true;
+    createButton.textContent = "Creating…";
+    const { ok, body } = await api("/api/accounts/signup", {
       method: "POST",
       body: JSON.stringify({ nodeName, email, password }),
     });
-    btn.disabled = false;
-    btn.textContent = "Create account";
+    createButton.textContent = "Create account";
     if (!ok) {
-      hint.textContent = body.error === "email_taken"
-        ? "That email is already registered."
-        : "Could not create the account. Please try again.";
-      hint.className = "hint bad";
+      createButton.disabled = false;
+      setSignupHint(
+        body.error === "node_name_taken" ? "That name was just taken - try another."
+          : body.error === "email_taken" ? "That email is already registered."
+          : body.error === "password_too_short" ? "Password must be at least 8 characters."
+          : "Could not create the account. Please try again.",
+        "bad");
       return;
     }
-    $("#done-name").textContent = "Node “" + (body.nodeName || nodeName) +
-      "” is registered. Check " + (body.email || email) +
-      " to verify your address.";
-    showStep("step-done");
+    storeSession(body);
+    setSignupHint("Account created. Opening your dashboard…", "good");
+    window.setTimeout(() => { location.href = "/dashboard"; }, 500);
   }
 
-  // --- Wiring ----------------------------------------------------------------
   nameInput.addEventListener("input", validateName);
-  nameInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !nameContinue.disabled) reserveName();
-  });
-  termsAgree.addEventListener("change", updateContinue);
-  nameContinue.addEventListener("click", reserveName);
-  $("#acct-create").addEventListener("click", createAccount);
+  emailInput.addEventListener("input", updateCreateState);
+  passwordInput.addEventListener("input", updateCreateState);
+  termsAgree.addEventListener("change", updateCreateState);
+  form.addEventListener("submit", createAccount);
 })();
