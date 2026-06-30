@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 281
 title: when I click to add to the discussion it does not click
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 7

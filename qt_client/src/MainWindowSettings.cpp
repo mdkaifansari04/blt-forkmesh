@@ -258,12 +258,51 @@ QWidget *MainWindow::buildSettingsSection()
     auto *voiceLabel = new QLabel("VOICE INPUT");
     voiceLabel->setObjectName("sectionLabel");
     auto *voiceHint = new QLabel(
-        "Download and build whisper.cpp to speak your prompts. It runs entirely "
-        "on this machine \xE2\x80\x94 no audio leaves your computer. Building needs "
-        "git, cmake and a C++ compiler; a click-to-record mic then appears next to "
-        "the prompt box.");
+        "Install a local speech-to-text engine to speak your prompts. Everything "
+        "runs on this machine \xE2\x80\x94 no audio leaves your computer. Whisper "
+        "(whisper.cpp) builds with git, cmake and a C++ compiler; Parakeet (NVIDIA) "
+        "uses a Python env (needs python3). Once installed a click-to-record mic "
+        "appears next to the prompt box.");
     voiceHint->setObjectName("statusLine");
     voiceHint->setWordWrap(true);
+    // Engine selector: whisper.cpp (default) or NVIDIA Parakeet. The model combo
+    // beside it swaps to match the chosen engine.
+    m_voiceEngineCombo = new QComboBox;
+    m_voiceEngineCombo->addItem(QStringLiteral("Whisper (whisper.cpp)"),
+                                QStringLiteral("whisper"));
+    m_voiceEngineCombo->addItem(QStringLiteral("Parakeet (NVIDIA)"),
+                                QStringLiteral("parakeet"));
+    m_voiceEngineCombo->setToolTip(
+        "Which speech-to-text engine transcribes your dictation. Both run locally; "
+        "Parakeet can be more accurate but installs a Python environment.");
+    {
+        const int ei = m_voiceEngineCombo->findData(voiceEngine());
+        m_voiceEngineCombo->setCurrentIndex(ei >= 0 ? ei : 0);
+    }
+    connect(m_voiceEngineCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+                QSettings().setValue(kVoiceEngineSetting,
+                                     m_voiceEngineCombo->currentData().toString());
+                refreshWhisperStatus();
+                updateVoiceInputButton();
+            });
+    m_parakeetModelCombo = new QComboBox;
+    m_parakeetModelCombo->addItem(QStringLiteral("Parakeet TDT 0.6B v2 (English)"),
+                                  QStringLiteral("parakeet-tdt-0.6b-v2"));
+    m_parakeetModelCombo->addItem(
+        QStringLiteral("Parakeet TDT 0.6B v3 (multilingual)"),
+        QStringLiteral("parakeet-tdt-0.6b-v3"));
+    m_parakeetModelCombo->setToolTip(
+        "Which Parakeet checkpoint to download for transcription.");
+    {
+        const int mi = m_parakeetModelCombo->findData(parakeetModelName());
+        m_parakeetModelCombo->setCurrentIndex(mi >= 0 ? mi : 0);
+    }
+    connect(m_parakeetModelCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+                QSettings().setValue(kParakeetModelSetting,
+                                     m_parakeetModelCombo->currentData().toString());
+            });
     m_whisperModelCombo = new QComboBox;
     m_whisperModelCombo->addItem(QStringLiteral("Tiny (fastest, ~75 MB)"),
                                  QStringLiteral("tiny.en"));
@@ -282,16 +321,18 @@ QWidget *MainWindow::buildSettingsSection()
     m_whisperInstallButton->setObjectName("ghostButton");
     m_whisperInstallButton->setCursor(Qt::PointingHandCursor);
     connect(m_whisperInstallButton, &QPushButton::clicked, this,
-            &MainWindow::installWhisperCpp);
+            &MainWindow::installVoiceEngine);
     m_whisperStatusLabel = new QLabel(this);
     m_whisperStatusLabel->setObjectName("statusLine");
     m_whisperStatusLabel->setWordWrap(true);
     auto *voiceRow = new QHBoxLayout;
     voiceRow->setSpacing(8);
+    voiceRow->addWidget(m_voiceEngineCombo);
     voiceRow->addWidget(m_whisperModelCombo);
+    voiceRow->addWidget(m_parakeetModelCombo);
     voiceRow->addWidget(m_whisperInstallButton);
     voiceRow->addStretch();
-    refreshWhisperStatus();
+    refreshWhisperStatus(); // toggles which model combo is shown
 
     // Microphone picker (adhoc #10): choose which input device the recorder
     // captures from. Populated from the installed recorder's device list; the
@@ -1454,24 +1495,42 @@ void MainWindow::allowFirewall()
 
 // ------------------------------------------------------------- voice input
 
-// Reflect whether whisper.cpp is installed (or installing) on the Settings
-// button + status line. Safe to call even when the Settings widgets don't exist.
+// Reflect whether the selected voice engine is installed (or installing) on the
+// Settings button + status line, and show the model combo that matches the engine.
+// Safe to call even when the Settings widgets don't exist.
 void MainWindow::refreshWhisperStatus()
 {
+    const bool parakeet = voiceEngine() == QStringLiteral("parakeet");
     const bool installing =
-        m_whisperInstallProc &&
-        m_whisperInstallProc->state() != QProcess::NotRunning;
+        (m_whisperInstallProc &&
+         m_whisperInstallProc->state() != QProcess::NotRunning) ||
+        (m_parakeetInstallProc &&
+         m_parakeetInstallProc->state() != QProcess::NotRunning);
+    const bool ready = voiceInputReady();
+    // Only the active engine's model combo is relevant.
+    if (m_whisperModelCombo)
+        m_whisperModelCombo->setVisible(!parakeet);
+    if (m_parakeetModelCombo)
+        m_parakeetModelCombo->setVisible(parakeet);
     if (m_whisperInstallButton) {
         m_whisperInstallButton->setEnabled(!installing);
         m_whisperInstallButton->setText(
             installing ? QStringLiteral("Installing\xE2\x80\xA6")
-                       : whisperInstalled() ? QStringLiteral("Reinstall")
-                                            : QStringLiteral("Download & install"));
+                       : ready ? QStringLiteral("Reinstall")
+                               : QStringLiteral("Download & install"));
     }
+    if (m_voiceEngineCombo)
+        m_voiceEngineCombo->setEnabled(!installing);
     if (m_whisperModelCombo)
         m_whisperModelCombo->setEnabled(!installing);
+    if (m_parakeetModelCombo)
+        m_parakeetModelCombo->setEnabled(!installing);
     if (m_whisperStatusLabel && !installing) {
-        if (whisperInstalled())
+        if (ready && parakeet)
+            m_whisperStatusLabel->setText(
+                QString::fromUtf8("\xE2\x97\x8F Installed (Parakeet). A mic now sits "
+                                  "next to the prompt box."));
+        else if (ready)
             m_whisperStatusLabel->setText(
                 QString::fromUtf8("\xE2\x97\x8F Installed (%1 model). A mic now sits "
                                   "next to the prompt box.")
@@ -1703,6 +1762,157 @@ echo "whisper.cpp ready"
     proc->start(QStringLiteral("sh"),
                 {QStringLiteral("-c"), QString::fromLatin1(kScript),
                  QStringLiteral("sh"), dir, model});
+}
+
+// Install whichever engine the Settings selector points at. Keeps the single
+// "Download & install" button wired to the right provisioner.
+void MainWindow::installVoiceEngine()
+{
+    if (voiceEngine() == QStringLiteral("parakeet"))
+        installParakeet();
+    else
+        installWhisperCpp();
+}
+
+// Provision NVIDIA Parakeet for local dictation: build a self-contained Python
+// venv and install a Parakeet runner into it (parakeet-mlx on Apple Silicon, NeMo
+// elsewhere), then drop a transcribe.py wrapper the mic shells out to. Streams the
+// pip log to the network log; runs detached from Settings like installWhisperCpp.
+void MainWindow::installParakeet()
+{
+    if (m_parakeetInstallProc &&
+        m_parakeetInstallProc->state() != QProcess::NotRunning)
+        return; // already running
+
+    const QString dir = parakeetDir();
+    const QString model = m_parakeetModelCombo
+                              ? m_parakeetModelCombo->currentData().toString()
+                              : parakeetModelName();
+    QSettings().setValue(kVoiceEngineSetting, QStringLiteral("parakeet"));
+    QSettings().setValue(kParakeetModelSetting, model);
+
+    // The wrapper the mic runs per clip: it loads Parakeet (MLX where available,
+    // else NeMo) and writes the transcript to the output path. Written from here so
+    // detection (parakeetInstalled()) and transcription both find it. Kept ASCII so
+    // it embeds cleanly as a raw C++ string.
+    static const char *kTranscribePy = R"py(
+import sys
+
+def main():
+    if len(sys.argv) < 3:
+        sys.exit("usage: transcribe.py <wav> <out.txt> [model]")
+    wav, out = sys.argv[1], sys.argv[2]
+    model = sys.argv[3] if len(sys.argv) > 3 else "parakeet-tdt-0.6b-v2"
+
+    try:
+        from parakeet_mlx import from_pretrained
+        have_mlx = True
+    except Exception:
+        have_mlx = False
+
+    if have_mlx:
+        repo = model if "/" in model else "mlx-community/" + model
+        m = from_pretrained(repo)
+        text = (getattr(m.transcribe(wav), "text", "") or "").strip()
+    else:
+        import nemo.collections.asr as nemo_asr
+        repo = model if "/" in model else "nvidia/" + model
+        m = nemo_asr.models.ASRModel.from_pretrained(repo)
+        res = m.transcribe([wav])
+        first = res[0] if res else ""
+        text = (getattr(first, "text", first) or "").strip()
+
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(text)
+
+if __name__ == "__main__":
+    main()
+)py";
+
+    QDir().mkpath(dir);
+    {
+        QFile f(parakeetScriptPath());
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(kTranscribePy);
+    }
+
+    // Build the venv and install the runner. macOS gets parakeet-mlx (fast, local);
+    // other platforms get NeMo's ASR stack. Idempotent: re-running upgrades.
+    static const char *kScript = R"sh(
+set -e
+DIR="$1"
+mkdir -p "$DIR"
+echo "Creating Python environment in $DIR"
+python3 -m venv "$DIR/venv"
+PY="$DIR/venv/bin/python"
+"$PY" -m pip install --upgrade pip >/dev/null
+case "$(uname -s)" in
+  Darwin)
+    echo "Installing parakeet-mlx (this can take a few minutes)"
+    "$PY" -m pip install -U parakeet-mlx ;;
+  *)
+    echo "Installing NeMo ASR (this can take several minutes)"
+    "$PY" -m pip install -U "nemo_toolkit[asr]" ;;
+esac
+echo "Parakeet ready"
+)sh";
+
+    auto *proc = new QProcess(this);
+    m_parakeetInstallProc = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    logSystem("Installing Parakeet for voice input\xE2\x80\xA6");
+    refreshWhisperStatus();
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        const QString out = QString::fromUtf8(proc->readAllStandardOutput());
+        for (const QString &line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.isEmpty())
+                continue;
+            if (m_whisperStatusLabel)
+                m_whisperStatusLabel->setText(trimmed.right(160));
+        }
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc](int exitCode, QProcess::ExitStatus status) {
+                proc->deleteLater();
+                if (m_parakeetInstallProc == proc)
+                    m_parakeetInstallProc = nullptr;
+                const bool ok = exitCode == 0 &&
+                                status == QProcess::NormalExit && parakeetInstalled();
+                if (ok) {
+                    logSystem("Parakeet installed \xE2\x80\x94 voice input ready.");
+                    if (m_whisperStatusLabel)
+                        m_whisperStatusLabel->setText(QString::fromUtf8(
+                            "\xE2\x97\x8F Installed (Parakeet). A mic now sits next "
+                            "to the prompt box."));
+                } else {
+                    logSystem("Parakeet install failed (exit " +
+                              QString::number(exitCode) +
+                              "). Check that python3 (with venv + pip) is installed.");
+                    if (m_whisperStatusLabel)
+                        m_whisperStatusLabel->setText(
+                            "Install failed. Ensure python3 with venv and pip are "
+                            "installed, then try again.");
+                }
+                refreshWhisperStatus();
+                updateVoiceInputButton();
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc](QProcess::ProcessError err) {
+                if (err != QProcess::FailedToStart || m_parakeetInstallProc != proc)
+                    return;
+                m_parakeetInstallProc = nullptr;
+                proc->deleteLater();
+                logSystem("Could not start the Parakeet install (sh not found?).");
+                if (m_whisperStatusLabel)
+                    m_whisperStatusLabel->setText("Could not start the install process.");
+                refreshWhisperStatus();
+            });
+
+    proc->start(QStringLiteral("sh"),
+                {QStringLiteral("-c"), QString::fromLatin1(kScript),
+                 QStringLiteral("sh"), dir});
 }
 
 // -------------------------------------------------------------- diagnostics

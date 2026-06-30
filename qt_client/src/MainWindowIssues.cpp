@@ -10,6 +10,9 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QLayoutItem>
+#include <QPixmap>
+
 using namespace forkmesh::ui;
 
 // ---- Issues section --------------------------------------------------------
@@ -3237,6 +3240,7 @@ void MainWindow::promptNewIssue()
     auto *createButton = new QPushButton("Create", page);
     createButton->setObjectName("primaryButton");
     createButton->setCursor(Qt::PointingHandCursor);
+    createButton->setToolTip("Create the issue (Ctrl+Enter)");
     setOcticon(createButton, "issue-opened", 16);
     auto *pageNotice = new QLabel(page);
     pageNotice->setObjectName("issueInlineNotice");
@@ -3326,6 +3330,15 @@ void MainWindow::promptNewIssue()
         if (more)
             promptNewIssue();
     });
+
+    // Cmd/Ctrl+Enter from anywhere in the form submits it, matching the muscle
+    // memory from GitHub's new-issue page (issue #307). QKeySequence maps Ctrl to
+    // Command on macOS, so this is Cmd+Return there; WidgetWithChildren scope lets
+    // it fire whether focus is in the title or the description editor.
+    auto *submitShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), page);
+    submitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(submitShortcut, &QShortcut::activated, createButton, &QPushButton::click);
 
     showIssueComposePage(page);
     titleEdit->setFocus();
@@ -3527,6 +3540,19 @@ void MainWindow::queueQuickAddImage(const QString &path)
             .arg(m_quickAddImages.size()));
 }
 
+// Drop a single queued attachment — wired to the "x" on its chip.
+void MainWindow::removeQuickAddImage(const QString &path)
+{
+    if (!m_quickAddImages.removeOne(path))
+        return;
+    updateQuickAddImageButton();
+    setIssueInlineNotice(
+        m_quickAddImages.isEmpty()
+            ? QStringLiteral("Attachment removed.")
+            : QStringLiteral("Attachment removed (%1 left).")
+                  .arg(m_quickAddImages.size()));
+}
+
 void MainWindow::clearQuickAddImages()
 {
     if (m_quickAddImages.isEmpty())
@@ -3539,6 +3565,7 @@ void MainWindow::clearQuickAddImages()
 // tooltip naming the files, so the paperclip stands out once something's attached.
 void MainWindow::updateQuickAddImageButton()
 {
+    rebuildQuickAddAttachChips();
     if (!m_quickAddImageButton)
         return;
     const int n = m_quickAddImages.size();
@@ -3557,6 +3584,62 @@ void MainWindow::updateQuickAddImageButton()
         QStringLiteral("%1 image%2 attached:\n%3\n\nClick to add more.")
             .arg(n)
             .arg(n == 1 ? QString() : QStringLiteral("s"), names.join(QLatin1Char('\n'))));
+}
+
+// Rebuild the attachment chips beside the paperclip: one chip per queued image,
+// each a small thumbnail with a little "x" to remove just that image. Hidden when
+// nothing is attached.
+void MainWindow::rebuildQuickAddAttachChips()
+{
+    if (!m_quickAddAttachStrip)
+        return;
+    auto *row = qobject_cast<QHBoxLayout *>(m_quickAddAttachStrip->layout());
+    if (!row)
+        return;
+    // Tear down the previous chips.
+    while (QLayoutItem *item = row->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    for (const QString &path : std::as_const(m_quickAddImages)) {
+        auto *chip = new QWidget(m_quickAddAttachStrip);
+        chip->setObjectName("quickAddAttachChip");
+        chip->setToolTip(QFileInfo(path).fileName());
+        chip->setStyleSheet(
+            "QWidget#quickAddAttachChip{background:#21262d;border:1px solid #30363d;"
+            "border-radius:4px;}");
+        auto *chipRow = new QHBoxLayout(chip);
+        chipRow->setContentsMargins(3, 2, 2, 2);
+        chipRow->setSpacing(3);
+
+        auto *thumb = new QLabel(chip);
+        QPixmap pm(path);
+        if (!pm.isNull())
+            thumb->setPixmap(pm.scaled(22, 22, Qt::KeepAspectRatio,
+                                       Qt::SmoothTransformation));
+        else
+            thumb->setText(QFileInfo(path).fileName());
+        chipRow->addWidget(thumb);
+
+        // The little "x": removes only this attachment.
+        auto *remove = new QPushButton(QString::fromUtf8("\xC3\x97"), chip);
+        remove->setObjectName("quickAddAttachRemove");
+        remove->setCursor(Qt::PointingHandCursor);
+        remove->setFixedSize(16, 16);
+        remove->setToolTip(QStringLiteral("Remove this attachment"));
+        remove->setStyleSheet(
+            "QPushButton#quickAddAttachRemove{color:#8b949e;border:none;"
+            "background:transparent;font-size:13px;font-weight:bold;padding:0;}"
+            "QPushButton#quickAddAttachRemove:hover{color:#f85149;}");
+        connect(remove, &QPushButton::clicked, this,
+                [this, path]() { removeQuickAddImage(path); });
+        chipRow->addWidget(remove);
+
+        row->addWidget(chip);
+    }
+    m_quickAddAttachStrip->setVisible(!m_quickAddImages.isEmpty());
 }
 
 void MainWindow::copyIssueToClipboard()
