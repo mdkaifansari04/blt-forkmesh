@@ -187,6 +187,12 @@ void MainWindow::loadReleasesPanel()
 
     // Artifacts column holds rich-text links, so key it on the rendered HTML.
     QHash<QString, QString> artifactsByTag;
+    // The "latest" channel is what install.sh actually downloads as the current
+    // release, regardless of which tag it was cut from. Remember its rendered
+    // artifacts (and source tag) so the newest release row can surface them even
+    // when that release's own build hasn't published a manifest yet.
+    QString latestChannelHtml;
+    QString latestChannelTag;
     if (!dir.isEmpty()) {
         const QDir releasesDir(dir + QStringLiteral("/releases"));
         const QStringList channels =
@@ -248,9 +254,15 @@ void MainWindow::loadReleasesPanel()
                 }
                 assetLinks.append(entry);
             }
-            if (!assetLinks.isEmpty())
-                artifactsByTag.insert(manifestTag,
-                                      assetLinks.join(QStringLiteral(", ")));
+            if (!assetLinks.isEmpty()) {
+                const QString joined = assetLinks.join(QStringLiteral(", "));
+                artifactsByTag.insert(manifestTag, joined);
+                if (channel.compare(QStringLiteral("latest"),
+                                    Qt::CaseInsensitive) == 0) {
+                    latestChannelHtml = joined;
+                    latestChannelTag = manifestTag;
+                }
+            }
         }
     }
 
@@ -284,7 +296,20 @@ void MainWindow::loadReleasesPanel()
             // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
             // The asset names are rendered as live-download links, so use a
             // rich-text label cell that opens the URL in the browser on click.
-            const QString artifactsHtml = artifactsByTag.value(tag);
+            QString artifactsHtml = artifactsByTag.value(tag);
+            // The newest release should always show a downloadable artifact when
+            // one exists. If this top row has no manifest of its own yet (its
+            // build hasn't published, so the tag-keyed lookup is empty), fall back
+            // to the "latest" channel's artifact — exactly what install.sh serves
+            // — annotated with the tag it was actually cut from.
+            if (artifactsHtml.isEmpty() && count == 0 &&
+                !latestChannelHtml.isEmpty()) {
+                artifactsHtml =
+                    latestChannelHtml +
+                    QStringLiteral(" <span style=\"color:#8b949e;"
+                                   "font-size:11px\">latest &middot; %1</span>")
+                        .arg(latestChannelTag.toHtmlEscaped());
+            }
             if (artifactsHtml.isEmpty()) {
                 m_releasesTable->setItem(row, 3, new QTableWidgetItem(QString()));
             } else {
