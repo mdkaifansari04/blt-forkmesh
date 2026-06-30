@@ -1632,9 +1632,11 @@ private:
     // captured region as a quick-add attachment.
     void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
-    // appears beside the prompt box. Clicking it records from the microphone;
-    // clicking again stops and transcribes the audio into the prompt locally.
-    void toggleVoiceCapture();
+    // appears beside the prompt box. It is push-to-talk: press and hold to
+    // record from the microphone, release to stop and transcribe the audio into
+    // the prompt locally.
+    void startVoiceCapture();
+    void stopVoiceCapture();
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
