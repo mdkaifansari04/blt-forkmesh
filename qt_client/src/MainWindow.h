@@ -1321,6 +1321,8 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    // Open a release's full notes + the diff since the previous release.
+    void showReleaseDetail(const QString &tag);
     QWidget *buildMirrorNodesTab();
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
