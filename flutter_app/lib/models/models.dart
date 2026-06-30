@@ -137,6 +137,7 @@ class PullRequest {
     this.author = '',
     this.baseBranch = '',
     this.headBranch = '',
+    this.createdMs = 0,
   });
 
   final int number;
@@ -146,6 +147,17 @@ class PullRequest {
   final String author;
   final String baseBranch;
   final String headBranch;
+  final int createdMs; // epoch ms the PR was opened; 0 when unknown
+
+  /// "yyyy-MM-dd" the PR was opened, or "" when no timestamp is available.
+  /// Mirrors the Created column on the Qt client's pull request list.
+  String get createdDate {
+    if (createdMs <= 0) return '';
+    final d = DateTime.fromMillisecondsSinceEpoch(createdMs);
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '${d.year}-$m-$day';
+  }
 
   factory PullRequest.fromJson(Map<String, dynamic> j) {
     int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
@@ -157,6 +169,7 @@ class PullRequest {
       author: (j['author'] ?? '').toString(),
       baseBranch: (j['base'] ?? j['baseBranch'] ?? '').toString(),
       headBranch: (j['head'] ?? j['headBranch'] ?? '').toString(),
+      createdMs: asInt(j['createdAt'] ?? j['ts'] ?? j['submittedAt'] ?? 0),
     );
   }
 }

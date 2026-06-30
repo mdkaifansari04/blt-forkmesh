@@ -389,7 +389,12 @@ class _PullsTab extends StatelessWidget {
                 ? const Color(0xFF8250DF)
                 : (pr.status == 'closed' ? FmColors.danger : FmColors.success)),
         title: Text(pr.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-        subtitle: Text('#${pr.number} · ${pr.author} · ${pr.status}'),
+        subtitle: Text([
+          '#${pr.number}',
+          pr.author,
+          pr.status,
+          if (pr.createdDate.isNotEmpty) pr.createdDate,
+        ].where((s) => s.isNotEmpty).join(' · ')),
         onTap: () => showPullActions(context, repo, pr),
       ),
     );
