@@ -316,9 +316,10 @@ int main(int argc, char *argv[])
                              "worktree is reused (#214)"));
     }
 
-    // Issue #263: data-table columns are user-resizable — ResizeToContents
-    // columns flip to draggable Interactive once rows arrive, keeping their
-    // fitted widths, while Stretch and Fixed columns are left as configured.
+    // Issue #263: data-table columns are user-resizable — every auto-sized column
+    // (ResizeToContents and the Stretch flex column) flips to draggable Interactive
+    // once rows arrive, keeping its width, while Fixed button columns are left as
+    // configured.
     check(window.testColumnsBecomeResizable(),
           QStringLiteral("data-table content columns become drag-resizable"));
 
@@ -346,19 +347,19 @@ int main(int argc, char *argv[])
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code"));
 
-    // Issue #268: dragging a column divider resizes like moving a margin — the
-    // width comes from the immediate neighbour, not a far-off Stretch column, so
-    // the divider tracks the cursor instead of snapping back.
-    check(window.testMarginResize(),
-          QStringLiteral("column drag trades width with its neighbour"));
+    // Issue #263: dragging a column divider behaves like a spreadsheet — only the
+    // dragged column resizes and the columns to its right shift over, instead of a
+    // neighbour or far-off Stretch column silently donating the width.
+    check(window.testSpreadsheetResize(),
+          QStringLiteral("column drag resizes only that column (spreadsheet)"));
 
     // Issue #33: the agents list lets the user drag column headers into a new
-    // order, and resizing afterwards still trades width with the visual
-    // neighbour so the divider keeps tracking the cursor.
+    // order, and resizing afterwards still follows the spreadsheet rule so other
+    // columns keep their widths.
     check(window.testAgentColumnsMovable(),
           QStringLiteral("agents list column headers are draggable/reorderable"));
-    check(window.testMarginResizeAfterMove(),
-          QStringLiteral("column drag trades with visual neighbour after a move"));
+    check(window.testSpreadsheetResizeAfterMove(),
+          QStringLiteral("column drag leaves others untouched after a move"));
 
     window.testEnableSessionStartBypass(true);
 

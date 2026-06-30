@@ -231,18 +231,18 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
-    // Verifies makeColumnsResizable(): once rows arrive, ResizeToContents columns
-    // flip to draggable Interactive (keeping their fitted widths) while Stretch
-    // and Fixed columns are left untouched.
+    // Verifies makeColumnsResizable(): once rows arrive, every auto-sized column
+    // (ResizeToContents and the Stretch flex column) flips to draggable
+    // Interactive keeping its current width, while Fixed columns are left alone.
     Q_INVOKABLE bool testColumnsBecomeResizable();
-    // Verifies installMarginResize(): dragging a draggable column's divider
-    // trades width with its immediate neighbour (like moving a margin) instead
-    // of letting a far-off Stretch column absorb the change.
-    Q_INVOKABLE bool testMarginResize();
-    // Verifies installMarginResize() trades with the *visual* neighbour after a
-    // column has been dragged into a new order, so the divider keeps tracking
-    // the cursor for movable-header tables like the agents list.
-    Q_INVOKABLE bool testMarginResizeAfterMove();
+    // Verifies the spreadsheet drag rule: dragging a column's divider resizes only
+    // that column; the columns to its right keep their widths and simply shift,
+    // rather than a neighbour or far-off Stretch column donating the difference.
+    Q_INVOKABLE bool testSpreadsheetResize();
+    // Verifies the spreadsheet rule still holds after a column is dragged into a
+    // new order: resizing one column leaves every other column's width untouched
+    // for movable-header tables like the agents list.
+    Q_INVOKABLE bool testSpreadsheetResizeAfterMove();
     // Verifies the agents list lets the user drag its column headers into a new
     // order (in addition to resizing them).
     Q_INVOKABLE bool testAgentColumnsMovable() const;
@@ -584,6 +584,12 @@ private:
     void updateChatButton();       // refresh the top-bar chat unread indicator
     bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
+    // Take this node online / offline from the top-bar toggle. Offline stops the
+    // reward heartbeat and live repo serving (so the node stops collecting
+    // rewards) while leaving the user in the app; online resumes both.
+    void setNodeOffline(bool offline);
+    // Refresh the top-bar reward toggle, status line and "online Xh" uptime.
+    void updateNodeOnlineControls();
     // Bottom quick-add issue bar (the network log now lives in its own section).
     QWidget *buildNetworkLogDock();
     // Refresh the footer's centered git-identity label for the open repo.
@@ -2090,6 +2096,15 @@ private:
     // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
     // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
+    // Reward-availability cluster in the top-right (next to the balance): a toggle
+    // that takes this node offline (stops serving + the reward heartbeat), a clear
+    // "available for rewards" / "offline · not collecting rewards" status line, and
+    // a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a node
+    // the user deliberately took offline stays offline across restarts.
+    QPushButton *m_nodeOnlineToggle = nullptr;
+    QLabel *m_nodeRewardStatus = nullptr;
+    QLabel *m_nodeUptimeLabel = nullptr;
+    bool m_nodeOffline = false;
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each
     // click (which used to rate-limit and leave the figure stuck).

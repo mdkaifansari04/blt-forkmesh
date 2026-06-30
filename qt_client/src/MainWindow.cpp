@@ -25,6 +25,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
     m_networkAccess = new QNetworkAccessManager(this);
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
+    m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
 
     loadServers();
     loadCachedFavicons();
@@ -136,6 +137,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_relayLatencyTimer = new QTimer(this);
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::probeRelayLatency);
+    // Piggy-back the top-bar "online Xh" uptime + reward status refresh on the same
+    // once-a-minute tick (minute granularity is plenty for an hours-online readout).
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::updateNodeOnlineControls);
     m_relayLatencyTimer->start(60 * 1000);
     QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
