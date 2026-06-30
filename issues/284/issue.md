@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 284
 title: show the time on releases list and allow to click to see detail notes of the release and see diffs
-status: open
+status: closed
 labels: [Partial]
 milestone: 
 priority: 20
