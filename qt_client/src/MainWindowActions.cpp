@@ -989,12 +989,18 @@ void MainWindow::refreshActionsTable()
         wfItem->setData(Qt::UserRole, run.id);
         auto *statusItem = new QTableWidgetItem(actionStatusText(run.status));
         statusItem->setForeground(actionStatusColor(run.status));
-        const QString when =
-            run.createdAtMs > 0
-                ? QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
-                      .toString(QStringLiteral("MMM d  hh:mm"))
-                : QString();
+        // Show a human-friendly relative time ("5m ago") in the column, with the
+        // exact date/time kept on hover.
+        QString when;
+        if (run.createdAtMs > 0) {
+            const QString rel = formatShortRelativeTime(run.createdAtMs / 1000);
+            when = rel == QStringLiteral("now") ? rel
+                                                : rel + QStringLiteral(" ago");
+        }
         auto *whenItem = new QTableWidgetItem(when);
+        if (run.createdAtMs > 0)
+            whenItem->setToolTip(QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
+                                     .toString(QStringLiteral("MMM d  hh:mm")));
 
         m_actionsTable->setItem(row, 0, wfItem);
         m_actionsTable->setItem(row, 1, statusItem);
@@ -2303,8 +2309,9 @@ QWidget *MainWindow::buildRepoActionsTab()
 
     // Middle: the run list for the selected workflow (or all).
     auto *listPane = new QWidget;
-    // ~25% more room for the runs table before the right splitter handle stops.
-    listPane->setMinimumWidth(375);
+    // Extra room for the runs table: the Workflow column is now twice as wide
+    // (see setColumnWidth below) so the pane needs to grow with it.
+    listPane->setMinimumWidth(475);
     auto *heading = new QLabel("Runs");
     heading->setObjectName("channelTitle");
     // Clear button on the Runs header row: wipes the run history shown below
@@ -2332,6 +2339,9 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
     m_actionsTable->horizontalHeader()->setHighlightSections(false);
+    // Give the Workflow column twice the default width so names like
+    // "Deploy Cloudflare" aren't truncated to "Deploy Cl...".
+    m_actionsTable->setColumnWidth(0, 200);
     m_actionsTable->verticalHeader()->setVisible(false);
     m_actionsTable->setShowGrid(false);
     m_actionsTable->setWordWrap(false);
