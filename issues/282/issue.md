@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 282
 title: make the runs table expanded more on first load
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 19

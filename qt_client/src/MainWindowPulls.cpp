@@ -21,6 +21,31 @@ QWidget *MainWindow::buildPullsTab()
     listPane->setMinimumWidth(360);
     auto *heading = new QLabel("Pull requests");
     heading->setObjectName("channelTitle");
+    // "Hide detail" toggle (issue #274): collapse the detail panel so the PR
+    // list spans the full tab width. Re-checking restores it for the open row.
+    m_pullHideDetailButton = new QPushButton("Hide detail");
+    m_pullHideDetailButton->setObjectName("ghostButton");
+    m_pullHideDetailButton->setCursor(Qt::PointingHandCursor);
+    m_pullHideDetailButton->setCheckable(true);
+    m_pullHideDetailButton->setToolTip(
+        "Hide the detail panel and show the pull-request list full width");
+    setOcticon(m_pullHideDetailButton, "chevron-right", 16);
+    connect(m_pullHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
+        m_pullDetailHidden = hidden;
+        m_pullHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
+        setOcticon(m_pullHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
+        if (hidden) {
+            if (m_pullDetail)
+                m_pullDetail->hide();
+        } else if (m_pullDetail && m_currentPullNumber > 0) {
+            m_pullDetail->show(); // reopen for the still-selected row
+        }
+    });
+    auto *headingRow = new QHBoxLayout;
+    headingRow->setContentsMargins(0, 0, 0, 0);
+    headingRow->setSpacing(8);
+    headingRow->addWidget(heading, 1);
+    headingRow->addWidget(m_pullHideDetailButton, 0, Qt::AlignTop);
     m_pullNewButton = new QPushButton("New pull request");
     m_pullChooseDirButton = new QPushButton("Choose directory");
     m_pullImportButton = new QPushButton("Import patch");
@@ -53,12 +78,12 @@ QWidget *MainWindow::buildPullsTab()
     m_pullSearch->setPlaceholderText("Search pull requests\xE2\x80\xA6");
     m_pullSearch->setClearButtonEnabled(true);
 
-    m_pullTable = new QTableWidget(0, 8);
+    m_pullTable = new QTableWidget(0, 10);
     m_pullTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_pullTable);
     m_pullTable->setHorizontalHeaderLabels(
         {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
-         "Author", "Agent cost"});
+         "Author", "Agent cost", "Created", "Modified"});
     m_pullTable->verticalHeader()->setVisible(false);
     m_pullTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_pullTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -70,14 +95,14 @@ QWidget *MainWindow::buildPullsTab()
     ph->setHighlightSections(false);
     ph->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     ph->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 8; ++c)
+    for (int c = 2; c < m_pullTable->columnCount(); ++c)
         ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_pullTable);
 
     auto *listLayout = new QVBoxLayout(listPane);
     listLayout->setContentsMargins(18, 18, 12, 18);
     listLayout->setSpacing(8);
-    listLayout->addWidget(heading);
+    listLayout->addLayout(headingRow);
     listLayout->addLayout(toolbar);
     listLayout->addWidget(m_pullSearch);
     listLayout->addWidget(m_pullTable, 1);
@@ -954,6 +979,27 @@ void MainWindow::refreshPullList()
             costItem->setData(Qt::UserRole, 0.0);
         }
         m_pullTable->setItem(row, 7, costItem);
+
+        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
+        // tooltip carries the friendly "x ago" form. Mirrors the issue list.
+        auto *created = new QTableWidgetItem(
+            pr.ts > 0
+                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd")
+                : QString());
+        created->setToolTip(formatIssueRelativeTime(pr.ts));
+        m_pullTable->setItem(row, 8, created);
+
+        // Modified date: the most recent activity on the PR (latest signed
+        // event, falling back to the created time).
+        qint64 updatedAt = pr.ts;
+        for (const PullEvent &ev : pr.events)
+            updatedAt = qMax(updatedAt, ev.ts);
+        auto *modified = new QTableWidgetItem(
+            updatedAt > 0
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                : QString());
+        modified->setToolTip(formatIssueRelativeTime(updatedAt));
+        m_pullTable->setItem(row, 9, modified);
     }
     m_pullTable->setSortingEnabled(true);
     int selRow = -1;
@@ -1110,7 +1156,9 @@ void MainWindow::showPull(int number)
         return;
     }
 
-    if (m_pullDetail)
+    // Keep the detail panel collapsed while "Hide detail" is engaged (issue
+    // #274); its contents below still update for when the user reopens it.
+    if (m_pullDetail && !m_pullDetailHidden)
         m_pullDetail->show();
     if (m_pullComposer) {
         m_pullComposer->setEnabled(true);
@@ -1691,18 +1739,25 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     // issue timeline. Peer avatars are broadcast over chat and cached in
     // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
     // our own avatar may not be in that cache yet, so fall back to
-    // effectiveAvatar() for our own cards. Unknown peers keep the initials.
+    // effectiveAvatar() for our own cards. Authors we have no real picture for
+    // (peers and agents whose avatar hasn't been broadcast) get the deterministic
+    // procedural face used for contributor and assignee avatars, keyed by their
+    // pubkey, so every PR card shows an avatar instead of bare initials.
+    QPixmap authorAvatar;
     if (!authorId.isEmpty()) {
-        QPixmap authorAvatar;
         const QPixmap cached = m_avatars.value(authorId);
         if (!cached.isNull())
             authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
         else if (authorId == m_profileIdentity.publicKey())
             authorAvatar = roundedAvatar(effectiveAvatar(), 36);
-        if (!authorAvatar.isNull()) {
-            avatar->setText(QString());
-            avatar->setPixmap(authorAvatar);
-        }
+    }
+    if (authorAvatar.isNull()) {
+        const QString seed = authorId.isEmpty() ? who.toLower() : authorId;
+        authorAvatar = roundedAvatar(forkMeshAvatarPng(seed), 36);
+    }
+    if (!authorAvatar.isNull()) {
+        avatar->setText(QString());
+        avatar->setPixmap(authorAvatar);
     }
     rowLayout->addWidget(avatar, 0, Qt::AlignTop);
 
