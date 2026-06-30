@@ -1846,6 +1846,11 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+// The shared welcome room and the per-identity flag that records whether this
+// node has already posted its one-time "just joined" greeting there (issue #192).
+const QString kWelcomeChannel = QStringLiteral("#welcome");
+const QString kWelcomeAnnouncedSettingPrefix =
+    QStringLiteral("chat/welcomeAnnounced/");
 
 // True when a notification category is enabled. Default false: notifications are
 // off until the user turns them on, so a fresh install is silent.
