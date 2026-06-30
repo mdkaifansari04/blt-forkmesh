@@ -2068,8 +2068,13 @@ void MainWindow::propagateRepoUpdate(int index)
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
     // it surfaces the pending "↑N to push" state the instant the comment/commit
-    // lands, rather than only after the fetch completes.
-    if (index == m_repoDetailIndex)
+    // lands, rather than only after the fetch completes — but only while that panel
+    // is actually on screen. It shells several synchronous git reads (mirror
+    // HEAD/commit/size, issue count, the ahead-count walk) that would lag the commit
+    // for nothing when the user is on another tab; switching to the tab reloads it
+    // (see the repo-detail tab handler), so a hidden panel stays correct.
+    if (index == m_repoDetailIndex && m_mirrorNodesTable &&
+        m_mirrorNodesTable->isVisible())
         loadMirrorNodesPanel();
 }
 
