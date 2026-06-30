@@ -2547,6 +2547,11 @@ private:
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
     QPushButton *m_branchFixButton = nullptr;   // "Fix with agent" (conflicts only)
+    // Sit beside the Fix button (adhoc #56): one dropdown picks the agent/provider
+    // (Claude / OpenAI / Claude Code), the other the model it runs. The button then
+    // resolves with whatever the two combos currently show.
+    QComboBox *m_branchFixAgentCombo = nullptr;
+    QComboBox *m_branchFixModelCombo = nullptr;
     QPushButton *m_branchPrButton = nullptr;    // "Create PR" from the branch
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
