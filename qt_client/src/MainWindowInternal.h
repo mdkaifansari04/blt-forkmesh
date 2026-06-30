@@ -1885,6 +1885,12 @@ const QString kOpenAiAdminKeySetting = QStringLiteral("agents/openAiAdminKey");
 // IDE integration: when on, the issue view gains "run in IDE" buttons that hand
 // the issue to the ForkMesh VS Code / Codeium extension via ~/.forkmesh/ide/.
 const QString kIdeIntegrationSetting = QStringLiteral("ide/integrationEnabled");
+// Voice input: when whisper.cpp is downloaded and built (from Settings), a mic
+// button next to the prompt box lets the user dictate the prompt locally. The
+// install dir holds the cloned/built repo; the model name picks which ggml model
+// was fetched (tiny.en/base.en/small.en).
+const QString kWhisperDirSetting = QStringLiteral("voice/whisperDir");
+const QString kWhisperModelSetting = QStringLiteral("voice/whisperModel");
 // When on, a successful "Merge to main" automatically runs "Pull <base> into
 // all" so every other branch catches up with the just-merged work (adhoc #250).
 const QString kBranchAutoPullAllSetting =
@@ -4344,6 +4350,90 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16)
     button->setProperty("forkmeshOcticon", name);
     button->setProperty("forkmeshOcticonSize", size);
     applyStoredOcticon(button);
+}
+
+// ---- voice input (whisper.cpp) helpers --------------------------------------
+// Where whisper.cpp is cloned/built. Defaults to the app's local-data dir; the
+// installer records the chosen dir so detection survives across launches.
+inline QString whisperDir()
+{
+    const QString stored =
+        QSettings().value(kWhisperDirSetting).toString().trimmed();
+    if (!stored.isEmpty())
+        return stored;
+    const QString base =
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    return QDir(base.isEmpty() ? QDir::homePath() : base)
+        .filePath(QStringLiteral("whisper.cpp"));
+}
+
+// Which ggml model was downloaded (English-only variants keep transcription fast
+// and accurate for prompts). Defaults to base.en.
+inline QString whisperModelName()
+{
+    const QString stored =
+        QSettings().value(kWhisperModelSetting).toString().trimmed();
+    return stored.isEmpty() ? QStringLiteral("base.en") : stored;
+}
+
+inline QString whisperModelPath()
+{
+    return QDir(whisperDir())
+        .filePath(QStringLiteral("models/ggml-%1.bin").arg(whisperModelName()));
+}
+
+// whisper.cpp's CLI moved from ./main to ./build/bin/whisper-cli across releases,
+// so probe the new name first then the legacy ones. Empty == not built yet.
+inline QString whisperBinaryPath()
+{
+    const QDir dir(whisperDir());
+    static const char *const candidates[] = {
+        "build/bin/whisper-cli", "build/bin/main", "main", "whisper-cli"};
+    for (const char *c : candidates) {
+        const QString p = dir.filePath(QString::fromLatin1(c));
+        if (QFileInfo::exists(p))
+            return p;
+    }
+    return QString();
+}
+
+inline bool whisperInstalled()
+{
+    return !whisperBinaryPath().isEmpty() && QFileInfo::exists(whisperModelPath());
+}
+
+// A CLI audio recorder + the args to capture 16 kHz mono 16-bit WAV (what
+// whisper.cpp expects) into `outWav`, running until the process is terminated.
+// An empty program means no supported recorder is installed.
+struct AudioRecorderCommand {
+    QString program;
+    QStringList args;
+};
+
+inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
+{
+    auto have = [](const char *p) {
+        return !QStandardPaths::findExecutable(QString::fromLatin1(p)).isEmpty();
+    };
+    if (have("arecord"))
+        return {QStringLiteral("arecord"),
+                {QStringLiteral("-q"), QStringLiteral("-f"), QStringLiteral("S16_LE"),
+                 QStringLiteral("-c"), QStringLiteral("1"), QStringLiteral("-r"),
+                 QStringLiteral("16000"), QStringLiteral("-t"), QStringLiteral("wav"),
+                 outWav}};
+    if (have("parecord"))
+        return {QStringLiteral("parecord"),
+                {QStringLiteral("--rate=16000"), QStringLiteral("--channels=1"),
+                 QStringLiteral("--format=s16le"),
+                 QStringLiteral("--file-format=wav"), outWav}};
+    if (have("ffmpeg"))
+        return {QStringLiteral("ffmpeg"),
+                {QStringLiteral("-loglevel"), QStringLiteral("error"),
+                 QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("alsa"),
+                 QStringLiteral("-i"), QStringLiteral("default"),
+                 QStringLiteral("-ar"), QStringLiteral("16000"),
+                 QStringLiteral("-ac"), QStringLiteral("1"), outWav}};
+    return {};
 }
 
 // Widen a changed-files list so its longest entry opens fully visible instead of

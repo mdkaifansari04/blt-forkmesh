@@ -35,6 +35,7 @@
         <file alias="link.svg">icons/octicons/link.svg</file>
         <file alias="list-unordered.svg">icons/octicons/list-unordered.svg</file>
         <file alias="lock.svg">icons/octicons/lock.svg</file>
+        <file alias="mic.svg">icons/octicons/mic.svg</file>
         <file alias="moon.svg">icons/octicons/moon.svg</file>
         <file alias="package.svg">icons/octicons/package.svg</file>
         <file alias="paperclip.svg">icons/octicons/paperclip.svg</file>
