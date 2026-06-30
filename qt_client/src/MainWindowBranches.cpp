@@ -1989,6 +1989,35 @@ void MainWindow::loadBranchesPanel()
         }
     }
 
+    // Ahead/behind of each remote-tracking branch vs the default branch, so those
+    // rows can show how far they've diverged from main just like the local ones do
+    // (adhoc #61). One batched `for-each-ref` (git 2.41+ '%(ahead-behind:<base>)')
+    // rather than a rev-list per branch keeps it cheap even when a repo carries
+    // hundreds of remote refs. The atom emits "<ahead> <behind>"; the hash stays
+    // empty (rows fall back to a plain "Remote" label) when the field or base is
+    // unavailable, e.g. on older git.
+    QHash<QString, QPair<int, int>> remoteAheadBehind; // ref -> (ahead, behind)
+    if (!dir.isEmpty() && !base.isEmpty() && !remoteBranches.isEmpty()) {
+        QByteArray ab;
+        if (runGitCapture(
+                dir,
+                {"for-each-ref",
+                 QStringLiteral("--format=%(refname:short) %(ahead-behind:%1)").arg(base),
+                 "refs/remotes/"},
+                &ab, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(ab).split('\n', Qt::SkipEmptyParts)) {
+                const QStringList parts = line.split(
+                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                // "<ref> <ahead> <behind>"; ref names never contain whitespace.
+                if (parts.size() >= 3)
+                    remoteAheadBehind.insert(
+                        parts.first(),
+                        qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
+            }
+        }
+    }
+
     // Map each branch to the agent session working it (if any), scoped to the
     // current repo, so the per-row "Issue / Agent" column can name the issue the
     // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
@@ -2210,10 +2239,11 @@ void MainWindow::loadBranchesPanel()
 
     // Remote-tracking branches, listed read-only under their full ref-qualified
     // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
-    // in the repo, not just the local heads (adhoc #55). No ahead/behind probe or
-    // row actions here: these aren't checked out locally and a repo can carry
-    // hundreds of them, so each row stays cheap — just the name and last-commit
-    // time. Clicking one still renders its diff vs the default branch.
+    // in the repo, not just the local heads (adhoc #55). No row actions here (these
+    // aren't checked out locally), but the Status column shows their ahead/behind
+    // vs the default branch from the batched probe above so the divergence info
+    // matches the local rows (adhoc #61). Clicking one still renders its diff vs
+    // the default branch.
     for (const QString &branch : remoteBranches) {
         const int row = m_branchesTable->rowCount();
         m_branchesTable->insertRow(row);
@@ -2224,8 +2254,29 @@ void MainWindow::loadBranchesPanel()
         name->setToolTip(QStringLiteral("Remote-tracking branch %1").arg(branch));
         m_branchesTable->setItem(row, 0, name);
 
-        auto *statusItem = new QTableWidgetItem(QStringLiteral("Remote"));
+        // Ahead/behind vs the default branch when known, else a plain "Remote".
+        QString rstatus = QStringLiteral("Remote");
+        QString rtip = QStringLiteral("Remote-tracking branch");
+        const auto abIt = remoteAheadBehind.constFind(branch);
+        if (abIt != remoteAheadBehind.constEnd()) {
+            const int rahead = abIt->first;
+            const int rbehind = abIt->second;
+            if (rahead == 0 && rbehind == 0) {
+                rstatus = QStringLiteral("Up to date");
+                rtip = QStringLiteral("Up to date with %1").arg(base);
+            } else {
+                rstatus = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
+                              .arg(rbehind)
+                              .arg(rahead);
+                rtip = QStringLiteral("%1 commit(s) behind and %2 ahead of %3")
+                           .arg(rbehind)
+                           .arg(rahead)
+                           .arg(base);
+            }
+        }
+        auto *statusItem = new QTableWidgetItem(rstatus);
         statusItem->setForeground(QColor("#8b949e"));
+        statusItem->setToolTip(rtip);
         m_branchesTable->setItem(row, 1, statusItem);
 
         m_branchesTable->setItem(
