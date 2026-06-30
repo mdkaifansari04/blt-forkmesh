@@ -1,0 +1,146 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index b8c9e861..8b0c3ec2 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -1200,6 +1200,41 @@ bool MainWindow::testOpenRepository(int index)
+     return true;
+ }
+ 
++bool MainWindow::testShowRepoCommitsTab()
++{
++    if (!m_repoDetailStack || m_repoDetailStack->count() <= 1)
++        return false;
++    m_repoDetailStack->setCurrentIndex(1); // Commits
++    if (m_repoDetailTabs) {
++        if (QAbstractButton *b = m_repoDetailTabs->button(1))
++            b->setChecked(true);
++    }
++    loadCommits();
++    return true;
++}
++
++bool MainWindow::testCommitListRowHasRestoreAction() const
++{
++    if (!m_commitsTable || m_commitsTable->rowCount() == 0)
++        return false;
++    const QList<QWidget *> actionGroups =
++        m_commitsTable->findChildren<QWidget *>(QStringLiteral("commitRowActions"));
++    for (QWidget *actions : actionGroups) {
++        bool hasRestore = false;
++        bool hasDelete = false;
++        const QList<QPushButton *> buttons = actions->findChildren<QPushButton *>();
++        for (QPushButton *button : buttons) {
++            const QString action =
++                button->property("commitAction").toString();
++            hasRestore = hasRestore || action == QStringLiteral("restore");
++            hasDelete = hasDelete || action == QStringLiteral("delete");
++        }
++        if (hasRestore && hasDelete)
++            return true;
++    }
++    return false;
++}
++
+ QString MainWindow::testRepoDefaultBranch() const
+ {
+     return repoDefaultBranch(repoBranches());
+@@ -9370,9 +9405,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
+         commitHeader->resizeSection(i, commitColWidths[i]);
+     }
+     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
+-    // Trailing action column: a fixed, narrow slot for the per-row delete button.
++    // Trailing action column: fixed slots for per-row restore/delete buttons.
+     commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
+-    commitHeader->resizeSection(kCommitActionCol, 38);
++    commitHeader->resizeSection(kCommitActionCol, 68);
+     // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
+     // moved to the far left so it reads like a git log graph. Its width is
+     // recomputed per load once the lane count is known (see loadCommits).
+@@ -26786,12 +26821,35 @@ void MainWindow::loadCommits()
+         delsItem->setData(kTableSortRole, dels);
+         m_commitsTable->setItem(row, 5, delsItem);
+ 
+-        // Per-row "delete from history" button. Enabled only on the source of
+-        // truth; on a browse-only mirror it stays visible but disabled so the
+-        // reason is discoverable.
++        // Per-row restore/delete buttons. Enabled only on the source of truth; on
++        // a browse-only mirror they stay visible but disabled so the reason is
++        // discoverable.
+         const QString fullHash = f.at(0);
++        auto *actions = new QWidget;
++        actions->setObjectName("commitRowActions");
++        auto *actionsLayout = new QHBoxLayout(actions);
++        actionsLayout->setContentsMargins(0, 0, 0, 0);
++        actionsLayout->setSpacing(2);
++        actionsLayout->setAlignment(Qt::AlignCenter);
++        auto *restore = new QPushButton;
++        restore->setObjectName("issueIconButton");
++        restore->setProperty("commitAction", "restore");
++        restore->setFlat(true);
++        restore->setCursor(Qt::PointingHandCursor);
++        restore->setFocusPolicy(Qt::NoFocus);
++        restore->setIcon(themedOcticon("history", QColor("#58a6ff"), 15));
++        restore->setIconSize(QSize(15, 15));
++        restore->setEnabled(writable);
++        restore->setToolTip(writable
++                                ? QStringLiteral("Restore %1 by committing its inverse")
++                                      .arg(f.at(1))
++                                : QStringLiteral("Read-only mirror — no working tree to "
++                                                 "commit a revert into"));
++        connect(restore, &QPushButton::clicked, this,
++                [this, fullHash] { revertCommit(fullHash); });
+         auto *del = new QPushButton;
+         del->setObjectName("issueIconButton");
++        del->setProperty("commitAction", "delete");
+         del->setFlat(true);
+         del->setCursor(Qt::PointingHandCursor);
+         // Don't let the per-row button take keyboard focus: as a focusable cell
+@@ -26808,7 +26866,9 @@ void MainWindow::loadCommits()
+                                              "rewrite history in"));
+         connect(del, &QPushButton::clicked, this,
+                 [this, fullHash] { deleteCommit(fullHash); });
+-        m_commitsTable->setCellWidget(row, kCommitActionCol, del);
++        actionsLayout->addWidget(restore);
++        actionsLayout->addWidget(del);
++        m_commitsTable->setCellWidget(row, kCommitActionCol, actions);
+     }
+     // Size the graph gutter to the widest the lanes ever got, then re-assert the
+     // Date-descending sort so rows stay in git-log order (the order the lanes were
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 830daa12..b49bae79 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -249,6 +249,8 @@ public:
+     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
+                                            const QString &localPath);
+     Q_INVOKABLE bool testOpenRepository(int index);
++    Q_INVOKABLE bool testShowRepoCommitsTab();
++    Q_INVOKABLE bool testCommitListRowHasRestoreAction() const;
+     // The branch the open repo treats as its default/merge base, so a test can
+     // prove it stays main even when the working tree is parked on a feature branch.
+     Q_INVOKABLE QString testRepoDefaultBranch() const;
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index c08df665..89551245 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -482,7 +482,19 @@ int main(int argc, char *argv[])
+                       {"-C", repoDir.path(), "commit", "-qm", "init"});
+     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
+     window.testOpenRepository(repoIdx);
+-    QApplication::processEvents();
++    window.testShowRepoCommitsTab();
++    bool commitRestoreActionFound = false;
++    QElapsedTimer commitActionTimer;
++    commitActionTimer.start();
++    while (commitActionTimer.elapsed() < 5000) {
++        QApplication::processEvents();
++        commitRestoreActionFound = window.testCommitListRowHasRestoreAction();
++        if (commitRestoreActionFound)
++            break;
++    }
++    check(commitRestoreActionFound,
++          QStringLiteral("commit list row shows a restore action next to delete "
++                         "commit (#207)"));
+ 
+     // Issue #286: the "Prioritize from README" button must actually be on the
+     // open issues view (not hidden, not pushed off the right edge of the panel).
