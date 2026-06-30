@@ -4413,37 +4413,113 @@ struct AudioRecorderCommand {
     QStringList args;
 };
 
-// Which of the supported CLI recorders is installed, in the same priority order
-// audioRecorderFor() picks (arecord > parecord > ffmpeg), or empty if none is.
-// Kept separate so the Settings mic-picker enumerates devices for the same tool
-// that will actually capture.
+// Which of the supported CLI recorders is installed, or empty if none is. On
+// Linux the priority order matches audioRecorderFor() (arecord > parecord >
+// ffmpeg); on macOS/Windows neither ships a capture CLI, so we drive ffmpeg
+// (avfoundation / dshow), which is the only portable recorder there. Kept
+// separate so the Settings mic-picker enumerates devices for the same tool that
+// will actually capture.
 inline QString preferredAudioRecorder()
 {
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    if (!QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty())
+        return QStringLiteral("ffmpeg");
+    return QString();
+#else
     for (const char *p : {"arecord", "parecord", "ffmpeg"})
         if (!QStandardPaths::findExecutable(QString::fromLatin1(p)).isEmpty())
             return QString::fromLatin1(p);
     return QString();
+#endif
 }
 
 // Available microphone/input devices for the installed recorder, as
 // {display label, device id} pairs. The id is what audioRecorderFor() hands the
-// recorder (-D for arecord / -i for ffmpeg-alsa, --device= for parecord); an empty
-// id means "system default". Best-effort: returns just the default entry when the
-// listing command is missing or unparseable.
+// recorder (-D for arecord / -i for ffmpeg-alsa, --device= for parecord, ":N" for
+// avfoundation, the device name for dshow); an empty id means "system default".
+// Best-effort: returns just the default entry when the listing command is missing
+// or unparseable.
 inline QList<QPair<QString, QString>> voiceInputDevices()
 {
     QList<QPair<QString, QString>> out;
     out.append({QStringLiteral("System default"), QString()});
     const QString tool = preferredAudioRecorder();
+    if (tool.isEmpty())
+        return out;
+    // Run a listing command and return its combined output. ffmpeg dumps its
+    // device list to stderr and then exits non-zero, which is expected here, so we
+    // merge the channels and ignore the exit code.
     auto runCmd = [](const QString &prog, const QStringList &args) -> QString {
         if (QStandardPaths::findExecutable(prog).isEmpty())
             return QString();
         QProcess p;
+        p.setProcessChannelMode(QProcess::MergedChannels);
         p.start(prog, args);
         if (!p.waitForFinished(3000))
             return QString();
-        return QString::fromUtf8(p.readAllStandardOutput());
+        return QString::fromUtf8(p.readAll());
     };
+#if defined(Q_OS_MACOS)
+    // avfoundation device dump: "[N] Device Name" lines under the "AVFoundation
+    // audio devices:" header. The capture id ffmpeg wants is ":N".
+    const QString listing = runCmd(
+        QStringLiteral("ffmpeg"),
+        {QStringLiteral("-hide_banner"), QStringLiteral("-f"),
+         QStringLiteral("avfoundation"), QStringLiteral("-list_devices"),
+         QStringLiteral("true"), QStringLiteral("-i"), QStringLiteral("")});
+    static const QRegularExpression re(QStringLiteral("\\[(\\d+)\\]\\s+(.+?)\\s*$"));
+    bool inAudio = false;
+    for (const QString &line :
+         listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (line.contains(QStringLiteral("audio devices"))) {
+            inAudio = true;
+            continue;
+        }
+        if (line.contains(QStringLiteral("video devices"))) {
+            inAudio = false;
+            continue;
+        }
+        if (!inAudio)
+            continue;
+        const QRegularExpressionMatch m = re.match(line);
+        if (m.hasMatch())
+            out.append(
+                {m.captured(2).trimmed(), QStringLiteral(":") + m.captured(1)});
+    }
+    return out;
+#elif defined(Q_OS_WIN)
+    // dshow device dump: audio devices appear as quoted names, either grouped
+    // under a "DirectShow audio devices" header (older ffmpeg) or suffixed with
+    // "(audio)" (newer ffmpeg). The capture id is the bare device name.
+    const QString listing = runCmd(
+        QStringLiteral("ffmpeg"),
+        {QStringLiteral("-hide_banner"), QStringLiteral("-list_devices"),
+         QStringLiteral("true"), QStringLiteral("-f"), QStringLiteral("dshow"),
+         QStringLiteral("-i"), QStringLiteral("dummy")});
+    static const QRegularExpression re(QStringLiteral("\"([^\"]+)\""));
+    bool inAudio = false;
+    for (const QString &line :
+         listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (line.contains(QStringLiteral("audio devices"))) {
+            inAudio = true;
+            continue;
+        }
+        if (line.contains(QStringLiteral("video devices"))) {
+            inAudio = false;
+            continue;
+        }
+        // The alternative-name line is a device path, not a friendly name.
+        if (line.contains(QStringLiteral("Alternative name")))
+            continue;
+        const bool audioLine = inAudio || line.contains(QStringLiteral("(audio)"));
+        if (!audioLine)
+            continue;
+        const QRegularExpressionMatch m = re.match(line);
+        if (m.hasMatch())
+            out.append({m.captured(1), m.captured(1)});
+    }
+    return out;
+#else
     if (tool == QLatin1String("parecord")) {
         // PulseAudio/PipeWire capture sources via pactl; skip the ".monitor"
         // loopbacks (those tap output, not a mic).
@@ -4484,6 +4560,7 @@ inline QList<QPair<QString, QString>> voiceInputDevices()
         }
     }
     return out;
+#endif
 }
 
 inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
@@ -4494,6 +4571,46 @@ inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
     // The mic chosen in Settings (empty == the recorder's own default device).
     const QString device =
         QSettings().value(kVoiceInputDeviceSetting).toString().trimmed();
+#if defined(Q_OS_MACOS)
+    // macOS has no capture CLI: drive ffmpeg's avfoundation input. The device id
+    // is ":N" (audio index); ":default" follows the system default mic.
+    // -flush_packets keeps the WAV growing in near-real-time so the live level
+    // meter moves while you speak.
+    if (have("ffmpeg"))
+        return {QStringLiteral("ffmpeg"),
+                {QStringLiteral("-loglevel"), QStringLiteral("error"),
+                 QStringLiteral("-y"), QStringLiteral("-f"),
+                 QStringLiteral("avfoundation"), QStringLiteral("-i"),
+                 device.isEmpty() ? QStringLiteral(":default") : device,
+                 QStringLiteral("-ar"), QStringLiteral("16000"),
+                 QStringLiteral("-ac"), QStringLiteral("1"),
+                 QStringLiteral("-flush_packets"), QStringLiteral("1"), outWav}};
+    return {};
+#elif defined(Q_OS_WIN)
+    // Windows has no capture CLI: drive ffmpeg's dshow input. dshow has no
+    // "default" device, so when none is chosen fall back to the first enumerated
+    // microphone.
+    if (have("ffmpeg")) {
+        QString name = device;
+        if (name.isEmpty()) {
+            for (const auto &d : voiceInputDevices())
+                if (!d.second.isEmpty()) {
+                    name = d.second;
+                    break;
+                }
+        }
+        if (name.isEmpty())
+            return {};
+        return {QStringLiteral("ffmpeg"),
+                {QStringLiteral("-loglevel"), QStringLiteral("error"),
+                 QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("dshow"),
+                 QStringLiteral("-i"), QStringLiteral("audio=") + name,
+                 QStringLiteral("-ar"), QStringLiteral("16000"),
+                 QStringLiteral("-ac"), QStringLiteral("1"),
+                 QStringLiteral("-flush_packets"), QStringLiteral("1"), outWav}};
+    }
+    return {};
+#else
     if (have("arecord")) {
         QStringList args = {QStringLiteral("-q"), QStringLiteral("-f"),
                             QStringLiteral("S16_LE"), QStringLiteral("-c"),
@@ -4522,8 +4639,10 @@ inline AudioRecorderCommand audioRecorderFor(const QString &outWav)
                  QStringLiteral("-i"),
                  device.isEmpty() ? QStringLiteral("default") : device,
                  QStringLiteral("-ar"), QStringLiteral("16000"),
-                 QStringLiteral("-ac"), QStringLiteral("1"), outWav}};
+                 QStringLiteral("-ac"), QStringLiteral("1"),
+                 QStringLiteral("-flush_packets"), QStringLiteral("1"), outWav}};
     return {};
+#endif
 }
 
 // Peak amplitude (0..1, fraction of full scale) of a 16-bit mono PCM WAV, or -1

@@ -323,6 +323,34 @@ QWidget *MainWindow::buildSettingsSection()
     voiceDeviceRow->addWidget(m_voiceDeviceCombo, 1);
     voiceDeviceRow->addStretch();
 
+    // Test-mic check (adhoc #14): record from the chosen device and show a live
+    // level bar, so you can confirm the mic is actually captured (and watch the
+    // level move as you speak) without going through whisper transcription. Works
+    // even before whisper.cpp is installed — it only needs a recorder.
+    m_voiceTestMicButton = new QPushButton("Test mic");
+    m_voiceTestMicButton->setObjectName("ghostButton");
+    m_voiceTestMicButton->setCursor(Qt::PointingHandCursor);
+    m_voiceTestMicButton->setToolTip(
+        "Record from the selected microphone and show its input level so you can "
+        "confirm it's working. Click again to stop.");
+    connect(m_voiceTestMicButton, &QPushButton::clicked, this,
+            &MainWindow::toggleMicTest);
+    m_voiceTestMeter = new QProgressBar;
+    m_voiceTestMeter->setObjectName("voiceLevelMeter");
+    m_voiceTestMeter->setRange(0, 100);
+    m_voiceTestMeter->setValue(0);
+    m_voiceTestMeter->setTextVisible(false);
+    m_voiceTestMeter->setFixedHeight(14);
+    m_voiceTestMeter->setToolTip("Live microphone input level");
+    m_voiceTestMeter->setStyleSheet(
+        "QProgressBar#voiceLevelMeter{border:1px solid #30363d;border-radius:3px;"
+        "background:#0d1117;}"
+        "QProgressBar#voiceLevelMeter::chunk{background:#3fb950;border-radius:2px;}");
+    auto *voiceTestRow = new QHBoxLayout;
+    voiceTestRow->setSpacing(8);
+    voiceTestRow->addWidget(m_voiceTestMicButton);
+    voiceTestRow->addWidget(m_voiceTestMeter, 1);
+
     auto *appearanceLabel = new QLabel("APPEARANCE");
     appearanceLabel->setObjectName("sectionLabel");
     m_themeCombo = new QComboBox;
@@ -961,6 +989,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(voiceHint);
     agentsCol->addLayout(voiceRow);
     agentsCol->addLayout(voiceDeviceRow);
+    agentsCol->addLayout(voiceTestRow);
     agentsCol->addWidget(m_whisperStatusLabel);
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
@@ -1450,6 +1479,125 @@ void MainWindow::refreshWhisperStatus()
         else
             m_whisperStatusLabel->setText("Not installed.");
     }
+}
+
+// Settings "Test mic" (adhoc #14): start/stop a self-contained recording from the
+// chosen microphone and drive the level bar from the growing capture, so the user
+// can confirm the mic is actually being hooked into and watch the level move as
+// they speak. Independent of whisper.cpp — it only needs a recorder.
+void MainWindow::toggleMicTest()
+{
+    if (!m_voiceTestMicButton)
+        return;
+
+    // Already testing: stop. The recorder finalizes on SIGTERM; cleanup runs from
+    // its finished handler (or here if it never started).
+    if (m_voiceTestRecording) {
+        stopMicTest();
+        return;
+    }
+
+    m_voiceTestWavPath =
+        QDir(QDir::tempPath())
+            .filePath(QStringLiteral("forkmesh-mictest-%1.wav")
+                          .arg(QDateTime::currentMSecsSinceEpoch()));
+    const AudioRecorderCommand rec = audioRecorderFor(m_voiceTestWavPath);
+    if (rec.program.isEmpty()) {
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+        logSystem("Mic test needs ffmpeg to capture the microphone. Install it "
+                  "and make sure it's on your PATH.");
+#else
+        logSystem("Mic test needs a recorder. Install one of: arecord "
+                  "(alsa-utils), parecord (pulseaudio-utils) or ffmpeg.");
+#endif
+        return;
+    }
+
+    auto *proc = new QProcess(this);
+    m_voiceTestProc = proc;
+    connect(proc, &QProcess::finished, this,
+            [this, proc](int, QProcess::ExitStatus) {
+                const QString err =
+                    QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                const bool captured = QFileInfo::exists(m_voiceTestWavPath) &&
+                                      QFileInfo(m_voiceTestWavPath).size() >= 1024;
+                if (m_voiceTestProc == proc)
+                    stopMicTest();
+                proc->deleteLater();
+                // The recorder never opened the device (no WAV / header only):
+                // surface why so the user knows the mic isn't being hooked into.
+                if (!captured && !err.isEmpty())
+                    logSystem("Mic test: capture failed \xE2\x80\x94 " +
+                              err.right(200));
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc](QProcess::ProcessError err) {
+                if (err != QProcess::FailedToStart || m_voiceTestProc != proc)
+                    return;
+                stopMicTest();
+                proc->deleteLater();
+                logSystem("Mic test: could not start the recorder.");
+            });
+
+    proc->start(rec.program, rec.args);
+    if (!proc->waitForStarted(3000))
+        return; // errorOccurred handles cleanup
+
+    m_voiceTestRecording = true;
+    m_voiceTestPos = 0;
+    if (!m_voiceTestTimer) {
+        m_voiceTestTimer = new QTimer(this);
+        m_voiceTestTimer->setInterval(80);
+        connect(m_voiceTestTimer, &QTimer::timeout, this,
+                &MainWindow::updateMicTestMeter);
+    }
+    if (m_voiceTestMeter)
+        m_voiceTestMeter->setValue(0);
+    m_voiceTestTimer->start();
+    m_voiceTestMicButton->setText("Stop test");
+}
+
+// Drive the test-mic level bar from the freshly-captured tail of the WAV. Mirrors
+// updateVoiceLevelMeter(): attack fast, release slow, square-rooted so ordinary
+// speech moves the bar visibly.
+void MainWindow::updateMicTestMeter()
+{
+    if (!m_voiceTestMeter)
+        return;
+    const double peak = wavLevelSince(m_voiceTestWavPath, &m_voiceTestPos);
+    const int cur = m_voiceTestMeter->value();
+    int next;
+    if (peak < 0.0) {
+        next = qMax(0, cur - 14);
+    } else {
+        const int target = int(qBound(0.0, qSqrt(peak) * 135.0, 100.0));
+        next = target >= cur ? target : qMax(target, cur - 14);
+    }
+    if (next != cur)
+        m_voiceTestMeter->setValue(next);
+}
+
+// Stop the test recording, reset the bar, and clean up the temp WAV.
+void MainWindow::stopMicTest()
+{
+    m_voiceTestRecording = false;
+    if (m_voiceTestTimer)
+        m_voiceTestTimer->stop();
+    if (m_voiceTestProc && m_voiceTestProc->state() != QProcess::NotRunning) {
+        // Detach the finished handler's path before terminating so it doesn't
+        // re-enter stopMicTest() while we're already tearing down.
+        QProcess *p = m_voiceTestProc;
+        m_voiceTestProc = nullptr;
+        p->terminate();
+    } else {
+        m_voiceTestProc = nullptr;
+    }
+    if (m_voiceTestMeter)
+        m_voiceTestMeter->setValue(0);
+    if (m_voiceTestMicButton)
+        m_voiceTestMicButton->setText("Test mic");
+    if (!m_voiceTestWavPath.isEmpty())
+        QFile::remove(m_voiceTestWavPath);
 }
 
 // Clone (or update), build, and fetch a model for whisper.cpp, streaming the
