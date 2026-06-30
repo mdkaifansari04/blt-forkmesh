@@ -24,6 +24,10 @@
         pubkey: body.pubkey,
         emailVerified: Boolean(body.emailVerified),
         isAdmin: Boolean(body.isAdmin),
+        solana: body.solana || "",
+        hasPayoutAddress: Boolean(body.hasPayoutAddress),
+        avatarPng: body.avatarPng || "",
+        avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
         at: Date.now(),
       }));
       document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";
@@ -91,6 +95,8 @@
       body.error === "invalid_credentials" ? "Incorrect email or password."
         : body.error === "too_many_attempts"
           ? "Too many failed attempts. Wait a few minutes and try again."
+        : body.error === "account_disabled"
+          ? "This account has been disabled."
         : "Could not log in. Please try again.", "bad");
   }
 

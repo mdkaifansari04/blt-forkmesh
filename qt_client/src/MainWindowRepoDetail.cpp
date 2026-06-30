@@ -6114,14 +6114,24 @@ QString MainWindow::repoHeadBranch() const
     return b == QLatin1String("HEAD") ? QString() : b; // "HEAD" => detached
 }
 
-// Refresh the commits-page branch button: its label (the checked-out branch) and
-// its checkout dropdown (every branch, plus "Create new branch…").
+// Refresh the commits-page branch button: its label (the branch whose history is
+// on screen) and its dropdown (every branch, plus "Create new branch…").
+// Selecting a branch *browses* its commits — exactly like the Code-tab switcher —
+// rather than checking it out into the working tree. The commit list is driven by
+// currentRef() (the browsed ref), so the indicator must track that same ref or the
+// two disagree: e.g. after browsing a branch elsewhere the list would show it while
+// the button still claimed HEAD, and clicking then did a heavyweight checkout (also
+// blockable by uncommitted changes) instead of switching the list. Real checkouts
+// live in the Branches panel; here switching is a read-only history view change.
 void MainWindow::refreshCommitsBranchButton()
 {
     if (!m_commitsBranchButton)
         return;
-    const QString cur = repoHeadBranch();
-    m_commitsBranchButton->setText(cur.isEmpty() ? QStringLiteral("(detached)") : cur);
+    // What the list below actually shows: the explicitly browsed branch, or the
+    // checked-out HEAD when none is pinned (currentRef() resolves to "HEAD" then).
+    const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+    m_commitsBranchButton->setText(
+        browsed.isEmpty() ? QStringLiteral("(detached)") : browsed);
 
     auto *menu = new QMenu(m_commitsBranchButton);
     QAction *create =
@@ -6132,8 +6142,8 @@ void MainWindow::refreshCommitsBranchButton()
     for (const QString &b : branches) {
         QAction *a = menu->addAction(b);
         a->setCheckable(true);
-        a->setChecked(b == cur);
-        connect(a, &QAction::triggered, this, [this, b] { checkoutRepoBranch(b); });
+        a->setChecked(b == browsed);
+        connect(a, &QAction::triggered, this, [this, b] { setRepoBranch(b); });
     }
     if (branches.isEmpty())
         menu->addAction(QStringLiteral("No branches"))->setEnabled(false);
@@ -6142,37 +6152,6 @@ void MainWindow::refreshCommitsBranchButton()
     m_commitsBranchButton->setMenu(menu);
     if (old)
         old->deleteLater();
-}
-
-// Real checkout of a branch (changes HEAD), guarded so it never clobbers local
-// changes — the commits page then follows the newly checked-out branch.
-void MainWindow::checkoutRepoBranch(const QString &branch)
-{
-    const QString dir = repoGitDir();
-    if (dir.isEmpty() || branch.isEmpty())
-        return;
-    if (branch == repoHeadBranch()) {
-        setRepoBranch(branch); // already on it; just make sure we're browsing it
-        return;
-    }
-    QByteArray st;
-    if (runGitCapture(dir, {"status", "--porcelain"}, &st, nullptr) &&
-        !st.trimmed().isEmpty()) {
-        setRepoDetailNotice(
-            QStringLiteral("Commit or stash your changes before switching branches."),
-            true);
-        return;
-    }
-    QString err;
-    if (!runGitCapture(dir, {"checkout", branch}, nullptr, &err)) {
-        setRepoDetailNotice(
-            QStringLiteral("Could not switch to %1: %2").arg(branch, err.left(200)), true);
-        return;
-    }
-    logSystem(QStringLiteral("Git: checked out %1.").arg(branch));
-    setRepoDetailNotice(QStringLiteral("Switched to %1.").arg(branch));
-    setRepoBranch(branch); // browse + reload the commit list for the new branch
-    refreshCommitsBranchButton();
 }
 
 // "Create new branch…" — make a branch off HEAD and switch to it.
@@ -6845,7 +6824,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsBranchButton = new QPushButton("main");
     m_commitsBranchButton->setObjectName("ghostButton");
     m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
-    m_commitsBranchButton->setToolTip("Current branch — click to switch or create one");
+    m_commitsBranchButton->setToolTip(
+        "Branch shown below — click to browse another branch's history or create one");
     setOcticon(m_commitsBranchButton, "git-branch", 16);
 
     auto *searchRow = new QHBoxLayout;

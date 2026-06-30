@@ -8,7 +8,35 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QComboBox>
+#include <QTimer>
+
 using namespace forkmesh::ui;
+
+// Refill the "Fix with agent" model dropdown for the agent/provider the sibling
+// combo currently shows (adhoc #56). Item data is the model id passed straight to
+// fixBranchConflictsWithAgent; the API providers fall back to their low-cost
+// default on an empty value, Claude Code's empty entry leaves the CLI's default.
+static void fillBranchFixModels(QComboBox *combo, const QString &provider)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    if (provider == QLatin1String("claude-code")) {
+        combo->addItem(QStringLiteral("Default model"), QString());
+        combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+        combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+        combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    } else if (provider == QLatin1String("openai")) {
+        combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
+        combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
+        combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));
+    } else { // claude API
+        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
+        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6"));
+        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
+    }
+}
 
 // ---- Branches panel --------------------------------------------------------
 
@@ -16,6 +44,28 @@ using namespace forkmesh::ui;
 // loadBranchesPanel can probe each branch for merge conflicts.
 static QString branchMergeTree(const QString &dir, const QString &base,
                                const QString &branch);
+
+// Split rendered diff HTML into its self-contained per-file blocks. Each file's
+// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
+// and ends before the next one, so these chunks can be streamed into the view a
+// few at a time instead of laid out in one blocking pass (adhoc #51). Any
+// preamble before the first anchor rides along with the first block.
+static QStringList splitDiffFileBlocks(const QString &html)
+{
+    static const QString marker = QStringLiteral("<a name=\"file-");
+    int pos = html.indexOf(marker);
+    if (pos < 0)
+        return {html}; // no per-file anchors (e.g. an empty/notice body)
+    QStringList blocks;
+    if (pos > 0)
+        blocks.append(html.left(pos)); // preamble before the first file (if any)
+    while (pos >= 0) {
+        const int next = html.indexOf(marker, pos + marker.size());
+        blocks.append(html.mid(pos, next < 0 ? -1 : next - pos));
+        pos = next;
+    }
+    return blocks;
+}
 
 // Worktrees tab (next to Branches): lists this repo's git worktrees — the main
 // checkout plus each agent's isolated worktree+branch — with open/remove/prune.
@@ -1762,41 +1812,65 @@ QWidget *MainWindow::buildBranchesTab()
     });
 
     // Fix with agent: only relevant when the selected branch conflicts with base,
-    // so updateBranchDetailActions() hides it otherwise.
+    // so updateBranchDetailActions() hides it otherwise. The button now resolves
+    // straight away (no menu); the agent and model are chosen in the two dropdowns
+    // beside it (adhoc #56).
     m_branchFixButton = new QPushButton("Fix with agent");
     m_branchFixButton->setObjectName("ghostButton");
     m_branchFixButton->setProperty("buttonSize", "sm");
     m_branchFixButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
-    auto *fixMenu = new QMenu(m_branchFixButton);
-    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
-    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
-    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
-    connect(fixClaude, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
+    connect(m_branchFixButton, &QPushButton::clicked, this, [this] {
+        if (m_branchDiffBranch.isEmpty())
+            return;
+        const QString provider = m_branchFixAgentCombo
+                                     ? m_branchFixAgentCombo->currentData().toString()
+                                     : QStringLiteral("claude");
+        const QString model = m_branchFixModelCombo
+                                  ? m_branchFixModelCombo->currentData().toString()
+                                  : QString();
+        fixBranchConflictsWithAgent(m_branchDiffBranch, provider, model);
     });
-    connect(fixOpenAi, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
-    });
-    connect(fixClaudeCode, &QAction::triggered, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            fixBranchConflictsWithAgent(m_branchDiffBranch,
-                                        QStringLiteral("claude-code"));
-    });
-    // Bold the user's configured default agent (Settings -> Agents) so the dropdown
-    // makes the default choice obvious; refresh on open in case it changed.
-    auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
+
+    // Agent dropdown: which provider resolves the conflicts. Data values match the
+    // strings fixBranchConflictsWithAgent expects ("claude" is the Claude API).
+    m_branchFixAgentCombo = new QComboBox;
+    m_branchFixAgentCombo->setObjectName("issueControlSm");
+    m_branchFixAgentCombo->setCursor(Qt::PointingHandCursor);
+    m_branchFixAgentCombo->setToolTip("Which agent resolves the conflicts");
+    m_branchFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
+    m_branchFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
+    m_branchFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+                                   QStringLiteral("claude-code"));
+    m_branchFixAgentCombo->hide();
+    // Start on the user's configured default agent (Settings -> Agents). That
+    // setting stores the Claude API as "claude-api"; the combo uses "claude".
+    {
         const QString def = defaultAgentProvider();
-        fixMenu->setDefaultAction(def == QLatin1String("claude-code") ? fixClaudeCode
-                                  : def == QLatin1String("claude-api") ? fixClaude
-                                                                       : fixOpenAi);
-    };
-    highlightDefaultFix();
-    connect(fixMenu, &QMenu::aboutToShow, fixMenu, highlightDefaultFix);
-    m_branchFixButton->setMenu(fixMenu);
+        const QString want = def == QLatin1String("claude-api")
+                                 ? QStringLiteral("claude")
+                                 : def;
+        const int idx = m_branchFixAgentCombo->findData(want);
+        m_branchFixAgentCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+
+    // Model dropdown: refilled to match the selected agent (e.g. Opus / Sonnet /
+    // Haiku for Claude).
+    m_branchFixModelCombo = new QComboBox;
+    m_branchFixModelCombo->setObjectName("issueControlSm");
+    m_branchFixModelCombo->setCursor(Qt::PointingHandCursor);
+    m_branchFixModelCombo->setToolTip("Which model the agent uses");
+    m_branchFixModelCombo->hide();
+    fillBranchFixModels(m_branchFixModelCombo,
+                        m_branchFixAgentCombo->currentData().toString());
+    connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (m_branchFixAgentCombo && m_branchFixModelCombo)
+                    fillBranchFixModels(
+                        m_branchFixModelCombo,
+                        m_branchFixAgentCombo->currentData().toString());
+            });
 
     m_branchPrButton = new QPushButton("Create PR");
     m_branchPrButton->setObjectName("ghostButton");
@@ -1830,6 +1904,8 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->addWidget(m_branchMergeEditorButton);
     detailBar->addWidget(m_branchPullButton);
     detailBar->addWidget(m_branchFixButton);
+    detailBar->addWidget(m_branchFixAgentCombo);
+    detailBar->addWidget(m_branchFixModelCombo);
     detailBar->addWidget(m_branchPrButton);
     detailBar->addWidget(m_branchMergeButton);
     auto *diffPane = new QWidget;
@@ -1907,11 +1983,43 @@ void MainWindow::loadBranchesPanel()
     const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
     const bool writable = repoHasWorkingTree();
 
-    if (m_branchesSummary)
+    // Remote-tracking branches (refs/remotes/*): the branches other nodes / the
+    // relay have published, which `git branch` (local heads only, via
+    // repoBranches()) leaves out. The list should show every branch in the repo,
+    // including these refs, under their full ref-qualified name (adhoc #55).
+    // Rendered read-only after the local branches below. Skip each remote's
+    // symbolic */HEAD pointer and the bare remote name (e.g. "origin"), which
+    // aren't branches; a remote-tracking ref is always "<remote>/<branch>".
+    QStringList remoteBranches;
+    if (!dir.isEmpty()) {
+        QByteArray rout;
+        if (runGitCapture(dir,
+                          {"for-each-ref", "--sort=-committerdate",
+                           "--format=%(refname:short)", "refs/remotes/"},
+                          &rout, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(rout).split('\n', Qt::SkipEmptyParts)) {
+                const QString ref = line.trimmed();
+                if (ref.isEmpty() || !ref.contains(u'/') ||
+                    ref.endsWith(QLatin1String("/HEAD")))
+                    continue;
+                if (!remoteBranches.contains(ref))
+                    remoteBranches.append(ref);
+            }
+        }
+    }
+
+    if (m_branchesSummary) {
+        const QString def = base.isEmpty() ? QStringLiteral("none") : base;
+        const QString total =
+            remoteBranches.isEmpty()
+                ? QString::number(branches.size())
+                : QString::fromUtf8("%1 local \xC2\xB7 %2 remote")
+                      .arg(branches.size())
+                      .arg(remoteBranches.size());
         m_branchesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 total \xC2\xB7 default: %2")
-                .arg(branches.size())
-                .arg(base.isEmpty() ? "none" : base));
+            QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 default: %2").arg(total, def));
+    }
 
     // Branch commit timestamps in one batch: spawning a `git log -1` per branch
     // (below) blocked the UI thread for ~2s on repos with many branches because
@@ -1923,13 +2031,42 @@ void MainWindow::loadBranchesPanel()
         if (runGitCapture(dir,
                           {"for-each-ref",
                            "--format=%(refname:short) %(committerdate:unix)",
-                           "refs/heads/"},
+                           "refs/heads/", "refs/remotes/"},
                           &times, nullptr)) {
             for (const QString &line :
                  QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
                 const qsizetype sp = line.lastIndexOf(u' ');
                 if (sp > 0)
                     branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
+            }
+        }
+    }
+
+    // Ahead/behind of each remote-tracking branch vs the default branch, so those
+    // rows can show how far they've diverged from main just like the local ones do
+    // (adhoc #61). One batched `for-each-ref` (git 2.41+ '%(ahead-behind:<base>)')
+    // rather than a rev-list per branch keeps it cheap even when a repo carries
+    // hundreds of remote refs. The atom emits "<ahead> <behind>"; the hash stays
+    // empty (rows fall back to a plain "Remote" label) when the field or base is
+    // unavailable, e.g. on older git.
+    QHash<QString, QPair<int, int>> remoteAheadBehind; // ref -> (ahead, behind)
+    if (!dir.isEmpty() && !base.isEmpty() && !remoteBranches.isEmpty()) {
+        QByteArray ab;
+        if (runGitCapture(
+                dir,
+                {"for-each-ref",
+                 QStringLiteral("--format=%(refname:short) %(ahead-behind:%1)").arg(base),
+                 "refs/remotes/"},
+                &ab, nullptr)) {
+            for (const QString &line :
+                 QString::fromUtf8(ab).split('\n', Qt::SkipEmptyParts)) {
+                const QStringList parts = line.split(
+                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+                // "<ref> <ahead> <behind>"; ref names never contain whitespace.
+                if (parts.size() >= 3)
+                    remoteAheadBehind.insert(
+                        parts.first(),
+                        qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
             }
         }
     }
@@ -1961,7 +2098,12 @@ void MainWindow::loadBranchesPanel()
     if (!dir.isEmpty()) {
         QByteArray wtOut;
         if (runGitCapture(dir, {"worktree", "list", "--porcelain"}, &wtOut, nullptr)) {
-            const QString mainPath = QDir(dir).absolutePath();
+            // Compare canonical paths so a symlinked checkout root (e.g. /tmp on
+            // some platforms) doesn't make the main worktree look like a separate
+            // branch worktree; fall back to the absolute path if it can't resolve.
+            QString mainPath = QFileInfo(dir).canonicalFilePath();
+            if (mainPath.isEmpty())
+                mainPath = QDir(dir).absolutePath();
             QString currentPath;
             for (const QString &raw :
                  QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
@@ -1972,8 +2114,11 @@ void MainWindow::loadBranchesPanel()
                     const QString br =
                         line.mid(7).trimmed().replace(QLatin1String("refs/heads/"),
                                                       QString());
+                    QString canonicalPath = QFileInfo(currentPath).canonicalFilePath();
+                    if (canonicalPath.isEmpty())
+                        canonicalPath = QDir(currentPath).absolutePath();
                     if (!br.isEmpty() && !currentPath.isEmpty()
-                        && QDir(currentPath).absolutePath() != mainPath)
+                        && canonicalPath != mainPath)
                         branchWorktrees.insert(br, currentPath);
                 }
             }
@@ -2153,6 +2298,56 @@ void MainWindow::loadBranchesPanel()
         // column edge (the action row already carries an 8px right margin).
         m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
 
+    // Remote-tracking branches, listed read-only under their full ref-qualified
+    // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
+    // in the repo, not just the local heads (adhoc #55). No row actions here (these
+    // aren't checked out locally), but the Status column shows their ahead/behind
+    // vs the default branch from the batched probe above so the divergence info
+    // matches the local rows (adhoc #61). Clicking one still renders its diff vs
+    // the default branch.
+    for (const QString &branch : remoteBranches) {
+        const int row = m_branchesTable->rowCount();
+        m_branchesTable->insertRow(row);
+
+        auto *name = new QTableWidgetItem(branch);
+        name->setIcon(themedOcticon("repo-forked", QColor("#8b949e"), 14));
+        name->setForeground(QColor("#8b949e"));
+        name->setToolTip(QStringLiteral("Remote-tracking branch %1").arg(branch));
+        m_branchesTable->setItem(row, 0, name);
+
+        // Ahead/behind vs the default branch when known, else a plain "Remote".
+        QString rstatus = QStringLiteral("Remote");
+        QString rtip = QStringLiteral("Remote-tracking branch");
+        const auto abIt = remoteAheadBehind.constFind(branch);
+        if (abIt != remoteAheadBehind.constEnd()) {
+            const int rahead = abIt->first;
+            const int rbehind = abIt->second;
+            if (rahead == 0 && rbehind == 0) {
+                rstatus = QStringLiteral("Up to date");
+                rtip = QStringLiteral("Up to date with %1").arg(base);
+            } else {
+                rstatus = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
+                              .arg(rbehind)
+                              .arg(rahead);
+                rtip = QStringLiteral("%1 commit(s) behind and %2 ahead of %3")
+                           .arg(rbehind)
+                           .arg(rahead)
+                           .arg(base);
+            }
+        }
+        auto *statusItem = new QTableWidgetItem(rstatus);
+        statusItem->setForeground(QColor("#8b949e"));
+        statusItem->setToolTip(rtip);
+        m_branchesTable->setItem(row, 1, statusItem);
+
+        m_branchesTable->setItem(
+            row, 2,
+            new QTableWidgetItem(
+                formatShortRelativeTime(branchTimes.value(branch, 0))));
+        m_branchesTable->setItem(row, 3, new QTableWidgetItem);
+        m_branchesTable->setItem(row, 4, new QTableWidgetItem);
+    }
+
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
     if (m_branchPullAllButton) {
@@ -2185,7 +2380,7 @@ void MainWindow::loadBranchesPanel()
                             .arg(base));
     }
 
-    if (branches.isEmpty()) {
+    if (m_branchesTable->rowCount() == 0) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
@@ -2198,7 +2393,8 @@ void MainWindow::loadBranchesPanel()
     // Re-select the row the user was viewing (falling back to the checked-out
     // branch) so rebuilding the table doesn't leave the diff pane blank.
     QString target = previouslyViewed;
-    if (target.isEmpty() || !branches.contains(target))
+    if (target.isEmpty() ||
+        (!branches.contains(target) && !remoteBranches.contains(target)))
         target = selected;
     for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
         QTableWidgetItem *it = m_branchesTable->item(r, 0);
@@ -2494,13 +2690,22 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                     .arg(base, branch));
     }
 
-    // Fix with agent: shown only when the selected branch conflicts with base.
+    // Fix with agent: shown only when the selected branch conflicts with base. The
+    // agent/model dropdowns travel with the button.
     m_branchFixButton->setVisible(hasConflict);
     m_branchFixButton->setEnabled(hasConflict && writable);
     m_branchFixButton->setToolTip(
-        QStringLiteral("Let a low-cost model merge %1 into %2 and resolve the "
+        QStringLiteral("Let the chosen agent merge %1 into %2 and resolve the "
                        "conflicts \xE2\x80\x94 watch it on the Agents tab")
             .arg(base, branch));
+    if (m_branchFixAgentCombo) {
+        m_branchFixAgentCombo->setVisible(hasConflict);
+        m_branchFixAgentCombo->setEnabled(hasConflict && writable);
+    }
+    if (m_branchFixModelCombo) {
+        m_branchFixModelCombo->setVisible(hasConflict);
+        m_branchFixModelCombo->setEnabled(hasConflict && writable);
+    }
 
     // Create PR from this branch into base.
     const bool canPr = writable && !isBase;
@@ -2747,6 +2952,9 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
+    // Supersede any progressive render still streaming in from a prior scope.
+    ++m_branchDiffRenderGen;
+    m_branchDiffPendingBlocks.clear();
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         m_branchFileList->clear();
@@ -2757,11 +2965,26 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     const QSet<QString> viewed = loadDiffViewed(viewedContext);
     const QString html = renderDiffHtml(patch, files, dir, base, m_branchDiffBranch,
                                         QString(), QHash<QString, QString>(), viewed);
-    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays
-    // it all out on the UI thread, freezing it for many seconds (issue #187).
-    // Past a sane size, show the changed-files list with a notice instead.
-    constexpr int kMaxDiffHtmlChars = 1'000'000;
-    if (html.size() > kMaxDiffHtmlChars) {
+    m_branchDiffFilePaths.clear();
+    for (const DiffFileEntry &f : files)
+        m_branchDiffFilePaths.append(f.path);
+
+    // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
+    // and lays it all out on the GUI thread at once, freezing the window for
+    // seconds (issue #187). Rather than refuse to render a large commit, split it
+    // into per-file blocks and stream them in: paint enough to fill the viewport
+    // now (so the commit shows immediately), then append the rest a batch at a
+    // time off the event loop, keeping the window responsive while it fills in
+    // (adhoc #51). A truly pathological diff (a huge generated/vendored file) is
+    // still refused past a hard ceiling, to stay mindful of memory.
+    constexpr int kStreamDiffHtmlChars = 1'000'000;  // stream, don't block, above this
+    constexpr int kMaxDiffHtmlChars = 8'000'000;     // refuse entirely above this
+    constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
+    if (html.isEmpty()) {
+        setDiffHtml(m_branchDiffView,
+            QStringLiteral("<p style='color:#8b949e'>%1</p>")
+                .arg(emptyMessage.toHtmlEscaped()));
+    } else if (html.size() > kMaxDiffHtmlChars) {
         setDiffHtml(m_branchDiffView,
             QStringLiteral(
                 "<p style='color:#d29922'>This diff is too large to render here "
@@ -2769,12 +2992,22 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                 "your editor.</p>")
                 .arg(files.size())
                 .arg(files.size() == 1 ? "" : "s"));
+    } else if (html.size() > kStreamDiffHtmlChars) {
+        QStringList blocks = splitDiffFileBlocks(html);
+        QString firstChunk;
+        while (!blocks.isEmpty() &&
+               (firstChunk.isEmpty() || firstChunk.size() < kFirstPaintChars))
+            firstChunk += blocks.takeFirst();
+        // A streamed diff is assembled incrementally; don't let a
+        // Ctrl+wheel zoom re-render a partial copy (issue #254).
+        m_branchDiffView->setProperty("fm_diffSource", QString());
+        m_branchDiffView->document()->setDefaultStyleSheet(
+            diffStyleSheet(m_diffFontPt));
+        m_branchDiffView->setHtml(firstChunk);
+        m_branchDiffPendingBlocks = blocks;
+        appendBranchDiffBlocks(m_branchDiffRenderGen);
     } else {
-        setDiffHtml(m_branchDiffView,
-            html.isEmpty()
-                ? QStringLiteral("<p style='color:#8b949e'>%1</p>")
-                      .arg(emptyMessage.toHtmlEscaped())
-                : html);
+        setDiffHtml(m_branchDiffView, html);
     }
 
     // Changed-files list: a status-coloured row per file; click to scroll the
@@ -2810,19 +3043,59 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         fitFileListToWidestEntry(m_branchFileList);
     }
 
-    // Record each file header's position so the sticky bar can name the file
-    // currently scrolled into view. Walk the document's blocks (cheap and
-    // layout-free) rather than QTextDocument::find(), whose cursor positioning
-    // forces a full synchronous layout of the entire diff — that alone froze the
-    // UI for seconds on large branch diffs (issue #187).
+    // Map each file header to its document position for the sticky bar. When the
+    // diff is being streamed in (above), only the first blocks are in the document
+    // now; appendBranchDiffBlocks() rebuilds the full map once the last batch
+    // lands. Either way this covers whatever is currently shown.
+    rebuildBranchDiffSpans();
+}
+
+// Stream the next queued batch of per-file diff blocks into the branch diff view,
+// then reschedule until the queue drains (see renderBranchDiffPatch). A batch
+// from a superseded scope selection (m_branchDiffRenderGen bumped) bails.
+void MainWindow::appendBranchDiffBlocks(int gen)
+{
+    if (gen != m_branchDiffRenderGen || !m_branchDiffView)
+        return;
+    if (m_branchDiffPendingBlocks.isEmpty()) {
+        rebuildBranchDiffSpans(); // every file is in the document now
+        return;
+    }
+    QTimer::singleShot(0, this, [this, gen] {
+        if (gen != m_branchDiffRenderGen || !m_branchDiffView)
+            return;
+        constexpr int kAppendBatchChars = 400'000;
+        QString batch;
+        while (!m_branchDiffPendingBlocks.isEmpty() &&
+               (batch.isEmpty() || batch.size() < kAppendBatchChars))
+            batch += m_branchDiffPendingBlocks.takeFirst();
+        // Append at the document's end via a private cursor so the user's current
+        // scroll position is left untouched as the rest fills in below.
+        QTextCursor cur(m_branchDiffView->document());
+        cur.movePosition(QTextCursor::End);
+        cur.insertHtml(batch);
+        appendBranchDiffBlocks(gen);
+    });
+}
+
+// Rebuild the sticky-bar file-span map from whatever is currently in the branch
+// diff document. Walk the document's blocks (cheap and layout-free) rather than
+// QTextDocument::find(), whose cursor positioning forces a full synchronous
+// layout of the entire diff — that alone froze the UI for seconds (issue #187).
+void MainWindow::rebuildBranchDiffSpans()
+{
+    if (!m_branchDiffView)
+        return;
+    m_branchDiffFileSpans.clear();
     QTextDocument *spanDoc = m_branchDiffView->document();
     int fileIdx = 0;
     for (QTextBlock block = spanDoc->begin();
-         block.isValid() && fileIdx < files.size(); block = block.next()) {
-        const int at = block.text().indexOf(files.at(fileIdx).path);
+         block.isValid() && fileIdx < m_branchDiffFilePaths.size();
+         block = block.next()) {
+        const int at = block.text().indexOf(m_branchDiffFilePaths.at(fileIdx));
         if (at >= 0) {
             m_branchDiffFileSpans.append(
-                qMakePair(block.position() + at, files.at(fileIdx).path));
+                qMakePair(block.position() + at, m_branchDiffFilePaths.at(fileIdx)));
             ++fileIdx;
         }
     }
@@ -3323,7 +3596,8 @@ void MainWindow::pullBaseIntoAllBranches()
 }
 
 void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
-                                             const QString &provider)
+                                             const QString &provider,
+                                             const QString &modelArg)
 {
     if (m_aiFix) {
         flashMessage("An AI conflict fix is already running; wait for it to finish.",
@@ -3349,10 +3623,14 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     // local login); the two API providers POST each conflicted file to their endpoint.
     const bool claudeCode = provider == QLatin1String("claude-code");
     const bool claude = !claudeCode && agentIsClaudeProvider(provider);
-    const QString model =
-        claudeCode ? QString()
-                   : claude ? QStringLiteral("claude-haiku-4-5")
-                            : QStringLiteral("gpt-4.1-nano");
+    // The dropdown lets the user pick a model per provider (adhoc #60). For the
+    // API providers an empty choice falls back to the provider's low-cost
+    // default; Claude Code passes the alias straight through to the CLI as
+    // --model (empty = the CLI's own default).
+    QString model = modelArg.trimmed();
+    if (model.isEmpty() && !claudeCode)
+        model = claude ? QStringLiteral("claude-haiku-4-5")
+                       : QStringLiteral("gpt-4.1-nano");
     QString apiKey;
     if (!claudeCode) {
         apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
@@ -3467,7 +3745,7 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        claudeCode
+        model.isEmpty()
             ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
                   .arg(agentProviderName(provider), base, branch)
             : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")

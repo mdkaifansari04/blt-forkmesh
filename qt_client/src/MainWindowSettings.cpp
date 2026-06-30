@@ -76,6 +76,14 @@ QWidget *MainWindow::buildSettingsSection()
     form->setSpacing(8);
     form->addRow("Name", m_settingsNameEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
+    m_settingsEmailLabel = new QLabel("Email");
+    m_settingsEmailVerifiedBadge = new QLabel;
+    m_settingsEmailVerifiedBadge->setObjectName("emailVerifiedBadge");
+    m_settingsEmailVerifiedBadge->setAlignment(Qt::AlignCenter);
+    m_settingsEmailVerifiedBadge->setSizePolicy(QSizePolicy::Fixed,
+                                                QSizePolicy::Fixed);
+    form->addRow(m_settingsEmailLabel, m_settingsEmailVerifiedBadge);
+    refreshSettingsEmailVerifiedBadge();
     form->addRow("Avatar", avatarRow);
 
     auto *startupLabel = new QLabel("STARTUP");
@@ -1315,6 +1323,44 @@ QStringList MainWindow::headlessStatusLines() const
                  .arg(m_homeRoster.size());
     lines << QStringLiteral("Repos:     %1").arg(m_repositories.size());
     lines << QStringLiteral("Serving:   %1 live host(s)").arg(m_repoHosts.size());
+
+    // Aggregate the collaboration totals across every permanent repo this node
+    // holds, so an operator can see at a glance how much is on the node without
+    // opening the GUI: pull requests, discussions, branches and commits.
+    int pulls = 0, discussions = 0, branches = 0, commits = 0;
+    for (const RepositoryRecord &r : m_repositories) {
+        if (r.previewOnly)
+            continue;
+        pulls += PullStore(r.localPath, r.mirrorPath, &m_profileIdentity, m_userName)
+                     .loadAll()
+                     .size();
+        discussions +=
+            DiscussionStore(r.localPath, r.mirrorPath, &m_profileIdentity, m_userName)
+                .loadAll()
+                .size();
+        const QString dir =
+            (!r.localPath.isEmpty() && QDir(r.localPath).exists())
+                ? r.localPath
+                : (!r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists()
+                       ? r.mirrorPath
+                       : QString());
+        if (dir.isEmpty())
+            continue;
+        QByteArray out;
+        if (runGitCapture(dir, {"for-each-ref", "--format=%(refname)", "refs/heads"},
+                          &out, nullptr))
+            branches += QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts).size();
+        out.clear();
+        if (runGitCapture(dir, {"rev-list", "--count", "HEAD"}, &out, nullptr))
+            commits += QString::fromUtf8(out).trimmed().toInt();
+    }
+    lines << QString::fromUtf8("Content:   %1 pulls \xC2\xB7 %2 discussions \xC2\xB7 "
+                              "%3 branches \xC2\xB7 %4 commits")
+                 .arg(pulls)
+                 .arg(discussions)
+                 .arg(branches)
+                 .arg(commits);
+
     lines << QStringLiteral("Load:      %1").arg(headlessResourceLine());
     return lines;
 }
@@ -2101,6 +2147,16 @@ void MainWindow::rebuildLogFilterButtons()
     }
     m_logFilterRow->addStretch();
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testResetNetworkLog()
+{
+    m_networkLog.clear();
+    m_networkLogDiskLines = 0;
+    QFile::remove(networkLogPath());
+    rebuildNetworkLogView();
+}
+#endif
 
 void MainWindow::rebuildNetworkLogView()
 {

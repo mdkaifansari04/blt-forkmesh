@@ -112,7 +112,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     setObjectName("messageRow");
 
     auto *outer = new QHBoxLayout(this);
-    outer->setContentsMargins(12, 5, 12, 5);
+    // A little more breathing room so messages don't hug the panel edges; the
+    // enclosing chat list has no margins of its own.
+    outer->setContentsMargins(18, 7, 18, 7);
     outer->setSpacing(10);
 
     m_avatarLabel = new QLabel;
@@ -127,8 +129,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(3);
 
-    const QString time =
-        QDateTime::fromMSecsSinceEpoch(message.timestampMs).toString("hh:mm");
+    const QDateTime sent = QDateTime::fromMSecsSinceEpoch(message.timestampMs);
+    const QString time = sent.toString("hh:mm");
     auto *header = new QLabel(
         "<span style='color:" + nameColor + "; font-weight:700'>" +
         message.senderName.toHtmlEscaped() + "</span>"
@@ -136,6 +138,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         (message.edited ? " (edited)" : "") + "</span>");
     header->setTextFormat(Qt::RichText);
     header->setCursor(Qt::PointingHandCursor);
+    // Hovering the header (where the abbreviated time sits next to the name)
+    // reveals the full date and time the message was sent.
+    header->setToolTip(sent.toString("dddd, MMMM d, yyyy  h:mm:ss AP"));
     header->installEventFilter(this);
     m_senderLabel = header;
     auto *headerRow = new QHBoxLayout;

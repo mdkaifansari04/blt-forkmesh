@@ -39,20 +39,32 @@ def _load(*names, extra_globals=None):
 )
 
 
-def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="", size=0):
+def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
+         size=0, commit="", branch="", issue_count=None, platform="", version="",
+         node_id=""):
+    data = {
+        "owner": owner,
+        "name": name,
+        "visibility": visibility,
+        "hostedSince": hosted,
+        "lastSync": synced,
+        "rootCommit": root,
+        "sizeBytes": size,
+        "source": "local-node",
+    }
+    # Node facts the publishing node mirrors into its catalog record (adhoc #56);
+    # only set when provided so legacy records without them are also exercised.
+    for field, value in (("commit", commit), ("branch", branch),
+                         ("platform", platform), ("version", version),
+                         ("nodeId", node_id)):
+        if value:
+            data[field] = value
+    if issue_count is not None:
+        data["issueCount"] = issue_count
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
-        "data": {
-            "owner": owner,
-            "name": name,
-            "visibility": visibility,
-            "hostedSince": hosted,
-            "lastSync": synced,
-            "rootCommit": root,
-            "sizeBytes": size,
-            "source": "local-node",
-        },
+        "data": data,
     }
 
 
@@ -108,6 +120,36 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["hostedSince"] == 80_000
     assert payload["mirrors"][1]["behind"] is True
     assert payload["mirrors"][1]["cloneAvailable"] is True
+
+
+def test_payload_carries_node_facts_for_offline_mirrors():
+    # A node mirrors its latest commit / issue count / platform / version / id into
+    # its catalog record, so the Mirror nodes view can show those columns even while
+    # the node is offline (adhoc #56). A legacy record without them degrades to the
+    # unknown sentinels rather than erroring.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10,
+             commit="686d7ebd1ef0", branch="main", issue_count=302,
+             platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz"),
+        _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    rich = payload["mirrors"][0]
+    assert rich["commit"] == "686d7ebd1ef0"
+    assert rich["branch"] == "main"
+    assert rich["issueCount"] == 302
+    assert rich["platform"] == "linux"
+    assert rich["version"] == "0.5.22"
+    assert rich["id"] == "7ZMh_2s_IOTPxYz"
+    # Legacy record (no node facts): empty strings and the -1 "unknown" issue count.
+    legacy = payload["mirrors"][1]
+    assert legacy["commit"] == ""
+    assert legacy["platform"] == ""
+    assert legacy["issueCount"] == -1
+    assert legacy["id"] == ""
 
 
 def test_payload_groups_mirror_with_missing_root_commit_by_name():
