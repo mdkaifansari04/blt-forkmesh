@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class ForkMeshIdentity;
 
 // One entry in an issue's append-only, signed history. Different event types use
@@ -103,7 +105,11 @@ public:
     // working tree). Otherwise issues are read-only here (submit via the relay).
     bool canWrite() const;
 
-    QList<Issue> loadAll(QString *error = nullptr) const;
+    // `tick`, if set, is invoked once per issue as the (potentially long, on a
+    // big repo) file-read loop runs, so a caller in an interactive load can pump
+    // the GUI between reads and avoid tripping the stall watchdog.
+    QList<Issue> loadAll(QString *error = nullptr,
+                         const std::function<void()> &tick = {}) const;
     QList<IssueLabel> loadLabels() const;
     QList<IssueMilestone> loadMilestones() const;
 
