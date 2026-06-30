@@ -783,6 +783,39 @@ int main(int argc, char *argv[])
         stopChildProcesses(seeded);
     }
 
+    // Issue #203: quick-adding an issue without assigning it to an agent should
+    // land the user on that new issue — its detail pane opens automatically,
+    // just as the assign-an-agent path jumps straight to the new session.
+    {
+        QTemporaryDir quickAddRepo;
+        if (initGitRepo(quickAddRepo)) {
+            MainWindow qaWindow;
+            qaWindow.show();
+            QApplication::processEvents();
+            const int idx = qaWindow.testAddLocalRepository(
+                "me", "qarepo", quickAddRepo.path());
+            qaWindow.testOpenRepository(idx);
+            qaWindow.testShowRepoIssuesTab();
+            QApplication::processEvents();
+
+            // With no issue open yet the detail pane is collapsed; quick-adding
+            // one (no agent) must reveal it on the freshly-created issue.
+            const bool hiddenBefore = !qaWindow.testIssueDetailVisible();
+            const int number = qaWindow.testQuickAddIssueNoAgent(
+                QStringLiteral("Land me on the detail pane"));
+            QApplication::processEvents();
+
+            check(hiddenBefore && number > 0 && qaWindow.testIssueDetailVisible(),
+                  QString("quick-add without an agent opens the new issue's "
+                          "detail pane (hiddenBefore=%1 number=%2 visible=%3) "
+                          "(#203)")
+                      .arg(hiddenBefore)
+                      .arg(number)
+                      .arg(qaWindow.testIssueDetailVisible()));
+            stopChildProcesses(qaWindow);
+        }
+    }
+
     // Issue #287: the headless "mirrors" view leads with this node's own CPU and
     // memory so an operator watching a durable daemon can see its load, and the
     // "status" view carries the same Load line.
