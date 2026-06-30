@@ -1,6 +1,5 @@
 #include "ScreenCaptureOverlay.h"
 
-#include <QByteArray>
 #include <QCursor>
 #include <QEventLoop>
 #include <QFile>
@@ -27,40 +26,8 @@ namespace {
 // is forbidden (it comes back all-black) and we must go through the XDG portal.
 bool runningOnWayland()
 {
-    if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"),
-                                                   Qt::CaseInsensitive))
-        return true;
-    // Under XWayland we present to Qt as an ordinary X11 client (platform "xcb"),
-    // yet the compositor still blocks direct screen grabs — they come back black.
-    // The session type is the reliable tell, so route those through the portal too.
-    return qgetenv("XDG_SESSION_TYPE").compare("wayland", Qt::CaseInsensitive) == 0;
-}
-
-// A direct screen grab that comes back as a uniform black frame almost always
-// means the compositor refused it (a Wayland/XWayland session we slipped into as
-// an X client, or an X compositor that hadn't repainted the desktop yet) rather
-// than a desktop that is genuinely all black — a real desktop always has *some*
-// non-black pixel (a panel, window chrome, the cursor). Sample a coarse grid and
-// report a failed grab only when every probe is exactly black, so a legitimately
-// dark region is never mistaken for one.
-bool looksLikeFailedGrab(const QImage &img)
-{
-    if (img.isNull())
-        return true;
-    const int cols = qMin(img.width(), 48);
-    const int rows = qMin(img.height(), 48);
-    if (cols <= 0 || rows <= 0)
-        return true;
-    for (int iy = 0; iy < rows; ++iy) {
-        const int y = (iy * (img.height() - 1)) / qMax(1, rows - 1);
-        for (int ix = 0; ix < cols; ++ix) {
-            const int x = (ix * (img.width() - 1)) / qMax(1, cols - 1);
-            const QRgb px = img.pixel(x, y);
-            if (qRed(px) != 0 || qGreen(px) != 0 || qBlue(px) != 0)
-                return false;
-        }
-    }
-    return true;
+    return QGuiApplication::platformName().startsWith(QLatin1String("wayland"),
+                                                      Qt::CaseInsensitive);
 }
 
 // A deliberate crosshair "snip" reticle so the pointer clearly reads as a
@@ -247,22 +214,8 @@ void ScreenCaptureOverlay::beginCapture(const QRect &sel)
         QTimer::singleShot(150, this, [this] { grabViaPortal(m_pendingSel); });
         return;
     }
-
-    // Even off Wayland the direct grab can hand back a uniform black frame (a
-    // compositor that refused it, or one we couldn't pin as Wayland). Rather than
-    // save a black screenshot, fall back to the portal, which is allowed to read
-    // the real desktop. Checking the *whole* composite (not just the selection)
-    // keeps a legitimately dark region from misfiring the fallback.
-    const QImage desktop = compositeScreens();
-    if (looksLikeFailedGrab(desktop)) {
-        m_pendingSel = sel;
-        QTimer::singleShot(150, this, [this] { grabViaPortal(m_pendingSel); });
-        return;
-    }
-    finish(cropDesktop(desktop, sel));
-#else
-    finish(grabViaScreens(sel));
 #endif
+    finish(grabViaScreens(sel));
 }
 
 QImage ScreenCaptureOverlay::cropDesktop(const QImage &full, const QRect &sel) const
@@ -282,14 +235,14 @@ QImage ScreenCaptureOverlay::cropDesktop(const QImage &full, const QRect &sel) c
     return full.copy(dev);
 }
 
-QImage ScreenCaptureOverlay::compositeScreens()
+QImage ScreenCaptureOverlay::grabViaScreens(const QRect &sel)
 {
     // Let the compositor repaint the now-hidden overlay away before grabbing.
     QGuiApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
 
     // Composite each screen's grab into one snapshot of the virtual desktop at
     // the primary ratio (drawPixmap honours each grab's own ratio, so mixed-DPI
-    // setups still line up in logical coords).
+    // setups still line up in logical coords), then crop the selection.
     QPixmap shot(m_virtualGeom.size() * m_dpr);
     shot.setDevicePixelRatio(m_dpr);
     shot.fill(Qt::black);
@@ -303,12 +256,7 @@ QImage ScreenCaptureOverlay::compositeScreens()
                                grab);
         }
     }
-    return shot.toImage();
-}
-
-QImage ScreenCaptureOverlay::grabViaScreens(const QRect &sel)
-{
-    return cropDesktop(compositeScreens(), sel);
+    return cropDesktop(shot.toImage(), sel);
 }
 
 void ScreenCaptureOverlay::grabViaPortal(const QRect &sel)

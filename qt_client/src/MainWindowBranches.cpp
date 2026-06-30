@@ -1793,39 +1793,22 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(m_branchFixButton, "rocket", 14);
     m_branchFixButton->hide();
     auto *fixMenu = new QMenu(m_branchFixButton);
-    // Each provider is a submenu of model choices (adhoc #60); picking a model
-    // passes it through to fixBranchConflictsWithAgent, which uses it instead of
-    // the provider's hardcoded default. The first entry is that default.
-    auto addFixProvider =
-        [this, fixMenu](const QString &title, const QString &provider,
-                        const QList<QPair<QString, QString>> &models) -> QAction * {
-        auto *sub = new QMenu(title, fixMenu);
-        for (const QPair<QString, QString> &entry : models) {
-            const QString model = entry.second;
-            QAction *act = sub->addAction(entry.first);
-            connect(act, &QAction::triggered, this, [this, provider, model] {
-                if (!m_branchDiffBranch.isEmpty())
-                    fixBranchConflictsWithAgent(m_branchDiffBranch, provider, model);
-            });
-        }
-        return fixMenu->addMenu(sub);
-    };
-    QAction *fixClaude = addFixProvider(
-        QStringLiteral("Fix with Claude"), QStringLiteral("claude"),
-        {{QStringLiteral("Claude Haiku 4.5"), QStringLiteral("claude-haiku-4-5")},
-         {QStringLiteral("Claude Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6")},
-         {QStringLiteral("Claude Opus 4.8"), QStringLiteral("claude-opus-4-8")}});
-    QAction *fixOpenAi = addFixProvider(
-        QStringLiteral("Fix with OpenAI"), QStringLiteral("openai"),
-        {{QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano")},
-         {QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini")},
-         {QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1")}});
-    QAction *fixClaudeCode = addFixProvider(
-        QStringLiteral("Fix with Claude Code"), QStringLiteral("claude-code"),
-        {{QStringLiteral("Default model"), QString()},
-         {QStringLiteral("Opus"), QStringLiteral("opus")},
-         {QStringLiteral("Sonnet"), QStringLiteral("sonnet")},
-         {QStringLiteral("Haiku"), QStringLiteral("haiku")}});
+    QAction *fixClaude = fixMenu->addAction(QStringLiteral("Fix with Claude"));
+    QAction *fixOpenAi = fixMenu->addAction(QStringLiteral("Fix with OpenAI"));
+    QAction *fixClaudeCode = fixMenu->addAction(QStringLiteral("Fix with Claude Code"));
+    connect(fixClaude, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("claude"));
+    });
+    connect(fixOpenAi, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch, QStringLiteral("openai"));
+    });
+    connect(fixClaudeCode, &QAction::triggered, this, [this] {
+        if (!m_branchDiffBranch.isEmpty())
+            fixBranchConflictsWithAgent(m_branchDiffBranch,
+                                        QStringLiteral("claude-code"));
+    });
     // Bold the user's configured default agent (Settings -> Agents) so the dropdown
     // makes the default choice obvious; refresh on open in case it changed.
     auto highlightDefaultFix = [fixMenu, fixClaude, fixOpenAi, fixClaudeCode] {
@@ -1947,43 +1930,11 @@ void MainWindow::loadBranchesPanel()
     const QString selected = m_repoBranch.isEmpty() ? base : m_repoBranch;
     const bool writable = repoHasWorkingTree();
 
-    // Remote-tracking branches (refs/remotes/*): the branches other nodes / the
-    // relay have published, which `git branch` (local heads only, via
-    // repoBranches()) leaves out. The list should show every branch in the repo,
-    // including these refs, under their full ref-qualified name (adhoc #55).
-    // Rendered read-only after the local branches below. Skip each remote's
-    // symbolic */HEAD pointer and the bare remote name (e.g. "origin"), which
-    // aren't branches; a remote-tracking ref is always "<remote>/<branch>".
-    QStringList remoteBranches;
-    if (!dir.isEmpty()) {
-        QByteArray rout;
-        if (runGitCapture(dir,
-                          {"for-each-ref", "--sort=-committerdate",
-                           "--format=%(refname:short)", "refs/remotes/"},
-                          &rout, nullptr)) {
-            for (const QString &line :
-                 QString::fromUtf8(rout).split('\n', Qt::SkipEmptyParts)) {
-                const QString ref = line.trimmed();
-                if (ref.isEmpty() || !ref.contains(u'/') ||
-                    ref.endsWith(QLatin1String("/HEAD")))
-                    continue;
-                if (!remoteBranches.contains(ref))
-                    remoteBranches.append(ref);
-            }
-        }
-    }
-
-    if (m_branchesSummary) {
-        const QString def = base.isEmpty() ? QStringLiteral("none") : base;
-        const QString total =
-            remoteBranches.isEmpty()
-                ? QString::number(branches.size())
-                : QString::fromUtf8("%1 local \xC2\xB7 %2 remote")
-                      .arg(branches.size())
-                      .arg(remoteBranches.size());
+    if (m_branchesSummary)
         m_branchesSummary->setText(
-            QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 default: %2").arg(total, def));
-    }
+            QString::fromUtf8("\xC2\xB7 %1 total \xC2\xB7 default: %2")
+                .arg(branches.size())
+                .arg(base.isEmpty() ? "none" : base));
 
     // Branch commit timestamps in one batch: spawning a `git log -1` per branch
     // (below) blocked the UI thread for ~2s on repos with many branches because
@@ -1995,42 +1946,13 @@ void MainWindow::loadBranchesPanel()
         if (runGitCapture(dir,
                           {"for-each-ref",
                            "--format=%(refname:short) %(committerdate:unix)",
-                           "refs/heads/", "refs/remotes/"},
+                           "refs/heads/"},
                           &times, nullptr)) {
             for (const QString &line :
                  QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
                 const qsizetype sp = line.lastIndexOf(u' ');
                 if (sp > 0)
                     branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
-            }
-        }
-    }
-
-    // Ahead/behind of each remote-tracking branch vs the default branch, so those
-    // rows can show how far they've diverged from main just like the local ones do
-    // (adhoc #61). One batched `for-each-ref` (git 2.41+ '%(ahead-behind:<base>)')
-    // rather than a rev-list per branch keeps it cheap even when a repo carries
-    // hundreds of remote refs. The atom emits "<ahead> <behind>"; the hash stays
-    // empty (rows fall back to a plain "Remote" label) when the field or base is
-    // unavailable, e.g. on older git.
-    QHash<QString, QPair<int, int>> remoteAheadBehind; // ref -> (ahead, behind)
-    if (!dir.isEmpty() && !base.isEmpty() && !remoteBranches.isEmpty()) {
-        QByteArray ab;
-        if (runGitCapture(
-                dir,
-                {"for-each-ref",
-                 QStringLiteral("--format=%(refname:short) %(ahead-behind:%1)").arg(base),
-                 "refs/remotes/"},
-                &ab, nullptr)) {
-            for (const QString &line :
-                 QString::fromUtf8(ab).split('\n', Qt::SkipEmptyParts)) {
-                const QStringList parts = line.split(
-                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-                // "<ref> <ahead> <behind>"; ref names never contain whitespace.
-                if (parts.size() >= 3)
-                    remoteAheadBehind.insert(
-                        parts.first(),
-                        qMakePair(parts.at(1).toInt(), parts.at(2).toInt()));
             }
         }
     }
@@ -2254,56 +2176,6 @@ void MainWindow::loadBranchesPanel()
         // column edge (the action row already carries an 8px right margin).
         m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
 
-    // Remote-tracking branches, listed read-only under their full ref-qualified
-    // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
-    // in the repo, not just the local heads (adhoc #55). No row actions here (these
-    // aren't checked out locally), but the Status column shows their ahead/behind
-    // vs the default branch from the batched probe above so the divergence info
-    // matches the local rows (adhoc #61). Clicking one still renders its diff vs
-    // the default branch.
-    for (const QString &branch : remoteBranches) {
-        const int row = m_branchesTable->rowCount();
-        m_branchesTable->insertRow(row);
-
-        auto *name = new QTableWidgetItem(branch);
-        name->setIcon(themedOcticon("repo-forked", QColor("#8b949e"), 14));
-        name->setForeground(QColor("#8b949e"));
-        name->setToolTip(QStringLiteral("Remote-tracking branch %1").arg(branch));
-        m_branchesTable->setItem(row, 0, name);
-
-        // Ahead/behind vs the default branch when known, else a plain "Remote".
-        QString rstatus = QStringLiteral("Remote");
-        QString rtip = QStringLiteral("Remote-tracking branch");
-        const auto abIt = remoteAheadBehind.constFind(branch);
-        if (abIt != remoteAheadBehind.constEnd()) {
-            const int rahead = abIt->first;
-            const int rbehind = abIt->second;
-            if (rahead == 0 && rbehind == 0) {
-                rstatus = QStringLiteral("Up to date");
-                rtip = QStringLiteral("Up to date with %1").arg(base);
-            } else {
-                rstatus = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
-                              .arg(rbehind)
-                              .arg(rahead);
-                rtip = QStringLiteral("%1 commit(s) behind and %2 ahead of %3")
-                           .arg(rbehind)
-                           .arg(rahead)
-                           .arg(base);
-            }
-        }
-        auto *statusItem = new QTableWidgetItem(rstatus);
-        statusItem->setForeground(QColor("#8b949e"));
-        statusItem->setToolTip(rtip);
-        m_branchesTable->setItem(row, 1, statusItem);
-
-        m_branchesTable->setItem(
-            row, 2,
-            new QTableWidgetItem(
-                formatShortRelativeTime(branchTimes.value(branch, 0))));
-        m_branchesTable->setItem(row, 3, new QTableWidgetItem);
-        m_branchesTable->setItem(row, 4, new QTableWidgetItem);
-    }
-
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
     if (m_branchPullAllButton) {
@@ -2336,7 +2208,7 @@ void MainWindow::loadBranchesPanel()
                             .arg(base));
     }
 
-    if (m_branchesTable->rowCount() == 0) {
+    if (branches.isEmpty()) {
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
@@ -2349,8 +2221,7 @@ void MainWindow::loadBranchesPanel()
     // Re-select the row the user was viewing (falling back to the checked-out
     // branch) so rebuilding the table doesn't leave the diff pane blank.
     QString target = previouslyViewed;
-    if (target.isEmpty() ||
-        (!branches.contains(target) && !remoteBranches.contains(target)))
+    if (target.isEmpty() || !branches.contains(target))
         target = selected;
     for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
         QTableWidgetItem *it = m_branchesTable->item(r, 0);
@@ -3539,8 +3410,7 @@ void MainWindow::pullBaseIntoAllBranches()
 }
 
 void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
-                                             const QString &provider,
-                                             const QString &modelArg)
+                                             const QString &provider)
 {
     if (m_aiFix) {
         flashMessage("An AI conflict fix is already running; wait for it to finish.",
@@ -3566,14 +3436,10 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     // local login); the two API providers POST each conflicted file to their endpoint.
     const bool claudeCode = provider == QLatin1String("claude-code");
     const bool claude = !claudeCode && agentIsClaudeProvider(provider);
-    // The dropdown lets the user pick a model per provider (adhoc #60). For the
-    // API providers an empty choice falls back to the provider's low-cost
-    // default; Claude Code passes the alias straight through to the CLI as
-    // --model (empty = the CLI's own default).
-    QString model = modelArg.trimmed();
-    if (model.isEmpty() && !claudeCode)
-        model = claude ? QStringLiteral("claude-haiku-4-5")
-                       : QStringLiteral("gpt-4.1-nano");
+    const QString model =
+        claudeCode ? QString()
+                   : claude ? QStringLiteral("claude-haiku-4-5")
+                            : QStringLiteral("gpt-4.1-nano");
     QString apiKey;
     if (!claudeCode) {
         apiKey = (claude ? QSettings().value(kClaudeApiKeySetting)
@@ -3688,7 +3554,7 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
-        model.isEmpty()
+        claudeCode
             ? QStringLiteral("==> %1 resolving merge conflicts: %2 into %3.\n")
                   .arg(agentProviderName(provider), base, branch)
             : QStringLiteral("==> %1 (%2) resolving merge conflicts: %3 into %4.\n")
