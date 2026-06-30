@@ -458,6 +458,17 @@ QWidget *MainWindow::buildNetworkLogDock()
         "background:#0d1117;}"
         "QProgressBar#voiceLevelMeter::chunk{background:#3fb950;border-radius:2px;}");
     m_voiceLevelMeter->setVisible(false);
+    // Auto-send toggle beside the mic (adhoc #45): when checked, the prompt is sent
+    // (same as Enter/Send) the moment a voice dictation finishes its final
+    // transcription, so you can dictate-and-go hands-free. Persisted across launches.
+    m_quickAddVoiceAutoSubmit = new QCheckBox("Auto-send");
+    m_quickAddVoiceAutoSubmit->setToolTip(
+        "Automatically send the prompt when voice dictation finishes transcribing.");
+    m_quickAddVoiceAutoSubmit->setChecked(
+        QSettings().value(kVoiceAutoSubmitSetting, false).toBool());
+    connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kVoiceAutoSubmitSetting, on);
+    });
     // "No issue" on by default (issue #79): the common quick-add path is firing a
     // coding agent straight from the typed prompt, not filing an issue.
     m_quickAddNoIssue->setChecked(true);
@@ -568,6 +579,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddCharCount);
     quickAddRow->addWidget(m_quickAddMicButton);
     quickAddRow->addWidget(m_voiceLevelMeter);
+    quickAddRow->addWidget(m_quickAddVoiceAutoSubmit);
     quickAddRow->addWidget(m_quickAddImageButton);
     quickAddRow->addWidget(m_quickAddAttachStrip);
     quickAddRow->addWidget(quickAddSendButton);
@@ -643,6 +655,10 @@ QWidget *MainWindow::buildNetworkLogDock()
 void MainWindow::updateVoiceInputButton()
 {
     const bool ready = voiceInputReady();
+    // The Auto-send toggle only makes sense alongside the mic, so it follows the
+    // engine's installed state just like the mic button does.
+    if (m_quickAddVoiceAutoSubmit)
+        m_quickAddVoiceAutoSubmit->setVisible(ready);
     if (m_quickAddMicButton) {
         m_quickAddMicButton->setVisible(ready);
         // Leave the mic currently recording on its red broadcast glyph.
@@ -993,6 +1009,10 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 }
 
                 hideVoiceTranscribeSpinner();
+                // Capture the dictation target before applyVoiceTranscript releases
+                // the live span; the Auto-send check below needs to know whether the
+                // footer prompt (not a comment composer) was the one being dictated.
+                const bool wasFooterPrompt = m_voiceTargetEdit == m_issueQuickAdd;
                 if (m_voiceTargetEdit)
                     m_voiceTargetEdit->setPlaceholderText(m_voiceIdlePlaceholder);
                 QFile::remove(wav);
@@ -1003,6 +1023,13 @@ void MainWindow::startVoiceTranscription(bool finalPass)
                 else if (text.isEmpty())
                     logSystem("No speech detected \xE2\x80\x94 check that your "
                               "microphone is capturing audio.");
+                // Auto-send (adhoc #45): once the footer prompt has its final
+                // transcript, submit it just like pressing Enter/Send. Only fires when
+                // the toggle is on and the dictation actually produced words, so a
+                // silent capture never sends an empty (or stale) prompt.
+                else if (wasFooterPrompt && m_quickAddVoiceAutoSubmit &&
+                         m_quickAddVoiceAutoSubmit->isChecked())
+                    quickAddIssue();
             });
     // Both engines write the transcript to "<base>.txt"; reading the file is more
     // robust than parsing stdout. whisper.cpp produces it via -otxt -of <base>;

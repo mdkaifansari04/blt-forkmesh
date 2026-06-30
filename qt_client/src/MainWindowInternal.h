@@ -2150,6 +2150,9 @@ const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel")
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
+// soon as a voice dictation finishes transcribing, without pressing Enter/Send.
+const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
