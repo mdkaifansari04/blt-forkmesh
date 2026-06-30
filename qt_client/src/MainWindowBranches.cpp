@@ -3222,18 +3222,7 @@ void MainWindow::pullBaseIntoAllBranches()
         return;
     }
 
-    // Confirm before touching every behind branch (adhoc #45): this bulk merge
-    // rewrites refs across the whole repo, so make the blast radius explicit and
-    // give the user a chance to back out, mirroring the per-branch "Pull main".
-    if (QMessageBox::question(
-            this, QStringLiteral("Pull %1 into all").arg(base),
-            QStringLiteral("Merge %1 into %2 branch(es) that are behind it?")
-                .arg(base)
-                .arg(behindCount),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
-        return;
-
-    // Acknowledge the confirmed click with a spinner on the button. The per-branch
+    // Acknowledge the click with a spinner on the button. The per-branch
     // git work runs synchronously, so a GitKeepAlive scope pumps the event loop
     // across it to keep the spinner turning; the scope guard restores the button on
     // every exit path below.
