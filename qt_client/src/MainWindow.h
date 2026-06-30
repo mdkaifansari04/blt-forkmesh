@@ -2252,6 +2252,13 @@ private:
     bool m_voiceRecording = false;
     int m_voiceInsertPos = -1;
     int m_voiceInsertLen = 0;
+    // Smoothness guards for the live preview: m_voiceLastTranscribeSize is the WAV
+    // size at the last transcription pass so a tick is skipped when no new audio was
+    // captured (no point reloading whisper to redo the same clip); m_voiceLastPreview
+    // is the text the box currently shows so an unchanged result doesn't re-insert
+    // and churn the cursor.
+    qint64 m_voiceLastTranscribeSize = 0;
+    QString m_voiceLastPreview;
     // Live input-level meter shown beside the mic while recording. m_voiceLevelTimer
     // samples the fresh tail of the WAV every ~80 ms; m_voiceLevelPos tracks the byte
     // offset already metered so each tick only reads the newly-captured samples.
