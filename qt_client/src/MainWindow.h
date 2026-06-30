@@ -231,18 +231,18 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
-    // Verifies makeColumnsResizable(): once rows arrive, ResizeToContents columns
-    // flip to draggable Interactive (keeping their fitted widths) while Stretch
-    // and Fixed columns are left untouched.
+    // Verifies makeColumnsResizable(): once rows arrive, every auto-sized column
+    // (ResizeToContents and the Stretch flex column) flips to draggable
+    // Interactive keeping its current width, while Fixed columns are left alone.
     Q_INVOKABLE bool testColumnsBecomeResizable();
-    // Verifies installMarginResize(): dragging a draggable column's divider
-    // trades width with its immediate neighbour (like moving a margin) instead
-    // of letting a far-off Stretch column absorb the change.
-    Q_INVOKABLE bool testMarginResize();
-    // Verifies installMarginResize() trades with the *visual* neighbour after a
-    // column has been dragged into a new order, so the divider keeps tracking
-    // the cursor for movable-header tables like the agents list.
-    Q_INVOKABLE bool testMarginResizeAfterMove();
+    // Verifies the spreadsheet drag rule: dragging a column's divider resizes only
+    // that column; the columns to its right keep their widths and simply shift,
+    // rather than a neighbour or far-off Stretch column donating the difference.
+    Q_INVOKABLE bool testSpreadsheetResize();
+    // Verifies the spreadsheet rule still holds after a column is dragged into a
+    // new order: resizing one column leaves every other column's width untouched
+    // for movable-header tables like the agents list.
+    Q_INVOKABLE bool testSpreadsheetResizeAfterMove();
     // Verifies the agents list lets the user drag its column headers into a new
     // order (in addition to resizing them).
     Q_INVOKABLE bool testAgentColumnsMovable() const;
