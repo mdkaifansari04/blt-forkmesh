@@ -1188,9 +1188,6 @@ private:
     // it (sync the served mirror) and refresh the Releases panel if it's open.
     void onReleaseMetadataLanded(int runId);
     void refreshActionsTable();
-    // Show/hide the top-of-tab failure alert for the most recent failed run in the
-    // current repo (no-op when nothing has failed or the failure was dismissed).
-    void refreshActionFailureBanner();
     void showLatestVisibleActionRun();
     void showRun(int runId);
     void approveSelectedRun();
@@ -2971,13 +2968,6 @@ private:
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
-    // Failure alert pinned to the top of the Actions tab: surfaces the most recent
-    // failed run for this repo so a broken action (e.g. a Cloudflare deploy) can't
-    // pass unnoticed. Clickable to jump to the run; dismissable per failed run id.
-    QWidget *m_actionFailureBanner = nullptr;
-    QLabel *m_actionFailureLabel = nullptr;
-    int m_actionFailureBannerRunId = -1;        // run currently shown in the banner
-    int m_actionFailureDismissedRunId = -1;     // last run the user dismissed
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
     QLabel *m_actionApprovalBanner = nullptr;
