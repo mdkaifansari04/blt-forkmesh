@@ -3204,6 +3204,9 @@ private:
     QTimer *m_issueAiTypingTimer = nullptr;
     MarkdownEditor *m_issueComposer = nullptr;
     QPushButton *m_issueNewButton = nullptr;
+    // Twin of m_issueNewButton pinned to the top of the issue-list pane so "New
+    // issue" is reachable without first selecting an issue (adhoc #11).
+    QPushButton *m_issueListNewButton = nullptr;
     QPushButton *m_issueSyncButton = nullptr;
     QPushButton *m_issuePrioritizeButton = nullptr;
     // Agent picker sitting next to "Prioritize from README" so the run can use
