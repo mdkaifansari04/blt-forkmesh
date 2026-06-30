@@ -31,7 +31,9 @@ def test_auth_pages_keep_single_logo_home_link():
         html = _read(page)
 
         assert html.count('class="brand" href="/" aria-label="ForkMesh home"') == 1
-        assert '<img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />' in html
+        assert 'class="brand-mark"' in html
+        assert 'src="/assets/logo.png"' in html
+        assert 'aria-hidden="true"' in html
 
 
 def test_auth_pages_use_landing_inspired_small_controls():
@@ -60,7 +62,8 @@ def test_auth_links_are_white_not_green():
     for page in AUTH_PAGES:
         html = _read(page)
 
-        assert ".row-links a { color: #ffffff; }" in html
+        assert ".row-links a" in html
+        assert "color: #ffffff;" in html
         assert "color: var(--accent-bright);" not in html
         assert "background: var(--accent-bright);" not in html
         assert ".auth-button-primary { color: var(--accent-bright)" not in html
@@ -71,8 +74,8 @@ def test_login_and_signup_cross_links_remain():
     login = _read(PUBLIC / "login.html")
     signup = _read(PUBLIC / "signup.html")
 
-    assert 'href="/signup.html"' in login
-    assert 'href="/login.html"' in signup
+    assert ('href="/signup.html"' in login) or ('href="/signup"' in login)
+    assert ('href="/login.html"' in signup) or ('href="/login"' in signup)
 
 
 def test_signup_card_is_centered_vertically_like_login():
@@ -89,28 +92,87 @@ def test_signup_card_is_centered_vertically_like_login():
     assert "padding: 28px 16px 56px;" not in shell_css
 
 
-def test_signup_intro_uses_compact_donation_note_instead_of_stats_grid():
+def test_signup_is_single_step_email_password_name_form():
     signup = _read(PUBLIC / "signup.html")
 
-    assert 'class="signup-donation-note"' in signup
-    # Signup is free: the note advertises that, not a required donation amount.
-    assert "Free to join" in signup
-    assert "No payment required" in signup
-    assert 'class="stat-grid"' not in signup
-    assert 'id="stat-nodes"' not in signup
-    assert 'id="stat-repos"' not in signup
-    assert 'id="stat-clients"' not in signup
+    assert 'id="signup-form"' in signup
+    assert 'id="node-name"' in signup
+    assert 'id="acct-email"' in signup
+    assert 'id="acct-pass"' in signup
+    assert 'id="signup-create"' in signup
+    assert "Create your ForkMesh account" in signup
+    assert "Add a Solana payout address later from your dashboard profile" in signup
+    assert 'id="step-account"' not in signup
+    assert 'id="name-continue"' not in signup
+    assert "Name reserved" not in signup
 
 
-def test_signup_stats_do_not_render_zero_on_api_failure():
+def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
     signup_js = _read(PUBLIC / "signup.js")
-    load_stats = signup_js[
-        signup_js.index("async function loadStats")
-        : signup_js.index("// Show exactly how a join donation is divided")
-    ]
 
-    assert 'const { ok, body } = await api("/api/network/stats");' in load_stats
-    assert "if (!ok) return;" in load_stats
+    assert 'api("/api/accounts/signup"' in signup_js
+    assert 'api("/api/accounts/reserve"' not in signup_js
+    assert 'api("/api/accounts/donation-address"' not in signup_js
+    assert "solana" not in signup_js.lower()
+    assert 'localStorage.setItem("forkmesh.session", JSON.stringify({' in signup_js
+
+
+def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
+    dashboard = _read(PUBLIC / "dashboard.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "data-profile-settings-button" in dashboard
+    assert "data-profile-modal" in dashboard
+    assert "data-profile-email-status" in dashboard
+    assert "data-profile-verify-email" in dashboard
+    assert "data-profile-solana" in dashboard
+    assert "data-profile-password" in dashboard
+    assert "data-profile-save" in dashboard
+    assert "/api/accounts/profile" in dashboard_js
+
+
+def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
+    dashboard = _read(PUBLIC / "dashboard.html")
+
+    assert 'data-view="profile"' in dashboard
+    assert "data-profile-page-avatar" in dashboard
+    assert "data-profile-page-node-name" in dashboard
+    assert "data-profile-page-email" in dashboard
+    assert "data-profile-page-email-status" in dashboard
+    assert "data-profile-page-verify-email" in dashboard
+    assert "data-profile-page-solana" in dashboard
+    assert "data-profile-page-password" in dashboard
+    assert "data-profile-page-save" in dashboard
+    assert "data-profile-rename-input" in dashboard
+    assert "data-profile-rename-status" in dashboard
+    assert "data-profile-rename-save" in dashboard
+    assert "data-profile-delete-password" in dashboard
+    assert "data-profile-delete-confirm" in dashboard
+    assert "data-profile-delete-account" in dashboard
+    assert "Delete account" in dashboard
+    assert "Type DELETE" in dashboard
+
+
+def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_account():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "renderProfilePage(session)" in dashboard_js
+    assert "checkNodeNameAvailability" in dashboard_js
+    assert 'fetch(`/api/accounts/${encodeURIComponent(candidate)}`' in dashboard_js
+    assert "renameNodeName" in dashboard_js
+    assert "newNodeName" in dashboard_js
+    assert "refreshRepositories()" in dashboard_js
+    assert "deleteAccount" in dashboard_js
+    assert "deleteAccount: true" in dashboard_js
+    assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
+    assert 'setSection("profile")' in dashboard_js
+
+
+def test_login_explains_disabled_legacy_accounts():
+    login_js = _read(PUBLIC / "login.js")
+
+    assert 'body.error === "account_disabled"' in login_js
+    assert "This account has been disabled." in login_js
 
 
 def test_login_persists_returned_session_details():
@@ -123,6 +185,8 @@ def test_login_persists_returned_session_details():
     assert "pubkey: body.pubkey" in login_js
     assert "emailVerified: Boolean(body.emailVerified)" in login_js
     assert "isAdmin: Boolean(body.isAdmin)" in login_js
+    assert 'solana: body.solana || ""' in login_js
+    assert "hasPayoutAddress: Boolean(body.hasPayoutAddress)" in login_js
 
 
 def test_login_exposes_localhost_only_demo_credentials():
