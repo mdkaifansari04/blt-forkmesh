@@ -3769,6 +3769,11 @@ void MainWindow::aiFixRunClaudeCode()
     m_aiFix->process = process;
     process->setProcessChannelMode(QProcess::MergedChannels);
     process->setWorkingDirectory(m_aiFix->workTree);
+    // The prompt is delivered in argv (or redirected from the prompt file inside
+    // the command itself), so this run never reads our stdin. Point stdin at the
+    // null device so `claude` doesn't sit waiting on an empty, never-closed stdin
+    // pipe for 3s and emit a "no stdin data received" warning before proceeding.
+    process->setStandardInputFile(QProcess::nullDevice());
 
     // Claude Code authenticates through its own login; strip any inherited API key
     // so it never silently uses a stale/foreign one, and widen PATH to the usual
