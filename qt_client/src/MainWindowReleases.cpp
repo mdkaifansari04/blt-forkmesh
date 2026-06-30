@@ -122,7 +122,7 @@ QWidget *MainWindow::buildReleasesTab()
     m_releasesTable = new QTableWidget(0, 5);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
-    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Date", "Release notes", "Artifacts", ""});
+    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Released", "Release notes", "Artifacts", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -138,14 +138,16 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
-    // keyboard-focused row opens the tag too, matching the arrow-key navigation
-    // the tab now supports (adhoc #183).
+    // keyboard-focused row opens the release too, matching the arrow-key
+    // navigation the tab supports (adhoc #183). Opening a row shows the
+    // release's full notes and the diff since the previous release (issue #284);
+    // a button there still browses the repo at the tag.
     connect(m_releasesTable, &QTableWidget::itemActivated, this,
             [this](QTableWidgetItem *item) {
                 QTableWidgetItem *it =
                     item ? m_releasesTable->item(item->row(), 0) : nullptr;
-                if (it)
-                    setRepoBranch(it->text()); // browse the repo at the tag
+                if (it && !it->text().trimmed().isEmpty())
+                    showReleaseDetail(it->text().trimmed());
             });
     layout->addWidget(m_releasesTable, 1);
     return page;
@@ -271,7 +273,8 @@ void MainWindow::loadReleasesPanel()
     if (!dir.isEmpty() &&
         runGitCapture(dir,
                       {"for-each-ref", "--sort=-creatordate", "refs/tags",
-                       "--format=%(refname:short)%1f%(creatordate:short)%1f"
+                       "--format=%(refname:short)%1f"
+                       "%(creatordate:format:%Y-%m-%d %H:%M)%1f"
                        "%(contents:subject)"},
                       &out, nullptr)) {
         for (const QByteArray &line : out.split('\n')) {
@@ -1082,6 +1085,149 @@ void MainWindow::promptNewRelease()
             }
         }
     }
+}
+
+void MainWindow::showReleaseDetail(const QString &tag)
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || tag.isEmpty())
+        return;
+    // Only real tags open a detail view — guards the empty-state placeholder row,
+    // whose cell text isn't a tag.
+    if (!runGitCapture(dir, {"rev-parse", "--verify", "--quiet",
+                             QStringLiteral("refs/tags/") + tag},
+                       nullptr, nullptr))
+        return;
+
+    // --- Tag metadata: full release notes, creation date+time, tagger. For an
+    // annotated tag %(contents:*) is the tag message (the title + notes typed in
+    // promptNewRelease); for a lightweight tag it falls back to the commit's.
+    QByteArray meta;
+    runGitCapture(dir,
+                  {"for-each-ref",
+                   "--format=%(creatordate:format:%Y-%m-%d %H:%M)%1f%(taggername)"
+                   "%1f%(contents:subject)%1f%(contents:body)",
+                   QStringLiteral("refs/tags/") + tag},
+                  &meta, nullptr);
+    const QStringList mf = QString::fromUtf8(meta).split(QLatin1Char('\x1f'));
+    const QString when = mf.value(0).trimmed();
+    const QString tagger = mf.value(1).trimmed();
+    const QString subject = mf.value(2).trimmed();
+    const QString body = mf.value(3).trimmed();
+
+    // --- The previous release (next-older tag by creation date) is the diff
+    // base, so the detail view shows "what changed since the last release" — the
+    // same ordering the list uses, so it always lines up with the row above.
+    QString prevTag;
+    {
+        QByteArray tagsOut;
+        if (runGitCapture(dir,
+                          {"for-each-ref", "--sort=-creatordate",
+                           "--format=%(refname:short)", "refs/tags"},
+                          &tagsOut, nullptr)) {
+            const QStringList all =
+                QString::fromUtf8(tagsOut).split(QLatin1Char('\n'));
+            int idx = -1;
+            for (int i = 0; i < all.size(); ++i)
+                if (all.at(i).trimmed() == tag) {
+                    idx = i;
+                    break;
+                }
+            for (int j = idx + 1; idx >= 0 && j < all.size(); ++j) {
+                const QString cand = all.at(j).trimmed();
+                if (!cand.isEmpty()) {
+                    prevTag = cand;
+                    break;
+                }
+            }
+        }
+    }
+
+    // --- The release diff: prevTag..tag (git resolves annotated tags to the
+    // commits they point at). The very first release has no earlier tag, so the
+    // diff section says so rather than dumping the whole tree.
+    QString diffHtml;
+    if (!prevTag.isEmpty()) {
+        QByteArray patchRaw;
+        runGitCapture(dir, {"diff", "-M", prevTag, tag}, &patchRaw, nullptr);
+        QList<DiffFileEntry> files;
+        diffHtml =
+            renderDiffHtml(QString::fromUtf8(patchRaw), files, dir, prevTag, tag);
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Release %1").arg(tag));
+    dialog.resize(900, 640);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(
+        QStringLiteral("<b style='font-size:16px'>%1</b>")
+            .arg((subject.isEmpty() ? tag : subject).toHtmlEscaped()));
+    title->setTextFormat(Qt::RichText);
+    title->setWordWrap(true);
+    layout->addWidget(title);
+
+    QStringList metaBits;
+    if (!when.isEmpty())
+        metaBits << when;
+    if (!tagger.isEmpty())
+        metaBits << tagger;
+    if (!metaBits.isEmpty()) {
+        auto *metaLabel = new QLabel(metaBits.join(QString::fromUtf8(" \xC2\xB7 ")));
+        metaLabel->setObjectName("statusLine");
+        layout->addWidget(metaLabel);
+    }
+
+    // Release notes (the annotated tag's body, below its subject/title).
+    if (!body.isEmpty()) {
+        auto *notes = new QLabel(
+            QStringLiteral("<span style='white-space:pre-wrap'>%1</span>")
+                .arg(body.toHtmlEscaped()));
+        notes->setTextFormat(Qt::RichText);
+        notes->setWordWrap(true);
+        notes->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(notes);
+    }
+
+    auto *diffHeading = new QLabel(
+        prevTag.isEmpty()
+            ? QStringLiteral("Changes")
+            : QStringLiteral("Changes since %1").arg(prevTag.toHtmlEscaped()));
+    diffHeading->setObjectName("channelTitle");
+    layout->addWidget(diffHeading);
+
+    auto *diff = new QTextBrowser;
+    diff->setObjectName("diffView");
+    diff->setOpenLinks(false); // read-only diff; don't navigate on anchor clicks
+    diff->setLineWrapMode(QTextEdit::NoWrap);
+    diff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    if (diffHtml.trimmed().isEmpty())
+        diff->setHtml(
+            prevTag.isEmpty()
+                ? QStringLiteral(
+                      "<p style='color:#8b949e'>This is the earliest release "
+                      "\xE2\x80\x94 no previous release to diff against.</p>")
+                : QStringLiteral(
+                      "<p style='color:#8b949e'>No file changes between %1 and "
+                      "%2.</p>")
+                      .arg(prevTag.toHtmlEscaped(), tag.toHtmlEscaped()));
+    else
+        diff->setHtml(diffHtml);
+    layout->addWidget(diff, 1);
+
+    auto *buttons = new QDialogButtonBox;
+    auto *browseBtn = buttons->addButton(QStringLiteral("Browse repo at this tag"),
+                                         QDialogButtonBox::ActionRole);
+    buttons->addButton(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(browseBtn, &QPushButton::clicked, &dialog, [this, &dialog, tag] {
+        dialog.accept();
+        setRepoBranch(tag); // browse the repo's files at this tag
+    });
+    layout->addWidget(buttons);
+
+    dialog.exec();
 }
 
 void MainWindow::deleteTag(const QString &tag)
