@@ -2925,15 +2925,8 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
-    if (QMessageBox::question(
-            this, QStringLiteral("Pull from %1").arg(base),
-            QStringLiteral("Merge %1 into %2 to bring it up to date?\n\n"
-                           "%2 is %3 commit(s) behind %1.")
-                .arg(base, branch)
-                .arg(behind),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
-        return;
-
+    // The user invoked this deliberately (the Pull button is only enabled when
+    // the branch is behind), so skip the confirmation and update straight away.
     QByteArray headOut;
     QString currentBranch;
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
