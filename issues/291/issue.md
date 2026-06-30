@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 291
 title: when a worktree or pr related to an agent task is merged into main add a note to the status and the detail page of the aget session
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 48

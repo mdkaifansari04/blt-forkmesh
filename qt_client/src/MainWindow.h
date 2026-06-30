@@ -361,6 +361,17 @@ public:
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
     int testClickBranchAgentCell(const QString &branch);
+    // issue #291: when an agent task's worktree/PR lands in the base branch the
+    // session is flagged "merged" on its Status column and detail page. Drive the
+    // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
+    // take) for `branch`, then read back the rendered Status-cell text and the
+    // persisted merged flag, so a test can prove the note appears.
+    bool testMarkAgentBranchMerged(const QString &branch)
+    {
+        return markAgentSessionsMerged(0, branch);
+    }
+    QString testAgentStatusCellText(int sessionId) const;
+    bool testAgentSessionMerged(int sessionId) const;
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -766,7 +777,13 @@ private:
     void renderPullDiff();
     // Scroll the all-files diff so the given file's section is at the top.
     void scrollPullDiffToFile(const QString &filePath);
-    void adjustDiffFont(int delta); // +/- diff text-size zoom
+    void adjustDiffFont(int delta); // +/- diff text-size zoom (issue #254)
+    // Register a diff viewer so it shares the text-size zoom: tracks it for the
+    // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
+    void registerDiffView(QTextEdit *view);
+    // Set a diff viewer's HTML, remembering the source so a later font-size
+    // change can re-render it in place without re-running its renderer.
+    void setDiffHtml(QTextEdit *view, const QString &html);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
@@ -2852,6 +2869,9 @@ private:
     // currentItemChanged doesn't scroll the diff back to the file header.
     bool m_pullSuppressFileScroll = false;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
+    // Every diff viewer registered for shared text-size zoom (issue #254), so a
+    // +/- click or Ctrl+wheel can re-render them all at the new size.
+    QList<QTextEdit *> m_diffViews;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
     // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.

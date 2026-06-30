@@ -2103,8 +2103,7 @@ void MainWindow::showRun(int runId)
                        : QStringLiteral(
                              "<p style='color:#8b949e'>No changes from the "
                              "approved workflow.</p>");
-        m_actionDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
-        m_actionDiff->setHtml(html);
+        setDiffHtml(m_actionDiff, html);
     } else if (m_actionLog) {
         m_actionLog->setPlainText(m_actionStore->readLog(*run));
         m_actionLog->moveCursor(QTextCursor::End);
@@ -2403,6 +2402,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionDiff->setLineWrapMode(QTextEdit::NoWrap);
     m_actionDiff->setFontFamily(QStringLiteral("monospace"));
     m_actionDiff->hide();
+    registerDiffView(m_actionDiff);
 
     m_actionApproveButton = new QPushButton("Approve & run");
     m_actionApproveButton->setObjectName("primaryButton");

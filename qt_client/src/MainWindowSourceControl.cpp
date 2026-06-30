@@ -250,7 +250,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    registerDiffView(m_scmDiff);
 
     auto *bodySplit = new QSplitter(Qt::Horizontal);
     bodySplit->setChildrenCollapsible(false);
@@ -526,10 +526,9 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     // this cache whenever the working tree changes.
     const QString key =
         QStringLiteral("%1|%2|%3").arg(int(staged)).arg(int(untracked)).arg(path);
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     auto cached = m_scmDiffCache.constFind(key);
     if (cached != m_scmDiffCache.constEnd()) {
-        m_scmDiff->setHtml(*cached);
+        setDiffHtml(m_scmDiff, *cached);
         return;
     }
     const QString dir = repoGitDir();
@@ -547,7 +546,7 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     if (html.isEmpty())
         html = QStringLiteral("<p style='color:#8b949e'>(no diff)</p>");
     m_scmDiffCache.insert(key, html);
-    m_scmDiff->setHtml(html);
+    setDiffHtml(m_scmDiff, html);
 }
 
 void MainWindow::showScmDiffAll(bool staged)
@@ -557,7 +556,6 @@ void MainWindow::showScmDiffAll(bool staged)
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return;
-    m_scmDiff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
 
     QByteArray out;
     if (staged) {
@@ -582,7 +580,7 @@ void MainWindow::showScmDiffAll(bool staged)
                                   QString(), QString(), QHash<QString, QString>());
     if (html.isEmpty())
         html = QStringLiteral("<p style='color:#8b949e'>(no changes)</p>");
-    m_scmDiff->setHtml(html);
+    setDiffHtml(m_scmDiff, html);
 }
 
 void MainWindow::scmSelectAdjacentChange(int delta)

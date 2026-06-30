@@ -80,6 +80,7 @@
 #include <QMessageBox>
 #include <QMimeDatabase>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
