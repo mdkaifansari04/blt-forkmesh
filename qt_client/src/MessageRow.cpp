@@ -112,7 +112,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     setObjectName("messageRow");
 
     auto *outer = new QHBoxLayout(this);
-    outer->setContentsMargins(12, 5, 12, 5);
+    // A little more breathing room so messages don't hug the panel edges; the
+    // enclosing chat list has no margins of its own.
+    outer->setContentsMargins(18, 7, 18, 7);
     outer->setSpacing(10);
 
     m_avatarLabel = new QLabel;
