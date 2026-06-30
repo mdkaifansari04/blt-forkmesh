@@ -6410,6 +6410,23 @@ class Default(WorkerEntrypoint):
                             self.env, owner, repo, ts, sig)
                     if not ok:
                         return json_response({"error": "unauthorized"}, status=401)
+                else:
+                    # Public repo whose named host is offline: redirect the browse
+                    # to a healthy online mirror of the same logical repo so the
+                    # website can still serve the tree/blob/commits when the source
+                    # of truth goes down. This mirrors the clone fallback in
+                    # _git_host; _select_clone_fallback returns None while the named
+                    # host is live, so an online source is never redirected away.
+                    fallback = await self._select_clone_fallback(owner, repo)
+                    if fallback and fallback.lower() != owner.lower():
+                        location = "/api/repo/%s/%s/%s" % (
+                            fallback, repo, host_match.group(3))
+                        if url.query:
+                            location += "?" + url.query
+                        return Response(
+                            "", status=302,
+                            headers={"location": location,
+                                     "cache-control": "no-store"})
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             return await host_object.fetch(request)
