@@ -107,6 +107,14 @@ public:
     QList<IssueLabel> loadLabels() const;
     QList<IssueMilestone> loadMilestones() const;
 
+    // A cheap content signature of the issues/ subtree: its git tree oid (plus the
+    // source path, so a different repo can't collide). Two calls return an equal,
+    // non-empty value iff loadAll()/loadLabels()/loadMilestones() would return the
+    // same data, so the UI can skip re-reading and rebuilding the issue list when
+    // nothing changed. Returns empty when it can't be computed (no source) — treat
+    // empty as "unknown" and don't skip. One fast `git rev-parse`, no blob reads.
+    QString contentSignature() const;
+
     // Mutations (require canWrite()). Each writes the issue's info.json (and the
     // label/milestone def files when relevant), then commits the issues/ folder.
     int createIssue(const QString &title, const QString &body,

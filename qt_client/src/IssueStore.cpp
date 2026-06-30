@@ -581,6 +581,29 @@ QList<Issue> IssueStore::loadAll(QString *error) const
     return issues;
 }
 
+QString IssueStore::contentSignature() const
+{
+    // Resolve the issues/ subtree to its git object id. The oid is a content hash
+    // of the whole subtree, so it moves iff some issue/event/label/milestone file
+    // changed — exactly when a reload would surface something new. A writable store
+    // commits every mutation (createIssue / applyRemoteEvent / set*), so HEAD:issues
+    // matches the on-disk issues/ that loadAll() reads there; the mirror case reads
+    // the same ref it loads blobs from.
+    const QString dir = canWrite() ? m_workTree : m_mirror;
+    if (dir.isEmpty())
+        return QString();
+    const QString ref = canWrite() ? QStringLiteral("HEAD") : mirrorRef();
+    if (ref.isEmpty())
+        return QString();
+    // -q + non-zero exit when issues/ doesn't exist yet (no issues): we ignore the
+    // bool and fold the empty oid into a stable "no issues" signature.
+    QByteArray oid;
+    runGit(dir, {"rev-parse", "--verify", "-q", ref + QStringLiteral(":issues")}, &oid);
+    // Prefix with the source path so two repos with no issues (both empty oid) — or
+    // a coincidental oid match — can't be mistaken for "unchanged" across a switch.
+    return dir + QLatin1Char('\n') + QString::fromUtf8(oid).trimmed();
+}
+
 bool IssueStore::readIssueFile(int number, Issue &out) const
 {
     QFile file(issueDir(number) + "/issue.md");
