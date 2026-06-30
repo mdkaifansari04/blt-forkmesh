@@ -696,6 +696,16 @@ QWidget *MainWindow::buildRepoEditorPage()
         if (!path.isEmpty())
             showRepoFileHistory(path);
     });
+    // Markdown files get a tiny toggle that flips between the raw source and a
+    // rendered preview (README.md, docs, any *.md / *.markdown).
+    m_repoFilePreviewButton = new QPushButton("Preview");
+    m_repoFilePreviewButton->setObjectName("ghostButton");
+    m_repoFilePreviewButton->setCursor(Qt::PointingHandCursor);
+    m_repoFilePreviewButton->setCheckable(true);
+    m_repoFilePreviewButton->setToolTip("Preview rendered Markdown");
+    setOcticon(m_repoFilePreviewButton, "eye", 16);
+    connect(m_repoFilePreviewButton, &QPushButton::clicked, this,
+            &MainWindow::toggleRepoFileMarkdownPreview);
     m_repoFileCommitButton = new QPushButton("Commit direct");
     m_repoFileCommitButton->setObjectName("ghostButton");
     m_repoFileCommitButton->setCursor(Qt::PointingHandCursor);
@@ -710,6 +720,7 @@ QWidget *MainWindow::buildRepoEditorPage()
     setOcticon(m_repoFilePullButton, "git-pull-request", 16);
     connect(m_repoFilePullButton, &QPushButton::clicked, this,
             [this] { saveCurrentRepoFile(true); });
+    backRow->addWidget(m_repoFilePreviewButton);
     backRow->addWidget(m_repoFileHistoryButton);
     backRow->addWidget(m_repoFileCommitButton);
     backRow->addWidget(m_repoFilePullButton);
@@ -1798,8 +1809,19 @@ void MainWindow::updateRepoFileSaveActions()
 {
     const QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
     const auto *editor = qobject_cast<const QPlainTextEdit *>(w);
-    const bool haveFile = editor && !w->property("previewPath").toString().isEmpty();
+    const QString path = w ? w->property("previewPath").toString() : QString();
+    const bool haveFile = editor && !path.isEmpty();
     const bool editable = haveFile && !editor->isReadOnly();
+    // The rendered-markdown toggle only makes sense for Markdown files; it reflects
+    // whichever side (source / preview) the current tab is showing.
+    if (m_repoFilePreviewButton) {
+        const bool isMarkdown =
+            haveFile && previewSyntaxForPath(path) == PreviewSyntax::Markdown;
+        const auto *preview = dynamic_cast<const CodePreviewEditor *>(w);
+        m_repoFilePreviewButton->setEnabled(isMarkdown);
+        m_repoFilePreviewButton->setVisible(isMarkdown);
+        m_repoFilePreviewButton->setChecked(preview && preview->markdownPreviewVisible());
+    }
     // Viewing history only reads git, so it works for any open file — including
     // read-only previews on a mirror.
     if (m_repoFileHistoryButton)
@@ -1824,6 +1846,18 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
         return;
     if (saveRepoFileEdit(path, editor->toPlainText(), createPull))
         editor->document()->setModified(false);
+    updateRepoFileSaveActions();
+}
+
+void MainWindow::toggleRepoFileMarkdownPreview()
+{
+    QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
+    auto *editor = dynamic_cast<CodePreviewEditor *>(w);
+    if (!editor)
+        return;
+    // Re-renders from the editor's current text each time, so edits made in the
+    // source view show up the moment you flip to the preview.
+    editor->setMarkdownPreviewVisible(!editor->markdownPreviewVisible());
     updateRepoFileSaveActions();
 }
 

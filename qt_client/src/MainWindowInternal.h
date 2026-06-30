@@ -4394,6 +4394,34 @@ public:
         return qMax(42, 14 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits);
     }
 
+    // Markdown files can be flipped between source and a rendered preview from a
+    // tiny toolbar toggle (see MainWindow::toggleRepoFileMarkdownPreview). The
+    // rendered view is an overlay child so this editor — and all the
+    // save / commit / history wiring keyed off the tab widget — stays put.
+    bool markdownPreviewVisible() const
+    {
+        return m_markdownPreview && m_markdownPreview->isVisible();
+    }
+
+    void setMarkdownPreviewVisible(bool on)
+    {
+        if (!on) {
+            if (m_markdownPreview)
+                m_markdownPreview->hide();
+            return;
+        }
+        if (!m_markdownPreview) {
+            m_markdownPreview = new QTextBrowser(this);
+            m_markdownPreview->setObjectName("markdownPreview");
+            m_markdownPreview->setOpenExternalLinks(true);
+            m_markdownPreview->setFrameShape(QFrame::NoFrame);
+        }
+        m_markdownPreview->setMarkdown(toPlainText());
+        m_markdownPreview->setGeometry(contentsRect());
+        m_markdownPreview->show();
+        m_markdownPreview->raise();
+    }
+
     void lineNumberAreaPaintEvent(QPaintEvent *event)
     {
         const bool dark = currentThemeIsDark();
@@ -4427,6 +4455,8 @@ protected:
         const QRect cr = contentsRect();
         m_lineNumberArea->setGeometry(
             QRect(cr.left(), cr.top(), lineNumberAreaWidth(), cr.height()));
+        if (m_markdownPreview && m_markdownPreview->isVisible())
+            m_markdownPreview->setGeometry(cr);
     }
 
     void changeEvent(QEvent *event) override
@@ -4471,6 +4501,7 @@ private:
     }
 
     CodeLineNumberArea *m_lineNumberArea = nullptr;
+    QTextBrowser *m_markdownPreview = nullptr; // lazy rendered-markdown overlay
 };
 
 inline CodeLineNumberArea::CodeLineNumberArea(CodePreviewEditor *editor)

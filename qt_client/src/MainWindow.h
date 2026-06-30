@@ -1221,6 +1221,8 @@ private:
     void openRepoReadme(); // open the repo's README in a file tab (default view)
     void updateRepoFileSaveActions();
     void saveCurrentRepoFile(bool createPull);
+    // Flip the current Markdown file tab between its source and a rendered preview.
+    void toggleRepoFileMarkdownPreview();
     // Pop up the commit history for one repo file: a list of the commits that
     // touched it, each showing that commit's diff for the file.
     void showRepoFileHistory(const QString &path);
@@ -2714,6 +2716,7 @@ private:
     QPushButton *m_repoFileCommitButton = nullptr;
     QPushButton *m_repoFilePullButton = nullptr;
     QPushButton *m_repoFileHistoryButton = nullptr;
+    QPushButton *m_repoFilePreviewButton = nullptr; // toggle markdown source/render
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
 
     // Discussions tab
