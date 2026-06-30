@@ -6,6 +6,7 @@ import io
 import json
 import re
 import struct
+import traceback
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from js import Date
@@ -64,6 +65,24 @@ MAX_PENDING_COMMIT_COMMENTS = 500
 # Discussion inbox: signed open/comment events for read-only contributors.
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
+# Notification inbox: Worker indexes public-safe notification state while the
+# canonical issue/PR/discussion/release records remain in signed repo files or
+# pending inboxes. Stored rows are encrypted and bounded per recipient.
+MAX_NOTIFICATIONS_PER_RECIPIENT = 500
+MAX_NOTIFICATIONS_FETCH = 100
+NOTIFICATION_RETAIN_MS = 90 * 24 * 60 * 60 * 1000
+NOTIFICATION_KINDS = frozenset({
+    "mention",
+    "pull_submitted",
+    "issue_assigned",
+    "repo_shared",
+    "bounty_funded",
+    "bounty_paid",
+    "release_published",
+    "host_online",
+    "host_offline",
+    "pending_inbox",
+})
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -87,7 +106,7 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|commits|commit)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$")
 # Release asset download (issue #304): the bytes live in the node's
 # content-addressed store (never in git), streamed back over the host tunnel.
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.
@@ -117,6 +136,7 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 # their repo namespace, so it is validated identically in the web and desktop
 # clients.
 NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b")
 MAX_NODE_NAME = 63
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
@@ -125,12 +145,44 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+MAX_AVATAR_BYTES = 256 * 1024
+MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
+PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 
 
 def valid_node_name(value):
     value = (value or "").strip()
     return (bool(value) and len(value) <= MAX_NODE_NAME and
             bool(NODE_NAME_RE.match(value)))
+
+
+def notification_mentions(*parts):
+    found = set()
+    for part in parts:
+        if not part:
+            continue
+        for match in MENTION_RE.finditer(str(part).lower()):
+            name = match.group(1)
+            if name and len(name) <= MAX_NODE_NAME and NODE_NAME_RE.match(name):
+                found.add(name)
+    return sorted(found)
+
+
+def notification_payload(kind, title, body="", repo="", href="", actor="",
+                         source="", ts=0, meta=None):
+    kind = kind if kind in NOTIFICATION_KINDS else "pending_inbox"
+    return {
+        "kind": kind,
+        "title": clean_string(title, 160),
+        "body": clean_string(body, 500),
+        "repo": clean_string(repo, 180),
+        "href": clean_string(href, 512),
+        "actor": clean_string(actor, 120),
+        "source": clean_string(source, 80),
+        "ts": int(ts or 0),
+        "readAt": 0,
+        "meta": meta if isinstance(meta, dict) else {},
+    }
 
 
 def b64url_decode(value):
@@ -687,6 +739,85 @@ def release_bytes_response(data, sha256):
     )
 
 
+REPO_BLOB_CONTENT_TYPES = {
+    "3g2": "video/3gpp2",
+    "3gp": "video/3gpp",
+    "aac": "audio/aac",
+    "apng": "image/png",
+    "avi": "video/x-msvideo",
+    "avif": "image/avif",
+    "bmp": "image/bmp",
+    "csv": "text/csv; charset=utf-8",
+    "flac": "audio/flac",
+    "gif": "image/gif",
+    "ico": "image/x-icon",
+    "jfif": "image/jpeg",
+    "jpe": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "m4a": "audio/mp4",
+    "m4v": "video/mp4",
+    "mid": "audio/midi",
+    "midi": "audio/midi",
+    "mkv": "video/x-matroska",
+    "mov": "video/quicktime",
+    "mp3": "audio/mpeg",
+    "mp4": "video/mp4",
+    "mpeg": "video/mpeg",
+    "mpg": "video/mpeg",
+    "oga": "audio/ogg",
+    "ogg": "audio/ogg",
+    "ogv": "video/ogg",
+    "opus": "audio/ogg",
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+    "tab": "text/tab-separated-values; charset=utf-8",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "tsv": "text/tab-separated-values; charset=utf-8",
+    "wav": "audio/wav",
+    "weba": "audio/webm",
+    "webm": "video/webm",
+    "webp": "image/webp",
+}
+
+
+def repo_blob_content_type(path):
+    name = str(path or "").rsplit("/", 1)[-1].lower()
+    if "." not in name:
+        return "application/octet-stream"
+    return REPO_BLOB_CONTENT_TYPES.get(
+        name.rsplit(".", 1)[-1], "application/octet-stream")
+
+
+def repo_blob_filename(path):
+    name = str(path or "").rsplit("/", 1)[-1].strip() or "file"
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
+    return (cleaned or "file")[:180]
+
+
+def repo_blob_bytes_response(data, path):
+    data = bytes(data)
+    filename = repo_blob_filename(path)
+    return JsResponse.new(
+        _to_js(data),
+        to_js(
+            {
+                "status": 200,
+                "headers": {
+                    "content-type": repo_blob_content_type(path),
+                    "content-length": str(len(data)),
+                    "cache-control": "no-cache, max-age=0, must-revalidate",
+                    "content-disposition": 'inline; filename="%s"' % filename,
+                    "x-content-type-options": "nosniff",
+                    "content-security-policy": "sandbox",
+                },
+            }
+        ),
+    )
+
+
 def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
 
@@ -966,12 +1097,21 @@ async def touch_host_presence(env, repo_bi):
     # connects and, throttled, while it serves traffic.
     await ensure_schema(env)
     now = int(Date.now())
+    notify_online = False
+    try:
+        existing = await d1_first(env, "SELECT ts FROM host_presence WHERE repo_bi=?", repo_bi)
+        previous = int((existing or {}).get("ts") or 0)
+        notify_online = not previous or now - previous > HOST_PRESENCE_STALE_MS
+    except Exception:
+        notify_online = False
     await d1_run(
         env,
         "INSERT INTO host_presence (repo_bi, ts) VALUES (?, ?) "
         "ON CONFLICT(repo_bi) DO UPDATE SET ts=excluded.ts",
         repo_bi, now,
     )
+    if notify_online:
+        await notify_host_status(env, repo_bi, "host_online")
     # Stamp the first time this repo was ever hosted (for the "longest hosted"
     # leaderboard). INSERT OR IGNORE keeps the earliest timestamp forever.
     try:
@@ -1036,6 +1176,7 @@ async def network_stats(env, include_payouts=False):
 
     cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
     try:
+        await notify_stale_hosts_offline(env, cutoff)
         await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
     except Exception:
         pass
@@ -1709,6 +1850,27 @@ def clean_string(value, max_length=240):
     return value.strip()[:max_length]
 
 
+def clean_avatar_png(value):
+    if not isinstance(value, str):
+        return "", "bad_avatar"
+    avatar = value.strip()
+    if avatar.startswith("data:image/png;base64,"):
+        avatar = avatar.split(",", 1)[1].strip()
+    if not avatar:
+        return "", ""
+    if len(avatar) > MAX_AVATAR_B64:
+        return "", "avatar_too_large"
+    try:
+        raw = base64.b64decode(avatar, validate=True)
+    except Exception:
+        return "", "bad_avatar"
+    if len(raw) > MAX_AVATAR_BYTES:
+        return "", "avatar_too_large"
+    if not raw.startswith(PNG_HEADER):
+        return "", "bad_avatar"
+    return base64.b64encode(raw).decode(), ""
+
+
 # Owners (or repo names) that must never appear in the public catalog / under
 # /network/, and may never register host presence. Seeded with a known phantom
 # account that kept re-publishing; extend without a code change via the
@@ -2009,6 +2171,14 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    """CREATE TABLE IF NOT EXISTS notifications (
+        dedupe_bi TEXT PRIMARY KEY,
+        recipient_bi TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        read_at INTEGER NOT NULL DEFAULT 0,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_ts ON notifications(recipient_bi, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_bi, read_at, ts)",
 ]
 
 
@@ -2047,14 +2217,33 @@ async def ensure_schema(env):
     _schema_ready = True
 
 
+def js_nullish(value):
+    return value is None or type(value).__name__ in ("JsNull", "JsUndefined")
+
+
+def d1_row_to_dict(row):
+    if js_nullish(row):
+        return None
+    if hasattr(row, "to_py"):
+        row = row.to_py()
+        if js_nullish(row):
+            return None
+    return dict(row)
+
+
 async def d1_all(env, sql, *args):
     stmt = env.DB.prepare(sql)
     if args:
         stmt = stmt.bind(*args)
     result = await stmt.all()
     out = []
-    for row in (result.results or []):
-        out.append(row.to_py() if hasattr(row, "to_py") else dict(row))
+    results = getattr(result, "results", None)
+    if js_nullish(results):
+        return out
+    for row in results:
+        converted = d1_row_to_dict(row)
+        if converted is not None:
+            out.append(converted)
     return out
 
 
@@ -2063,9 +2252,7 @@ async def d1_first(env, sql, *args):
     if args:
         stmt = stmt.bind(*args)
     row = await stmt.first()
-    if row is None:
-        return None
-    return row.to_py() if hasattr(row, "to_py") else dict(row)
+    return d1_row_to_dict(row)
 
 
 async def d1_run(env, sql, *args):
@@ -2716,6 +2903,309 @@ async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
     )
 
 
+async def _save_account_full(env, name_bi, rec, email_bi=None, ip_bi=None,
+                             is_admin=0):
+    enc = await encrypt_row(env, rec)
+    await d1_run(
+        env,
+        """INSERT INTO accounts (name_bi, data, email_bi, name, is_admin, ip_bi)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(name_bi) DO UPDATE SET
+             data=excluded.data, email_bi=excluded.email_bi,
+             name=excluded.name, is_admin=excluded.is_admin,
+             ip_bi=excluded.ip_bi""",
+        name_bi, enc, email_bi, rec.get("name", ""),
+        int(is_admin or 0), ip_bi,
+    )
+
+
+async def _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo):
+    rows = await d1_all(
+        env, "SELECT grantee_bi, data, ts FROM repo_shares WHERE repo_bi=?",
+        old_repo_bi)
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data", "")) or {}
+        rec["owner"] = new_owner
+        rec["repo"] = repo
+        enc = await encrypt_row(env, rec)
+        await d1_run(
+            env,
+            """INSERT OR REPLACE INTO repo_shares
+               (repo_bi, grantee_bi, data, ts) VALUES (?,?,?,?)""",
+            new_repo_bi, row.get("grantee_bi"), enc, row.get("ts", 0))
+    await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", old_repo_bi)
+
+
+async def _move_bounties_namespace(env, old_owner, new_owner, repo,
+                                   apply_changes=True):
+    rows = await d1_all(env, "SELECT bounty_bi, data FROM issue_bounty")
+    moves = []
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data", "")) or {}
+        if (rec.get("owner") != old_owner or rec.get("repo") != repo):
+            continue
+        try:
+            number = int(rec.get("number", 0))
+        except (TypeError, ValueError):
+            number = 0
+        if number <= 0:
+            continue
+        new_bi = await _bounty_bi(env, new_owner, repo, number)
+        old_bi = row.get("bounty_bi")
+        if new_bi != old_bi:
+            existing = await d1_first(
+                env, "SELECT bounty_bi FROM issue_bounty WHERE bounty_bi=?",
+                new_bi)
+            if existing:
+                return "repo_namespace_conflict"
+        moves.append((old_bi, new_bi, rec))
+    if not apply_changes:
+        return ""
+    for old_bi, new_bi, rec in moves:
+        rec["owner"] = new_owner
+        rec["repo"] = repo
+        enc = await encrypt_row(env, rec)
+        await d1_run(
+            env,
+            """INSERT INTO issue_bounty (bounty_bi, data) VALUES (?,?)
+               ON CONFLICT(bounty_bi) DO UPDATE SET data=excluded.data""",
+            new_bi, enc)
+        if new_bi != old_bi:
+            await d1_run(
+                env, "DELETE FROM issue_bounty WHERE bounty_bi=?", old_bi)
+    return ""
+
+
+async def _move_chat_history_namespace(env, old_owner, new_owner, repo):
+    old_prefix = "repo:" + old_owner + "/" + repo + ":room:"
+    new_prefix = "repo:" + new_owner + "/" + repo + ":room:"
+    rows = await d1_all(
+        env,
+        "SELECT room_key, msg_id, ts, body FROM chat_history WHERE room_key LIKE ?",
+        old_prefix + "%")
+    for row in rows:
+        old_key = row.get("room_key", "")
+        new_key = new_prefix + old_key[len(old_prefix):]
+        await d1_run(
+            env,
+            """INSERT OR REPLACE INTO chat_history
+               (room_key, msg_id, ts, body) VALUES (?,?,?,?)""",
+            new_key, row.get("msg_id"), row.get("ts", 0), row.get("body", ""))
+        await d1_run(
+            env,
+            "DELETE FROM chat_history WHERE room_key=? AND msg_id=?",
+            old_key, row.get("msg_id"))
+
+
+async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
+                               new_owner, apply_changes=True):
+    rows = await d1_all(
+        env, "SELECT key_bi, data, is_private FROM repositories WHERE owner_bi=?",
+        old_owner_bi)
+    moves = []
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data", "")) or {}
+        if (rec.get("owner", "").lower() != old_owner.lower()):
+            continue
+        repo = clean_string(rec.get("name", ""), MAX_REPO_SEGMENT)
+        if not repo:
+            continue
+        old_repo_bi = row.get("key_bi")
+        new_repo_bi = await blind_index(env, new_owner + "/" + repo)
+        if new_repo_bi != old_repo_bi:
+            existing = await d1_first(
+                env, "SELECT key_bi FROM repositories WHERE key_bi=?",
+                new_repo_bi)
+            if existing:
+                return "repo_namespace_conflict"
+        bounty_error = await _move_bounties_namespace(
+            env, old_owner, new_owner, repo, apply_changes=False)
+        if bounty_error:
+            return bounty_error
+        moves.append((row, rec, repo, old_repo_bi, new_repo_bi))
+    if not apply_changes:
+        return ""
+
+    for row, rec, repo, old_repo_bi, new_repo_bi in moves:
+        rec["owner"] = new_owner
+        enc = await encrypt_row(env, rec)
+        await d1_run(
+            env,
+            """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
+               VALUES (?,?,?,?)
+               ON CONFLICT(key_bi) DO UPDATE SET
+                 owner_bi=excluded.owner_bi, data=excluded.data,
+                 is_private=excluded.is_private""",
+            new_repo_bi, new_owner_bi, enc, int(row.get("is_private") or 0))
+        await _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo)
+        await d1_run(
+            env, "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE pull_inbox SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE commit_inbox SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE discussion_inbox SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE host_presence SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE clone_rr SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await d1_run(
+            env, "UPDATE repo_first_hosted SET repo_bi=? WHERE repo_bi=?",
+            new_repo_bi, old_repo_bi)
+        await _move_bounties_namespace(env, old_owner, new_owner, repo)
+        await _move_chat_history_namespace(env, old_owner, new_owner, repo)
+        await d1_run(
+            env,
+            "UPDATE funds_received SET key=?, name=? WHERE scope='project' AND key=?",
+            new_owner + "/" + repo, new_owner + "/" + repo,
+            old_owner + "/" + repo)
+        if new_repo_bi != old_repo_bi:
+            await d1_run(
+                env, "DELETE FROM repositories WHERE key_bi=?", old_repo_bi)
+    return ""
+
+
+async def _rename_account_namespace(env, name_bi, rec, new_name):
+    old_name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    new_name = clean_string(new_name, MAX_NODE_NAME).lower()
+    if not valid_node_name(new_name):
+        return name_bi, rec, "invalid_node_name"
+    if new_name == old_name:
+        return name_bi, rec, "node_name_unchanged"
+
+    new_name_bi, target = await _account_row(env, new_name)
+    if target and (target.get("status") == "active" or
+                   target.get("donation_confirmed") or
+                   _donation_in_progress(target)):
+        return name_bi, rec, "node_name_taken"
+
+    account_row = await d1_first(
+        env, "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
+        name_bi)
+    if not account_row:
+        return name_bi, rec, "invalid_credentials"
+
+    move_error = await _move_repo_namespace(
+        env, name_bi, old_name, new_name_bi, new_name, apply_changes=False)
+    if move_error:
+        return name_bi, rec, move_error
+
+    next_rec = dict(rec)
+    next_rec["name"] = new_name
+    await _save_account_full(
+        env, new_name_bi, next_rec,
+        email_bi=account_row.get("email_bi"),
+        ip_bi=account_row.get("ip_bi"),
+        is_admin=account_row.get("is_admin", 0),
+    )
+    move_error = await _move_repo_namespace(
+        env, name_bi, old_name, new_name_bi, new_name)
+    if move_error:
+        return name_bi, rec, move_error
+    await d1_run(
+        env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE pending_verifications SET name_bi=? WHERE name_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+    await edge_cache_delete(CATALOG_CACHE_KEY)
+    return new_name_bi, next_rec, ""
+
+
+async def _delete_bounties_namespace(env, owner, repo):
+    rows = await d1_all(env, "SELECT bounty_bi, data FROM issue_bounty")
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data", "")) or {}
+        if rec.get("owner") == owner and rec.get("repo") == repo:
+            await d1_run(
+                env, "DELETE FROM issue_bounty WHERE bounty_bi=?",
+                row.get("bounty_bi"))
+
+
+async def _delete_repo_scoped_state(env, repo_bi):
+    await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM repo_first_hosted WHERE repo_bi=?", repo_bi)
+
+
+async def _delete_repo_namespace(env, owner_bi, owner):
+    rows = await d1_all(
+        env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?",
+        owner_bi)
+    owner = clean_string(owner, MAX_NODE_NAME).lower()
+    for row in rows:
+        repo_bi = row.get("key_bi")
+        rec = await decrypt_row(env, row.get("data", "")) or {}
+        repo = clean_string(rec.get("name", ""), MAX_REPO_SEGMENT)
+        if repo_bi:
+            await _delete_repo_scoped_state(env, repo_bi)
+            await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", repo_bi)
+        if owner and repo:
+            await _delete_bounties_namespace(env, owner, repo)
+            await d1_run(
+                env, "DELETE FROM chat_history WHERE room_key LIKE ?",
+                "repo:" + owner + "/" + repo + ":room:%")
+            await d1_run(
+                env,
+                "DELETE FROM funds_received WHERE scope='project' AND key=?",
+                owner + "/" + repo)
+    await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
+    await edge_cache_delete(CATALOG_CACHE_KEY)
+
+
+async def _delete_account_namespace(env, name_bi, rec):
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    email = clean_string(rec.get("email", ""), 254).strip().lower()
+    await _delete_repo_namespace(env, name_bi, name)
+    await d1_run(env, "DELETE FROM repo_shares WHERE grantee_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM account_presence WHERE name_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM pending_verifications WHERE name_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM notifications WHERE recipient_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", name_bi)
+    if email:
+        email_bi = await blind_index(env, email)
+        await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
+    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+
+
+async def _account_public_payload(env, rec):
+    name = rec.get("name", "")
+    solana = (rec.get("solana") or "").strip()
+    has_payout = bool(solana and SOLANA_RE.match(solana))
+    return {
+        "ok": True,
+        "nodeName": name,
+        "email": rec.get("email", ""),
+        "status": rec.get("status", "active"),
+        "pubkey": rec.get("pubkey", ""),
+        "emailVerified": bool(rec.get("email_verified")),
+        "isAdmin": await _is_admin(env, name),
+        "solana": solana if has_payout else "",
+        "hasPayoutAddress": has_payout,
+        "avatarPng": rec.get("avatar_png", ""),
+        "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+    }
+
+
 def _donation_expiry_fields(rec, now):
     try:
         created = int(rec.get("donation_created_at") or rec.get("created_at") or now)
@@ -2768,6 +3258,56 @@ def _donation_in_progress(rec):
         return False
     _, expires, _ = _donation_expiry_fields(rec, Date.now())
     return Date.now() < expires
+
+
+# Simple web signup: create an active account from node name + email + password.
+# Solana payout details are intentionally handled later from the dashboard profile.
+async def _account_signup(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    email = clean_string(data.get("email", ""), 254).strip().lower()
+    password = (data.get("password", "") or "")[:256]
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_name"}, status=400)
+    if "@" not in email or len(email) < 3:
+        return json_response({"error": "valid_email_required"}, status=400)
+    if len(password) < 8:
+        return json_response({"error": "password_too_short"}, status=400)
+
+    name_bi, existing = await _account_row(env, name)
+    if existing and (existing.get("status") == "active" or
+                     existing.get("donation_confirmed") or
+                     _donation_in_progress(existing)):
+        return json_response({"error": "node_name_taken"}, status=409)
+
+    email_bi = await blind_index(env, email)
+    dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+    if dup and dup.get("name_bi") != name_bi:
+        return json_response({"error": "email_taken"}, status=409)
+
+    salt, phash = await hash_password(password)
+    rec = existing or {}
+    rec.update({
+        "name": name,
+        "email": email,
+        "pass_salt": salt,
+        "pass_hash": phash,
+    })
+    rec["status"] = "active"
+    rec["email_verified"] = bool(rec.get("email_verified", False))
+    rec.setdefault("created_at", int(Date.now()))
+    rec.setdefault("signup", _signup_metadata(request))
+    signup_ip = (rec.get("signup") or {}).get("ip") or ""
+    ip_bi = await blind_index(env, signup_ip) if signup_ip else None
+    await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
+    if rec.get("email") and not rec["email_verified"]:
+        sent = await _send_verification_email(env, request, name, rec["email"])
+        if not sent:
+            await _enqueue_verification(env, name_bi, name, rec["email"])
+    return json_response(await _account_public_payload(env, rec), status=201)
 
 
 # Step 1 of the funnel: claim a public node name. The desktop client signs the
@@ -3440,11 +3980,101 @@ async def _account_finalize(env, request):
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
-    return json_response(
-        {"ok": True, "nodeName": name, "email": rec.get("email", ""),
-         "status": "active", "emailVerified": rec["email_verified"],
-         "isAdmin": await _is_admin(env, name)},
-        status=201)
+    return json_response(await _account_public_payload(env, rec), status=201)
+
+
+async def _account_profile(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    identifier = clean_string(
+        data.get("nodeName", "") or data.get("identifier", "") or
+        data.get("email", ""), 254).strip().lower()
+    password = (data.get("password", "") or "")[:256]
+    if not identifier or not password:
+        return json_response({"error": "invalid_credentials"}, status=401)
+
+    name_bi = ""
+    rec = None
+    if "@" in identifier:
+        email_bi = await blind_index(env, identifier)
+        row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if row:
+            name_bi = row.get("name_bi", "")
+            rec = await decrypt_row(env, row.get("data"))
+    elif valid_node_name(identifier):
+        name_bi, rec = await _account_row(env, identifier)
+    if not rec or rec.get("status") != "active" or not rec.get("pass_hash"):
+        return json_response({"error": "invalid_credentials"}, status=401)
+    if not await verify_password(password, rec.get("pass_salt", ""), rec.get("pass_hash", "")):
+        return json_response({"error": "invalid_credentials"}, status=401)
+    if not name_bi:
+        name_bi = await blind_index(env, rec.get("name", ""))
+
+    if data.get("deleteAccount") or data.get("disableAccount"):
+        await _delete_account_namespace(env, name_bi, rec)
+        return json_response({"ok": True, "accountDeleted": True})
+
+    changed = False
+    if "solana" in data:
+        solana = clean_string(data.get("solana", ""), 64).strip()
+        if solana and not SOLANA_RE.match(solana):
+            return json_response({"error": "bad_solana"}, status=400)
+        if solana:
+            if rec.get("solana") != solana:
+                rec["solana"] = solana
+                changed = True
+        elif rec.get("solana"):
+            rec.pop("solana", None)
+            changed = True
+
+    if "avatarPng" in data:
+        avatar_png, avatar_error = clean_avatar_png(data.get("avatarPng", ""))
+        if avatar_error:
+            status = 413 if avatar_error == "avatar_too_large" else 400
+            return json_response({"error": avatar_error}, status=status)
+        if avatar_png:
+            if rec.get("avatar_png") != avatar_png:
+                rec["avatar_png"] = avatar_png
+                rec["avatar_updated_at"] = int(Date.now())
+                changed = True
+        elif rec.get("avatar_png"):
+            rec.pop("avatar_png", None)
+            rec["avatar_updated_at"] = int(Date.now())
+            changed = True
+
+    verification_sent = False
+    verification_queued = False
+    if data.get("resendVerification") and rec.get("email") and not rec.get("email_verified"):
+        verification_sent = await _send_verification_email(env, request, rec.get("name", ""), rec.get("email", ""))
+        if not verification_sent:
+            await _enqueue_verification(env, name_bi, rec.get("name", ""), rec.get("email", ""))
+            verification_queued = True
+
+    new_name = clean_string(data.get("newNodeName", ""), MAX_NODE_NAME).lower()
+    renamed = False
+    if new_name:
+        if not rec.get("email_verified"):
+            return json_response({"error": "email_not_verified"}, status=403)
+        name_bi, rec, rename_error = await _rename_account_namespace(env, name_bi, rec, new_name)
+        if rename_error:
+            status = 400
+            if rename_error in ("node_name_taken", "repo_namespace_conflict"):
+                status = 409
+            elif rename_error == "invalid_credentials":
+                status = 401
+            return json_response({"error": rename_error}, status=status)
+        changed = False
+        renamed = True
+
+    if changed:
+        await _save_account(env, name_bi, rec)
+    payload = await _account_public_payload(env, rec)
+    payload["verificationSent"] = bool(verification_sent)
+    payload["verificationQueued"] = bool(verification_queued)
+    payload["nodeNameChanged"] = bool(renamed)
+    return json_response(payload)
 
 
 async def _login_locked_until(env, id_bi):
@@ -3527,6 +4157,12 @@ async def _account_login(env, request):
     elif valid_node_name(identifier):
         _, rec = await _account_row(env, identifier)
 
+    if rec is not None and rec.get("status") != "active":
+        if rec.get("pass_hash") and await verify_password(
+                password, rec.get("pass_salt", ""), rec.get("pass_hash", "")):
+            await _login_clear(env, id_bi)
+            return json_response({"error": "account_disabled"}, status=403)
+
     ok = (rec is not None and rec.get("status") == "active" and
           rec.get("pass_hash") and
           await verify_password(password, rec.get("pass_salt", ""),
@@ -3554,13 +4190,7 @@ async def _account_login(env, request):
     elif pubkey and rec.get("pubkey") != pubkey:
         return json_response({"error": "pubkey_mismatch"}, status=409)
 
-    return json_response({
-        "ok": True, "nodeName": rec.get("name", ""),
-        "email": rec.get("email", ""), "status": rec.get("status", "active"),
-        "pubkey": rec.get("pubkey", ""),
-        "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, rec.get("name", "")),
-    })
+    return json_response(await _account_public_payload(env, rec))
 
 
 def _random_bytes(n):
@@ -3583,8 +4213,12 @@ async def _account_heartbeat(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
     solana = clean_string(data.get("solana", ""), 64)
+    avatar_png, avatar_error = clean_avatar_png(data.get("avatarPng", ""))
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
+    if avatar_error:
+        status = 413 if avatar_error == "avatar_too_large" else 400
+        return json_response({"error": avatar_error}, status=status)
     name_bi, rec = await _account_row(env, name)
     if not rec or rec.get("status") != "active":
         return json_response({"ok": True, "online": False})
@@ -3598,6 +4232,10 @@ async def _account_heartbeat(env, request):
     # Keep the payout address current if the node sent a valid one.
     if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
         rec["solana"] = solana
+        await _save_account(env, name_bi, rec)
+    if avatar_png and rec.get("avatar_png") != avatar_png:
+        rec["avatar_png"] = avatar_png
+        rec["avatar_updated_at"] = int(Date.now())
         await _save_account(env, name_bi, rec)
 
     await d1_run(
@@ -3879,6 +4517,7 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
         {"address": a, "lamports": l} for a, l in transfers]
     await _save_bounty(env, bounty_bi, rec)
     await _record_bounty_payout(env, rec, transfers)
+    await notify_bounty_event(env, rec, "bounty_paid")
     return rec
 
 
@@ -4000,6 +4639,7 @@ async def bounties_handler(env, request, owner, repo):
 
     if action == "status":
         if rec.get("status") != "paid" and rec.get("address"):
+            previous_status = rec.get("status", "open")
             balance = await _solana_balance_lamports(env, rec["address"])
             if balance is not None:
                 rec["received_lamports"] = balance
@@ -4008,6 +4648,8 @@ async def bounties_handler(env, request, owner, repo):
                     if rec.get("status") == "open":
                         rec["status"] = "funded"
                 await _save_bounty(env, bounty_bi, rec)
+                if previous_status != "funded" and rec.get("status") == "funded":
+                    await notify_bounty_event(env, rec, "bounty_funded")
                 # As soon as it's funded and we have an owner-authorized payee,
                 # split it — no second manual payout step is needed.
                 if (rec.get("status") == "funded" and rec.get("payee") and
@@ -4069,6 +4711,7 @@ async def bounties_handler(env, request, owner, repo):
             {"address": a, "lamports": l} for a, l in transfers]
         await _save_bounty(env, bounty_bi, rec)
         await _record_bounty_payout(env, rec, transfers)
+        await notify_bounty_event(env, rec, "bounty_paid")
         return json_response(_bounty_public(rec))
 
     return json_response({"error": "bad_action"}, status=400)
@@ -4165,6 +4808,13 @@ async def shares_handler(env, request, owner, repo):
             "VALUES (?,?,?,?) ON CONFLICT(repo_bi, grantee_bi) DO UPDATE SET "
             "data=excluded.data, ts=excluded.ts",
             repo_bi, grantee_bi, enc, now)
+        await enqueue_notification(env, grantee, "repo_shared",
+                                   owner + " shared " + owner + "/" + repo + " with you",
+                                   body="You can now view and clone this private repository with your own node key.",
+                                   repo=owner + "/" + repo,
+                                   href="/dashboard?repo=" + quote(owner + "/" + repo),
+                                   actor=owner, source="repo_share",
+                                   dedupe="share:" + owner + "/" + repo + ":" + grantee)
         return json_response({"ok": True, "grantee": grantee, "shared": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -4886,8 +5536,12 @@ async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
     method = method_name(request)
+    if url.path == "/api/accounts/signup" and method == "POST":
+        return await _account_signup(env, request)
     if url.path == "/api/accounts/reserve" and method == "POST":
         return await _account_reserve(env, request)
+    if url.path == "/api/accounts/profile" and method == "POST":
+        return await _account_profile(env, request)
     if url.path == "/api/accounts/donation-address" and method == "POST":
         return await _account_donation_address(env, request)
     if url.path == "/api/accounts/donation-status" and method == "GET":
@@ -4927,6 +5581,8 @@ async def accounts_handler(env, request):
              "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
              "isAdmin": await _is_admin(env, rec.get("name", name)),
+             "avatarPng": rec.get("avatar_png", ""),
+             "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0)}
         )
     return json_response({"error": "not_found"}, status=404)
@@ -4965,6 +5621,234 @@ async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
         repo_bi, submitter_bi,
     )
     return bool(row and (row.get("c", 0) or 0) >= MAX_PENDING_PER_AUTHOR)
+
+
+async def enqueue_notification(env, recipient, kind, title, body="", repo="",
+                               href="", actor="", source="", dedupe="",
+                               ts=0, meta=None):
+    # Account-scoped notification index. It intentionally stores only an encrypted
+    # payload plus blind indexes/read state; the canonical event stays in repo git
+    # files or a signed inbox table.
+    await ensure_schema(env)
+    recipient = clean_string(recipient, MAX_NODE_NAME).lower()
+    actor = clean_string(actor, MAX_NODE_NAME).lower()
+    if not valid_node_name(recipient) or kind not in NOTIFICATION_KINDS:
+        return False
+    if actor and actor == recipient:
+        return False
+    now = int(ts or Date.now())
+    payload = notification_payload(
+        kind, title, body=body, repo=repo, href=href, actor=actor,
+        source=source, ts=now, meta=meta)
+    recipient_bi = await blind_index(env, recipient)
+    dedupe_value = dedupe or (kind + ":" + recipient + ":" + source + ":" +
+                              repo + ":" + str(now))
+    dedupe_bi = await blind_index(env, "notification:" + recipient + ":" + dedupe_value)
+    await d1_run(
+        env,
+        """INSERT INTO notifications (dedupe_bi, recipient_bi, ts, read_at, data)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(dedupe_bi) DO UPDATE SET
+             recipient_bi=excluded.recipient_bi,
+             ts=excluded.ts,
+             data=excluded.data""",
+        dedupe_bi, recipient_bi, now, 0, await encrypt_row(env, payload),
+    )
+    cutoff = now - NOTIFICATION_RETAIN_MS
+    await d1_run(
+        env,
+        "DELETE FROM notifications WHERE recipient_bi=? AND ts < ?",
+        recipient_bi, cutoff,
+    )
+    await d1_run(
+        env,
+        """DELETE FROM notifications
+           WHERE recipient_bi=? AND dedupe_bi NOT IN (
+             SELECT dedupe_bi FROM notifications
+             WHERE recipient_bi=? ORDER BY ts DESC LIMIT ?
+           )""",
+        recipient_bi, recipient_bi, MAX_NOTIFICATIONS_PER_RECIPIENT,
+    )
+    return True
+
+
+async def notify_mentions(env, owner, repo, actor, title, body, href, source):
+    for name in notification_mentions(title, body):
+        await enqueue_notification(
+            env, name, "mention", "You were mentioned in " + owner + "/" + repo,
+            body=(title or body or "Open the repository item to read the mention."),
+            repo=owner + "/" + repo, href=href, actor=actor, source=source,
+            dedupe="mention:" + owner + "/" + repo + ":" + source + ":" + name +
+                   ":" + clean_string(actor, 80) + ":" + clean_string(title, 80) +
+                   ":" + clean_string(body, 80),
+        )
+
+
+async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0):
+    kind = "pull_submitted" if source == "pull" else "pending_inbox"
+    label = {
+        "issue": "Issue submitted",
+        "pull": "Pull request submitted",
+        "commit_comment": "Commit comment submitted",
+        "discussion": "Discussion submitted",
+    }.get(source, "Pending inbox item")
+    await enqueue_notification(
+        env, owner, kind, label + " for " + owner + "/" + repo,
+        body=title or "A signed item is waiting in your desktop inbox.",
+        repo=owner + "/" + repo, href="/dashboard?repo=" + quote(owner + "/" + repo),
+        actor=actor, source=source,
+        dedupe="pending:" + owner + "/" + repo + ":" + source + ":" +
+               clean_string(actor, 120) + ":" + str(number) + ":" + clean_string(title, 120),
+        meta={"number": number, "source": source},
+    )
+
+
+async def notify_issue_assignees(env, owner, repo, assignees, actor, title, number=0):
+    for assignee in sorted({clean_string(a, MAX_NODE_NAME).lower() for a in (assignees or [])}):
+        if not valid_node_name(assignee):
+            continue
+        await enqueue_notification(
+            env, assignee, "issue_assigned",
+            "Issue assigned in " + owner + "/" + repo,
+            body=title or "You were assigned to an issue.",
+            repo=owner + "/" + repo,
+            href="/dashboard?repo=" + quote(owner + "/" + repo),
+            actor=actor, source="issue_assigned",
+            dedupe="issue-assigned:" + owner + "/" + repo + ":" + str(number) +
+                   ":" + assignee,
+            meta={"number": number},
+        )
+
+
+async def notify_bounty_event(env, rec, kind):
+    owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
+    repo = clean_string(rec.get("repo", ""), MAX_REPO_SEGMENT)
+    if not owner or not repo:
+        return
+    number = int(rec.get("number", 0) or 0)
+    title = "Bounty funded" if kind == "bounty_funded" else "Bounty paid"
+    await enqueue_notification(
+        env, owner, kind, title + " on " + owner + "/" + repo,
+        body=("Issue #" + str(number) + " bounty is " +
+              ("funded." if kind == "bounty_funded" else "paid.")),
+        repo=owner + "/" + repo,
+        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        source="bounty", dedupe=kind + ":" + owner + "/" + repo + ":" + str(number),
+        meta={"number": number, "status": rec.get("status", "")},
+    )
+
+
+async def notify_release_published(env, owner, repo, release):
+    tag = clean_string((release or {}).get("tag", ""), 128)
+    actor = clean_string((release or {}).get("created_by", ""), MAX_NODE_NAME).lower()
+    await enqueue_notification(
+        env, owner, "release_published",
+        "Release " + (tag or "published") + " published",
+        body=(release or {}).get("name", "") or ("Release " + tag + " is live."),
+        repo=owner + "/" + repo,
+        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        actor=actor, source="release",
+        dedupe="release:" + owner + "/" + repo + ":" + tag,
+        ts=int((release or {}).get("published_at", 0) or 0),
+        meta={"tag": tag},
+    )
+
+
+async def _repo_notification_target(env, repo_bi):
+    row = await d1_first(env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+    if not row:
+        return "", ""
+    rec = await decrypt_row(env, row.get("data", ""))
+    if not rec:
+        return "", ""
+    return (clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower(),
+            clean_string(rec.get("name", ""), MAX_REPO_SEGMENT))
+
+
+async def notify_host_status(env, repo_bi, kind):
+    owner, repo = await _repo_notification_target(env, repo_bi)
+    if not owner or not repo:
+        return
+    title = "Host online" if kind == "host_online" else "Host offline"
+    await enqueue_notification(
+        env, owner, kind, title + " for " + owner + "/" + repo,
+        body=("A desktop host is reachable." if kind == "host_online"
+              else "No live host has checked in recently."),
+        repo=owner + "/" + repo,
+        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        source="host", dedupe=kind + ":" + repo_bi,
+    )
+
+
+async def notify_stale_hosts_offline(env, cutoff):
+    rows = await d1_all(env, "SELECT repo_bi FROM host_presence WHERE ts < ?", cutoff)
+    for row in rows:
+        repo_bi = row.get("repo_bi")
+        if repo_bi:
+            await notify_host_status(env, repo_bi, "host_offline")
+
+
+async def notifications_handler(env, request):
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "GET":
+        params = parse_qs(urlparse(request.url).query)
+        node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+        if not valid_node_name(node):
+            return json_response({"error": "node_required"}, status=400)
+        try:
+            limit = int(params.get("limit", ["40"])[0])
+        except (TypeError, ValueError):
+            limit = 40
+        limit = max(1, min(limit, MAX_NOTIFICATIONS_FETCH))
+        recipient_bi = await blind_index(env, node)
+        rows = await d1_all(
+            env,
+            """SELECT dedupe_bi, ts, read_at, data FROM notifications
+               WHERE recipient_bi=? ORDER BY ts DESC LIMIT ?""",
+            recipient_bi, limit,
+        )
+        items = []
+        unread = 0
+        for row in rows:
+            rec = await decrypt_row(env, row.get("data", ""))
+            if not rec:
+                continue
+            read_at = int(row.get("read_at") or 0)
+            rec["id"] = row.get("dedupe_bi", "")
+            rec["readAt"] = read_at
+            rec["ts"] = int(row.get("ts") or rec.get("ts") or 0)
+            if not read_at:
+                unread += 1
+            items.append(rec)
+        return json_response({"ok": True, "notifications": items, "unread": unread})
+
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        if not valid_node_name(node):
+            return json_response({"error": "node_required"}, status=400)
+        recipient_bi = await blind_index(env, node)
+        now = int(Date.now())
+        if data.get("all"):
+            await d1_run(
+                env, "UPDATE notifications SET read_at=? WHERE recipient_bi=?",
+                now, recipient_bi)
+            return json_response({"ok": True})
+        ids = data.get("ids") if isinstance(data.get("ids"), list) else []
+        for item_id in ids[:MAX_NOTIFICATIONS_FETCH]:
+            item_id = clean_string(item_id, 160)
+            if item_id:
+                await d1_run(
+                    env,
+                    "UPDATE notifications SET read_at=? WHERE recipient_bi=? AND dedupe_bi=?",
+                    now, recipient_bi, item_id)
+        return json_response({"ok": True})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
 
 
 async def issues_handler(env, request, owner, repo):
@@ -5029,6 +5913,14 @@ async def issues_handler(env, request, owner, repo):
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         await _record_contributor(env, event.get("author", ""), "issues")
+        actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
+        await notify_pending_inbox(env, owner, repo, "issue", actor, item.get("titleIfNew", ""), number)
+        await notify_mentions(env, owner, repo, actor, item.get("titleIfNew", ""), event.get("body", ""),
+                              "/dashboard?repo=" + quote(owner + "/" + repo), "issue")
+        assignees = list(meta.get("assignees", [])) if isinstance(meta, dict) else []
+        if isinstance(event.get("assignees"), list):
+            assignees.extend(event.get("assignees"))
+        await notify_issue_assignees(env, owner, repo, assignees, actor, item.get("titleIfNew", ""), number)
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -5094,6 +5986,10 @@ async def pulls_handler(env, request, owner, repo):
                 repo_bi, await encrypt_row(env, item), submitter_bi,
             )
             await _record_contributor(env, event.get("author", ""), "pulls")
+            actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
+            await notify_pending_inbox(env, owner, repo, "pull", actor, event.get("body", ""), number)
+            await notify_mentions(env, owner, repo, actor, "Pull request comment", event.get("body", ""),
+                                  "/dashboard?repo=" + quote(owner + "/" + repo), "pull")
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -5123,6 +6019,11 @@ async def pulls_handler(env, request, owner, repo):
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         await _record_contributor(env, pull.get("author", ""), "pulls")
+        actor = clean_string(pull.get("authorName", "") or pull.get("author", ""), MAX_NODE_NAME).lower()
+        title = clean_string(pull.get("title", "") or pull.get("subject", ""), 240)
+        await notify_pending_inbox(env, owner, repo, "pull", actor, title, 0)
+        await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
+                              "/dashboard?repo=" + quote(owner + "/" + repo), "pull")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -5182,6 +6083,10 @@ async def commits_handler(env, request, owner, repo):
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
         await _record_contributor(env, comment.get("author", ""), "commits")
+        actor = clean_string(comment.get("authorName", "") or comment.get("author", ""), MAX_NODE_NAME).lower()
+        await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
+        await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
+                              "/dashboard?repo=" + quote(owner + "/" + repo), "commit_comment")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -5248,6 +6153,11 @@ async def discussions_handler(env, request, owner, repo):
             "VALUES (?,?,?)",
             repo_bi, await encrypt_row(env, item), submitter_bi,
         )
+        actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
+        title = item.get("titleIfNew", "") or "Discussion update"
+        await notify_pending_inbox(env, owner, repo, "discussion", actor, title, number)
+        await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
+                              "/dashboard?repo=" + quote(owner + "/" + repo), "discussion")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -6082,7 +6992,8 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             await log_error(
                 self.env, 500, method_name(request), url.path,
-                repr(error), request.headers.get("cf-ray") or "",
+                (repr(error) + "\n" + traceback.format_exc()),
+                request.headers.get("cf-ray") or "",
             )
             return json_response({"error": "internal_error"}, status=500)
         try:
@@ -6233,9 +7144,6 @@ class Default(WorkerEntrypoint):
         if url.path == "/blog.html":
             return Response("", status=308, headers={"location": "/blogs"})
 
-        if url.path == "/features":
-            return Response("", status=308, headers={"location": "/features/"})
-
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
                 {
@@ -6297,6 +7205,9 @@ class Default(WorkerEntrypoint):
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):
             return await catalog_handler(self.env, request)
+
+        if url.path in ("/api/notifications", "/api/notifications/"):
+            return await notifications_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
@@ -6391,7 +7302,7 @@ class Default(WorkerEntrypoint):
                 sig = params.get("sig", [""])[0]
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
-            elif host_match.group(3) in ("tree", "blob", "commits", "commit"):
+            elif host_match.group(3) in ("tree", "blob", "raw", "history", "commit", "branches"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -6818,9 +7729,14 @@ class ForkMeshHost(DurableObject):
             return await self._release_blob(release_blob_match.group(3))
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
-        if action in ("tree", "blob", "commits", "commit"):
+        ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()
+        if action == "raw":
             await self._mark_present(path)
-            return await self._tunnel(action, rel_path)
+            return await self._raw_blob(rel_path, ref)
+        if action in ("tree", "blob", "history", "commit", "branches"):
+            await self._mark_present(path)
+            op = "commits" if action == "history" else action
+            return await self._tunnel(op, rel_path, ref)
         return json_response({"error": "not_found"}, status=404)
 
     def _host_count(self):
@@ -6896,7 +7812,7 @@ class ForkMeshHost(DurableObject):
                 best, best_score = ws, score
         return best
 
-    async def _tunnel(self, op, rel_path):
+    async def _tunnel(self, op, rel_path, ref=""):
         self._ensure()
         host = self._best_host()
         if host is None:
@@ -6913,7 +7829,7 @@ class ForkMeshHost(DurableObject):
         try:
             host.send(
                 json.dumps({"type": "request", "reqId": req_id, "op": op,
-                            "path": rel_path})
+                            "path": rel_path, "ref": ref})
             )
         except Exception:
             self.pending.pop(req_id, None)
@@ -6981,6 +7897,43 @@ class ForkMeshHost(DurableObject):
             status = 404 if err in ("not_found", "bad_hash") else 502
             return Response("Release asset unavailable.", status=status)
         return release_bytes_response(result.get("data", b""), sha256)
+
+    async def _raw_blob(self, rel_path, ref=""):
+        # Stream a repository blob from git as bytes so browser-native previews
+        # can load media without the capped JSON/base64 /blob response.
+        if not rel_path or "\x00" in rel_path:
+            return Response("not found", status=404)
+        self._ensure()
+        host = self._best_host()
+        if host is None:
+            return Response("No host is currently serving this file.", status=503)
+        self.counter += 1
+        req_id = "r%d" % self.counter
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        self.git_buffers[req_id] = bytearray()
+        try:
+            host.send(json.dumps({
+                "type": "request", "reqId": req_id,
+                "op": "raw-blob", "path": rel_path, "ref": ref,
+            }))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503)
+        try:
+            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_buffers.pop(req_id, None)
+            return Response("Host timed out.", status=504)
+        if not result.get("ok"):
+            err = str(result.get("error", ""))
+            status = 404 if err in ("not_found", "bad_path") else 502
+            return Response("File unavailable.", status=status)
+        return repo_blob_bytes_response(result.get("data", b""), rel_path)
 
     def _drop_host(self, ws):
         # A send failed: force-close so the runtime drops it from getWebSockets.
