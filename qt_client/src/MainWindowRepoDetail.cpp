@@ -1205,6 +1205,10 @@ void MainWindow::openRepoDetail(int repoIndex)
         if (m_commitsTable)
             m_commitsTable->setRowCount(0);
         m_commitsLoadedTip.clear();
+        // Invalidate any still-pending stat fill from the repo we just left, so it
+        // doesn't run a --numstat read against this repo and write into rows we
+        // just cleared.
+        ++m_commitsLoadGen;
     }
     logStartup(QStringLiteral("  openRepo: commits loaded"));
     // Insights (contributor stats, git shortlog) are computed lazily when the
@@ -2761,17 +2765,22 @@ void MainWindow::refreshCommitMarkersIfStale()
 
 void MainWindow::loadCommits()
 {
-    // The reload fires several blocking git reads (status, log --numstat, the
-    // unpushed-set walk), any of which can take a second on a large repo. Keep the
-    // event loop breathing across them so the window stays painted (and the
-    // Refresh spinner keeps turning) instead of freezing. Nestable/RAII.
+    // The reload fires a few blocking git reads (status, the commit log, the
+    // unpushed-set walk). Keep the event loop breathing across them so the window
+    // stays painted (and the Refresh spinner keeps turning) instead of freezing.
+    // The slow per-commit diff (--numstat) is deferred to fillCommitStats() so it
+    // no longer holds up the list appearing. Nestable/RAII.
     GitKeepAlive keepAlive;
     refreshSourceControl(); // keep the working-changes panel in sync with the tab
     if (!m_commitsTable)
         return;
+    // Bump the load generation up front so any background stat fill still pending
+    // from a previous load (see fillCommitStats) sees its tag go stale and aborts,
+    // even if this load takes an early return below.
+    const int loadGen = ++m_commitsLoadGen;
     QSignalBlocker block(m_commitsTable);
     // Suspend the table's repaints for the *whole* reload, not just the row-build
-    // loop below. The heavy git reads (log --numstat, the unpushed-set walk) run
+    // loop below. The git reads (the commit log, the unpushed-set walk) run
     // under the GitKeepAlive above, which pumps the event loop — so without the
     // guard the table, already cleared to empty by setRowCount(0), would repaint
     // blank mid-load and flash before the rows arrive. With it the previous rows
@@ -2803,8 +2812,14 @@ void MainWindow::loadCommits()
     // Fetch one extra record so a full page tells us older history remains. When a
     // search is active (m_commitsShowingAll) we drop the cap entirely so the filter
     // can reach every commit in the current ref, including by hash.
+    //
+    // Deliberately NO --numstat here: that flag makes git diff every commit in the
+    // window (~1s on a large history) and was the bulk of this load's cost, yet it
+    // only feeds the Files/+/− columns. This plain log returns in milliseconds so
+    // the list paints immediately; fillCommitStats() backfills those three columns
+    // from a deferred --numstat read once the rows are on screen.
     QStringList logArgs{
-        "log", "--numstat",
+        "log",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
     if (!m_commitsShowingAll)
         logArgs << "-n" << QString::number(m_commitsLimit + 1);
@@ -2911,23 +2926,6 @@ void MainWindow::loadCommits()
             }
         }
 
-        int files = 0;
-        int adds = 0;
-        int dels = 0;
-        for (int i = 1; i < lines.size(); ++i) {
-            const QStringList stats = lines.at(i).split(QLatin1Char('\t'));
-            if (stats.size() < 3)
-                continue;
-            ++files;
-            bool ok = false;
-            const int addCount = stats.at(0).toInt(&ok);
-            if (ok)
-                adds += addCount;
-            const int delCount = stats.at(1).toInt(&ok);
-            if (ok)
-                dels += delCount;
-        }
-
         const int row = m_commitsTable->rowCount();
         m_commitsTable->insertRow(row);
         // Graph gutter cell: carries this row's lane layout for CommitGraphDelegate.
@@ -2985,17 +2983,20 @@ void MainWindow::loadCommits()
             hashItem->setToolTip(f.at(1));
         }
         m_commitsTable->setItem(row, kCommitHashCol, hashItem);
-        auto *fileItem = new SortTableWidgetItem(QString::number(files));
-        fileItem->setData(kTableSortRole, files);
+        // Files/+/− start as a pending dot and are filled by fillCommitStats()
+        // once the deferred --numstat read returns (see the log above). Sort key 0
+        // until then so sorting by these columns mid-fill stays well-defined.
+        const QString pending = QString::fromUtf8("\xC2\xB7"); // "·"
+        auto *fileItem = new SortTableWidgetItem(pending);
+        fileItem->setData(kTableSortRole, 0);
         m_commitsTable->setItem(row, 3, fileItem);
-        auto *addsItem = new SortTableWidgetItem(QStringLiteral("+%1").arg(adds));
+        auto *addsItem = new SortTableWidgetItem(pending);
         addsItem->setForeground(QColor("#2ea043"));
-        addsItem->setData(kTableSortRole, adds);
+        addsItem->setData(kTableSortRole, 0);
         m_commitsTable->setItem(row, 4, addsItem);
-        auto *delsItem =
-            new SortTableWidgetItem(QString::fromUtf8("\xE2\x88\x92%1").arg(dels));
+        auto *delsItem = new SortTableWidgetItem(pending);
         delsItem->setForeground(QColor("#f85149"));
-        delsItem->setData(kTableSortRole, dels);
+        delsItem->setData(kTableSortRole, 0);
         m_commitsTable->setItem(row, 5, delsItem);
 
         // Per-row "delete from history" button. Enabled only on the source of
@@ -3063,11 +3064,99 @@ void MainWindow::loadCommits()
     m_commitsLoadedMirrorTip = currentMirrorTip();
     refreshCommitsBranchButton(); // keep the branch indicator + switcher in sync
 
+    // Backfill the Files/+/− columns now that the rows are painted. This is the one
+    // slow read (a --numstat diff of every commit in the window); running it after
+    // the list is on screen is what makes opening Commits feel instant. loadGen
+    // discards it if another load supersedes this one before it lands.
+    QTimer::singleShot(0, this, [this, loadGen] { fillCommitStats(loadGen); });
+
     // Honour "closes #N" / "fixes #N" / "resolves #N" in commit messages by
     // closing and annotating the referenced issues (idempotent). This does its
     // own `git log` and a full issue-store scan, so defer it until after the
     // table has painted — it's a side effect, not part of rendering the list.
     QTimer::singleShot(0, this, [this] { applyCommitIssueClosures(); });
+}
+
+void MainWindow::fillCommitStats(int loadGen)
+{
+    // A newer load already replaced these rows (or the table is gone) — its own
+    // fill will run, so this stale one would only write mismatched counts. Bail
+    // before paying for the git read.
+    if (loadGen != m_commitsLoadGen || !m_commitsTable)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    // The expensive read loadCommits() left out: --numstat diffs every commit in
+    // the window. Keep the window breathing across it (it can take ~1s on a large
+    // history) — but the list is already on screen, so this only fills three
+    // columns rather than blocking the whole tab. Mirror loadCommits()'s window:
+    // the same cap, or no cap while a search is showing every commit.
+    GitKeepAlive keepAlive;
+    QStringList args{"log", "--numstat", "--format=%x1e%H"};
+    if (!m_commitsShowingAll)
+        args << "-n" << QString::number(m_commitsLimit);
+    args << currentRef();
+    QByteArray out;
+    if (!runGitCapture(dir, args, &out, nullptr))
+        return;
+    // The event-loop pump above can run another load while git worked; if so its
+    // rows are different and these stats no longer line up. Drop them.
+    if (loadGen != m_commitsLoadGen || !m_commitsTable)
+        return;
+
+    struct CommitStat { int files = 0; int adds = 0; int dels = 0; };
+    QHash<QString, CommitStat> stats;
+    for (const QByteArray &record : out.split('\x1e')) {
+        const QStringList lines =
+            QString::fromUtf8(record).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        if (lines.isEmpty())
+            continue;
+        CommitStat s;
+        for (int i = 1; i < lines.size(); ++i) {
+            const QStringList cols = lines.at(i).split(QLatin1Char('\t'));
+            if (cols.size() < 3)
+                continue;
+            ++s.files;
+            bool ok = false;
+            const int addCount = cols.at(0).toInt(&ok); // "-" for binary → skipped
+            if (ok)
+                s.adds += addCount;
+            const int delCount = cols.at(1).toInt(&ok);
+            if (ok)
+                s.dels += delCount;
+        }
+        stats.insert(lines.first(), s); // full hash (%H) is the record's first line
+    }
+
+    // Drop the counts into each row by full hash — the table may be sorted into a
+    // different order than git log returned them. Suspend sorting/signals so the
+    // bulk update is a single repaint, not one re-sort per cell.
+    QSignalBlocker block(m_commitsTable);
+    const bool wasSorting = m_commitsTable->isSortingEnabled();
+    m_commitsTable->setSortingEnabled(false);
+    for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
+        const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+        if (!sum)
+            continue;
+        const auto it = stats.constFind(sum->data(Qt::UserRole).toString());
+        if (it == stats.constEnd())
+            continue;
+        const CommitStat &s = it.value();
+        if (QTableWidgetItem *f = m_commitsTable->item(row, 3)) {
+            f->setText(QString::number(s.files));
+            f->setData(kTableSortRole, s.files);
+        }
+        if (QTableWidgetItem *a = m_commitsTable->item(row, 4)) {
+            a->setText(QStringLiteral("+%1").arg(s.adds));
+            a->setData(kTableSortRole, s.adds);
+        }
+        if (QTableWidgetItem *d = m_commitsTable->item(row, 5)) {
+            d->setText(QString::fromUtf8("\xE2\x88\x92%1").arg(s.dels));
+            d->setData(kTableSortRole, s.dels);
+        }
+    }
+    m_commitsTable->setSortingEnabled(wasSorting);
 }
 
 void MainWindow::loadMoreCommits()
