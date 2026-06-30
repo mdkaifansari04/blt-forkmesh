@@ -268,10 +268,15 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMeta->setWordWrap(true);
     m_pullMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                         Qt::LinksAccessibleByMouse);
-    // The "agent" reference (adhoc #78) jumps to the producing session's detail.
+    // The "agent" reference (adhoc #78) jumps to the producing session's detail;
+    // the base/head branch names open that branch's row in the Branches tab so a
+    // branch is clickable here too (issue #204).
     connect(m_pullMeta, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(kAgentLinkScheme))
             switchToAgentsTab(href.mid(kAgentLinkScheme.size()).toInt());
+        else if (href.startsWith(kBranchLinkScheme))
+            switchToBranch(QUrl::fromPercentEncoding(
+                href.mid(kBranchLinkScheme.size()).toUtf8()));
     });
     // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
     // it applies cleanly (or which files conflict) before they hit Merge.
@@ -1173,7 +1178,7 @@ void MainWindow::showPull(int number)
         QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
                        "<span style='color:#3fb950'>+%5</span> "
                        "<span style='color:#f85149'>-%6</span> \xC2\xB7 by %7")
-            .arg(found->base.toHtmlEscaped(), found->head.toHtmlEscaped(),
+            .arg(branchLinkHtml(found->base), branchLinkHtml(found->head),
                  found->status)
             .arg(formatCount(found->filesChanged))
             .arg(formatCount(found->additions))
