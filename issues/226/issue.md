@@ -5,7 +5,7 @@ title: show number of releases in releases tab
 status: open
 labels: [Partial]
 milestone: 
-priority: 50
+priority: 29
 progress: 20
 assignees: []
 createdAt: 1782354908601

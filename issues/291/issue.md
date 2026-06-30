@@ -5,7 +5,7 @@ title: when a worktree or pr related to an agent task is merged into main add a 
 status: open
 labels: [Incomplete]
 milestone: 
-priority: 76
+priority: 48
 progress: 5
 assignees: []
 createdAt: 1782502952144

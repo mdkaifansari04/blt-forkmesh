@@ -5,7 +5,7 @@ title: show the time on releases list and allow to click to see detail notes of 
 status: open
 labels: [Partial]
 milestone: 
-priority: 70
+priority: 20
 progress: 20
 assignees: []
 createdAt: 1782487517730
