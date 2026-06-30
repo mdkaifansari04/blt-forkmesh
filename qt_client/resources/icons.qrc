@@ -46,6 +46,7 @@
         <file alias="repo.svg">icons/octicons/repo.svg</file>
         <file alias="repo-forked.svg">icons/octicons/repo-forked.svg</file>
         <file alias="rocket.svg">icons/octicons/rocket.svg</file>
+        <file alias="screen-full.svg">icons/octicons/screen-full.svg</file>
         <file alias="search.svg">icons/octicons/search.svg</file>
         <file alias="server.svg">icons/octicons/server.svg</file>
         <file alias="shield-check.svg">icons/octicons/shield-check.svg</file>
