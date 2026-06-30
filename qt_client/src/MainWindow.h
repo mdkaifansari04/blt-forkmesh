@@ -744,16 +744,22 @@ private:
     void refreshPullList();
     void showPull(int number);
     void renderPullReviewSummary(const PullRequest &pr);
-    void renderPullDiff(const QString &filePath);
+    // Render every changed file of the current PR into one continuously
+    // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
+    // and the file list / Prev-Next jump between files.
+    void renderPullDiff();
+    // Scroll the all-files diff so the given file's section is at the top.
+    void scrollPullDiffToFile(const QString &filePath);
     void adjustDiffFont(int delta); // +/- diff text-size zoom
-    // Step the Files-changed view through every change: first the open file's
-    // hunks, then on to the next/previous file. delta is +1 (next) or -1 (prev).
+    // Scroll the Files-changed diff to the next/previous change relative to what
+    // is currently on screen. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
-    // Scroll the pull diff to the next/previous hunk header; returns false when
-    // there is no further hunk in that direction (so the caller can move files).
-    bool pullScrollToAdjacentHunk(int delta, bool fromEnd = false);
-    // Handle a click on a diff line-number anchor ("cmt:<side>:<line>"): prompt
-    // for a comment and attach it to that line of the current PR file.
+    // Scroll the pull diff to the next/previous hunk header relative to the
+    // current scroll position; returns false when there is no further hunk in
+    // that direction.
+    bool pullScrollToAdjacentHunk(int delta);
+    // Handle a click on a diff line-number anchor ("cmt:<path>?s=<side>&l=<line>"):
+    // prompt for a comment and attach it to that line of the PR file.
     void onPullDiffAnchorClicked(const QUrl &url);
     void submitPullThreadReply(const QString &threadId);
     void setPullThreadState(const QString &threadId, const QString &state);
@@ -2779,6 +2785,12 @@ private:
     // refresh/poll re-renders the same file with unchanged content. Cleared
     // whenever the widget is set to something other than a rendered diff.
     QString m_pullDiffRenderKey;
+    // current PR: file path -> the "file-N" HTML anchor in the all-files diff,
+    // so selecting a file in the list (or Prev/Next) can scroll straight to it.
+    QHash<QString, QString> m_pullFileAnchors;
+    // Set while the file list is being re-selected to follow the diff scroll, so
+    // currentItemChanged doesn't scroll the diff back to the file header.
+    bool m_pullSuppressFileScroll = false;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
