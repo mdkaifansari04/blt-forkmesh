@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 263
 title: have all tables be adjustable width for the columns
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 22

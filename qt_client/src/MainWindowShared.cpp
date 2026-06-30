@@ -508,23 +508,29 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
 // and +/- coloring (classes styled by the document stylesheet), one block per
 // file with a named anchor so the file list can scroll to it.
 // Build a line-number gutter cell. When anchors is true the number links to
-// "cmt:<side>:<line>" so the PR view can attach a comment to that line.
+// "cmt:<path>?s=<side>&l=<line>" so the PR view can attach a comment to that
+// line. The file path is carried in the anchor (not inferred from the selected
+// list row) so a continuous all-files diff targets the right file (issue #250).
 QString gutterCellHtml(const QString &cls, const QString &num, const QString &side,
-                       bool anchors)
+                       bool anchors, const QString &path)
 {
     if (num.isEmpty())
         return QStringLiteral("<td class='ln %1'></td>").arg(cls);
     if (!anchors)
         return QStringLiteral("<td class='ln %1'>%2</td>").arg(cls, num);
+    const QString enc = QString::fromLatin1(QUrl::toPercentEncoding(path));
     return QStringLiteral("<td class='ln lnlink %1'>"
-                          "<a href='cmt:%2:%3' title='Comment on this line'>%3</a></td>")
-        .arg(cls, side, num);
+                          "<a href='cmt:%2?s=%3&l=%4' title='Comment on this line'>"
+                          "%4</a></td>")
+        .arg(cls, enc, side, num);
 }
 
 // Insert any inline-comment note rows that target the just-emitted line numbers
-// (keys "old:<n>" / "new:<n>"), spanning all `columns` columns of the table.
-QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &oldNum,
-                     const QString &newNum, int columns)
+// (keys "<path>\x1fold:<n>" / "<path>\x1fnew:<n>"), spanning all `columns`
+// columns of the table. The path prefix keeps notes from one file off another
+// file's same-numbered line when every file is rendered into one view (#250).
+QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &path,
+                     const QString &oldNum, const QString &newNum, int columns)
 {
     QString out;
     const auto addNote = [&](const QString &key) {
@@ -534,10 +540,11 @@ QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &ol
                        .arg(columns)
                        .arg(note);
     };
+    const QString prefix = path + QLatin1Char('\x1f');
     if (!oldNum.isEmpty())
-        addNote(QStringLiteral("old:") + oldNum);
+        addNote(prefix + QStringLiteral("old:") + oldNum);
     if (!newNum.isEmpty())
-        addNote(QStringLiteral("new:") + newNum);
+        addNote(prefix + QStringLiteral("new:") + newNum);
     return out;
 }
 
@@ -673,6 +680,11 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     // seen, so the base85 literal/delta payload that follows is skipped instead of
     // rendered as garbage context rows. Reset at the next "diff --git".
     bool inBinary = false;
+    // Path of the file whose rows are currently being emitted (for comment
+    // anchors / note keys when all files share one rendered view — issue #250).
+    const auto curPath = [&] {
+        return fileIdx >= 0 ? files[fileIdx].path : QString();
+    };
 
     // Per-file header is emitted lazily: we buffer the rows so the header can
     // report final +/- counts (read from the hunks), then prepend the styled
@@ -802,19 +814,24 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         }
         QString gutters;
         if (addOnly)
-            gutters = gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors);
+            gutters = gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
+                                     curPath());
         else if (delOnly)
-            gutters = gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors);
+            gutters = gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors,
+                                     curPath());
         else
             gutters =
-                gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors) +
-                gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors);
+                gutterCellHtml(cls, oldCell, QStringLiteral("old"), anchors,
+                               curPath()) +
+                gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
+                               curPath());
         fileBody += QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
                         .arg(gutters, cls,
                              text.isEmpty() ? QStringLiteral("&nbsp;")
                                             : text.toHtmlEscaped());
         if (anchors)
-            fileBody += lineNoteRows(lineNotes, oldCell, newCell, oneSided ? 2 : 3);
+            fileBody += lineNoteRows(lineNotes, curPath(), oldCell, newCell,
+                                     oneSided ? 2 : 3);
     }
     closeFile();
     return html;
@@ -844,6 +861,11 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     bool inFile = false;
     bool inBinary = false; // see renderUnifiedDiffHtml
 
+    // Path of the file currently being emitted (for comment anchors / note keys
+    // when all files share one rendered view — issue #250).
+    const auto curPath = [&] {
+        return fileIdx >= 0 ? files[fileIdx].path : QString();
+    };
     // A side gutter cell; clickable (comment anchor) when anchors is on.
     const auto gut = [&](const QString &extraCls, const QString &num,
                          const QString &side) {
@@ -851,10 +873,11 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             return QStringLiteral("<td class='ln %1'></td>").arg(extraCls);
         if (!anchors)
             return QStringLiteral("<td class='ln %1'>%2</td>").arg(extraCls, num);
+        const QString enc = QString::fromLatin1(QUrl::toPercentEncoding(curPath()));
         return QStringLiteral("<td class='ln lnlink %1'>"
-                              "<a href='cmt:%2:%3' title='Comment on this line'>%3</a>"
-                              "</td>")
-            .arg(extraCls, side, num);
+                              "<a href='cmt:%2?s=%3&l=%4' title='Comment on this line'>"
+                              "%4</a></td>")
+            .arg(extraCls, enc, side, num);
     };
 
     // Buffered runs of removed/added lines awaiting pairing.
@@ -888,7 +911,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                     QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
                         .arg(gut(cls, ln, side), cls, emitText(t));
                 if (anchors)
-                    fileBody += lineNoteRows(lineNotes,
+                    fileBody += lineNoteRows(lineNotes, curPath(),
                                              addOnly ? QString() : ln,
                                              addOnly ? ln : QString(), 2);
             }
@@ -913,7 +936,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                                  addCls,
                                  hasAdd ? emitText(pendingAdd.at(i)) : QStringLiteral("&nbsp;"));
             if (anchors)
-                fileBody += lineNoteRows(lineNotes, oldLn, newLn, 4);
+                fileBody += lineNoteRows(lineNotes, curPath(), oldLn, newLn, 4);
         }
         pendingDel.clear();
         pendingAdd.clear();
@@ -1063,7 +1086,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                                  gut(QStringLiteral("nln"), ln2, QStringLiteral("new")),
                                  emitText(text));
             if (anchors)
-                fileBody += lineNoteRows(lineNotes, ln1, ln2, 4);
+                fileBody += lineNoteRows(lineNotes, curPath(), ln1, ln2, 4);
         }
     }
     closeFile();

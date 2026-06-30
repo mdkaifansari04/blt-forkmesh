@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 260
 title: allow claude clde prompt to be edited and saved in the settings
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 39
