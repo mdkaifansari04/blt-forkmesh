@@ -933,6 +933,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDiffView->setObjectName("diffView");
     m_agentDiffView->setOpenExternalLinks(false);
     m_agentDiffView->setLineWrapMode(QTextEdit::NoWrap);
+    registerDiffView(m_agentDiffView);
     // The DiffFileNavigator (sticky header + scroll<->select wiring) is created
     // lazily on first render, where its complete type is in scope.
 
@@ -5276,7 +5277,6 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
         return;
     const QString dir = sessionWorkdir(sessionId);
     const QString base = sessionDiffBase(sessionId, dir);
-    m_agentDiffView->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     QList<DiffFileEntry> files;
     const QString html =
         renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
@@ -5303,7 +5303,7 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
     // the file list below still rebuilds so committed/uncommitted markers stay
     // current.
     if (sessionId != m_agentDiffRenderedSession || shown != m_agentDiffLastHtml) {
-        m_agentDiffView->setHtml(shown);
+        setDiffHtml(m_agentDiffView, shown);
         m_agentDiffLastHtml = shown;
     }
 

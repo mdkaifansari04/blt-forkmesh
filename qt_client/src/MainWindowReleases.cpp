@@ -1272,9 +1272,9 @@ void MainWindow::showReleaseDetail(const QString &tag)
     diff->setObjectName("diffView");
     diff->setOpenLinks(false); // read-only diff; don't navigate on anchor clicks
     diff->setLineWrapMode(QTextEdit::NoWrap);
-    diff->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
+    registerDiffView(diff);
     if (diffHtml.trimmed().isEmpty())
-        diff->setHtml(
+        setDiffHtml(diff,
             prevTag.isEmpty()
                 ? QStringLiteral(
                       "<p style='color:#8b949e'>This is the earliest release "
@@ -1284,7 +1284,7 @@ void MainWindow::showReleaseDetail(const QString &tag)
                       "%2.</p>")
                       .arg(prevTag.toHtmlEscaped(), tag.toHtmlEscaped()));
     else
-        diff->setHtml(diffHtml);
+        setDiffHtml(diff, diffHtml);
     layout->addWidget(diff, 1);
 
     auto *buttons = new QDialogButtonBox;
