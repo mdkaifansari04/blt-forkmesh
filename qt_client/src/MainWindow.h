@@ -2340,6 +2340,10 @@ private:
     // talk. m_voiceInsertPos/Len mark the span those live passes own so each
     // refresh replaces only the dictation, never the user's own text.
     QPushButton *m_quickAddMicButton = nullptr;
+    // Auto-send toggle beside the mic (adhoc #45): when checked, the footer prompt
+    // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
+    // final transcription, so you can dictate-and-go without reaching for the keyboard.
+    QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
