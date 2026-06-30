@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ScreenCaptureOverlay.h"
 
 using namespace forkmesh::ui;
 
@@ -1664,6 +1665,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
+    // Square screenshot button beside the rebuild/restart button: drag a region
+    // anywhere on screen and it lands in the prompt as an attachment.
+    m_navScreenshotButton = new QPushButton;
+    m_navScreenshotButton->setObjectName("topNavButton");
+    m_navScreenshotButton->setCursor(Qt::PointingHandCursor);
+    m_navScreenshotButton->setToolTip(
+        QString::fromUtf8("Screenshot a region \xE2\x80\x94 drag a square anywhere on "
+                          "screen and it's attached to your prompt"));
+    setOcticon(m_navScreenshotButton, "screen-full", 14);
+    connect(m_navScreenshotButton, &QPushButton::clicked, this,
+            &MainWindow::captureScreenRegion);
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -1737,7 +1750,9 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addStretch();
-    // Right-aligned so it sits under the top-right avatar.
+    // Right-aligned so they sit under the top-right avatar; the screenshot button
+    // sits just left of the rebuild/restart button.
+    navRow->addWidget(m_navScreenshotButton);
     navRow->addWidget(m_navRebuildButton);
     layout->addLayout(navRow);
     // Home/Code is the initial section, so show its nav button selected up front.
@@ -1758,6 +1773,29 @@ void MainWindow::updateNavRebuildButton()
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(
             QSettings().value(kShowRebuildButtonSetting, false).toBool());
+}
+
+// Screenshot button: drop a full-screen overlay, let the user drag a rectangle
+// anywhere on the computer (capture on press, send on release), then save the
+// region to a temp PNG and queue it as the next quick-add attachment.
+void MainWindow::captureScreenRegion()
+{
+    ScreenCaptureOverlay *overlay = ScreenCaptureOverlay::begin();
+    if (!overlay) {
+        logSystem("Couldn't grab the screen for a region screenshot.");
+        return;
+    }
+    connect(overlay, &ScreenCaptureOverlay::captured, this,
+            [this](const QImage &image) {
+                const QString path = saveNewAgentPromptImage(image);
+                if (path.isEmpty()) {
+                    logSystem("Couldn't save the screenshot.");
+                    return;
+                }
+                queueQuickAddImage(path);
+                if (m_issueQuickAdd)
+                    m_issueQuickAdd->setFocus();
+            });
 }
 
 void MainWindow::updateConnectionStatus()
