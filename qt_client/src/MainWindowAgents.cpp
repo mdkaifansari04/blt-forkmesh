@@ -1128,6 +1128,11 @@ QWidget *MainWindow::buildAgentsTab()
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
             return;
+        // Clear the composer up front, before dispatching: the send paths below
+        // can pump the event loop (transcript repaint, session restart), and
+        // clearing only afterwards sometimes left the just-sent prompt stuck in
+        // the input box (adhoc #29). Empty it now so it's added and gone at once.
+        m_agentPromptEdit->clear();
         if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
             s && s->running()) {
             // Steer the live Claude Code transcript session: record the turn in
@@ -1169,7 +1174,6 @@ QWidget *MainWindow::buildAgentsTab()
                         .arg(prompt));
             continueSelectedAgentSession();
         }
-        m_agentPromptEdit->clear();
     });
 
     // Composer accessory controls: add-files (+), a slash-command menu, and the
@@ -1189,6 +1193,26 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSlashButton->setToolTip("Insert a slash command");
     connect(m_agentSlashButton, &QPushButton::clicked, this,
             &MainWindow::showAgentSlashMenu);
+
+    // Voice dictation mic (adhoc #29): hold to record, release to transcribe into
+    // the message box. Reuses the footer's whisper.cpp pipeline — including the
+    // circle spinner (RingSpinner) that rings the mic while the clip transcribes
+    // and the live input-level meter — so the composer dictates just like the
+    // footer prompt and comment composers. Shown only once a voice engine is
+    // installed; m_voiceButtons keeps its visibility in sync (updateVoiceInputButton).
+    m_agentVoiceButton = new QPushButton;
+    m_agentVoiceButton->setObjectName("ghostButton");
+    m_agentVoiceButton->setCursor(Qt::PointingHandCursor);
+    m_agentVoiceButton->setFixedWidth(32);
+    setOcticon(m_agentVoiceButton, "mic", 16);
+    m_agentVoiceButton->setToolTip(QStringLiteral(
+        "Speak your message \xE2\x80\x94 hold to record, release to transcribe."));
+    m_agentVoiceButton->setVisible(voiceInputReady());
+    connect(m_agentVoiceButton, &QPushButton::pressed, this,
+            [this] { startVoiceCaptureFor(m_agentPromptEdit, m_agentVoiceButton); });
+    connect(m_agentVoiceButton, &QPushButton::released, this,
+            &MainWindow::stopVoiceCapture);
+    m_voiceButtons.append(m_agentVoiceButton);
 
     m_agentAutoModeCombo = new QComboBox;
     m_agentAutoModeCombo->setObjectName("agentAutoMode");
@@ -1245,6 +1269,7 @@ QWidget *MainWindow::buildAgentsTab()
     composerBtns->setSpacing(6);
     composerBtns->addWidget(m_agentAddFilesButton);
     composerBtns->addWidget(m_agentSlashButton);
+    composerBtns->addWidget(m_agentVoiceButton);
     composerBtns->addWidget(m_agentAutoModeCombo);
     composerBtns->addWidget(m_agentModelCombo);
     composerBtns->addStretch(1);
