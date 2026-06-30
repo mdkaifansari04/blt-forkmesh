@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 192
 title: make a welcome room and announce new users to it
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 3

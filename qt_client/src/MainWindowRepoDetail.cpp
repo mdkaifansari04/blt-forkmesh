@@ -6970,12 +6970,16 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMessage->setTextFormat(Qt::RichText);
     m_commitMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                              Qt::LinksAccessibleByMouse);
-    // "#123" references in the message are rendered as ref: links and open
-    // issues first. PR/comment bodies use typed Markdown reference links.
+    // "#123" references in the message open issues/PRs (ref:), and bare commit
+    // SHAs open that commit (commit:) so a message referencing another commit is
+    // clickable everywhere a commit is shown. PR/comment bodies use typed
+    // Markdown reference links.
     connect(m_commitMessage, &QLabel::linkActivated, this,
             [this](const QString &href) {
                 if (href.startsWith(QStringLiteral("ref:")))
                     openCommitReference(href.mid(4).toInt());
+                else if (href.startsWith(QStringLiteral("commit:")))
+                    openCommitHashReference(href.mid(7));
             });
 
     m_commitMeta = new QLabel;

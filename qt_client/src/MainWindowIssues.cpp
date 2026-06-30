@@ -3240,6 +3240,7 @@ void MainWindow::promptNewIssue()
     auto *createButton = new QPushButton("Create", page);
     createButton->setObjectName("primaryButton");
     createButton->setCursor(Qt::PointingHandCursor);
+    createButton->setToolTip("Create the issue (Ctrl+Enter)");
     setOcticon(createButton, "issue-opened", 16);
     auto *pageNotice = new QLabel(page);
     pageNotice->setObjectName("issueInlineNotice");
@@ -3329,6 +3330,15 @@ void MainWindow::promptNewIssue()
         if (more)
             promptNewIssue();
     });
+
+    // Cmd/Ctrl+Enter from anywhere in the form submits it, matching the muscle
+    // memory from GitHub's new-issue page (issue #307). QKeySequence maps Ctrl to
+    // Command on macOS, so this is Cmd+Return there; WidgetWithChildren scope lets
+    // it fire whether focus is in the title or the description editor.
+    auto *submitShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), page);
+    submitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(submitShortcut, &QShortcut::activated, createButton, &QPushButton::click);
 
     showIssueComposePage(page);
     titleEdit->setFocus();

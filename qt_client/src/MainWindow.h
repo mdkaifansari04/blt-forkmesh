@@ -1644,9 +1644,11 @@ private:
     // captured region as a quick-add attachment.
     void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
-    // appears beside the prompt box. Clicking it records from the microphone;
-    // clicking again stops and transcribes the audio into the prompt locally.
-    void toggleVoiceCapture();
+    // appears beside the prompt box. It is push-to-talk: press and hold to
+    // record from the microphone, release to stop and transcribe the audio into
+    // the prompt locally.
+    void startVoiceCapture();
+    void stopVoiceCapture();
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
@@ -1662,6 +1664,10 @@ private:
     void stopMicTest();
     // Settings: download, build and provision whisper.cpp for local dictation.
     void installWhisperCpp();
+    // Settings: provision NVIDIA Parakeet (a local Python env) for dictation.
+    void installParakeet();
+    // Install whichever engine the Settings selector currently points at.
+    void installVoiceEngine();
     void refreshWhisperStatus();
     // Quick-add prompt history (adhoc #200): remember each sent prompt and let
     // Up/Down walk back through them in the footer bar. direction < 0 is Up
@@ -1868,6 +1874,10 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
+    // Post this node's one-time "just joined" greeting to the shared #welcome
+    // room. Only a brand-new identity announces (gated by a per-identity setting),
+    // so the network sees a single join line with no per-peer duplicates (#192).
+    void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
     // ("@<peerId>").
@@ -2270,6 +2280,12 @@ private:
     QLabel *m_whisperStatusLabel = nullptr;      // Settings install-status line
     QPushButton *m_whisperInstallButton = nullptr;
     QComboBox *m_whisperModelCombo = nullptr;
+    // Voice engine selector + Parakeet provisioning (the option to use Parakeet
+    // instead of whisper.cpp). m_parakeetInstallProc is the venv/pip build, kept on
+    // the window so closing Settings mid-install doesn't kill it.
+    QComboBox *m_voiceEngineCombo = nullptr;
+    QComboBox *m_parakeetModelCombo = nullptr;
+    QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
@@ -3387,6 +3403,9 @@ private:
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;
+    // True once this node has posted (or confirmed it already posted) its one-time
+    // #welcome greeting this run, so the per-roster check stays cheap (issue #192).
+    bool m_welcomeAnnounced = false;
     // Catalog-backed mirror list (issue #223): the worker's /mirrors payload for
     // the repo group currently shown in the mirror-nodes panel, merged in so a
     // mirror that isn't live in the chat room is still listed for the owner.
