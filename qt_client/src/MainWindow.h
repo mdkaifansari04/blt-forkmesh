@@ -1625,16 +1625,22 @@ private:
     void attachQuickAddImage();
     bool tryPasteImageIntoQuickAdd();
     void queueQuickAddImage(const QString &path);
+    void removeQuickAddImage(const QString &path);
     void clearQuickAddImages();
     void updateQuickAddImageButton();
+    // Rebuilds the row of attachment chips (thumbnail + an "x" to remove each)
+    // shown next to the paperclip once images are queued.
+    void rebuildQuickAddAttachChips();
     // Screenshot button (next to the rebuild/restart button): drops a full-screen
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
     void captureScreenRegion();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
-    // appears beside the prompt box. Clicking it records from the microphone;
-    // clicking again stops and transcribes the audio into the prompt locally.
-    void toggleVoiceCapture();
+    // appears beside the prompt box. It is push-to-talk: press and hold to
+    // record from the microphone, release to stop and transcribe the audio into
+    // the prompt locally.
+    void startVoiceCapture();
+    void stopVoiceCapture();
     void startVoiceTranscription(bool finalPass);
     void applyVoiceTranscript(const QString &text, bool finalPass);
     void updateVoiceInputButton();
@@ -2235,6 +2241,7 @@ private:
     QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
+    QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
