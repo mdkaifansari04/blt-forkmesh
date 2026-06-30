@@ -7,7 +7,7 @@ labels: []
 milestone: 
 priority: 2
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782758766690
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: mdkaifansari04

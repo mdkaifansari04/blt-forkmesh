@@ -332,6 +332,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCharCount = new QLabel;
     m_quickAddCharCount->setObjectName("quickAddCharCount");
     m_quickAddCharCount->setToolTip("Characters remaining in the quick-add title");
+    // Fixed width + right alignment so the count (1–5 digits) never changes the
+    // label's footprint as you type — otherwise the expanding prompt field next to
+    // it visibly jolts each time the digit count changes.
+    m_quickAddCharCount->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_quickAddCharCount->setFixedWidth(
+        m_quickAddCharCount->fontMetrics().horizontalAdvance(
+            QString::number(kQuickAddMaxChars)) +
+        6);
     auto updateQuickAddCharCount = [this, kQuickAddMaxChars]() {
         const int remaining =
             kQuickAddMaxChars - m_issueQuickAdd->toPlainText().length();
@@ -657,11 +665,19 @@ void MainWindow::toggleVoiceCapture()
                           .arg(QDateTime::currentMSecsSinceEpoch()));
     const AudioRecorderCommand rec = audioRecorderFor(m_voiceWavPath);
     if (rec.program.isEmpty()) {
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+        logSystem(
+            "Voice input needs ffmpeg to capture the microphone. Install it "
+            "(macOS: \"brew install ffmpeg\"; Windows: ffmpeg.org) and make sure "
+            "it's on your PATH.");
+        m_issueQuickAdd->setPlaceholderText("no recorder found (install ffmpeg)");
+#else
         logSystem(
             "Voice input needs a microphone recorder. Install one of: arecord "
             "(alsa-utils), parecord (pulseaudio-utils) or ffmpeg.");
         m_issueQuickAdd->setPlaceholderText(
             "no recorder found (install arecord / parecord / ffmpeg)");
+#endif
         return;
     }
 
@@ -3422,6 +3438,10 @@ void MainWindow::enablePaidMirroring()
 
 void MainWindow::showSection(int index)
 {
+    // Leaving Settings (index 1) while the mic test is recording would otherwise
+    // leave the recorder holding the microphone open in the background; stop it.
+    if (index != 1 && m_voiceTestRecording)
+        stopMicTest();
     if (m_navGroup && m_navGroup->button(index))
         m_navGroup->button(index)->setChecked(true);
     if (m_sectionStack)
