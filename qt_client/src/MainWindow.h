@@ -1466,6 +1466,13 @@ private:
     void promptNewRelease();
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
+    // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in
+    // its content-addressed store (forkmesh-releases/sha256/…). Lists each blob
+    // with its release name/tag, checksum and on-disk size, and lets it be deleted
+    // to reclaim space.
+    QWidget *buildArtifactsTab();
+    void loadArtifactsPanel();
+    void deleteArtifact(const QString &hash, const QString &label);
     QWidget *buildMirrorNodesTab();
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
@@ -2208,6 +2215,9 @@ private:
     QWidget *m_relayRadar = nullptr;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
+    int m_relayProbeFailures = 0;          // consecutive failed probes; the radar
+                                           // only flips to "offline" after the
+                                           // second miss (one blip isn't an outage)
     // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
@@ -2593,6 +2603,7 @@ private:
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
+    int m_artifactsTabIndex = -1; // index of the Artifacts page
     int m_settingsTabIndex = -1; // index of the Settings page
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -2651,6 +2662,8 @@ private:
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
+    QTableWidget *m_artifactsTable = nullptr;
+    QLabel *m_artifactsSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     // Live activity strip floating just above the Mirror nodes tab: a dot per
@@ -2720,6 +2733,12 @@ private:
     // fillCommitStats) from a superseded load drops itself instead of writing
     // mismatched Files/+/− counts into the new rows.
     int m_commitsLoadGen = 0;
+    // Short-lived cache for repoBranches() — avoids re-running `git branch` on
+    // every loadCommits() call (e.g. on each search keystroke). Keyed by dir;
+    // expires after 5 s so the button menu stays fresh after branch operations.
+    mutable QStringList m_branchesCache;
+    mutable QString m_branchesCacheDir;
+    mutable qint64 m_branchesCacheTime = 0;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is

@@ -5715,6 +5715,49 @@ inline int mirrorArtifactCount(const QString &mirrorPath)
     return count;
 }
 
+// One release artifact blob physically stored in a node's mirror CAS, resolved
+// from its content-addressed path. Used by the Artifacts tab to list what a node
+// is actually holding on disk (name/tag come from the release manifests).
+struct MirrorReleaseBlob {
+    QString hash; // the blob's sha256 (its own directory name / identity)
+    QString path; // absolute path to the "data" file on disk
+    qint64 size = 0; // byte size of the stored blob
+};
+
+// Every release artifact blob present in the mirror's content-addressed store,
+// largest first. Walks the same forkmesh-releases/sha256/<aa>/<hash>/data fanout
+// mirrorArtifactCount tallies, but returns each blob's on-disk size so the
+// Artifacts tab can show what's using space and offer to delete it.
+inline QList<MirrorReleaseBlob> mirrorReleaseBlobs(const QString &mirrorPath)
+{
+    QList<MirrorReleaseBlob> blobs;
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return blobs;
+    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
+    if (!casDir.exists())
+        return blobs;
+    const QStringList shards =
+        casDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &shard : shards) {
+        const QDir shardDir(casDir.filePath(shard));
+        const QStringList hashes =
+            shardDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &hash : hashes) {
+            const QString dataPath =
+                shardDir.filePath(hash + QStringLiteral("/data"));
+            const QFileInfo info(dataPath);
+            if (!info.exists())
+                continue;
+            blobs.append({hash, info.absoluteFilePath(), info.size()});
+        }
+    }
+    std::sort(blobs.begin(), blobs.end(),
+              [](const MirrorReleaseBlob &a, const MirrorReleaseBlob &b) {
+                  return a.size > b.size;
+              });
+    return blobs;
+}
+
 // How many numbered subdirectories a node's bare mirror holds under <subdir>/ on
 // the served branch (the same tally the issues / pulls / discussions tabs show).
 // Advertised to peers so the mirror-nodes view can show what each node is
