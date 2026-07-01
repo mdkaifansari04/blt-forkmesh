@@ -162,8 +162,12 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
                       ? QStringLiteral("-")
                       : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
     cell->setData(kTableSortRole, stat.files);
-    if (stat.conflicted)
-        cell->setForeground(QColor(QStringLiteral("#f85149")));
+    // Reset the brush explicitly in the clean case: refreshAgentTable() now reuses
+    // row items in place (adhoc #74), so a cell that was red for a conflict must
+    // clear back to the default colour once the conflict is gone rather than
+    // keeping the stale red tint.
+    cell->setForeground(stat.conflicted ? QBrush(QColor(QStringLiteral("#f85149")))
+                                        : QBrush());
     QStringList tip;
     if (stat.conflicted)
         tip << QStringLiteral("Conflicts with %1 — merge base in and resolve")
@@ -753,6 +757,34 @@ QWidget *MainWindow::buildAgentsTab()
             [this](const QString &kind, const QString &text, int percent) {
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
+            });
+    // The user answered an AskUserQuestion multiple-choice card in the transcript
+    // (issue #67). Satisfy the pending tool call so the CLI resumes, record the
+    // answer in the session buffer (persists + replays the answered card), and
+    // flip the session back to Running.
+    connect(m_agentTranscript, &ClaudeTranscriptView::questionAnswered, this,
+            [this](const QString &toolUseId, const QString &answer) {
+                const int sid = m_selectedAgentSessionId;
+                if (sid < 0)
+                    return;
+                ClaudeStreamSession *s = m_streamSessions.value(sid);
+                if (!s || !s->running())
+                    return;
+                applyTranscriptEvent(
+                    sid,
+                    QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_ask_answer")},
+                        {QStringLiteral("tool_use_id"), toolUseId},
+                        {QStringLiteral("text"), answer}});
+                s->sendToolResult(toolUseId, answer);
+                bumpClaudeCodeUsage();
+                if (AgentSession *as = findAgentSession(sid);
+                    as && as->status == AgentStatus::Waiting) {
+                    as->status = AgentStatus::Running;
+                    if (m_agentStore)
+                        m_agentStore->saveSession(*as);
+                    updateAgentStatusCell(sid);
+                }
             });
     // Issue #84: the live token/cost counter (statsChanged) is now folded into
     // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
@@ -2132,12 +2164,11 @@ void MainWindow::refreshAgentTable()
         if (passesFilter(session))
             agentDiffStat(session, agentGitDir, agentBase);
 
-    QSignalBlocker block(m_agentTable);
-    TableRepaintGuard repaintGuard(m_agentTable);
-    m_agentTable->setSortingEnabled(false);
-    m_agentTable->setRowCount(0);
-    // Whether "Delete all merged" has anything to act on — counted across the whole
-    // repo, before the search filter, since the batch ignores the filter (adhoc #235).
+    // The rows this repo + search filter will show, in session order (the table's
+    // own sort reorders them afterwards). Also count how many merged sessions the
+    // "Delete all merged" batch could act on — across the whole repo, before the
+    // search filter, since the batch ignores it (adhoc #235).
+    QList<const AgentSession *> visible;
     int mergedDeletable = 0;
     for (const AgentSession &session : sessions) {
         if (session.owner != owner || session.name != name)
@@ -2145,86 +2176,57 @@ void MainWindow::refreshAgentTable()
         if (session.merged && !session.branchName.isEmpty()
             && !isExternalSession(session.id))
             ++mergedDeletable;
-        if (!passesFilter(session))
-            continue;
-        const int row = m_agentTable->rowCount();
-        m_agentTable->insertRow(row);
+        if (passesFilter(session))
+            visible.append(&session);
+    }
 
-        auto *idItem = new QTableWidgetItem;
-        idItem->setData(Qt::DisplayRole, session.id);
-        idItem->setData(Qt::UserRole, session.id);
-        m_agentTable->setItem(row, 0, idItem);
-        // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
-        // conflict auto-fixer, issueNumber 0) just show their title.
-        m_agentTable->setItem(
-            row, 1,
-            new QTableWidgetItem(
-                session.issueNumber > 0
-                    ? QStringLiteral("#%1 %2").arg(session.issueNumber)
-                          .arg(session.issueTitle)
-                    : session.issueTitle));
-        m_agentTable->setItem(row, 2,
-                              new QTableWidgetItem(agentProviderName(session.provider)));
-        auto *status = new QTableWidgetItem;
-        applyAgentStatusCell(status, session);
-        m_agentTable->setItem(row, 3, status);
-        // Turns / Time columns: the run summary the CLI reports on finish, each
-        // sorting on its raw value (SortTableWidgetItem reads kTableSortRole).
-        auto *turns = new SortTableWidgetItem;
-        applyAgentTurnsCell(turns, session);
-        m_agentTable->setItem(row, 4, turns);
-        auto *runTime = new SortTableWidgetItem;
-        applyAgentTimeCell(runTime, session);
-        m_agentTable->setItem(row, 5, runTime);
-        auto *cost = new QTableWidgetItem;
-        cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
-        cost->setData(Qt::UserRole, session.costUsd);
-        cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
-        m_agentTable->setItem(row, 6, cost);
-        // Live token usage, refreshed in place as the session streams (see
-        // updateAgentTokenCell). Sort by the raw number, not the formatted text.
-        auto *tokens = new QTableWidgetItem;
-        const qint64 toks = sessionTokenTotal(session);
-        tokens->setData(Qt::DisplayRole,
-                        toks > 0 ? formatCount(toks) : QStringLiteral("-"));
-        tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
-        tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
-        m_agentTable->setItem(row, 7, tokens);
-        // Speed column: the token throughput with the service over the task,
-        // derived from the token total and the run duration (see
-        // applyAgentSpeedCell). Sorts on the raw rate via SortTableWidgetItem.
-        auto *speed = new SortTableWidgetItem;
-        applyAgentSpeedCell(speed, session, toks);
-        m_agentTable->setItem(row, 8, speed);
-        // "Updated" column: when the session was last touched — created,
-        // started, finished or merged, whichever is most recent — shown as a
-        // friendly "x ago" string. The tooltip carries the full timestamp, and
-        // the raw millisecond value drives chronological sorting.
-        const qint64 updatedMs =
-            qMax(qMax(session.createdAtMs, session.startedAtMs),
-                 qMax(session.finishedAtMs, session.mergedAtMs));
-        auto *updated = new SortTableWidgetItem(
-            updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
-                          : QStringLiteral("-"));
-        updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
-        if (updatedMs > 0)
-            updated->setToolTip(QDateTime::fromMSecsSinceEpoch(updatedMs)
-                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-        m_agentTable->setItem(row, 9, updated);
-        // Diff column (issue #170): files changed + branch ahead/behind, computed
-        // once per session and memoised (see agentDiffStat). Sorts on file count.
-        auto *diff = new SortTableWidgetItem;
-        applyAgentDiffCell(diff, agentDiffStat(session, agentGitDir, agentBase),
-                           agentBase);
-        m_agentTable->setItem(row, 10, diff);
-        // Night-rider light: a custom-painted scanner that sweeps while this
-        // session streams raw output. AgentScannerDelegate looks the animation
-        // state up by the sessionId stashed here in Qt::UserRole.
-        auto *activity = new QTableWidgetItem;
-        activity->setData(Qt::UserRole, session.id);
-        activity->setToolTip(QStringLiteral(
-            "Live activity — sweeps while the agent is streaming output"));
-        m_agentTable->setItem(row, kAgentActivityColumn, activity);
+    // Stability fix (adhoc #74): when the table already holds exactly this set of
+    // session rows, rewrite each row's cells in place instead of clearing the
+    // table and rebuilding it. setRowCount(0) + re-insert destroys and recreates
+    // every item, and queueing a message re-refreshes the list several times in a
+    // row (the status flips, the session may restart), so the wholesale rebuild
+    // made the list visibly flash and its Status column blank out between
+    // refreshes. Reusing the rows keeps the list steady; a real membership change
+    // (a row added or removed) still falls back to a full rebuild.
+    bool reuseRows = m_agentTable->rowCount() == visible.size();
+    if (reuseRows) {
+        QSet<int> present;
+        for (int r = 0; r < m_agentTable->rowCount(); ++r)
+            if (QTableWidgetItem *it = m_agentTable->item(r, 0))
+                present.insert(it->data(Qt::UserRole).toInt());
+        for (const AgentSession *s : std::as_const(visible))
+            if (!present.contains(s->id)) {
+                reuseRows = false;
+                break;
+            }
+    }
+
+    QSignalBlocker block(m_agentTable);
+    TableRepaintGuard repaintGuard(m_agentTable);
+    // Freeze sorting across the update so writing a cell's sort value can't reorder
+    // rows mid-loop (which would move the row out from under us); re-enabling it
+    // afterwards re-applies the user's chosen sort in a single pass.
+    m_agentTable->setSortingEnabled(false);
+    if (reuseRows) {
+        for (const AgentSession *sp : std::as_const(visible)) {
+            int row = -1;
+            for (int r = 0; r < m_agentTable->rowCount(); ++r) {
+                QTableWidgetItem *it = m_agentTable->item(r, 0);
+                if (it && it->data(Qt::UserRole).toInt() == sp->id) {
+                    row = r;
+                    break;
+                }
+            }
+            if (row >= 0)
+                applyAgentRowCells(row, *sp, agentGitDir, agentBase);
+        }
+    } else {
+        m_agentTable->setRowCount(0);
+        for (const AgentSession *sp : std::as_const(visible)) {
+            const int row = m_agentTable->rowCount();
+            m_agentTable->insertRow(row);
+            applyAgentRowCells(row, *sp, agentGitDir, agentBase);
+        }
     }
     m_agentTable->setSortingEnabled(true);
     block.unblock();
@@ -2259,6 +2261,92 @@ void MainWindow::refreshAgentTable()
     // they were in the list while staying on the active agent's detail.
     if (m_agentTable->verticalScrollBar())
         m_agentTable->verticalScrollBar()->setValue(scrollPos);
+}
+
+// Write one Agents-table row's cells for `session`. Reuses each column's existing
+// item when present (an in-place refresh, adhoc #74) and creates one of the right
+// type when the row is fresh (a full rebuild). Every apply*/setData below fully
+// overwrites the cell, so a reused item never keeps stale text/icon/colour.
+void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
+                                    const QString &agentGitDir,
+                                    const QString &agentBase)
+{
+    if (!m_agentTable)
+        return;
+    auto plain = [&](int col) -> QTableWidgetItem * {
+        QTableWidgetItem *it = m_agentTable->item(row, col);
+        if (!it) {
+            it = new QTableWidgetItem;
+            m_agentTable->setItem(row, col, it);
+        }
+        return it;
+    };
+    // Columns that sort on kTableSortRole need a SortTableWidgetItem.
+    auto sortable = [&](int col) -> QTableWidgetItem * {
+        QTableWidgetItem *it = m_agentTable->item(row, col);
+        if (!it) {
+            it = new SortTableWidgetItem;
+            m_agentTable->setItem(row, col, it);
+        }
+        return it;
+    };
+
+    QTableWidgetItem *idItem = plain(0);
+    idItem->setData(Qt::DisplayRole, session.id);
+    idItem->setData(Qt::UserRole, session.id);
+    // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
+    // conflict auto-fixer, issueNumber 0) just show their title.
+    plain(1)->setText(session.issueNumber > 0
+                          ? QStringLiteral("#%1 %2")
+                                .arg(session.issueNumber)
+                                .arg(session.issueTitle)
+                          : session.issueTitle);
+    plain(2)->setText(agentProviderName(session.provider));
+    // Status column: text + coloured glyph (issue #108).
+    applyAgentStatusCell(plain(3), session);
+    // Turns / Time columns: the run summary the CLI reports on finish, each sorting
+    // on its raw value (SortTableWidgetItem reads kTableSortRole).
+    applyAgentTurnsCell(sortable(4), session);
+    applyAgentTimeCell(sortable(5), session);
+    QTableWidgetItem *cost = plain(6);
+    cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
+    cost->setData(Qt::UserRole, session.costUsd);
+    cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
+    // Live token usage, refreshed in place as the session streams (see
+    // updateAgentTokenCell). Sort by the raw number, not the formatted text.
+    const qint64 toks = sessionTokenTotal(session);
+    QTableWidgetItem *tokens = plain(7);
+    tokens->setData(Qt::DisplayRole,
+                    toks > 0 ? formatCount(toks) : QStringLiteral("-"));
+    tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
+    tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
+    // Speed column: token throughput derived from the token total and run duration.
+    applyAgentSpeedCell(sortable(8), session, toks);
+    // "Updated" column: the most recent of created/started/finished/merged, shown
+    // as a friendly "x ago" string. The tooltip carries the full timestamp and the
+    // raw millisecond value drives chronological sorting.
+    const qint64 updatedMs =
+        qMax(qMax(session.createdAtMs, session.startedAtMs),
+             qMax(session.finishedAtMs, session.mergedAtMs));
+    QTableWidgetItem *updated = sortable(9);
+    updated->setData(Qt::DisplayRole,
+                     updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
+                                   : QStringLiteral("-"));
+    updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
+    updated->setToolTip(updatedMs > 0
+                            ? QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
+                                  QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                            : QString());
+    // Diff column (issue #170): files changed + branch ahead/behind, memoised.
+    applyAgentDiffCell(sortable(10),
+                       agentDiffStat(session, agentGitDir, agentBase), agentBase);
+    // Night-rider light: a custom-painted scanner that sweeps while this session
+    // streams raw output. AgentScannerDelegate looks the animation state up by the
+    // sessionId stashed here in Qt::UserRole.
+    QTableWidgetItem *activity = plain(kAgentActivityColumn);
+    activity->setData(Qt::UserRole, session.id);
+    activity->setToolTip(QStringLiteral(
+        "Live activity — sweeps while the agent is streaming output"));
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
@@ -4682,6 +4770,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
                                        .value(QStringLiteral("content")).toArray();
         QString assistantText;
+        bool askedQuestion = false;
         for (const QJsonValue &bv : content) {
             const QJsonObject b = bv.toObject();
             const QString btype = b.value(QStringLiteral("type")).toString();
@@ -4690,6 +4779,8 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             if (btype != QLatin1String("tool_use"))
                 continue;
             const QString name = b.value(QStringLiteral("name")).toString();
+            if (name == QLatin1String("AskUserQuestion"))
+                askedQuestion = true;
             if (name == QLatin1String("Edit") || name == QLatin1String("Write")
                 || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
                 const QString p = b.value(QStringLiteral("input")).toObject()
@@ -4700,6 +4791,11 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
+        // A clarifying question (AskUserQuestion) stops the turn on the tool call
+        // with no `result` event — the agent is waiting on the user's answer, so
+        // flag it "Waiting" and notify just as an ended turn would.
+        if (askedQuestion)
+            notifyAgentWaiting(sessionId, false);
     }
 
     // The turn finished (or the CLI is asking to use a tool while in manual mode):
