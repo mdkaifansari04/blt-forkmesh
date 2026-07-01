@@ -153,6 +153,230 @@ QWidget *MainWindow::buildReleasesTab()
     return page;
 }
 
+// ---- Artifacts panel -------------------------------------------------------
+//
+// Release binaries live out of git in the node's content-addressed store
+// (forkmesh-releases/sha256/<aa>/<hash>/data — see issue #304); the Releases tab
+// only links to their downloads. This tab lists the blobs actually on disk with
+// their size and the release they belong to, and lets each be deleted to reclaim
+// space (adhoc #98). An orphaned blob — one no release manifest references — is
+// surfaced explicitly, since those are the ones most worth pruning.
+
+QWidget *MainWindow::buildArtifactsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 14, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    auto *heading = new QLabel("Artifacts");
+    heading->setObjectName("channelTitle");
+    m_artifactsSummary = new QLabel;
+    m_artifactsSummary->setObjectName("statusLine");
+    auto *refreshButton = new QPushButton("Refresh");
+    refreshButton->setObjectName("ghostButton");
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(refreshButton, "sync", 16);
+    connect(refreshButton, &QPushButton::clicked, this,
+            &MainWindow::loadArtifactsPanel);
+    addRefreshSpin(refreshButton);
+    headerRow->addWidget(heading);
+    headerRow->addWidget(m_artifactsSummary);
+    headerRow->addStretch();
+    headerRow->addWidget(refreshButton);
+    layout->addLayout(headerRow);
+
+    auto *hint = new QLabel(
+        "Release binaries this node hosts for download, stored out of git in its "
+        "content-addressed release store. Deleting one frees its disk space; a peer "
+        "that still holds it can re-seed this node on the next sync.");
+    hint->setObjectName("statusLine");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    m_artifactsTable = new QTableWidget(0, 5);
+    m_artifactsTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_artifactsTable);
+    m_artifactsTable->setHorizontalHeaderLabels(
+        {"Artifact", "Release", "Size", "Checksum", ""});
+    m_artifactsTable->verticalHeader()->setVisible(false);
+    m_artifactsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_artifactsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_artifactsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_artifactsTable->setShowGrid(false);
+    m_artifactsTable->setWordWrap(false);
+    QHeaderView *rh = m_artifactsTable->horizontalHeader();
+    rh->setHighlightSections(false);
+    rh->setSectionResizeMode(0, QHeaderView::Stretch);
+    rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_artifactsTable);
+    layout->addWidget(m_artifactsTable, 1);
+    return page;
+}
+
+void MainWindow::loadArtifactsPanel()
+{
+    if (!m_artifactsTable)
+        return;
+    TableRepaintGuard repaintGuard(m_artifactsTable);
+    m_artifactsTable->setRowCount(0);
+    if (m_artifactsSummary)
+        m_artifactsSummary->clear();
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString mirrorPath = m_repositories.at(m_repoDetailIndex).mirrorPath;
+    // Deletion only touches the on-disk CAS in this node's own mirror, so it's
+    // fine on mirror-only hosting nodes too (where reclaiming space matters most)
+    // — gate on holding a writable local mirror, not on having a working tree.
+    const bool writable = !m_repositories.at(m_repoDetailIndex).previewOnly &&
+                          !mirrorPath.isEmpty() && QDir(mirrorPath).exists();
+
+    const QList<MirrorReleaseBlob> blobs = mirrorReleaseBlobs(mirrorPath);
+
+    // Map blob sha256 -> asset name / source tag from the release manifests git
+    // already mirrors (releases/<channel>/release.json on the served branch), the
+    // same way replicateReleaseArtifacts reads them. A blob no manifest names is
+    // an orphan and shown as such.
+    QHash<QString, QString> nameByHash;
+    QHash<QString, QString> tagByHash;
+    const QString branch = mirrorHeadBranch(mirrorPath);
+    QByteArray channelsOut;
+    if (!blobs.isEmpty() && !branch.isEmpty() &&
+        runGitCapture(mirrorPath,
+                      {QStringLiteral("ls-tree"), QStringLiteral("-z"),
+                       QStringLiteral("--name-only"),
+                       branch + QStringLiteral(":releases")},
+                      &channelsOut, nullptr)) {
+        for (const QByteArray &raw : channelsOut.split('\0')) {
+            const QString channel = QString::fromUtf8(raw).trimmed();
+            if (channel.isEmpty())
+                continue;
+            QByteArray manifestOut;
+            if (!runGitCapture(mirrorPath,
+                               {QStringLiteral("show"),
+                                branch + QStringLiteral(":releases/") + channel +
+                                    QStringLiteral("/release.json")},
+                               &manifestOut, nullptr))
+                continue;
+            const QJsonObject obj = QJsonDocument::fromJson(manifestOut).object();
+            const QString tag = obj.value(QStringLiteral("tag")).toString().trimmed();
+            const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
+            for (const QJsonValue &asset : assets) {
+                const QJsonObject a = asset.toObject();
+                const QString hash = a.value(QStringLiteral("blob_sha256"))
+                                         .toString()
+                                         .trimmed()
+                                         .toLower();
+                if (hash.isEmpty())
+                    continue;
+                const QString name = a.value(QStringLiteral("name")).toString();
+                if (!name.isEmpty() && !nameByHash.contains(hash))
+                    nameByHash.insert(hash, name);
+                if (!tag.isEmpty() && !tagByHash.contains(hash))
+                    tagByHash.insert(hash, tag);
+            }
+        }
+    }
+
+    qint64 totalBytes = 0;
+    for (const MirrorReleaseBlob &blob : blobs) {
+        const int row = m_artifactsTable->rowCount();
+        m_artifactsTable->insertRow(row);
+        totalBytes += blob.size;
+
+        const QString name = nameByHash.value(blob.hash);
+        const QString tag = tagByHash.value(blob.hash);
+        auto *nameItem = new QTableWidgetItem(
+            name.isEmpty() ? QStringLiteral("(unreferenced blob)") : name);
+        nameItem->setIcon(themedOcticon("package", QColor("#a371f7"), 14));
+        if (name.isEmpty())
+            nameItem->setToolTip(QStringLiteral(
+                "No release manifest references this blob — safe to delete to "
+                "reclaim its space."));
+        m_artifactsTable->setItem(row, 0, nameItem);
+        m_artifactsTable->setItem(
+            row, 1,
+            new QTableWidgetItem(tag.isEmpty() ? QStringLiteral("—") : tag));
+
+        auto *sizeItem =
+            new QTableWidgetItem(QLocale().formattedDataSize(blob.size));
+        sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_artifactsTable->setItem(row, 2, sizeItem);
+
+        auto *hashItem = new QTableWidgetItem(
+            QStringLiteral("sha256:%1").arg(blob.hash.left(12)));
+        hashItem->setToolTip(QStringLiteral("sha256:%1").arg(blob.hash));
+        m_artifactsTable->setItem(row, 3, hashItem);
+
+        auto *del = new QPushButton;
+        del->setObjectName("issueIconButton");
+        del->setFlat(true);
+        del->setCursor(Qt::PointingHandCursor);
+        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
+        del->setIconSize(QSize(15, 15));
+        del->setToolTip(QStringLiteral("Delete this artifact from disk"));
+        del->setEnabled(writable);
+        const QString hash = blob.hash;
+        const QString label = name.isEmpty() ? blob.hash.left(12) : name;
+        connect(del, &QPushButton::clicked, this,
+                [this, hash, label] { deleteArtifact(hash, label); });
+        m_artifactsTable->setCellWidget(row, 4, del);
+    }
+
+    if (m_artifactsSummary) {
+        if (blobs.isEmpty())
+            m_artifactsSummary->setText(QStringLiteral("(none)"));
+        else
+            m_artifactsSummary->setText(
+                QStringLiteral("(%1 · %2)")
+                    .arg(blobs.size())
+                    .arg(QLocale().formattedDataSize(totalBytes)));
+    }
+}
+
+void MainWindow::deleteArtifact(const QString &hash, const QString &label)
+{
+    if (hash.isEmpty() || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString mirrorPath = m_repositories.at(m_repoDetailIndex).mirrorPath;
+    if (QMessageBox::question(
+            this, "Delete artifact",
+            QStringLiteral("Delete artifact \"%1\" from this node's release store? "
+                           "This frees its disk space and cannot be undone, but a "
+                           "peer that still holds it can re-seed this node.")
+                .arg(label),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    // The blob lives at <mirror>/forkmesh-releases/sha256/<aa>/<hash>/data — drop
+    // the whole <hash>/ directory, then the <aa>/ shard once it's empty.
+    const QFileInfo info(mirrorReleaseBlobPath(mirrorPath, hash));
+    QDir hashDir = info.absoluteDir();
+    if (!hashDir.removeRecursively()) {
+        setRepoDetailNotice(
+            QStringLiteral("Could not delete artifact %1.").arg(label), true);
+        return;
+    }
+    QDir shardDir = hashDir;
+    if (shardDir.cdUp() && shardDir.isEmpty())
+        shardDir.rmdir(QStringLiteral("."));
+    logSystem(
+        QStringLiteral("Artifacts: deleted %1 (sha256:%2) from the release store.")
+            .arg(label, hash.left(12)));
+    setRepoDetailNotice(QStringLiteral("Deleted artifact %1.").arg(label));
+    loadArtifactsPanel();
+    // The Mirror nodes view advertises this node's artifact tally; keep it honest
+    // if it's the visible tab.
+    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
+        loadMirrorNodesPanel();
+}
+
 void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
