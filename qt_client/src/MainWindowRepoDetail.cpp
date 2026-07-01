@@ -6189,14 +6189,20 @@ void MainWindow::createAndCheckoutBranch()
     }
     logSystem(QStringLiteral("Git: created and checked out %1.").arg(name));
     setRepoDetailNotice(QStringLiteral("Created and switched to %1.").arg(name));
+    m_branchesCache.clear(); // new branch — bust the cache so it appears in the menu
     setRepoBranch(name);
     refreshCommitsBranchButton();
 }
 
 QStringList MainWindow::repoBranches() const
 {
-    QStringList branches;
     const QString dir = repoGitDir();
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (dir == m_branchesCacheDir && !m_branchesCache.isEmpty() &&
+        now - m_branchesCacheTime < 5) {
+        return m_branchesCache;
+    }
+    QStringList branches;
     QByteArray out;
     if (!dir.isEmpty() &&
         runGitCapture(dir,
@@ -6209,6 +6215,9 @@ QStringList MainWindow::repoBranches() const
                 branches.append(branch);
         }
     }
+    m_branchesCacheDir = dir;
+    m_branchesCache = branches;
+    m_branchesCacheTime = now;
     return branches;
 }
 
@@ -6456,6 +6465,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Worktrees", "file-directory"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
+                                {"Artifacts", "package"},
                                 {"Settings", "gear"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
@@ -6568,17 +6578,18 @@ QWidget *MainWindow::buildRepoDetailSection()
     mirrorStrip->hide();
     m_mirrorActivityStrip = mirrorStrip;
 
-    // Current-release pill floating just above the Releases tab (adhoc #69),
-    // mirroring the mirror-activity strip over Mirror nodes: a small purple tag
-    // pill naming the newest release so it's visible from any tab. Created
-    // parented to the window; positionReleaseStrip reparents it onto the page and
-    // the tag scan (loadBranchesAndTags / loadReleasesPanel) fills in its text.
+    // Current-release label floating just above the Releases tab (adhoc #69),
+    // mirroring the mirror-activity strip over Mirror nodes: it names the newest
+    // release so it's visible from any tab. Rendered as plain text (no pill
+    // chrome) at a comfortably readable size; the colour is left to the theme
+    // foreground. Created parented to the window; positionReleaseStrip reparents
+    // it onto the page and the tag scan (loadBranchesAndTags / loadReleasesPanel)
+    // fills in its text.
     m_releaseStrip = new QLabel(this);
     m_releaseStrip->setObjectName("releaseStrip");
     m_releaseStrip->setStyleSheet(
-        QStringLiteral("#releaseStrip{color:#d2a8ff;background:rgba(163,113,247,0.15);"
-                       "border:1px solid rgba(163,113,247,0.4);border-radius:9px;"
-                       "padding:0px 8px;font-size:11px;}"));
+        QStringLiteral("#releaseStrip{background:transparent;border:none;"
+                       "padding:0px;font-size:15px;}"));
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
@@ -6601,8 +6612,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 11 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 12 Mirror nodes
+    m_artifactsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildArtifactsTab());                   // 13 Artifacts
     m_settingsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 13 Settings
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 14 Settings
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -6687,6 +6700,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadReleasesPanel();
         else if (id == m_mirrorNodesTabIndex)
             loadMirrorNodesPanel();
+        else if (id == m_artifactsTabIndex)
+            loadArtifactsPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
         // Hand keyboard focus to the new tab's list so the user can arrow through

@@ -2,6 +2,7 @@
   const state = {
     repositories: [],
     filteredRepositories: [],
+    filteredGroups: [],
     page: 1,
     pageSize: 5,
     selectedRepo: null,
@@ -176,6 +177,48 @@
 
   function repoKey(repo) {
     return `${repo.owner || ""}/${repo.name || ""}`;
+  }
+
+  function repoGroupKey(repo) {
+    const root = (repo?.rootCommit || "").trim();
+    return root ? "root:" + root : "name:" + (repo?.name || "").trim().toLowerCase();
+  }
+
+  function groupRepositories(repos) {
+    const groups = new Map();
+    for (const repo of repos) {
+      const key = repoGroupKey(repo);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(repo);
+    }
+    // Fold empty-root name-keyed mirrors into rooted groups (same logic as worker).
+    const rootedByName = new Map();
+    for (const [key, members] of groups) {
+      if (!key.startsWith("root:")) continue;
+      for (const m of members) {
+        const n = (m.name || "").trim().toLowerCase();
+        if (n && !rootedByName.has(n)) rootedByName.set(n, key);
+      }
+    }
+    for (const [key, members] of [...groups]) {
+      if (!key.startsWith("name:")) continue;
+      const target = rootedByName.get(key.slice("name:".length));
+      if (target && groups.has(target)) {
+        groups.get(target).push(...members);
+        groups.delete(key);
+      }
+    }
+    return [...groups.values()].map((members) => {
+      const sorted = [...members].sort((a, b) => {
+        if (!!b.liveHost !== !!a.liveHost) return (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0);
+        return (b.lastSync || 0) > (a.lastSync || 0) ? 1 : -1;
+      });
+      return { primary: sorted[0], members: sorted };
+    });
+  }
+
+  function sourceOfTruth(group) {
+    return group.members.find((m) => (m.source || "").trim() === "local-node") || group.primary;
   }
 
   function repoApiBase(repo) {
@@ -844,31 +887,37 @@
     return repoIsLive(repo) && !repo?.liveHost;
   }
 
-  function repositoryCard(repo) {
-    const key = repoKey(repo);
+  function repositoryCard(group) {
+    const origin = sourceOfTruth(group);
+    const repo = group.primary;
+    const key = repoKey(origin);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
-    const visibility = repo.isPrivate ? "private" : "public";
+    const visibility = origin.isPrivate ? "private" : "public";
     const statusClass = live ? "text-primary" : "text-muted-foreground";
-    const statusText = viaMirror ? "via mirror" : live ? "online" : "offline";
+    const nodeCount = group.members.length;
+    const liveCount = group.members.reduce((n, m) => n + (repoIsLive(m) ? 1 : 0), 0);
+    const statusText = nodeCount > 1
+      ? `${liveCount} of ${nodeCount} nodes`
+      : (viaMirror ? "via mirror" : live ? "online" : "offline");
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" class="repo-card group px-4 sm:px-5 py-5 hover:bg-secondary/40 transition-colors">
         <div class="repo-layout flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
           <div class="min-w-0">
             <p class="text-sm font-medium text-foreground truncate">
-              <span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span>${escapeHtml(repo.name || "repository")}
+              <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
             </p>
-            <p class="mt-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <p class="mt-2 text-sm text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
             <div class="mt-4 flex items-center gap-x-5 gap-y-2 flex-wrap">
               <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(visibility)}
               </span>
               <span class="flex items-center gap-1 text-xs text-muted-foreground">
-                <i data-lucide="radio" class="w-3 h-3"></i>${viaMirror ? "served by mirror" : live ? "live host" : "host offline"}
+                <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} nodes` : (viaMirror ? "served by mirror" : live ? "live host" : "host offline")}
               </span>
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
-            <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" class="copy-button mt-5 inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-secondary text-xs text-foreground hover:bg-secondary/80 transition-colors">
+            <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(origin))}" class="copy-button mt-5 inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-secondary text-xs text-foreground hover:bg-secondary/80 transition-colors">
               <i data-lucide="copy" class="copy-icon w-3.5 h-3.5"></i>
               <i data-lucide="check" class="copy-check w-3.5 h-3.5 text-primary"></i>
               Copy clone
@@ -890,13 +939,13 @@
   }
 
   function updateRepositoryPagination() {
-    const total = state.filteredRepositories.length;
+    const total = state.filteredGroups.length;
     const pages = Math.max(1, Math.ceil(total / state.pageSize));
     state.page = Math.min(Math.max(1, state.page), pages);
 
     const start = (state.page - 1) * state.pageSize;
     const end = Math.min(start + state.pageSize, total);
-    const visible = state.filteredRepositories.slice(start, end);
+    const visible = state.filteredGroups.slice(start, end);
     const list = $("#repoList");
     const summary = $("[data-repo-summary]");
     const prev = $("[data-repo-prev]");
@@ -910,7 +959,7 @@
     }
     if (summary) {
       summary.textContent = total
-        ? `Showing ${start + 1}-${end} of ${total} mirrored repositories`
+        ? `Showing ${start + 1}-${end} of ${total} repositories`
         : "No repositories match this filter";
     }
     if (prev) {
@@ -946,16 +995,18 @@
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
       repositoryMatchesQuery(repo, query));
+    state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
   }
 
   function renderRepositories(repositories, session) {
     state.repositories = Array.isArray(repositories) ? repositories : [];
     state.filteredRepositories = state.repositories.slice();
+    state.filteredGroups = groupRepositories(state.repositories);
     state.page = 1;
 
     const count = $("[data-repo-count]");
-    if (count) count.textContent = `${formatCount(state.repositories.length)} mirrored`;
+    if (count) count.textContent = `${formatCount(state.filteredGroups.length)} mirrored`;
 
     renderSidebarRepositories(session);
     applyRepositoryFilter();

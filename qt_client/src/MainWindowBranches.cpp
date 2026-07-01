@@ -357,6 +357,8 @@ void MainWindow::focusRepoDetailTable(int id)
         table = m_releasesTable;
     else if (id == m_mirrorNodesTabIndex)
         table = m_mirrorNodesTable;
+    else if (id == m_artifactsTabIndex)
+        table = m_artifactsTable;
     // Only grab focus for a table that's actually on screen (e.g. the Issues tab
     // hides m_issueTable while its Milestones/Labels sub-tab is showing).
     if (table && table->isVisible() && table->isEnabled())
@@ -2466,6 +2468,7 @@ void MainWindow::deleteBranch(const QString &branch)
     }
     logSystem(QStringLiteral("Git: deleted branch %1.").arg(branch));
     setRepoDetailNotice(QStringLiteral("Deleted branch %1.").arg(branch));
+    m_branchesCache.clear(); // branch removed — bust the cache
     // Steer loadBranchesPanel()'s "re-select the previously-viewed branch" logic at
     // the neighbour: it reads m_branchDiffBranch as the branch to restore, and an
     // empty value falls back to the default branch ("go to main") (adhoc #256).
