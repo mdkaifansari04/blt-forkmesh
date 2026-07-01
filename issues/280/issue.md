@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 280
 title: give more info when we stall 11:18:08  INFO   [11:18:08] UI stalled ~5485 ms (event loop blocked)
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 44
