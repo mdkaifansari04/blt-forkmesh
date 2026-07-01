@@ -5028,7 +5028,7 @@ void MainWindow::showCommit(const QString &hash)
         mf.value(3).trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     const QString subject = mf.value(4).trimmed();
     const QString body = mf.value(5).trimmed();
-    const QString shortHash = full.isEmpty() ? hash : full.left(7);
+    const QString fullHash = full.isEmpty() ? hash : full;
 
     // Diff against the first parent (or the empty tree for a root commit), which
     // matches how a commit page presents merges and initial commits.
@@ -5073,7 +5073,7 @@ void MainWindow::showCommit(const QString &hash)
     // --- Header labels.
     if (m_commitTitle)
         m_commitTitle->setText(
-            QStringLiteral("Commit <code>%1</code>").arg(shortHash.toHtmlEscaped()));
+            QStringLiteral("Commit <code>%1</code>").arg(fullHash.toHtmlEscaped()));
     if (m_commitMessage) {
         QString msg =
             QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
