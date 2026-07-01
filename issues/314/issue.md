@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 314
 title: plese make issues show up on the website and other tab data only show the cou…
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
