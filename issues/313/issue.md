@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 313
 title: add the ability for a user to reset their password please
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
