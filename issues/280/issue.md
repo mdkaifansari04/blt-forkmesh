@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 280
 title: give more info when we stall 11:18:08  INFO   [11:18:08] UI stalled ~5485 ms (event loop blocked)
-status: open
+status: closed
 labels: [Incomplete]
 milestone: 
 priority: 44
 progress: 10
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782487143729
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode

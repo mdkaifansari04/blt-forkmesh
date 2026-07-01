@@ -1024,6 +1024,10 @@ def build_repo_mirrors_payload(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
         )
         issue_count = _int_field(rec, "issueCount")
+        # Clones / website serves this node has provided; -1 == not advertised
+        # (older peer or a record predating the counters), shown as an em-dash.
+        clones_served = _int_field(rec, "clonesServed")
+        website_served = _int_field(rec, "websiteServed")
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1050,6 +1054,8 @@ def build_repo_mirrors_payload(
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
             "id": str(rec.get("nodeId") or "").strip(),
+            "clonesServed": clones_served,
+            "websiteServed": website_served,
         })
 
     mirrors.sort(
@@ -2004,6 +2010,11 @@ def safe_catalog_record(data):
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
+        # How many clones and website (browse/fetch) requests this node has served
+        # for the repo. Purely local counters otherwise, mirrored here so the Mirror
+        # nodes view can show a node's contribution even while it's offline.
+        "clonesServed": clean_string(data.get("clonesServed", ""), 12),
+        "websiteServed": clean_string(data.get("websiteServed", ""), 12),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
         # Owner-signed fingerprint of the repo's served refs (sha256 over the
@@ -2067,6 +2078,15 @@ SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
+# Central donation fund (issue #308): a single worker-custodied Solana wallet
+# that anyone can donate to. A cron sweeps its whole balance out to the
+# currently-online nodes once an hour, so one donation address fans out to every
+# node keeping the network alive.
+CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
+# Don't distribute dust: wait until the fund holds at least this much over the
+# fee reserve before sweeping, so a cycle doesn't burn a transaction fee to hand
+# out a few lamports each.
+CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
 
@@ -2207,6 +2227,11 @@ SCHEMA_STATEMENTS = [
     # encrypted row holding the auto-generated Ed25519 keypair used to sign
     # relay->main calls. id is always 1.
     "CREATE TABLE IF NOT EXISTS relay_self (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
+    # Central donation fund (issue #308): a single worker-custodied Solana wallet
+    # anyone can donate to, swept out to online nodes on an hourly cron. The
+    # encrypted blob holds the deposit address, its Ed25519 seed, and the last
+    # distribution's timestamp/signature. id is always 1. Main relay only.
+    "CREATE TABLE IF NOT EXISTS central_fund (id INTEGER PRIMARY KEY, data TEXT NOT NULL)",
     # --- Leaderboard backing data (issue #11) -------------------------------
     # First time each repo's tunnel was ever seen live, so the "longest hosted"
     # board can rank by age. repo_bi is the same blind index host_presence uses
@@ -4486,6 +4511,101 @@ async def _sweep_confirmed_donation(env, name_bi, rec, balance=None):
     return True
 
 
+# --- Central donation fund (issue #308) -------------------------------------
+# One worker-custodied Solana wallet that anyone can donate to. A cron sweeps its
+# whole balance out to the currently-online nodes once an hour, so a single
+# donation address fans out to everyone keeping the network alive. Only the main
+# relay custodies it (federated relays proxy the address lookup, like treasury).
+async def _central_fund_record(env):
+    # Load-or-create the fund keypair, kept in D1 so the operator needs no key
+    # management. Mirrors _relay_identity's single-row pattern.
+    row = await d1_first(env, "SELECT data FROM central_fund WHERE id=1")
+    if row:
+        rec = await decrypt_row(env, row.get("data"))
+        if rec and rec.get("address") and rec.get("secret"):
+            return rec
+    addr, secret = await _new_solana_keypair()
+    if not addr:
+        return None
+    rec = {"address": addr, "secret": secret}
+    await _save_central_fund(env, rec)
+    return rec
+
+
+async def _save_central_fund(env, rec):
+    await d1_run(
+        env,
+        "INSERT INTO central_fund (id, data) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        await encrypt_row(env, rec))
+
+
+async def _central_fund_public(env):
+    # Public donation payload: the fund's address, live balance, a Solana Pay URI,
+    # and the last hourly distribution so a client can show a QR + status.
+    rec = await _central_fund_record(env)
+    if not rec:
+        return None
+    addr = rec.get("address", "")
+    balance = await _solana_balance_lamports(env, addr)
+    return {
+        "address": addr,
+        "uri": _solana_pay_uri(addr, 0, message="ForkMesh central fund"),
+        "balanceLamports": balance if balance is not None else 0,
+        "balanceSol": _amount_sol(balance or 0),
+        "distributionIntervalMs": CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS,
+        "lastDistributionAt": int(rec.get("last_distribution_at", 0) or 0),
+        "lastDistributionSig": rec.get("last_distribution_sig", ""),
+        "lastDistributionLamports": int(rec.get("last_distribution_lamports", 0) or 0),
+        "lastDistributionPayees": int(rec.get("last_distribution_payees", 0) or 0),
+    }
+
+
+async def _distribute_central_fund(env):
+    # Cron: once an hour, sweep the whole central fund out to the currently-online
+    # nodes, split evenly. Main relay only; best-effort. The interval is measured
+    # from the last SUCCESSFUL distribution, so a donation that lands after a quiet
+    # spell still goes out at the next tick.
+    if not _is_main_relay(env):
+        return False
+    rec = await _central_fund_record(env)
+    if not rec:
+        return False
+    now = int(Date.now())
+    last = int(rec.get("last_distribution_at", 0) or 0)
+    if last and now - last < CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS:
+        return False
+    from_addr = rec.get("address", "")
+    secret = rec.get("secret", "")
+    if not SOLANA_RE.match(from_addr or "") or not secret:
+        return False
+    balance = await _solana_balance_lamports(env, from_addr)
+    if balance is None:
+        return False
+    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+    if transferable < CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS:
+        return False
+    payees = [p for p in await _online_payout_addresses(env) if p != from_addr]
+    if not payees:
+        return False
+    per_node = transferable // len(payees)
+    if per_node <= 0:
+        return False
+    transfers = [(payee, per_node) for payee in payees]
+    sig = await _solana_send_transfers(env, from_addr, secret, transfers)
+    if not sig:
+        return False
+    rec["last_distribution_at"] = now
+    rec["last_distribution_sig"] = sig
+    rec["last_distribution_lamports"] = per_node * len(payees)
+    rec["last_distribution_payees"] = len(payees)
+    await _save_central_fund(env, rec)
+    # Credit each node its share for the "funds received · mainnodes" board.
+    for payee, lamports in transfers:
+        await _record_funds_received(env, "mainnode", payee, "", lamports)
+    return True
+
+
 # --- Issue bounties ---------------------------------------------------------
 # Same custody model as the signup donation funnel: each bounty gets its OWN
 # freshly generated Solana deposit address; the worker holds the key (encrypted
@@ -5390,12 +5510,24 @@ async def federation_handler(env, request):
         return await _federation_nodes(env, request)
     if url.path == "/api/federation/treasury-address":
         return await _federation_treasury_address(env, request)
+    if url.path == "/api/federation/central-fund":
+        return await _federation_central_fund(env, request)
     return json_response({"error": "not_found"}, status=404)
 
 
 async def _federation_treasury_address(env, request):
     """Main relay: hand a federated relay the treasury address to display."""
     return json_response({"address": _treasury_address(env)})
+
+
+async def _federation_central_fund(env, request):
+    """Main relay: hand a federated relay the central-fund donation payload."""
+    if not _is_main_relay(env):
+        return json_response({"error": "not_main_relay"}, status=404)
+    payload = await _central_fund_public(env)
+    if not payload or not payload.get("address"):
+        return json_response({"error": "central_fund_unavailable"}, status=503)
+    return json_response(payload)
 
 
 # --- Federated-relay proxy (the "flow through main relay") -------------------
@@ -5602,6 +5734,25 @@ async def _account_treasury_address(env, request):
     return json_response({"address": addr})
 
 
+async def _account_central_fund(env, request):
+    """Public: the ForkMesh central donation fund (issue #308).
+
+    Returns the one wallet anyone can donate to; a cron distributes its balance
+    evenly to the online nodes hourly. On a federated (non-main) relay the fund
+    lives on the main relay, so proxy the lookup there (like the treasury).
+    """
+    if not _is_main_relay(env):
+        reply = await _call_main_relay(env, "/api/federation/central-fund", {})
+        if reply and reply.get("address"):
+            reply.pop("_status", None)
+            return json_response(reply)
+        return json_response({"address": ""}, status=503)
+    payload = await _central_fund_public(env)
+    if not payload or not payload.get("address"):
+        return json_response({"address": ""}, status=503)
+    return json_response(payload)
+
+
 async def accounts_handler(env, request):
     await ensure_schema(env)
     url = urlparse(request.url)
@@ -5618,6 +5769,8 @@ async def accounts_handler(env, request):
         return await _account_donation_status(env, request)
     if url.path == "/api/accounts/treasury-address" and method == "GET":
         return await _account_treasury_address(env, request)
+    if url.path == "/api/accounts/central-fund" and method == "GET":
+        return await _account_central_fund(env, request)
     if url.path == "/api/accounts/finalize" and method == "POST":
         return await _account_finalize(env, request)
     if url.path == "/api/accounts/heartbeat" and method == "POST":
@@ -7037,6 +7190,14 @@ class Default(WorkerEntrypoint):
             await sweep_funded_bounties(self.env)
         except Exception:
             pass
+        # Central donation fund: once an hour, sweep the fund wallet out to the
+        # currently-online nodes (issue #308). The interval gate inside makes the
+        # per-minute cron a no-op until an hour has elapsed.
+        try:
+            await ensure_schema(self.env)
+            await _distribute_central_fund(self.env)
+        except Exception:
+            pass
         # Relay federation: a federated relay registers + reports its online nodes
         # to the main relay; the main relay expires stale federated presence and
         # sweeps confirmed federated signups.
@@ -7733,6 +7894,18 @@ class ForkMeshHost(DurableObject):
     async def _mark_present(self, path=None):
         # Refresh this repo's host-presence row, throttled so hot browse traffic
         # doesn't write to D1 on every request. Best-effort; never fails the call.
+        #
+        # Only ever mark presence while a host WebSocket is actually connected to
+        # this DO. Otherwise a repo whose desktop host has gone offline would be
+        # kept "live" forever by the very browse/clone traffic that can't be
+        # served: each request self-refreshes host_presence, so `liveHost`/
+        # `source_online` never age out, `_select_clone_fallback` refuses to
+        # redirect ("never redirect away from an online source"), and the online
+        # mirror is never used — the repo shows "host online" yet nothing serves
+        # its tree. Letting presence lapse when no host is connected is what lets
+        # the source of truth age out so a live mirror takes over (adhoc #68).
+        if not self._host_count():
+            return
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
