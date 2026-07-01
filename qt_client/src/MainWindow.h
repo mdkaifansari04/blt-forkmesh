@@ -677,6 +677,17 @@ private:
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
+    // Settings -> Data tab: where configuration data is stored, per-directory
+    // file/folder breakdown, open/delete, and export/import as a .tar.gz backup.
+    QWidget *buildDataSection();
+    void refreshDataDirTable();
+    void exportConfigData();
+    void importConfigData();
+    void deleteDataDir(const QString &label, const QString &path, bool critical);
+    void deleteAllData();
+    void setDataStatus(const QString &text, bool error = false);
+    void stopLiveServicesForDataOp();
+    void relaunchForkMesh();
     QWidget *buildNotificationsSection();
     // Network leaderboards (issue #11): fetched from /api/network/leaderboards.
     QWidget *buildLeaderboardsSection();
@@ -2358,6 +2369,9 @@ private:
     QLabel *m_rebuildStatus = nullptr;
     QLineEdit *m_mirrorRootEdit = nullptr;
     QLineEdit *m_previewCacheRootEdit = nullptr;
+    // Settings -> Data tab: storage breakdown table and backup/cleanup status.
+    QTableWidget *m_dataDirTable = nullptr;
+    QLabel *m_dataStatus = nullptr;
     // Import-a-repo (GitHub/GitLab) controls.
     QLineEdit *m_importUrlEdit = nullptr;
     QPushButton *m_importButton = nullptr;
