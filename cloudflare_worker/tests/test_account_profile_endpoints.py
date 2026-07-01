@@ -201,6 +201,62 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
         assert required in repo_move_body
 
 
+def test_worker_exposes_password_reset_flow():
+    # Both halves of the emailed password-reset flow are routed and implemented.
+    assert 'url.path == "/api/accounts/forgot-password" and method == "POST"' in ENTRY_TEXT
+    assert 'url.path == "/api/accounts/reset-password" and method == "POST"' in ENTRY_TEXT
+    assert "async def _account_forgot_password" in ENTRY_TEXT
+    assert "async def _account_reset_password" in ENTRY_TEXT
+    assert "async def _password_reset_token" in ENTRY_TEXT
+    assert "async def _send_password_reset_email" in ENTRY_TEXT
+
+
+def test_forgot_password_does_not_leak_account_existence():
+    forgot_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_forgot_password"):
+        ENTRY_TEXT.index("async def _account_reset_password")
+    ]
+    # Look up by email OR node name, but always answer {"ok": True} so the
+    # endpoint can't enumerate which accounts exist.
+    assert 'data.get("identifier", "")' in forgot_body
+    assert "_send_password_reset_email" in forgot_body
+    assert 'return json_response({"ok": True})' in forgot_body
+    assert "invalid_credentials" not in forgot_body
+    assert "no_such_account" not in forgot_body
+
+
+def test_reset_password_validates_token_expiry_and_hashes_new_password():
+    reset_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_reset_password"):
+        ENTRY_TEXT.index("def _verify_email_page")
+    ]
+    # Expiry is enforced, the token is recomputed from the stored pass_hash
+    # (single-use), a short password is rejected, and the new one is PBKDF2-hashed.
+    assert "reset_link_expired" in reset_body
+    assert "password_too_short" in reset_body
+    assert "invalid_reset_token" in reset_body
+    assert "hmac.compare_digest(token, expected)" in reset_body
+    assert "hash_password(password)" in reset_body
+    assert 'rec["pass_hash"] = phash' in reset_body
+
+    token_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _password_reset_token"):
+        ENTRY_TEXT.index("async def _send_password_reset_email")
+    ]
+    # The token is domain-separated and binds the current pass_hash + expiry.
+    assert "forkmesh-password-reset-v1" in token_body
+    assert "pass_hash" in token_body
+
+
+def test_login_page_links_to_password_reset():
+    login_html = (Path(__file__).resolve().parents[1] /
+                  "public" / "login.html").read_text(encoding="utf-8")
+    assert "/forgot-password.html" in login_html
+    for asset in ("forgot-password.html", "forgot-password.js",
+                  "reset-password.html", "reset-password.js"):
+        assert (Path(__file__).resolve().parents[1] / "public" / asset).exists()
+
+
 if __name__ == "__main__":
     for test in (
         test_worker_exposes_simple_signup_endpoint,
@@ -211,6 +267,54 @@ if __name__ == "__main__":
         test_profile_endpoint_supports_verified_node_rename_and_hard_delete,
         test_hard_delete_removes_account_identity_and_owned_namespace_state,
         test_namespace_rename_moves_account_repo_and_repo_scoped_state,
+        test_worker_exposes_password_reset_flow,
+        test_forgot_password_does_not_leak_account_existence,
+        test_reset_password_validates_token_expiry_and_hashes_new_password,
+        test_login_page_links_to_password_reset,
     ):
         test()
         print("PASS", test.__name__)
+
+
+def test_worker_exposes_password_reset_endpoints():
+    assert 'url.path == "/api/accounts/forgot-password" and method == "POST"' in ENTRY_TEXT
+    assert 'url.path == "/api/accounts/reset-password" and method == "POST"' in ENTRY_TEXT
+    assert "async def _account_forgot_password" in ENTRY_TEXT
+    assert "async def _account_reset_password" in ENTRY_TEXT
+
+
+def test_forgot_password_never_leaks_account_existence():
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_forgot_password"):
+        ENTRY_TEXT.index("async def _account_reset_password")
+    ]
+    assert 'return json_response({"ok": True})' in body
+    assert "_send_password_reset_email" in body
+
+
+def test_reset_password_verifies_token_and_rehashes():
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_reset_password"):
+        ENTRY_TEXT.index("def _verify_email_page")
+    ]
+    assert "_password_reset_token" in body
+    assert "hmac.compare_digest" in body
+    assert "hash_password(password)" in body
+    assert '"password_too_short"' in body
+    assert '"reset_link_expired"' in body
+
+
+def test_reset_token_bound_to_current_hash_and_expiry():
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _password_reset_token"):
+        ENTRY_TEXT.index("async def _send_password_reset_email")
+    ]
+    assert "forkmesh-password-reset-v1" in body
+    assert "pass_hash" in body
+    assert "expires" in body
+
+
+def test_login_page_links_to_password_reset():
+    login_html = (Path(__file__).resolve().parents[1] /
+                  "public" / "login.html").read_text(encoding="utf-8")
+    assert "/forgot-password.html" in login_html
