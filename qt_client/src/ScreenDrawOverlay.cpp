@@ -1,6 +1,9 @@
 #include "ScreenDrawOverlay.h"
 
+#include "ScreenCaptureOverlay.h"
+
 #include <QCursor>
+#include <QFont>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -117,10 +120,107 @@ void ScreenDrawOverlay::paintEvent(QPaintEvent *)
     for (const QVector<QPoint> &stroke : m_strokes)
         drawStroke(stroke);
     drawStroke(m_current);
+
+    paintScreenshotButton(painter);
+}
+
+// A floating "Screenshot" pill at the top of the primary screen. Clicking it hands
+// off to a region screenshot (see startCapture); it hides itself while a capture is
+// in progress so it never lands in the grabbed image.
+QRect ScreenDrawOverlay::screenshotButtonRect() const
+{
+    QScreen *primary = QGuiApplication::primaryScreen();
+    const QRect screen = primary ? primary->geometry() : m_virtualGeom;
+    // Work in widget-local coordinates: the overlay's origin is m_virtualGeom's.
+    const QRect local = screen.translated(-m_virtualGeom.topLeft());
+    const int w = 150;
+    const int h = 40;
+    const int x = local.x() + (local.width() - w) / 2;
+    const int y = local.y() + 24;
+    return QRect(x, y, w, h);
+}
+
+void ScreenDrawOverlay::paintScreenshotButton(QPainter &painter)
+{
+    if (m_capturing)
+        return; // keep the button out of the grabbed screenshot
+    const QRect r = screenshotButtonRect();
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    // Pill background with a faint border so it reads as a control over any wallpaper.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(20, 22, 28, 225));
+    painter.drawRoundedRect(r, 9, 9);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(255, 255, 255, 45), 1));
+    painter.drawRoundedRect(r.adjusted(0, 0, -1, -1), 9, 9);
+
+    // A crop-frame glyph (corner brackets) echoing the nav screenshot icon.
+    const QRect icon(r.left() + 12, r.center().y() - 7, 16, 14);
+    QPen ip(QColor(255, 255, 255, 235));
+    ip.setWidth(2);
+    ip.setCapStyle(Qt::RoundCap);
+    painter.setPen(ip);
+    const int a = 5; // bracket arm length
+    const auto corner = [&](const QPoint &c, int dx, int dy) {
+        painter.drawLine(c, c + QPoint(dx, 0));
+        painter.drawLine(c, c + QPoint(0, dy));
+    };
+    corner(icon.topLeft(), a, a);
+    corner(icon.topRight(), -a, a);
+    corner(icon.bottomLeft(), a, -a);
+    corner(icon.bottomRight(), -a, -a);
+
+    // Label.
+    painter.setPen(QColor(255, 255, 255, 240));
+    QFont f = painter.font();
+    f.setBold(true);
+    painter.setFont(f);
+    const QRect textRect(icon.right() + 10, r.top(), r.right() - icon.right() - 18,
+                         r.height());
+    painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
+                     QStringLiteral("Screenshot"));
+    painter.restore();
+}
+
+// Hand off to a region screenshot. This overlay stays shown underneath the capture
+// overlay, so the ink is part of the live desktop the region grab composites; the
+// button is hidden first so it isn't captured. On success the image is emitted and
+// the overlay dismisses; a cancel returns to drawing.
+void ScreenDrawOverlay::startCapture()
+{
+    if (m_capturing)
+        return;
+    m_capturing = true;
+    m_drawing = false;
+    m_current.clear();
+    update();
+
+    ScreenCaptureOverlay *cap = ScreenCaptureOverlay::begin();
+    if (!cap) {
+        m_capturing = false;
+        update();
+        return;
+    }
+    connect(cap, &ScreenCaptureOverlay::captured, this,
+            [this](const QImage &image) {
+                emit captured(image);
+                finish();
+            });
+    connect(cap, &ScreenCaptureOverlay::cancelled, this, [this] {
+        m_capturing = false;
+        update();
+    });
 }
 
 void ScreenDrawOverlay::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton && !m_capturing &&
+        screenshotButtonRect().contains(event->position().toPoint())) {
+        startCapture(); // click the floating button -> region screenshot with ink
+        return;
+    }
     if (event->button() != Qt::LeftButton) {
         finish(); // right/middle click clears and dismisses
         return;
