@@ -2715,36 +2715,51 @@
     return state.repositories.find((repo) => repoKey(repo) === key);
   }
 
+  // A node's dot is only filled green when it is online *right now*; historical
+  // uptime-leaderboard entries that have since gone offline render hollow so an
+  // idle node no longer looks active (the right-rail bug in adhoc #86).
+  function nodeDotClass(row, size) {
+    return row.online
+      ? `${size} fill-primary text-primary shrink-0`
+      : `${size} fill-transparent text-muted-foreground/50 shrink-0`;
+  }
+
+  function nodeMetaLabel(row) {
+    if (row.minutes) return formatCount(row.minutes);
+    return row.online ? "live" : "";
+  }
+
   function renderNetworkRows(rows) {
     const list = $("[data-network-node-list]");
     const rail = $("[data-network-rail-nodes]");
     const count = $("[data-network-node-count]");
     const recent = rows.slice(0, 6);
+    const onlineCount = rows.filter((row) => row.online).length;
 
-    if (count) count.textContent = `${recent.length} recent`;
+    if (count) count.textContent = `${formatCount(onlineCount)} online`;
     if (list) {
       list.innerHTML = recent.length
         ? recent.map((row) => `
           <div class="px-4 py-3 flex items-center gap-4 hover:bg-secondary/50 transition-colors">
             <div class="flex items-center gap-2 flex-1 min-w-0">
-              <i data-lucide="circle" class="w-2 h-2 fill-primary text-primary shrink-0"></i>
-              <span class="text-sm text-foreground font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
+              <i data-lucide="circle" class="${nodeDotClass(row, "w-2 h-2")}"></i>
+              <span class="text-sm ${row.online ? "text-foreground" : "text-muted-foreground"} font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
             </div>
-            <span class="text-xs text-muted-foreground w-20 text-right font-mono">${formatCount(row.minutes || row.repos || row.total || 0)}</span>
+            <span class="text-xs text-muted-foreground w-20 text-right font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
           </div>
         `).join("")
-        : '<div class="px-4 py-3 text-sm text-muted-foreground">No recent network activity yet.</div>';
+        : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
     }
     if (rail) {
       rail.innerHTML = recent.slice(0, 3).length
         ? recent.slice(0, 3).map((row) => `
           <div class="flex items-center gap-2">
-            <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary shrink-0"></i>
-            <span class="text-xs text-muted-foreground truncate flex-1 font-mono">${escapeHtml(row.name || "node")}</span>
-            <span class="text-[10px] text-muted-foreground font-mono">${formatCount(row.minutes || row.repos || row.total || 0)}</span>
+            <i data-lucide="circle" class="${nodeDotClass(row, "w-1.5 h-1.5")}"></i>
+            <span class="text-xs ${row.online ? "text-foreground" : "text-muted-foreground"} truncate flex-1 font-mono">${escapeHtml(row.name || "node")}</span>
+            <span class="text-[10px] text-muted-foreground font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
           </div>
         `).join("")
-        : '<div class="text-xs text-muted-foreground">No recent network activity.</div>';
+        : '<div class="text-xs text-muted-foreground">No nodes online right now.</div>';
     }
   }
 
@@ -2778,7 +2793,38 @@
       $("[data-network-rail-clients]") && ($("[data-network-rail-clients]").textContent = formatCount(clients));
       $("[data-network-rail-uptime]") && ($("[data-network-rail-uptime]").textContent = activeMinutes ? "Active" : "Idle");
 
-      renderNetworkRows(uptime);
+      // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
+      // that are online right now. Online nodes sort first and always appear even
+      // with no accrued minutes yet, so a freshly-started node (e.g. a VM host)
+      // shows up on the rail; offline leaderboard nodes stay listed but render
+      // as inactive rather than looking live.
+      const onlineNames = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
+      const onlineSet = new Set(
+        onlineNames.map((name) => String(name || "").trim().toLowerCase()).filter(Boolean),
+      );
+      const nodeRows = new Map();
+      uptime.forEach((row) => {
+        const name = String(row.name || "").trim();
+        if (!name) return;
+        nodeRows.set(name.toLowerCase(), {
+          name,
+          minutes: Number(row.minutes) || 0,
+          online: onlineSet.has(name.toLowerCase()),
+        });
+      });
+      onlineNames.forEach((name) => {
+        const clean = String(name || "").trim();
+        if (!clean) return;
+        const key = clean.toLowerCase();
+        if (!nodeRows.has(key)) nodeRows.set(key, { name: clean, minutes: 0, online: true });
+      });
+      const rows = [...nodeRows.values()].sort(
+        (a, b) =>
+          Number(b.online) - Number(a.online) ||
+          b.minutes - a.minutes ||
+          a.name.localeCompare(b.name),
+      );
+      renderNetworkRows(rows);
     } catch (_) {
       $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
         '<div class="px-4 py-3 text-sm text-muted-foreground">Network data is unavailable right now.</div>');
