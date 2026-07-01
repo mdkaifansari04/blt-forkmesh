@@ -105,6 +105,12 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("s", m.source); // shared upstream identity for grouping
         head.insert("z", double(m.sizeBytes)); // on-disk mirror size in bytes
         head.insert("i", m.issueCount); // issues this mirror holds (-1 = unknown)
+        // More per-node tallies for the Mirror nodes view (-1 = unknown/older peer).
+        head.insert("k", m.commitCount);     // commits on the served branch
+        head.insert("h", m.branchCount);     // local branches (refs/heads)
+        head.insert("p", m.pullCount);       // pull requests
+        head.insert("d", m.discussionCount); // discussions
+        head.insert("w", m.worktreeCount);   // working-copy worktrees (agent tasks)
         heads.insert(m.ownerName, head);
     }
     message.insert("mirrors", names);
@@ -130,6 +136,12 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
         advert.source = head.value("s").toString().left(kMaxRepoNameChars);
         advert.sizeBytes = qMax(qint64(0), qint64(head.value("z").toDouble()));
         advert.issueCount = head.contains("i") ? head.value("i").toInt(-1) : -1;
+        advert.commitCount = head.contains("k") ? head.value("k").toInt(-1) : -1;
+        advert.branchCount = head.contains("h") ? head.value("h").toInt(-1) : -1;
+        advert.pullCount = head.contains("p") ? head.value("p").toInt(-1) : -1;
+        advert.discussionCount =
+            head.contains("d") ? head.value("d").toInt(-1) : -1;
+        advert.worktreeCount = head.contains("w") ? head.value("w").toInt(-1) : -1;
         mirrors.append(advert);
     }
     return mirrors;

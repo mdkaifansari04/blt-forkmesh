@@ -419,12 +419,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 13);
+    m_mirrorNodesTable = new QTableWidget(0, 18);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Latest commit", "Synced", "Size", "Issues", "CPU", "RAM",
-         "Disk", "Platform", "Version", "Node id", "Clones", "Website"});
+        {"Node", "Latest commit", "Synced", "Size", "Issues", "Commits",
+         "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
+         "Platform", "Version", "Node id", "Clones", "Website"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -435,19 +436,24 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->sortByColumn(0, Qt::AscendingOrder); // source of truth first
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
-    mh->setSectionResizeMode(0, QHeaderView::Stretch);          // Node
-    mh->setSectionResizeMode(1, QHeaderView::ResizeToContents); // Latest commit
-    mh->setSectionResizeMode(2, QHeaderView::ResizeToContents); // Synced
-    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents); // Size
-    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents); // Issues
-    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents); // CPU (bar)
-    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents); // RAM (bar)
-    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents); // Disk (bar)
-    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents); // Platform
-    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents); // Version
-    mh->setSectionResizeMode(10, QHeaderView::ResizeToContents); // Node id
-    mh->setSectionResizeMode(11, QHeaderView::ResizeToContents); // Clones served
-    mh->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Website serves
+    mh->setSectionResizeMode(0, QHeaderView::Stretch);           // Node
+    mh->setSectionResizeMode(1, QHeaderView::ResizeToContents);  // Latest commit
+    mh->setSectionResizeMode(2, QHeaderView::ResizeToContents);  // Synced
+    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents);  // Size
+    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents);  // Issues
+    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents);  // Commits
+    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents);  // Branches
+    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents);  // Pulls
+    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents);  // Discussions
+    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents);  // Worktrees
+    mh->setSectionResizeMode(10, QHeaderView::ResizeToContents); // CPU (bar)
+    mh->setSectionResizeMode(11, QHeaderView::ResizeToContents); // RAM (bar)
+    mh->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Disk (bar)
+    mh->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Platform
+    mh->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Version
+    mh->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Node id
+    mh->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Clones served
+    mh->setSectionResizeMode(17, QHeaderView::ResizeToContents); // Website serves
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -455,7 +461,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
         2, new MirrorSyncDelegate(m_mirrorNodesTable));
     // CPU / RAM / disk columns render as little usage bars (details on hover).
     auto *resourceBars = new ResourceBarDelegate(m_mirrorNodesTable);
-    for (int col : {5, 6, 7})
+    for (int col : {10, 11, 12})
         m_mirrorNodesTable->setItemDelegateForColumn(col, resourceBars);
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
@@ -536,6 +542,11 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.updatedMs = repo.lastSyncMs;
     selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
     selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
+    selfAdvert.commitCount = mirrorCommitCount(localMirror, selfAdvert.branch);
+    selfAdvert.branchCount = mirrorBranchCount(localMirror);
+    selfAdvert.pullCount = mirrorPullCount(localMirror, selfAdvert.branch);
+    selfAdvert.discussionCount = mirrorDiscussionCount(localMirror, selfAdvert.branch);
+    selfAdvert.worktreeCount = mirrorWorktreeCount(repo.localPath);
 
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
@@ -638,6 +649,21 @@ void MainWindow::loadMirrorNodesPanel()
     QSet<QString> shownNames;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorActivityStrip::Dot> activityDots;
+    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/Discussions/
+    // Worktrees): the figure, an em-dash when the node doesn't advertise it (-1, an
+    // older peer), and a singular/plural tooltip. Shared by the live-roster rows and
+    // the catalog-backed rows below so both render these columns identically.
+    auto makeCountCell = [](int n, const QString &singular,
+                            const QString &plural) -> SortTableWidgetItem * {
+        auto *item = new SortTableWidgetItem(
+            n >= 0 ? QString::number(n) : QString::fromUtf8("\xE2\x80\x94"));
+        item->setData(kTableSortRole, double(n));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (n >= 0)
+            item->setToolTip(
+                QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
+        return item;
+    };
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -768,23 +794,45 @@ void MainWindow::loadMirrorNodesPanel()
                     .arg(nodeIssues == 1 ? "" : "s"));
         m_mirrorNodesTable->setItem(row, 4, issuesItem);
 
+        // Commits / Branches / Pulls / Discussions / Worktrees: more per-node
+        // tallies advertised alongside the issue count, so the panel shows how much
+        // history each node mirrors and how busy it is. Em-dash for older peers.
+        m_mirrorNodesTable->setItem(
+            row, 5,
+            makeCountCell(advert ? advert->commitCount : -1, "commit", "commits"));
+        m_mirrorNodesTable->setItem(
+            row, 6,
+            makeCountCell(advert ? advert->branchCount : -1, "branch", "branches"));
+        m_mirrorNodesTable->setItem(
+            row, 7,
+            makeCountCell(advert ? advert->pullCount : -1, "pull request",
+                          "pull requests"));
+        m_mirrorNodesTable->setItem(
+            row, 8,
+            makeCountCell(advert ? advert->discussionCount : -1, "discussion",
+                          "discussions"));
+        m_mirrorNodesTable->setItem(
+            row, 9,
+            makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
+                          "worktrees"));
+
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
-        m_mirrorNodesTable->setItem(row, 5, makeCpuUsageCell(node.cpuPercent));
+        m_mirrorNodesTable->setItem(row, 10, makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 6, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+            row, 11, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
         m_mirrorNodesTable->setItem(
-            row, 7,
+            row, 12,
             makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
 
         m_mirrorNodesTable->setItem(
-            row, 8,
+            row, 13,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 9,
+            row, 14,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -792,7 +840,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 10, idItem);
+        m_mirrorNodesTable->setItem(row, 15, idItem);
 
         // Clones / website serves: per-node local counters. Our own row reads the
         // freshest count straight from the local tally (keyed as onRequestServed
@@ -809,10 +857,10 @@ void MainWindow::loadMirrorNodesPanel()
             nodeClones = s.first;
             nodeWebsite = s.second;
         }
-        m_mirrorNodesTable->setItem(row, 11,
+        m_mirrorNodesTable->setItem(row, 16,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
         m_mirrorNodesTable->setItem(
-            row, 12, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
+            row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
         ++count;
     }
 
@@ -885,10 +933,11 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
-            // Issues / platform / version / node id: also mirrored into the catalog
-            // record by the publishing node, so they show for an offline node too
-            // (adhoc #56). Only the live CPU/RAM/disk telemetry (cols 5-7) stays
-            // unknown for catalog rows — it's broadcast per heartbeat, never stored.
+            // Issues / commit / branch / pull / discussion / worktree counts /
+            // platform / version / node id: also mirrored into the catalog record by
+            // the publishing node, so they show for an offline node too (adhoc #56).
+            // Only the live CPU/RAM/disk telemetry (cols 10-12) stays unknown for
+            // catalog rows — it's broadcast per heartbeat, never stored.
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
                 catIssues >= 0 ? QString::number(catIssues)
@@ -900,18 +949,38 @@ void MainWindow::loadMirrorNodesPanel()
                                               .arg(catIssues)
                                               .arg(catIssues == 1 ? "" : "s"));
             m_mirrorNodesTable->setItem(row, 4, catIssuesItem);
-            for (int col : {5, 6, 7})
+            m_mirrorNodesTable->setItem(
+                row, 5,
+                makeCountCell(m.value("commitCount").toInt(-1), "commit",
+                              "commits"));
+            m_mirrorNodesTable->setItem(
+                row, 6,
+                makeCountCell(m.value("branchCount").toInt(-1), "branch",
+                              "branches"));
+            m_mirrorNodesTable->setItem(
+                row, 7,
+                makeCountCell(m.value("pullCount").toInt(-1), "pull request",
+                              "pull requests"));
+            m_mirrorNodesTable->setItem(
+                row, 8,
+                makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
+                              "discussions"));
+            m_mirrorNodesTable->setItem(
+                row, 9,
+                makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
+                              "worktrees"));
+            for (int col : {10, 11, 12})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
-                row, 8,
+                row, 13,
                 new QTableWidgetItem(catPlatform.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catPlatform));
             const QString catVersion = m.value("version").toString();
             m_mirrorNodesTable->setItem(
-                row, 9,
+                row, 14,
                 new QTableWidgetItem(catVersion.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catVersion));
@@ -924,15 +993,15 @@ void MainWindow::loadMirrorNodesPanel()
                                             : QString()));
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
-            m_mirrorNodesTable->setItem(row, 10, catIdItem);
+            m_mirrorNodesTable->setItem(row, 15, catIdItem);
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
             const int catWebsite = m.value("websiteServed").toInt(-1);
             m_mirrorNodesTable->setItem(
-                row, 11, makeServeCountCell(catClones, clonesTip(catClones)));
+                row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
             m_mirrorNodesTable->setItem(
-                row, 12, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
+                row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             ++count;
         }
     }

@@ -945,6 +945,33 @@ def mirroring_owner_set(records):
     return owners
 
 
+def served_mirror_groups(records):
+    # Mirror groups (root-commit / name keyed) that have at least one online,
+    # PUBLIC host right now. `records` are catalog records already annotated with
+    # rec["liveHost"] (the named node's own host presence). A group lands here as
+    # soon as ANY node mirroring that logical repo is live, which is what lets a
+    # repo stay cloneable/browsable in place through its own URL while its named
+    # source of truth is down (adhoc #61). Private rows never serve a public
+    # group, matching the clone fallback in select_clone_fallback.
+    groups = set()
+    for rec in records or []:
+        if (rec or {}).get("liveHost") and (rec or {}).get("visibility") != "private":
+            groups.add(repo_mirror_group_key(rec))
+    return groups
+
+
+def repo_clone_online(rec, served_groups):
+    # Whether a repo is actually reachable for clone/browse right now: its own
+    # named host is live, OR — for a public repo — a peer mirroring the same
+    # logical repo is online and the relay will serve it in place (adhoc #61).
+    # Private repos get no mirror fallback, so they depend on their own host.
+    if (rec or {}).get("liveHost"):
+        return True
+    if (rec or {}).get("visibility") == "private":
+        return False
+    return repo_mirror_group_key(rec) in (served_groups or set())
+
+
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
 ):
@@ -975,6 +1002,12 @@ def build_repo_mirrors_payload(
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
 
+    def _int_field(rec, name):
+        try:
+            return int(rec.get(name))
+        except (TypeError, ValueError):
+            return -1
+
     mirrors = []
     for row in members:
         rec = row["data"]
@@ -990,20 +1023,11 @@ def build_repo_mirrors_payload(
         behind = bool(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
         )
-        try:
-            issue_count = int(rec.get("issueCount"))
-        except (TypeError, ValueError):
-            issue_count = -1
+        issue_count = _int_field(rec, "issueCount")
         # Clones / website serves this node has provided; -1 == not advertised
         # (older peer or a record predating the counters), shown as an em-dash.
-        try:
-            clones_served = int(rec.get("clonesServed"))
-        except (TypeError, ValueError):
-            clones_served = -1
-        try:
-            website_served = int(rec.get("websiteServed"))
-        except (TypeError, ValueError):
-            website_served = -1
+        clones_served = _int_field(rec, "clonesServed")
+        website_served = _int_field(rec, "websiteServed")
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1022,6 +1046,11 @@ def build_repo_mirrors_payload(
             "commit": str(rec.get("commit") or "").strip(),
             "branch": str(rec.get("branch") or "").strip(),
             "issueCount": issue_count,
+            "commitCount": _int_field(rec, "commitCount"),
+            "branchCount": _int_field(rec, "branchCount"),
+            "pullCount": _int_field(rec, "pullCount"),
+            "discussionCount": _int_field(rec, "discussionCount"),
+            "worktreeCount": _int_field(rec, "worktreeCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
             "id": str(rec.get("nodeId") or "").strip(),
@@ -1973,6 +2002,11 @@ def safe_catalog_record(data):
         "commit": clean_string(data.get("commit", ""), 64),
         "branch": clean_string(data.get("branch", ""), 120),
         "issueCount": clean_string(data.get("issueCount", ""), 12),
+        "commitCount": clean_string(data.get("commitCount", ""), 12),
+        "branchCount": clean_string(data.get("branchCount", ""), 12),
+        "pullCount": clean_string(data.get("pullCount", ""), 12),
+        "discussionCount": clean_string(data.get("discussionCount", ""), 12),
+        "worktreeCount": clean_string(data.get("worktreeCount", ""), 12),
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
@@ -2541,6 +2575,15 @@ async def catalog_handler(env, request):
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
                 repos.append(rec)
+        # Second pass: mark each repo cloneable when its own host is offline but a
+        # peer mirroring the same logical repo is online — the relay serves that
+        # mirror in place through the repo's own URL (adhoc #61), so the website
+        # shows the repo as available (and which nodes are live) instead of a
+        # bare "host offline". served_mirror_groups sees the whole public list, so
+        # this works even when the freshest live node is a different owner's mirror.
+        served = served_mirror_groups(repos)
+        for rec in repos:
+            rec["cloneOnline"] = repo_clone_online(rec, served)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
         # Per-viewer responses (with private repos) must not be cached at the shared

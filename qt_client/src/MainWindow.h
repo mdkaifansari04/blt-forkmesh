@@ -1188,9 +1188,6 @@ private:
     // it (sync the served mirror) and refresh the Releases panel if it's open.
     void onReleaseMetadataLanded(int runId);
     void refreshActionsTable();
-    // Show/hide the top-of-tab failure alert for the most recent failed run in the
-    // current repo (no-op when nothing has failed or the failure was dismissed).
-    void refreshActionFailureBanner();
     void showLatestVisibleActionRun();
     void showRun(int runId);
     void approveSelectedRun();
@@ -1727,6 +1724,10 @@ private:
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
     void captureScreenRegion();
+    // Pencil button (next to the screenshot button): drops a full-screen overlay
+    // you can draw on freehand anywhere on the computer. Nothing is captured — it's
+    // a throwaway scratch layer for pointing things out. Esc dismisses it.
+    void startScreenDraw();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into
@@ -2233,6 +2234,7 @@ private:
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
+    QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
@@ -2971,13 +2973,6 @@ private:
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
-    // Failure alert pinned to the top of the Actions tab: surfaces the most recent
-    // failed run for this repo so a broken action (e.g. a Cloudflare deploy) can't
-    // pass unnoticed. Clickable to jump to the run; dismissable per failed run id.
-    QWidget *m_actionFailureBanner = nullptr;
-    QLabel *m_actionFailureLabel = nullptr;
-    int m_actionFailureBannerRunId = -1;        // run currently shown in the banner
-    int m_actionFailureDismissedRunId = -1;     // last run the user dismissed
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
     QLabel *m_actionApprovalBanner = nullptr;
