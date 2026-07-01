@@ -5431,14 +5431,68 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             // over-count is what made a one-file session read as "14 files changed"
             // (issue #183).
             const QString base = sessionDiffBase(sid, dir);
+            // Gather every git read the render needs as four parallel async
+            // subprocesses; render once, when the last one lands. A late result
+            // for a session the user has since clicked away from is dropped.
+            auto probe = std::make_shared<AgentDiffProbe>();
+            probe->pending = base.isEmpty() ? 2 : 4; // ahead/behind need a base
+            const auto finish = [this, sid, probe] {
+                if (--probe->pending > 0)
+                    return;
+                if (sid == m_selectedAgentSessionId)
+                    renderAgentDiff(sid, *probe);
+            };
             QStringList args{QStringLiteral("diff")};
             if (!base.isEmpty())
                 args << base;
-            runGitDetached(dir, args, [this, sid](bool ok, const QByteArray &out) {
-                if (!ok || sid != m_selectedAgentSessionId)
-                    return;
-                renderAgentDiff(sid, out);
-            });
+            runGitDetached(dir, args,
+                           [probe, finish](bool ok, const QByteArray &out) {
+                               if (ok)
+                                   probe->patch = out;
+                               finish();
+                           });
+            // One `status --porcelain` covers what used to be two reads (tracked
+            // edits vs HEAD + untracked files): the ● "uncommitted" markers.
+            runGitDetached(dir, {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                           [probe, finish](bool ok, const QByteArray &out) {
+                               if (ok)
+                                   for (QString line : QString::fromUtf8(out).split(
+                                            QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                                       QString p = line.mid(3);
+                                       const int arrow =
+                                           p.indexOf(QLatin1String(" -> "));
+                                       if (arrow >= 0)
+                                           p = p.mid(arrow + 4);
+                                       if (p.startsWith(QLatin1Char('"')) &&
+                                           p.endsWith(QLatin1Char('"')))
+                                           p = p.mid(1, p.size() - 2);
+                                       probe->uncommitted.insert(p.trimmed());
+                                   }
+                               finish();
+                           });
+            if (!base.isEmpty()) {
+                // The commits this branch adds (list + count in one read)…
+                runGitDetached(dir,
+                               {QStringLiteral("log"), QStringLiteral("--format=%h %s"),
+                                base + QStringLiteral("..HEAD")},
+                               [probe, finish](bool ok, const QByteArray &out) {
+                                   if (ok)
+                                       probe->commitLines =
+                                           QString::fromUtf8(out).split(
+                                               QLatin1Char('\n'), Qt::SkipEmptyParts);
+                                   finish();
+                               });
+                // …and how far it trails the base branch's live tip.
+                runGitDetached(dir,
+                               {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                                QStringLiteral("HEAD..") + base},
+                               [probe, finish](bool ok, const QByteArray &out) {
+                                   if (ok)
+                                       probe->behind =
+                                           QString::fromUtf8(out).trimmed().toInt();
+                                   finish();
+                               });
+            }
         });
     }
     m_agentFilesDiffTimer->start();
@@ -5488,7 +5542,9 @@ QString MainWindow::sessionDiffBase(int sessionId, const QString &dir)
 // list with per-file +/- counts and scroll anchors, and stamp the changed-file
 // count onto the tab header (issue #131). A no-op for a stale/other session so a
 // late async callback can't clobber the panel after the selection moved on.
-void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
+// Runs no git: the probe carries everything (see scheduleAgentFilesDiff), so this
+// can't pump the event loop mid-render and re-enter itself.
+void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
 {
     if (!m_agentDiffView || sessionId != m_selectedAgentSessionId)
         return;
@@ -5496,7 +5552,7 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
     const QString base = sessionDiffBase(sessionId, dir);
     QList<DiffFileEntry> files;
     const QString html =
-        renderDiffHtml(QString::fromUtf8(patch), files, dir, base, QString(),
+        renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
                        QString(), QHash<QString, QString>(), QSet<QString>());
     // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays it
     // all out on the UI thread, freezing it for many seconds (issue #187; the
@@ -5525,26 +5581,10 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
     }
 
     // Which of these changes are still sitting in the working tree (not yet in any
-    // commit on this branch): tracked edits vs HEAD plus untracked files. Files in
-    // this set get a "●" marker so the panel distinguishes work the agent has
-    // committed from work it hasn't (adhoc #260).
-    QSet<QString> uncommitted;
-    if (!dir.isEmpty()) {
-        QByteArray out;
-        if (runGitCapture(dir, {QStringLiteral("diff"), QStringLiteral("--name-only"),
-                                QStringLiteral("HEAD")},
-                          &out, nullptr))
-            for (const QString &p : QString::fromUtf8(out).split(QLatin1Char('\n'),
-                                                                 Qt::SkipEmptyParts))
-                uncommitted.insert(p.trimmed());
-        out.clear();
-        if (runGitCapture(dir, {QStringLiteral("ls-files"), QStringLiteral("--others"),
-                                QStringLiteral("--exclude-standard")},
-                          &out, nullptr))
-            for (const QString &p : QString::fromUtf8(out).split(QLatin1Char('\n'),
-                                                                 Qt::SkipEmptyParts))
-                uncommitted.insert(p.trimmed());
-    }
+    // commit on this branch): files in this set get a "●" marker so the panel
+    // distinguishes work the agent has committed from work it hasn't (adhoc #260).
+    // Pre-gathered async (one `git status --porcelain`) by scheduleAgentFilesDiff.
+    const QSet<QString> &uncommitted = probe.uncommitted;
 
     if (m_agentFilesList) {
         QSignalBlocker block(m_agentFilesList);
@@ -5606,28 +5646,13 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
         if (adds > 0 || dels > 0)
             parts << QString::fromUtf8("+%1 \xE2\x88\x92%2").arg(adds).arg(dels);
         // Commits the branch carries (ahead) and how far it trails base (behind),
-        // measured against the base branch's live tip — same probe the agents
-        // table's Diff cell uses (base...branch → left=behind, right=ahead).
-        if (!dir.isEmpty() && !baseBranch.isEmpty()) {
-            QByteArray counts;
-            if (runGitCapture(dir,
-                              {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
-                               QStringLiteral("--count"),
-                               baseBranch + QStringLiteral("...HEAD")},
-                              &counts, nullptr)) {
-                const QStringList lr = QString::fromUtf8(counts).trimmed().split(
-                    QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-                if (lr.size() >= 2) {
-                    const int behind = lr.at(0).toInt();
-                    const int ahead = lr.at(1).toInt();
-                    if (ahead > 0)
-                        parts << QStringLiteral("%1 commit%2")
-                                     .arg(ahead).arg(ahead == 1 ? "" : "s");
-                    if (behind > 0)
-                        parts << QStringLiteral("%1 behind %2").arg(behind).arg(baseBranch);
-                }
-            }
-        }
+        // measured against the base branch's live tip. Both pre-gathered async
+        // (commit list ⇒ ahead; rev-list --count ⇒ behind).
+        const int ahead = probe.commitLines.size();
+        if (ahead > 0)
+            parts << QStringLiteral("%1 commit%2").arg(ahead).arg(ahead == 1 ? "" : "s");
+        if (probe.behind > 0 && !baseBranch.isEmpty())
+            parts << QStringLiteral("%1 behind %2").arg(probe.behind).arg(baseBranch);
         m_agentFilesChangedSummary->setText(parts.join(QString::fromUtf8("  \xC2\xB7  ")));
     }
 
@@ -5637,21 +5662,12 @@ void MainWindow::renderAgentDiff(int sessionId, const QByteArray &patch)
     if (m_agentCommitsList && m_agentCommitsHeading) {
         m_agentCommitsList->clear();
         int commitCount = 0;
-        if (!dir.isEmpty() && !base.isEmpty()) {
-            QByteArray log;
-            if (runGitCapture(dir,
-                              {QStringLiteral("log"), QStringLiteral("--format=%h %s"),
-                               base + QStringLiteral("..HEAD")},
-                              &log, nullptr)) {
-                for (const QString &line : QString::fromUtf8(log).split(
-                         QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-                    auto *item = new QListWidgetItem(line.trimmed());
-                    item->setIcon(themedOcticon(QStringLiteral("git-commit"),
-                                                QColor("#8b949e"), 14));
-                    m_agentCommitsList->addItem(item);
-                    ++commitCount;
-                }
-            }
+        for (const QString &line : probe.commitLines) {
+            auto *item = new QListWidgetItem(line.trimmed());
+            item->setIcon(themedOcticon(QStringLiteral("git-commit"),
+                                        QColor("#8b949e"), 14));
+            m_agentCommitsList->addItem(item);
+            ++commitCount;
         }
         const bool any = commitCount > 0;
         m_agentCommitsHeading->setVisible(any);

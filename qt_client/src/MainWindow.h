@@ -741,6 +741,11 @@ private:
     QWidget *buildRepoEditorPage();
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
+    // showCommit's synchronous tail: pure widget population once the async
+    // `show -s` metadata and `diff -M` patch are both in hand.
+    void renderCommitDetail(const QString &dir, const QString &hash,
+                            const QStringList &metaFields,
+                            const QByteArray &patchRaw);
     void showCommitList();                // back to the commits list
     void openMostRecentCommit();          // select newest commit + expand its diff
     // Remove a commit from the browsed branch's history (source-of-truth only),
@@ -2839,7 +2844,9 @@ private:
     QListWidget *m_commitFileList = nullptr;
     QTextBrowser *m_commitDiffView = nullptr;
     QWidget *m_commitDiffSpinner = nullptr; // inline spinner by the files heading
-    bool m_commitDetailLoading = false;     // guards re-entrant showCommit loads
+    // showCommit() async-load generation: each click bumps it; stale callbacks
+    // from a superseded load compare and bail (last click wins).
+    int m_commitLoadGen = 0;
     QPushButton *m_commitPrevButton = nullptr;
     QPushButton *m_commitNextButton = nullptr;
     QPushButton *m_commitDownloadButton = nullptr;
@@ -3333,10 +3340,24 @@ private:
     void refreshAgentFilesPanel(int sessionId);
     void populateAgentFilesPanel(int sessionId, const QStringList &diffFiles);
     void scheduleAgentFilesDiff(int sessionId);
+    // Everything the Files-changed tab needs from git, gathered by four parallel
+    // *async* subprocesses (see scheduleAgentFilesDiff) so renderAgentDiff() runs
+    // no git at all. It used to shell four synchronous reads per render; each one
+    // pumped the event loop under GitKeepAlive mid-render, re-entering the render
+    // and stacking multi-second stalls (the renderAgentDiff<-renderAgentDiff
+    // frames all over ~/.forkmesh/diagnostics/stalls.log).
+    struct AgentDiffProbe {
+        QByteArray patch;        // git diff <base>
+        QSet<QString> uncommitted; // paths with working-tree changes / untracked
+        QStringList commitLines; // "abc1234 subject" per commit ahead of base
+        int behind = 0;          // commits the base branch has that we don't
+        int pending = 0;         // async probes still in flight
+    };
     // Render the session's full diff (vs its base ref) into the Files-changed tab's
     // viewer, rebuild the file list with per-file +/- counts and anchors, and stamp
-    // the changed-file count onto the tab header. Runs off the event loop.
-    void renderAgentDiff(int sessionId, const QByteArray &patch);
+    // the changed-file count onto the tab header. Pure UI: all git data arrives
+    // pre-gathered in the probe.
+    void renderAgentDiff(int sessionId, const AgentDiffProbe &probe);
     void updateAgentFilesTabState(int sessionId);
     QString sessionBaseRef(int sessionId);
     QString sessionBaseBranch(int sessionId);
