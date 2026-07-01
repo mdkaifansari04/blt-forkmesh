@@ -545,8 +545,11 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'number === page ? "bg-secondary text-foreground border-border"' in pagination
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" in dashboard_js
-    assert '${repo.liveHost ? "text-foreground" : "text-muted-foreground"}' in render
-    assert '${repo.liveHost ? "text-primary" : "text-muted-foreground"}">${repo.liveHost ? "available" : "offline"}</dd>' not in render
+    # The Clone availability chip keys off the group-liveness verdict (`live`,
+    # which folds in an online mirror serving in place — adhoc #61) but keeps the
+    # neutral GitHub-like foreground/muted colors, never the accent primary.
+    assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
+    assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
 
 
 def test_dashboard_repository_records_open_live_markdown_detail_views():
