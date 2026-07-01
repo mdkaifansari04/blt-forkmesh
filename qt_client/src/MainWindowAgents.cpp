@@ -754,6 +754,34 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
+    // The user answered an AskUserQuestion multiple-choice card in the transcript
+    // (issue #67). Satisfy the pending tool call so the CLI resumes, record the
+    // answer in the session buffer (persists + replays the answered card), and
+    // flip the session back to Running.
+    connect(m_agentTranscript, &ClaudeTranscriptView::questionAnswered, this,
+            [this](const QString &toolUseId, const QString &answer) {
+                const int sid = m_selectedAgentSessionId;
+                if (sid < 0)
+                    return;
+                ClaudeStreamSession *s = m_streamSessions.value(sid);
+                if (!s || !s->running())
+                    return;
+                applyTranscriptEvent(
+                    sid,
+                    QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("_local_ask_answer")},
+                        {QStringLiteral("tool_use_id"), toolUseId},
+                        {QStringLiteral("text"), answer}});
+                s->sendToolResult(toolUseId, answer);
+                bumpClaudeCodeUsage();
+                if (AgentSession *as = findAgentSession(sid);
+                    as && as->status == AgentStatus::Waiting) {
+                    as->status = AgentStatus::Running;
+                    if (m_agentStore)
+                        m_agentStore->saveSession(*as);
+                    updateAgentStatusCell(sid);
+                }
+            });
     // Issue #84: the live token/cost counter (statsChanged) is now folded into
     // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
     // the same totals plus the budget breakdown, so there's no separate label.
@@ -4666,6 +4694,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
                                        .value(QStringLiteral("content")).toArray();
         QString assistantText;
+        bool askedQuestion = false;
         for (const QJsonValue &bv : content) {
             const QJsonObject b = bv.toObject();
             const QString btype = b.value(QStringLiteral("type")).toString();
@@ -4674,6 +4703,8 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             if (btype != QLatin1String("tool_use"))
                 continue;
             const QString name = b.value(QStringLiteral("name")).toString();
+            if (name == QLatin1String("AskUserQuestion"))
+                askedQuestion = true;
             if (name == QLatin1String("Edit") || name == QLatin1String("Write")
                 || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
                 const QString p = b.value(QStringLiteral("input")).toObject()
@@ -4684,6 +4715,11 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
+        // A clarifying question (AskUserQuestion) stops the turn on the tool call
+        // with no `result` event — the agent is waiting on the user's answer, so
+        // flag it "Waiting" and notify just as an ended turn would.
+        if (askedQuestion)
+            notifyAgentWaiting(sessionId, false);
     }
 
     // The turn finished (or the CLI is asking to use a tool while in manual mode):

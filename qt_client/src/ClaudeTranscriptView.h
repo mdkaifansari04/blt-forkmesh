@@ -43,6 +43,10 @@ signals:
     void usageChanged(const QString &kind, const QString &text, int percent);
     // Running totals as the session spends them (assistant usage + result).
     void statsChanged(qint64 tokens, double costUsd);
+    // The user answered an AskUserQuestion clarifying-question card. toolUseId is
+    // the pending tool_use to satisfy; answer is the assembled reply text. The
+    // host sends it back to the CLI as a tool_result (see sendToolResult).
+    void questionAnswered(const QString &toolUseId, const QString &answer);
 
 protected:
     // Keep the bottom spacer tall enough that the newest card can scroll to the
@@ -116,6 +120,16 @@ private:
     void addToolResult(const QString &id, const QString &text, bool isError);
     void addResult(const QJsonObject &ev);
 
+    // Claude Code's AskUserQuestion tool: instead of a passive tool card, render
+    // an interactive multiple-choice card (one group per question, each option a
+    // clickable button, plus a free-text "Other" field) so the user can answer
+    // the clarifying question in place. On submit it emits questionAnswered().
+    // markAskAnswered() locks the card and shows the chosen reply — driven by a
+    // synthetic "_local_ask_answer" event so the answered state survives a
+    // transcript rebuild/replay.
+    void addAskUserQuestion(const QString &id, const QJsonObject &input);
+    void markAskAnswered(const QString &id, const QString &answer);
+
     QString toolSubtitle(const QString &name, const QJsonObject &input) const;
     QWidget *toolBody(const QString &name, const QJsonObject &input);
     QWidget *makeDiff(const QString &oldText, const QString &newText);
@@ -140,6 +154,14 @@ private:
         bool hasResult = false;      // an OUT row was appended
     };
     QHash<QString, ToolCard> m_toolCards;
+
+    // Live AskUserQuestion cards, keyed by their tool_use id: the button area to
+    // lock once answered and the status line that shows the chosen reply.
+    struct AskCard {
+        QPointer<QWidget> buttons; // disabled on answer
+        QPointer<QLabel> status;   // "✓ You answered: …"
+    };
+    QHash<QString, AskCard> m_askCards;
 
     Collapsible *m_liveThinking = nullptr;
     QLabel *m_thinkingBody = nullptr;
