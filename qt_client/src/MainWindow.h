@@ -2733,6 +2733,12 @@ private:
     // fillCommitStats) from a superseded load drops itself instead of writing
     // mismatched Files/+/− counts into the new rows.
     int m_commitsLoadGen = 0;
+    // Short-lived cache for repoBranches() — avoids re-running `git branch` on
+    // every loadCommits() call (e.g. on each search keystroke). Keyed by dir;
+    // expires after 5 s so the button menu stays fresh after branch operations.
+    mutable QStringList m_branchesCache;
+    mutable QString m_branchesCacheDir;
+    mutable qint64 m_branchesCacheTime = 0;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
