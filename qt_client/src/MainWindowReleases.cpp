@@ -419,13 +419,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 16);
+    m_mirrorNodesTable = new QTableWidget(0, 18);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Latest commit", "Synced", "Size", "Issues", "Commits",
          "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
-         "Platform", "Version", "Node id"});
+         "Platform", "Version", "Node id", "Clones", "Website"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -452,6 +452,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Platform
     mh->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Version
     mh->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Node id
+    mh->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Clones served
+    mh->setSectionResizeMode(17, QHeaderView::ResizeToContents); // Website serves
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -601,6 +603,41 @@ void MainWindow::loadMirrorNodesPanel()
     }
     const QString referenceCommit =
         !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
+
+    // Clone / website-serve tallies are per-node local counters, carried across the
+    // network only in each node's published catalog record. Index the catalog cache
+    // by node name so the live-roster loop can fill the "Clones" / "Website" columns
+    // for peers too (our own row reads the fresher local tally). Value = (clones,
+    // website serves); -1 == the node hasn't advertised the count yet.
+    QHash<QString, QPair<int, int>> serveCounts;
+    if (m_catalogMirrorsSource == source) {
+        for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
+            const QJsonObject m = value.toObject();
+            const QString n = m.value("node").toString().trimmed().toLower();
+            if (!n.isEmpty())
+                serveCounts.insert(n, {m.value("clonesServed").toInt(-1),
+                                       m.value("websiteServed").toInt(-1)});
+        }
+    }
+    // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
+    // (abbreviated) number, sorting on the raw value.
+    auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
+        auto *item = new SortTableWidgetItem(
+            value >= 0 ? formatCount(value) : QString::fromUtf8("\xE2\x80\x94"));
+        item->setData(kTableSortRole, double(value));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (value >= 0)
+            item->setToolTip(tip);
+        return item;
+    };
+    auto clonesTip = [](int n) {
+        return QString::fromUtf8("Provided %1 clone%2").arg(n).arg(n == 1 ? "" : "s");
+    };
+    auto websiteTip = [](int n) {
+        return QString::fromUtf8("Served the website %1 time%2")
+            .arg(n)
+            .arg(n == 1 ? "" : "s");
+    };
 
     int count = 0;
     qint64 totalBytes = 0;     // data mirrored across every node in this group
@@ -804,6 +841,26 @@ void MainWindow::loadMirrorNodesPanel()
                                                     : QString()));
         idItem->setToolTip(node.id);
         m_mirrorNodesTable->setItem(row, 15, idItem);
+
+        // Clones / website serves: per-node local counters. Our own row reads the
+        // freshest count straight from the local tally (keyed as onRequestServed
+        // writes it); peers come from their published catalog record (serveCounts).
+        int nodeClones = -1, nodeWebsite = -1;
+        if (node.self) {
+            const QPair<int, int> s =
+                m_repoStats.value(catalogOwner(repo) + "/" + repo.name);
+            nodeClones = s.second;
+            nodeWebsite = qMax(0, s.first - s.second);
+        } else {
+            const QPair<int, int> s =
+                serveCounts.value(node.name.trimmed().toLower(), {-1, -1});
+            nodeClones = s.first;
+            nodeWebsite = s.second;
+        }
+        m_mirrorNodesTable->setItem(row, 16,
+                                    makeServeCountCell(nodeClones, clonesTip(nodeClones)));
+        m_mirrorNodesTable->setItem(
+            row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
         ++count;
     }
 
@@ -937,6 +994,14 @@ void MainWindow::loadMirrorNodesPanel()
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
             m_mirrorNodesTable->setItem(row, 15, catIdItem);
+            // Clones / website serves the publishing node reported (adhoc #56 kin);
+            // an em-dash for records predating the counters.
+            const int catClones = m.value("clonesServed").toInt(-1);
+            const int catWebsite = m.value("websiteServed").toInt(-1);
+            m_mirrorNodesTable->setItem(
+                row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
+            m_mirrorNodesTable->setItem(
+                row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             ++count;
         }
     }
