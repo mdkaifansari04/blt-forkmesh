@@ -43,17 +43,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // swaps to the real avatar a few seconds later when silent-auth/startSession
     // finally loads the same values.
     m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
-    // A headless mirror deployed via the installer arrives with no saved name but
-    // an operator-chosen one in FORKMESH_NODE_NAME. Adopt it (only on a brand-new
-    // node, so a reinstall never renames an existing one) and persist it before
+    // A headless mirror deployed via the installer arrives with the operator's
+    // chosen name in FORKMESH_NODE_NAME. That typed name is the source of truth,
+    // so adopt it whenever the installer supplied a valid one that differs from
+    // whatever is saved here — this includes re-running the installer on a box
+    // that already ran under an old name, which must actually rename the node
+    // (previously the old saved name silently won, so a host installed as
+    // "mirror1" kept showing up as its earlier "vm1"). Persist it before
     // buildSetupPage() seeds m_nameEdit from savedProfileName(), so the deferred
-    // auto-connect path picks it up and the node joins the network unattended
-    // instead of idling at the setup screen.
-    if (savedProfileName().isEmpty()) {
+    // auto-connect path picks it up and the node re-joins the network under the
+    // chosen name unattended. FORKMESH_NODE_NAME is only present on the
+    // installer-launched process (a plain relaunch leaves it unset), so a normal
+    // launch — where envName is empty or already matches — is a no-op and never
+    // touches an existing name.
+    {
         const QString envName =
             accountNameFromInput(qEnvironmentVariable("FORKMESH_NODE_NAME"),
                                  QString());
-        if (isValidNodeName(envName))
+        if (isValidNodeName(envName) &&
+            envName.compare(savedProfileName(), Qt::CaseInsensitive) != 0)
             QSettings().setValue(kAccountNameSetting, envName);
     }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())

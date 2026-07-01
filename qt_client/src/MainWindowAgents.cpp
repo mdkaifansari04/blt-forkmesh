@@ -707,7 +707,6 @@ QWidget *MainWindow::buildAgentsTab()
     topRow->addLayout(titleCol, 1);
     topRow->addWidget(m_agentCreateIssueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentContinueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentDeleteAllButton, 0, Qt::AlignTop);
@@ -1303,6 +1302,12 @@ QWidget *MainWindow::buildAgentsTab()
     auto *composerCol = new QVBoxLayout(composer);
     composerCol->setContentsMargins(12, 10, 10, 8);
     composerCol->setSpacing(6);
+    // Continue sits right on top of the "Queue another message" box so the
+    // conversation can be resumed at any time without hunting for it in the
+    // header button row (adhoc #105). It stays enabled whenever a session is
+    // selected; continueSelectedAgentSession() itself no-ops if the session is
+    // already running or queued.
+    composerCol->addWidget(m_agentContinueButton, 0, Qt::AlignLeft);
     composerCol->addWidget(m_agentPromptEdit);
     auto *composerBtns = new QHBoxLayout;
     composerBtns->setContentsMargins(0, 0, 0, 0);
@@ -5886,18 +5891,15 @@ void MainWindow::updateAgentActionState()
         m_agentStopButton->setEnabled(running || externalRunning);
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
-    // PR-scoped sessions (issueNumber 0, e.g. the conflict auto-fixer) aren't
-    // backed by a re-runnable AgentRunner/issue, so Continue and steering don't
-    // apply to them.
-    const bool issueBacked = session && session->issueNumber > 0;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    // Sessions run in parallel, so Continue only depends on this session's own
-    // state, not whether other sessions are busy.
+    // Continue is always active whenever a session is selected so the
+    // conversation can be resumed at any time (adhoc #105). Clicking it while the
+    // session is already running or queued is a no-op — continueSelectedAgentSession()
+    // guards against that internally — so there's no need to grey it out.
     if (m_agentContinueButton)
-        m_agentContinueButton->setEnabled(
-            issueBacked && !running && session->status != AgentStatus::Queued);
+        m_agentContinueButton->setEnabled(selected);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled((selected || externalSelected) && !aiFixBusy);
     // "Delete all" also nukes the worktree + branch, so it only applies to a real
