@@ -3448,6 +3448,12 @@ private:
     // (adhoc #247). The second one defers instead.
     bool m_heavyRefreshInFlight = false;
     bool m_repoListRefreshQueued = false; // a refreshRepositoryList deferred past a pump
+    // Signature of the inputs to the advertised per-repo mirror stats
+    // (mirrorPath|lastSyncMs|localPath|worktrees-dir mtime, per non-preview repo).
+    // Those ~9 git subprocesses per repo froze the GUI thread when re-run on every
+    // onRequestServed (adhoc #83); skip the rebuild while the signature is
+    // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
+    QString m_mirrorAdvertSig;
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.

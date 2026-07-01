@@ -529,6 +529,11 @@ void MainWindow::loadMirrorNodesPanel()
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Keep the GUI breathing across this panel's synchronous git reads: ~10 for our
+    // own selfAdvert (head/commit/size/counts/worktrees) plus a `git show` per roster
+    // row for its commit subject. Rebuilt on every roster update, so without this the
+    // main thread froze while a peer's presence flickered (adhoc #83).
+    GitKeepAlive keepAlive;
     // This node's own clone identity (catalog/host owner) for this repo.
     const QString canonical =
         catalogOwner(repo) + "/" +
