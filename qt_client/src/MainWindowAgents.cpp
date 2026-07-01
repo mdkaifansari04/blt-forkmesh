@@ -2767,8 +2767,9 @@ void MainWindow::showAgentSession(int sessionId)
     if (!session->branchName.isEmpty()) {
         const int repoIdx = repoIndexFor(session->owner, session->name);
         if (repoIdx >= 0)
-            worktreePath = worktreePathForBranch(
-                m_repositories.at(repoIdx).localPath, session->branchName);
+            worktreePath = cachedSessionWorktree(
+                sessionId, m_repositories.at(repoIdx).localPath,
+                session->branchName);
     }
     if (m_agentMeta && isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Branches-tab row and the
@@ -4335,33 +4336,48 @@ QString MainWindow::sessionWorkdir(int sessionId)
             const QString repoLocal = m_repositories.at(ri).localPath;
             // The in-memory m_streamWorktree map only knows sessions launched in
             // *this* run. For a reloaded session (e.g. after restart, or one that
-            // finished earlier) resolve its worktree from the branch via git, so
-            // the Files-changed diff runs in the session's own tree rather than
-            // the main checkout — otherwise the tab shows the wrong files.
-            //
-            // worktreePathForBranch() shells `git worktree list`, and this is on
-            // the hot path: refreshAgentFilesPanel() calls us on every transcript
-            // turn (twice — also via scheduleAgentFilesDiff), so a streaming
-            // reloaded session fired a git subprocess per event on the GUI thread
-            // and stalled it for seconds (adhoc #247). The branch->worktree binding
-            // is fixed for a session's lifetime, so cache the resolved path and
-            // re-resolve only if a previously found worktree was since removed
-            // (a cheap filesystem check, no subprocess).
-            auto cached = m_sessionWorkdirCache.constFind(sessionId);
-            QString wt;
-            if (cached != m_sessionWorkdirCache.constEnd()
-                && (cached->isEmpty() || QDir(*cached).exists())) {
-                wt = *cached;
-            } else {
-                wt = worktreePathForBranch(repoLocal, s->branchName);
-                m_sessionWorkdirCache.insert(sessionId, wt);
-            }
+            // finished earlier) resolve its worktree from the branch, so the
+            // Files-changed diff runs in the session's own tree rather than the
+            // main checkout — otherwise the tab shows the wrong files. Cached so
+            // this stays subprocess-free on the hot path.
+            const QString wt =
+                cachedSessionWorktree(sessionId, repoLocal, s->branchName);
             if (!wt.isEmpty() && QDir(wt).exists())
                 return wt;
             return repoLocal;
         }
     }
     return QString();
+}
+
+// Resolve a session's dedicated worktree path ("" when its branch has no separate
+// worktree / is the main checkout) without re-shelling `git worktree list` every
+// time. worktreePathForBranch() spawns a synchronous git subprocess, and the
+// click path resolved it twice per open — once for the header's worktree link and
+// once to gate the Files-changed tab — plus refreshAgentFilesPanel() drove it on
+// every transcript turn. Two subprocesses on the GUI thread is the ~0.5s stall
+// opening a session showed (adhoc #78). Sessions launched this run already know
+// their worktree from m_streamWorktree (no git at all); reloaded ones resolve it
+// once and cache it — a branch->worktree binding is fixed for the session's
+// lifetime — re-resolving only if a found path was since removed (adhoc #247).
+QString MainWindow::cachedSessionWorktree(int sessionId, const QString &repoLocal,
+                                          const QString &branch)
+{
+    if (repoLocal.isEmpty() || branch.trimmed().isEmpty())
+        return QString();
+    // This-run sessions: m_streamWorktree only ever holds a genuine /tmp worktree
+    // (set only when the `git worktree add` produced one), so it's equivalent to
+    // worktreePathForBranch() here but free.
+    auto live = m_streamWorktree.constFind(sessionId);
+    if (live != m_streamWorktree.constEnd())
+        return *live;
+    auto cached = m_sessionWorkdirCache.constFind(sessionId);
+    if (cached != m_sessionWorkdirCache.constEnd()
+        && (cached->isEmpty() || QDir(*cached).exists()))
+        return *cached;
+    const QString wt = worktreePathForBranch(repoLocal, branch);
+    m_sessionWorkdirCache.insert(sessionId, wt);
+    return wt;
 }
 
 bool MainWindow::isStreamTranscriptSession(int sessionId) const
@@ -5573,7 +5589,7 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
         if (ri >= 0) {
             repoLocal = m_repositories.at(ri).localPath;
             if (!branch.isEmpty())
-                wt = worktreePathForBranch(repoLocal, branch);
+                wt = cachedSessionWorktree(sessionId, repoLocal, branch);
         }
     }
     const QString base = repoDefaultBranch(repoBranches());

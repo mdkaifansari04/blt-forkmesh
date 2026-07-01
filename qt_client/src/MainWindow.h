@@ -1739,6 +1739,11 @@ private:
     // you can draw on freehand anywhere on the computer. Nothing is captured — it's
     // a throwaway scratch layer for pointing things out. Esc dismisses it.
     void startScreenDraw();
+    // Settings → Screenshot alignment: drops a full-screen calibration target
+    // (corner brackets, edge rulers, centre crosshair, alignment markers). Grab it
+    // with the region screenshot tool and check the captured pixels line up with
+    // the labelled coordinates. Esc / click dismisses it.
+    void showScreenshotAlignment();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into
@@ -3280,6 +3285,14 @@ private:
     void stopStreamSession(int sessionId, bool refreshUi = true);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // A session's dedicated worktree path ("" when its branch has no separate
+    // worktree / is the main checkout), resolved without re-shelling `git worktree
+    // list` on every click. Sessions launched this run know it from
+    // m_streamWorktree; reloaded ones resolve once via git and cache it for the
+    // session's lifetime (m_sessionWorkdirCache). See the definition for why the
+    // click path leaned on this (adhoc #78).
+    QString cachedSessionWorktree(int sessionId, const QString &repoLocal,
+                                  const QString &branch);
     // Remove the isolated worktree a stream session ran in (if any) and prune the
     // registration, freeing its branch so the PR's branch can be checked out in
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
