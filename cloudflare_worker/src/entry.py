@@ -994,6 +994,16 @@ def build_repo_mirrors_payload(
             issue_count = int(rec.get("issueCount"))
         except (TypeError, ValueError):
             issue_count = -1
+        # Clones / website serves this node has provided; -1 == not advertised
+        # (older peer or a record predating the counters), shown as an em-dash.
+        try:
+            clones_served = int(rec.get("clonesServed"))
+        except (TypeError, ValueError):
+            clones_served = -1
+        try:
+            website_served = int(rec.get("websiteServed"))
+        except (TypeError, ValueError):
+            website_served = -1
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1015,6 +1025,8 @@ def build_repo_mirrors_payload(
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
             "id": str(rec.get("nodeId") or "").strip(),
+            "clonesServed": clones_served,
+            "websiteServed": website_served,
         })
 
     mirrors.sort(
@@ -1964,6 +1976,11 @@ def safe_catalog_record(data):
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
+        # How many clones and website (browse/fetch) requests this node has served
+        # for the repo. Purely local counters otherwise, mirrored here so the Mirror
+        # nodes view can show a node's contribution even while it's offline.
+        "clonesServed": clean_string(data.get("clonesServed", ""), 12),
+        "websiteServed": clean_string(data.get("websiteServed", ""), 12),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
         # Owner-signed fingerprint of the repo's served refs (sha256 over the
