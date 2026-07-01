@@ -429,13 +429,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 18);
+    m_mirrorNodesTable = new QTableWidget(0, 19);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Latest commit", "Synced", "Size", "Issues", "Commits",
          "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
-         "Platform", "Version", "Node id", "Clones", "Website"});
+         "Platform", "Version", "Node id", "Clones", "Website", "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -464,6 +464,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Node id
     mh->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Clones served
     mh->setSectionResizeMode(17, QHeaderView::ResizeToContents); // Website serves
+    mh->setSectionResizeMode(18, QHeaderView::ResizeToContents); // Artifacts hosted
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -562,6 +563,7 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.pullCount = mirrorPullCount(localMirror, selfAdvert.branch);
     selfAdvert.discussionCount = mirrorDiscussionCount(localMirror, selfAdvert.branch);
     selfAdvert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+    selfAdvert.artifactCount = mirrorArtifactCount(localMirror);
 
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
@@ -876,6 +878,13 @@ void MainWindow::loadMirrorNodesPanel()
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
         m_mirrorNodesTable->setItem(
             row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
+        // Artifacts: how many release binaries this node is hosting for download
+        // in its content-addressed store (issue #304). A mirror replicates these
+        // separately from git, so the count reflects what it can actually serve.
+        m_mirrorNodesTable->setItem(
+            row, 18,
+            makeCountCell(advert ? advert->artifactCount : -1, "artifact",
+                          "artifacts"));
         ++count;
     }
 
@@ -1017,6 +1026,12 @@ void MainWindow::loadMirrorNodesPanel()
                 row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
             m_mirrorNodesTable->setItem(
                 row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
+            // Artifacts the publishing node reported hosting for download, so the
+            // count shows for an offline node too.
+            m_mirrorNodesTable->setItem(
+                row, 18,
+                makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
+                              "artifacts"));
             ++count;
         }
     }
@@ -1123,6 +1138,157 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                 loadMirrorNodesPanel();
         }
     });
+}
+
+void MainWindow::replicateReleaseArtifacts(int index)
+{
+    if (!m_networkAccess || index < 0 || index >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(index);
+    if (repo.previewOnly)
+        return;
+    const QString mirrorPath = repo.mirrorPath;
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return;
+    const QString branch = mirrorHeadBranch(mirrorPath);
+    if (branch.isEmpty())
+        return;
+
+    // Release manifests are committed metadata (releases/<channel>/release.json)
+    // that git already mirrors; only the binary bytes live out of git in the
+    // per-node content-addressed store (issue #304). Read every channel's manifest
+    // from the served branch, collect the asset blob hashes we don't already hold,
+    // and remember the owner/repo that stages each one so we can pull it.
+    QByteArray channelsOut;
+    if (!runGitCapture(mirrorPath,
+                       {QStringLiteral("ls-tree"), QStringLiteral("-z"),
+                        QStringLiteral("--name-only"),
+                        branch + QStringLiteral(":releases")},
+                       &channelsOut, nullptr))
+        return; // no releases/ tree on this branch — nothing to mirror
+    static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
+    // Every mirror of this repo shares the same source identity; a manifest that
+    // doesn't name its own staging repo falls back to it.
+    const QString fallbackRepo =
+        repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+        repoSegment(repo.name, QStringLiteral("repository"));
+    QMap<QString, QString> pending; // blob sha256 -> "owner/name" to download from
+    for (const QByteArray &raw : channelsOut.split('\0')) {
+        const QString channel = QString::fromUtf8(raw).trimmed();
+        if (channel.isEmpty())
+            continue;
+        QByteArray manifestOut;
+        if (!runGitCapture(mirrorPath,
+                           {QStringLiteral("show"),
+                            branch + QStringLiteral(":releases/") + channel +
+                                QStringLiteral("/release.json")},
+                           &manifestOut, nullptr))
+            continue;
+        const QJsonObject obj = QJsonDocument::fromJson(manifestOut).object();
+        const QString manifestRepo =
+            obj.value(QStringLiteral("repo")).toString().trimmed();
+        const QString downloadRepo =
+            manifestRepo.isEmpty() ? fallbackRepo : manifestRepo;
+        const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
+        for (const QJsonValue &asset : assets) {
+            const QString hash = asset.toObject()
+                                     .value(QStringLiteral("blob_sha256"))
+                                     .toString()
+                                     .trimmed()
+                                     .toLower();
+            if (!sha256Re.match(hash).hasMatch())
+                continue;
+            if (QFile::exists(mirrorReleaseBlobPath(mirrorPath, hash)))
+                continue; // already hosting this artifact
+            if (!pending.contains(hash))
+                pending.insert(hash, downloadRepo);
+        }
+    }
+    if (pending.isEmpty())
+        return;
+    logSystem(QStringLiteral("Mirror: fetching %1 release artifact%2 for %3/%4 so "
+                             "this node can serve them.")
+                  .arg(pending.size())
+                  .arg(pending.size() == 1 ? "" : "s")
+                  .arg(repo.owner, repo.name));
+    // Pull them one at a time so a multi-asset release doesn't open a dozen
+    // parallel binary streams at once.
+    downloadNextReleaseBlob(mirrorPath, pending);
+}
+
+void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
+                                         QMap<QString, QString> pending)
+{
+    if (pending.isEmpty() || !m_networkAccess)
+        return;
+    auto it = pending.begin();
+    const QString hash = it.key();
+    const QString downloadRepo = it.value();
+    pending.erase(it);
+
+    const int slash = downloadRepo.indexOf('/');
+    if (slash <= 0) {
+        downloadNextReleaseBlob(mirrorPath, pending);
+        return;
+    }
+    const QString owner = downloadRepo.left(slash);
+    const QString name = downloadRepo.mid(slash + 1);
+
+    // Stream the bytes straight to a temp file in the target CAS shard, hashing as
+    // we go, so even a large binary never sits fully in memory. On a verified match
+    // we atomically rename it into place; otherwise the partial is discarded.
+    const QString blobPath = mirrorReleaseBlobPath(mirrorPath, hash);
+    QDir().mkpath(QFileInfo(blobPath).absolutePath());
+    auto tmp = std::make_shared<QFile>(blobPath + QStringLiteral(".part"));
+    if (!tmp->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        downloadNextReleaseBlob(mirrorPath, pending);
+        return;
+    }
+    auto hasher = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+
+    QUrl url = catalogApiUrl(); // relay host/scheme; content-addressed route is public
+    url.setPath(QStringLiteral("/api/repo/%1/%2/releases/blob/sha256/%3")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(name)), hash));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::readyRead, this, [reply, tmp, hasher]() {
+        const QByteArray chunk = reply->readAll();
+        tmp->write(chunk);
+        hasher->addData(chunk);
+    });
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, tmp, hasher, mirrorPath, hash, blobPath, pending]() {
+                const QByteArray rest = reply->readAll();
+                tmp->write(rest);
+                hasher->addData(rest);
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                const QString netError = reply->errorString();
+                reply->deleteLater();
+                tmp->close();
+                const QString partPath = tmp->fileName();
+                const QString actual =
+                    QString::fromLatin1(hasher->result().toHex());
+                if (ok && actual == hash) {
+                    QFile::remove(blobPath); // replace any stale/empty leftover
+                    if (!QFile::rename(partPath, blobPath))
+                        QFile::remove(partPath);
+                } else {
+                    QFile::remove(partPath);
+                    if (!ok)
+                        logSystem(QStringLiteral(
+                                      "Mirror: release artifact %1 download failed "
+                                      "(%2); will retry on next sync.")
+                                      .arg(hash.left(12), netError));
+                    else
+                        logSystem(QStringLiteral(
+                                      "Mirror: release artifact %1 failed checksum, "
+                                      "discarded.")
+                                      .arg(hash.left(12)));
+                }
+                // Continue with the rest regardless of this one's outcome; a fresh
+                // panel load picks up the newly-hosted artifacts' count.
+                downloadNextReleaseBlob(mirrorPath, pending);
+            });
 }
 
 void MainWindow::promptNewRelease()
