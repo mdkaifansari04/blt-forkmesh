@@ -447,6 +447,31 @@ void MainWindow::refreshRepositoryList()
     // a DO with no host attached and got a 503 — surfaced as "Sync deferred,
     // host temporarily unavailable" even though we were online and serving.
     if (m_backend) {
+        // Building the adverts shells ~9 git subprocesses per repo (head, commit,
+        // size, issue/pull/discussion/commit/branch counts, worktree count). None of
+        // that changes when we merely serve a request, yet refreshRepositoryList runs
+        // on every onRequestServed and a 1-minute timer, so recomputing it every time
+        // blocked the GUI thread for seconds (adhoc #83). A mirror's stats only move
+        // when it is re-synced (repo.lastSyncMs) and the worktree count only when a
+        // worktree is added/removed (the .git/worktrees dir mtime) — so skip the whole
+        // rebuild while that signature is unchanged, and when it did change run the git
+        // reads under GitKeepAlive so the window keeps breathing.
+        QString advertSig;
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly)
+                continue;
+            advertSig +=
+                repo.mirrorPath + QLatin1Char('|') +
+                QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
+                QLatin1Char('|') +
+                QString::number(
+                    QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
+                        .lastModified()
+                        .toMSecsSinceEpoch()) +
+                QLatin1Char('\n');
+        }
+        if (advertSig != m_mirrorAdvertSig) {
+        GitKeepAlive keepAlive;
         QList<MirrorAdvert> ours;
         for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
             if (repo.previewOnly)
@@ -482,6 +507,8 @@ void MainWindow::refreshRepositoryList()
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);
+        m_mirrorAdvertSig = advertSig;
+        }
     }
 }
 
@@ -1841,16 +1868,31 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
     // refs/tags/* only, sorted, joined by '\n'.
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
+    // Repository details (about text + website) live in the committed
+    // .forkmesh/info.json, the single source of truth (issue #232). Prefer it over
+    // the locally-cached record fields so the website's About panel is filled from
+    // info.json even for a mirror that cloned the repo but never had its
+    // description typed in locally (adhoc #86).
     QString publishedWebsite;
+    QString publishedDescription = repo.description;
     if (!repo.localPath.trimmed().isEmpty()) {
         QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();
+            const QString about =
+                info.value(QStringLiteral("about")).toString().trimmed();
+            if (!about.isEmpty())
+                publishedDescription = about;
         }
     }
-    if (publishedWebsite.isEmpty() && index == m_repoDetailIndex)
-        publishedWebsite = m_repoInfo.website;
+    if (index == m_repoDetailIndex) {
+        if (publishedWebsite.isEmpty())
+            publishedWebsite = m_repoInfo.website;
+        if (publishedDescription.trimmed().isEmpty() &&
+            !m_repoInfo.about.trimmed().isEmpty())
+            publishedDescription = m_repoInfo.about;
+    }
     // Node facts the live Mirror nodes view shows per node (latest commit, issue
     // count, platform, version, node id). Published alongside the mirror so those
     // columns stay populated for a node that's offline or only intermittently in
@@ -1901,7 +1943,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"nodeId", selfNodeId},
                          {"clonesServed", QString::number(clonesServed)},
                          {"websiteServed", QString::number(websiteServed)},
-                         {"description", repo.description},
+                         {"description", publishedDescription},
                          {"website", publishedWebsite},
                          {"cloneUrl", repo.cloneUrl},
                          {"solana", repo.solanaAddress},

@@ -2432,6 +2432,11 @@ void MainWindow::loadRepoOverview(const QString &path)
     }
     m_overviewLoadedKey.clear(); // cleared until this load completes successfully
 
+    // Past the skip check we do the full rebuild: a whole-tree --numstat diff plus a
+    // `git log -1` per entry (and the README read). Serviced on a button click, so
+    // pump the event loop across those reads to keep the window responsive (adhoc #83).
+    GitKeepAlive keepAlive;
+
     m_overviewPath = path;
     m_overviewList->clear();
     if (m_readmeView)
