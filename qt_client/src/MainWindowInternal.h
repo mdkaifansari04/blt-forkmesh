@@ -156,6 +156,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #ifndef Q_OS_WIN
 #include <csignal>
@@ -5383,11 +5384,42 @@ inline void pumpKeepAlive()
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
 }
 
+// A compact one-line breadcrumb naming a git subprocess (subcommand + repo) for
+// stall reports — e.g. "git log --numstat (forkmesh)". Drops the "-C <dir>" prefix
+// our helpers use to target a working tree but keeps the repo's basename, and caps
+// length so a long --pretty format or path can't bloat the stall log line.
+inline QString gitBlockingCrumb(const QProcess &process)
+{
+    QStringList args = process.arguments();
+    QString repo;
+    if (args.size() >= 2 && args.first() == QLatin1String("-C")) {
+        repo = QFileInfo(args.at(1)).fileName();
+        args = args.mid(2);
+    }
+    QString cmd = (process.program() + QLatin1Char(' ') + args.join(QLatin1Char(' ')))
+                      .simplified();
+    constexpr int kMax = 80;
+    if (cmd.size() > kMax)
+        cmd = cmd.left(kMax - 1) + QStringLiteral("…");
+    if (!repo.isEmpty())
+        cmd += QStringLiteral(" (%1)").arg(repo);
+    return cmd;
+}
+
 // Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
 // short slices and service the GUI between them so the window stays responsive
 // and spinners animate; otherwise block as before.
 inline bool waitForGit(QProcess &process, QString *err)
 {
+    // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
+    // thread, the stall report can name the git command instead of leaving only a
+    // raw backtrace. Only the main thread is watched, so leave the breadcrumb alone
+    // for off-thread reads rather than clobbering what the GUI thread set.
+    std::optional<BlockingCallScope> crumb;
+    const QCoreApplication *app = QCoreApplication::instance();
+    if (app && QThread::currentThread() == app->thread())
+        crumb.emplace(gitBlockingCrumb(process));
+
     if (g_gitKeepAliveDepth <= 0) {
         if (process.waitForFinished(8000))
             return true;
