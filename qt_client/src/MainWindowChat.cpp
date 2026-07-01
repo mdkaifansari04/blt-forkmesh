@@ -2128,13 +2128,27 @@ void MainWindow::captureScreenRegion()
 
 // Pencil button: drop a transparent overlay over the whole desktop (the live
 // screen stays visible) that you can scribble on freehand with the pointer, to
-// point things out on screen. Nothing is captured or saved; Esc / right-click
-// clears the ink and dismisses it.
+// point things out on screen. Esc / right-click clears the ink and dismisses it.
+// The overlay also carries a "Screenshot" button: clicking it grabs a region with
+// the drawn ink baked in and queues it as the next attachment.
 void MainWindow::startScreenDraw()
 {
     ScreenDrawOverlay *overlay = ScreenDrawOverlay::begin();
-    if (!overlay)
+    if (!overlay) {
         logSystem("Couldn't open the on-screen drawing overlay.");
+        return;
+    }
+    connect(overlay, &ScreenDrawOverlay::captured, this,
+            [this](const QImage &image) {
+                const QString path = saveNewAgentPromptImage(image);
+                if (path.isEmpty()) {
+                    logSystem("Couldn't save the screenshot.");
+                    return;
+                }
+                queueQuickAddImage(path);
+                if (m_issueQuickAdd)
+                    m_issueQuickAdd->setFocus();
+            });
 }
 
 void MainWindow::updateConnectionStatus()
