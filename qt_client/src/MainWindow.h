@@ -1468,6 +1468,16 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Mirror the repo's release artifacts: pull any content-addressed binary blobs
+    // this node doesn't already hold (the metadata is in git, the bytes are not —
+    // issue #304) into its release store, so a mirror can serve downloads too and
+    // not just clones (adhoc #77). Called after a successful sync of a real mirror.
+    void replicateReleaseArtifacts(int index);
+    // Download the next missing release blob in `pending` (hash -> "owner/name" to
+    // pull it from) from the relay's public content-addressed route, verify its
+    // sha256, store it in the mirror's release CAS, then recurse to the rest.
+    void downloadNextReleaseBlob(const QString &mirrorPath,
+                                 QMap<QString, QString> pending);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
@@ -1748,11 +1758,6 @@ private:
     // you can draw on freehand anywhere on the computer. Nothing is captured — it's
     // a throwaway scratch layer for pointing things out. Esc dismisses it.
     void startScreenDraw();
-    // Settings → Screenshot alignment: drops a full-screen calibration target
-    // (corner brackets, edge rulers, centre crosshair, alignment markers). Grab it
-    // with the region screenshot tool and check the captured pixels line up with
-    // the labelled coordinates. Esc / click dismisses it.
-    void showScreenshotAlignment();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into

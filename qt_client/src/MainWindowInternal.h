@@ -5672,6 +5672,49 @@ inline qint64 mirrorRepoSizeBytes(const QString &mirrorPath)
     return sizeKiB * 1024;
 }
 
+// The content-addressed release store a node keeps alongside its bare mirror.
+// Release binaries are never committed to git (issue #304); they live here as
+// forkmesh-releases/sha256/<aa>/<full-hash>/data and are self-verifying (the
+// path IS the sha256). Both the artifact tally and the mirror-side replicator
+// resolve a blob's on-disk path through this one helper.
+inline QString mirrorReleaseCasRoot(const QString &mirrorPath)
+{
+    return QDir(mirrorPath).filePath(QStringLiteral("forkmesh-releases/sha256"));
+}
+inline QString mirrorReleaseBlobPath(const QString &mirrorPath, const QString &hash)
+{
+    return QDir(mirrorReleaseCasRoot(mirrorPath))
+        .filePath(QStringLiteral("%1/%2/data").arg(hash.left(2), hash));
+}
+
+// How many release artifact blobs this node is actually hosting for download —
+// the files present in the mirror's content-addressed release store. A mirror
+// replicates these separately from the git refs, so the figure shows how many
+// artifacts a node can serve. Advertised to peers for the Mirror nodes view.
+// Returns -1 when the mirror path can't be read, so "unknown" (older peer) stays
+// distinct from a genuine zero; a store with no blobs yet counts as zero.
+inline int mirrorArtifactCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
+    if (!casDir.exists())
+        return 0; // no artifacts stored yet
+    int count = 0;
+    // Two-level fanout: sha256/<aa>/<full-hash>/data.
+    const QStringList shards =
+        casDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &shard : shards) {
+        const QDir shardDir(casDir.filePath(shard));
+        const QStringList hashes =
+            shardDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &hash : hashes)
+            if (QFile::exists(shardDir.filePath(hash + QStringLiteral("/data"))))
+                ++count;
+    }
+    return count;
+}
+
 // How many numbered subdirectories a node's bare mirror holds under <subdir>/ on
 // the served branch (the same tally the issues / pulls / discussions tabs show).
 // Advertised to peers so the mirror-nodes view can show what each node is
