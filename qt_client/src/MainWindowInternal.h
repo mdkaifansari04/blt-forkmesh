@@ -4759,6 +4759,16 @@ inline bool voiceInputReady()
                                                        : whisperInstalled();
 }
 
+// Short human-readable name of the engine + model dictation will run, e.g.
+// "Whisper base.en" or "Parakeet parakeet-tdt-0.6b-v2". Surfaced in the mic
+// tooltips so it's clear which speech-to-text model is transcribing.
+inline QString voiceModelLabel()
+{
+    return voiceEngine() == QStringLiteral("parakeet")
+               ? QStringLiteral("Parakeet %1").arg(parakeetModelName())
+               : QStringLiteral("Whisper %1").arg(whisperModelName());
+}
+
 // A CLI audio recorder + the args to capture 16 kHz mono 16-bit WAV (what
 // whisper.cpp expects) into `outWav`, running until the process is terminated.
 // An empty program means no supported recorder is installed.
