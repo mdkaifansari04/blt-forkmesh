@@ -1280,10 +1280,11 @@ async def network_stats(env, include_payouts=False):
         return cached
 
     await ensure_schema(env)
+    now = int(Date.now())
     repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
     repos = int((repo_row or {}).get("n", 0) or 0)
 
-    cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
+    cutoff = now - HOST_PRESENCE_STALE_MS
     try:
         await notify_stale_hosts_offline(env, cutoff)
         await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
@@ -1294,6 +1295,17 @@ async def network_stats(env, include_payouts=False):
     )
     hosts = int((host_row or {}).get("n", 0) or 0)
 
+    # Named list of the nodes that are actually online right now (same signal the
+    # uptime cron samples), so the dashboard rail can show *who* is live instead of
+    # painting the 48h uptime leaderboard green — a node offline now must not look
+    # active, and a node that just came up must appear even with no accrued minutes.
+    try:
+        online_nodes = sorted(
+            {label for label in (await _live_online_nodes(env, now)).values() if label}
+        )
+    except Exception:
+        online_nodes = []
+
     clients = await _flagship_client_count(env)
     payout_nodes = await _network_payout_nodes(env) if include_payouts else None
 
@@ -1303,6 +1315,7 @@ async def network_stats(env, include_payouts=False):
     price = await _sol_usd_price(env)
     resp = json_response(
         {"ok": True, "repos": repos, "hosts": hosts, "clients": clients,
+         "onlineNodes": online_nodes,
          "minLamports": min_lamports, "minSol": _amount_sol(min_lamports),
          "minUsd": round((min_lamports / LAMPORTS_PER_SOL) * price, 2) if price else 0,
          "solUsd": price or 0,

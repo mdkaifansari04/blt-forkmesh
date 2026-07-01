@@ -1868,16 +1868,31 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
     // refs/tags/* only, sorted, joined by '\n'.
     const QString stateHash = mirrorStateHash(repo.mirrorPath);
+    // Repository details (about text + website) live in the committed
+    // .forkmesh/info.json, the single source of truth (issue #232). Prefer it over
+    // the locally-cached record fields so the website's About panel is filled from
+    // info.json even for a mirror that cloned the repo but never had its
+    // description typed in locally (adhoc #86).
     QString publishedWebsite;
+    QString publishedDescription = repo.description;
     if (!repo.localPath.trimmed().isEmpty()) {
         QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
         if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
             publishedWebsite = info.value(QStringLiteral("website")).toString();
+            const QString about =
+                info.value(QStringLiteral("about")).toString().trimmed();
+            if (!about.isEmpty())
+                publishedDescription = about;
         }
     }
-    if (publishedWebsite.isEmpty() && index == m_repoDetailIndex)
-        publishedWebsite = m_repoInfo.website;
+    if (index == m_repoDetailIndex) {
+        if (publishedWebsite.isEmpty())
+            publishedWebsite = m_repoInfo.website;
+        if (publishedDescription.trimmed().isEmpty() &&
+            !m_repoInfo.about.trimmed().isEmpty())
+            publishedDescription = m_repoInfo.about;
+    }
     // Node facts the live Mirror nodes view shows per node (latest commit, issue
     // count, platform, version, node id). Published alongside the mirror so those
     // columns stay populated for a node that's offline or only intermittently in
@@ -1928,7 +1943,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"nodeId", selfNodeId},
                          {"clonesServed", QString::number(clonesServed)},
                          {"websiteServed", QString::number(websiteServed)},
-                         {"description", repo.description},
+                         {"description", publishedDescription},
                          {"website", publishedWebsite},
                          {"cloneUrl", repo.cloneUrl},
                          {"solana", repo.solanaAddress},
