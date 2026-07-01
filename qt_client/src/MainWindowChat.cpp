@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "ScreenCaptureOverlay.h"
+#include "ScreenDrawOverlay.h"
 
 using namespace forkmesh::ui;
 
@@ -1978,6 +1979,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
+    // Pencil button beside the screenshot button: drop a transparent overlay you
+    // can scribble on freehand anywhere on screen — handy for pointing things out.
+    m_navDrawButton = new QPushButton;
+    m_navDrawButton->setObjectName("topNavButton");
+    m_navDrawButton->setCursor(Qt::PointingHandCursor);
+    m_navDrawButton->setToolTip(
+        QString::fromUtf8("Draw on the screen \xE2\x80\x94 scribble freehand "
+                          "anywhere; Esc to clear it away"));
+    setOcticon(m_navDrawButton, "pencil", 14);
+    connect(m_navDrawButton, &QPushButton::clicked, this,
+            &MainWindow::startScreenDraw);
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -2063,8 +2076,9 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addStretch();
-    // Right-aligned so they sit under the top-right avatar; the screenshot button
-    // sits just left of the rebuild/restart button.
+    // Right-aligned so they sit under the top-right avatar; the pencil and
+    // screenshot buttons sit just left of the rebuild/restart button.
+    navRow->addWidget(m_navDrawButton);
     navRow->addWidget(m_navScreenshotButton);
     navRow->addWidget(m_navRebuildButton);
     layout->addLayout(navRow);
@@ -2100,6 +2114,31 @@ void MainWindow::captureScreenRegion()
         return;
     }
     connect(overlay, &ScreenCaptureOverlay::captured, this,
+            [this](const QImage &image) {
+                const QString path = saveNewAgentPromptImage(image);
+                if (path.isEmpty()) {
+                    logSystem("Couldn't save the screenshot.");
+                    return;
+                }
+                queueQuickAddImage(path);
+                if (m_issueQuickAdd)
+                    m_issueQuickAdd->setFocus();
+            });
+}
+
+// Pencil button: drop a transparent overlay over the whole desktop (the live
+// screen stays visible) that you can scribble on freehand with the pointer, to
+// point things out on screen. Esc / right-click clears the ink and dismisses it.
+// The overlay also carries a "Screenshot" button: clicking it grabs a region with
+// the drawn ink baked in and queues it as the next attachment.
+void MainWindow::startScreenDraw()
+{
+    ScreenDrawOverlay *overlay = ScreenDrawOverlay::begin();
+    if (!overlay) {
+        logSystem("Couldn't open the on-screen drawing overlay.");
+        return;
+    }
+    connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
                 const QString path = saveNewAgentPromptImage(image);
                 if (path.isEmpty()) {

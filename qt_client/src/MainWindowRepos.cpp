@@ -468,6 +468,14 @@ void MainWindow::refreshRepositoryList()
             advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
             // Issues we're mirroring, so peers can show the count per node.
             advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
+            // More tallies the Mirror nodes view shows per node: history depth,
+            // branch/PR/discussion counts, and our live worktree (agent task) count.
+            advert.commitCount = mirrorCommitCount(repo.mirrorPath, advert.branch);
+            advert.branchCount = mirrorBranchCount(repo.mirrorPath);
+            advert.pullCount = mirrorPullCount(repo.mirrorPath, advert.branch);
+            advert.discussionCount =
+                mirrorDiscussionCount(repo.mirrorPath, advert.branch);
+            advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);
@@ -1850,6 +1858,11 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const QString headBranch = mirrorHeadBranch(repo.mirrorPath);
     const QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
+    const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
+    const int branchCount = mirrorBranchCount(repo.mirrorPath);
+    const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
+    const int discussionCount = mirrorDiscussionCount(repo.mirrorPath, headBranch);
+    const int worktreeCount = mirrorWorktreeCount(repo.localPath);
     QString selfPlatform, selfVersion, selfNodeId;
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         if (member.self) {
@@ -1873,6 +1886,11 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"commit", headCommit},
                          {"branch", headBranch},
                          {"issueCount", QString::number(issueCount)},
+                         {"commitCount", QString::number(commitCount)},
+                         {"branchCount", QString::number(branchCount)},
+                         {"pullCount", QString::number(pullCount)},
+                         {"discussionCount", QString::number(discussionCount)},
+                         {"worktreeCount", QString::number(worktreeCount)},
                          {"platform", selfPlatform},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
