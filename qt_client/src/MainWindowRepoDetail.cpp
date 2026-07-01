@@ -6568,17 +6568,18 @@ QWidget *MainWindow::buildRepoDetailSection()
     mirrorStrip->hide();
     m_mirrorActivityStrip = mirrorStrip;
 
-    // Current-release pill floating just above the Releases tab (adhoc #69),
-    // mirroring the mirror-activity strip over Mirror nodes: a small purple tag
-    // pill naming the newest release so it's visible from any tab. Created
-    // parented to the window; positionReleaseStrip reparents it onto the page and
-    // the tag scan (loadBranchesAndTags / loadReleasesPanel) fills in its text.
+    // Current-release label floating just above the Releases tab (adhoc #69),
+    // mirroring the mirror-activity strip over Mirror nodes: it names the newest
+    // release so it's visible from any tab. Rendered as plain text (no pill
+    // chrome) at a comfortably readable size; the colour is left to the theme
+    // foreground. Created parented to the window; positionReleaseStrip reparents
+    // it onto the page and the tag scan (loadBranchesAndTags / loadReleasesPanel)
+    // fills in its text.
     m_releaseStrip = new QLabel(this);
     m_releaseStrip->setObjectName("releaseStrip");
     m_releaseStrip->setStyleSheet(
-        QStringLiteral("#releaseStrip{color:#d2a8ff;background:rgba(163,113,247,0.15);"
-                       "border:1px solid rgba(163,113,247,0.4);border-radius:9px;"
-                       "padding:0px 8px;font-size:11px;}"));
+        QStringLiteral("#releaseStrip{background:transparent;border:none;"
+                       "padding:0px;font-size:15px;}"));
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
