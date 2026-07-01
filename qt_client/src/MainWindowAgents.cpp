@@ -1859,7 +1859,15 @@ void MainWindow::refreshClaudeCodeUsage()
 
 void MainWindow::refreshClaudeModelCombo()
 {
-    if (!m_networkAccess || !m_agentModelCombo)
+    // Fold any already-fetched line-up into both model combos first, so a combo
+    // built after the fetch (the composer's m_agentModelCombo vs the quick-add
+    // bar's m_quickAddClaudeModel) still shows the live models even while the
+    // re-fetch throttle below is armed. Both calls are no-ops if the combo is
+    // absent or the cache is empty.
+    mergeLiveClaudeModels(m_agentModelCombo, m_liveClaudeModels);
+    mergeLiveClaudeModels(m_quickAddClaudeModel, m_liveClaudeModels);
+
+    if (!m_networkAccess || (!m_agentModelCombo && !m_quickAddClaudeModel))
         return;
     // Throttle: at most one live fetch every 10 minutes. buildAgentsTab() fires
     // the first one; showAgentSession() re-arms it as the user works, so the list
@@ -1892,37 +1900,19 @@ void MainWindow::refreshClaudeModelCombo()
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
-        // The combo can be gone (tab rebuilt) while the request was in flight; a
-        // failed request just leaves the static defaults untouched.
-        if (!m_agentModelCombo || reply->error() != QNetworkReply::NoError)
+        // A failed request just leaves the static defaults untouched.
+        if (reply->error() != QNetworkReply::NoError)
             return;
         const QJsonArray models =
             QJsonDocument::fromJson(body).object().value("data").toArray();
         if (models.isEmpty())
             return;
-        // Merging must not disturb the current pick or re-fire the change handler,
-        // so block signals and restore the selected model by its data value.
-        QSignalBlocker block(m_agentModelCombo);
-        const QVariant picked = m_agentModelCombo->currentData();
-        // A separator divides the convenience aliases from the live line-up. Add
-        // it (and each live model) at most once so a re-fetch stays idempotent.
-        bool separated = m_agentModelCombo->property("liveModelsMerged").toBool();
-        for (const QJsonValue &v : models) {
-            const QJsonObject m = v.toObject();
-            const QString id = m.value(QStringLiteral("id")).toString();
-            if (id.isEmpty() || m_agentModelCombo->findData(id) >= 0)
-                continue;
-            if (!separated) {
-                m_agentModelCombo->insertSeparator(m_agentModelCombo->count());
-                m_agentModelCombo->setProperty("liveModelsMerged", true);
-                separated = true;
-            }
-            m_agentModelCombo->addItem(
-                m.value(QStringLiteral("display_name")).toString(id), id);
-        }
-        const int idx = m_agentModelCombo->findData(picked);
-        if (idx >= 0)
-            m_agentModelCombo->setCurrentIndex(idx);
+        // Cache for combos built later, then merge into any that exist now. The
+        // helper blocks signals and restores the current pick so the merge never
+        // disturbs the selection; combos torn down mid-flight are no-ops.
+        m_liveClaudeModels = models;
+        mergeLiveClaudeModels(m_agentModelCombo, models);
+        mergeLiveClaudeModels(m_quickAddClaudeModel, models);
     });
 }
 
