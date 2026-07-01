@@ -653,8 +653,38 @@ QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
     return item;
 }
 
+// Token/cost bookkeeping for an event that is deliberately not rendered (the
+// tail-capped replay skips old rows): mirrors handleEvent's stats reads only.
+void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
+{
+    const QString type = ev.value(QStringLiteral("type")).toString();
+    if (type == QLatin1String("assistant")) {
+        m_totalTokens += (qint64)ev.value(QStringLiteral("message")).toObject()
+                             .value(QStringLiteral("usage")).toObject()
+                             .value(QStringLiteral("output_tokens")).toDouble();
+    } else if (type == QLatin1String("result")) {
+        const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
+        if (cost > 0)
+            m_totalCost = cost; // result carries the run's cumulative cost
+    }
+}
+
+void ClaudeTranscriptView::addSkippedNotice(int count)
+{
+    auto *l = new QLabel(
+        QStringLiteral("… %1 earlier event%2 not shown — the Raw view has the "
+                       "full stream …")
+            .arg(count)
+            .arg(count == 1 ? QString() : QStringLiteral("s")));
+    l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
+    addRow(l);
+    emit statsChanged(m_totalTokens, m_totalCost);
+}
+
 void ClaudeTranscriptView::fadeIn(QWidget *card)
 {
+    if (m_bulkPopulate)
+        return; // replaying a stored session: rows appear at once, no per-row anim
     auto *eff = new QGraphicsOpacityEffect(card);
     card->setGraphicsEffect(eff);
     auto *a = new QPropertyAnimation(eff, "opacity", card);

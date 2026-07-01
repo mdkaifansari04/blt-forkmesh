@@ -1386,6 +1386,14 @@ void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
 {
     if (!view)
         return;
+    // Rich-text parse + layout runs synchronously on the GUI thread and is the
+    // slow half of showing a diff; name it so a stall report points here instead
+    // of an anonymous harfbuzz/QTextDocumentLayout backtrace.
+    BlockingCallScope crumb(QStringLiteral("diff html layout (%1 chars, %2)")
+                                .arg(html.size())
+                                .arg(view->objectName().isEmpty()
+                                         ? QStringLiteral("unnamed view")
+                                         : view->objectName()));
     view->setProperty(kDiffSourceProp, html);
     view->document()->setDefaultStyleSheet(diffStyleSheet(m_diffFontPt));
     view->setHtml(html);
