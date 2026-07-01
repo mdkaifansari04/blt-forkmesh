@@ -1077,6 +1077,10 @@ QWidget *MainWindow::buildSettingsSection()
     secretsCol->addStretch();
     addTab(secretsTab, "Secrets & Coves");
 
+    // Data: where configuration data lives, per-directory breakdown, backup and
+    // cleanup. Built in its own translation unit (MainWindowData.cpp).
+    addTab(buildDataSection(), "Data");
+
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
