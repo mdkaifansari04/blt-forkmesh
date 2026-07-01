@@ -2601,7 +2601,10 @@
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
 		                <div class="flex min-w-0 items-center gap-2">
-                  <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
+                  <div class="flex min-w-0 items-center gap-2">
+			                  <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
+			                  <span data-repo-served-by hidden title="Mirror node that served this page (round-robined across online mirrors)" class="shrink-0 items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground"></span>
+			                </div>
                   <span data-repo-served-by hidden title="Mirror node that served this page (round-robined across online mirrors)" class="shrink-0 items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground"></span>
                 </div>
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
