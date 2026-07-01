@@ -1232,6 +1232,9 @@ private:
     // Stop the currently selected run: abort it if it's executing, or drop it
     // from the queue if it hasn't started yet. Records the run as Cancelled.
     void stopSelectedRun();
+    // Start a new coding agent to fix the selected (failed) run, on its own
+    // branch/PR like any other ad-hoc agent run (adhoc #114).
+    void fixSelectedRunWithAgent(const QString &provider, const QString &model);
     // Delete every run currently shown in the Runs list (its meta + log on
     // disk); skips any run that's still in flight. Prompts for confirmation.
     void clearActionRuns();
@@ -3153,6 +3156,12 @@ private:
     QPushButton *m_actionStopButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
+    // "Fix with agent" (adhoc #114): only shown for a failed run. Starts a new
+    // coding agent on its own branch/PR, same as any other ad-hoc agent run, with
+    // the failing run's log as its task.
+    QPushButton *m_actionFixButton = nullptr;
+    QComboBox *m_actionFixAgentCombo = nullptr;
+    QComboBox *m_actionFixModelCombo = nullptr;
     // Settings: variables/secrets table.
     QTableWidget *m_varsTable = nullptr;
     // When true, the variables table shows secret values in clear text instead
@@ -3513,7 +3522,8 @@ private:
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
     // (>0) or 0 if it could not start.
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
-                               const QString &provider, bool createPr);
+                               const QString &provider, bool createPr,
+                               const QString &model = QString());
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
