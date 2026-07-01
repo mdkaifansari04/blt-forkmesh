@@ -945,6 +945,33 @@ def mirroring_owner_set(records):
     return owners
 
 
+def served_mirror_groups(records):
+    # Mirror groups (root-commit / name keyed) that have at least one online,
+    # PUBLIC host right now. `records` are catalog records already annotated with
+    # rec["liveHost"] (the named node's own host presence). A group lands here as
+    # soon as ANY node mirroring that logical repo is live, which is what lets a
+    # repo stay cloneable/browsable in place through its own URL while its named
+    # source of truth is down (adhoc #61). Private rows never serve a public
+    # group, matching the clone fallback in select_clone_fallback.
+    groups = set()
+    for rec in records or []:
+        if (rec or {}).get("liveHost") and (rec or {}).get("visibility") != "private":
+            groups.add(repo_mirror_group_key(rec))
+    return groups
+
+
+def repo_clone_online(rec, served_groups):
+    # Whether a repo is actually reachable for clone/browse right now: its own
+    # named host is live, OR — for a public repo — a peer mirroring the same
+    # logical repo is online and the relay will serve it in place (adhoc #61).
+    # Private repos get no mirror fallback, so they depend on their own host.
+    if (rec or {}).get("liveHost"):
+        return True
+    if (rec or {}).get("visibility") == "private":
+        return False
+    return repo_mirror_group_key(rec) in (served_groups or set())
+
+
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
 ):
@@ -2537,6 +2564,15 @@ async def catalog_handler(env, request):
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
                 repos.append(rec)
+        # Second pass: mark each repo cloneable when its own host is offline but a
+        # peer mirroring the same logical repo is online — the relay serves that
+        # mirror in place through the repo's own URL (adhoc #61), so the website
+        # shows the repo as available (and which nodes are live) instead of a
+        # bare "host offline". served_mirror_groups sees the whole public list, so
+        # this works even when the freshest live node is a different owner's mirror.
+        served = served_mirror_groups(repos)
+        for rec in repos:
+            rec["cloneOnline"] = repo_clone_online(rec, served)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
         # Per-viewer responses (with private repos) must not be cached at the shared
