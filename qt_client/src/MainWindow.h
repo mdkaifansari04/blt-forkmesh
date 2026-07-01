@@ -1466,6 +1466,13 @@ private:
     void promptNewRelease();
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
+    // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in
+    // its content-addressed store (forkmesh-releases/sha256/…). Lists each blob
+    // with its release name/tag, checksum and on-disk size, and lets it be deleted
+    // to reclaim space.
+    QWidget *buildArtifactsTab();
+    void loadArtifactsPanel();
+    void deleteArtifact(const QString &hash, const QString &label);
     QWidget *buildMirrorNodesTab();
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
@@ -2593,6 +2600,7 @@ private:
     QString m_worktreeSelectedPath;                // its on-disk worktree folder
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
+    int m_artifactsTabIndex = -1; // index of the Artifacts page
     int m_settingsTabIndex = -1; // index of the Settings page
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -2651,6 +2659,8 @@ private:
     QPushButton *m_branchMergeButton = nullptr; // "Merge to main"
     QTableWidget *m_releasesTable = nullptr;
     QLabel *m_releasesSummary = nullptr;
+    QTableWidget *m_artifactsTable = nullptr;
+    QLabel *m_artifactsSummary = nullptr;
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     // Live activity strip floating just above the Mirror nodes tab: a dot per
