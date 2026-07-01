@@ -100,12 +100,21 @@ bool MainWindow::tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) 
     for (const QString &pw : std::as_const(candidates)) {
         if (pw.isEmpty())
             continue;
+        // Deriving a cove key is deliberately slow (a ~0.5-1s KDF, by design);
+        // a candidate that already failed for this cove will fail again, so
+        // don't re-pay the derivation on every settings rebuild — that stalled
+        // every repo open that carried a non-matching saved password (stall
+        // log: tryUnlockCove <- rebuildRepoCovesList <- openRepoDetail).
+        const QString attempt = cove.id + QLatin1Char('\x1f') + pw;
+        if (m_coveFailedUnlocks.contains(attempt))
+            continue;
         if (CoveStore::unlock(cove, pw)) {
             const_cast<MainWindow *>(this)->m_coveSessionPasswords.insert(cove.id, pw);
             if (passwordOut)
                 *passwordOut = pw;
             return true;
         }
+        const_cast<MainWindow *>(this)->m_coveFailedUnlocks.insert(attempt);
     }
     return false;
 }

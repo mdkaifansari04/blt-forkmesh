@@ -1207,8 +1207,14 @@ void MainWindow::startDiagnostics()
     if (!m_stallWatchdog) {
         m_stallWatchdog = new StallWatchdog(this);
         connect(m_stallWatchdog, &StallWatchdog::stalled, this, &MainWindow::onUiStall);
+#ifdef FORKMESH_WINDOW_TESTS
+        // Test binaries stall on purpose (blocking asserts, offscreen waits) —
+        // never let their reports pollute the user's real diagnostics log.
+        const QString logPath;
+#else
         const QString logPath =
             QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
+#endif
         m_stallLogPath = logPath;
         // Rotate an oversized log (it had grown past 12 MB) so appends and any
         // "read the stall log" tooling stay fast; one previous generation kept.
