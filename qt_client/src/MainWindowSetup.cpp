@@ -787,6 +787,36 @@ void MainWindow::startSession()
     authenticateSilently(name);
 #endif
 
+    // A headless mirror VM has no GUI to click "Join ForkMesh", so a fresh node
+    // would connect for chat but never register its account — and without a
+    // key-bound account the relay rejects its catalog writes and host tokens, so
+    // its mirrors never appear on the website. Auto-register it (free, key-bound,
+    // no dialog) here, mirroring what a desktop user does by hand. Guarded on
+    // hasActiveAccountSession() so a returning VM whose silent auth already
+    // succeeded never re-registers, and skipped under the test server-bypass.
+    if (m_headless && !hasActiveAccountSession() && isValidNodeName(name)) {
+        bool registered = false;
+#ifdef FORKMESH_WINDOW_TESTS
+        if (!m_testBypassServerStart)
+            registered = registerNodeAccountSilently(name);
+#else
+        registered = registerNodeAccountSilently(name);
+#endif
+        // A just-registered node has no catalog record yet, and an already-synced
+        // mirror won't re-publish on the next (quiet, unchanged) auto-sync — so
+        // seed the catalog now for every mirror we already hold. The repo page
+        // builds its mirror rows from catalog records, so without this the node
+        // would host (host_presence) yet never appear in the list.
+        if (registered) {
+            for (int i = 0; i < m_repositories.size(); ++i) {
+                const RepositoryRecord &r = m_repositories.at(i);
+                if (!r.previewOnly && r.publishToNetwork &&
+                    !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
+                    publishRepository(i, false);
+            }
+        }
+    }
+
     if (m_serverUrlEdit->text().trimmed().isEmpty())
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
@@ -1444,6 +1474,94 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         return true;
     }
     return false;
+}
+
+// Non-interactive account registration for a headless mirror node. The desktop
+// opens the runSignupFlow dialog and a human clicks "Join ForkMesh"; a headless
+// VM has no GUI, so its auto-start path calls this to reserve + finalize its
+// node name (binding this VM's Ed25519 key) the same free, no-donation way. Once
+// the account is key-bound, the relay accepts this node's catalog writes and
+// host-auth tokens, so its mirrors finally register in the database and appear on
+// the repository page. Returns true when the node ends up active + key-bound.
+bool MainWindow::registerNodeAccountSilently(const QString &accountName)
+{
+    if (!isValidNodeName(accountName))
+        return false;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
+        return false;
+    if (m_accountAuthenticated && m_accountName == accountName)
+        return true;
+
+    // Don't try to claim a name that already belongs to another node's key: an
+    // active account bound to a different pubkey isn't ours to register. The node
+    // keeps mirroring + chatting; it just won't host under a name it can't sign
+    // for. (A stale/abandoned reservation on another key is reclaimable — the
+    // relay's reserve step decides — so only an ACTIVE mismatch bails here.)
+    int lookupStatus = 0;
+    const QJsonObject lookup = getAccountSync(accountName, &lookupStatus);
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == QStringLiteral("active") &&
+        lookup.value("pubkey").toString() != m_profileIdentity.publicKey()) {
+        logSystem("Account: \"" + accountName + "\" is registered to another "
+                  "node; this headless node will keep mirroring without hosting "
+                  "under that name.");
+        return false;
+    }
+    // Relay unreachable (status 0): nothing to register against right now. A later
+    // auto-sync/startSession retries once it's reachable.
+    if (lookupStatus == 0)
+        return false;
+
+    // Step 1: reserve the name, binding it to this node's key.
+    const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray rcanon =
+        ("forkmesh-reserve-v1\n" + accountName + "\n" + rts).toUtf8();
+    int rstatus = 0;
+    const QJsonObject rresp = postAccountSync(
+        "reserve",
+        QJsonObject{{"nodeName", accountName},
+                    {"pubkey", m_profileIdentity.publicKey()},
+                    {"ts", rts},
+                    {"sig", m_profileIdentity.signData(rcanon)}},
+        &rstatus);
+    if (!rresp.value("ok").toBool()) {
+        logSystem("Account: could not reserve \"" + accountName +
+                  "\" for headless registration (it may be taken).");
+        return false;
+    }
+
+    // Step 2: finalize for free with no email/password — a key-bound join. The
+    // finalize signature covers an empty email segment, matching the relay's
+    // canonical string for a key-bound, credential-less join (see runSignupFlow).
+    const QString fts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray fcanon =
+        ("forkmesh-finalize-v1\n" + accountName + "\n\n" + fts).toUtf8();
+    int fstatus = 0;
+    const QJsonObject fresp = postAccountSync(
+        "finalize",
+        QJsonObject{{"nodeName", accountName},
+                    {"email", QString()},
+                    {"password", QString()},
+                    {"pubkey", m_profileIdentity.publicKey()},
+                    {"ts", fts},
+                    {"sig", m_profileIdentity.signData(fcanon)}},
+        &fstatus);
+    if (fstatus != 201 || !fresp.value("ok").toBool()) {
+        logSystem("Account: could not finalize headless registration for \"" +
+                  accountName + "\".");
+        return false;
+    }
+
+    m_accountAuthenticated = true;
+    m_accountName = accountName;
+    m_accountTier = QStringLiteral("active");
+    m_accountSolanaVerified = true; // registered = active network member
+    QSettings().setValue(kAuthedAccountSetting, accountName);
+    QSettings().setValue(kAccountNameSetting, accountName);
+    applyAccountEmailVerified(accountName, fresp.value("emailVerified").toBool());
+    logSystem("Account: registered headless node \"" + accountName +
+              "\" (free, key-bound); its mirrors will now publish and host.");
+    return true;
 }
 
 // POST /api/accounts/login — log in by email (+ optional TOTP).
