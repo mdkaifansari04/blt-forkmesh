@@ -668,9 +668,11 @@ void MainWindow::updateVoiceInputButton()
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
             m_quickAddMicButton->setStyleSheet(QString());
-            m_quickAddMicButton->setToolTip(QStringLiteral(
-                "Speak your prompt \xE2\x80\x94 hold to record, release "
-                "to transcribe."));
+            m_quickAddMicButton->setToolTip(
+                QString::fromUtf8(
+                    "Speak your prompt \xE2\x80\x94 hold to record, release "
+                    "to transcribe.\nVoice model: %1")
+                    .arg(voiceModelLabel()));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -717,8 +719,10 @@ QPushButton *MainWindow::makeVoiceButton(MarkdownEditor *composer)
     btn->setObjectName("ghostButton");
     btn->setCursor(Qt::PointingHandCursor);
     setOcticon(btn, "mic", 16);
-    btn->setToolTip(QStringLiteral(
-        "Speak your comment \xE2\x80\x94 hold to record, release to transcribe."));
+    btn->setToolTip(QString::fromUtf8("Speak your comment \xE2\x80\x94 hold to "
+                                      "record, release to transcribe.\nVoice "
+                                      "model: %1")
+                        .arg(voiceModelLabel()));
     btn->setVisible(voiceInputReady());
     connect(btn, &QPushButton::pressed, this, [this, composer, btn] {
         if (!m_voiceRecording && composer)
