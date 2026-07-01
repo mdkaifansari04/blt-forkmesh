@@ -5474,7 +5474,9 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
             const auto finish = [this, sid, probe] {
                 if (--probe->pending > 0)
                     return;
-                if (sid == m_selectedAgentSessionId)
+                // A failed diff read (worktree vanished mid-run) keeps the last
+                // rendered view rather than blanking it, matching the old path.
+                if (probe->patchOk && sid == m_selectedAgentSessionId)
                     renderAgentDiff(sid, *probe);
             };
             QStringList args{QStringLiteral("diff")};
@@ -5482,6 +5484,7 @@ void MainWindow::scheduleAgentFilesDiff(int sessionId)
                 args << base;
             runGitDetached(dir, args,
                            [probe, finish](bool ok, const QByteArray &out) {
+                               probe->patchOk = ok;
                                if (ok)
                                    probe->patch = out;
                                finish();

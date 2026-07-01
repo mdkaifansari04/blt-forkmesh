@@ -3357,6 +3357,7 @@ private:
     // frames all over ~/.forkmesh/diagnostics/stalls.log).
     struct AgentDiffProbe {
         QByteArray patch;        // git diff <base>
+        bool patchOk = false;    // that read succeeded (else keep the old view)
         QSet<QString> uncommitted; // paths with working-tree changes / untracked
         QStringList commitLines; // "abc1234 subject" per commit ahead of base
         int behind = 0;          // commits the base branch has that we don't
