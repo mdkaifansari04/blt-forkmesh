@@ -3419,6 +3419,10 @@ private:
     QPushButton *m_agentVoiceButton = nullptr;    // composer mic : voice dictation (adhoc #29)
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
+    // Epoch-ms of the last live provider model-list fetch (see
+    // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
+    // hit /v1/models on every click while still keeping the list current.
+    qint64 m_claudeModelsFetchedMs = 0;
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
