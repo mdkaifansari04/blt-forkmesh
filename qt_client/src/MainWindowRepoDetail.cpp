@@ -6456,6 +6456,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Worktrees", "file-directory"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
+                                {"Artifacts", "package"},
                                 {"Settings", "gear"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
@@ -6602,8 +6603,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 11 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 12 Mirror nodes
+    m_artifactsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildArtifactsTab());                   // 13 Artifacts
     m_settingsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 13 Settings
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 14 Settings
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -6688,6 +6691,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadReleasesPanel();
         else if (id == m_mirrorNodesTabIndex)
             loadMirrorNodesPanel();
+        else if (id == m_artifactsTabIndex)
+            loadArtifactsPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
         // Hand keyboard focus to the new tab's list so the user can arrow through
