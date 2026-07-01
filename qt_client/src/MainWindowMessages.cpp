@@ -444,9 +444,23 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     updateHomeStats();
     updateConnectionStatus();
     // Keep the open repo's Mirror nodes view (and its tab count) live as peers
-    // come and go or re-advertise fresher mirrors.
-    if (m_repoDetailIndex >= 0)
-        loadMirrorNodesPanel();
+    // come and go or re-advertise fresher mirrors. Coalesced: the rebuild runs
+    // ~10 synchronous git reads plus per-row lookups, and roster updates arrive
+    // in bursts while presence flickers, so rebuild at most twice a second
+    // instead of once per event (stall log: loadMirrorNodesPanel <- setRoster).
+    if (m_repoDetailIndex >= 0) {
+        if (!m_mirrorPanelRosterTimer) {
+            m_mirrorPanelRosterTimer = new QTimer(this);
+            m_mirrorPanelRosterTimer->setSingleShot(true);
+            m_mirrorPanelRosterTimer->setInterval(500);
+            connect(m_mirrorPanelRosterTimer, &QTimer::timeout, this, [this] {
+                if (m_repoDetailIndex >= 0)
+                    loadMirrorNodesPanel();
+            });
+        }
+        if (!m_mirrorPanelRosterTimer->isActive())
+            m_mirrorPanelRosterTimer->start();
+    }
     // A re-advertised roster can mean the source of truth just moved: pull any
     // repo whose served state is now behind a peer's, immediately, instead of
     // waiting for the next heartbeat/auto-sync.

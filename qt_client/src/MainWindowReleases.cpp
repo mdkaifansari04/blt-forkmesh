@@ -950,15 +950,25 @@ void MainWindow::loadMirrorNodesPanel()
             if (!advert->branch.isEmpty())
                 commitText += "  (" + advert->branch + ")";
             commitTip = advert->commit;
-            QByteArray subject;
-            if (!localMirror.isEmpty() &&
-                runGitCapture(localMirror,
-                              {"show", "-s", "--format=%s", advert->commit},
-                              &subject, nullptr)) {
-                const QString s = QString::fromUtf8(subject).trimmed();
-                if (!s.isEmpty())
-                    commitTip = s + "\n" + advert->commit;
+            // Commit subjects are immutable per hash — cache them so the panel's
+            // roster-driven rebuilds don't re-shell one `git show` per row every
+            // time a peer's presence flickers (stall log: loadMirrorNodesPanel
+            // <- setRoster).
+            if (m_commitSubjectCache.size() > 5000)
+                m_commitSubjectCache.clear(); // safety valve, never hit in practice
+            auto cached = m_commitSubjectCache.constFind(advert->commit);
+            if (cached == m_commitSubjectCache.constEnd()) {
+                QByteArray subject;
+                QString s;
+                if (!localMirror.isEmpty() &&
+                    runGitCapture(localMirror,
+                                  {"show", "-s", "--format=%s", advert->commit},
+                                  &subject, nullptr))
+                    s = QString::fromUtf8(subject).trimmed();
+                cached = m_commitSubjectCache.insert(advert->commit, s);
             }
+            if (!cached.value().isEmpty())
+                commitTip = cached.value() + "\n" + advert->commit;
         }
         auto *commitItem = new QTableWidgetItem(commitText);
         commitItem->setToolTip(commitTip);
