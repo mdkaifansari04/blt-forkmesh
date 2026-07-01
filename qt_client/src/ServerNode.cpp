@@ -111,6 +111,7 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("p", m.pullCount);       // pull requests
         head.insert("d", m.discussionCount); // discussions
         head.insert("w", m.worktreeCount);   // working-copy worktrees (agent tasks)
+        head.insert("a", m.artifactCount);   // release artifacts hosted for download
         heads.insert(m.ownerName, head);
     }
     message.insert("mirrors", names);
@@ -142,6 +143,7 @@ QList<MirrorAdvert> readMirrors(const QJsonObject &message)
         advert.discussionCount =
             head.contains("d") ? head.value("d").toInt(-1) : -1;
         advert.worktreeCount = head.contains("w") ? head.value("w").toInt(-1) : -1;
+        advert.artifactCount = head.contains("a") ? head.value("a").toInt(-1) : -1;
         mirrors.append(advert);
     }
     return mirrors;
