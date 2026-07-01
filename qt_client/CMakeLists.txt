@@ -112,6 +112,8 @@ set(FORKMESH_APP_SOURCES
     src/ScreenCaptureOverlay.cpp
     src/ScreenDrawOverlay.h
     src/ScreenDrawOverlay.cpp
+    src/ScreenAlignmentOverlay.h
+    src/ScreenAlignmentOverlay.cpp
     src/StallWatchdog.h
     src/StallWatchdog.cpp
     src/SystemStats.h
