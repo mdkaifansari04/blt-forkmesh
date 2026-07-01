@@ -20,7 +20,7 @@ def test_dashboard_defines_group_liveness_helpers():
 
 def test_repo_card_uses_group_liveness_not_raw_livehost():
     card = DASHBOARD_JS[
-        DASHBOARD_JS.index("function repositoryCard(repo)")
+        DASHBOARD_JS.index("function repositoryCard(group)")
         : DASHBOARD_JS.index("function updateRepositoryPagination(")
     ]
     assert "const live = repoIsLive(repo);" in card
