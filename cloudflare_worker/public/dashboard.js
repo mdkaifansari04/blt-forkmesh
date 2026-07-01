@@ -732,7 +732,7 @@
       <button data-dashboard-open-repo="${escapeHtml(repoKey(repo))}" class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
         <i data-lucide="git-branch" class="w-3 h-3 shrink-0"></i>
         <span class="truncate">${escapeHtml(repo.name || "repository")}</span>
-        <i data-lucide="circle" class="w-1.5 h-1.5 ml-auto fill-current shrink-0 ${repo.liveHost ? "text-primary" : "text-muted-foreground"}"></i>
+        <i data-lucide="circle" class="w-1.5 h-1.5 ml-auto fill-current shrink-0 ${repoIsLive(repo) ? "text-primary" : "text-muted-foreground"}"></i>
       </button>
     `).join("");
   }
@@ -749,12 +749,25 @@
     return haystack.includes(query);
   }
 
+  // A repo is reachable when its own host is live OR — for a public repo — a peer
+  // mirroring the same logical repo is online and the relay serves it in place
+  // through the repo's own URL (adhoc #61). cloneOnline is the worker's group
+  // verdict; fall back to liveHost for older payloads that predate it.
+  function repoIsLive(repo) {
+    return Boolean(repo?.cloneOnline ?? repo?.liveHost);
+  }
+  // Live, but the named source of truth is down — a mirror node is serving it.
+  function repoServedByMirror(repo) {
+    return repoIsLive(repo) && !repo?.liveHost;
+  }
+
   function repositoryCard(repo) {
     const key = repoKey(repo);
-    const live = Boolean(repo.liveHost);
+    const live = repoIsLive(repo);
+    const viaMirror = repoServedByMirror(repo);
     const visibility = repo.isPrivate ? "private" : "public";
     const statusClass = live ? "text-primary" : "text-muted-foreground";
-    const statusText = live ? "online" : "offline";
+    const statusText = viaMirror ? "via mirror" : live ? "online" : "offline";
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" class="repo-card group px-4 sm:px-5 py-5 hover:bg-secondary/40 transition-colors">
         <div class="repo-layout flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
@@ -768,7 +781,7 @@
                 <span class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(visibility)}
               </span>
               <span class="flex items-center gap-1 text-xs text-muted-foreground">
-                <i data-lucide="radio" class="w-3 h-3"></i>${live ? "live host" : "host offline"}
+                <i data-lucide="radio" class="w-3 h-3"></i>${viaMirror ? "served by mirror" : live ? "live host" : "host offline"}
               </span>
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
@@ -2520,6 +2533,8 @@
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
     const commitId = String(repo.rootCommit || repo.latestCommit || repo.commit || "").slice(0, 7) || "live";
     const updatedAt = formatDate(repo.updatedAt || repo.lastSync);
+    const live = repoIsLive(repo);
+    const viaMirror = repoServedByMirror(repo);
     const tabMeta = {
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
@@ -2537,14 +2552,14 @@
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
                 <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
-                <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${repo.liveHost ? "text-primary" : "text-muted-foreground"}">${repo.liveHost ? "host online" : "host offline"}</span>
+                <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "host online" : "host offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
             <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${repo.liveHost ? "text-primary" : "text-muted-foreground"}">${repo.liveHost ? "online" : "offline"}</span></span>
+              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
@@ -2660,7 +2675,7 @@
 		              <dl class="mt-3 grid gap-3 text-xs">
 		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
 		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Data</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatSize(repo.sizeBytes))}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${repo.liveHost ? "text-foreground" : "text-muted-foreground"}">${repo.liveHost ? "available" : "offline"}</dd></div>
+		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${live ? "text-foreground" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "available" : "offline"}</dd></div>
 		              </dl>
 		            </div>
           </aside>
