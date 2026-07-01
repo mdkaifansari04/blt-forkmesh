@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 315
 title: Show breadcrumbs on the repository page so we can go back to the main reposit…
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
