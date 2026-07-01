@@ -187,6 +187,14 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
     }
 
 
+def repo_web_href(owner, repo):
+    # Clean, shareable repo link (/owner/repo) for notification "Open context"
+    # buttons. 404.html bounces this to the dashboard's repo view and dashboard.js
+    # keeps the clean path in the address bar, so links read forkmesh.com/owner/repo
+    # rather than the old forkmesh.com/dashboard?repo=owner/repo form.
+    return "/" + quote(owner) + "/" + quote(repo)
+
+
 def b64url_decode(value):
     value = (value or "").strip()
     value += "=" * (-len(value) % 4)
@@ -5083,7 +5091,7 @@ async def shares_handler(env, request, owner, repo):
                                    owner + " shared " + owner + "/" + repo + " with you",
                                    body="You can now view and clone this private repository with your own node key.",
                                    repo=owner + "/" + repo,
-                                   href="/dashboard?repo=" + quote(owner + "/" + repo),
+                                   href=repo_web_href(owner, repo),
                                    actor=owner, source="repo_share",
                                    dedupe="share:" + owner + "/" + repo + ":" + grantee)
         return json_response({"ok": True, "grantee": grantee, "shared": True})
@@ -6113,7 +6121,7 @@ async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0)
     await enqueue_notification(
         env, owner, kind, label + " for " + owner + "/" + repo,
         body=title or "A signed item is waiting in your desktop inbox.",
-        repo=owner + "/" + repo, href="/dashboard?repo=" + quote(owner + "/" + repo),
+        repo=owner + "/" + repo, href=repo_web_href(owner, repo),
         actor=actor, source=source,
         dedupe="pending:" + owner + "/" + repo + ":" + source + ":" +
                clean_string(actor, 120) + ":" + str(number) + ":" + clean_string(title, 120),
@@ -6130,7 +6138,7 @@ async def notify_issue_assignees(env, owner, repo, assignees, actor, title, numb
             "Issue assigned in " + owner + "/" + repo,
             body=title or "You were assigned to an issue.",
             repo=owner + "/" + repo,
-            href="/dashboard?repo=" + quote(owner + "/" + repo),
+            href=repo_web_href(owner, repo),
             actor=actor, source="issue_assigned",
             dedupe="issue-assigned:" + owner + "/" + repo + ":" + str(number) +
                    ":" + assignee,
@@ -6150,7 +6158,7 @@ async def notify_bounty_event(env, rec, kind):
         body=("Issue #" + str(number) + " bounty is " +
               ("funded." if kind == "bounty_funded" else "paid.")),
         repo=owner + "/" + repo,
-        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        href=repo_web_href(owner, repo),
         source="bounty", dedupe=kind + ":" + owner + "/" + repo + ":" + str(number),
         meta={"number": number, "status": rec.get("status", "")},
     )
@@ -6164,7 +6172,7 @@ async def notify_release_published(env, owner, repo, release):
         "Release " + (tag or "published") + " published",
         body=(release or {}).get("name", "") or ("Release " + tag + " is live."),
         repo=owner + "/" + repo,
-        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        href=repo_web_href(owner, repo),
         actor=actor, source="release",
         dedupe="release:" + owner + "/" + repo + ":" + tag,
         ts=int((release or {}).get("published_at", 0) or 0),
@@ -6193,7 +6201,7 @@ async def notify_host_status(env, repo_bi, kind):
         body=("A desktop host is reachable." if kind == "host_online"
               else "No live host has checked in recently."),
         repo=owner + "/" + repo,
-        href="/dashboard?repo=" + quote(owner + "/" + repo),
+        href=repo_web_href(owner, repo),
         source="host", dedupe=kind + ":" + repo_bi,
     )
 
@@ -6334,7 +6342,7 @@ async def issues_handler(env, request, owner, repo):
         actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
         await notify_pending_inbox(env, owner, repo, "issue", actor, item.get("titleIfNew", ""), number)
         await notify_mentions(env, owner, repo, actor, item.get("titleIfNew", ""), event.get("body", ""),
-                              "/dashboard?repo=" + quote(owner + "/" + repo), "issue")
+                              repo_web_href(owner, repo), "issue")
         assignees = list(meta.get("assignees", [])) if isinstance(meta, dict) else []
         if isinstance(event.get("assignees"), list):
             assignees.extend(event.get("assignees"))
@@ -6407,7 +6415,7 @@ async def pulls_handler(env, request, owner, repo):
             actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
             await notify_pending_inbox(env, owner, repo, "pull", actor, event.get("body", ""), number)
             await notify_mentions(env, owner, repo, actor, "Pull request comment", event.get("body", ""),
-                                  "/dashboard?repo=" + quote(owner + "/" + repo), "pull")
+                                  repo_web_href(owner, repo), "pull")
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -6441,7 +6449,7 @@ async def pulls_handler(env, request, owner, repo):
         title = clean_string(pull.get("title", "") or pull.get("subject", ""), 240)
         await notify_pending_inbox(env, owner, repo, "pull", actor, title, 0)
         await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
-                              "/dashboard?repo=" + quote(owner + "/" + repo), "pull")
+                              repo_web_href(owner, repo), "pull")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -6504,7 +6512,7 @@ async def commits_handler(env, request, owner, repo):
         actor = clean_string(comment.get("authorName", "") or comment.get("author", ""), MAX_NODE_NAME).lower()
         await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
         await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
-                              "/dashboard?repo=" + quote(owner + "/" + repo), "commit_comment")
+                              repo_web_href(owner, repo), "commit_comment")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -6575,7 +6583,7 @@ async def discussions_handler(env, request, owner, repo):
         title = item.get("titleIfNew", "") or "Discussion update"
         await notify_pending_inbox(env, owner, repo, "discussion", actor, title, number)
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
-                              "/dashboard?repo=" + quote(owner + "/" + repo), "discussion")
+                              repo_web_href(owner, repo), "discussion")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
