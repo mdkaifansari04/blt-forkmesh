@@ -7733,6 +7733,18 @@ class ForkMeshHost(DurableObject):
     async def _mark_present(self, path=None):
         # Refresh this repo's host-presence row, throttled so hot browse traffic
         # doesn't write to D1 on every request. Best-effort; never fails the call.
+        #
+        # Only ever mark presence while a host WebSocket is actually connected to
+        # this DO. Otherwise a repo whose desktop host has gone offline would be
+        # kept "live" forever by the very browse/clone traffic that can't be
+        # served: each request self-refreshes host_presence, so `liveHost`/
+        # `source_online` never age out, `_select_clone_fallback` refuses to
+        # redirect ("never redirect away from an online source"), and the online
+        # mirror is never used — the repo shows "host online" yet nothing serves
+        # its tree. Letting presence lapse when no host is connected is what lets
+        # the source of truth age out so a live mirror takes over (adhoc #68).
+        if not self._host_count():
+            return
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
