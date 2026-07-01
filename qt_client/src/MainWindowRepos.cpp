@@ -1752,12 +1752,13 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
     stats.first += 1; // served through the mainnode
     if (clone)
         stats.second += 1; // git clone
-    saveRepoStats();
-    refreshRepositoryList();
+    // Only the activity-strip pulse is per-event; everything else below is
+    // coalesced. A clone/browse burst fires this slot dozens of times a second,
+    // and re-running the full repository-list rebuild (per-repo git reads) plus a
+    // QSettings write for each one stalled the GUI for seconds (stall log:
+    // refreshRepositoryList <- onRequestServed).
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-        if (repo.owner == owner && repo.name == name)
-            updateRepoDetailStatus();
         // Flash our own dot on the Mirror nodes activity strip: green when we
         // just served a clone, orange when we served codebase browsing/fetches.
         if (m_mirrorActivityStrip && catalogOwner(repo) == owner &&
@@ -1765,9 +1766,25 @@ void MainWindow::onRequestServed(const QString &owner, const QString &name, bool
             static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)
                 ->pulse(m_profileIdentity.publicKey(), clone);
     }
-    // Hosting stats now live in the node profile; keep them current while it is open.
-    if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
-        refreshProfileHostingStats();
+    if (!m_requestServedFlushTimer) {
+        m_requestServedFlushTimer = new QTimer(this);
+        m_requestServedFlushTimer->setSingleShot(true);
+        m_requestServedFlushTimer->setInterval(1000);
+        connect(m_requestServedFlushTimer, &QTimer::timeout, this, [this] {
+            saveRepoStats();
+            refreshRepositoryList();
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                updateRepoDetailStatus();
+            // Hosting stats live in the node profile; keep them current while
+            // it is open.
+            if (m_nodeProfilePanel && m_nodeProfilePanel->isVisible())
+                refreshProfileHostingStats();
+        });
+    }
+    // Not restarted while pending: under continuous traffic the flush still
+    // lands once a second instead of being pushed out forever.
+    if (!m_requestServedFlushTimer->isActive())
+        m_requestServedFlushTimer->start();
 }
 
 void MainWindow::loadRepoStats()
