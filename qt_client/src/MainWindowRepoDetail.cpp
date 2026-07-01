@@ -2812,6 +2812,11 @@ void MainWindow::refreshCommitMarkersIfStale()
         loadCommits();
 }
 
+// How deep a commit search widens the table window (see filterCommits). Bounded:
+// row-building is the cost, not git — 5000 rows build in a blink, a whole large
+// history froze the UI for 10-20s.
+constexpr int kCommitSearchDepth = 5000;
+
 void MainWindow::loadCommits()
 {
     // The reload fires a few blocking git reads (status, the commit log, the
@@ -2859,19 +2864,23 @@ void MainWindow::loadCommits()
         m_commitsLimit = 300;
     m_commitsHasMore = false;
     // Fetch one extra record so a full page tells us older history remains. When a
-    // search is active (m_commitsShowingAll) we drop the cap entirely so the filter
-    // can reach every commit in the current ref, including by hash.
+    // search is active (m_commitsShowingAll) deepen the window to the search depth
+    // — bounded, not the whole ref: building *every* commit as table rows (each
+    // with a cell-widget button) froze the UI for 10-20s on a big history (stall
+    // log: loadCommits <- filterCommits), and the matching uncapped --numstat in
+    // fillCommitStats() froze it again. Anything deeper stays reachable by
+    // scrolling the window onward first.
     //
     // Deliberately NO --numstat here: that flag makes git diff every commit in the
     // window (~1s on a large history) and was the bulk of this load's cost, yet it
     // only feeds the Files/+/− columns. This plain log returns in milliseconds so
     // the list paints immediately; fillCommitStats() backfills those three columns
     // from a deferred --numstat read once the rows are on screen.
+    const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
-    if (!m_commitsShowingAll)
-        logArgs << "-n" << QString::number(m_commitsLimit + 1);
+    logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
     if (!runGitCapture(dir, logArgs, &out, nullptr)) {
         m_commitsTable->setSortingEnabled(true);
@@ -2901,9 +2910,8 @@ void MainWindow::loadCommits()
             continue;
         // Stop at the current window; the extra fetched record means more remain,
         // which the scroll handler uses to load the next page. A search load
-        // (m_commitsShowingAll) has no cap — every commit is built so the filter
-        // can reach it.
-        if (!m_commitsShowingAll && m_commitsTable->rowCount() >= m_commitsLimit) {
+        // (m_commitsShowingAll) uses the deeper — but still bounded — window.
+        if (m_commitsTable->rowCount() >= rowLimit) {
             m_commitsHasMore = true;
             break;
         }
@@ -3143,8 +3151,9 @@ void MainWindow::fillCommitStats(int loadGen)
     // the same cap, or no cap while a search is showing every commit.
     GitKeepAlive keepAlive;
     QStringList args{"log", "--numstat", "--format=%x1e%H"};
-    if (!m_commitsShowingAll)
-        args << "-n" << QString::number(m_commitsLimit);
+    args << "-n"
+         << QString::number(m_commitsShowingAll ? kCommitSearchDepth
+                                                : m_commitsLimit);
     args << currentRef();
     QByteArray out;
     if (!runGitCapture(dir, args, &out, nullptr))
@@ -4597,11 +4606,12 @@ void MainWindow::filterCommits(const QString &query)
     if (!m_commitsTable)
         return;
     const QString needle = query.trimmed().toLower();
-    // A search has to span the whole history, not just the lazily-paged window, so
-    // a hash or message that lives deeper than the loaded rows still turns up. The
-    // first keystroke deepens the table to every commit; clearing it restores the
-    // paged window. loadCommits() re-applies this same filter at its tail, so the
-    // deepened pass falls through to the row loop below.
+    // A search should reach well past the lazily-paged window, so a hash or
+    // message deeper than the loaded rows still turns up. The first keystroke
+    // deepens the table to kCommitSearchDepth commits (bounded — building the
+    // whole history froze the UI for 10-20s on big repos); clearing it restores
+    // the paged window. loadCommits() re-applies this same filter at its tail, so
+    // the deepened pass falls through to the row loop below.
     if (!needle.isEmpty() && !m_commitsShowingAll && m_commitsHasMore) {
         m_commitsShowingAll = true;
         loadCommits();
@@ -4998,44 +5008,18 @@ void MainWindow::showCommit(const QString &hash)
         m_commitsTable->selectRow(m_currentCommitRow);
     }
 
-    // Re-entrancy guard: the keep-alive pump below services queued slots between
-    // git reads, so a second click (or a deferred reload) must not start a second
-    // diff load on top of this one. Set before the first event-loop turn below.
-    if (m_commitDetailLoading)
-        return;
-    m_commitDetailLoading = true;
+    // Last click wins: a new showCommit() supersedes any in-flight async load.
+    // (The old code *dropped* clicks that arrived mid-load, which made Prev/Next
+    // feel dead; and it blocked the click on two synchronous git reads.) Every
+    // async hop below re-checks this generation and bails when superseded.
+    const int gen = ++m_commitLoadGen;
 
-    // Land on the diff page and paint a spinner straight away, then yield one
-    // event-loop turn so it actually shows before the (possibly multi-second) git
-    // reads + diff render run. The GitKeepAlive scope keeps the window breathing —
-    // and the spinner turning — across those reads so the click never freezes.
+    // Land on the diff page and paint a spinner straight away; all git below is
+    // asynchronous, so the click itself never blocks the GUI thread.
     m_commitsStack->setCurrentIndex(1);
     startCommitDiffSpin();
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    GitKeepAlive keepAlive;
 
-    // --- Metadata (full hash, author, date, parents, subject, body).
-    QByteArray meta;
-    runGitCapture(dir,
-                  {"show", "-s", "--date=format:%b %e, %Y",
-                   "--format=%H%x1f%an%x1f%ad%x1f%P%x1f%s%x1f%b", hash},
-                  &meta, nullptr);
-    const QStringList mf = QString::fromUtf8(meta).split(QLatin1Char('\x1f'));
-    const QString full = mf.value(0).trimmed();
-    const QString author = mf.value(1).trimmed();
-    const QString date = mf.value(2).trimmed();
-    const QStringList parents =
-        mf.value(3).trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    const QString subject = mf.value(4).trimmed();
-    const QString body = mf.value(5).trimmed();
-    const QString fullHash = full.isEmpty() ? hash : full;
-
-    // Diff against the first parent (or the empty tree for a root commit), which
-    // matches how a commit page presents merges and initial commits.
-    const QString emptyTree =
-        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
-    const QString base = parents.isEmpty() ? emptyTree : parents.first();
-    m_currentCommitHash = full.isEmpty() ? hash : full;
+    m_currentCommitHash = hash; // refined to the full hash when metadata lands
     if (m_commitComposer)
         m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
@@ -5066,9 +5050,59 @@ void MainWindow::showCommit(const QString &hash)
                                "commit a revert into"));
         }
     }
-    QByteArray patchRaw;
-    runGitCapture(dir, {"diff", "-M", base, full.isEmpty() ? hash : full},
-                  &patchRaw, nullptr);
+    // --- Metadata (full hash, author, date, parents, subject, body), then the
+    // patch, then the render: an async chain, each hop generation-checked.
+    runGitDetached(
+        dir,
+        {QStringLiteral("show"), QStringLiteral("-s"),
+         QStringLiteral("--date=format:%b %e, %Y"),
+         QStringLiteral("--format=%H%x1f%an%x1f%ad%x1f%P%x1f%s%x1f%b"), hash},
+        [this, gen, dir, hash](bool, const QByteArray &meta) {
+            if (gen != m_commitLoadGen)
+                return;
+            const QStringList mf =
+                QString::fromUtf8(meta).split(QLatin1Char('\x1f'));
+            const QString full = mf.value(0).trimmed();
+            const QString fullHash = full.isEmpty() ? hash : full;
+            // Diff against the first parent (or the empty tree for a root
+            // commit), which matches how a commit page presents merges and
+            // initial commits.
+            const QString emptyTree =
+                QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+            const QStringList parents = mf.value(3).trimmed().split(
+                QLatin1Char(' '), Qt::SkipEmptyParts);
+            const QString base =
+                parents.isEmpty() ? emptyTree : parents.first();
+            runGitDetached(dir,
+                           {QStringLiteral("diff"), QStringLiteral("-M"), base,
+                            fullHash},
+                           [this, gen, dir, hash, mf](bool,
+                                                      const QByteArray &patch) {
+                               if (gen != m_commitLoadGen)
+                                   return;
+                               renderCommitDetail(dir, hash, mf, patch);
+                           });
+        });
+}
+
+// The synchronous tail of showCommit(): all git output is in hand (metaFields
+// from `show -s`, patchRaw from `diff -M`), so this is pure widget population.
+void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
+                                    const QStringList &metaFields,
+                                    const QByteArray &patchRaw)
+{
+    const QString full = metaFields.value(0).trimmed();
+    const QString author = metaFields.value(1).trimmed();
+    const QString date = metaFields.value(2).trimmed();
+    const QStringList parents =
+        metaFields.value(3).trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QString subject = metaFields.value(4).trimmed();
+    const QString body = metaFields.value(5).trimmed();
+    const QString fullHash = full.isEmpty() ? hash : full;
+    const QString emptyTree =
+        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+    const QString base = parents.isEmpty() ? emptyTree : parents.first();
+    m_currentCommitHash = fullHash;
 
     // --- Header labels.
     if (m_commitTitle)
@@ -5087,8 +5121,7 @@ void MainWindow::showCommit(const QString &hash)
     // --- Render the diff and collect per-file stats.
     QList<DiffFileEntry> files;
     const QString diffHtml =
-        renderDiffHtml(QString::fromUtf8(patchRaw), files, dir, base,
-                       full.isEmpty() ? hash : full);
+        renderDiffHtml(QString::fromUtf8(patchRaw), files, dir, base, fullHash);
     int totalAdds = 0, totalDels = 0;
     for (const DiffFileEntry &f : files) {
         totalAdds += f.adds;
@@ -5155,8 +5188,8 @@ void MainWindow::showCommit(const QString &hash)
 
     renderCommitThread(m_currentCommitHash);
     stopCommitDiffSpin();
-    m_commitsStack->setCurrentIndex(1);
-    m_commitDetailLoading = false;
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(1);
 }
 
 void MainWindow::renderCommitThread(const QString &sha)
