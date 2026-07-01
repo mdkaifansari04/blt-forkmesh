@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 #include <QLayoutItem>
 #include <QPixmap>
@@ -241,6 +242,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueTable = new QTableWidget(0, 17);
     m_issueTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_issueTable); // 3-dots per-column menu (adhoc #73)
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
@@ -289,6 +291,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueMilestonesTable = new QTableWidget(0, 6);
     m_issueMilestonesTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_issueMilestonesTable); // 3-dots per-column menu (adhoc #73)
     enableHoverRowHighlight(m_issueMilestonesTable);
     m_issueMilestonesTable->setHorizontalHeaderLabels(
         {"Milestone", "Open", "Closed", "Progress", "Due", "Status"});
@@ -307,6 +310,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     m_issueLabelsTable = new QTableWidget(0, 5);
     m_issueLabelsTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_issueLabelsTable); // 3-dots per-column menu (adhoc #73)
     enableHoverRowHighlight(m_issueLabelsTable);
     m_issueLabelsTable->setHorizontalHeaderLabels(
         {"Label", "Open", "Closed", "Total", ""});
