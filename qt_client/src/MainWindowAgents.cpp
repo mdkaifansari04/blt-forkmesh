@@ -1279,7 +1279,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentModelCombo = new QComboBox;
     m_agentModelCombo->setObjectName("agentModel");
     m_agentModelCombo->setCursor(Qt::PointingHandCursor);
+    // Seed with the always-available alias defaults, then ask the provider which
+    // models it currently serves and merge those in so the dropdown reflects the
+    // live line-up (new releases show up without an app update).
     populateClaudeModelCombo(m_agentModelCombo);
+    refreshClaudeModelCombo();
     m_agentModelCombo->setToolTip(
         "Model for this session. Applies the next time it runs; shown in the header.");
     connect(m_agentModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -1844,6 +1848,75 @@ void MainWindow::refreshClaudeCodeUsage()
             if (const qint64 r = resetMsOf(QStringLiteral("seven_day")))
                 applyClaudeReset(true, r);
         }
+    });
+}
+
+void MainWindow::refreshClaudeModelCombo()
+{
+    if (!m_networkAccess || !m_agentModelCombo)
+        return;
+    // Throttle: at most one live fetch every 10 minutes. buildAgentsTab() fires
+    // the first one; showAgentSession() re-arms it as the user works, so the list
+    // stays current in real time without hitting /v1/models on every click.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_claudeModelsFetchedMs > 0 &&
+        now - m_claudeModelsFetchedMs < 10LL * 60 * 1000)
+        return;
+    // Claude Code authenticates with the claude.ai OAuth token in
+    // ~/.claude/.credentials.json (the same source the usage gauge reads). Without
+    // it (API-key login, or not signed in) we can't query the account's model
+    // list, so the static alias defaults are all we show.
+    const QString token = claudeCodeOAuthToken();
+    if (token.isEmpty())
+        return;
+    // Arm the throttle on send (not only on success) so a persistently failing
+    // request doesn't retry on every call.
+    m_claudeModelsFetchedMs = now;
+
+    // The provider's Models API lists exactly the models this account can drive
+    // right now, newest first; limit=1000 grabs them all in one page.
+    QNetworkRequest req(QUrl(
+        QStringLiteral("https://api.anthropic.com/v1/models?limit=1000")));
+    req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
+    req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+    req.setRawHeader("anthropic-version", "2023-06-01");
+    req.setRawHeader("Accept", "application/json");
+
+    QNetworkReply *reply = m_networkAccess->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        // The combo can be gone (tab rebuilt) while the request was in flight; a
+        // failed request just leaves the static defaults untouched.
+        if (!m_agentModelCombo || reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonArray models =
+            QJsonDocument::fromJson(body).object().value("data").toArray();
+        if (models.isEmpty())
+            return;
+        // Merging must not disturb the current pick or re-fire the change handler,
+        // so block signals and restore the selected model by its data value.
+        QSignalBlocker block(m_agentModelCombo);
+        const QVariant picked = m_agentModelCombo->currentData();
+        // A separator divides the convenience aliases from the live line-up. Add
+        // it (and each live model) at most once so a re-fetch stays idempotent.
+        bool separated = m_agentModelCombo->property("liveModelsMerged").toBool();
+        for (const QJsonValue &v : models) {
+            const QJsonObject m = v.toObject();
+            const QString id = m.value(QStringLiteral("id")).toString();
+            if (id.isEmpty() || m_agentModelCombo->findData(id) >= 0)
+                continue;
+            if (!separated) {
+                m_agentModelCombo->insertSeparator(m_agentModelCombo->count());
+                m_agentModelCombo->setProperty("liveModelsMerged", true);
+                separated = true;
+            }
+            m_agentModelCombo->addItem(
+                m.value(QStringLiteral("display_name")).toString(id), id);
+        }
+        const int idx = m_agentModelCombo->findData(picked);
+        if (idx >= 0)
+            m_agentModelCombo->setCurrentIndex(idx);
     });
 }
 
@@ -2735,6 +2808,9 @@ void MainWindow::showAgentSession(int sessionId)
                                       session->provider ==
                                           QLatin1String("claude-code"));
     }
+    // Keep the model line-up fresh as the user browses sessions (throttled inside
+    // refreshClaudeModelCombo() so this doesn't hit the provider on every click).
+    refreshClaudeModelCombo();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()

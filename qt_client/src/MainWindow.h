@@ -1114,6 +1114,12 @@ private:
     // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
     // accurate even when no agent is streaming rate-limit events.
     void refreshClaudeCodeUsage();
+    // Ask the provider which models this account can drive right now
+    // (GET /v1/models) and merge them into the composer's per-session model
+    // picker, so the dropdown reflects the live line-up (new releases appear
+    // without an app update). Best-effort: on any failure the static defaults
+    // from populateClaudeModelCombo() stand.
+    void refreshClaudeModelCombo();
     // Poll usage now and again a few seconds later. Use this the moment a new
     // agent starts or a prompt is sent: at that instant no tokens have been
     // consumed yet, so an immediate poll still shows the pre-start figure — the
@@ -3413,6 +3419,10 @@ private:
     QPushButton *m_agentVoiceButton = nullptr;    // composer mic : voice dictation (adhoc #29)
     QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
     QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
+    // Epoch-ms of the last live provider model-list fetch (see
+    // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
+    // hit /v1/models on every click while still keeping the list current.
+    qint64 m_claudeModelsFetchedMs = 0;
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
