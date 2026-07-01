@@ -614,7 +614,7 @@ private:
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
     void startDiagnostics();
     void updateFooterDiagnostics();
-    void onUiStall(qint64 peakMs, const QString &backtrace);
+    void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
     // De-duped by backtrace so one recurring freeze files a single task.
