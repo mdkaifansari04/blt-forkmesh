@@ -1206,12 +1206,22 @@ void MainWindow::startDiagnostics()
         const QString logPath =
             QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
         m_stallLogPath = logPath;
+        // Rotate an oversized log (it had grown past 12 MB) so appends and any
+        // "read the stall log" tooling stay fast; one previous generation kept.
+        if (QFileInfo(logPath).size() > 4 * 1024 * 1024) {
+            const QString prev = logPath + QStringLiteral(".1");
+            QFile::remove(prev);
+            QFile::rename(logPath, prev);
+        }
         // Recorded with each stall so a report sent to an agent identifies the
         // exact build and where its source lives (FORKMESH_SOURCE_DIR is the
         // build-time qt_client path).
         const QString buildInfo =
             QStringLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
-        m_stallWatchdog->start(/*stallThresholdMs=*/1500, logPath, buildInfo);
+        // 500 ms, not 1500: "snappy" means sub-half-second interactions, and the
+        // old threshold let real (but shorter) click-freezes go unrecorded. Every
+        // report names the blocking operation via the BlockingCallScope crumbs.
+        m_stallWatchdog->start(/*stallThresholdMs=*/500, logPath, buildInfo);
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
@@ -1356,6 +1366,11 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
 void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace)
 {
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
+        return;
+    // The watchdog now *records* everything past 500 ms (sub-second jank matters
+    // for snappiness), but only a solidly user-visible freeze warrants spinning
+    // up a whole fix-it agent.
+    if (peakMs < 1500)
         return;
     // No captured stack means nothing actionable to point an agent at.
     const QString signature = backtrace.trimmed();

@@ -2684,6 +2684,10 @@ private:
     // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
     QWidget *m_mirrorActivityStrip = nullptr;
     QTimer *m_mirrorActivityStripTimer = nullptr;
+    // Coalesces the heavy tail of onRequestServed (stats save + full repo-list
+    // rebuild) so a clone/browse burst costs one refresh per second, not one per
+    // served request.
+    QTimer *m_requestServedFlushTimer = nullptr;
     // Current-release pill floating just above the Releases tab (adhoc #69):
     // shows the newest tag so the current release is visible from any tab. Its
     // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
