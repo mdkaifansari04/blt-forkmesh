@@ -2812,6 +2812,11 @@ void MainWindow::refreshCommitMarkersIfStale()
         loadCommits();
 }
 
+// How deep a commit search widens the table window (see filterCommits). Bounded:
+// row-building is the cost, not git — 5000 rows build in a blink, a whole large
+// history froze the UI for 10-20s.
+constexpr int kCommitSearchDepth = 5000;
+
 void MainWindow::loadCommits()
 {
     // The reload fires a few blocking git reads (status, the commit log, the
@@ -2859,19 +2864,23 @@ void MainWindow::loadCommits()
         m_commitsLimit = 300;
     m_commitsHasMore = false;
     // Fetch one extra record so a full page tells us older history remains. When a
-    // search is active (m_commitsShowingAll) we drop the cap entirely so the filter
-    // can reach every commit in the current ref, including by hash.
+    // search is active (m_commitsShowingAll) deepen the window to the search depth
+    // — bounded, not the whole ref: building *every* commit as table rows (each
+    // with a cell-widget button) froze the UI for 10-20s on a big history (stall
+    // log: loadCommits <- filterCommits), and the matching uncapped --numstat in
+    // fillCommitStats() froze it again. Anything deeper stays reachable by
+    // scrolling the window onward first.
     //
     // Deliberately NO --numstat here: that flag makes git diff every commit in the
     // window (~1s on a large history) and was the bulk of this load's cost, yet it
     // only feeds the Files/+/− columns. This plain log returns in milliseconds so
     // the list paints immediately; fillCommitStats() backfills those three columns
     // from a deferred --numstat read once the rows are on screen.
+    const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
-    if (!m_commitsShowingAll)
-        logArgs << "-n" << QString::number(m_commitsLimit + 1);
+    logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
     if (!runGitCapture(dir, logArgs, &out, nullptr)) {
         m_commitsTable->setSortingEnabled(true);
@@ -2901,9 +2910,8 @@ void MainWindow::loadCommits()
             continue;
         // Stop at the current window; the extra fetched record means more remain,
         // which the scroll handler uses to load the next page. A search load
-        // (m_commitsShowingAll) has no cap — every commit is built so the filter
-        // can reach it.
-        if (!m_commitsShowingAll && m_commitsTable->rowCount() >= m_commitsLimit) {
+        // (m_commitsShowingAll) uses the deeper — but still bounded — window.
+        if (m_commitsTable->rowCount() >= rowLimit) {
             m_commitsHasMore = true;
             break;
         }
@@ -3143,8 +3151,9 @@ void MainWindow::fillCommitStats(int loadGen)
     // the same cap, or no cap while a search is showing every commit.
     GitKeepAlive keepAlive;
     QStringList args{"log", "--numstat", "--format=%x1e%H"};
-    if (!m_commitsShowingAll)
-        args << "-n" << QString::number(m_commitsLimit);
+    args << "-n"
+         << QString::number(m_commitsShowingAll ? kCommitSearchDepth
+                                                : m_commitsLimit);
     args << currentRef();
     QByteArray out;
     if (!runGitCapture(dir, args, &out, nullptr))
@@ -4597,11 +4606,12 @@ void MainWindow::filterCommits(const QString &query)
     if (!m_commitsTable)
         return;
     const QString needle = query.trimmed().toLower();
-    // A search has to span the whole history, not just the lazily-paged window, so
-    // a hash or message that lives deeper than the loaded rows still turns up. The
-    // first keystroke deepens the table to every commit; clearing it restores the
-    // paged window. loadCommits() re-applies this same filter at its tail, so the
-    // deepened pass falls through to the row loop below.
+    // A search should reach well past the lazily-paged window, so a hash or
+    // message deeper than the loaded rows still turns up. The first keystroke
+    // deepens the table to kCommitSearchDepth commits (bounded — building the
+    // whole history froze the UI for 10-20s on big repos); clearing it restores
+    // the paged window. loadCommits() re-applies this same filter at its tail, so
+    // the deepened pass falls through to the row loop below.
     if (!needle.isEmpty() && !m_commitsShowingAll && m_commitsHasMore) {
         m_commitsShowingAll = true;
         loadCommits();

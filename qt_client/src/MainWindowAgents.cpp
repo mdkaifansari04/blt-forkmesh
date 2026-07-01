@@ -3006,7 +3006,11 @@ void MainWindow::showAgentSession(int sessionId)
             || m_renderedTranscriptCount != m_streamEvents.value(sessionId).size())
             renderTranscriptForSession(sessionId);
         refreshAgentFilesPanel(sessionId);
-        setAgentLogText(sessionId, m_streamRaw.value(sessionId)); // raw view tail
+        // Only lay the raw log out when it's the surface on screen; while the
+        // transcript is shown, showAgentRawOutput() rebuilds it from m_streamRaw
+        // on toggle anyway, so laying out megabytes of JSON here was pure waste.
+        if (m_agentOutputStack && m_agentOutputStack->currentWidget() == m_agentLog)
+            setAgentLogText(sessionId, m_streamRaw.value(sessionId));
     } else {
         // Legacy log/terminal session: m_agentLog is the visible surface.
         setAgentLogText(sessionId, log);
@@ -3060,6 +3064,18 @@ void MainWindow::setAgentLogText(int sessionId, const QString &text)
     // refreshAgentTable() re-selected the open session (adhoc #245).
     if (m_agentLogSession == sessionId && m_agentLogText == text)
         return;
+    // Streaming growth: the new text usually just extends what's on screen.
+    // Insert only the delta at the end (incremental layout) instead of paying
+    // setPlainText()'s full re-layout of a multi-megabyte document per burst.
+    if (m_agentLogSession == sessionId && !m_agentLogText.isEmpty() &&
+        text.startsWith(m_agentLogText)) {
+        QTextCursor cursor(m_agentLog->document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText(text.mid(m_agentLogText.size()));
+        m_agentLogText = text;
+        m_agentLog->moveCursor(QTextCursor::End);
+        return;
+    }
     m_agentLogSession = sessionId;
     m_agentLogText = text;
     m_agentLog->setPlainText(text);
