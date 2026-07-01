@@ -1,5 +1,6 @@
 #include "ClaudeStreamSession.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -69,13 +70,37 @@ void ClaudeStreamSession::sendUserText(const QString &text)
 
 void ClaudeStreamSession::writeUserTurn(const QString &text)
 {
-    if (!running())
-        return;
-    const QJsonObject msg{
+    writeLine(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("user")},
         {QStringLiteral("message"),
          QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
-                     {QStringLiteral("content"), text}}}};
+                     {QStringLiteral("content"), text}}}});
+}
+
+void ClaudeStreamSession::sendToolResult(const QString &toolUseId,
+                                         const QString &content)
+{
+    if (toolUseId.isEmpty())
+        return;
+    // A tool_result is delivered as a user turn whose content is a single
+    // tool_result block referencing the pending tool_use id (Messages API
+    // shape). This is what lets the CLI resume a turn that stopped on a tool
+    // call awaiting user input, e.g. AskUserQuestion.
+    const QJsonObject block{
+        {QStringLiteral("type"), QStringLiteral("tool_result")},
+        {QStringLiteral("tool_use_id"), toolUseId},
+        {QStringLiteral("content"), content}};
+    writeLine(QJsonObject{
+        {QStringLiteral("type"), QStringLiteral("user")},
+        {QStringLiteral("message"),
+         QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                     {QStringLiteral("content"), QJsonArray{block}}}}});
+}
+
+void ClaudeStreamSession::writeLine(const QJsonObject &msg)
+{
+    if (!running())
+        return;
     m_proc->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n');
 }
 
