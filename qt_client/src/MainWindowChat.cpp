@@ -2479,16 +2479,29 @@ void MainWindow::probeRelayLatency()
         m_relayProbeInFlight = false;
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
+            m_relayProbeFailures = 0;
             radar->setLatency(static_cast<int>(elapsed));
         } else {
-            radar->setUnreachable();
-            // The relay dropped. Drop any pooled keep-alive connection so the
-            // next probe dials a fresh socket: otherwise QNetworkAccessManager
-            // can keep reusing the now-dead connection and the radar never
-            // clears even after we're back online. The steady once-a-minute
-            // timer keeps re-probing while offline so it reconnects on its own.
+            // Drop any pooled keep-alive connection so the next probe dials a
+            // fresh socket: otherwise QNetworkAccessManager can keep reusing a
+            // now-dead connection and the radar never clears even after we're
+            // back online.
             if (m_networkAccess)
                 m_networkAccess->clearConnectionCache();
+            // A single miss is usually just a stale keep-alive socket or a
+            // momentary blip (very common for the first probe right after
+            // launch, before the connection is warm) — not a real outage. Don't
+            // flip the radar to red on the strength of one failure; re-probe
+            // shortly on the now-clean connection and only declare "offline"
+            // once a second consecutive probe also fails. This stops the dish
+            // getting stranded on "offline" while we're genuinely online.
+            if (++m_relayProbeFailures >= 2) {
+                radar->setUnreachable();
+                // The steady once-a-minute timer keeps re-probing while offline
+                // so it reconnects on its own.
+            } else {
+                QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
+            }
         }
     });
 }
