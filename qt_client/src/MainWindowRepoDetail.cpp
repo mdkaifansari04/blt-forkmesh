@@ -6279,17 +6279,38 @@ void MainWindow::loadBranchesAndTags()
         m_branchButton->setMenu(menu);
     }
 
-    // Tags count (clicking the button opens the Releases panel, not a menu).
-    if (m_tagsButton) {
+    // Tags: count them and note the newest (the current release). The count
+    // feeds both the "Tags N" pill and the Releases (N) tab badge eagerly (so it
+    // shows without opening the panel, like Branches); the newest tag names the
+    // current-release pill floating just above the Releases tab (adhoc #69).
+    {
         QByteArray out;
         int count = 0;
+        QString currentTag;
         if (!dir.isEmpty() && runGitCapture(dir, {"tag", "--sort=-creatordate"}, &out,
                                             nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n'))
-                if (!line.trimmed().isEmpty())
-                    ++count;
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString tag = line.trimmed();
+                if (tag.isEmpty())
+                    continue;
+                if (currentTag.isEmpty())
+                    currentTag = tag; // sorted newest-first
+                ++count;
+            }
         }
-        m_tagsButton->setText(QStringLiteral("Tags %1").arg(formatCount(count)));
+        if (m_tagsButton)
+            m_tagsButton->setText(QStringLiteral("Tags %1").arg(formatCount(count)));
+        if (m_repoReleasesTab)
+            m_repoReleasesTab->setText(
+                QStringLiteral("Releases (%1)").arg(formatCount(count)));
+        if (m_releaseStrip) {
+            m_releaseStrip->setText(currentTag);
+            m_releaseStrip->setToolTip(
+                currentTag.isEmpty()
+                    ? QString()
+                    : QStringLiteral("Current release: %1").arg(currentTag));
+            positionReleaseStrip(); // anchor + reveal (or hide) over the Releases tab
+        }
     }
 
     // Only refresh the Branches / Releases panels if one is actually on screen.
@@ -6541,6 +6562,19 @@ QWidget *MainWindow::buildRepoDetailSection()
         "serves a clone, orange when it serves codebase browsing."));
     mirrorStrip->hide();
     m_mirrorActivityStrip = mirrorStrip;
+
+    // Current-release pill floating just above the Releases tab (adhoc #69),
+    // mirroring the mirror-activity strip over Mirror nodes: a small purple tag
+    // pill naming the newest release so it's visible from any tab. Created
+    // parented to the window; positionReleaseStrip reparents it onto the page and
+    // the tag scan (loadBranchesAndTags / loadReleasesPanel) fills in its text.
+    m_releaseStrip = new QLabel(this);
+    m_releaseStrip->setObjectName("releaseStrip");
+    m_releaseStrip->setStyleSheet(
+        QStringLiteral("#releaseStrip{color:#d2a8ff;background:rgba(163,113,247,0.15);"
+                       "border:1px solid rgba(163,113,247,0.4);border-radius:9px;"
+                       "padding:0px 8px;font-size:11px;}"));
+    m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;

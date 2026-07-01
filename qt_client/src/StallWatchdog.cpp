@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutex>
 #include <QTextStream>
 #include <QTimer>
 
@@ -77,7 +78,34 @@ QString firstFrame(const QString &bt)
     const int nl = bt.indexOf(QLatin1Char('\n'));
     return nl < 0 ? bt : bt.left(nl);
 }
+
+// The current main-thread breadcrumb (see stallwatch::noteBlockingCall). Written
+// by the GUI thread, read by the watcher thread, so it's mutex-guarded — the lock
+// is only ever held for the assignment/copy below, never across a blocking call,
+// so the watcher can always read it even while the GUI thread is frozen.
+QMutex g_blockingMutex;
+QString g_blockingCall;
 } // namespace
+
+namespace stallwatch {
+void noteBlockingCall(const QString &what)
+{
+    QMutexLocker lock(&g_blockingMutex);
+    g_blockingCall = what;
+}
+QString blockingCall()
+{
+    QMutexLocker lock(&g_blockingMutex);
+    return g_blockingCall;
+}
+} // namespace stallwatch
+
+BlockingCallScope::BlockingCallScope(const QString &what)
+    : m_prev(stallwatch::blockingCall())
+{
+    stallwatch::noteBlockingCall(what);
+}
+BlockingCallScope::~BlockingCallScope() { stallwatch::noteBlockingCall(m_prev); }
 
 StallWatchdog::StallWatchdog(QObject *parent) : QObject(parent)
 {
@@ -142,6 +170,7 @@ void StallWatchdog::watchLoop()
     QString bt;       // first sample (also handed to the stalled() signal)
     QString extra;    // later samples taken while a long stall keeps dragging on
     QString lastTop;  // deepest frame of the last sample, to skip duplicate spots
+    QString culprit;  // breadcrumb of the operation blocking when the stall began
     // A single sample taken at the 1.5s mark mislabels multi-phase stalls — e.g. a
     // panel rebuild that runs a dozen back-to-back git calls, or layout thrash,
     // gets blamed on whatever frame the one sample happened to catch. Re-sampling a
@@ -157,11 +186,17 @@ void StallWatchdog::watchLoop()
                 inStall = true;
                 peak = age;
                 bt = captureBacktrace(); // sample the stack at first detection
+                // What the GUI thread said it was doing — usually the git command
+                // in flight — is far more actionable than a raw backtrace and is
+                // often the only readable clue when frames don't symbolise.
+                culprit = stallwatch::blockingCall();
                 lastTop = firstFrame(bt);
                 lastSampleMs = now;
                 sampleCount = 1;
             } else {
                 peak = qMax(peak, age);
+                if (culprit.isEmpty()) // set slightly after the stall began
+                    culprit = stallwatch::blockingCall();
                 if (sampleCount < kMaxSamples && now - lastSampleMs >= kResampleMs) {
                     lastSampleMs = now;
                     const QString s = captureBacktrace();
@@ -188,6 +223,8 @@ void StallWatchdog::watchLoop()
                     .arg(peak)
                     .arg(m_thresholdMs)
                     .arg(sampleCount);
+            if (!culprit.isEmpty())
+                header += QStringLiteral("blocking call: %1\n").arg(culprit);
             if (!m_exePath.isEmpty())
                 header += QStringLiteral(
                               "symbolize unresolved frames: addr2line -fpe %1 <hex-addr>\n")
@@ -206,12 +243,13 @@ void StallWatchdog::watchLoop()
                     ts << "----\n";
                 }
             }
-            emit stalled(peak, full); // queued to the main thread for live display
+            emit stalled(peak, culprit, full); // queued to the main thread for live display
             peak = 0;
             sampleCount = 0;
             bt.clear();
             extra.clear();
             lastTop.clear();
+            culprit.clear();
         }
     }
 }

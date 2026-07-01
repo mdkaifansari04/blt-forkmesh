@@ -7,6 +7,32 @@
 
 class QTimer;
 
+// A short breadcrumb naming the heavy main-thread operation currently in flight
+// (e.g. the git command a synchronous read is waiting on). Set from the GUI
+// thread around a blocking call; the watchdog folds the value into a stall report
+// so it names the culprit operation instead of leaving only a raw, often
+// unsymbolised backtrace to decode. Empty when the GUI thread is idle. Thread-safe.
+namespace stallwatch {
+void noteBlockingCall(const QString &what); // pass an empty string to clear
+QString blockingCall();
+} // namespace stallwatch
+
+// RAII breadcrumb: names the blocking operation for the scope's lifetime and
+// restores the previous breadcrumb on exit, so nested/re-entrant calls (an event-
+// loop pump running another read mid-wait) still report the right culprit. Cheap
+// enough to wrap every synchronous main-thread git read.
+class BlockingCallScope
+{
+public:
+    explicit BlockingCallScope(const QString &what);
+    ~BlockingCallScope();
+    BlockingCallScope(const BlockingCallScope &) = delete;
+    BlockingCallScope &operator=(const BlockingCallScope &) = delete;
+
+private:
+    QString m_prev;
+};
+
 // Watches the GUI (main) thread for "not responding" stalls — the kind that make
 // the window manager pop the Wait / Force-Quit prompt, or just feel sluggish. A
 // main-thread heartbeat timer bumps a timestamp; a background thread notices when
@@ -28,9 +54,10 @@ public:
                const QString &buildInfo = QString());
 
 signals:
-    // Fired once a stall ends: how long the UI was unresponsive (peak observed)
-    // and the captured backtrace (may be empty if it couldn't be sampled).
-    void stalled(qint64 peakMs, const QString &backtrace);
+    // Fired once a stall ends: how long the UI was unresponsive (peak observed),
+    // the breadcrumb of the operation blocking when it began (may be empty), and
+    // the captured backtrace/report (may be empty if it couldn't be sampled).
+    void stalled(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
 
 private:
     void beat();      // runs on the main thread (heartbeat timer)

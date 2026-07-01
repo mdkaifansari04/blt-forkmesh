@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 308
 title: have a way to have a central wallet that holds funds to distribute to nodes every hour that they are online peple can donate to the centeral fund
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
