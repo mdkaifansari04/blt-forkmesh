@@ -937,7 +937,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
         'if action in ("tree", "blob", "history", "commit", "branches"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
-        'return await self._tunnel(op, rel_path, ref)',
+        'return await self._tunnel(op, rel_path, ref, served_by)',
         '"ref": ref',
     ):
         assert marker in ENTRY_TEXT
