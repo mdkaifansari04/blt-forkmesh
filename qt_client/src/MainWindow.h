@@ -619,6 +619,15 @@ private:
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
     // De-duped by backtrace so one recurring freeze files a single task.
     void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
+    // Repo whose checkout a stall-fix agent runs in: ForkMesh's own source tree
+    // (the freeze is in this app's GUI thread), else the Issues tab's repo, or -1.
+    int stallReportRepoIndex() const;
+    // Wipe every recorded UI stall (in-memory count/log and the durable on-disk
+    // log) so diagnostics start fresh. Backs the dialog's Clear button.
+    void clearStallLog();
+    // Hand every recorded UI stall to a fresh coding agent as one task. Returns
+    // true if an agent was started. Backs the dialog's "Send to a new agent" button.
+    bool sendStallLogToAgent();
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
@@ -923,6 +932,14 @@ private:
     void initAgents();
     void reloadAgents();
     void refreshAgentTable();
+    // Populate (or update in place) one Agents-table row's cells for a session.
+    // Creates each column's item when the row is empty (a full rebuild) and
+    // otherwise rewrites the existing items, so refreshAgentTable() can reuse the
+    // rows instead of clearing the table when the visible set is unchanged — which
+    // is what stops the list flashing / the Status column blanking when a queued
+    // message re-refreshes it (adhoc #74).
+    void applyAgentRowCells(int row, const AgentSession &session,
+                            const QString &agentGitDir, const QString &agentBase);
     // Files-changed + branch ahead/behind summary for a session's Diff cell
     // (issue #170), computed against the given git dir / base branch and memoised
     // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
@@ -3282,6 +3299,14 @@ private:
     void stopStreamSession(int sessionId, bool refreshUi = true);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // A session's dedicated worktree path ("" when its branch has no separate
+    // worktree / is the main checkout), resolved without re-shelling `git worktree
+    // list` on every click. Sessions launched this run know it from
+    // m_streamWorktree; reloaded ones resolve once via git and cache it for the
+    // session's lifetime (m_sessionWorkdirCache). See the definition for why the
+    // click path leaned on this (adhoc #78).
+    QString cachedSessionWorktree(int sessionId, const QString &repoLocal,
+                                  const QString &branch);
     // Remove the isolated worktree a stream session ran in (if any) and prune the
     // registration, freeing its branch so the PR's branch can be checked out in
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
