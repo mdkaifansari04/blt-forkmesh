@@ -1855,6 +1855,13 @@ void MainWindow::refreshClaudeModelCombo()
 {
     if (!m_networkAccess || !m_agentModelCombo)
         return;
+    // Throttle: at most one live fetch every 10 minutes. buildAgentsTab() fires
+    // the first one; showAgentSession() re-arms it as the user works, so the list
+    // stays current in real time without hitting /v1/models on every click.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_claudeModelsFetchedMs > 0 &&
+        now - m_claudeModelsFetchedMs < 10LL * 60 * 1000)
+        return;
     // Claude Code authenticates with the claude.ai OAuth token in
     // ~/.claude/.credentials.json (the same source the usage gauge reads). Without
     // it (API-key login, or not signed in) we can't query the account's model
@@ -1862,6 +1869,9 @@ void MainWindow::refreshClaudeModelCombo()
     const QString token = claudeCodeOAuthToken();
     if (token.isEmpty())
         return;
+    // Arm the throttle on send (not only on success) so a persistently failing
+    // request doesn't retry on every call.
+    m_claudeModelsFetchedMs = now;
 
     // The provider's Models API lists exactly the models this account can drive
     // right now, newest first; limit=1000 grabs them all in one page.
@@ -2798,6 +2808,9 @@ void MainWindow::showAgentSession(int sessionId)
                                       session->provider ==
                                           QLatin1String("claude-code"));
     }
+    // Keep the model line-up fresh as the user browses sessions (throttled inside
+    // refreshClaudeModelCombo() so this doesn't hit the provider on every click).
+    refreshClaudeModelCombo();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
