@@ -4,6 +4,7 @@
 # for the repo detail view, not real files. Without this rule they fall
 # through to 404-page handling, and dashboard.js's requestedRepoKey() would
 # then bounce them to /dashboard?repo=owner/repo with a full-navigation flash.
+/dashboard/index.html /dashboard/index.html 200
 /dashboard/* /dashboard/index.html 200
 /dashboard.html /dashboard 308
 /noisy-background.avif /noisy-background.avif 200
