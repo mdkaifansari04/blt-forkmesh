@@ -1024,6 +1024,10 @@ def build_repo_mirrors_payload(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
         )
         issue_count = _int_field(rec, "issueCount")
+        # Clones / website serves this node has provided; -1 == not advertised
+        # (older peer or a record predating the counters), shown as an em-dash.
+        clones_served = _int_field(rec, "clonesServed")
+        website_served = _int_field(rec, "websiteServed")
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1050,6 +1054,8 @@ def build_repo_mirrors_payload(
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
             "id": str(rec.get("nodeId") or "").strip(),
+            "clonesServed": clones_served,
+            "websiteServed": website_served,
         })
 
     mirrors.sort(
@@ -2004,6 +2010,11 @@ def safe_catalog_record(data):
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
+        # How many clones and website (browse/fetch) requests this node has served
+        # for the repo. Purely local counters otherwise, mirrored here so the Mirror
+        # nodes view can show a node's contribution even while it's offline.
+        "clonesServed": clean_string(data.get("clonesServed", ""), 12),
+        "websiteServed": clean_string(data.get("websiteServed", ""), 12),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
         # Owner-signed fingerprint of the repo's served refs (sha256 over the
@@ -7883,6 +7894,18 @@ class ForkMeshHost(DurableObject):
     async def _mark_present(self, path=None):
         # Refresh this repo's host-presence row, throttled so hot browse traffic
         # doesn't write to D1 on every request. Best-effort; never fails the call.
+        #
+        # Only ever mark presence while a host WebSocket is actually connected to
+        # this DO. Otherwise a repo whose desktop host has gone offline would be
+        # kept "live" forever by the very browse/clone traffic that can't be
+        # served: each request self-refreshes host_presence, so `liveHost`/
+        # `source_online` never age out, `_select_clone_fallback` refuses to
+        # redirect ("never redirect away from an online source"), and the online
+        # mirror is never used — the repo shows "host online" yet nothing serves
+        # its tree. Letting presence lapse when no host is connected is what lets
+        # the source of truth age out so a live mirror takes over (adhoc #68).
+        if not self._host_count():
+            return
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
