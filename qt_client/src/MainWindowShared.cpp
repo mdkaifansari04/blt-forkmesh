@@ -89,9 +89,29 @@ QString mirrorHeadBranch(const QString &mirrorPath)
         return QString();
     QProcess p;
     p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
-    if (!p.waitForFinished(5000) || p.exitCode() != 0)
+    if (p.waitForFinished(5000) && p.exitCode() == 0) {
+        const QString head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        if (!head.isEmpty())
+            return head;
+    }
+    // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
+    // relay serves git-upload-pack without advertising a symref HEAD), so the
+    // symbolic-ref above yields nothing. Every downstream figure the Mirror nodes
+    // view shows for a node — its latest commit and the issue/commit/pull/
+    // discussion counts — is read relative to this branch, so an empty result
+    // blanks nearly the whole row for such a node (issue #243). Fall back to an
+    // actual served branch: prefer main/master, else the first refs/heads/* held.
+    QProcess refs;
+    refs.start("git", {"-C", mirrorPath, "for-each-ref",
+                       "--format=%(refname:short)", "refs/heads/"});
+    if (!refs.waitForFinished(5000) || refs.exitCode() != 0)
         return QString();
-    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+    const QStringList branches = QString::fromUtf8(refs.readAllStandardOutput())
+                                     .split('\n', Qt::SkipEmptyParts);
+    for (const QString &preferred : {QStringLiteral("main"), QStringLiteral("master")})
+        if (branches.contains(preferred))
+            return preferred;
+    return branches.isEmpty() ? QString() : branches.first().trimmed();
 }
 
 QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
