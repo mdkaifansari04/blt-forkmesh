@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ScreenAlignmentTarget.h"
 
 using namespace forkmesh::ui;
 
@@ -117,6 +118,20 @@ QWidget *MainWindow::buildSettingsSection()
                 QSettings().setValue(kDefaultRepoTabSetting,
                                      defaultTabCombo->currentData().toInt());
             });
+
+    // Screenshot: an inline calibration target for the region screenshot tool. It
+    // shows a square with corner brackets and a centre crosshair right here in
+    // Settings — grab it with the screenshot button and confirm the captured
+    // pixels line up with the corners and the size shown. The screenshot itself is
+    // queued as the next new-agent attachment.
+    auto *screenshotLabel = new QLabel("SCREENSHOT");
+    screenshotLabel->setObjectName("sectionLabel");
+    auto *screenshotHint = new QLabel(
+        "Grab this square with the screenshot tool to check the capture lines up "
+        "with the corners \xE2\x80\x94 the shot attaches to a new agent.");
+    screenshotHint->setObjectName("statusLine");
+    screenshotHint->setWordWrap(true);
+    auto *alignmentTarget = new ScreenAlignmentTarget;
 
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
@@ -971,6 +986,10 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartCheck);
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(screenshotLabel);
+    generalCol->addWidget(screenshotHint);
+    generalCol->addWidget(alignmentTarget, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 
