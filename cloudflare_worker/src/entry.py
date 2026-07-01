@@ -145,6 +145,8 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+# How long a password-reset link stays valid after it is emailed.
+PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
@@ -5252,6 +5254,116 @@ async def _send_verification_email(env, request, name, email):
     return await _send_email(env, email, subject, text, html)
 
 
+async def _password_reset_token(env, name, email, pass_hash, expires):
+    # Stateless, deterministic reset token bound to (name, email, current
+    # password hash, expiry). Only the server can compute it (keyed by DATA_KEY
+    # via the blind-index HMAC key, with its own domain-separation prefix), so a
+    # valid token in the link proves the recipient controls the mailbox — no
+    # token column needed. Binding the *current* pass_hash makes the link
+    # single-use: once the password changes the token no longer verifies. The
+    # expiry (also carried in the link) bounds how long a leaked link is usable.
+    key = await _hmac_key(env)
+    msg = ("forkmesh-password-reset-v1\n" + (name or "") + "\n" + (email or "") +
+           "\n" + (pass_hash or "") + "\n" + str(expires)).encode()
+    sig = await js_crypto.subtle.sign("HMAC", key, _to_js(msg))
+    return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
+
+
+async def _send_password_reset_email(env, request, name, email, pass_hash):
+    expires = int(Date.now()) + PASSWORD_RESET_TTL_MS
+    token = await _password_reset_token(env, name, email, pass_hash, expires)
+    link = (_public_base_url(env, request) +
+            "/reset-password.html?node=" + quote(name) +
+            "&exp=" + str(expires) + "&token=" + token)
+    subject = "Reset your ForkMesh password"
+    text = ("A password reset was requested for your ForkMesh node \"" + name +
+            "\".\n\nOpen this link to choose a new password:\n" + link +
+            "\n\nThis link expires in 1 hour. If you didn't request a reset, "
+            "you can ignore this email — your password won't change.")
+    html = (
+        "<p>A password reset was requested for your ForkMesh node "
+        "<strong>" + name + "</strong>.</p>"
+        "<p><a href=\"" + link + "\">Choose a new password</a></p>"
+        "<p style=\"color:#888;font-size:13px\">This link expires in 1 hour. "
+        "If you didn't request a reset, you can ignore this email — your "
+        "password won't change.</p>")
+    return await _send_email(env, email, subject, text, html)
+
+
+# Step 1 of a password reset: a user who forgot their password gives their email
+# (or node name); if it matches an active account with an email on file we send a
+# time-bound reset link. Always returns {ok:true} — never revealing whether the
+# identifier matched an account — so the endpoint can't be used to enumerate
+# which emails/nodes are registered.
+async def _account_forgot_password(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    identifier = clean_string(
+        data.get("identifier", "") or data.get("email", "") or
+        data.get("nodeName", ""), 254).strip().lower()
+    if identifier:
+        rec = None
+        if "@" in identifier:
+            email_bi = await blind_index(env, identifier)
+            row = await d1_first(
+                env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+            if row:
+                rec = await decrypt_row(env, row.get("data"))
+        elif valid_node_name(identifier):
+            _, rec = await _account_row(env, identifier)
+        if (rec and rec.get("status") == "active" and rec.get("email") and
+                rec.get("pass_hash")):
+            await _send_password_reset_email(
+                env, request, rec.get("name", ""), rec.get("email", ""),
+                rec.get("pass_hash", ""))
+    return json_response({"ok": True})
+
+
+# Step 2 of a password reset: the emailed link posts back the node name, expiry,
+# token and a new password. The token is recomputed from the account's current
+# pass_hash + the expiry, so a stale/used/tampered link fails, and the new
+# password is PBKDF2-hashed and stored.
+async def _account_reset_password(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(
+        data.get("node", "") or data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    token = clean_string(data.get("token", ""), 64)
+    password = (data.get("password", "") or "")[:256]
+    try:
+        expires = int(data.get("exp", 0))
+    except (TypeError, ValueError):
+        expires = 0
+    if len(password) < 8:
+        return json_response({"error": "password_too_short"}, status=400)
+    if not name or not token or not expires:
+        return json_response({"error": "invalid_reset_token"}, status=400)
+    if int(Date.now()) > expires:
+        return json_response({"error": "reset_link_expired"}, status=400)
+    name_bi, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active" or not rec.get("email") or
+            not rec.get("pass_hash")):
+        return json_response({"error": "invalid_reset_token"}, status=400)
+    expected = await _password_reset_token(
+        env, name, rec.get("email", ""), rec.get("pass_hash", ""), expires)
+    if not hmac.compare_digest(token, expected):
+        return json_response({"error": "invalid_reset_token"}, status=400)
+    salt, phash = await hash_password(password)
+    rec["pass_salt"] = salt
+    rec["pass_hash"] = phash
+    await _save_account(env, name_bi, rec)
+    # A successful reset also lifts any brute-force lockout so the user can log in
+    # right away, whether they log in by node name or by email.
+    await _login_clear(env, name_bi)
+    if rec.get("email"):
+        await _login_clear(env, await blind_index(env, rec.get("email", "")))
+    return json_response({"ok": True})
+
+
 def _verify_email_page(message, status):
     body = ("<!doctype html><meta charset=utf-8><title>ForkMesh email</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
@@ -5866,6 +5978,10 @@ async def accounts_handler(env, request):
         return await _admin_relay_approve(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
+    if url.path == "/api/accounts/forgot-password" and method == "POST":
+        return await _account_forgot_password(env, request)
+    if url.path == "/api/accounts/reset-password" and method == "POST":
+        return await _account_reset_password(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
@@ -8337,7 +8453,14 @@ class ForkMeshHost(DurableObject):
         new_rtt = (elapsed if not isinstance(prev, (int, float))
                    else 0.5 * prev + 0.5 * elapsed)
         try:
-            ws.serializeAttachment(to_js({"rtt": new_rtt}))
+            # Preserve repo_bi when rewriting the attachment. serializeAttachment
+            # replaces the whole blob, so omitting repo_bi here loses it after the
+            # first successful tunnel response. The heartbeat handler reads repo_bi
+            # from the attachment after DO hibernation to restore self._repo_bi and
+            # keep host_presence fresh; without it, heartbeats silently stop
+            # refreshing presence and the mirror ages out in HOST_PRESENCE_STALE_MS.
+            ws.serializeAttachment(
+                to_js({"rtt": new_rtt, "repo_bi": _ws_attr(ws, "repo_bi")}))
         except Exception:
             pass
 
