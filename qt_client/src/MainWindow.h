@@ -1739,6 +1739,11 @@ private:
     // you can draw on freehand anywhere on the computer. Nothing is captured — it's
     // a throwaway scratch layer for pointing things out. Esc dismisses it.
     void startScreenDraw();
+    // Settings → Screenshot alignment: drops a full-screen calibration target
+    // (corner brackets, edge rulers, centre crosshair, alignment markers). Grab it
+    // with the region screenshot tool and check the captured pixels line up with
+    // the labelled coordinates. Esc / click dismisses it.
+    void showScreenshotAlignment();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into
