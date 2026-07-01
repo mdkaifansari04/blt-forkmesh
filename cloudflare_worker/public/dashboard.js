@@ -29,6 +29,7 @@
     notifications: [],
     notificationUnread: 0,
     selectedNotificationId: "",
+    issuesView: { filter: "open", items: [] },
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -1786,7 +1787,7 @@
       const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy);
       const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
-      if (!path && data.counts) updateRepoLiveCounts(repo, data.counts);
+      if (!path && data.counts) { updateRepoLiveCounts(repo, data.counts); applyServedCounts(data.counts); }
       entries.sort((a, b) => {
         if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
         return String(a.name || "").localeCompare(String(b.name || ""));
@@ -2196,6 +2197,96 @@
     }
   }
 
+  function setRepoTabCount(tab, count) {
+    const badge = $(`[data-dashboard-repo-tab-count="${tab}"]`);
+    if (badge) badge.textContent = formatCount(count);
+  }
+
+  function applyServedCounts(counts) {
+    if (!counts || typeof counts !== "object") return;
+    if (Number.isFinite(Number(counts.pulls))) setRepoTabCount("pulls", Number(counts.pulls));
+    if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
+  }
+
+  function renderRepoIssues() {
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    const issuesView = state.issuesView;
+    const filtered = issuesView.items.filter((issue) => {
+      if (issuesView.filter === "all") return true;
+      if (issuesView.filter === "open") return issue.status === "open";
+      return issue.status !== "open";
+    });
+    const config = repoCollectionConfig.issues;
+    const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
+      ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
+    </div>`;
+    container.innerHTML = filterBar + (filtered.length
+      ? renderRepoRecordList(filtered, config, "issues")
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.</div>`);
+    window.lucide?.createIcons();
+  }
+
+  function setIssueFilter(filter) {
+    state.issuesView.filter = filter;
+    $$("[data-dashboard-issue-filter]").forEach((btn) => {
+      btn.setAttribute("aria-pressed", btn.dataset.dashboardIssueFilter === filter ? "true" : "false");
+      btn.className = `inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${btn.dataset.dashboardIssueFilter === filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`;
+    });
+    renderRepoIssues();
+  }
+
+  async function loadRepoIssues(repo) {
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading issues from the live mirror...</div>';
+    try {
+      let tree;
+      try {
+        // List the git tree under issues/ (the mirror browse endpoint
+        // /tree?path=issues) then read one issues/${number}/issue.md blob each.
+        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "issues" }));
+      } catch (error) {
+        if (isMissingMirrorFolder(error)) {
+          state.issuesView.items = [];
+          state.issuesView.filter = "open";
+          renderRepoIssues();
+          return;
+        }
+        throw error;
+      }
+      const dirs = (Array.isArray(tree.entries) ? tree.entries : [])
+        .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
+        .sort((a, b) => Number(b.name) - Number(a.name))
+        .slice(0, 50);
+      const items = (await Promise.all(dirs.map(async (entry) => {
+        const number = Number(entry.name);
+        try {
+          const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: `issues/${number}/issue.md` }));
+          const parsed = parseFrontMatter(blobText(blob));
+          const values = parsed.values || {};
+          return {
+            number,
+            title: values.title || `issue #${number}`,
+            status: values.status || values.state || "open",
+            author: values.authorName || values.author || "unknown",
+            date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
+            meta: repoCollectionConfig.issues.meta(values),
+            body: parsed.body || "",
+          };
+        } catch (_) {
+          return null;
+        }
+      }))).filter(Boolean);
+      state.issuesView.items = items;
+      state.issuesView.filter = "open";
+      setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
+      renderRepoIssues();
+    } catch (_) {
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the issues/ folder.</div>';
+    }
+  }
+
   async function loadRepoCollection(repo, kind, containerSelector) {
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
@@ -2400,6 +2491,7 @@
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
+      setRepoTabCount("mirrors", mirrors.length);
       if (!mirrors.length) {
         container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
         return;
@@ -2419,9 +2511,7 @@
 
   function loadRepoFeaturePanels(repo) {
     loadRepoCommits(repo);
-    loadRepoCollection(repo, "issues", "[data-repo-issues]");
-    loadRepoCollection(repo, "pulls", "[data-repo-pulls]");
-    loadRepoCollection(repo, "discussions", "[data-repo-discussions]");
+    loadRepoIssues(repo);
     loadRepoMirrors(repo);
   }
 
@@ -2689,6 +2779,11 @@
     if (!detail || !repo) return;
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
+    // Pull requests and discussions load lazily the first time their tab is
+    // opened rather than on every page load. Eagerly fetching every record's
+    // blob up front is what flooded the host with requests and tripped the rate
+    // limit after a few refreshes; this map remembers which tabs have loaded.
+    state.loadedRepoTabs = {};
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
@@ -2736,7 +2831,7 @@
                 : tab === "pulls"
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
-              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}</button>`;
+              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}</button>`;
             }).join("")}
           </div>
         </div>
@@ -3349,7 +3444,15 @@
 
       const repoTabButton = event.target.closest("[data-dashboard-repo-tab]");
       if (repoTabButton) {
-        setRepoTab(repoTabButton.dataset.dashboardRepoTab || "code");
+        const tab = repoTabButton.dataset.dashboardRepoTab || "code";
+        setRepoTab(tab);
+        // Pull requests and discussions are fetched on first view so a repo with
+        // many records doesn't fan out into dozens of blob requests on load.
+        if (state.selectedRepo && (tab === "pulls" || tab === "discussions") && !state.loadedRepoTabs?.[tab]) {
+          if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+          state.loadedRepoTabs[tab] = true;
+          loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
+        }
         return;
       }
 
@@ -3433,9 +3536,15 @@
         return;
       }
 
+      const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
+      if (issueFilterButton) {
+        setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter || "open");
+        return;
+      }
+
       const issueCancelButton = event.target.closest("[data-repo-issue-cancel]");
       if (issueCancelButton && state.selectedRepo) {
-        loadRepoCollection(state.selectedRepo, "issues", "[data-repo-issues]");
+        renderRepoIssues();
         return;
       }
 
@@ -3448,7 +3557,11 @@
       const recordBackButton = event.target.closest("[data-repo-record-back]");
       if (recordBackButton && state.selectedRepo) {
         const kind = recordBackButton.dataset.repoRecordBack || "";
-        loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+        if (kind === "issues") {
+          renderRepoIssues();
+        } else {
+          loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+        }
         return;
       }
 

@@ -276,8 +276,10 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         # Issues load from the repo's git tree so the Open-by-default state
         # filter (issue #270) has real published issues to work with.
         "loadRepoIssues(repo)",
-        "loadRepoCollection(repo, \"pulls\"",
-        "loadRepoCollection(repo, \"discussions\"",
+        # Pull requests and discussions load lazily on first tab view rather than
+        # eagerly on every refresh (adhoc #105: eager per-record blob fan-out
+        # tripped the host rate limit and made reloads stop working).
+        "loadRepoCollection(state.selectedRepo, tab,",
         "loadRepoCommits(repo)",
         "loadRepoMirrors(repo)",
         "Copy clone",
@@ -382,9 +384,10 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         "fetchJson(repoLiveUrl(repo, \"history\"))",
         "function parseFrontMatter(markdown)",
         "async function loadRepoRecordsFromMirror(repo, config)",
-        "loadRepoCollection(repo, \"issues\"",
-        "loadRepoCollection(repo, \"pulls\"",
-        "loadRepoCollection(repo, \"discussions\"",
+        # Issues read the public git tree via loadRepoIssues; pulls and
+        # discussions read it lazily through loadRepoCollection on tab view.
+        "loadRepoIssues(repo)",
+        "loadRepoCollection(state.selectedRepo, tab,",
         'dir: "issues", file: "issue.md"',
         'dir: "pulls", file: "pull.md"',
         'dir: "discussions", file: "discussion.md"',
@@ -637,7 +640,9 @@ def test_dashboard_repository_tab_counts_wait_for_live_data_and_update_mirrors()
     assert "function tabCountLabel(value)" in dashboard_js
     assert "return null;" in repo_count
     assert "tabCountLabel(meta.count)" in render
-    assert 'data-dashboard-repo-count="${tab}"' in render
+    # Tab badges carry the -tab-count hook so live counts (open issues, served
+    # pulls/discussions, mirrors) update in place without a full re-render.
+    assert 'data-dashboard-repo-tab-count="${tab}"' in render
     assert 'data-dashboard-repo-count="mirrors"' in render
     assert "updateRepoLiveCounts(repo, data.counts);" in dashboard_js
     assert "updateRepoLiveCounts(repo, { mirrors: mirrorCount });" in mirror_loader
