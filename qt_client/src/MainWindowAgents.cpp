@@ -2784,9 +2784,12 @@ void MainWindow::showAgentSession(int sessionId)
         return;
     }
 
-    // Restore a finished/idle Claude Code session's transcript from disk before
-    // deciding which output surface to show, so it survives an app restart.
-    ensureStreamEventsLoaded(sessionId);
+    // Restore a finished/idle Claude Code session's transcript from disk so it
+    // survives an app restart — parsed on a worker thread. The first click on a
+    // long session used to block on reading events.jsonl right here (the radar
+    // visibly froze); now the click paints immediately and the session is
+    // re-shown when its history lands.
+    ensureStreamEventsLoadedAsync(sessionId);
 
     // Keep the detail panel collapsed while "Hide detail" is engaged (issue #54);
     // its contents below still update for when the user reopens it.
@@ -2975,8 +2978,6 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentCreateIssueButton->setVisible(canTrack);
     }
 
-    const QString log = m_agentStore ? m_agentStore->readLog(*session) : QString();
-    updateAgentNetworkPanel(log, session->status);
     // Pick the right output surface. A Claude Code session renders its OWN
     // buffered transcript (so output never leaks between sessions); legacy
     // terminal sessions show the embedded terminal; everything else the log. The
@@ -2984,9 +2985,46 @@ void MainWindow::showAgentSession(int sessionId)
     // sessions. Each surface populates m_agentLog through setAgentLogText() so a
     // re-show of the same unchanged session skips the costly re-layout (adhoc #245).
     const bool external = isExternalSession(sessionId);
-    const bool transcript = external || isStreamTranscriptSession(sessionId);
+    const bool eventsLoading = m_streamEventsLoading.contains(sessionId);
+    const bool transcript =
+        external || eventsLoading || isStreamTranscriptSession(sessionId);
+    // The session log (megabytes for a long run) feeds the [net] traffic panel
+    // and the legacy log surface. Read + scan it on a worker thread: blocking
+    // the click on that disk read is what paused the radar between agent clicks.
+    if (m_agentStore) {
+        const AgentSession snapshot = *session;
+        AgentStore *store = m_agentStore;
+        const QString status = session->status;
+        const bool wantLogSurface = !transcript;
+        runOffThread<AgentLogScan>(
+            [store, snapshot] { return scanAgentLog(store->readLog(snapshot)); },
+            [this, sessionId, status, wantLogSurface](AgentLogScan scan) {
+                if (sessionId != m_selectedAgentSessionId)
+                    return; // clicked away while the read ran
+                applyAgentNetworkPanel(scan, status);
+                if (wantLogSurface)
+                    setAgentLogText(sessionId, scan.log);
+            });
+    }
     if (external) {
-        renderExternalTranscript(sessionId, /*full=*/true);
+        // Skip the full tail re-read/rebuild when this session is already on
+        // screen and its file hasn't grown — reloadAgents() re-shows the open
+        // session constantly, and re-parsing a 400 KB tail per refresh was a
+        // steady main-thread hitch.
+        const qint64 read = m_externalReadOffset.value(sessionId, -1);
+        const QString extPath = m_externalSurfaced.value(sessionId).path;
+        if (m_renderedExternalSession != sessionId || read < 0 ||
+            QFileInfo(extPath).size() > read)
+            renderExternalTranscript(sessionId, /*full=*/true);
+    } else if (eventsLoading) {
+        // History is still being parsed off-thread: present the (cleared)
+        // transcript surface now — the load's completion re-runs
+        // showAgentSession and builds the rows.
+        if (m_renderedTranscriptSession != sessionId && m_agentTranscript) {
+            m_agentTranscript->clear();
+            m_renderedTranscriptSession = -1;
+            m_renderedExternalSession = -1; // the view no longer shows one
+        }
     } else if (isStreamTranscriptSession(sessionId)) {
         // Only rebuild the transcript widget tree when it's actually stale: a
         // different session was shown, or events were added since the last render.
@@ -3001,9 +3039,12 @@ void MainWindow::showAgentSession(int sessionId)
         // on toggle anyway, so laying out megabytes of JSON here was pure waste.
         if (m_agentOutputStack && m_agentOutputStack->currentWidget() == m_agentLog)
             setAgentLogText(sessionId, m_streamRaw.value(sessionId));
-    } else {
-        // Legacy log/terminal session: m_agentLog is the visible surface.
-        setAgentLogText(sessionId, log);
+    } else if (m_agentLog && m_agentLogSession != sessionId) {
+        // Legacy log/terminal session: m_agentLog is the visible surface; its
+        // text lands from the async read above. Blank a *different* session's
+        // leftover log rather than showing it while the read runs.
+        m_agentLog->setPlainText(QString());
+        m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
     if (m_agentOutputToggle)
         m_agentOutputToggle->setVisible(transcript);
@@ -3072,12 +3113,11 @@ void MainWindow::setAgentLogText(int sessionId, const QString &text)
     m_agentLog->moveCursor(QTextCursor::End); // raw log opens at the tail
 }
 
-void MainWindow::updateAgentNetworkPanel(const QString &log, const QString &status)
+// Count a session log's "[net]" markers. Pure — runs on a worker thread (the
+// log can be megabytes; this scan per click was part of the radar pause).
+MainWindow::AgentLogScan MainWindow::scanAgentLog(QString log)
 {
-    if (!m_agentNetPanel)
-        return;
-    int requests = 0, responses = 0, errors = 0;
-    long long inTokens = 0, outTokens = 0;
+    AgentLogScan scan;
     static const QRegularExpression tokenRe(
         QStringLiteral("in=(\\d+)\\s+out=(\\d+)"));
     const auto lines = QStringView(log).split(QLatin1Char('\n'));
@@ -3086,17 +3126,28 @@ void MainWindow::updateAgentNetworkPanel(const QString &log, const QString &stat
         if (!line.contains(QLatin1String("[net]")))
             continue;
         if (line.contains(QLatin1String("request #")))
-            ++requests;
+            ++scan.requests;
         else if (line.contains(QLatin1String("response #"))) {
-            ++responses;
+            ++scan.responses;
             const auto m = tokenRe.match(line);
             if (m.hasMatch()) {
-                inTokens += m.captured(1).toLongLong();
-                outTokens += m.captured(2).toLongLong();
+                scan.inTokens += m.captured(1).toLongLong();
+                scan.outTokens += m.captured(2).toLongLong();
             }
         } else if (line.contains(QLatin1String("error #")))
-            ++errors;
+            ++scan.errors;
     }
+    scan.log = std::move(log);
+    return scan;
+}
+
+void MainWindow::applyAgentNetworkPanel(const AgentLogScan &scan, const QString &status)
+{
+    if (!m_agentNetPanel)
+        return;
+    const int requests = scan.requests, responses = scan.responses,
+              errors = scan.errors;
+    const long long inTokens = scan.inTokens, outTokens = scan.outTokens;
 
     // Codex (external CLI) sessions don't emit our markers — keep the panel out
     // of the way rather than showing an empty graphic.
@@ -4774,6 +4825,7 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         // The shared transcript view now holds an external session, so the stream
         // render guard must not believe its session is still on screen.
         m_renderedTranscriptSession = -1;
+        m_renderedExternalSession = sessionId;
         offset = ClaudeSessionScan::tailStartOffset(ext.path, 400 * 1024);
     } else {
         offset = m_externalReadOffset.value(sessionId, 0);
@@ -5283,26 +5335,16 @@ void MainWindow::onScannerTick()
 // restart even though the live stream object is gone. Only populates when the
 // session actually has persisted events, so non-transcript sessions keep
 // showing their plain log instead of an empty transcript surface.
-void MainWindow::ensureStreamEventsLoaded(int sessionId)
+// Rebuild the side buffers the raw view and edited-files panel read from
+// (mirrors applyTranscriptEvent). Pure — safe on a worker thread.
+static void buildStreamSideBuffers(const QList<QJsonObject> &events, QString *raw,
+                                   QStringList *files)
 {
-    if (!m_agentStore || m_streamEvents.contains(sessionId)
-        || isExternalSession(sessionId))
-        return; // already loaded/live, or a watch-only external session
-    const AgentSession *s = findAgentSession(sessionId);
-    if (!s)
-        return;
-    const QList<QJsonObject> events = m_agentStore->loadEvents(*s);
-    if (events.isEmpty())
-        return;
-    m_streamEvents[sessionId] = events;
-    // Rebuild the side buffers the raw view and edited-files panel read from.
-    QString &raw = m_streamRaw[sessionId];
-    QStringList &files = m_streamFiles[sessionId];
     for (const QJsonObject &ev : events) {
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
             continue; // synthetic user turn, never part of the raw CLI stream
-        raw += QString::fromUtf8(QJsonDocument(ev).toJson(QJsonDocument::Compact))
-               + QStringLiteral("\n\n");
+        *raw += QString::fromUtf8(QJsonDocument(ev).toJson(QJsonDocument::Compact))
+                + QStringLiteral("\n\n");
         if (ev.value(QStringLiteral("type")).toString() != QLatin1String("assistant"))
             continue;
         // Collect edited files for the side panel (mirrors applyTranscriptEvent).
@@ -5317,11 +5359,71 @@ void MainWindow::ensureStreamEventsLoaded(int sessionId)
                 || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
                 const QString p = b.value(QStringLiteral("input")).toObject()
                                       .value(QStringLiteral("file_path")).toString();
-                if (!p.isEmpty() && !files.contains(p))
-                    files.append(p);
+                if (!p.isEmpty() && !files->contains(p))
+                    files->append(p);
             }
         }
     }
+}
+
+void MainWindow::ensureStreamEventsLoaded(int sessionId)
+{
+    if (!m_agentStore || m_streamEvents.contains(sessionId)
+        || isExternalSession(sessionId))
+        return; // already loaded/live, or a watch-only external session
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    const QList<QJsonObject> events = m_agentStore->loadEvents(*s);
+    if (events.isEmpty())
+        return;
+    m_streamEvents[sessionId] = events;
+    buildStreamSideBuffers(events, &m_streamRaw[sessionId],
+                           &m_streamFiles[sessionId]);
+}
+
+bool MainWindow::ensureStreamEventsLoadedAsync(int sessionId)
+{
+    if (m_streamEvents.contains(sessionId))
+        return true; // already loaded (or live-streaming)
+    if (!m_agentStore || isExternalSession(sessionId) ||
+        m_streamEventsAbsent.contains(sessionId) ||
+        m_streamEventsLoading.contains(sessionId))
+        return false;
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return false;
+    m_streamEventsLoading.insert(sessionId);
+    struct LoadedEvents {
+        QList<QJsonObject> events;
+        QString raw;
+        QStringList files;
+    };
+    const AgentSession snapshot = *s;
+    AgentStore *store = m_agentStore;
+    runOffThread<LoadedEvents>(
+        [store, snapshot] {
+            LoadedEvents out;
+            out.events = store->loadEvents(snapshot);
+            buildStreamSideBuffers(out.events, &out.raw, &out.files);
+            return out;
+        },
+        [this, sessionId](LoadedEvents out) {
+            m_streamEventsLoading.remove(sessionId);
+            if (out.events.isEmpty()) {
+                m_streamEventsAbsent.insert(sessionId); // don't re-probe per click
+            } else if (!m_streamEvents.contains(sessionId) &&
+                       !m_streamSessions.contains(sessionId)) {
+                // A live stream may have (re)started while we read — it owns the
+                // buffers then, and this now-stale snapshot is dropped.
+                m_streamEvents[sessionId] = std::move(out.events);
+                m_streamRaw[sessionId] = std::move(out.raw);
+                m_streamFiles[sessionId] = std::move(out.files);
+            }
+            if (sessionId == m_selectedAgentSessionId)
+                showAgentSession(sessionId); // render the restored history
+        });
+    return false;
 }
 
 // Repaint the transcript view from a session's buffered events (on selection).
@@ -5356,6 +5458,7 @@ void MainWindow::renderTranscriptForSession(int sessionId)
     // skip a redundant rebuild on the next reload (see its stream branch).
     m_renderedTranscriptSession = sessionId;
     m_renderedTranscriptCount = events.size();
+    m_renderedExternalSession = -1; // the shared view no longer holds an external
     reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
 }
 
@@ -5935,10 +6038,25 @@ void MainWindow::onAgentLog(int sessionId, const QString &text)
         m_agentLog->insertPlainText(QStringLiteral("\n"));
     m_agentLog->moveCursor(QTextCursor::End);
     m_agentLogSession = -1; // appended out-of-band; the dedup tracker is now stale
-    // Refresh the live traffic graphic when a network marker streams in.
-    if (text.contains(QLatin1String("[net]")) && m_agentStore) {
-        if (AgentSession *session = findAgentSession(sessionId))
-            updateAgentNetworkPanel(m_agentStore->readLog(*session), session->status);
+    // Refresh the live traffic graphic when a network marker streams in — read
+    // and scanned off-thread (the log grows to megabytes over a run; re-reading
+    // it on the GUI thread for every [net] line was a steady hitch), and only
+    // one scan in flight at a time so a marker burst costs one read.
+    if (text.contains(QLatin1String("[net]")) && m_agentStore &&
+        !m_agentNetScanInFlight) {
+        if (AgentSession *session = findAgentSession(sessionId)) {
+            m_agentNetScanInFlight = true;
+            const AgentSession snapshot = *session;
+            AgentStore *store = m_agentStore;
+            const QString status = session->status;
+            runOffThread<AgentLogScan>(
+                [store, snapshot] { return scanAgentLog(store->readLog(snapshot)); },
+                [this, sessionId, status](const AgentLogScan &scan) {
+                    m_agentNetScanInFlight = false;
+                    if (sessionId == m_selectedAgentSessionId)
+                        applyAgentNetworkPanel(scan, status);
+                });
+        }
     }
 }
 
