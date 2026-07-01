@@ -1114,6 +1114,12 @@ private:
     // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
     // accurate even when no agent is streaming rate-limit events.
     void refreshClaudeCodeUsage();
+    // Ask the provider which models this account can drive right now
+    // (GET /v1/models) and merge them into the composer's per-session model
+    // picker, so the dropdown reflects the live line-up (new releases appear
+    // without an app update). Best-effort: on any failure the static defaults
+    // from populateClaudeModelCombo() stand.
+    void refreshClaudeModelCombo();
     // Poll usage now and again a few seconds later. Use this the moment a new
     // agent starts or a prompt is sent: at that instant no tokens have been
     // consumed yet, so an immediate poll still shows the pre-start figure — the
