@@ -236,7 +236,10 @@
     const params = new URLSearchParams(location.search);
     const value = params.get("repo");
     if (value && value.includes("/")) return decodeURIComponent(value);
-    const parts = location.pathname.split("/").filter(Boolean);
+    // A leading "dashboard" segment (e.g. /dashboard/owner/repo deep links) is
+    // this page's own route, not part of the owner/repo pair — skip past it.
+    let parts = location.pathname.split("/").filter(Boolean);
+    if (parts[0] === "dashboard") parts = parts.slice(1);
     if (parts.length >= 2 && !["api", "assets", "dashboard", "docs", "blogs", "blog", "login", "signup", "network", "desktop", "about", "careers", "changelog", "privacy", "terms"].includes(parts[0])) {
       return `${decodeURIComponent(parts[0])}/${decodeURIComponent(parts[1])}`;
     }
