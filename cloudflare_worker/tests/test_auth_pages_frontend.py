@@ -189,6 +189,60 @@ def test_login_persists_returned_session_details():
     assert "hasPayoutAddress: Boolean(body.hasPayoutAddress)" in login_js
 
 
+def test_login_has_forgot_password_link():
+    login = _read(PUBLIC / "login.html")
+
+    assert 'href="/forgot-password.html"' in login
+    assert "Forgot" in login
+
+
+def test_forgot_password_page_exists_and_links_back():
+    forgot = _read(PUBLIC / "forgot-password.html")
+
+    assert 'id="identifier"' in forgot
+    assert 'id="forgot-btn"' in forgot
+    assert 'src="/forgot-password.js' in forgot
+    assert 'href="/login.html"' in forgot
+
+
+def test_forgot_password_js_posts_to_api():
+    forgot_js = _read(PUBLIC / "forgot-password.js")
+
+    assert 'fetch("/api/accounts/forgot-password"' in forgot_js
+    assert '"POST"' in forgot_js
+    assert "identifier" in forgot_js
+
+
+def test_reset_password_page_exists():
+    reset = _read(PUBLIC / "reset-password.html")
+
+    assert 'id="password"' in reset
+    assert 'id="confirm"' in reset
+    assert 'id="reset-btn"' in reset
+    assert 'src="/reset-password.js' in reset
+    assert 'href="/login.html"' in reset
+
+
+def test_reset_password_js_posts_to_api_and_redirects():
+    reset_js = _read(PUBLIC / "reset-password.js")
+
+    assert 'fetch("/api/accounts/reset-password"' in reset_js
+    assert '"POST"' in reset_js
+    assert "node" in reset_js
+    assert "token" in reset_js
+    assert "exp" in reset_js
+    assert 'location.href = "/login.html"' in reset_js
+
+
+def test_worker_handles_forgot_and_reset_password_routes():
+    entry = (PUBLIC.parent / "src" / "entry.py").read_text(encoding="utf-8")
+
+    assert '"/api/accounts/forgot-password"' in entry
+    assert "_account_forgot_password" in entry
+    assert '"/api/accounts/reset-password"' in entry
+    assert "_account_reset_password" in entry
+
+
 def test_login_exposes_localhost_only_demo_credentials():
     login = _read(PUBLIC / "login.html")
     login_js = _read(PUBLIC / "login.js")
