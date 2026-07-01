@@ -1275,14 +1275,13 @@
 
           <section data-view="explore" class="view h-full overflow-y-auto">
             <div data-explore-inner class="p-3 sm:p-6 w-full max-w-none">
-              <nav aria-label="Breadcrumb" class="mb-5 flex min-w-0 items-center gap-2 text-sm">
-                <button data-section="repos" type="button" class="nav-jump inline-flex shrink-0 items-center gap-1.5 font-medium text-primary hover:underline">
+              <div class="flex flex-col gap-3 mb-5 sm:flex-row sm:items-center sm:justify-between">
+                <h1 class="text-base font-semibold text-foreground">Repository</h1>
+                <button data-section="repos" type="button" class="nav-jump inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
                   <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
-                  Repositories
+                  Back to repositories
                 </button>
-                <span class="text-muted-foreground">/</span>
-                <span data-repo-detail-crumb class="min-w-0 truncate font-semibold text-foreground">Repository</span>
-              </nav>
+              </div>
               <div data-repo-detail class="rounded-lg border border-border bg-card p-5">
                 <p class="text-sm text-muted-foreground">Choose a repository to inspect it.</p>
               </div>
