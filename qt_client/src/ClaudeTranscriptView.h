@@ -67,6 +67,19 @@ public:
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
 
+    // ---- bulk rebuild support (replaying a stored session) -----------------
+    // While on, addRow() skips the per-row fade-in animation: replaying hundreds
+    // of buffered events created one QGraphicsOpacityEffect + animation per row
+    // and repolished each mid-rebuild, freezing the click that opened the session.
+    void setBulkPopulate(bool on) { m_bulkPopulate = on; }
+    // Fold an event that will NOT be rendered into the token/cost totals, so a
+    // tail-capped replay still reports the run's true numbers. No signal is
+    // emitted; call addSkippedNotice() (or render further events) to publish.
+    void accumulateStatsOnly(const QJsonObject &ev);
+    // A muted "… N earlier events not shown …" row, emitted at the top of a
+    // tail-capped replay; also publishes the totals gathered above.
+    void addSkippedNotice(int count);
+
     // ---- transcript search (adhoc #201) ------------------------------------
     // Find query (case-insensitive) across the rendered transcript, highlighting
     // every match, selecting the first and scrolling it into view; returns the
@@ -172,6 +185,7 @@ private:
     QPropertyAnimation *m_scrollAnim = nullptr; // smooth scrolling
     qint64 m_totalTokens = 0;
     double m_totalCost = 0.0;
+    bool m_bulkPopulate = false; // see setBulkPopulate()
 
     // ---- transcript search state ------------------------------------------
     // Each label that contains at least one match, in top-to-bottom order, with

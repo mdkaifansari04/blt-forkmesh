@@ -4797,6 +4797,9 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         // bytes; scale the meter bump by how many landed this read.
         noteAgentActivity(sessionId, events.size() * 200);
 
+    // A full surface replays hundreds of tail events at once — no per-row
+    // fade-in churn for those; incremental tails keep the animation.
+    m_agentTranscript->setBulkPopulate(full);
     qint64 addedTokens = 0;
     for (const QJsonObject &ev : events) {
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant"))
@@ -4826,6 +4829,7 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
         }
         m_agentTranscript->handleEvent(ev);
     }
+    m_agentTranscript->setBulkPopulate(false);
     // A full re-render recounts from the rendered tail; an incremental tail adds
     // to what's already there. Either way clamp to the prior figure so surfacing
     // a long external session (whose 400 KB tail under-counts its real total)
@@ -5337,12 +5341,27 @@ void MainWindow::renderTranscriptForSession(int sessionId)
         return;
     m_agentTranscript->clear();
     const QList<QJsonObject> &events = m_streamEvents[sessionId];
-    for (const QJsonObject &ev : events) {
+    // Rebuild only the last stretch as widget rows. Long sessions replayed one
+    // widget per event froze the opening click for seconds (stall log: repolish
+    // storms under renderTranscriptForSession <- showAgentSession); events past
+    // the tail feed the token/cost totals only, with a notice row up top and the
+    // full stream still available in the Raw view. Bulk mode also skips the
+    // per-row fade-in animation (one QGraphicsOpacityEffect per row).
+    constexpr int kTranscriptRenderTail = 300;
+    const int skipped = qMax(0, int(events.size()) - kTranscriptRenderTail);
+    m_agentTranscript->setBulkPopulate(true);
+    for (int i = 0; i < skipped; ++i)
+        m_agentTranscript->accumulateStatsOnly(events.at(i));
+    if (skipped > 0)
+        m_agentTranscript->addSkippedNotice(skipped);
+    for (int i = skipped; i < events.size(); ++i) {
+        const QJsonObject &ev = events.at(i);
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
             m_agentTranscript->addUserTurn(ev.value(QStringLiteral("text")).toString());
         else
             m_agentTranscript->handleEvent(ev);
     }
+    m_agentTranscript->setBulkPopulate(false);
     // Remember what's now built into the shared view so showAgentSession() can
     // skip a redundant rebuild on the next reload (see its stream branch).
     m_renderedTranscriptSession = sessionId;

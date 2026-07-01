@@ -2688,6 +2688,11 @@ private:
     // rebuild) so a clone/browse burst costs one refresh per second, not one per
     // served request.
     QTimer *m_requestServedFlushTimer = nullptr;
+    // Coalesces roster-driven Mirror-nodes panel rebuilds (they shell git).
+    QTimer *m_mirrorPanelRosterTimer = nullptr;
+    // Commit hash -> subject, so the Mirror-nodes panel's per-row tooltip lookup
+    // doesn't re-shell `git show` on every roster-driven rebuild.
+    QHash<QString, QString> m_commitSubjectCache;
     // Current-release pill floating just above the Releases tab (adhoc #69):
     // shows the newest tag so the current release is visible from any tab. Its
     // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
