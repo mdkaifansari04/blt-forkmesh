@@ -2835,6 +2835,15 @@
     // blob up front is what flooded the host with requests and tripped the rate
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
+    // Show the clean, shareable /owner/name URL in the address bar instead of
+    // the /dashboard?repo=... target that 404.html bounces repo links to (and
+    // instead of a bare /dashboard when the repo is opened from the list). Leave
+    // a URL that already points inside this repo (e.g. an /owner/name/tree/...
+    // deep link) untouched so the tree/blob restore below still sees its path.
+    const detailPath = repoPathUrl(repo);
+    if (!location.pathname.startsWith(detailPath)) {
+      window.history.replaceState(null, "", detailPath);
+    }
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);

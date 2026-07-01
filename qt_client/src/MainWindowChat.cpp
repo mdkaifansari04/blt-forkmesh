@@ -407,6 +407,10 @@ QWidget *MainWindow::buildNetworkLogDock()
                 QSettings().setValue(kClaudeCodeModelSetting,
                                      m_quickAddClaudeModel->currentData().toString());
             });
+    // Merge the account's live model line-up in beneath the static aliases, the
+    // same as the composer selector. Applies the cached list right away and
+    // arms a fetch (throttled) so this bar stays in sync (adhoc #114).
+    refreshClaudeModelCombo();
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
