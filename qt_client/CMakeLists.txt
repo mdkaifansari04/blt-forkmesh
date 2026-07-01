@@ -108,6 +108,8 @@ set(FORKMESH_APP_SOURCES
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
     src/ScreenCaptureOverlay.cpp
+    src/ScreenDrawOverlay.h
+    src/ScreenDrawOverlay.cpp
     src/StallWatchdog.h
     src/StallWatchdog.cpp
     src/SystemStats.h
