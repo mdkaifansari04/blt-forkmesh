@@ -1350,6 +1350,12 @@ QWidget *MainWindow::buildAgentsTab()
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setChildrenCollapsible(false);
+    // Non-opaque resize: dragging the divider tracks a lightweight rubber-band
+    // line and the panes only resize once, on release. With opaque resize (the
+    // Qt default) every mouse-move re-lays-out the detail pane, whose transcript
+    // is a scroll area of word-wrapped labels — an O(rows) reflow per pixel that
+    // froze the GUI thread and made the drag crawl (see issue #234 relayout cost).
+    splitter->setOpaqueResize(false);
     splitter->addWidget(listPane);
     splitter->addWidget(detailPane);
     splitter->setStretchFactor(0, 1);
