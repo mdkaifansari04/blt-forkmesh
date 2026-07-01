@@ -6189,14 +6189,20 @@ void MainWindow::createAndCheckoutBranch()
     }
     logSystem(QStringLiteral("Git: created and checked out %1.").arg(name));
     setRepoDetailNotice(QStringLiteral("Created and switched to %1.").arg(name));
+    m_branchesCache.clear(); // new branch — bust the cache so it appears in the menu
     setRepoBranch(name);
     refreshCommitsBranchButton();
 }
 
 QStringList MainWindow::repoBranches() const
 {
-    QStringList branches;
     const QString dir = repoGitDir();
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (dir == m_branchesCacheDir && !m_branchesCache.isEmpty() &&
+        now - m_branchesCacheTime < 5) {
+        return m_branchesCache;
+    }
+    QStringList branches;
     QByteArray out;
     if (!dir.isEmpty() &&
         runGitCapture(dir,
@@ -6209,6 +6215,9 @@ QStringList MainWindow::repoBranches() const
                 branches.append(branch);
         }
     }
+    m_branchesCacheDir = dir;
+    m_branchesCache = branches;
+    m_branchesCacheTime = now;
     return branches;
 }
 
