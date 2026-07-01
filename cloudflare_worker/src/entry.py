@@ -1290,21 +1290,30 @@ async def network_stats(env, include_payouts=False):
         await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
     except Exception:
         pass
-    host_row = await d1_first(
-        env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff
-    )
-    hosts = int((host_row or {}).get("n", 0) or 0)
 
     # Named list of the nodes that are actually online right now (same signal the
     # uptime cron samples), so the dashboard rail can show *who* is live instead of
     # painting the 48h uptime leaderboard green — a node offline now must not look
     # active, and a node that just came up must appear even with no accrued minutes.
+    #
+    # The headline "Nodes" count is the size of THIS set — the distinct, publicly
+    # known nodes (a catalog record or a registered account) that are live — rather
+    # than a raw COUNT of host_presence rows. A plain row count over-reports: one
+    # node hosting several repos counts many times, and an ad-hoc/private tunnel
+    # with no public catalog record inflates the total with a node we never name.
+    # Deriving the count from the named set is what makes the Network panel agree
+    # with the Mirror nodes list on who is online (adhoc #93).
     try:
         online_nodes = sorted(
             {label for label in (await _live_online_nodes(env, now)).values() if label}
         )
+        hosts = len(online_nodes)
     except Exception:
         online_nodes = []
+        host_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff
+        )
+        hosts = int((host_row or {}).get("n", 0) or 0)
 
     clients = await _flagship_client_count(env)
     payout_nodes = await _network_payout_nodes(env) if include_payouts else None
