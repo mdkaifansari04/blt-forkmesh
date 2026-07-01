@@ -7,7 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
-#include "ScreenAlignmentOverlay.h"
+#include "ScreenAlignmentTarget.h"
 
 using namespace forkmesh::ui;
 
@@ -119,22 +119,19 @@ QWidget *MainWindow::buildSettingsSection()
                                      defaultTabCombo->currentData().toInt());
             });
 
-    // Screenshot: a calibration target for the region screenshot tool. Opening it
-    // drops a full-screen pattern (corner brackets, rulers, a centre crosshair and
-    // alignment markers); grab it with the screenshot button and confirm the
-    // captured pixels line up with the coordinates shown.
+    // Screenshot: an inline calibration target for the region screenshot tool. It
+    // shows a square with corner brackets and a centre crosshair right here in
+    // Settings — grab it with the screenshot button and confirm the captured
+    // pixels line up with the corners and the size shown. The screenshot itself is
+    // queued as the next new-agent attachment.
     auto *screenshotLabel = new QLabel("SCREENSHOT");
     screenshotLabel->setObjectName("sectionLabel");
     auto *screenshotHint = new QLabel(
-        "Open an on-screen alignment target, then grab it with the screenshot "
-        "tool to check the capture lines up.");
+        "Grab this square with the screenshot tool to check the capture lines up "
+        "with the corners \xE2\x80\x94 the shot attaches to a new agent.");
     screenshotHint->setObjectName("statusLine");
     screenshotHint->setWordWrap(true);
-    auto *alignmentButton = new QPushButton("Open alignment target\xE2\x80\xA6");
-    alignmentButton->setObjectName("ghostButton");
-    alignmentButton->setCursor(Qt::PointingHandCursor);
-    connect(alignmentButton, &QPushButton::clicked, this,
-            &MainWindow::showScreenshotAlignment);
+    auto *alignmentTarget = new ScreenAlignmentTarget;
 
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
@@ -992,7 +989,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);
-    generalCol->addWidget(alignmentButton, 0, Qt::AlignLeft);
+    generalCol->addWidget(alignmentTarget, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 
@@ -1086,15 +1083,6 @@ QWidget *MainWindow::buildSettingsSection()
     reloadVariablesTable();
     setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
-}
-
-// Drop the full-screen alignment target so the region screenshot tool can be
-// calibrated against it (see ScreenAlignmentOverlay). The overlay owns and frees
-// itself; it dismisses on Esc/click.
-void MainWindow::showScreenshotAlignment()
-{
-    if (!ScreenAlignmentOverlay::begin())
-        logSystem("Couldn't open the screenshot alignment target (no screens).");
 }
 
 QByteArray MainWindow::effectiveAvatar()

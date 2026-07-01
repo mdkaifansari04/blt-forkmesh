@@ -501,6 +501,9 @@ void MainWindow::refreshRepositoryList()
             advert.discussionCount =
                 mirrorDiscussionCount(repo.mirrorPath, advert.branch);
             advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+            // Release artifacts we're actually hosting for download (issue #304 CAS
+            // blobs), so peers can see which nodes can serve a binary.
+            advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);
@@ -1890,6 +1893,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
     const int discussionCount = mirrorDiscussionCount(repo.mirrorPath, headBranch);
     const int worktreeCount = mirrorWorktreeCount(repo.localPath);
+    const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
     QString selfPlatform, selfVersion, selfNodeId;
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         if (member.self) {
@@ -1918,6 +1922,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"pullCount", QString::number(pullCount)},
                          {"discussionCount", QString::number(discussionCount)},
                          {"worktreeCount", QString::number(worktreeCount)},
+                         {"artifactCount", QString::number(artifactCount)},
                          {"platform", selfPlatform},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
@@ -2597,6 +2602,13 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             // mirror exists (pure live tunnel, nothing uploaded).
                             startRepoHosts();
                         }
+                        // Also mirror the repo's release artifacts: pull any binary
+                        // blobs we don't yet hold into our content-addressed store so
+                        // this node can serve downloads too, not just clones (adhoc
+                        // #77). Only on an actual change or a manual sync, so quiet
+                        // auto-syncs don't re-scan an up-to-date store every tick.
+                        if (!stillPreview && hasMirror && (changed || !quiet))
+                            replicateReleaseArtifacts(index);
                     });
                     worker->start();
                 } else {
