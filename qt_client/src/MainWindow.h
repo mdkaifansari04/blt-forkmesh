@@ -1015,6 +1015,9 @@ private:
     // Anchor the live mirror-activity dot strip just above the Mirror nodes tab
     // (adhoc #197), mirroring positionLooperToggle over Issues.
     void positionMirrorActivityStrip();
+    // Anchor the current-release pill just above the Releases tab (adhoc #69),
+    // mirroring positionMirrorActivityStrip over Mirror nodes.
+    void positionReleaseStrip();
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
@@ -2584,6 +2587,12 @@ private:
     // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
     QWidget *m_mirrorActivityStrip = nullptr;
     QTimer *m_mirrorActivityStripTimer = nullptr;
+    // Current-release pill floating just above the Releases tab (adhoc #69):
+    // shows the newest tag so the current release is visible from any tab. Its
+    // text is set from the tag scan; m_releaseStripTimer keeps it anchored as the
+    // window reflows (mirrors the mirror-activity strip).
+    QLabel *m_releaseStrip = nullptr;
+    QTimer *m_releaseStripTimer = nullptr;
     // "Reset integrity pin" action, shown in the Mirror nodes header only when
     // this node is the source of truth (the owner holding the working copy).
     QPushButton *m_mirrorResetPinButton = nullptr;

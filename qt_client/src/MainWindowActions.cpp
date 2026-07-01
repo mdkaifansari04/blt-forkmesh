@@ -1654,6 +1654,46 @@ void MainWindow::positionMirrorActivityStrip()
     }
 }
 
+// Anchor the current-release pill in the meta band just above the Releases tab
+// (adhoc #69), mirroring positionMirrorActivityStrip over Mirror nodes. It shows
+// only while a repo-detail page is open and there is a release to name; the tag
+// scan feeds its text, the timer keeps it pinned as the window reflows.
+void MainWindow::positionReleaseStrip()
+{
+    if (!m_releaseStrip || !m_repoReleasesTab)
+        return;
+    QWidget *tabBar = m_repoReleasesTab->parentWidget();
+    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    if (!page)
+        return;
+    if (m_releaseStrip->parentWidget() != page)
+        m_releaseStrip->setParent(page); // hides it; shown again just below
+    const int w = m_releaseStrip->sizeHint().width();
+    const int h = m_releaseStrip->sizeHint().height();
+    const QPoint tl = m_repoReleasesTab->mapTo(page, QPoint(0, 0));
+    int x = tl.x();
+    int y = tl.y() - h - 1; // the meta band above the tab row
+    if (y < 0)
+        y = 0;
+    if (x + w > page->width())
+        x = qMax(0, page->width() - w);
+    m_releaseStrip->setGeometry(x, y, w, h);
+    // Visible only on the repo-detail page and when there's a release to name —
+    // an empty pill would just be a floating box over the tab.
+    const bool onPage = page->isVisible() && !m_releaseStrip->text().isEmpty();
+    m_releaseStrip->setVisible(onPage);
+    if (onPage)
+        m_releaseStrip->raise();
+    // One low-rate timer re-anchors the pill as the window resizes or the tabs
+    // reflow, and reapplies the visibility check above; never needs stopping.
+    if (!m_releaseStripTimer) {
+        m_releaseStripTimer = new QTimer(this);
+        connect(m_releaseStripTimer, &QTimer::timeout, this,
+                &MainWindow::positionReleaseStrip);
+        m_releaseStripTimer->start(400);
+    }
+}
+
 // Persist the looper's running state so a restart resumes the loop on the same
 // repo with the same provider (adhoc #125). Called from updateIssueLooperButton,
 // the single funnel for every looper state change.
