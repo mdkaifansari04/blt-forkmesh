@@ -977,6 +977,63 @@ int main(int argc, char *argv[])
                   "mirror's commits");
         }
 
+        // --- checkMergeable previews a branch-backed PR via a real ref-merge --
+        // The mergeability check runs `git merge-tree` on the actual commits, so
+        // it reports a clean merge or names the conflicting files with no patch
+        // (and none of a `git apply --check`'s missing-blob / context-drift false
+        // conflicts).
+        {
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            const QString mtBase = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            writeFile("mt.txt", "orig-1\norig-2\norig-3\n");
+            git({"add", "mt.txt"});
+            git({"commit", "-q", "-m", "mt: seed"});
+
+            // A branch-backed PR that only adds a new file → merges cleanly.
+            git({"checkout", "-q", "-b", "feat-mt-clean"});
+            writeFile("mt-new.txt", "added\n");
+            git({"add", "mt-new.txt"});
+            git({"commit", "-q", "-m", "mt: add a separate file"});
+            git({"checkout", "-q", mtBase});
+            const int cleanN =
+                pulls.createPull("mt clean", "body", mtBase, "feat-mt-clean",
+                                 QString(), QString(), /*branchBacked=*/true, &err);
+            check(cleanN > 0, "createPull stores the non-overlapping branch PR");
+            bool clean = false;
+            QStringList cf;
+            check(pulls.checkMergeable(cleanN, &clean, &cf, &err) && clean,
+                  "checkMergeable reports a non-overlapping branch-backed PR as "
+                  "clean (via merge-tree, no patch)");
+
+            // A branch-backed PR that rewrites line 2, then the base rewrites the
+            // same line differently → a genuine content conflict merge-tree finds.
+            git({"checkout", "-q", "-b", "feat-mt-conflict", mtBase});
+            writeFile("mt.txt", "orig-1\nFEATURE-2\norig-3\n");
+            git({"add", "mt.txt"});
+            git({"commit", "-q", "-m", "mt: feature rewrites line 2"});
+            git({"checkout", "-q", mtBase});
+            writeFile("mt.txt", "orig-1\nBASE-2\norig-3\n");
+            git({"add", "mt.txt"});
+            git({"commit", "-q", "-m", "mt: base rewrites line 2"});
+            const int confN =
+                pulls.createPull("mt conflict", "body", mtBase, "feat-mt-conflict",
+                                 QString(), QString(), /*branchBacked=*/true, &err);
+            check(confN > 0, "createPull stores the overlapping branch PR");
+            bool clean2 = true;
+            QStringList cf2;
+            check(pulls.checkMergeable(confN, &clean2, &cf2, &err) && !clean2,
+                  "checkMergeable reports an overlapping branch-backed PR as not "
+                  "clean");
+            check(cf2.contains(QStringLiteral("mt.txt")),
+                  "checkMergeable names the conflicting file from the ref-merge");
+        }
+
         // --- CommitCommentStore round-trip -------------------------------
         const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
         CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
