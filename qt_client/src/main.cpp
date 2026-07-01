@@ -154,6 +154,10 @@ int main(int argc, char *argv[])
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
                              .arg(startup.elapsed(), 5);
     MainWindow window;
+    // Tell the window it's running without a GUI so its auto-start path can
+    // register a fresh mirror's account non-interactively (the desktop pops a
+    // "Join ForkMesh" dialog for that, which a headless VM cannot click).
+    window.setHeadlessMode(headless);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
     // show() works under the offscreen platform too (rendering to an offscreen
