@@ -52,6 +52,7 @@ struct AgentDiffStat {
 #include <QMetaType>
 #include <QPixmap>
 #include <QSet>
+#include <QThread>
 #include <QUrl>
 
 #include <functional>
@@ -1026,8 +1027,19 @@ private:
     // this no longer paints a detail-panel label — it feeds the figures into the
     // top-bar usage chart's hover tooltip (TokenUsageMiniChart::setStats).
     void setAgentUsageLabel(const AgentSession &session);
-    // Parse "==> [net]" markers from a session log into the traffic graphic.
-    void updateAgentNetworkPanel(const QString &log, const QString &status);
+    // A session log read + its "[net]" marker counters, produced off the GUI
+    // thread by showAgentSession (the log can be megabytes; reading and regex-
+    // scanning it per click is what paused the radar between agent clicks).
+    struct AgentLogScan {
+        QString log;
+        int requests = 0, responses = 0, errors = 0;
+        qint64 inTokens = 0, outTokens = 0;
+    };
+    // Count a log's "[net]" markers. Pure; safe on a worker thread.
+    static AgentLogScan scanAgentLog(QString log);
+    bool m_agentNetScanInFlight = false; // one live [net] rescan at a time
+    // Render pre-scanned "[net]" counters into the traffic graphic. Pure UI.
+    void applyAgentNetworkPanel(const AgentLogScan &scan, const QString &status);
     AgentSession *findAgentSession(int sessionId);
     const AgentSession *latestAgentSessionForIssue(int issueNumber) const;
     // The agent session attached to a PR, if any. Matches the PR number first
@@ -1351,6 +1363,28 @@ private:
     // freezing the window via waitForFinished() (see StallWatchdog reports).
     void runGitDetached(const QString &dir, const QStringList &args,
                         std::function<void(bool, const QByteArray &)> onDone);
+    // Run blocking work (disk reads, parsing — anything but GUI or git-helper
+    // state) on a detached worker thread, then deliver its result to `apply` on
+    // the GUI thread. The companion to runGitDetached for non-git work, and the
+    // building block for keeping clicks instant: capture the work's inputs BY
+    // VALUE — nothing shared with the GUI thread may be touched inside `work`.
+    // If the window is destroyed before delivery, the queued apply is discarded.
+    template <typename T>
+    void runOffThread(std::function<T()> work, std::function<void(T)> apply)
+    {
+        QThread *worker = QThread::create(
+            [this, work = std::move(work), apply = std::move(apply)]() mutable {
+                T result = work();
+                QMetaObject::invokeMethod(
+                    this,
+                    [apply = std::move(apply), result = std::move(result)]() mutable {
+                        apply(std::move(result));
+                    },
+                    Qt::QueuedConnection);
+            });
+        connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+        worker->start();
+    }
     // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
     int m_worktreeStatusGen = 0;
@@ -2939,6 +2973,9 @@ private:
     // Cove id -> the password that unlocked it this session (memory only). Lets
     // "auto-show" reveal a cove without re-prompting and re-encrypt on save.
     QHash<QString, QString> m_coveSessionPasswords;
+    // "coveId\x1fpassword" pairs that failed to unlock, so the (deliberately
+    // slow) key derivation is never re-paid for a known-bad candidate.
+    QSet<QString> m_coveFailedUnlocks;
 
     // Pull requests tab
     QTableWidget *m_pullTable = nullptr;
@@ -3279,6 +3316,10 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // Which *external* session's transcript is built into the shared view, so
+    // showAgentSession can skip the full 400 KB tail re-read/rebuild when the
+    // session is unchanged (reloadAgents re-shows the open session constantly).
+    int m_renderedExternalSession = -1;
     // Which session's raw log is currently laid into m_agentLog, and its text,
     // so setAgentLogText() can skip the costly re-layout when nothing changed.
     int m_agentLogSession = -1;
@@ -3391,8 +3432,16 @@ private:
     // Lazily restore a session's persisted transcript events from disk (issue
     // #41) so the rich transcript survives an app restart even after the live
     // stream object is gone. No-op for sessions already in memory or with no
-    // persisted events.
+    // persisted events. Synchronous — only for paths that need the result in
+    // hand (the resume path); browsing clicks use the async variant below.
     void ensureStreamEventsLoaded(int sessionId);
+    // Non-blocking variant for showAgentSession: returns true when the events
+    // are already in memory; otherwise parses events.jsonl on a worker thread
+    // and re-shows the session when it lands, so clicking between agents never
+    // waits on disk. Known-empty sessions are remembered and not re-probed.
+    bool ensureStreamEventsLoadedAsync(int sessionId);
+    QSet<int> m_streamEventsLoading; // async loads in flight
+    QSet<int> m_streamEventsAbsent;  // probed: nothing persisted on disk
     // Stop a live Claude Code stream session (the Stop button). stop() emits no
     // `finished`, so transition the session to Stopped and refresh here.
     // refreshUi=false skips the agent-table reload + transcript re-render for
