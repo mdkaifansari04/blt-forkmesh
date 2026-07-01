@@ -8453,7 +8453,14 @@ class ForkMeshHost(DurableObject):
         new_rtt = (elapsed if not isinstance(prev, (int, float))
                    else 0.5 * prev + 0.5 * elapsed)
         try:
-            ws.serializeAttachment(to_js({"rtt": new_rtt}))
+            # Preserve repo_bi when rewriting the attachment. serializeAttachment
+            # replaces the whole blob, so omitting repo_bi here loses it after the
+            # first successful tunnel response. The heartbeat handler reads repo_bi
+            # from the attachment after DO hibernation to restore self._repo_bi and
+            # keep host_presence fresh; without it, heartbeats silently stop
+            # refreshing presence and the mirror ages out in HOST_PRESENCE_STALE_MS.
+            ws.serializeAttachment(
+                to_js({"rtt": new_rtt, "repo_bi": _ws_attr(ws, "repo_bi")}))
         except Exception:
             pass
 
