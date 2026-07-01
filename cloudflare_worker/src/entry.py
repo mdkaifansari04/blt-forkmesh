@@ -7729,6 +7729,7 @@ class Default(WorkerEntrypoint):
             # Registering as a host (the WebSocket upgrade) requires a token signed
             # by the owner account's registered key. Read-only browse/clone of a
             # repo someone else hosts stays public, so only gate the upgrade.
+            public_browse = False
             upgrade = (request.headers.get("upgrade") or "").lower()
             if upgrade == "websocket":
                 params = parse_qs(url.query)
@@ -7766,6 +7767,7 @@ class Default(WorkerEntrypoint):
                     # re-rotating (which would loop). An offline source with an
                     # online mirror still lands on the mirror, as the clone fallback
                     # in _git_host does.
+                    public_browse = True
                     params = parse_qs(url.query)
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
@@ -7782,7 +7784,35 @@ class Default(WorkerEntrypoint):
                                          "cache-control": "no-store"})
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            return await host_object.fetch(request)
+            response = await host_object.fetch(request)
+            if public_browse:
+                # The routed node couldn't serve (no host connected: 503, or a
+                # dead-but-lingering tunnel: 504). Its host_presence row can lag
+                # reality for up to HOST_PRESENCE_STALE_MS, during which the
+                # rotation above still picks it — so on failure, re-rotate once
+                # to an online mirror of the same logical repo, excluding the
+                # node that just failed. `fmretry` caps this at a single extra
+                # hop so two stale mirrors can't bounce a request forever.
+                try:
+                    status = int(response.status)
+                except Exception:
+                    status = 0
+                params = parse_qs(url.query)
+                already_retried = bool(params.get("fmretry", [""])[0])
+                if status in (503, 504) and not already_retried:
+                    fallback = await self._select_browse_mirror(
+                        owner, repo, exclude=owner)
+                    if fallback and fallback.lower() != owner.lower():
+                        query = url.query
+                        tail = (query + "&" if query else "") + \
+                            "fmserved=" + fallback + "&fmretry=1"
+                        location = "/api/repo/%s/%s/%s?%s" % (
+                            fallback, repo, host_match.group(3), tail)
+                        return Response(
+                            "", status=302,
+                            headers={"location": location,
+                                     "cache-control": "no-store"})
+            return response
 
         room = room_key_from_path(url.path)
         if room:
@@ -7837,14 +7867,17 @@ class Default(WorkerEntrypoint):
         except Exception:
             return None
 
-    async def _select_browse_mirror(self, owner, repo):
+    async def _select_browse_mirror(self, owner, repo, exclude=None):
         # Round-robin pick of which online mirror serves this website browse of
         # owner/repo. Spreads consecutive page loads across every live mirror of
         # the logical repo (the named source included) so no single node carries
         # all the browse traffic and the website can show which node served the
         # page. Returns the chosen node's owner (possibly `owner` itself), or None
-        # when nothing is online. Best-effort: any failure returns None so the
-        # request just falls through to the normal named-owner route.
+        # when nothing is online. `exclude` drops one node from consideration —
+        # used on retry after that node's host DO failed to serve, since its
+        # presence row may not have aged out yet. Best-effort: any failure
+        # returns None so the request just falls through to the normal
+        # named-owner route.
         try:
             await ensure_schema(self.env)
             now = int(Date.now())
@@ -7874,6 +7907,9 @@ class Default(WorkerEntrypoint):
                 })
             candidates = browse_mirror_candidates(
                 owner, repo, catalog_rows, presence, now, HOST_PRESENCE_STALE_MS)
+            if exclude:
+                candidates = [
+                    c for c in candidates if c.lower() != exclude.lower()]
             if not candidates:
                 return None
             if len(candidates) == 1:
@@ -8298,10 +8334,49 @@ class ForkMeshHost(DurableObject):
                 )
 
     async def webSocketClose(self, ws, code, reason, was_clean):
-        return
+        await self._host_disconnected(ws)
 
     async def webSocketError(self, ws, error):
-        return
+        await self._host_disconnected(ws)
+
+    async def _host_disconnected(self, ws):
+        # The last host socket going away means nothing can serve this repo, so
+        # expire its host_presence row NOW instead of letting it linger up to
+        # HOST_PRESENCE_STALE_MS — that stale window is what kept browse/clone
+        # traffic routed at a dead source while a live mirror sat unused. The
+        # offline notification is deduped (kind:repo_bi), so a reconnect blip
+        # doesn't spam. Best-effort: an unclean death that skips this handler is
+        # still covered by the router's no-host retry to a live mirror.
+        self._ensure()
+        if self._live_host_count(skip=ws) > 0:
+            return
+        repo_bi = _ws_attr(ws, "repo_bi") or self._repo_bi
+        if not repo_bi:
+            return
+        self._last_presence = 0
+        try:
+            await ensure_schema(self.env)
+            await d1_run(
+                self.env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
+            await notify_host_status(self.env, repo_bi, "host_offline")
+        except Exception:
+            pass
+
+    def _live_host_count(self, skip=None):
+        # Host sockets that are still actually open. During a close/error event
+        # the runtime may still list the dying socket, so filter it (and anything
+        # no longer OPEN) out rather than trusting the raw tag count.
+        count = 0
+        for socket in self.ctx.getWebSockets("host"):
+            if skip is not None and socket == skip:
+                continue
+            try:
+                if int(socket.readyState) != 1:
+                    continue
+            except Exception:
+                pass
+            count += 1
+        return count
 
     # Hibernation events may be dispatched under either naming convention.
     web_socket_message = webSocketMessage
