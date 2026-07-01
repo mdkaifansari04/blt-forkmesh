@@ -385,6 +385,11 @@ public:
     // First-run / connect: equivalent to typing a name and pressing the GUI
     // connect button (drives startSession via the offscreen setup widgets).
     void headlessStart(const QString &name, const QString &solana = QString());
+    // Flags this process as a no-GUI (headless / offscreen) node. main() sets it
+    // right after construction so startSession can auto-register a fresh mirror's
+    // account — the desktop opens a "Join ForkMesh" dialog for that, which a
+    // headless VM has no way to click.
+    void setHeadlessMode(bool headless) { m_headless = headless; }
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
     // Pull the latest version from the live install mirror, rebuild and relaunch
@@ -432,12 +437,20 @@ private:
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
+    bool m_headless = false;               // no-GUI node (offscreen); see setHeadlessMode
     // Account = node identity. Registration (name + Solana + password + TOTP) gates
     // joining the network; the account name is the canonical repo owner.
     bool ensureNodeAccount(const QString &accountName, const QString &solana);
     // Non-interactive auth used on launch: true only if this node key already
     // matches a registered active account (or was confirmed before, offline).
     bool authenticateSilently(const QString &accountName);
+    // Non-interactive equivalent of runSignupFlow for a headless mirror node: a
+    // VM has no GUI to click "Join ForkMesh", so its auto-start path reserves +
+    // finalizes its node name (free, key-bound, no dialog) here. Once the account
+    // is key-bound the relay accepts this node's catalog writes and host tokens,
+    // so the mirror finally registers in the database and shows on the repo page.
+    // Returns true when the node ends up with an active, key-bound account.
+    bool registerNodeAccountSilently(const QString &accountName);
     // In-app join: pick a public node name and you're in. Joining is free — the
     // name is reserved and activated against this device key (no donation, no
     // email/password). Cross-device credentials can be added later.
