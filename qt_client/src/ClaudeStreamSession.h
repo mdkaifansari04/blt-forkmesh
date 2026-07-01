@@ -34,6 +34,12 @@ public:
                const QString &model = QString());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
+    // Answer a pending tool call (e.g. the AskUserQuestion clarifying-question
+    // tool) by writing a `tool_result` block for that tool_use id. When the
+    // agent's turn ended with a tool_use the conversation is structurally
+    // required to continue with a matching tool_result — a plain user turn would
+    // be rejected — so multiple-choice answers go back through this path.
+    void sendToolResult(const QString &toolUseId, const QString &content);
     void stop();
     bool running() const;
 
@@ -48,6 +54,7 @@ private:
     void onStdout();
     void onStderr();
     void writeUserTurn(const QString &text);
+    void writeLine(const QJsonObject &msg);
 
     QProcess *m_proc = nullptr;
     QByteArray m_buf; // accumulates partial stdout lines
