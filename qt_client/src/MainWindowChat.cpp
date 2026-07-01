@@ -1313,12 +1313,17 @@ void MainWindow::updateFooterDiagnostics()
 
 // A UI stall ended: record it, surface it in the system log, and reflect the
 // running count in the footer. The full backtrace is kept for the detail dialog.
-void MainWindow::onUiStall(qint64 peakMs, const QString &backtrace)
+void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
+                           const QString &backtrace)
 {
     ++m_stallCount;
     const QString when = QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss"));
-    const QString head =
+    // Name the culprit operation inline so the one-line Log entry is actionable on
+    // its own; the full backtrace stays in the stall-detail dialog.
+    QString head =
         QStringLiteral("[%1] UI stalled ~%2 ms (event loop blocked)").arg(when).arg(peakMs);
+    if (!blockingCall.isEmpty())
+        head += QStringLiteral(" while %1").arg(blockingCall);
     logSystem(head); // shows up in the app's Log view
     QString entry = head;
     if (!backtrace.isEmpty())
@@ -1328,9 +1333,11 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &backtrace)
         m_stallLog.removeFirst();
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
-            QStringLiteral("Last UI stall: ~%1 ms at %2. Click for details (%3 logged).")
+            QStringLiteral("Last UI stall: ~%1 ms at %2%3. Click for details (%4 logged).")
                 .arg(peakMs)
                 .arg(when)
+                .arg(blockingCall.isEmpty() ? QString()
+                                            : QStringLiteral(" (%1)").arg(blockingCall))
                 .arg(m_stallCount));
     updateFooterDiagnostics();
     maybeAutoFileStallAgent(peakMs, backtrace);
