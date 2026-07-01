@@ -41,7 +41,7 @@ def _load(*names, extra_globals=None):
 
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
-         node_id="", clones_served=None, website_served=None):
+         node_id="", clones_served=None, website_served=None, artifact_count=None):
     data = {
         "owner": owner,
         "name": name,
@@ -65,6 +65,8 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         data["clonesServed"] = clones_served
     if website_served is not None:
         data["websiteServed"] = website_served
+    if artifact_count is not None:
+        data["artifactCount"] = artifact_count
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
@@ -136,7 +138,7 @@ def test_payload_carries_node_facts_for_offline_mirrors():
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10,
              commit="686d7ebd1ef0", branch="main", issue_count=302,
              platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz",
-             clones_served=42, website_served=118),
+             clones_served=42, website_served=118, artifact_count=3),
         _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
     ]
     payload = build_repo_mirrors_payload(
@@ -152,6 +154,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     # Clone / website-serve tallies the node has provided (issue: mirror-node counts).
     assert rich["clonesServed"] == 42
     assert rich["websiteServed"] == 118
+    # Release artifacts the node is hosting for download (adhoc #77).
+    assert rich["artifactCount"] == 3
     # Legacy record (no node facts): empty strings and the -1 "unknown" sentinels.
     legacy = payload["mirrors"][1]
     assert legacy["commit"] == ""
@@ -160,6 +164,7 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["id"] == ""
     assert legacy["clonesServed"] == -1
     assert legacy["websiteServed"] == -1
+    assert legacy["artifactCount"] == -1
 
 
 def test_payload_groups_mirror_with_missing_root_commit_by_name():
