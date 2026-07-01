@@ -1468,6 +1468,16 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Mirror the repo's release artifacts: pull any content-addressed binary blobs
+    // this node doesn't already hold (the metadata is in git, the bytes are not —
+    // issue #304) into its release store, so a mirror can serve downloads too and
+    // not just clones (adhoc #77). Called after a successful sync of a real mirror.
+    void replicateReleaseArtifacts(int index);
+    // Download the next missing release blob in `pending` (hash -> "owner/name" to
+    // pull it from) from the relay's public content-addressed route, verify its
+    // sha256, store it in the mirror's release CAS, then recurse to the rest.
+    void downloadNextReleaseBlob(const QString &mirrorPath,
+                                 QMap<QString, QString> pending);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();

@@ -27,6 +27,10 @@ struct MirrorAdvert {
     int pullCount = -1;       // pull requests the mirror holds
     int discussionCount = -1; // discussions the mirror holds
     int worktreeCount = -1;   // git worktrees on this node's working copy
+    // Release artifacts (content-addressed binary blobs) this node is actually
+    // hosting for download, co-located with the bare mirror. A mirror replicates
+    // these separately from git (issue #304); -1 = not advertised (older peer).
+    int artifactCount = -1;
 };
 
 // A chat participant as shown in the member list. `id` is the stable node id
