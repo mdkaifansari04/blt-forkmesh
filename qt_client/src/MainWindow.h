@@ -3285,6 +3285,14 @@ private:
     void stopStreamSession(int sessionId, bool refreshUi = true);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
+    // A session's dedicated worktree path ("" when its branch has no separate
+    // worktree / is the main checkout), resolved without re-shelling `git worktree
+    // list` on every click. Sessions launched this run know it from
+    // m_streamWorktree; reloaded ones resolve once via git and cache it for the
+    // session's lifetime (m_sessionWorkdirCache). See the definition for why the
+    // click path leaned on this (adhoc #78).
+    QString cachedSessionWorktree(int sessionId, const QString &repoLocal,
+                                  const QString &branch);
     // Remove the isolated worktree a stream session ran in (if any) and prune the
     // registration, freeing its branch so the PR's branch can be checked out in
     // the main repo. `git worktree remove` keeps the branch ref itself, so the
