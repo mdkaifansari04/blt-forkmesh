@@ -3191,6 +3191,85 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
     return true;
 }
 
+// Gather the rich-tooltip detail for a pending sync: the pending commits (subject
+// + per-commit line diffstat, newest first, capped) and the aggregate +/- line
+// counts over the whole range. `base` is the ref the pending commits are ahead of
+// (a served-mirror commit, or @{upstream}); empty means "from the root commit".
+// Shells git on the given path only, so it's safe on the worker thread.
+void MainWindow::collectPushDetail(const QString &localPath, const QString &base,
+                                   RepoPushState *st)
+{
+    if (!st || localPath.isEmpty())
+        return;
+    constexpr int kMax = 8; // cap the list so a big backlog can't blow up the tooltip
+    const QString logRange =
+        base.isEmpty() ? QStringLiteral("HEAD") : base + QStringLiteral("..HEAD");
+
+    // One `git log --numstat` pass gives every pending commit's subject and its
+    // added/removed lines. Records are split on RS (0x1e); within a record the
+    // header line is "<hash>\x1f<subject>", followed by numstat rows.
+    QByteArray logOut;
+    if (runGitCapture(localPath,
+                      {QStringLiteral("log"), logRange,
+                       QStringLiteral("--max-count=%1").arg(kMax + 1),
+                       QStringLiteral("--numstat"),
+                       QStringLiteral("--format=%x1e%h%x1f%s")},
+                      &logOut, nullptr)) {
+        const QList<QByteArray> records = logOut.split('\x1e');
+        for (const QByteArray &record : records) {
+            if (record.trimmed().isEmpty())
+                continue;
+            if (st->commits.size() >= kMax) {
+                st->extraCommits++;
+                continue;
+            }
+            const int nl = record.indexOf('\n');
+            const QByteArray head = nl >= 0 ? record.left(nl) : record;
+            const int us = head.indexOf('\x1f');
+            RepoPushState::PendingCommit c;
+            c.hash = QString::fromUtf8(us >= 0 ? head.left(us) : head).trimmed();
+            c.subject = QString::fromUtf8(us >= 0 ? head.mid(us + 1) : QByteArray());
+            if (nl >= 0) {
+                const QList<QByteArray> rows = record.mid(nl + 1).split('\n');
+                for (const QByteArray &row : rows) {
+                    const QList<QByteArray> cols = row.split('\t');
+                    if (cols.size() < 2)
+                        continue; // blank line, or a binary file's "-\t-\t"
+                    bool okA = false, okR = false;
+                    const int a = QString::fromUtf8(cols[0]).toInt(&okA);
+                    const int r = QString::fromUtf8(cols[1]).toInt(&okR);
+                    if (okA) c.added += a;
+                    if (okR) c.removed += r;
+                }
+            }
+            st->commits << c;
+        }
+    }
+
+    // Aggregate +/- over the FULL range (including commits past the cap) so the
+    // headline totals stay honest. `git diff --numstat A HEAD` collapses the whole
+    // span; from the root, diff against the empty tree.
+    static const QString kEmptyTree =
+        QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+    QByteArray diffOut;
+    if (runGitCapture(localPath,
+                      {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                       base.isEmpty() ? kEmptyTree : base, QStringLiteral("HEAD")},
+                      &diffOut, nullptr)) {
+        const QList<QByteArray> rows = diffOut.split('\n');
+        for (const QByteArray &row : rows) {
+            const QList<QByteArray> cols = row.split('\t');
+            if (cols.size() < 2)
+                continue;
+            bool okA = false, okR = false;
+            const int a = QString::fromUtf8(cols[0]).toInt(&okA);
+            const int r = QString::fromUtf8(cols[1]).toInt(&okR);
+            if (okA) st->added += a;
+            if (okR) st->removed += r;
+        }
+    }
+}
+
 // Resolve every git-derived count the "Sync changes" button needs — the relay /
 // upstream classification, unpublished/ahead/behind walks. Each is a rev-list /
 // rev-parse subprocess on the working copy + served mirror, so this is the part
@@ -3239,6 +3318,12 @@ MainWindow::computeRepoPushState(const RepositoryRecord &repo) const
         st.relay = true;
         st.unpublished = unpublished;
         st.behind = behindCount(repo);
+        st.target = QStringLiteral("your served mirror");
+        if (unpublished > 0)
+            collectPushDetail(repo.localPath,
+                              mirrorBranchCommit(repo.mirrorPath,
+                                                 mirrorHeadBranch(repo.mirrorPath)),
+                              &st);
         return st;
     }
 
@@ -3263,6 +3348,9 @@ MainWindow::computeRepoPushState(const RepositoryRecord &repo) const
         return st;
     st.ahead = QString::fromUtf8(countOut).trimmed().toInt();
     st.behind = behindCount(repo);
+    st.target = upstream;
+    if (st.ahead > 0)
+        collectPushDetail(repo.localPath, upstream, &st);
     return st;
 }
 
@@ -3306,6 +3394,57 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         if (out > 0 && in > 0) return QString::fromUtf8(" \xE2\x87\x85"); // ⇅
         if (in > 0) return QString::fromUtf8(" \xE2\x86\x93");            // ↓
         return QString::fromUtf8(" \xE2\x86\x91");                        // ↑
+    };
+    // A rich (HTML) tooltip that answers "what am I about to sync, and where to?":
+    // a one-line summary (count + destination + aggregate ± lines), then the pending
+    // commits with their per-commit line-change markers. `count` is the true pending
+    // total; state.commits is the capped, detail-bearing subset.
+    auto minus = QString::fromUtf8("\xE2\x88\x92"); // U+2212 minus (matches diff UI)
+    auto detailTip = [&minus](int count, const QString &fromRepo,
+                              const RepoPushState &s) -> QString {
+        const QString headline =
+            QStringLiteral("Sync <b>%1</b> commit%2 from %3 to <b>%4</b>")
+                .arg(count)
+                .arg(count == 1 ? QString() : QStringLiteral("s"),
+                     fromRepo.toHtmlEscaped(),
+                     (s.target.isEmpty() ? QStringLiteral("your served mirror")
+                                         : s.target).toHtmlEscaped());
+        QString html = QStringLiteral("<div style='white-space:nowrap'>%1")
+                           .arg(headline);
+        if (s.behind > 0)
+            html += QStringLiteral(
+                        " <span style='color:#8b949e'>(and pull %1 incoming)</span>")
+                        .arg(s.behind);
+        if (s.added > 0 || s.removed > 0)
+            html += QStringLiteral(
+                        " &nbsp;<span style='color:#3fb950'>+%1</span> "
+                        "<span style='color:#f85149'>%2%3</span>")
+                        .arg(s.added).arg(minus).arg(s.removed);
+        html += QStringLiteral("</div>");
+        if (!s.commits.isEmpty()) {
+            html += QStringLiteral("<table cellspacing='0' cellpadding='0' "
+                                   "style='margin-top:4px'>");
+            for (const RepoPushState::PendingCommit &c : s.commits)
+                html += QStringLiteral(
+                            "<tr>"
+                            "<td style='color:#8b949e;padding-right:8px'><code>%1</code></td>"
+                            "<td style='color:#3fb950;padding-right:4px'>+%2</td>"
+                            "<td style='color:#f85149;padding-right:8px'>%3%4</td>"
+                            "<td style='white-space:nowrap'>%5</td>"
+                            "</tr>")
+                            .arg(c.hash.toHtmlEscaped())
+                            .arg(c.added)
+                            .arg(minus).arg(c.removed)
+                            .arg(c.subject.toHtmlEscaped());
+            html += QStringLiteral("</table>");
+            if (s.extraCommits > 0)
+                html += QStringLiteral(
+                            "<div style='color:#8b949e;margin-top:2px'>"
+                            "+%1 more commit%2</div>")
+                            .arg(s.extraCommits)
+                            .arg(s.extraCommits == 1 ? QString() : QStringLiteral("s"));
+        }
+        return html;
     };
 
     if (index < 0 || index >= m_repositories.size() || !state.valid) {
@@ -3352,14 +3491,8 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         // Commits tab — instead of hiding it in the tooltip (issue #208).
         m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(unpublished)
                                   + arrow(unpublished, behind));
-        m_repoPushButton->setToolTip(
-            QStringLiteral("Sync %1 local commit%2 from %3/%4 with your served "
-                           "mirror%5")
-                .arg(unpublished)
-                .arg(unpublished == 1 ? QString() : QStringLiteral("s"),
-                     repo.owner, repo.name,
-                     behind > 0 ? QStringLiteral(" (and pull %1 incoming)").arg(behind)
-                                : QString()));
+        m_repoPushButton->setToolTip(detailTip(
+            unpublished, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
         m_repoPushButton->setEnabled(true);
         reveal();
         return;
@@ -3378,13 +3511,8 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
     // Show the pending commit count on the button itself (issue #208).
     m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(ahead)
                               + arrow(ahead, behind));
-    m_repoPushButton->setToolTip(
-        QStringLiteral("Sync %1 local commit%2 from %3/%4 to %5%6")
-            .arg(ahead)
-            .arg(ahead == 1 ? QString() : QStringLiteral("s"),
-                 repo.owner, repo.name, state.upstreamRef,
-                 behind > 0 ? QStringLiteral(" (and pull %1 incoming)").arg(behind)
-                            : QString()));
+    m_repoPushButton->setToolTip(detailTip(
+        ahead, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
     m_repoPushButton->setEnabled(true);
     reveal();
 }
