@@ -1859,6 +1859,15 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             break;
         }
     }
+    // Clone / website-serve tallies this node has accumulated for the repo. The
+    // stored pair is (total served, clones); publish clones and website (browse)
+    // serves separately so the Mirror nodes view can show each node's contribution
+    // even while it's offline (the counters are otherwise purely local). Keyed the
+    // same way onRequestServed writes them: catalogOwner()/raw repo name.
+    const QPair<int, int> serveStats =
+        m_repoStats.value(owner + "/" + repo.name);
+    const int clonesServed = serveStats.second;
+    const int websiteServed = qMax(0, serveStats.first - serveStats.second);
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
                          {"commit", headCommit},
@@ -1867,6 +1876,8 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"platform", selfPlatform},
                          {"version", selfVersion},
                          {"nodeId", selfNodeId},
+                         {"clonesServed", QString::number(clonesServed)},
+                         {"websiteServed", QString::number(websiteServed)},
                          {"description", repo.description},
                          {"website", publishedWebsite},
                          {"cloneUrl", repo.cloneUrl},
