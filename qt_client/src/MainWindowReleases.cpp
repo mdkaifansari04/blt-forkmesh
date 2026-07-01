@@ -358,6 +358,16 @@ void MainWindow::loadReleasesPanel()
     if (m_repoReleasesTab)
         m_repoReleasesTab->setText(
             QStringLiteral("Releases (%1)").arg(formatCount(count)));
+    // Keep the current-release pill floating above the Releases tab (adhoc #69)
+    // in sync after drafting/deleting a tag reloads this panel.
+    if (m_releaseStrip) {
+        m_releaseStrip->setText(currentTag);
+        m_releaseStrip->setToolTip(
+            currentTag.isEmpty()
+                ? QString()
+                : QStringLiteral("Current release: %1").arg(currentTag));
+        positionReleaseStrip();
+    }
     if (count == 0) {
         m_releasesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
