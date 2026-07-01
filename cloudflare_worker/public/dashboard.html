@@ -575,6 +575,23 @@
             <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
             <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
           </button>
+          <button
+            data-profile-settings-button
+            type="button"
+            aria-label="Open profile"
+            title="Profile"
+            class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+          >
+            <span
+              data-dashboard-profile-avatar
+              class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
+              style="width: 28px; height: 28px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 10.5px"
+            >
+              <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
+              <span data-avatar-initial>Y</span>
+            </span>
+            <span data-dashboard-profile-name class="sr-only">My Profile</span>
+          </button>
         </div>
       </header>
 
@@ -622,58 +639,6 @@
           </div>
         </div>
 
-        <div data-sidebar-profile class="mt-auto px-3 py-3 border-t border-border">
-          <div class="relative">
-            <div
-              data-profile-popover
-              role="menu"
-              class="hidden absolute left-0 right-0 bottom-full mb-2 rounded-lg border border-border bg-card p-1.5 shadow-2xl shadow-background/50 z-50"
-            >
-	              <button
-	                data-profile-settings-button
-	                type="button"
-	                role="menuitem"
-	                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-              >
-	                <i data-lucide="user-cog" class="w-3.5 h-3.5"></i>
-	                Profile
-	              </button>
-	              <button
-	                data-logout-button
-	                type="button"
-	                role="menuitem"
-	                class="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-              >
-                <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
-                Logout
-              </button>
-            </div>
-
-            <button
-              data-profile-toggle
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded="false"
-              class="w-full flex items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-secondary transition-colors focus:outline-none focus:ring-1 focus:ring-foreground/20"
-            >
-              <span
-                data-dashboard-profile-avatar
-                class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
-                style="width: 26px; height: 26px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 9.88px"
-              >
-                <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
-                <span data-avatar-initial>Y</span>
-              </span>
-              <span class="min-w-0">
-                <span data-dashboard-profile-name class="block text-xs font-medium text-foreground truncate">My Profile</span>
-                <span class="flex items-center gap-1 mt-0.5">
-                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary text-primary"></i>
-                  <span data-dashboard-profile-status class="text-[10px] text-muted-foreground">The node is online</span>
-                </span>
-              </span>
-            </button>
-          </div>
-        </div>
       </aside>
 
       <main data-dashboard-main class="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -1007,6 +972,14 @@
                   <h1 class="text-base font-semibold text-foreground">Profile settings</h1>
                   <p class="mt-1 text-sm text-muted-foreground">Manage your public node identity, verification, and payout details.</p>
                 </div>
+                <button
+                  data-logout-button
+                  type="button"
+                  class="inline-flex h-9 w-fit shrink-0 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
+                >
+                  <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+                  Logout
+                </button>
               </div>
 
               <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
@@ -1275,14 +1248,13 @@
 
           <section data-view="explore" class="view h-full overflow-y-auto">
             <div data-explore-inner class="p-3 sm:p-6 w-full max-w-none">
-              <nav aria-label="Breadcrumb" class="mb-5 flex min-w-0 items-center gap-2 text-sm">
-                <button data-section="repos" type="button" class="nav-jump inline-flex shrink-0 items-center gap-1.5 font-medium text-primary hover:underline">
+              <div class="flex flex-col gap-3 mb-5 sm:flex-row sm:items-center sm:justify-between">
+                <h1 class="text-base font-semibold text-foreground">Repository</h1>
+                <button data-section="repos" type="button" class="nav-jump inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
                   <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
-                  Repositories
+                  Back to repositories
                 </button>
-                <span class="text-muted-foreground">/</span>
-                <span data-repo-detail-crumb class="min-w-0 truncate font-semibold text-foreground">Repository</span>
-              </nav>
+              </div>
               <div data-repo-detail class="rounded-lg border border-border bg-card p-5">
                 <p class="text-sm text-muted-foreground">Choose a repository to inspect it.</p>
               </div>
