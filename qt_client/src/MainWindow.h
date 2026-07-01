@@ -619,6 +619,15 @@ private:
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
     // De-duped by backtrace so one recurring freeze files a single task.
     void maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace);
+    // Repo whose checkout a stall-fix agent runs in: ForkMesh's own source tree
+    // (the freeze is in this app's GUI thread), else the Issues tab's repo, or -1.
+    int stallReportRepoIndex() const;
+    // Wipe every recorded UI stall (in-memory count/log and the durable on-disk
+    // log) so diagnostics start fresh. Backs the dialog's Clear button.
+    void clearStallLog();
+    // Hand every recorded UI stall to a fresh coding agent as one task. Returns
+    // true if an agent was started. Backs the dialog's "Send to a new agent" button.
+    bool sendStallLogToAgent();
     void showDiagnosticsDialog();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
