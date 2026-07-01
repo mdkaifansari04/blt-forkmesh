@@ -2689,6 +2689,8 @@
     if (!detail || !repo) return;
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
+    const crumb = $("[data-repo-detail-crumb]");
+    if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
     const issuesCount = repoCount(repo, ["issues", "issuesCount", "openIssues"]);
     const pullsCount = repoCount(repo, ["pulls", "pullsCount", "openPulls", "pullRequests"]);
