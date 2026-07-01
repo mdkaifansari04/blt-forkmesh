@@ -210,6 +210,88 @@
     return data;
   }
 
+  // ---- Web issue authoring (signed inbox submissions) ------------------------
+  // A logged-in web user files an issue the same way a mirror node does: a signed
+  // "open" event POSTed to the repo's inbox for the maintainer to drain. The
+  // browser holds no desktop key, so it keeps a persistent Ed25519 identity of
+  // its own; the logged-in node name rides along as authorName for display.
+  const ISSUE_TEXT_ENCODER = new TextEncoder();
+  const WEB_ISSUE_KEY_STORAGE = "forkmesh.issueKey";
+
+  function bytesToB64url(bytes) {
+    const arr = new Uint8Array(bytes);
+    let bin = "";
+    for (let i = 0; i < arr.length; i += 1) bin += String.fromCharCode(arr[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function sha256HexLower(text) {
+    const digest = await crypto.subtle.digest("SHA-256", ISSUE_TEXT_ENCODER.encode(text));
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function getWebIssueKey() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(WEB_ISSUE_KEY_STORAGE) || "null"); } catch (_) {}
+    if (stored && stored.jwk && stored.pub) {
+      try {
+        const privateKey = await crypto.subtle.importKey("jwk", stored.jwk, { name: "Ed25519" }, false, ["sign"]);
+        return { privateKey, pub: stored.pub };
+      } catch (_) { /* fall through and mint a fresh key */ }
+    }
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const rawPub = await crypto.subtle.exportKey("raw", pair.publicKey);
+    const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+    const pub = bytesToB64url(rawPub);
+    try { localStorage.setItem(WEB_ISSUE_KEY_STORAGE, JSON.stringify({ jwk, pub })); } catch (_) {}
+    const privateKey = await crypto.subtle.importKey("jwk", jwk, { name: "Ed25519" }, false, ["sign"]);
+    return { privateKey, pub };
+  }
+
+  // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
+  // inbox POST (verify_issue_event in the worker). New issues are signed with
+  // number 0; the maintainer assigns the durable number on drain.
+  async function submitWebIssue(repo, title, body) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    // open event content = title \0 body \0 attachments(joined by ","; empty here)
+    const NUL = String.fromCharCode(0);
+    const content = title + NUL + cleanBody + NUL;
+    const contentHash = await sha256HexLower(content);
+    const canonical = `forkmesh-issue-event-v1\nopen\n0\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type: "open",
+      id: "open-web-" + ts,
+      title,
+      body: cleanBody,
+      attachments: [],
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = {
+      owner: repo.owner,
+      repo: repo.name,
+      number: 0,
+      titleIfNew: title,
+      event,
+      meta: { labels: [], milestone: "", priority: 0, assignees: [] },
+    };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
   function sessionFromAccountPayload(body, base = {}) {
     const nextSession = {
       ...(base || {}),
@@ -2131,6 +2213,69 @@
     }
   }
 
+  function openIssueCompose(repo) {
+    const container = $("[data-repo-issues]");
+    if (!container || !repo) return;
+    const who = escapeHtml(state.session?.nodeName || "you");
+    container.innerHTML = `
+      <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="circle-dot" class="h-4 w-4 text-primary"></i>New issue</span>
+          <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
+        </div>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Title
+          <input data-repo-issue-title type="text" required maxlength="240" placeholder="Short, descriptive title" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
+          <textarea data-repo-issue-body rows="6" placeholder="Describe the issue. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
+        </div>
+      </form>`;
+    window.lucide?.createIcons();
+    container.querySelector("[data-repo-issue-title]")?.focus();
+  }
+
+  async function handleIssueComposeSubmit(repo, form) {
+    if (!repo || !form) return;
+    const titleInput = form.querySelector("[data-repo-issue-title]");
+    const bodyInput = form.querySelector("[data-repo-issue-body]");
+    const submit = form.querySelector("[data-repo-issue-submit]");
+    const hint = form.querySelector("[data-repo-issue-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const title = String(titleInput?.value || "").trim();
+    if (!title) {
+      setHint("Enter a title for the issue.", "bad");
+      titleInput?.focus();
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebIssue(repo, title, String(bodyInput?.value || ""));
+      // Submissions land in the maintainer's inbox, not the public mirror, so it
+      // won't appear in the list until they drain it — say so and reset the form.
+      if (titleInput) titleInput.value = "";
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Issue sent to the maintainer's inbox for review. Submit another or go back.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "issue_too_large" ? "The description is too large - please shorten it."
+          : "Could not send the issue. Please try again.",
+        "bad");
+    }
+  }
+
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
@@ -2529,7 +2674,9 @@
                 <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i>${tabCountLabel(openCount)} Open</span>
                 <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i>${tabCountLabel(closedCount)} Closed</span>
               </div>
-              <span class="text-[10px] text-muted-foreground">Create from desktop client for signed submissions</span>
+              ${kind === "issues" && state.session?.nodeName
+                ? `<button type="button" data-repo-issue-new class="inline-flex h-7 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`
+                : `<span class="text-[10px] text-muted-foreground">Create from desktop client for signed submissions</span>`}
             </div>
             <div data-repo-${kind}></div>
           </div>
@@ -3274,6 +3421,22 @@
         return;
       }
 
+      const issueNewButton = event.target.closest("[data-repo-issue-new]");
+      if (issueNewButton && state.selectedRepo) {
+        if (!state.session?.nodeName) {
+          location.href = "/login";
+          return;
+        }
+        openIssueCompose(state.selectedRepo);
+        return;
+      }
+
+      const issueCancelButton = event.target.closest("[data-repo-issue-cancel]");
+      if (issueCancelButton && state.selectedRepo) {
+        loadRepoCollection(state.selectedRepo, "issues", "[data-repo-issues]");
+        return;
+      }
+
       const recordButton = event.target.closest("[data-repo-record-kind][data-repo-record-number]");
       if (recordButton && state.selectedRepo) {
         loadRepoRecordDetail(state.selectedRepo, recordButton.dataset.repoRecordKind || "", recordButton.dataset.repoRecordNumber || "");
@@ -3308,6 +3471,14 @@
         }
         return;
       }
+  });
+
+  document.addEventListener("submit", (event) => {
+    const issueForm = event.target.closest("[data-repo-issue-form]");
+    if (issueForm && state.selectedRepo) {
+      event.preventDefault();
+      handleIssueComposeSubmit(state.selectedRepo, issueForm);
+    }
   });
 
   $("#repoSearch")?.addEventListener("input", () => {
