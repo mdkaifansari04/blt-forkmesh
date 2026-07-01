@@ -6,6 +6,7 @@
 #include <QEasingCurve>
 #include <QEvent>
 #include <QFontDatabase>
+#include <QButtonGroup>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
@@ -17,6 +18,7 @@
 #include <QRandomGenerator>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLocale>
 #include <QMouseEvent>
 #include <QPixmap>
@@ -593,6 +595,7 @@ void ClaudeTranscriptView::clear()
     m_searchCurrent = -1;
     emit searchResultsChanged(0, 0);
     m_toolCards.clear();
+    m_askCards.clear();
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
@@ -755,6 +758,11 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
             emit statsChanged(m_totalTokens, m_totalCost);
         }
         addResult(ev);
+    } else if (type == QLatin1String("_local_ask_answer")) {
+        // Synthetic, host-injected event that records the user's answer to an
+        // AskUserQuestion card so the answered state is rebuilt on replay.
+        markAskAnswered(ev.value(QStringLiteral("tool_use_id")).toString(),
+                        ev.value(QStringLiteral("text")).toString());
     }
 }
 
@@ -774,6 +782,7 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
         finalizeThinking(QString());
 
     bool hadTool = false;
+    bool askedQuestion = false;
     for (const QJsonValue &bv : content) {
         const QJsonObject b = bv.toObject();
         const QString t = b.value(QStringLiteral("type")).toString();
@@ -783,13 +792,25 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
                 addAssistantText(text);
         } else if (t == QLatin1String("tool_use")) {
             hadTool = true;
-            addToolUse(b.value(QStringLiteral("id")).toString(),
-                       b.value(QStringLiteral("name")).toString(),
-                       b.value(QStringLiteral("input")).toObject());
+            const QString name = b.value(QStringLiteral("name")).toString();
+            if (name == QLatin1String("AskUserQuestion")) {
+                // A clarifying question: render an interactive multiple-choice
+                // card the user answers in place, not a passive tool card.
+                askedQuestion = true;
+                addAskUserQuestion(b.value(QStringLiteral("id")).toString(),
+                                   b.value(QStringLiteral("input")).toObject());
+            } else {
+                addToolUse(b.value(QStringLiteral("id")).toString(), name,
+                           b.value(QStringLiteral("input")).toObject());
+            }
         }
     }
     // Tools running => keep the "what it's doing" ticker; a plain reply ends it.
-    if (hadTool)
+    // An AskUserQuestion turn stops on the tool call and waits for the user, so
+    // it's not "working" — drop the ticker even though a tool was used.
+    if (askedQuestion)
+        clearActivity();
+    else if (hadTool)
         ensureActivity();
     else
         clearActivity();
@@ -992,6 +1013,210 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.text, m_p);
     tc.io->addWidget(ioRow(isError ? QStringLiteral("ERR") : QStringLiteral("OUT"), out));
     tc.hasResult = true;
+}
+
+// Claude Code's AskUserQuestion tool: render an interactive multiple-choice card
+// (Anthropic Agent SDK "Handle approvals and user input" shape — a `questions`
+// array, each with a question/header/options[label,description]/multiSelect) so
+// the user can answer the clarifying question right in the transcript. Each
+// option is a checkable button; a free-text "Other" field covers answers the
+// options don't. On submit it emits questionAnswered(id, answer); the host turns
+// that into a tool_result for the CLI and records a "_local_ask_answer" event so
+// the answered state replays on rebuild.
+void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
+                                              const QJsonObject &input)
+{
+    clearActivity(); // the agent is now waiting on the user, not working
+
+    auto *card = new QFrame;
+    card->setStyleSheet(QStringLiteral(
+        "QFrame{background:%1;border:1px solid %2;border-left:3px solid %3;"
+        "border-radius:8px;}").arg(m_p.userBg, m_p.border, m_p.accent));
+    auto *v = new QVBoxLayout(card);
+    v->setContentsMargins(14, 12, 14, 12);
+    v->setSpacing(10);
+
+    auto *heading = new QLabel(QStringLiteral("Claude has a question"));
+    heading->setStyleSheet(QStringLiteral(
+        "color:%1;font-weight:700;background:transparent;border:none;").arg(m_p.accent));
+    v->addWidget(heading);
+
+    // Everything interactive lives in one container so answering can lock it all
+    // at once (see markAskAnswered).
+    auto *controls = new QWidget;
+    controls->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *cv = new QVBoxLayout(controls);
+    cv->setContentsMargins(0, 0, 0, 0);
+    cv->setSpacing(16);
+    v->addWidget(controls);
+
+    // One question's live widgets, captured for the submit handler.
+    struct QState {
+        QString question;
+        bool multi = false;
+        QList<QPushButton *> optionButtons;
+        QStringList optionLabels;
+        QLineEdit *other = nullptr;
+    };
+    QVector<QState> states;
+
+    const QString optCss = QStringLiteral(
+        "QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:6px;"
+        "padding:7px 12px;text-align:left;font-weight:600;}"
+        "QPushButton:hover{border-color:%4;}"
+        "QPushButton:checked{background:%4;color:%1;border-color:%4;}")
+        .arg(m_p.canvas, m_p.text, m_p.border, m_p.accent);
+    const QString editCss = QStringLiteral(
+        "QLineEdit{background:%1;color:%2;border:1px solid %3;border-radius:6px;"
+        "padding:6px 10px;}QLineEdit:focus{border-color:%4;}")
+        .arg(m_p.canvas, m_p.text, m_p.border, m_p.accent);
+
+    for (const QJsonValue &qv : input.value(QStringLiteral("questions")).toArray()) {
+        const QJsonObject q = qv.toObject();
+        QState st;
+        st.question = q.value(QStringLiteral("question")).toString();
+        st.multi = q.value(QStringLiteral("multiSelect")).toBool();
+
+        auto *qbox = new QWidget;
+        qbox->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *qv2 = new QVBoxLayout(qbox);
+        qv2->setContentsMargins(0, 0, 0, 0);
+        qv2->setSpacing(6);
+
+        auto *qlabel = new QLabel(st.question);
+        qlabel->setWordWrap(true);
+        qlabel->setStyleSheet(QStringLiteral(
+            "color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.text));
+        qv2->addWidget(qlabel);
+
+        // Exclusive for single-select (radio behaviour), free for multi-select.
+        auto *group = new QButtonGroup(controls);
+        group->setExclusive(!st.multi);
+
+        for (const QJsonValue &ov : q.value(QStringLiteral("options")).toArray()) {
+            const QJsonObject o = ov.toObject();
+            const QString label = o.value(QStringLiteral("label")).toString();
+            const QString desc = o.value(QStringLiteral("description")).toString();
+            auto *btn = new QPushButton(label);
+            btn->setCheckable(true);
+            btn->setCursor(Qt::PointingHandCursor);
+            btn->setStyleSheet(optCss);
+            group->addButton(btn);
+            qv2->addWidget(btn);
+            st.optionButtons.append(btn);
+            st.optionLabels.append(label);
+            if (!desc.trimmed().isEmpty()) {
+                auto *d = new QLabel(desc);
+                d->setWordWrap(true);
+                d->setStyleSheet(QStringLiteral(
+                    "color:%1;background:transparent;border:none;"
+                    "margin:0 0 2px 4px;font-size:12px;").arg(m_p.muted));
+                qv2->addWidget(d);
+            }
+        }
+
+        auto *other = new QLineEdit;
+        other->setPlaceholderText(
+            st.multi ? QStringLiteral("Other… (adds your own answer)")
+                     : QStringLiteral("Other… (type your own answer)"));
+        other->setStyleSheet(editCss);
+        qv2->addWidget(other);
+        st.other = other;
+
+        // Keep the free-text field and the option buttons from fighting for a
+        // single-select answer: typing clears the picked option, and picking an
+        // option clears the free text. Multi-select stacks them, so leave it.
+        if (!st.multi) {
+            connect(other, &QLineEdit::textEdited, group, [group](const QString &t) {
+                if (t.isEmpty())
+                    return;
+                if (QAbstractButton *b = group->checkedButton()) {
+                    group->setExclusive(false);
+                    b->setChecked(false);
+                    group->setExclusive(true);
+                }
+            });
+            connect(group, &QButtonGroup::buttonClicked, other,
+                    [other](QAbstractButton *) { other->clear(); });
+        }
+
+        states.append(st);
+        cv->addWidget(qbox);
+    }
+
+    auto *submit = new QPushButton(QStringLiteral("Send answer"));
+    submit->setCursor(Qt::PointingHandCursor);
+    submit->setStyleSheet(QStringLiteral(
+        "QPushButton{background:%1;color:%2;border:none;border-radius:6px;"
+        "padding:8px 16px;font-weight:600;}"
+        "QPushButton:hover{background:%3;}")
+        .arg(m_p.accent, m_p.canvas, m_p.add));
+    cv->addWidget(submit, 0, Qt::AlignLeft);
+
+    auto *status = new QLabel;
+    status->setWordWrap(true);
+    status->setVisible(false);
+    status->setStyleSheet(QStringLiteral(
+        "color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.add));
+    v->addWidget(status);
+
+    m_askCards.insert(id, AskCard{controls, status});
+
+    connect(submit, &QPushButton::clicked, this, [this, id, states] {
+        QStringList lines;
+        for (const QState &st : states) {
+            QStringList picks;
+            for (int i = 0; i < st.optionButtons.size(); ++i)
+                if (st.optionButtons[i]->isChecked())
+                    picks << st.optionLabels[i];
+            const QString otherText = st.other ? st.other->text().trimmed() : QString();
+            QString value;
+            if (st.multi) {
+                if (!otherText.isEmpty())
+                    picks << otherText;
+                value = picks.join(QStringLiteral(", "));
+            } else {
+                value = !otherText.isEmpty()
+                            ? otherText
+                            : (picks.isEmpty() ? QString() : picks.first());
+            }
+            if (value.isEmpty())
+                continue;
+            lines << (states.size() > 1
+                          ? QStringLiteral("%1 → %2").arg(st.question, value)
+                          : value);
+        }
+        const QString answer = lines.join(QStringLiteral("\n"));
+        if (answer.isEmpty())
+            return; // nothing chosen yet — keep the card open
+        markAskAnswered(id, answer); // instant local feedback
+        emit questionAnswered(id, answer);
+    });
+
+    addRow(card, m_p.accent);
+}
+
+// Lock a (possibly rebuilt) AskUserQuestion card and show the chosen reply.
+// Idempotent: called both from the submit handler and from the replayed
+// "_local_ask_answer" event.
+void ClaudeTranscriptView::markAskAnswered(const QString &id, const QString &answer)
+{
+    auto it = m_askCards.find(id);
+    if (it == m_askCards.end())
+        return;
+    AskCard &c = it.value();
+    if (c.buttons) {
+        c.buttons->setEnabled(false);
+        auto *fx = new QGraphicsOpacityEffect(c.buttons);
+        fx->setOpacity(0.5);
+        c.buttons->setGraphicsEffect(fx);
+    }
+    if (c.status) {
+        QString shown = answer;
+        shown.replace(QLatin1Char('\n'), QStringLiteral(" · "));
+        c.status->setText(QStringLiteral("✓ You answered: %1").arg(shown));
+        c.status->setVisible(true);
+    }
 }
 
 void ClaudeTranscriptView::addResult(const QJsonObject &ev)
