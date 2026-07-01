@@ -5630,19 +5630,21 @@ inline qint64 mirrorRepoSizeBytes(const QString &mirrorPath)
     return sizeKiB * 1024;
 }
 
-// How many issues a node's bare mirror holds: the count of numbered subdirs under
-// issues/ on the served branch (the same tally the issues tab shows). Advertised
-// to peers so the mirror-nodes view can show what each node is mirroring. Returns
-// -1 when the mirror/branch can't be read, so "unknown" stays distinct from zero.
-inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
+// How many numbered subdirectories a node's bare mirror holds under <subdir>/ on
+// the served branch (the same tally the issues / pulls / discussions tabs show).
+// Advertised to peers so the mirror-nodes view can show what each node is
+// mirroring. Returns -1 when the mirror/branch can't be read at all, so "unknown"
+// stays distinct from a genuine zero; a missing <subdir>/ folder counts as zero.
+inline int mirrorNumberedDirCount(const QString &mirrorPath, const QString &branch,
+                                  const QString &subdir)
 {
     if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
         !QDir(mirrorPath).exists())
         return -1;
     QByteArray out;
-    if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":issues"}, &out,
+    if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":" + subdir}, &out,
                        nullptr))
-        return 0; // no issues/ folder yet -> nothing filed
+        return 0; // no <subdir>/ folder yet -> nothing filed
     static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
     int count = 0;
     for (const QByteArray &record : out.split('\0')) {
@@ -5657,6 +5659,75 @@ inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
         if (numericName.match(QString::fromUtf8(record.mid(tab + 1))).hasMatch())
             ++count;
     }
+    return count;
+}
+
+// Issues / pull requests / discussions a node's mirror holds — each the count of
+// numbered subdirs under the matching top-level folder on the served branch.
+inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
+{
+    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral("issues"));
+}
+inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
+{
+    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral("pulls"));
+}
+inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)
+{
+    return mirrorNumberedDirCount(mirrorPath, branch,
+                                  QStringLiteral("discussions"));
+}
+
+// How many commits are reachable on the node's served branch (`git rev-list
+// --count`). Advertised so the mirror-nodes view can show each node's history
+// depth. Returns -1 when the mirror/branch can't be read.
+inline int mirrorCommitCount(const QString &mirrorPath, const QString &branch)
+{
+    if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
+        !QDir(mirrorPath).exists())
+        return -1;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath, {"rev-list", "--count", branch}, &out, nullptr))
+        return -1;
+    bool ok = false;
+    const int n = QString::fromUtf8(out).trimmed().toInt(&ok);
+    return ok ? n : -1;
+}
+
+// How many local branches (refs/heads/*) the node's bare mirror holds. Returns
+// -1 when the mirror can't be read.
+inline int mirrorBranchCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath,
+                       {"for-each-ref", "--format=%(refname)", "refs/heads/"}, &out,
+                       nullptr))
+        return -1;
+    int count = 0;
+    for (const QByteArray &line : out.split('\n'))
+        if (!line.trimmed().isEmpty())
+            ++count;
+    return count;
+}
+
+// How many git worktrees this node's working copy has checked out (`git worktree
+// list`), including the main checkout — in ForkMesh each extra worktree is a live
+// agent task, so the figure shows how busy the node is. Only meaningful for a node
+// that holds a working copy; pass its localPath (empty/mirror-only -> -1 unknown).
+inline int mirrorWorktreeCount(const QString &localPath)
+{
+    if (localPath.trimmed().isEmpty() || !QDir(localPath).exists())
+        return -1;
+    QByteArray out;
+    if (!runGitCapture(localPath, {"worktree", "list", "--porcelain"}, &out,
+                       nullptr))
+        return -1;
+    int count = 0;
+    for (const QByteArray &line : out.split('\n'))
+        if (line.startsWith("worktree "))
+            ++count;
     return count;
 }
 

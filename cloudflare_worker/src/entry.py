@@ -1002,6 +1002,12 @@ def build_repo_mirrors_payload(
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
 
+    def _int_field(rec, name):
+        try:
+            return int(rec.get(name))
+        except (TypeError, ValueError):
+            return -1
+
     mirrors = []
     for row in members:
         rec = row["data"]
@@ -1017,10 +1023,7 @@ def build_repo_mirrors_payload(
         behind = bool(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
         )
-        try:
-            issue_count = int(rec.get("issueCount"))
-        except (TypeError, ValueError):
-            issue_count = -1
+        issue_count = _int_field(rec, "issueCount")
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1039,6 +1042,11 @@ def build_repo_mirrors_payload(
             "commit": str(rec.get("commit") or "").strip(),
             "branch": str(rec.get("branch") or "").strip(),
             "issueCount": issue_count,
+            "commitCount": _int_field(rec, "commitCount"),
+            "branchCount": _int_field(rec, "branchCount"),
+            "pullCount": _int_field(rec, "pullCount"),
+            "discussionCount": _int_field(rec, "discussionCount"),
+            "worktreeCount": _int_field(rec, "worktreeCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
             "id": str(rec.get("nodeId") or "").strip(),
@@ -1988,6 +1996,11 @@ def safe_catalog_record(data):
         "commit": clean_string(data.get("commit", ""), 64),
         "branch": clean_string(data.get("branch", ""), 120),
         "issueCount": clean_string(data.get("issueCount", ""), 12),
+        "commitCount": clean_string(data.get("commitCount", ""), 12),
+        "branchCount": clean_string(data.get("branchCount", ""), 12),
+        "pullCount": clean_string(data.get("pullCount", ""), 12),
+        "discussionCount": clean_string(data.get("discussionCount", ""), 12),
+        "worktreeCount": clean_string(data.get("worktreeCount", ""), 12),
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
