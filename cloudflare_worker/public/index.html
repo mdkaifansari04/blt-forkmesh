@@ -2025,7 +2025,30 @@
                 rooms, and signed issues and patch PRs.
               </p>
               <div
-                class="motion-in motion-delay-3 mt-12 flex flex-col items-center justify-center gap-2 md:flex-row"
+                id="install-banner"
+                class="motion-in motion-delay-3 mx-auto mt-10 flex w-full max-w-xl items-center gap-3 rounded-xl border border-[#3B3B3B] bg-muted/60 py-2 pl-4 pr-2 text-left backdrop-blur-sm"
+              >
+                <span
+                  aria-hidden="true"
+                  class="font-favorit-mono text-sm text-muted-foreground"
+                  >$</span
+                >
+                <code
+                  class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-favorit-mono text-sm text-foreground"
+                  >curl -fsSL https://forkmesh.com/install.sh | bash</code
+                >
+                <button
+                  type="button"
+                  id="hero-install-copy"
+                  data-copy="curl -fsSL https://forkmesh.com/install.sh | bash"
+                  class="button-outline h-8 shrink-0 rounded-lg px-3 text-xs"
+                  aria-label="Copy install command"
+                >
+                  Copy
+                </button>
+              </div>
+              <div
+                class="motion-in motion-delay-3 mt-6 flex flex-col items-center justify-center gap-2 md:flex-row"
               >
                 <div class="rounded-xl bg-white/20 p-1">
                   <a
@@ -2034,6 +2057,12 @@
                     >Sign up</a
                   >
                 </div>
+                <a
+                  href="/network"
+                  class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-5 text-base"
+                  >Browse the network
+                  <span aria-hidden="true">&rarr;</span></a
+                >
                 <a href="/docs" class="button-ghost h-10 rounded-xl px-5"
                   >Read docs</a
                 >
@@ -3447,6 +3476,32 @@
             toggle?.setAttribute("aria-expanded", "false");
             toggle?.setAttribute("aria-label", "Open Menu");
           });
+        });
+      })();
+
+      (() => {
+        const button = document.getElementById("hero-install-copy");
+        if (!button) return;
+        const original = button.textContent.trim();
+        button.addEventListener("click", async () => {
+          const text = button.dataset.copy || "";
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (_) {
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "fixed";
+            temp.style.opacity = "0";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+          }
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = original;
+          }, 1600);
         });
       })();
 
