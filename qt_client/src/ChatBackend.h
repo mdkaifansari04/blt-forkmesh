@@ -20,6 +20,13 @@ struct MirrorAdvert {
     qint64 updatedMs = 0; // when the node last synced this repo from its source
     qint64 sizeBytes = 0; // on-disk size of this node's bare mirror (git objects)
     int issueCount = -1;  // issues this node's mirror holds; -1 = not advertised
+    // More per-node tallies the Mirror nodes view shows; -1 = not advertised
+    // (older peer) so "unknown" stays distinct from a genuine zero.
+    int commitCount = -1;     // commits on the served branch
+    int branchCount = -1;     // local branches (refs/heads) the mirror holds
+    int pullCount = -1;       // pull requests the mirror holds
+    int discussionCount = -1; // discussions the mirror holds
+    int worktreeCount = -1;   // git worktrees on this node's working copy
 };
 
 // A chat participant as shown in the member list. `id` is the stable node id
