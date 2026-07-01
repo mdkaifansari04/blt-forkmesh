@@ -2215,6 +2215,9 @@ private:
     QWidget *m_relayRadar = nullptr;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
+    int m_relayProbeFailures = 0;          // consecutive failed probes; the radar
+                                           // only flips to "offline" after the
+                                           // second miss (one blip isn't an outage)
     // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;

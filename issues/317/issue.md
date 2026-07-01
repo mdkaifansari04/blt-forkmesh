@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 317
 title: The offline radar is not working. For example, we were definitely online and …
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
