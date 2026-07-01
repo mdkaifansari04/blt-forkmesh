@@ -506,12 +506,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setProperty("buttonSize", "sm");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
 
-    // Far-right cluster: a standout donate button (opens the treasury QR), then
-    // the ForkMesh Reddit and Twitter/X links at the very edge.
+    // Far-right cluster: a standout donate button (opens the central-fund QR),
+    // then the ForkMesh Reddit and Twitter/X links at the very edge.
     auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
     donateButton->setObjectName("donateButton");
     donateButton->setCursor(Qt::PointingHandCursor);
-    donateButton->setToolTip("Donate SOL directly to the ForkMesh treasury");
+    donateButton->setToolTip(
+        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
+        "hourly)");
 
     auto *redditButton = new QPushButton("Reddit");
     redditButton->setObjectName("socialButton");
@@ -1440,29 +1442,36 @@ void MainWindow::showDiagnosticsDialog()
 
 void MainWindow::showTreasuryDonateDialog()
 {
-    // Pull the treasury address from the relay (kept server-side) and render a
-    // Solana QR so anyone can donate without us embedding the address.
+    // Pull the central-fund address from the relay (a wallet the relay custodies
+    // and sweeps out to online nodes hourly, issue #308) and render a Solana QR
+    // so anyone can donate without us embedding the address.
     int status = 0;
-    const QJsonObject resp = getAccountSync("treasury-address", &status);
+    const QJsonObject resp = getAccountSync("central-fund", &status);
     const QString address = resp.value("address").toString().trimmed();
     if (address.isEmpty()) {
         QMessageBox::information(
             this, "Donate to ForkMesh",
-            "The treasury isn't accepting donations right now. Please try again "
-            "later.");
+            "The central fund isn't accepting donations right now. Please try "
+            "again later.");
         return;
     }
-    const QString uri = QStringLiteral("solana:%1").arg(address);
+    // The endpoint returns a proper Solana Pay URI (label + message); fall back
+    // to a bare address URI if an older relay omits it.
+    QString uri = resp.value("uri").toString().trimmed();
+    if (uri.isEmpty())
+        uri = QStringLiteral("solana:%1").arg(address);
 
     QDialog dialog(this);
-    dialog.setWindowTitle("Donate to the ForkMesh treasury");
+    dialog.setWindowTitle("Donate to the ForkMesh central fund");
     auto *l = new QVBoxLayout(&dialog);
     l->setContentsMargins(20, 20, 20, 20);
     l->setSpacing(12);
 
     auto *intro = new QLabel(
         "Scan this Solana QR or copy the address below to donate to the ForkMesh "
-        "treasury. Donations keep the relay and mirror network running.");
+        "central fund. The relay distributes the fund to every online node once "
+        "an hour, so your donation goes straight to the people keeping the "
+        "network alive.");
     intro->setWordWrap(true);
     l->addWidget(intro);
 
