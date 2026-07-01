@@ -28,10 +28,12 @@ def _load(*names, extra_globals=None):
 
 (
     select_clone_fallback,
+    browse_mirror_candidates,
     _mirror_ms,
     repo_mirror_same_group,
 ) = _load(
     "select_clone_fallback",
+    "browse_mirror_candidates",
     "_mirror_ms",
     "repo_mirror_same_group",
 )
@@ -162,6 +164,66 @@ def test_round_robin_wraps_modulo_candidate_count():
     assert _pick("source", "forkmesh", rows, presence, rotate=1001) == "bravo"
 
 
+def _browse(owner, repo, rows, presence):
+    return browse_mirror_candidates(owner, repo, rows, presence, NOW, STALE)
+
+
+def test_browse_lists_the_online_source_itself():
+    # Website browse rotates across EVERY live mirror, the named source included,
+    # so a lone online source is a valid (single) serving node.
+    rows = [_row("kS", "source", "forkmesh")]
+    assert _browse("source", "forkmesh", rows, {"kS": NOW}) == ["source"]
+
+
+def test_browse_orders_source_and_mirrors_freshest_first():
+    rows = [
+        _row("kS", "source", "forkmesh", synced=NOW - 5000),
+        _row("kM", "mirror", "forkmesh", synced=NOW),  # freshest
+    ]
+    presence = {"kS": NOW, "kM": NOW}
+    # Both online; freshest-synced leads so the round-robin order is stable.
+    assert _browse("source", "forkmesh", rows, presence) == ["mirror", "source"]
+
+
+def test_browse_skips_offline_nodes():
+    rows = [
+        _row("kS", "source", "forkmesh"),
+        _row("kM", "mirror", "forkmesh"),
+    ]
+    presence = {"kS": NOW, "kM": NOW - 2 * STALE}  # mirror is stale/offline
+    assert _browse("source", "forkmesh", rows, presence) == ["source"]
+
+
+def test_browse_excludes_private_and_forked_mirrors():
+    rows = [
+        _row("kS", "source", "forkmesh"),
+        _row("kP", "priv", "forkmesh", visibility="private"),
+        _row("kF", "fork", "forkmesh", root="rootB"),  # rewritten history
+    ]
+    presence = {"kS": NOW, "kP": NOW, "kF": NOW}
+    assert _browse("source", "forkmesh", rows, presence) == ["source"]
+
+
+def test_browse_empty_when_nothing_online():
+    rows = [_row("kS", "source", "forkmesh")]
+    assert _browse("source", "forkmesh", rows, {"kS": NOW - 2 * STALE}) == []
+
+
+def test_browse_round_robin_walks_every_online_mirror():
+    # The router picks candidates[rotate % len]; walking rotate cycles through the
+    # whole ordered list so consecutive page loads hit a different node each time.
+    rows = [
+        _row("kS", "source", "forkmesh"),
+        _row("kA", "alpha", "forkmesh"),
+        _row("kB", "bravo", "forkmesh"),
+    ]
+    presence = {"kS": NOW, "kA": NOW, "kB": NOW}
+    cands = _browse("source", "forkmesh", rows, presence)
+    assert sorted(cands) == ["alpha", "bravo", "source"]
+    picks = [cands[i % len(cands)] for i in range(6)]
+    assert set(picks) == set(cands)  # every online node gets served
+
+
 def _route_source():
     # The browse fallback lives in the per-repo router (_route), a Durable Object
     # method that can't be exec'd in isolation like the pure helpers above. Lock
@@ -173,13 +235,14 @@ def _route_source():
     raise AssertionError("_route not found in entry.py")
 
 
-def test_browse_route_falls_back_to_mirror_when_source_offline():
-    # A tree/blob/commits browse of a public repo whose host is offline must reuse
-    # the same _select_clone_fallback decision and 302 the request to the mirror,
-    # so the website serves the repo instead of "No live desktop host..." (the
-    # web counterpart of the clone fallback already exercised above).
+def test_browse_route_round_robins_across_online_mirrors():
+    # A tree/blob/commits browse of a public repo must round-robin across every
+    # online mirror (the source included) via _select_browse_mirror and 302 to the
+    # chosen node when it isn't the named owner. The `fmserved` pin makes that
+    # redirect target serve in place instead of re-rotating (which would loop).
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
-    assert "_select_clone_fallback(owner, repo)" in browse
+    assert "_select_browse_mirror(owner, repo)" in browse
     assert "/api/repo/%s/%s/%s" in browse
     assert "status=302" in browse
+    assert "fmserved" in browse
