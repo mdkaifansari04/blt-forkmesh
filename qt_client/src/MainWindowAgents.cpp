@@ -4708,6 +4708,19 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
                 as->durationMs = dur;
             if (cost > 0)
                 as->costUsd = cost;
+            // A `result` with is_error (or an "error_*" subtype, e.g.
+            // error_max_turns / error_during_execution) means the CLI failed the
+            // run, not finished it. Mark the session Failed so the list/header show
+            // the red error state instead of a green "Success" — the finished()
+            // handler only promotes Running/Waiting to Success, so this sticks.
+            const QString subtype = ev.value(QStringLiteral("subtype")).toString();
+            if (ev.value(QStringLiteral("is_error")).toBool()
+                || subtype.startsWith(QLatin1String("error"))) {
+                as->status = AgentStatus::Failed;
+                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                const QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
+                as->lastError = detail.isEmpty() ? subtype : detail;
+            }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
             updateAgentCostCell(sessionId);
