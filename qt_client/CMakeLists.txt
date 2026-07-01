@@ -94,6 +94,8 @@ set(FORKMESH_APP_SOURCES
     src/MessageRow.h
     src/MessageRow.cpp
     src/MarkdownEditor.cpp
+    src/KebabHeaderView.h
+    src/KebabHeaderView.cpp
     src/TerminalWidget.h
     src/TerminalWidget.cpp
     src/ClaudeIdeBridge.h
