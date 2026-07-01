@@ -447,6 +447,31 @@ void MainWindow::refreshRepositoryList()
     // a DO with no host attached and got a 503 — surfaced as "Sync deferred,
     // host temporarily unavailable" even though we were online and serving.
     if (m_backend) {
+        // Building the adverts shells ~9 git subprocesses per repo (head, commit,
+        // size, issue/pull/discussion/commit/branch counts, worktree count). None of
+        // that changes when we merely serve a request, yet refreshRepositoryList runs
+        // on every onRequestServed and a 1-minute timer, so recomputing it every time
+        // blocked the GUI thread for seconds (adhoc #83). A mirror's stats only move
+        // when it is re-synced (repo.lastSyncMs) and the worktree count only when a
+        // worktree is added/removed (the .git/worktrees dir mtime) — so skip the whole
+        // rebuild while that signature is unchanged, and when it did change run the git
+        // reads under GitKeepAlive so the window keeps breathing.
+        QString advertSig;
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.previewOnly)
+                continue;
+            advertSig +=
+                repo.mirrorPath + QLatin1Char('|') +
+                QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
+                QLatin1Char('|') +
+                QString::number(
+                    QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
+                        .lastModified()
+                        .toMSecsSinceEpoch()) +
+                QLatin1Char('\n');
+        }
+        if (advertSig != m_mirrorAdvertSig) {
+        GitKeepAlive keepAlive;
         QList<MirrorAdvert> ours;
         for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
             if (repo.previewOnly)
@@ -482,6 +507,8 @@ void MainWindow::refreshRepositoryList()
             ours.append(advert);
         }
         m_backend->setMirroredRepos(ours);
+        m_mirrorAdvertSig = advertSig;
+        }
     }
 }
 
