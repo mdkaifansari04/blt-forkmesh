@@ -3454,6 +3454,10 @@ private:
     // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
     // hit /v1/models on every click while still keeping the list current.
     qint64 m_claudeModelsFetchedMs = 0;
+    // The `data` array from the last successful /v1/models fetch, cached so a
+    // model combo built after the fetch (the composer vs the quick-add bar) still
+    // gets the live line-up merged in even while the re-fetch throttle is armed.
+    QJsonArray m_liveClaudeModels;
     void addFilesToAgentPrompt();
     void showAgentSlashMenu();
     // Start an issue-less coding agent from the quick-add bar (issue #299) in

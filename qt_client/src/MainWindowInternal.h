@@ -2264,6 +2264,38 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
 }
 
+// Fold the account's live provider model line-up (the `data` array from
+// /v1/models) into a model combo that already holds the static aliases from
+// populateClaudeModelCombo (or the quick-add bar's inline copies). A separator
+// divides the convenience aliases from the live models; the merge is idempotent
+// — each id is added at most once, so re-running on a re-fetch or on a combo
+// built after the fetch is a no-op. Signals are blocked and the current pick is
+// restored by its data value so merging never disturbs the selection or fires
+// the change handler.
+inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
+{
+    if (!combo || models.isEmpty())
+        return;
+    QSignalBlocker block(combo);
+    const QVariant picked = combo->currentData();
+    bool separated = combo->property("liveModelsMerged").toBool();
+    for (const QJsonValue &v : models) {
+        const QJsonObject m = v.toObject();
+        const QString id = m.value(QStringLiteral("id")).toString();
+        if (id.isEmpty() || combo->findData(id) >= 0)
+            continue;
+        if (!separated) {
+            combo->insertSeparator(combo->count());
+            combo->setProperty("liveModelsMerged", true);
+            separated = true;
+        }
+        combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
+    }
+    const int idx = combo->findData(picked);
+    if (idx >= 0)
+        combo->setCurrentIndex(idx);
+}
+
 // User's preferred tab a repository opens on (Settings → General). Stored as
 // the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
 // data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
