@@ -923,6 +923,14 @@ private:
     void initAgents();
     void reloadAgents();
     void refreshAgentTable();
+    // Populate (or update in place) one Agents-table row's cells for a session.
+    // Creates each column's item when the row is empty (a full rebuild) and
+    // otherwise rewrites the existing items, so refreshAgentTable() can reuse the
+    // rows instead of clearing the table when the visible set is unchanged — which
+    // is what stops the list flashing / the Status column blanking when a queued
+    // message re-refreshes it (adhoc #74).
+    void applyAgentRowCells(int row, const AgentSession &session,
+                            const QString &agentGitDir, const QString &agentBase);
     // Files-changed + branch ahead/behind summary for a session's Diff cell
     // (issue #170), computed against the given git dir / base branch and memoised
     // in m_agentDiffStats. Both git args are hoisted by the caller so the per-row
