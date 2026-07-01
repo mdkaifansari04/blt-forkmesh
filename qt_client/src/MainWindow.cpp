@@ -236,6 +236,19 @@ void MainWindow::runDeferredStartup()
     }
     m_pendingRestoreRepoIndex = -1;
 
+    // Resume the agent sessions initAgents() re-queued after the restart, only
+    // now that the first frame is up and the last repository is restored.
+    // Draining inside the constructor started each resumed Claude transcript
+    // with its assign-time jump to the Agents tab — a full cold openRepoDetail()
+    // (~2s of git reads) before the window could paint, which the restore above
+    // then redid. Quiet mode keeps the resumed runs from stealing the view.
+    if (!m_agentQueue.isEmpty()) {
+        m_agentQuietResume = true;
+        processAgentQueue();
+        m_agentQuietResume = false;
+        logStartup(QStringLiteral("agent sessions resumed (deferred)"));
+    }
+
     // Then auto-enter the app whenever this machine already picked a node name.
     // No account is required: a returning node drops straight into the app shell.
     // Silent auth is best-effort — it restores an existing active account's

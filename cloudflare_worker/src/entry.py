@@ -7820,6 +7820,15 @@ class Default(WorkerEntrypoint):
             room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
             return await room_object.fetch(request)
 
+        # Dashboard SPA shell: /dashboard/* paths are client-side routes, not
+        # real files. Serve dashboard/index.html via the assets binding so that
+        # direct-navigation to /dashboard/owner/repo lands on the SPA correctly.
+        # (Handled here rather than via _redirects to avoid Cloudflare's
+        # loop-detection false-positive on /dashboard/* → /dashboard/index.html.)
+        if url.path.startswith("/dashboard/"):
+            shell_url = url.scheme + "://" + url.netloc + "/dashboard/index.html"
+            return await self.env.ASSETS.fetch(shell_url)
+
         return json_response({"error": "not_found"}, status=404)
 
     async def _select_clone_fallback(self, owner, repo):

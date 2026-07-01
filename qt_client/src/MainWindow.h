@@ -2072,6 +2072,12 @@ private:
     // logSystem append and the full rebuild in buildLogSection().
     void appendNetworkLogLine(const QString &storedLine);
     QString m_lastLogRenderDate; // date of the last line rendered (for dividers)
+    // The persisted history (up to kNetworkLogLimit lines of colored HTML) is
+    // rendered lazily on the first visit to the Log section instead of in
+    // buildLogSection() — the full render cost ~300ms of the constructor. Live
+    // logSystem() lines still append immediately; the first visit's rebuild
+    // re-renders the whole buffer in order, so nothing is lost or reordered.
+    bool m_networkLogViewStale = false;
     // Quick category filter + on-disk persistence for the network log so the
     // history survives a restart and can be narrowed to one event type. Filter
     // chips are rebuilt as new categories appear.
@@ -3186,6 +3192,12 @@ private:
     QList<AgentRunner *> m_agentRunners;
     QList<AgentSession> m_agentSessions;
     QList<int> m_agentQueue;
+    // True while runDeferredStartup() drains the sessions initAgents() re-queued
+    // after an app restart: resumed runs must NOT jump to the Agents tab the way
+    // a fresh user-driven start does. At startup that jump forced a full cold
+    // openRepoDetail() before the first frame (~2s of git reads), which the
+    // last-repo restore then redid from scratch moments later.
+    bool m_agentQuietResume = false;
     int m_selectedAgentSessionId = -1;
     // The session whose detail page last reset the Agent|Files tab selection. Used
     // so showAgentSession() lands on the Agent tab when a *different* session is
@@ -3448,6 +3460,15 @@ private:
     // callers that are about to delete the session and reload anyway (delete
     // paths), so the heavy refresh doesn't run twice and stall the UI.
     void stopStreamSession(int sessionId, bool refreshUi = true);
+    // Drop every in-memory buffer/guard keyed by a session id when the session is
+    // deleted. AgentStore::nextId() reuses the highest deleted id (it's maxId+1
+    // over the surviving on-disk dirs), so a fresh session can inherit a just-
+    // deleted one's number. Without this purge the new run picked up the old
+    // session's cached events — ensureStreamEventsLoaded() saw them and treated
+    // the brand-new prompt as a *resume* of the deleted conversation, showing its
+    // transcript and --resume-ing its dead Claude session id so the new prompt
+    // never actually ran.
+    void purgeSessionState(int sessionId);
     // Working directory for a session: its worktree if it has one, else the repo.
     QString sessionWorkdir(int sessionId);
     // A session's dedicated worktree path ("" when its branch has no separate
