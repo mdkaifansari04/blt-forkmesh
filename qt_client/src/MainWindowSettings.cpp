@@ -1230,6 +1230,9 @@ void MainWindow::attachBackend(ChatBackend *backend)
     if (m_backend)
         leaveSession();
     m_backend = backend;
+    // Force refreshRepositoryList to re-push the mirror adverts to this backend even
+    // if the repo signature hasn't changed since the last one (adhoc #83 skip cache).
+    m_mirrorAdvertSig.clear();
 
     connect(backend, &ChatBackend::messageArrived, this, &MainWindow::onMessage);
     connect(backend, &ChatBackend::reactionChanged, this, &MainWindow::onReaction);

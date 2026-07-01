@@ -563,10 +563,29 @@ private:
         bool hasUpstream = false; // tracks a real upstream remote (non-relay)
         int ahead = 0;            // commits ahead of that upstream
         QString upstreamRef;      // the @{upstream} name (for the non-relay tooltip)
+        // Rich-tooltip detail for the pending sync (computed off the GUI thread):
+        // the commits about to go out and the aggregate line-change diffstat, plus a
+        // human-readable name for where they're headed.
+        struct PendingCommit {
+            QString hash;    // short hash
+            QString subject; // first line of the commit message
+            int added = 0;   // lines added by this commit
+            int removed = 0; // lines removed by this commit
+        };
+        QString target;               // sync destination ("origin/main", served mirror)
+        QList<PendingCommit> commits; // pending commits, newest first (capped)
+        int extraCommits = 0;         // pending commits beyond the capped list
+        int added = 0;                // total lines added across the whole range
+        int removed = 0;              // total lines removed across the whole range
     };
     // Thread-safe (reads only the passed-in record + free git helpers + QSettings);
     // never touches m_repositories or a widget, so it is safe to run on a worker.
     RepoPushState computeRepoPushState(const RepositoryRecord &repo) const;
+    // Fill the rich-tooltip commit list + line diffstat for the pending range that
+    // ends at HEAD and starts just after `base` (empty base = from the root commit).
+    // Static: shells git on the passed-in path only, so it runs on the worker too.
+    static void collectPushDetail(const QString &localPath, const QString &base,
+                                  RepoPushState *st);
     void applyRepoPushButtonState(int index, const RepoPushState &state);
     void pushCurrentRepoUpstream();
     // Integrity pin: sha256 over the canonical heads+tags advertisement of a bare
@@ -3429,6 +3448,12 @@ private:
     // (adhoc #247). The second one defers instead.
     bool m_heavyRefreshInFlight = false;
     bool m_repoListRefreshQueued = false; // a refreshRepositoryList deferred past a pump
+    // Signature of the inputs to the advertised per-repo mirror stats
+    // (mirrorPath|lastSyncMs|localPath|worktrees-dir mtime, per non-preview repo).
+    // Those ~9 git subprocesses per repo froze the GUI thread when re-run on every
+    // onRequestServed (adhoc #83); skip the rebuild while the signature is
+    // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
+    QString m_mirrorAdvertSig;
     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
     // True while a user-driven repo load (a node switch or opening a repo) runs,
     // so nodeSwitchStep narrates progress for both, not just node switches.
