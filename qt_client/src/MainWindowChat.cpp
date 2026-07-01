@@ -668,9 +668,11 @@ void MainWindow::updateVoiceInputButton()
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
             m_quickAddMicButton->setStyleSheet(QString());
-            m_quickAddMicButton->setToolTip(QStringLiteral(
-                "Speak your prompt \xE2\x80\x94 hold to record, release "
-                "to transcribe."));
+            m_quickAddMicButton->setToolTip(
+                QString::fromUtf8(
+                    "Speak your prompt \xE2\x80\x94 hold to record, release "
+                    "to transcribe.\nVoice model: %1")
+                    .arg(voiceModelLabel()));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -717,8 +719,10 @@ QPushButton *MainWindow::makeVoiceButton(MarkdownEditor *composer)
     btn->setObjectName("ghostButton");
     btn->setCursor(Qt::PointingHandCursor);
     setOcticon(btn, "mic", 16);
-    btn->setToolTip(QStringLiteral(
-        "Speak your comment \xE2\x80\x94 hold to record, release to transcribe."));
+    btn->setToolTip(QString::fromUtf8("Speak your comment \xE2\x80\x94 hold to "
+                                      "record, release to transcribe.\nVoice "
+                                      "model: %1")
+                        .arg(voiceModelLabel()));
     btn->setVisible(voiceInputReady());
     connect(btn, &QPushButton::pressed, this, [this, composer, btn] {
         if (!m_voiceRecording && composer)
@@ -1367,20 +1371,7 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
 
     // Prefer ForkMesh's own checkout (the freeze is in this app's GUI thread);
     // fall back to whatever repo the Issues tab is pointed at.
-    int repoIndex = -1;
-    const QString bakedSource = QStringLiteral(FORKMESH_SOURCE_DIR);
-    if (!bakedSource.isEmpty()) {
-        const QString selfSource = QDir(bakedSource).absolutePath();
-        for (int i = 0; i < m_repositories.size(); ++i) {
-            const QString local = m_repositories.at(i).localPath;
-            if (!local.isEmpty() && QDir(local).absolutePath() == selfSource) {
-                repoIndex = i;
-                break;
-            }
-        }
-    }
-    if (repoIndex < 0)
-        repoIndex = issuesRepoIndex();
+    const int repoIndex = stallReportRepoIndex();
     if (repoIndex < 0)
         return; // no local checkout to run an agent in
 
@@ -1400,6 +1391,79 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
             "Auto-started an agent to fix the UI stall (toggle in Settings > "
             "Agents & IDE)."));
     }
+}
+
+// Repo whose checkout a stall-fix agent runs in: prefer ForkMesh's own source
+// tree (the freeze is in this app's GUI thread), else the Issues tab's repo.
+int MainWindow::stallReportRepoIndex() const
+{
+    const QString bakedSource = QStringLiteral(FORKMESH_SOURCE_DIR);
+    if (!bakedSource.isEmpty()) {
+        const QString selfSource = QDir(bakedSource).absolutePath();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const QString local = m_repositories.at(i).localPath;
+            if (!local.isEmpty() && QDir(local).absolutePath() == selfSource)
+                return i;
+        }
+    }
+    return issuesRepoIndex();
+}
+
+// Clear button on the diagnostics dialog: forget every recorded stall so the
+// footer badge, the detail list and the durable log all start fresh. The
+// watchdog re-creates the on-disk log (Append) whenever the next stall lands.
+void MainWindow::clearStallLog()
+{
+    m_stallCount = 0;
+    m_stallLog.clear();
+    m_autoFiledStallSignatures.clear();
+    if (!m_stallLogPath.isEmpty())
+        QFile::remove(m_stallLogPath);
+    if (m_footerDiagnostics)
+        m_footerDiagnostics->setToolTip(
+            QStringLiteral("Live CPU and memory use of this app. Click for UI-stall "
+                           "diagnostics (when the UI freezes long enough to trip the "
+                           "Wait/Kill prompt)."));
+    updateFooterDiagnostics();
+}
+
+// "Send to a new agent" button on the diagnostics dialog: hand the whole batch
+// of recorded stalls to one coding agent so the freezes get fixed. Mirrors the
+// auto-file prompt but bundles every entry (the auto-file path only ever fires
+// on one stall at a time). Returns true once an agent has been started.
+bool MainWindow::sendStallLogToAgent()
+{
+    if (m_stallLog.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("UI stall diagnostics"),
+                                 QStringLiteral("There are no recorded UI stalls to send."));
+        return false;
+    }
+    const int repoIndex = stallReportRepoIndex();
+    if (repoIndex < 0) {
+        QMessageBox::warning(
+            this, QStringLiteral("UI stall diagnostics"),
+            QStringLiteral("No local checkout is available to run an agent in. Clone "
+                           "ForkMesh (or add the repo on the Issues tab) and try again."));
+        return false;
+    }
+    const QString prompt =
+        QStringLiteral(
+            "ForkMesh's GUI thread stalled %1 time(s) this session — the event loop "
+            "was blocked, which makes the window freeze. For each report below, find "
+            "the blocking call in the backtrace and fix it so the UI stays responsive "
+            "(move the slow work off the main thread, or skip it when nothing "
+            "changed). Recorded stalls:\n\n%2")
+            .arg(m_stallLog.size())
+            .arg(m_stallLog.join(QStringLiteral("\n\n---\n\n")));
+    if (startAdHocAgentForRepo(repoIndex, prompt, defaultAgentProvider(),
+                               /*createPr=*/true) <= 0) {
+        QMessageBox::warning(this, QStringLiteral("UI stall diagnostics"),
+                             QStringLiteral("Could not start an agent for the recorded stalls."));
+        return false;
+    }
+    logSystem(QStringLiteral("Started an agent to fix the %1 recorded UI stall(s).")
+                  .arg(m_stallLog.size()));
+    return true;
 }
 
 // Detail view for the diagnostics readout: the recorded UI stalls (with the
@@ -1431,10 +1495,35 @@ void MainWindow::showDiagnosticsDialog()
         path->setStyleSheet(QStringLiteral("color:#8b949e;font-size:11px;"));
         v->addWidget(path);
     }
+    const bool haveStalls = !m_stallLog.isEmpty();
+    auto *clearBtn = new QPushButton(QStringLiteral("Clear"));
+    clearBtn->setToolTip(QStringLiteral("Forget every recorded stall (and its durable log)"));
+    clearBtn->setEnabled(haveStalls);
+    auto *sendBtn = new QPushButton(QStringLiteral("Send to a new agent"));
+    sendBtn->setToolTip(
+        QStringLiteral("Hand all recorded stalls to a coding agent to investigate and fix"));
+    sendBtn->setEnabled(haveStalls);
     auto *close = new QPushButton(QStringLiteral("Close"));
+
+    connect(clearBtn, &QPushButton::clicked, &dlg, [this, summary, view, clearBtn, sendBtn] {
+        clearStallLog();
+        summary->setText(
+            QStringLiteral("No UI stalls detected this session. The app watches the "
+                           "GUI thread and records any freeze longer than 1.5s here."));
+        view->setPlainText(QStringLiteral("(nothing recorded yet)"));
+        clearBtn->setEnabled(false);
+        sendBtn->setEnabled(false);
+    });
+    connect(sendBtn, &QPushButton::clicked, &dlg, [this, &dlg] {
+        if (sendStallLogToAgent())
+            dlg.accept();
+    });
     connect(close, &QPushButton::clicked, &dlg, &QDialog::accept);
+
     auto *row = new QHBoxLayout;
+    row->addWidget(clearBtn);
     row->addStretch(1);
+    row->addWidget(sendBtn);
     row->addWidget(close);
     v->addLayout(row);
     dlg.exec();
