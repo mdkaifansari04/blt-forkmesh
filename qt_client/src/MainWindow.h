@@ -2466,6 +2466,7 @@ private:
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
+    QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
@@ -2825,6 +2826,7 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
+    QPushButton *m_toolbarCommitsButton = nullptr; // -> commits panel, next to Branches/Tags
     // Persistent segmented toggle, always visible above the Code page, that
     // switches between the GitHub-style overview and the explorer/editor view.
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
