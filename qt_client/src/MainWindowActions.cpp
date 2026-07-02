@@ -1337,14 +1337,14 @@ void MainWindow::positionActionStrip()
     m_actionStrip->raise();
 }
 
-// Float the "Sync" button in the band just above the Commits tab, raised
+// Float the "Sync" button in the band just above the Code tab, raised
 // one above the tab bar. As an overlay it occupies no layout space, so toggling
 // it never shifts the tabs or page content.
 void MainWindow::positionRepoPushButton()
 {
-    if (!m_repoPushButton || !m_repoCommitsTab)
+    if (!m_repoPushButton || !m_repoCodeTab)
         return;
-    QWidget *tabBar = m_repoCommitsTab->parentWidget();
+    QWidget *tabBar = m_repoCodeTab->parentWidget();
     QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
     if (!page)
         return;
@@ -1352,7 +1352,7 @@ void MainWindow::positionRepoPushButton()
         m_repoPushButton->setParent(page); // hides it; reveal() re-shows
     const int w = m_repoPushButton->sizeHint().width();
     const int h = m_repoPushButton->sizeHint().height();
-    const QPoint tl = m_repoCommitsTab->mapTo(page, QPoint(0, 0));
+    const QPoint tl = m_repoCodeTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1; // the meta band above the tab row
     if (y < 0)
@@ -1570,7 +1570,7 @@ void MainWindow::updateAgentsTabIndicator()
 }
 
 // Anchor the looper toggle in the meta band just above the Issues tab (adhoc
-// #130), mirroring positionRepoPushButton over Commits. It stays visible the
+// #130), mirroring positionRepoPushButton over Code. It stays visible the
 // whole time a repo detail page is open — off (grey switch) or on (green switch
 // + travelling neon loop, naming the live issue). A modest timer keeps it
 // pinned over the tab as the window resizes or the tabs reflow.
