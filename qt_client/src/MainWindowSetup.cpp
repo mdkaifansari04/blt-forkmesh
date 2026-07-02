@@ -1681,11 +1681,15 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                     {"totp", totp},
                     {"pubkey", m_profileIdentity.publicKey()}},
         &status);
-    if (status == 200 && resp.value("ok").toBool()) {
+    auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
         m_accountAuthenticated = true;
-        m_accountName = resp.value("nodeName").toString(accountName);
+        m_accountName = payload.value("nodeName").toString(accountName);
         m_accountTier = QStringLiteral("active");
-        m_accountSolanaVerified = true; // joined = active network member
+        // True means this local Qt identity is the account's registered desktop
+        // key and can publish/host/sign owner-only actions. False is a safe
+        // password-only session for viewing/using the app when the account is
+        // bound to another desktop key.
+        m_accountSolanaVerified = ownsDesktopKey;
         // Remember that this machine successfully authenticated this account so
         // the next launch opens straight onto the app shell. Without this a
         // password (cross-device) login — where the node key does NOT own the
@@ -1693,16 +1697,41 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // login screen even with correct credentials.
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
         applyAccountEmailVerified(m_accountName,
-                                  resp.value("emailVerified").toBool());
+                                  payload.value("emailVerified").toBool());
+    };
+
+    if (status == 200 && resp.value("ok").toBool()) {
+        acceptLogin(resp, true);
         return true;
     }
     const QString err = resp.value("error").toString();
-    // A pubkey mismatch is unrecoverable from here: the account is already bound to
-    // a different desktop key, so retyping the (correct) email/password can never
-    // log in on this device. Flag it so runLoginFlow stops re-opening the dialog
-    // instead of trapping the user in an endless re-prompt loop.
+
+    // If the password is correct but this account is already bound to another
+    // desktop key, do a second web-style login without pubkey. That matches the
+    // web/mobile architecture: a client may use the central Worker with
+    // email/password, but only the bound desktop key can publish/host. Do not
+    // silently rotate or replace the account key here.
+    if (err == "pubkey_mismatch") {
+        int webStatus = 0;
+        const QJsonObject webResp = postAccountSync(
+            "login",
+            QJsonObject{{"email", email}, {"password", password}, {"totp", totp}},
+            &webStatus);
+        if (webStatus == 200 && webResp.value("ok").toBool()) {
+            acceptLogin(webResp, false);
+            QMessageBox::information(
+                this, "Logged in",
+                "You are signed in with email/password, but this account is "
+                "already bound to a different desktop key. Browsing and account "
+                "features will work from this device; publishing, hosting, and "
+                "owner-signed actions require the original desktop key or an "
+                "explicit account-key rotation/import.");
+            return true;
+        }
+    }
+
     if (fatal)
-        *fatal = (err == "pubkey_mismatch");
+        *fatal = false;
     QMessageBox::warning(this, "Log in",
                          err == "bad_totp"
                              ? "Incorrect authenticator code."
@@ -1716,8 +1745,9 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                                      "and try again."
                              : err == "pubkey_mismatch"
                                    ? "This account is already bound to another "
-                                     "desktop key. Use that device or rotate the "
-                                     "account key before publishing from here."
+                                     "desktop key, and password-only fallback also "
+                                     "failed. Use the original device, import its "
+                                     "identity backup, or rotate the account key."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");

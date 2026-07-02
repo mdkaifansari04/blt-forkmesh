@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import 'screens/home_shell.dart';
 import 'services/api_service.dart';
+import 'services/auth_service.dart';
 import 'services/identity.dart';
 import 'services/inbox_service.dart';
 import 'services/relay_service.dart';
@@ -18,6 +19,7 @@ Future<void> main() async {
   final identity = await Identity.loadOrCreate();
   final relay = RelayService(settings, identity);
   final api = ApiService(settings);
+  final auth = await AuthService.create(settings, identity);
   final inbox = InboxService(settings, identity);
 
   // Auto-join the relay on launch, like the Qt client.
@@ -29,6 +31,7 @@ Future<void> main() async {
       identity: identity,
       relay: relay,
       api: api,
+      auth: auth,
       inbox: inbox,
     ),
   );
@@ -41,6 +44,7 @@ class ForkMeshApp extends StatefulWidget {
     required this.identity,
     required this.relay,
     required this.api,
+    required this.auth,
     required this.inbox,
   });
 
@@ -48,6 +52,7 @@ class ForkMeshApp extends StatefulWidget {
   final Identity identity;
   final RelayService relay;
   final ApiService api;
+  final AuthService auth;
   final InboxService inbox;
 
   @override
@@ -55,8 +60,6 @@ class ForkMeshApp extends StatefulWidget {
 }
 
 class _ForkMeshAppState extends State<ForkMeshApp> {
-  bool _authenticated = false;
-
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
@@ -65,17 +68,18 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
         Provider.value(value: widget.identity),
         ChangeNotifierProvider.value(value: widget.relay),
         Provider.value(value: widget.api),
+        ChangeNotifierProvider.value(value: widget.auth),
         Provider.value(value: widget.inbox),
       ],
       child: MaterialApp(
         title: 'ForkMesh',
         debugShowCheckedModeBanner: false,
         theme: buildForkMeshTheme(),
-        home: _authenticated
-            ? const HomeShell()
-            : AuthMockFlow(
-                onAuthenticated: () => setState(() => _authenticated = true),
-              ),
+        home: Consumer<AuthService>(
+          builder: (context, auth, _) => auth.isAuthenticated
+              ? const HomeShell()
+              : AuthMockFlow(onAuthenticated: () => auth.authenticatePreview()),
+        ),
       ),
     );
   }
