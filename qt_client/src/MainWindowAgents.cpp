@@ -2080,7 +2080,12 @@ void MainWindow::initAgents()
     }
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
-    processAgentQueue();
+    // The re-queued sessions are NOT started here: initAgents() runs inside the
+    // MainWindow constructor, and draining the queue starts Claude transcripts
+    // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
+    // dozen cold git reads before the first frame could paint. The drain runs
+    // from runDeferredStartup() instead — after the window is exposed and the
+    // last repository is restored — with m_agentQuietResume suppressing the jump.
 }
 
 void MainWindow::reloadAgents()
@@ -3860,9 +3865,58 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
         flashMessage("Could not delete the agent session.", true);
         return false;
     }
+    // Wipe every in-memory buffer keyed by this id BEFORE the next createSession()
+    // can hand the number back out (nextId() reuses the highest deleted id), or the
+    // reused id would inherit this dead session's cached transcript/resume state.
+    purgeSessionState(snapshot.id);
     if (m_selectedAgentSessionId == sessionId)
         m_selectedAgentSessionId = -1;
     return true;
+}
+
+// See the header: everything below is keyed by session id, and a deleted id can be
+// re-issued to a brand-new session. Clearing it here keeps the new run from picking
+// up the old one's transcript, files, worktree, tokens or resume id.
+void MainWindow::purgeSessionState(int sessionId)
+{
+    if (sessionId <= 0)
+        return;
+    if (ClaudeStreamSession *stream = m_streamSessions.take(sessionId))
+        stream->deleteLater();
+    m_streamEvents.remove(sessionId);
+    m_streamRaw.remove(sessionId);
+    m_streamFiles.remove(sessionId);
+    m_streamWorktree.remove(sessionId);
+    m_streamPending.remove(sessionId);
+    m_streamSessionInfo.remove(sessionId);
+    m_sessionWorkdirCache.remove(sessionId);
+    m_pendingSteerMessage.remove(sessionId);
+    m_sessionTokens.remove(sessionId);
+    m_lastAssistantText.remove(sessionId);
+    m_scannerStates.remove(sessionId);
+    m_agentDiffStats.remove(sessionId);
+    m_agentDiffSig.remove(sessionId);
+    m_streamEventsLoading.remove(sessionId);
+    m_streamEventsAbsent.remove(sessionId);
+    m_agentQueue.removeAll(sessionId);
+    // Scalar "what's currently rendered" guards: reset any that point at the id so
+    // the next showAgentSession() for a reused id rebuilds instead of no-op'ing.
+    if (m_renderedTranscriptSession == sessionId) {
+        m_renderedTranscriptSession = -1;
+        m_renderedTranscriptCount = -1;
+    }
+    if (m_renderedExternalSession == sessionId)
+        m_renderedExternalSession = -1;
+    if (m_agentDiffRenderedSession == sessionId) {
+        m_agentDiffRenderedSession = -1;
+        m_agentDiffLastHtml.clear();
+    }
+    if (m_agentLogSession == sessionId) {
+        m_agentLogSession = -1;
+        m_agentLogText.clear();
+    }
+    if (m_terminalSessionId == sessionId)
+        m_terminalSessionId = -1;
 }
 
 void MainWindow::openAgentSessionFromIssue()
@@ -4383,14 +4437,20 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         QString::fromUtf8("\n==> Preparing an isolated worktree for branch %1\xE2\x80\xA6\n")
             .arg(branchName));
 
-    m_terminalSessionId = session.id;
-    switchToAgentsTab(session.id);
-    showAgentSession(session.id); // renders the buffered turn + selects the surface
+    // Jump the UI to the new session's transcript — but only for a user-driven
+    // start. A restart resume (m_agentQuietResume, see runDeferredStartup) must
+    // not yank the user off the restored view, and the jump's openRepoDetail()
+    // is exactly the cold ~2s git load the deferred resume exists to avoid.
+    if (!m_agentQuietResume) {
+        m_terminalSessionId = session.id;
+        switchToAgentsTab(session.id);
+        showAgentSession(session.id); // renders the buffered turn + selects the surface
+        if (m_transcriptModeButton)
+            m_transcriptModeButton->setChecked(true);
+        if (m_terminalModeButton)
+            m_terminalModeButton->setChecked(false);
+    }
     reloadAgents();
-    if (m_transcriptModeButton)
-        m_transcriptModeButton->setChecked(true);
-    if (m_terminalModeButton)
-        m_terminalModeButton->setChecked(false);
 
     // Start the CLI once the working directory is ready. Pulled into a lambda
     // because the worktree checkout below finishes asynchronously; the IDE bridge
