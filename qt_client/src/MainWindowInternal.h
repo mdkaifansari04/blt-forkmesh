@@ -1331,7 +1331,7 @@ protected:
 
     // Subclasses can opt out of the light-green mouse-hover row fill while still
     // tracking the hovered row (e.g. the agents list, which wants no hover tint).
-    bool m_hoverFill = true;
+    bool m_hoverFill = false;
 
 private:
     void setHovered(const QModelIndex &index)
