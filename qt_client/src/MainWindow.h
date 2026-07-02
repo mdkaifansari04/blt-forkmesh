@@ -2345,6 +2345,10 @@ private:
     int m_relayProbeFailures = 0;          // consecutive failed probes; the radar
                                            // only flips to "offline" after the
                                            // second miss (one blip isn't an outage)
+    int m_relayProbeElevated = 0;          // consecutive elevated-latency samples;
+                                           // backs off the confirm re-probe so a
+                                           // persistently-slow link isn't polled
+                                           // every second forever (adhoc #74)
     // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
