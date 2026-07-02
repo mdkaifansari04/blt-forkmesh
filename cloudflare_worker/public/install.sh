@@ -5,15 +5,18 @@
 # attached to the latest release (no compiler/Qt toolchain, no multi-minute
 # build). When no prebuilt asset is published for the platform — or
 # FORKMESH_FROM_SOURCE=1 is set — it falls back to cloning the repository and
-# building the Qt client from source. Missing build prerequisites are installed
-# automatically when a supported package manager is detected; set
-# FORKMESH_NO_INSTALL_DEPS=1 to opt out. The binary lands in ~/.local/bin.
+# building the Qt client from source. Set FORKMESH_NO_SOURCE_FALLBACK=1 to
+# disable that fallback and fail instead when no prebuilt binary is available
+# (this is the default on headless Linux — see below). Missing build
+# prerequisites are installed automatically when a supported package manager
+# is detected; set FORKMESH_NO_INSTALL_DEPS=1 to opt out. The binary lands in
+# ~/.local/bin.
 set -euo pipefail
 
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.2 (2026-06-29)"
+INSTALLER_VERSION="0.12.3 (2026-07-02)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -60,6 +63,22 @@ INSTALLED_PREBUILT=0
 # desktop/launch tail can reference it even on the prebuilt fast path (where no
 # build ever runs) without tripping `set -u`.
 BUILD=""
+
+# Whether to fall back to a source build when no prebuilt binary is published
+# for this platform/arch. A headless Linux box (no DISPLAY/WAYLAND_DISPLAY) is
+# almost always an unattended mirror-node deploy — pulling in a full
+# git/cmake/compiler/Qt toolchain there is undesirable, and a same-platform
+# release binary should always exist, so the fallback defaults to OFF (binary
+# only) there. Every other case (headful Linux, macOS) defaults the fallback
+# ON, unchanged from prior behaviour. Explicitly set FORKMESH_NO_SOURCE_FALLBACK
+# to 1 or 0 to override the default either way.
+if [ -z "${FORKMESH_NO_SOURCE_FALLBACK:-}" ]; then
+  if [ "$(uname -s 2>/dev/null)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    FORKMESH_NO_SOURCE_FALLBACK=1
+  else
+    FORKMESH_NO_SOURCE_FALLBACK=0
+  fi
+fi
 
 # Anchor to a directory that exists. The installer may be launched from a path
 # that was just deleted — e.g. running this right after the uninstaller removed
@@ -594,6 +613,9 @@ if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
   if install_prebuilt_release; then
     INSTALLED_PREBUILT=1
     diag prebuilt 1 "$ASSET_NAME"
+  elif [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
+    diag prebuilt 0 "$ASSET_NAME"
+    die "No prebuilt ForkMesh binary is published for ${ASSET_OS}/${ASSET_ARCH}, and falling back to a source build is disabled (FORKMESH_NO_SOURCE_FALLBACK=1, the default on headless Linux). Publish a prebuilt binary for this platform, or re-run with FORKMESH_NO_SOURCE_FALLBACK=0 to allow a source build."
   else
     say "No prebuilt binary published for ${ASSET_OS}/${ASSET_ARCH}; building from source."
     diag prebuilt 0 "$ASSET_NAME"
