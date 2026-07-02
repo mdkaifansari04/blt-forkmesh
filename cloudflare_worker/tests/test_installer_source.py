@@ -99,6 +99,77 @@ def test_installer_stops_when_no_mirror_is_online():
     assert "REPO=" not in result.stdout
 
 
+def test_installer_skips_mirror_lookup_when_uploading_a_binary():
+    # Direct-upload installs (adhoc #67/#70) stream the binary over the same SSH
+    # session, so a missing/offline mirror must not block them: resolve_install_node
+    # (and its curl call to the mainnode) must not run at all when
+    # FORKMESH_LOCAL_BINARY is set, even if no mirror is actually online.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        marker = tmp / "resolve_curl_called"
+        curl = bindir / "curl"
+        curl.write_text(
+            f"#!/bin/sh\ntouch {marker}\n"
+            'printf \'%s\\n\' "$FORKMESH_TEST_RESPONSE"\n',
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        env = os.environ.copy()
+        env["FORKMESH_TEST_RESPONSE"] = '{"ok":false,"error":"no_online_install_source"}'
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        env["FORKMESH_NO_DIAG"] = "1"  # isolate resolve_install_node's curl use
+        env["FORKMESH_LOCAL_BINARY"] = "/tmp/fake-forkmesh-upload"
+        result = subprocess.run(
+            ["bash", "-c", _selection_prefix()], env=env,
+            text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "REPO=\n" in result.stdout
+        assert "CANDIDATES=\n" in result.stdout
+        assert not marker.exists()
+
+
+def test_installer_still_resolves_a_mirror_lazily_if_upload_is_unusable():
+    # install_prebuilt_release calls ensure_mirror_candidates itself, so a local
+    # upload that turns out to be unusable (bad platform, empty file, ...) still
+    # falls back to a real mirror lookup instead of leaving REPO_CANDIDATES empty.
+    prefix = _selection_prefix() + (
+        "\nensure_mirror_candidates\n"
+        'printf "REPO2=%s\\n" "$REPO"\n'
+        'printf "CANDIDATES2=%s\\n" "${REPO_CANDIDATES[*]}"\n'
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir()
+        curl = bindir / "curl"
+        curl.write_text(
+            """#!/bin/sh
+printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
+""",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        env = os.environ.copy()
+        env["FORKMESH_TEST_RESPONSE"] = (
+            '{"ok":true,"node":"fallback-node","repo":"forkmesh","totalMinutes":1}'
+        )
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        env["FORKMESH_LOCAL_BINARY"] = "/tmp/fake-forkmesh-upload"
+        result = subprocess.run(
+            ["bash", "-c", prefix], env=env, text=True,
+            capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        # Skipped up front (matches the previous test) ...
+        assert "REPO=\n" in result.stdout
+        assert "CANDIDATES=\n" in result.stdout
+        # ... but resolves once something actually needs a mirror.
+        assert "REPO2=https://forkmesh.com/fallback-node/forkmesh" in result.stdout
+        assert "CANDIDATES2=https://forkmesh.com/fallback-node/forkmesh" in result.stdout
+
+
 def _clone_functions():
     # repo_node + classify_clone_failure + clean_clone, sliced out so the
     # multi-mirror fallback can be driven directly with a fake `git`.
