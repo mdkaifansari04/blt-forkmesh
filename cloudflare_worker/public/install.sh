@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.3 (2026-07-02)"
+INSTALLER_VERSION="0.12.4 (2026-07-02)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -32,6 +32,13 @@ FORKMESH_NODE="${FORKMESH_NODE:-}"
 # verbatim FORKMESH_NODE (older deploy UI) so naming still works across skew.
 # Empty unless the operator set one of them explicitly.
 FORKMESH_NODE_NAME="${FORKMESH_NODE_NAME:-${FORKMESH_NODE:-}}"
+# Link code for attaching this fresh node to the installing user's account
+# (adhoc #53). A headless launch mints one (or honours a pre-set 6-digit value),
+# prints it as "FORKMESH LINK CODE: NNNNNN", and hands it to the daemon, which
+# presents it when it registers. The desktop app that drove the install offers
+# the same code signed with its own key; the relay pairs the two halves and
+# records the new node under that user.
+FORKMESH_LINK_CODE="${FORKMESH_LINK_CODE:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
@@ -982,7 +989,16 @@ launch_forkmesh() {
       # root refusal. FORKMESH_NODE_NAME hands the app the operator's chosen name
       # so the fresh node adopts it and auto-connects.
       LAUNCH_MODE="daemon"
-      local args="" log
+      local args="" log rand
+      # Mint the account link code (adhoc #53) unless the operator pre-set one.
+      case "$FORKMESH_LINK_CODE" in
+        [0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+        *)
+          rand="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+          [ -n "$rand" ] || rand=$(( $(date +%s) + $$ ))
+          FORKMESH_LINK_CODE="$(printf '%06d' $(( rand % 1000000 )))"
+          ;;
+      esac
       if [ "$(id -u)" -eq 0 ]; then
         # Clear the built-in root refusal both for this launch (the arg) AND for
         # any process the node later relaunches as itself — an in-app update does
@@ -996,9 +1012,9 @@ launch_forkmesh() {
       log="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
       mkdir -p "$(dirname "$log")" 2>/dev/null || true
       if command -v setsid >/dev/null 2>&1; then
-        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" setsid "$BIN" $args >"$log" 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" setsid "$BIN" $args >"$log" 2>&1 < /dev/null &
       else
-        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" nohup "$BIN" $args >"$log" 2>&1 < /dev/null &
+        FORKMESH_NODE_NAME="$FORKMESH_NODE_NAME" FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE" nohup "$BIN" $args >"$log" 2>&1 < /dev/null &
       fi
       return 0
       ;;
@@ -1017,6 +1033,13 @@ elif launch_forkmesh; then
     say "Done — ForkMesh is running as a background daemon."
     say "  The node will join the network and appear in the Mirror nodes list shortly."
     say "  Logs: $LOG_PATH    Stop: pkill -f '$BIN'"
+    # The ForkMesh desktop app watches an SSH install's stream for this exact
+    # line and pops up a link dialog prefilled with the code (adhoc #53).
+    say ""
+    say "FORKMESH LINK CODE: $FORKMESH_LINK_CODE"
+    say "  Enter this code in your ForkMesh desktop app to link the new node"
+    say "  to your account (a popup opens during a Hosts-panel install; the"
+    say "  code expires 30 minutes after the node registers)."
   else
     say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
   fi

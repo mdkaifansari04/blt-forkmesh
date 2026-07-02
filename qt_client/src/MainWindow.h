@@ -495,6 +495,15 @@ private:
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
+    // A user on forkmesh.com claimed this node's ID (adhoc #53): the heartbeat
+    // reply carried a confirmation code, shown on this machine so the person
+    // standing at both screens can type it back into the website.
+    void showNodeClaimCode(const QString &user, const QString &code);
+    // Installer link-code flow (adhoc #53): the hosts/SSH installer printed a
+    // link code on the fresh machine; confirm + submit it here, signed with
+    // this account's key, so the new node is attached to this user.
+    void promptHostLinkCode(const QString &code);
+    void submitHostLinkCode(const QString &code);
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -2151,6 +2160,7 @@ private:
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
     MessageRow *addMessageRow(const ChatMessage &message);
+    void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
     void scrollToBottom();
     void setChannels(const QStringList &channels);
@@ -2445,6 +2455,11 @@ private:
     bool m_hostInstallLogBold = false;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
+    // Installer link-code detection (adhoc #53): rolling tail of the install
+    // output so the "Link code: NNNNNN" line survives chunk splits, and a
+    // per-run guard so the link popup opens once.
+    QString m_hostInstallLinkTail;
+    bool m_hostLinkPrompted = false;
     // Relays section: live list of configured relays with status / latency / version.
     QTableWidget *m_relaysTable = nullptr;
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
@@ -2452,6 +2467,7 @@ private:
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
+    QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
     QWidget *m_repoPublishBar = nullptr;     // row hosting m_repoPushButton, hidden when idle
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
@@ -2811,6 +2827,7 @@ private:
     QPushButton *m_branchButton = nullptr;
     QPushButton *m_branchesButton = nullptr;
     QPushButton *m_tagsButton = nullptr;
+    QPushButton *m_toolbarCommitsButton = nullptr; // -> commits panel, next to Branches/Tags
     // Persistent segmented toggle, always visible above the Code page, that
     // switches between the GitHub-style overview and the explorer/editor view.
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
@@ -3969,6 +3986,9 @@ private:
     bool m_isAdmin = false;
     QTimer *m_adminPollTimer = nullptr;
     QStringList m_seenPendingUsers;
+    // Last website-claim confirmation code already shown (adhoc #53), so the
+    // per-minute heartbeat doesn't reopen the popup for the same claim.
+    QString m_lastClaimCodeShown;
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;
