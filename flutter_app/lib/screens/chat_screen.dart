@@ -32,8 +32,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _composer.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
       }
     });
   }
@@ -74,7 +77,7 @@ class _ChannelList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return Material(
       color: FmColors.rail,
       child: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -95,12 +98,25 @@ class _ChannelList extends StatelessWidget {
           for (final m in roster)
             ListTile(
               dense: true,
-              leading: Icon(Icons.circle,
-                  size: 10, color: m.online ? FmColors.success : FmColors.offline),
-              title: Text(m.self ? '${m.name} (you)' : m.name,
-                  style: const TextStyle(fontSize: 14), overflow: TextOverflow.ellipsis),
-              subtitle: m.platform.isEmpty ? null : Text(m.platform,
-                  style: const TextStyle(fontSize: 11, color: FmColors.textMuted)),
+              leading: Icon(
+                Icons.circle,
+                size: 10,
+                color: m.online ? FmColors.success : FmColors.offline,
+              ),
+              title: Text(
+                m.self ? '${m.name} (you)' : m.name,
+                style: const TextStyle(fontSize: 14),
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: m.platform.isEmpty
+                  ? null
+                  : Text(
+                      m.platform,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: FmColors.textMuted,
+                      ),
+                    ),
               onTap: m.self ? null : () => relay.switchConversation('@${m.id}'),
             ),
         ],
@@ -114,11 +130,17 @@ class _SectionLabel extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-        child: Text(text,
-            style: const TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w700, color: FmColors.textMuted, letterSpacing: 0.5)),
-      );
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        color: FmColors.textMuted,
+        letterSpacing: 0.5,
+      ),
+    ),
+  );
 }
 
 class _Transcript extends StatelessWidget {
@@ -140,9 +162,9 @@ class _Transcript extends StatelessWidget {
     final c = relay.currentConversation;
     if (c.startsWith('@')) {
       final m = relay.roster().firstWhere(
-            (e) => e.id == c.substring(1),
-            orElse: () => Member(id: c, name: 'direct message'),
-          );
+        (e) => e.id == c.substring(1),
+        orElse: () => Member(id: c, name: 'direct message'),
+      );
       return '@${m.name}';
     }
     return c;
@@ -155,21 +177,30 @@ class _Transcript extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(12),
           alignment: Alignment.centerLeft,
-          child: Row(children: [
-            const Icon(Icons.tag, size: 18, color: FmColors.textMuted),
-            const SizedBox(width: 6),
-            Text(_title, style: const TextStyle(fontWeight: FontWeight.w700)),
-            const Spacer(),
-            const Icon(Icons.lock_outline, size: 14, color: FmColors.success),
-            const SizedBox(width: 4),
-            const Text('encrypted', style: TextStyle(fontSize: 12, color: FmColors.textMuted)),
-          ]),
+          child: Row(
+            children: [
+              const Icon(Icons.tag, size: 18, color: FmColors.textMuted),
+              const SizedBox(width: 6),
+              Text(_title, style: const TextStyle(fontWeight: FontWeight.w700)),
+              const Spacer(),
+              const Icon(Icons.lock_outline, size: 14, color: FmColors.success),
+              const SizedBox(width: 4),
+              const Text(
+                'encrypted',
+                style: TextStyle(fontSize: 12, color: FmColors.textMuted),
+              ),
+            ],
+          ),
         ),
         const Divider(height: 1),
         Expanded(
           child: messages.isEmpty
               ? const Center(
-                  child: Text('No messages yet.', style: TextStyle(color: FmColors.textMuted)))
+                  child: Text(
+                    'No messages yet.',
+                    style: TextStyle(color: FmColors.textMuted),
+                  ),
+                )
               : ListView.builder(
                   controller: scroll,
                   padding: const EdgeInsets.symmetric(vertical: 8),
@@ -180,19 +211,24 @@ class _Transcript extends StatelessWidget {
         const Divider(height: 1),
         Padding(
           padding: const EdgeInsets.all(10),
-          child: Row(children: [
-            Expanded(
-              child: TextField(
-                controller: composer,
-                minLines: 1,
-                maxLines: 5,
-                decoration: const InputDecoration(hintText: 'Message…'),
-                onSubmitted: (_) => onSend(),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: composer,
+                  minLines: 1,
+                  maxLines: 5,
+                  decoration: const InputDecoration(hintText: 'Message…'),
+                  onSubmitted: (_) => onSend(),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filled(onPressed: onSend, icon: const Icon(Icons.send, size: 18)),
-          ]),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                onPressed: onSend,
+                icon: const Icon(Icons.send, size: 18),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -208,7 +244,9 @@ class _MessageRow extends StatelessWidget {
     final ts = msg.timestamp;
     final time =
         '${ts.hour.toString().padLeft(2, '0')}:${ts.minute.toString().padLeft(2, '0')}';
-    final initial = msg.senderName.isEmpty ? '?' : msg.senderName.characters.first.toUpperCase();
+    final initial = msg.senderName.isEmpty
+        ? '?'
+        : msg.senderName.characters.first.toUpperCase();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       child: Row(
@@ -217,28 +255,51 @@ class _MessageRow extends StatelessWidget {
           CircleAvatar(
             radius: 14,
             backgroundColor: FmColors.senderColor(msg.senderName),
-            child: Text(initial, style: const TextStyle(fontSize: 12, color: Colors.white)),
+            child: Text(
+              initial,
+              style: const TextStyle(fontSize: 12, color: Colors.white),
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(children: [
-                  Text(msg.self ? '${msg.senderName} (you)' : msg.senderName,
+                Row(
+                  children: [
+                    Text(
+                      msg.self ? '${msg.senderName} (you)' : msg.senderName,
                       style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: FmColors.senderColor(msg.senderName))),
-                  const SizedBox(width: 8),
-                  Text(time, style: const TextStyle(fontSize: 11, color: FmColors.textMuted)),
-                ]),
+                        fontWeight: FontWeight.w700,
+                        color: FmColors.senderColor(msg.senderName),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      time,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: FmColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
                 if (msg.text.isNotEmpty)
                   Text(msg.text, style: const TextStyle(color: FmColors.text)),
                 if (msg.fileName.isNotEmpty)
-                  Row(children: [
-                    const Icon(Icons.attach_file, size: 14, color: FmColors.textMuted),
-                    Text(msg.fileName, style: const TextStyle(color: FmColors.accent)),
-                  ]),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.attach_file,
+                        size: 14,
+                        color: FmColors.textMuted,
+                      ),
+                      Text(
+                        msg.fileName,
+                        style: const TextStyle(color: FmColors.accent),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),
