@@ -2256,29 +2256,23 @@ inline void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
-// Fill a combo with the Claude Code model choices (issue #32). The data values
-// are `claude` CLI aliases; the empty default leaves the CLI's own default model
-// in place. Used by the per-session composer model selector.
+// Clear a Claude model combo so it's ready to receive live models from the
+// provider API. The list is filled by mergeLiveClaudeModels once the fetch
+// returns. Used by the per-session composer model selector and the quick-add bar.
 inline void populateClaudeModelCombo(QComboBox *combo)
 {
     if (!combo)
         return;
     combo->clear();
-    combo->addItem(QStringLiteral("Default model"), QString());
-    combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
-    combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
-    combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
 }
 
 // Friendly label for a session's `model` field, so the agent header can show
-// which LLM actually did the work alongside its worktree location. Mirrors the
-// combo labels above / fillAgentFixModelCombo below; anything fetched live
-// that isn't in this static list (e.g. a dated model id) is shown as-is rather
-// than falling back to something misleading.
+// which LLM actually did the work alongside its worktree location. Known short
+// aliases and full IDs are mapped to display names; anything else is shown as-is.
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
-        return QStringLiteral("Default model");
+        return QString();
     static const QHash<QString, QString> kLabels = {
         {QStringLiteral("opus"), QStringLiteral("Opus")},
         {QStringLiteral("sonnet"), QStringLiteral("Sonnet")},
@@ -2295,20 +2289,16 @@ inline QString agentModelLabel(const QString &model)
 
 // Fill an agent-provider model combo for one of the three agent providers
 // (adhoc #56; shared by the branch "Fix with agent" bar and the Actions "Fix
-// with agent" bar). Item data is the model id/alias passed straight to the
-// caller's start function; the API providers fall back to their low-cost
-// default on an empty value, Claude Code's empty entry leaves the CLI's
-// default in place.
+// with agent" bar). Item data is the model id passed straight to the caller's
+// start function. claude-code combos are left empty for mergeLiveClaudeModels
+// to fill; openai/claude-api combos keep static lists (no live fetch for those).
 inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
 {
     if (!combo)
         return;
     combo->clear();
     if (provider == QLatin1String("claude-code")) {
-        combo->addItem(QStringLiteral("Default model"), QString());
-        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
-        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
-        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
+        // Live models populated by refreshClaudeModelCombo / mergeLiveClaudeModels
     } else if (provider == QLatin1String("openai")) {
         combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
         combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
@@ -2320,36 +2310,27 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     }
 }
 
-// Fold the account's live provider model line-up (the `data` array from
-// /v1/models) into a model combo that already holds the static aliases from
-// populateClaudeModelCombo (or the quick-add bar's inline copies). A separator
-// divides the convenience aliases from the live models; the merge is idempotent
-// — each id is added at most once, so re-running on a re-fetch or on a combo
-// built after the fetch is a no-op. Signals are blocked and the current pick is
-// restored by its data value so merging never disturbs the selection or fires
-// the change handler.
+// Replace a Claude model combo's contents with the live provider line-up (the
+// `data` array from /v1/models). Signals are blocked and the current pick is
+// restored by its data value so replacing never disturbs the selection or fires
+// the change handler. Skips combos that belong to a non-Claude provider (their
+// static lists are managed by fillAgentFixModelCombo instead).
 inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
 {
     if (!combo || models.isEmpty())
         return;
     QSignalBlocker block(combo);
     const QVariant picked = combo->currentData();
-    bool separated = combo->property("liveModelsMerged").toBool();
+    combo->clear();
     for (const QJsonValue &v : models) {
         const QJsonObject m = v.toObject();
         const QString id = m.value(QStringLiteral("id")).toString();
-        if (id.isEmpty() || combo->findData(id) >= 0)
+        if (id.isEmpty())
             continue;
-        if (!separated) {
-            combo->insertSeparator(combo->count());
-            combo->setProperty("liveModelsMerged", true);
-            separated = true;
-        }
         combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
     }
     const int idx = combo->findData(picked);
-    if (idx >= 0)
-        combo->setCurrentIndex(idx);
+    combo->setCurrentIndex(idx >= 0 ? idx : 0);
 }
 
 // User's preferred tab a repository opens on (Settings → General). Stored as
