@@ -339,6 +339,9 @@ def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
     assert "force=True" in src
     # The forced fallback still routes via a 302 to the mirror's info/refs.
     assert "status=302" in src
+    # One-hop cap: two stale-presence, no-live-host peers must not 302 forever.
+    assert "fmretry" in src
+    assert "already_forced" in src
 
 
 def test_source_has_live_host_probes_the_host_do_not_presence():
