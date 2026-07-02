@@ -943,6 +943,11 @@ private:
     // commit the fix to the PR's own branch (no new PR). The work is surfaced as a
     // live agent session so the user can watch it. provider is "claude" | "openai".
     void fixCurrentPullConflictsWithAi(const QString &provider);
+    // Continue the agent session that originally authored this PR's branch,
+    // asking it to merge the base branch in and resolve conflicts itself — the
+    // same flow as the agent detail view's "Fix conflicts with agent" button.
+    // Only available when such a session is attached and idle.
+    void fixCurrentPullConflictsWithOriginatingAgent();
     void editCurrentPullFile();         // edit the selected file on the PR's branch
     void deleteCurrentPullFile();       // delete the selected file on the PR's branch
     void closeIssuesLinkedFromPull(const PullRequest &pr);
@@ -3101,6 +3106,10 @@ private:
     QAction *m_pullFixClaudeAction = nullptr;   // resolve via the Claude API
     QAction *m_pullFixOpenAiAction = nullptr;   // resolve via the OpenAI API
     QAction *m_pullFixClaudeCodeAction = nullptr; // resolve via the Claude Code CLI
+    // Shown alongside "Fix with agent" only when an agent session authored this
+    // PR's branch: continues that same session rather than spinning up a fresh,
+    // isolated conflict-only run.
+    QPushButton *m_pullFixConflictsButton = nullptr;
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
