@@ -1211,6 +1211,77 @@ def browse_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
     return ordered
 
 
+# How many recent owner-attested state pins are kept (and accepted) per repo.
+# The window is the availability/rollback trade: a mirror may lag the source by
+# up to this many publishes and still clone, while a rollback older than the
+# window is rejected.
+STATE_PIN_HISTORY = 10
+
+
+def clone_state_pins(target, target_key, rows, history=None):
+    # The set of repo-state hashes (sha256 over the canonical heads+tags
+    # advertisement) the relay accepts from the node serving a clone of the
+    # `target` catalog record, or None when the repo is unpinned (fail-open, e.g.
+    # a never-attested legacy repo). `rows` are decrypted catalog records
+    # [{"key_bi", "data"}]; `history` maps key_bi -> recent attested hashes from
+    # repo_state_history.
+    #
+    # A working-copy holder ("local-node" — the source of truth for its
+    # namespace) is validated against ITS OWN attestations: current pin plus
+    # recent history. Self-attestation is fine there — the node holds the signing
+    # key either way, so the pin is a consistency check, and the history absorbs
+    # the push-to-republish lag.
+    #
+    # A MIRROR ("remote-clone") must serve a state some working-copy holder in
+    # its logical-repo group (root commit, name fallback — see
+    # repo_mirror_same_group) actually attested. Its own self-signed pin proves
+    # nothing: a tampered mirror can always republish a hash matching its forged
+    # refs. Mirrors sync with `fetch --prune refs/heads/* refs/tags/*`, so a
+    # faithful mirror's full ref set — and therefore its hash — equals the
+    # source's. Only when NO group source has ever attested (legacy clients)
+    # does the mirror's own pin still apply, preserving the old behaviour.
+    #
+    # Residual limits, by design: a registered account that publishes a
+    # local-node record grouped with the repo can inject acceptable pins (raising
+    # the bar from "compromise one mirror" to "register a visible fake source"),
+    # and a mirror-run agent's local branches make its ref set diverge from the
+    # source until the next pruning sync (~5 min) — clones of that mirror fail
+    # the check for that window.
+    if not isinstance(target, dict) or not target:
+        return None
+
+    def _clean(value):
+        return str(value or "").strip().lower()
+
+    hist = history or {}
+
+    def _pins_for(key, rec):
+        pins = set()
+        if cur := _clean(rec.get("stateHash")):
+            pins.add(cur)
+        for h in hist.get(str(key or ""), []) or []:
+            if h := _clean(h):
+                pins.add(h)
+        return pins
+
+    # Records published before the field existed default to "local-node" (the
+    # same default safe_catalog_record applies on write).
+    if _clean(target.get("source") or "local-node") == "local-node":
+        return _pins_for(target_key, target) or None
+
+    source_pins = set()
+    for row in rows or []:
+        rec = (row or {}).get("data") or {}
+        if _clean(rec.get("source") or "local-node") != "local-node":
+            continue
+        if not repo_mirror_same_group(target, rec):
+            continue
+        source_pins |= _pins_for(row.get("key_bi"), rec)
+    if source_pins:
+        return source_pins
+    return _pins_for(target_key, target) or None
+
+
 async def touch_host_presence(env, repo_bi):
     # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
     # connects and, throttled, while it serves traffic.
@@ -2258,6 +2329,16 @@ SCHEMA_STATEMENTS = [
     # all piling onto the single freshest one. repo_bi is the same blind index
     # host_presence uses; n is a monotonically increasing rotation cursor.
     "CREATE TABLE IF NOT EXISTS clone_rr (repo_bi TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
+    # Recent owner-attested repo-state pins (sha256 of the canonical heads+tags
+    # advertisement), appended on every catalog publish by a working-copy holder
+    # ("local-node"). Mirrors are integrity-checked against the SOURCE's pins —
+    # current plus this short history — instead of their own self-attested hash,
+    # so a tampered mirror can't just publish a matching pin for its forged refs,
+    # while an honest mirror that lags the source by a few publishes still clones
+    # (see clone_state_pins). Pruned to the newest STATE_PIN_HISTORY per repo.
+    "CREATE TABLE IF NOT EXISTS repo_state_history ("
+    "key_bi TEXT NOT NULL, state_hash TEXT NOT NULL, ts INTEGER NOT NULL, "
+    "PRIMARY KEY (key_bi, state_hash))",
     # Account-level presence: a node heartbeats here while it is online so it can
     # be included in the reward split. Keyed by the account blind index.
     "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
