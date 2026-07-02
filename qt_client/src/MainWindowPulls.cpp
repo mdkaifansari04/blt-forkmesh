@@ -1086,11 +1086,12 @@ void MainWindow::refreshPullList()
         }
         m_pullTable->setItem(row, 7, costItem);
 
-        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
-        // tooltip carries the friendly "x ago" form. Mirrors the issue list.
+        // Created date: full ISO-ish "yyyy-MM-dd HH:mm" sorts chronologically
+        // as plain text and shows the exact moment at a glance; the tooltip
+        // carries the friendly "x ago" form. Mirrors the issue list.
         auto *created = new QTableWidgetItem(
             pr.ts > 0
-                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd HH:mm")
                 : QString());
         created->setToolTip(formatIssueRelativeTime(pr.ts));
         m_pullTable->setItem(row, 8, created);
@@ -1102,7 +1103,7 @@ void MainWindow::refreshPullList()
             updatedAt = qMax(updatedAt, ev.ts);
         auto *modified = new QTableWidgetItem(
             updatedAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         modified->setToolTip(formatIssueRelativeTime(updatedAt));
         m_pullTable->setItem(row, 9, modified);
