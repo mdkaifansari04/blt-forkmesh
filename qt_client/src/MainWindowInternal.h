@@ -12,6 +12,7 @@
 
 #include "ActionFile.h"
 #include "ActionRunner.h"
+#include "BackoffNetworkAccessManager.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"

@@ -23,7 +23,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     if (QSystemTrayIcon::isSystemTrayAvailable())
         m_trayIcon->show();
 
-    m_networkAccess = new QNetworkAccessManager(this);
+    // BackoffNetworkAccessManager gates every /api/* request through an
+    // exponential per-host backoff, so a rate-limited relay (Cloudflare 429s)
+    // doesn't get hammered by every independent call site's own retry.
+    m_networkAccess = new BackoffNetworkAccessManager(this);
     // Opt-in full request logging (Settings → "Log every network request").
     // When on, every HTTP request that completes through the shared manager is
     // written to the network log with its verb, status and URL so a user can

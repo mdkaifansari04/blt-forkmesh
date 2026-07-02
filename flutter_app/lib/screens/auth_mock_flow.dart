@@ -212,11 +212,6 @@ class _LoginScreenState extends State<_LoginScreen> {
     if (_loading) return;
     final identifier = _identifier.text.trim();
     final password = _password.text;
-    if (identifier.isEmpty && password.isEmpty) {
-      // Keep the design-preview path usable in widget tests and local mock demos.
-      widget.onAuthenticated();
-      return;
-    }
     if (identifier.isEmpty || password.isEmpty) {
       setState(() {
         _hint = 'Enter your email or node name and password.';
