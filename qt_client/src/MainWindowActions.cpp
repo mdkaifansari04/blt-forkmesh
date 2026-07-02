@@ -1472,8 +1472,6 @@ void MainWindow::updateAgentsTabIndicator()
         m_agentSpinnerIds.clear();
         if (m_agentSpinnerOverlay)
             m_agentSpinnerOverlay->hide();
-        if (m_agentSnake)
-            m_agentSnake->hide();
         return;
     }
     if (!m_agentSpinnerOverlay)
@@ -1532,42 +1530,18 @@ void MainWindow::updateAgentsTabIndicator()
     positionAgentSpinnerOverlay();
     m_agentSpinnerOverlay->show();
     m_agentSpinnerOverlay->raise();
-    if (m_agentSnake) {
-        positionAgentSnake();
-        m_agentSnake->show();
-        m_agentSnake->raise();
-    }
 
-    // Animate the purple snake and keep both indicators positioned as the window
-    // moves / tabs change.
+    // Keep indicators positioned as the window moves / tabs change.
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
         connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
-            static const char *frames[] = {"\xE2\xA0\x8B", "\xE2\xA0\x99",
-                                           "\xE2\xA0\xB9", "\xE2\xA0\xB8",
-                                           "\xE2\xA0\xBC", "\xE2\xA0\xB4",
-                                           "\xE2\xA0\xA6", "\xE2\xA0\xA7",
-                                           "\xE2\xA0\x87", "\xE2\xA0\x8F"};
             m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
-            if (m_agentSnake) {
-                m_agentSnake->setText(QString::fromUtf8(frames[m_agentsSpinFrame]));
-                positionAgentSnake();
-            }
             animateRunningAgentIcons(); // spin the running rows' Status glyph
             positionAgentSpinnerOverlay();
         });
     }
     if (!m_agentsSpinTimer->isActive())
         m_agentsSpinTimer->start(120);
-}
-
-void MainWindow::positionAgentSnake()
-{
-    if (!m_agentSnake || !m_repoAgentsTab)
-        return;
-    const int w = 16;
-    m_agentSnake->setGeometry(m_repoAgentsTab->width() - w - 6, 0, w,
-                              m_repoAgentsTab->height());
 }
 
 // Anchor the looper toggle in the meta band just above the Issues tab (adhoc
