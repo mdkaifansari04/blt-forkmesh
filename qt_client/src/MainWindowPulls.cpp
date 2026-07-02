@@ -126,6 +126,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeButton = new QPushButton("Merge");
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
     m_pullFixButton = new QPushButton("Fix with agent");
+    m_pullFixConflictsButton = new QPushButton("Fix conflicts with agent");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
     m_pullCloseButton = new QPushButton("Close");
@@ -138,7 +139,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton = new QPushButton("Link issue");
     m_pullSplitButton = new QPushButton;
     for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullFixButton,
+                           m_pullFixButton, m_pullFixConflictsButton,
                            m_pullEditFileButton, m_pullDeleteFileButton,
                            m_pullCloseButton, m_pullReopenButton,
                            m_pullSendToSourceButton, m_pullDeleteButton,
@@ -239,6 +240,16 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullFixClaudeCodeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude-code")); });
     m_pullFixButton->setMenu(m_pullFixMenu);
+    // Continue the agent session that authored this branch, same as the agent
+    // detail view's "Fix conflicts with agent" button: it keeps the run's own
+    // context/history and full tool access instead of a fresh, conflict-only
+    // rewrite. Only shown when such a session is attached (see
+    // updatePullActionState / agentSessionForPull).
+    m_pullFixConflictsButton->setObjectName("primaryButton");
+    setOcticon(m_pullFixConflictsButton, "git-merge", 16);
+    m_pullFixConflictsButton->hide();
+    connect(m_pullFixConflictsButton, &QPushButton::clicked, this,
+            &MainWindow::fixCurrentPullConflictsWithOriginatingAgent);
     setOcticon(m_pullEditFileButton, "pencil", 16);
     m_pullEditFileButton->setToolTip(
         "Edit the selected file and commit the change to this pull request's "
@@ -260,6 +271,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullPreviewButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullFixConflictsButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullFixButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullEditFileButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteFileButton, 0, Qt::AlignTop);
@@ -2748,6 +2760,7 @@ void MainWindow::updatePullActionState()
     bool closed = false;
     bool merged = false;
     QString head;
+    QString base;
     QString patch;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
@@ -2755,6 +2768,7 @@ void MainWindow::updatePullActionState()
             closed = pr.status == "closed";
             merged = pr.status == "merged";
             head   = pr.head;
+            base   = pr.base;
             patch  = pr.patch;
         }
     }
@@ -2927,6 +2941,33 @@ void MainWindow::updatePullActionState()
             m_pullFixClaudeCodeAction->setToolTip(
                 QStringLiteral("Resolve with the Claude Code CLI (uses your local "
                                "`claude` login)"));
+    }
+    if (m_pullFixConflictsButton) {
+        // Only offer to continue the agent that actually authored this branch
+        // (found by PR number or head branch, issue #257) and only while it still
+        // has a worktree to run in and isn't already busy — mirrors the agent
+        // detail view's "Fix conflicts with agent" button (adhoc #28).
+        const AgentSession *agent =
+            conflicted ? agentSessionForPull(m_currentPullNumber, head) : nullptr;
+        const bool continuable =
+            agent && !agent->branchName.isEmpty() && !isExternalSession(agent->id);
+        const bool agentBusy =
+            agent && (agent->status == AgentStatus::Running ||
+                      agent->status == AgentStatus::Queued ||
+                      runnerForSession(agent->id));
+        m_pullFixConflictsButton->setVisible(conflicted && continuable);
+        m_pullFixConflictsButton->setEnabled(conflicted && continuable &&
+                                             !agentBusy && !aiFixBusy);
+        m_pullFixConflictsButton->setToolTip(
+            agentBusy
+                ? QStringLiteral("The agent for this pull request is already "
+                                 "running \xE2\x80\x94 watch it on the Agents tab")
+                : QStringLiteral(
+                      "Ask the %1 session that authored this branch to merge "
+                      "`%2` in and resolve the conflicts itself")
+                      .arg(agent ? agentProviderName(agent->provider)
+                                 : QStringLiteral("agent"),
+                           base.isEmpty() ? QStringLiteral("main") : base));
     }
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
@@ -3781,6 +3822,50 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         aiFixRunClaudeCode();
     else
         aiFixResolveNextFile();
+}
+
+// "Fix conflicts with agent" on the PR page: rather than spinning up a fresh,
+// conflict-only run (fixCurrentPullConflictsWithAi above), continue the actual
+// agent session that authored this branch — same prompt and flow as the agent
+// detail view's own "Fix conflicts with agent" button, so the agent keeps its
+// full context/history and tool access (it can rebuild, run tests, etc. before
+// committing). Only reachable when updatePullActionState found such a session.
+void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
+{
+    if (m_currentPullNumber < 0)
+        return;
+    QString head, base;
+    for (const PullRequest &pr : m_currentPulls) {
+        if (pr.number == m_currentPullNumber) {
+            head = pr.head;
+            base = pr.base;
+        }
+    }
+    const AgentSession *agent = agentSessionForPull(m_currentPullNumber, head);
+    if (!agent || agent->branchName.isEmpty() || isExternalSession(agent->id)) {
+        flashMessage("No agent session is attached to this pull request.", true);
+        return;
+    }
+    if (agent->status == AgentStatus::Running ||
+        agent->status == AgentStatus::Queued || runnerForSession(agent->id)) {
+        flashMessage("The agent for this pull request is already running.", true);
+        return;
+    }
+
+    const int sessionId = agent->id;
+    const QString provider = agent->provider;
+    const QString prompt =
+        QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
+                       "Make sure the build and tests still pass, then commit.")
+            .arg(base.isEmpty() ? QStringLiteral("main") : base);
+    m_pendingSteerMessage.insert(sessionId, prompt);
+    if (provider == QLatin1String("claude-code"))
+        applyTranscriptEvent(
+            sessionId,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                        {QStringLiteral("text"), prompt}});
+    switchToAgentsTab(sessionId);
+    continueSelectedAgentSession();
 }
 
 void MainWindow::aiFixResolveNextFile()
