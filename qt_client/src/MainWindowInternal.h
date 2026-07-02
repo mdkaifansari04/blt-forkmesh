@@ -2270,6 +2270,29 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
 }
 
+// Friendly label for a session's `model` field, so the agent header can show
+// which LLM actually did the work alongside its worktree location. Mirrors the
+// combo labels above / fillAgentFixModelCombo below; anything fetched live
+// that isn't in this static list (e.g. a dated model id) is shown as-is rather
+// than falling back to something misleading.
+inline QString agentModelLabel(const QString &model)
+{
+    if (model.trimmed().isEmpty())
+        return QStringLiteral("Default model");
+    static const QHash<QString, QString> kLabels = {
+        {QStringLiteral("opus"), QStringLiteral("Opus")},
+        {QStringLiteral("sonnet"), QStringLiteral("Sonnet")},
+        {QStringLiteral("haiku"), QStringLiteral("Haiku")},
+        {QStringLiteral("claude-haiku-4-5"), QStringLiteral("Haiku 4.5")},
+        {QStringLiteral("claude-sonnet-4-6"), QStringLiteral("Sonnet 4.6")},
+        {QStringLiteral("claude-opus-4-8"), QStringLiteral("Opus 4.8")},
+        {QStringLiteral("gpt-4.1-nano"), QStringLiteral("GPT-4.1 nano")},
+        {QStringLiteral("gpt-4.1-mini"), QStringLiteral("GPT-4.1 mini")},
+        {QStringLiteral("gpt-4.1"), QStringLiteral("GPT-4.1")},
+    };
+    return kLabels.value(model.trimmed(), model.trimmed());
+}
+
 // Fill an agent-provider model combo for one of the three agent providers
 // (adhoc #56; shared by the branch "Fix with agent" bar and the Actions "Fix
 // with agent" bar). Item data is the model id/alias passed straight to the
