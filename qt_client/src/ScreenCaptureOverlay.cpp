@@ -14,6 +14,7 @@
 #include <QScreen>
 #include <QTimer>
 #include <QUrl>
+#include <QWidget>
 
 #ifdef FORKMESH_HAVE_PORTAL
 #include <QDBusConnection>
@@ -95,56 +96,122 @@ QCursor makeSnipCursor()
 
 } // namespace
 
+// PerScreenPanel: a frameless transparent overlay covering one physical screen.
+// It forwards all input to the ScreenCaptureOverlay coordinator, which updates
+// shared drag state and repaints every panel so the selection marquee tracks
+// across monitor boundaries regardless of where the drag started.
+class PerScreenPanel : public QWidget
+{
+public:
+    PerScreenPanel(ScreenCaptureOverlay *owner, const QRect &screenGeom,
+                   const QCursor &cursor)
+        : QWidget(nullptr), m_owner(owner), m_screenGeom(screenGeom)
+    {
+        setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
+                       Qt::WindowStaysOnTopHint | Qt::BypassWindowManagerHint);
+        setAttribute(Qt::WA_DeleteOnClose);
+        // Transparent overlay: the live desktop shows through.
+        setAttribute(Qt::WA_TranslucentBackground);
+        setMouseTracking(true);
+        setGeometry(screenGeom);
+        setCursor(cursor);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        // A near-invisible veil (alpha 1/255) over this screen guarantees the
+        // panel receives mouse events everywhere, without visibly dimming content.
+        painter.fillRect(rect(), QColor(0, 0, 0, 1));
+        if (!m_owner->m_dragging)
+            return;
+        // Map the global drag endpoints to this panel's local coordinate system.
+        // Qt clips the rect at the widget boundary, so only the portion of the
+        // selection that falls on this screen is drawn here — the rest shows on
+        // the neighbouring panel(s).
+        const QPoint origin  = m_owner->m_originGlobal  - m_screenGeom.topLeft();
+        const QPoint current = m_owner->m_currentGlobal - m_screenGeom.topLeft();
+        const QRect sel = QRect(origin, current).normalized();
+        if (sel.isNull())
+            return;
+        QPen pen(QColor("#2f81f7"));
+        pen.setWidth(1);
+        pen.setStyle(Qt::DashLine);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(sel.adjusted(0, 0, -1, -1));
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        m_owner->onPress(event->button(), event->globalPosition().toPoint());
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        m_owner->onMove(event->globalPosition().toPoint());
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        m_owner->onRelease(event->button(), event->globalPosition().toPoint());
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event->key() == Qt::Key_Escape)
+            m_owner->onEscape();
+        else
+            QWidget::keyPressEvent(event);
+    }
+
+private:
+    ScreenCaptureOverlay *m_owner;
+    QRect m_screenGeom; // this screen's position in global coords
+};
+
 ScreenCaptureOverlay *ScreenCaptureOverlay::begin()
 {
     const QList<QScreen *> screens = QGuiApplication::screens();
     if (screens.isEmpty())
         return nullptr;
 
-    // The overlay must cover every monitor, so work in the union of all screen
-    // geometries (the "virtual desktop").
     QRect virtualGeom;
     for (QScreen *s : screens)
         virtualGeom = virtualGeom.united(s->geometry());
     if (virtualGeom.isEmpty())
         return nullptr;
 
-    // Grab/crop at the primary screen's device-pixel ratio later, on release.
     const qreal dpr = QGuiApplication::primaryScreen()
                           ? QGuiApplication::primaryScreen()->devicePixelRatio()
                           : 1.0;
 
-    auto *overlay = new ScreenCaptureOverlay(virtualGeom, dpr);
-    overlay->show();
-    overlay->raise();
-    overlay->activateWindow();
-    overlay->setFocus();
-    return overlay;
+    return new ScreenCaptureOverlay(virtualGeom, dpr, screens);
 }
 
-ScreenCaptureOverlay::ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr)
-    : QWidget(nullptr), m_virtualGeom(virtualGeom), m_dpr(dpr)
+ScreenCaptureOverlay::ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr,
+                                            const QList<QScreen *> &screens)
+    : QObject(nullptr), m_virtualGeom(virtualGeom), m_dpr(dpr)
 {
-    // Frameless, always-on-top, and bypassing the window manager so nothing
-    // repositions or resizes the overlay away from full virtual-desktop coverage.
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
-                   Qt::WindowStaysOnTopHint | Qt::BypassWindowManagerHint);
-    setAttribute(Qt::WA_DeleteOnClose);
-    // Transparent overlay: the live desktop stays visible underneath. We never
-    // freeze a snapshot or dim anything — just a dotted marquee while dragging —
-    // so picking a region doesn't black out the screen.
-    setAttribute(Qt::WA_TranslucentBackground);
-    setMouseTracking(true);
-    setGeometry(virtualGeom);
-
-    // Swap the pointer to a crosshair snip reticle so it's obvious a screenshot
-    // is in progress. Set it on the widget and push it as an application override
-    // too, so it takes effect even where a per-widget cursor is ignored (e.g. a
-    // bypass-WM surface on Wayland).
     const QCursor snip = makeSnipCursor();
-    setCursor(snip);
+    // Push an application-wide override so the snip cursor shows immediately
+    // even between panel surfaces or before the first paint.
     QGuiApplication::setOverrideCursor(snip);
     m_cursorPushed = true;
+
+    for (QScreen *s : screens) {
+        auto *panel = new PerScreenPanel(this, s->geometry(), snip);
+        m_panels.append(panel);
+        panel->show();
+        panel->raise();
+    }
+    // Activate the first panel so keyboard events (e.g. Escape) work immediately
+    // without requiring the user to click first.
+    if (!m_panels.isEmpty()) {
+        m_panels.first()->activateWindow();
+        m_panels.first()->setFocus();
+    }
 }
 
 void ScreenCaptureOverlay::popOverrideCursor()
@@ -155,94 +222,63 @@ void ScreenCaptureOverlay::popOverrideCursor()
     QGuiApplication::restoreOverrideCursor();
 }
 
-QRect ScreenCaptureOverlay::selectionRect() const
+void ScreenCaptureOverlay::onPress(Qt::MouseButton button, QPoint globalPos)
 {
-    // Widget-local rect, used to paint the marquee under the live cursor.
-    return QRect(m_origin, m_current).normalized();
-}
-
-QRect ScreenCaptureOverlay::captureRect() const
-{
-    // The grab/crop works in virtual-desktop coordinates (the snapshot's origin
-    // is m_virtualGeom.topLeft()), so map the drag through the overlay's *actual*
-    // on-screen position instead of assuming widget-local already equals
-    // virtual-desktop-relative. A bypass-WM surface isn't always placed exactly at
-    // the virtual-desktop origin; mapToGlobal absorbs any such offset so the
-    // captured pixels line up with what the marquee framed.
-    const QPoint a = mapToGlobal(m_origin) - m_virtualGeom.topLeft();
-    const QPoint b = mapToGlobal(m_current) - m_virtualGeom.topLeft();
-    return QRect(a, b).normalized();
-}
-
-void ScreenCaptureOverlay::paintEvent(QPaintEvent *)
-{
-    QPainter painter(this);
-    // A near-invisible veil (alpha 1/255) over the whole desktop guarantees the
-    // transparent overlay still receives the drag everywhere, without visibly
-    // changing the background.
-    painter.fillRect(rect(), QColor(0, 0, 0, 1));
-    if (!m_dragging)
-        return;
-    const QRect sel = selectionRect();
-    if (sel.isNull())
-        return;
-    // Dotted marquee around the selection, no fill — the desktop shows through
-    // and nothing is dimmed.
-    QPen pen(QColor("#2f81f7"));
-    pen.setWidth(1);
-    pen.setStyle(Qt::DashLine);
-    painter.setPen(pen);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRect(sel.adjusted(0, 0, -1, -1));
-}
-
-void ScreenCaptureOverlay::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() != Qt::LeftButton) {
+    if (button != Qt::LeftButton) {
         finish(QImage()); // right/middle click cancels
         return;
     }
     m_dragging = true;
-    m_origin = event->position().toPoint();
-    m_current = m_origin;
-    update();
+    m_originGlobal = globalPos;
+    m_currentGlobal = globalPos;
+    for (auto *p : m_panels)
+        p->update();
 }
 
-void ScreenCaptureOverlay::mouseMoveEvent(QMouseEvent *event)
+void ScreenCaptureOverlay::onMove(QPoint globalPos)
 {
     if (!m_dragging)
         return;
-    m_current = event->position().toPoint();
-    update();
+    m_currentGlobal = globalPos;
+    // Repaint all panels: the selection may now extend onto a neighbouring screen.
+    for (auto *p : m_panels)
+        p->update();
 }
 
-void ScreenCaptureOverlay::mouseReleaseEvent(QMouseEvent *event)
+void ScreenCaptureOverlay::onRelease(Qt::MouseButton button, QPoint globalPos)
 {
-    if (!m_dragging || event->button() != Qt::LeftButton)
+    if (!m_dragging || button != Qt::LeftButton)
         return;
     m_dragging = false;
-    m_current = event->position().toPoint();
-    const QRect sel = selectionRect();
+    m_currentGlobal = globalPos;
+    // Convert global coords to virtual-desktop-relative for the capture path.
+    const QPoint a = m_originGlobal  - m_virtualGeom.topLeft();
+    const QPoint b = m_currentGlobal - m_virtualGeom.topLeft();
+    const QRect sel = QRect(a, b).normalized();
     if (sel.width() < 3 || sel.height() < 3) {
         finish(QImage()); // a click without a real drag is a cancel
         return;
     }
-    // Grab in virtual-desktop coordinates so the snapshot lines up with the
-    // marquee regardless of where the bypass-WM overlay actually landed.
-    beginCapture(captureRect());
+    beginCapture(sel);
+}
+
+void ScreenCaptureOverlay::onEscape()
+{
+    finish(QImage());
 }
 
 void ScreenCaptureOverlay::beginCapture(const QRect &sel)
 {
-    // The selection is locked in, so drop the snip cursor and hide the overlay
-    // before grabbing so neither the veil nor the marquee can bleed into it.
+    // Selection is locked in — drop the snip cursor and hide all panels before
+    // grabbing so neither the veil nor the marquee can bleed into the screenshot.
     popOverrideCursor();
-    hide();
+    for (auto *p : m_panels)
+        p->hide();
 
 #ifdef FORKMESH_HAVE_PORTAL
     if (runningOnWayland()) {
         // Defer the portal call a beat so the compositor has actually dropped
-        // our (now hidden) surface before it snapshots the desktop.
+        // our (now hidden) surfaces before it snapshots the desktop.
         m_pendingSel = sel;
         QTimer::singleShot(150, this, [this] { grabViaPortal(m_pendingSel); });
         return;
@@ -284,7 +320,7 @@ QImage ScreenCaptureOverlay::cropDesktop(const QImage &full, const QRect &sel) c
 
 QImage ScreenCaptureOverlay::compositeScreens()
 {
-    // Let the compositor repaint the now-hidden overlay away before grabbing.
+    // Let the compositor repaint the now-hidden panels away before grabbing.
     QGuiApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
 
     // Composite each screen's grab into one snapshot of the virtual desktop at
@@ -369,24 +405,20 @@ void ScreenCaptureOverlay::onPortalResponse(uint response, const QVariantMap &re
     finish(cropDesktop(full, m_pendingSel));
 }
 
-void ScreenCaptureOverlay::keyPressEvent(QKeyEvent *event)
-{
-    if (event->key() == Qt::Key_Escape) {
-        finish(QImage());
-        return;
-    }
-    QWidget::keyPressEvent(event);
-}
-
 void ScreenCaptureOverlay::finish(const QImage &image)
 {
     if (m_done)
         return;
     m_done = true;
-    popOverrideCursor(); // no-op if already restored when the grab began
+    popOverrideCursor();
+    // Close all panels before emitting, so they're gone before callers react.
+    const auto panels = m_panels;
+    m_panels.clear();
+    for (auto *p : panels)
+        p->close(); // WA_DeleteOnClose frees each panel
     if (image.isNull())
         emit cancelled();
     else
         emit captured(image);
-    close(); // WA_DeleteOnClose frees the overlay
+    deleteLater(); // free the coordinator after the current call stack unwinds
 }
