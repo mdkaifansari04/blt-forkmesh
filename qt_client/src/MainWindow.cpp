@@ -24,6 +24,37 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_trayIcon->show();
 
     m_networkAccess = new QNetworkAccessManager(this);
+    // Opt-in full request logging (Settings → "Log every network request").
+    // When on, every HTTP request that completes through the shared manager is
+    // written to the network log with its verb, status and URL so a user can
+    // see exactly what background traffic the app is generating (adhoc #74).
+    // Off by default, so the common case pays nothing but the settings read.
+    connect(m_networkAccess, &QNetworkAccessManager::finished, this,
+            [this](QNetworkReply *reply) {
+                if (!reply ||
+                    !QSettings()
+                         .value(kVerboseNetworkLogSetting, false)
+                         .toBool())
+                    return;
+                static const char *const verbs[] = {"HEAD",   "GET", "PUT",
+                                                     "POST",   "DELETE",
+                                                     "CUSTOM"};
+                const int op = static_cast<int>(reply->operation());
+                const QString verb = (op >= 1 && op <= 6)
+                                         ? QLatin1String(verbs[op - 1])
+                                         : QStringLiteral("REQ");
+                QString status;
+                if (reply->error() != QNetworkReply::NoError) {
+                    status = QStringLiteral("ERR ") + reply->errorString();
+                } else {
+                    const QVariant code = reply->attribute(
+                        QNetworkRequest::HttpStatusCodeAttribute);
+                    status = code.isValid() ? code.toString()
+                                            : QStringLiteral("done");
+                }
+                logSystem(QStringLiteral("net %1 %2 %3")
+                              .arg(verb, status, reply->url().toString()));
+            });
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
     m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
 

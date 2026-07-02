@@ -490,6 +490,21 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
+    // Diagnostic: mirror every HTTP request the app makes into the network log
+    // (verb + status + URL). Off by default; handy for confirming what the
+    // background traffic actually is (adhoc #74).
+    auto *verboseNetLogCheck =
+        new QCheckBox("Log every network request in the network log");
+    verboseNetLogCheck->setChecked(
+        QSettings().value(kVerboseNetworkLogSetting, false).toBool());
+    verboseNetLogCheck->setToolTip(
+        "Record every HTTP request the app makes — method, status code and URL "
+        "— in the network log, so you can see exactly what traffic is going "
+        "out. Verbose; off by default.");
+    connect(verboseNetLogCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kVerboseNetworkLogSetting, enabled);
+    });
+
     // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
     // Mirror nodes view. Off by default on the desktop so a personal machine
     // doesn't broadcast its load; headless installs are seeded on at startup so
@@ -1005,6 +1020,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
+    generalCol->addWidget(verboseNetLogCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(nodeStatsLabel);
     generalCol->addWidget(nodeStatsHint);
