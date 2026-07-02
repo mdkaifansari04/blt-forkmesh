@@ -108,7 +108,7 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$")
 # Release asset download (issue #304): the bytes live in the node's
 # content-addressed store (never in git), streamed back over the host tunnel.
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.
@@ -120,6 +120,11 @@ GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
 ROOM_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 TUNNEL_TIMEOUT_MS = 20000
 GIT_TIMEOUT_MS = 60000
+# Most files one /blobs batch may read. One batched request replaces the
+# website's per-record /blob fan-out (50+ parallel HTTP calls per page view,
+# which tripped the per-repo rate limit); the DO spreads the reads over the
+# live tunnel concurrently instead.
+MAX_BLOB_BATCH = 60
 # Aggregate homepage/network stats. Cached at the edge so a burst of visitors
 # costs one computation per colo per TTL instead of a Durable Object fan-out per
 # visit. The flagship room whose live client count the homepage shows.
@@ -7828,7 +7833,7 @@ class Default(WorkerEntrypoint):
                 sig = params.get("sig", [""])[0]
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
-            elif host_match.group(3) in ("tree", "blob", "raw", "history", "commit", "branches"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -8510,6 +8515,39 @@ class ForkMeshHost(DurableObject):
         if action == "raw":
             await self._mark_present(path)
             return await self._raw_blob(rel_path, ref)
+        if action == "blobs":
+            # Batched blob read: one HTTP request returns up to MAX_BLOB_BATCH
+            # files (repeated ?path= params), fanned out over the live tunnel
+            # concurrently inside the DO. The website's issue/PR/discussion
+            # lists used to fetch every record's markdown as its own /blob
+            # request — 50+ parallel HTTP calls per page view, which tripped
+            # the per-repo rate limit and hammered the host.
+            await self._mark_present(path)
+            paths = [p.strip() for p in parse_qs(url.query).get("path", [])
+                     if p and p.strip()][:MAX_BLOB_BATCH]
+            if not paths:
+                return json_response({"error": "path_required"}, status=400)
+            results = await asyncio.gather(
+                *[self._tunnel_result("blob", p, ref) for p in paths])
+            if results and all(not r.get("ok") for r in results):
+                # Nothing could be served (host gone / tunnel dead). Surface it
+                # as the request's status so the router's mirror fallback sees
+                # the 503/504 and serves from a live mirror, instead of a 200
+                # full of nulls pinning traffic to a dead node.
+                stats = [int(r.get("_status") or 502) for r in results]
+                status = 503 if 503 in stats else 504 if 504 in stats else 502
+                return json_response(
+                    {"ok": False, "error": "unavailable"}, status=status)
+            blobs = {}
+            for p, result in zip(paths, results):
+                result.pop("_status", None)
+                blobs[p] = result if result.get("ok") else None
+            payload = {"ok": True, "blobs": blobs}
+            served = REPO_HOST_RE.match(path)
+            served_by = safe_segment(served.group(1)) if served else ""
+            if served_by:
+                payload["servedBy"] = served_by
+            return json_response(payload)
         if action in ("tree", "blob", "history", "commit", "branches"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
@@ -8697,13 +8735,15 @@ class ForkMeshHost(DurableObject):
                 best, best_score = ws, score
         return best
 
-    async def _tunnel(self, op, rel_path, ref="", served_by=""):
+    async def _tunnel_result(self, op, rel_path, ref=""):
+        # One request over the live tunnel, returned as a payload dict rather
+        # than a Response so callers can batch several reads into one HTTP
+        # response (see the /blobs action). Failures carry the HTTP status
+        # they'd map to under "_status"; _tunnel pops it before responding.
         self._ensure()
         host = self._best_host()
         if host is None:
-            return json_response(
-                {"ok": False, "error": "no_host"}, status=503
-            )
+            return {"ok": False, "error": "no_host", "_status": 503}
 
         self.counter += 1
         req_id = "r%d" % self.counter
@@ -8719,34 +8759,37 @@ class ForkMeshHost(DurableObject):
         except Exception:
             self.pending.pop(req_id, None)
             self._drop_host(host)
-            return json_response(
-                {"ok": False, "error": "host_unavailable"}, status=503
-            )
+            return {"ok": False, "error": "host_unavailable", "_status": 503}
 
         try:
             msg = await asyncio.wait_for(future, timeout=TUNNEL_TIMEOUT_MS / 1000)
         except Exception:
             self.pending.pop(req_id, None)
-            return json_response({"ok": False, "error": "timeout"}, status=504)
+            return {"ok": False, "error": "timeout", "_status": 504}
 
         self._update_rtt(host, Date.now() - started)
 
         if not msg.get("ok"):
-            return json_response(
-                {"ok": False, "error": msg.get("error", "host_error")},
-                status=502,
-            )
+            return {"ok": False, "error": msg.get("error", "host_error"),
+                    "_status": 502}
         payload = {
             key: value
             for key, value in msg.items()
             if key not in ("type", "reqId", "ok")
         }
         payload["ok"] = True
+        return payload
+
+    async def _tunnel(self, op, rel_path, ref="", served_by=""):
+        result = await self._tunnel_result(op, rel_path, ref)
+        status = int(result.pop("_status", 200) or 200)
+        if not result.get("ok"):
+            return json_response(result, status=status)
         if served_by:
             # The mirror node that answered, so the website can show a
             # "served by <node>" note confirming the round-robin is working.
-            payload["servedBy"] = served_by
-        return json_response(payload)
+            result["servedBy"] = served_by
+        return json_response(result)
 
     async def _stream_request(self, host, message, headers):
         # Send a chunked-transfer request to the host and return a Response

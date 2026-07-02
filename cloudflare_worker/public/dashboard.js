@@ -1029,6 +1029,7 @@
   function setRepoTab(tab) {
     const detail = $(`[data-dashboard-repo-tab-panel="${tab}"]`)?.closest("[data-repo-detail]") || $("[data-repo-detail]");
     if (!detail) return;
+    state.activeRepoTab = tab;
     detail.querySelectorAll("[data-dashboard-repo-tab]").forEach((button) => {
       const active = button.dataset.dashboardRepoTab === tab;
       button.setAttribute("aria-selected", active ? "true" : "false");
@@ -2077,6 +2078,26 @@
     return String(content || "");
   }
 
+  async function fetchRepoBlobs(repo, paths) {
+    // Batched file read: ONE request returns every path (repeated ?path=
+    // params); the worker fans the reads out over the live tunnel itself.
+    // Fetching each record as its own /blob call flooded the relay with 50+
+    // parallel requests per page view and tripped the per-repo rate limit.
+    // Missing/unreadable paths come back null.
+    if (!paths.length) return {};
+    const query = new URLSearchParams();
+    paths.forEach((path) => query.append("path", path));
+    const current = new URLSearchParams(location.search || "");
+    ["viewer", "ts", "sig"].forEach((key) => {
+      const value = current.get(key);
+      if (value) query.set(key, value);
+    });
+    query.set("ref", repoSelectedBranch(repo));
+    const data = await fetchRepoJson(`${repoApiBase(repo)}/blobs?${query.toString()}`);
+    renderRepoServedBy(data.servedBy);
+    return data.blobs || {};
+  }
+
   async function loadRepoRecordsFromMirror(repo, config) {
     let tree;
     try {
@@ -2089,26 +2110,25 @@
       .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
       .sort((a, b) => Number(b.name) - Number(a.name))
       .slice(0, 50);
-    const records = await Promise.all(dirs.map(async (entry) => {
+    // One batched request for every record file instead of a per-record fan-out.
+    const blobs = await fetchRepoBlobs(
+      repo, dirs.map((entry) => `${config.dir}/${entry.name}/${config.file}`));
+    const records = dirs.map((entry) => {
       const number = Number(entry.name);
-      const recordPath = `${config.dir}/${entry.name}/${config.file}`;
-      try {
-        const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath }));
-        const parsed = parseFrontMatter(blobText(blob));
-        const values = parsed.values || {};
-        return {
-          number,
-          title: values.title || `${config.itemLabel} #${number}`,
-          state: values.status || values.state || values.category || "open",
-          author: values.authorName || values.author || "unknown",
-          date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
-          meta: config.meta(values),
-          body: parsed.body || "",
-        };
-      } catch (_) {
-        return null;
-      }
-    }));
+      const blob = blobs[`${config.dir}/${entry.name}/${config.file}`];
+      if (!blob) return null;
+      const parsed = parseFrontMatter(blobText(blob));
+      const values = parsed.values || {};
+      return {
+        number,
+        title: values.title || `${config.itemLabel} #${number}`,
+        state: values.status || values.state || values.category || "open",
+        author: values.authorName || values.author || "unknown",
+        date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
+        meta: config.meta(values),
+        body: parsed.body || "",
+      };
+    });
     return records.filter(Boolean);
   }
 
@@ -2299,6 +2319,9 @@
 
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
+    // Total issue count from the root tree's bundled tallies; the first view of
+    // the Issues tab refines it to the OPEN count (issues load lazily now).
+    if (Number.isFinite(Number(counts.issues))) setRepoTabCount("issues", Number(counts.issues));
     if (Number.isFinite(Number(counts.pulls))) setRepoTabCount("pulls", Number(counts.pulls));
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
@@ -2354,25 +2377,25 @@
         .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
         .sort((a, b) => Number(b.name) - Number(a.name))
         .slice(0, 50);
-      const items = (await Promise.all(dirs.map(async (entry) => {
+      // One batched request for all of them, not one /blob call per issue.
+      const blobs = await fetchRepoBlobs(
+        repo, dirs.map((entry) => `issues/${Number(entry.name)}/issue.md`));
+      const items = dirs.map((entry) => {
         const number = Number(entry.name);
-        try {
-          const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: `issues/${number}/issue.md` }));
-          const parsed = parseFrontMatter(blobText(blob));
-          const values = parsed.values || {};
-          return {
-            number,
-            title: values.title || `issue #${number}`,
-            status: values.status || values.state || "open",
-            author: values.authorName || values.author || "unknown",
-            date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
-            meta: repoCollectionConfig.issues.meta(values),
-            body: parsed.body || "",
-          };
-        } catch (_) {
-          return null;
-        }
-      }))).filter(Boolean);
+        const blob = blobs[`issues/${number}/issue.md`];
+        if (!blob) return null;
+        const parsed = parseFrontMatter(blobText(blob));
+        const values = parsed.values || {};
+        return {
+          number,
+          title: values.title || `issue #${number}`,
+          status: values.status || values.state || "open",
+          author: values.authorName || values.author || "unknown",
+          date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
+          meta: repoCollectionConfig.issues.meta(values),
+          body: parsed.body || "",
+        };
+      }).filter(Boolean);
       state.issuesView.items = items;
       state.issuesView.filter = "open";
       setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
@@ -2606,8 +2629,20 @@
 
   function loadRepoFeaturePanels(repo) {
     loadRepoCommits(repo);
-    loadRepoIssues(repo);
     loadRepoMirrors(repo);
+    // Issue/PR/discussion lists load on their FIRST tab view (and reload here
+    // after a repo/branch switch): fetching them eagerly for every repo open
+    // fired blob reads for tabs nobody was looking at. The tab badges stay
+    // filled meanwhile from the root tree's bundled counts.
+    state.loadedRepoTabs = {};
+    const active = state.activeRepoTab || "code";
+    if (active === "issues") {
+      state.loadedRepoTabs.issues = true;
+      loadRepoIssues(repo);
+    } else if (active === "pulls" || active === "discussions") {
+      state.loadedRepoTabs[active] = true;
+      loadRepoCollection(repo, active, `[data-repo-${active}]`);
+    }
   }
 
   function updateRepoLiveCounts(repo, counts) {
@@ -3557,12 +3592,14 @@
       if (repoTabButton) {
         const tab = repoTabButton.dataset.dashboardRepoTab || "code";
         setRepoTab(tab);
-        // Pull requests and discussions are fetched on first view so a repo with
-        // many records doesn't fan out into dozens of blob requests on load.
-        if (state.selectedRepo && (tab === "pulls" || tab === "discussions") && !state.loadedRepoTabs?.[tab]) {
+        // Issues, pull requests and discussions are fetched on first view so a
+        // repo with many records doesn't fire record reads on load for tabs
+        // nobody opened.
+        if (state.selectedRepo && ["issues", "pulls", "discussions"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
           if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
           state.loadedRepoTabs[tab] = true;
-          loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
+          if (tab === "issues") loadRepoIssues(state.selectedRepo);
+          else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
         }
         return;
       }
