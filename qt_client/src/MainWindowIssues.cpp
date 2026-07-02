@@ -748,6 +748,20 @@ QWidget *MainWindow::buildIssuesSection()
                                   QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_issueAgentProvider);
     m_issueAgentProvider->setToolTip("Which agent to run on this issue");
+    // Model picker beneath the provider so a run can target a specific model
+    // (e.g. Opus / Sonnet / Haiku for Claude), refilled when the provider
+    // changes. Empty "Default model" leaves the provider's own default in place.
+    m_issueAgentModel = new QComboBox(meta);
+    m_issueAgentModel->setToolTip("Which model the agent uses");
+    fillAgentFixModelCombo(m_issueAgentModel,
+                           m_issueAgentProvider->currentData().toString());
+    connect(m_issueAgentProvider,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+                if (m_issueAgentProvider && m_issueAgentModel)
+                    fillAgentFixModelCombo(
+                        m_issueAgentModel,
+                        m_issueAgentProvider->currentData().toString());
+            });
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
     m_issueAgentCreatePrCheck->setToolTip(
@@ -778,6 +792,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     agentLayout->addWidget(m_issueAgentValue);
     agentLayout->addWidget(m_issueAgentProvider);
+    agentLayout->addWidget(m_issueAgentModel);
     agentLayout->addWidget(m_issueAssignAgentButton);
     agentLayout->addWidget(m_issueAgentCreatePrCheck);
     agentLayout->addWidget(m_issueAgentViewButton, 0, Qt::AlignLeft);
@@ -785,7 +800,10 @@ QWidget *MainWindow::buildIssuesSection()
     agentLayout->addLayout(ideRow);
     connect(m_issueAssignAgentButton, &QPushButton::clicked, this, [this] {
         if (m_issueAgentProvider)
-            assignIssueToAgent(m_issueAgentProvider->currentData().toString());
+            assignIssueToAgent(m_issueAgentProvider->currentData().toString(),
+                               m_issueAgentModel
+                                   ? m_issueAgentModel->currentData().toString()
+                                   : QString());
     });
     connect(m_issueAgentViewButton, &QPushButton::clicked, this,
             &MainWindow::openAgentSessionFromIssue);
@@ -3102,6 +3120,8 @@ void MainWindow::updateIssueActionState()
     }
     if (m_issueAgentProvider)
         m_issueAgentProvider->setEnabled(writable && haveIssue);
+    if (m_issueAgentModel)
+        m_issueAgentModel->setEnabled(writable && haveIssue);
     if (m_issueAgentCreatePrCheck)
         m_issueAgentCreatePrCheck->setEnabled(writable && haveIssue);
     if (m_issueAgentViewButton)
