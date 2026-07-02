@@ -2193,6 +2193,10 @@ const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel")
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// When an agent is created from a non-Agents tab, automatically switch to the
+// Agents tab and select the new session so the user can watch it run.
+// Default on; can be disabled in Settings.
+const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");

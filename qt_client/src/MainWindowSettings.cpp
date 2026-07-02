@@ -137,6 +137,17 @@ QWidget *MainWindow::buildSettingsSection()
                                      defaultTabCombo->currentData().toInt());
             });
 
+    auto *autoSwitchToAgentCheck =
+        new QCheckBox("Switch to Agents tab when a new agent is created");
+    autoSwitchToAgentCheck->setChecked(
+        QSettings().value(kAutoSwitchToAgentSetting, true).toBool());
+    autoSwitchToAgentCheck->setToolTip(
+        "When you start an agent from a non-Agents tab, automatically navigate "
+        "to the Agents tab and select the new session so you can watch it run.");
+    connect(autoSwitchToAgentCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoSwitchToAgentSetting, enabled);
+    });
+
     // Screenshot: an inline calibration target for the region screenshot tool. It
     // shows a square with corner brackets and a centre crosshair right here in
     // Settings — grab it with the screenshot button and confirm the captured
@@ -1005,6 +1016,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(autoUpdateCheck);
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
+    generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);
