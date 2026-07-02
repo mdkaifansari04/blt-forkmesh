@@ -607,6 +607,14 @@ QString MainWindow::testArrowOnWorktrees(bool down)
 
 void MainWindow::testClickRepoDetailTab(int id)
 {
+    if (id == 1) {
+        // Commits has no top-bar tab anymore: drive the commit strip's
+        // "N Commits" toggle instead, the same path a real click takes
+        // (no-op when the panel is already showing — click would hide it).
+        if (m_historyButton && !m_historyButton->isChecked())
+            m_historyButton->click();
+        return;
+    }
     if (!m_repoDetailTabs)
         return;
     if (QAbstractButton *b = m_repoDetailTabs->button(id))
