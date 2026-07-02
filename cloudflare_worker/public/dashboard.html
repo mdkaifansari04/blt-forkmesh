@@ -1069,6 +1069,41 @@
                       </button>
                     </div>
                   </section>
+
+                  <section class="rounded-lg border border-border bg-card overflow-hidden">
+                    <div class="border-b border-border px-4 py-3">
+                      <h2 class="text-sm font-semibold text-foreground">Nodes</h2>
+                    </div>
+                    <div class="grid gap-4 p-4">
+                      <p class="text-sm leading-6 text-muted-foreground">
+                        Claim ownership of a node (e.g. a headless mirror you installed) by entering its node ID below. A confirmation code will appear on that node — enter it here to finish linking it to your account.
+                      </p>
+                      <ul data-claim-node-list class="grid gap-1.5 text-xs text-foreground">
+                        <li class="text-muted-foreground">No linked nodes yet.</li>
+                      </ul>
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Node ID
+                        <input data-claim-node-input type="text" inputmode="latin" autocomplete="off" placeholder="node-name" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                      </label>
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Current password
+                        <input data-claim-node-password type="password" autocomplete="current-password" placeholder="Required to claim a node" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                      </label>
+                      <p data-claim-node-status class="min-h-4 text-xs text-muted-foreground"></p>
+                      <button data-claim-node-send type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground hover:bg-secondary/80 transition-colors">
+                        Send claim code
+                      </button>
+                      <div data-claim-code-row class="hidden grid gap-3 border-t border-border pt-4">
+                        <label class="grid gap-1.5 text-xs text-muted-foreground">
+                          Confirmation code (shown on the node)
+                          <input data-claim-code-input type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                        </label>
+                        <button data-claim-code-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                          Link node
+                        </button>
+                      </div>
+                    </div>
+                  </section>
                 </div>
 
                 <aside class="grid gap-5 content-start min-w-0">
