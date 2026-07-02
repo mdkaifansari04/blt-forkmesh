@@ -1208,6 +1208,18 @@ void setDiffSplitPref(bool split)
     QSettings().setValue(QStringLiteral("view/diffSplit"), split);
 }
 
+// User preference (persisted): automatically mark a pull request's files as
+// "Viewed" as the reviewer scrolls past them in the Files-changed diff.
+// Defaults off, matching GitHub's same-named setting.
+bool autoMarkViewedOnScrollPref()
+{
+    return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), false).toBool();
+}
+void setAutoMarkViewedOnScrollPref(bool on)
+{
+    QSettings().setValue(QStringLiteral("view/autoMarkViewedOnScroll"), on);
+}
+
 // Dispatch to the split or unified renderer based on the current preference.
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,
