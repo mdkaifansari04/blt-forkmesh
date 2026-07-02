@@ -1598,8 +1598,13 @@ QWidget *MainWindow::buildRepoSecurityTab()
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
-        if (!path.isEmpty())
-            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
+        if (path.isEmpty())
+            return;
+        // Switch to the Code tab (index 0) so the highlighted line is visible;
+        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
     scroll->setWidget(content);
@@ -2088,8 +2093,13 @@ QWidget *MainWindow::buildRepoQualityTab()
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
-        if (!path.isEmpty())
-            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
+        if (path.isEmpty())
+            return;
+        // Switch to the Code tab (index 0) so the highlighted line is visible;
+        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
     scroll->setWidget(content);
