@@ -3602,11 +3602,13 @@ private:
     int registerExternalSession(const QString &uuid); // auto-create a temp list entry
     void surfaceExternalSession(const QString &uuid); // click -> jump to its entry
     void unsurfaceExternalSession(int sessionId);     // remove a temp entry
+    void deleteExternalSession(int sessionId); // kill the CLI process, then unsurface
     int externalTempIdFor(const QString &uuid);
     bool isExternalSession(int sessionId) const { return sessionId <= kExternalIdBase; }
     bool externalIsLive(const QString &uuid) const; // still in the detected set
     void renderExternalTranscript(int sessionId, bool full);
     void stopExternalSession(int sessionId); // signal the external CLI process to quit
+    void killExternalSessionPids(const QList<qint64> &pids); // SIGTERM, then SIGKILL fallback
     QSet<QString> m_externalStopped;         // uuids we've stopped — keep them idle
     QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
     QPlainTextEdit *m_agentPromptEdit = nullptr;
