@@ -151,6 +151,10 @@ struct RepositoryRecord {
     // push and can't be triggered manually, but stay listed so past runs remain
     // visible and the switch can be flipped back on.
     QStringList disabledWorkflows;
+    // Block pushes when the diff introduces a high-confidence secret (API key,
+    // private key, etc.). Enabled by default; the user can bypass per-push or
+    // turn it off entirely here.
+    bool secretScanningEnabled = true;
     // Temporary, browse-only cache for a repo hosted by another node. Preview
     // repos are not saved, advertised, published, hosted, or wired for actions.
     bool previewOnly = false;
@@ -1567,6 +1571,8 @@ private:
     void updateRepoSource();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
+    // Enable or disable secret-scanning push protection for the open repo.
+    void setRepoSecretScanningEnabled(bool on);
     // Switch a single workflow (by path) on or off for the open repo, persist it,
     // and refresh the manual-run bar so a disabled workflow can't be run by hand.
     void setWorkflowDisabled(const QString &path, bool disabled);
@@ -3193,6 +3199,7 @@ private:
     // checkboxes drive the same state via setRepoActionsEnabled().
     QCheckBox *m_actionsEnabledCheck = nullptr;
     QCheckBox *m_settingsActionsCheck = nullptr;
+    QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
     QCheckBox *m_repoPrivateCheck = nullptr;

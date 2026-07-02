@@ -177,13 +177,14 @@ QString redacted(QString match)
     return match.left(4) + QStringLiteral("...") + match.right(4);
 }
 
-QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
+struct SecretPattern {
+    QString name;
+    QRegularExpression re;
+};
+
+const QList<SecretPattern> &secretPatterns()
 {
-    struct Pattern {
-        QString name;
-        QRegularExpression re;
-    };
-    const QList<Pattern> patterns{
+    static const QList<SecretPattern> kPatterns{
         {QStringLiteral("GitHub token"),
          QRegularExpression(QStringLiteral("\\bgh[pousr]_[A-Za-z0-9_]{36}\\b"))},
         {QStringLiteral("AWS access key"),
@@ -193,11 +194,15 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
         {QStringLiteral("Private key"),
          QRegularExpression(QStringLiteral("-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"))},
     };
+    return kPatterns;
+}
 
+QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
+{
     QList<RepoSecurityFinding> findings;
     for (const RepoFile &file : files) {
         const QString text = QString::fromUtf8(file.content);
-        for (const Pattern &pattern : patterns) {
+        for (const SecretPattern &pattern : secretPatterns()) {
             auto matches = pattern.re.globalMatch(text);
             while (matches.hasNext()) {
                 const QRegularExpressionMatch match = matches.next();
@@ -217,6 +222,70 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
                     QStringLiteral("Rotate the credential and remove it from git.");
                 findings.append(finding);
             }
+        }
+    }
+    return findings;
+}
+
+// Scan a raw `git diff` output string for secrets introduced in added lines.
+QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
+{
+    static const QRegularExpression kHunkRe(
+        QStringLiteral(R"(@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@)"));
+
+    QList<RepoSecurityFinding> findings;
+    QString currentFile;
+    int hunkStart = 0;
+    int hunkOffset = 0;
+
+    for (const QString &line : diff.split(QLatin1Char('\n'))) {
+        if (line.startsWith(QStringLiteral("+++ b/"))) {
+            currentFile = line.mid(6).trimmed();
+            hunkStart = 0;
+            hunkOffset = 0;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("diff --git ")) ||
+            line.startsWith(QStringLiteral("--- ")) ||
+            line.startsWith(QStringLiteral("index "))) {
+            continue;
+        }
+        const QRegularExpressionMatch hunkMatch = kHunkRe.match(line);
+        if (hunkMatch.hasMatch()) {
+            hunkStart = hunkMatch.captured(1).toInt();
+            hunkOffset = 0;
+            continue;
+        }
+        if (line.startsWith(QLatin1Char('+'))) {
+            const int lineNum = hunkStart + hunkOffset;
+            const QString content = line.mid(1);
+            for (const SecretPattern &p : secretPatterns()) {
+                auto matches = p.re.globalMatch(content);
+                while (matches.hasNext()) {
+                    const QRegularExpressionMatch m = matches.next();
+                    RepoSecurityFinding finding;
+                    finding.id = QStringLiteral("secret:%1:%2:%3")
+                                     .arg(currentFile)
+                                     .arg(lineNum)
+                                     .arg(m.capturedStart());
+                    finding.category = QStringLiteral("Secret");
+                    finding.severity = RepoSecuritySeverity::Critical;
+                    finding.title = p.name;
+                    finding.detail =
+                        QStringLiteral("Possible %1 introduced in push: %2")
+                            .arg(p.name.toLower(), redacted(m.captured(0)));
+                    finding.path = currentFile;
+                    finding.line = lineNum;
+                    finding.recommendedAction =
+                        QStringLiteral("Rotate the credential and remove it from git.");
+                    findings.append(finding);
+                }
+            }
+            hunkOffset++;
+        } else if (line.startsWith(QLatin1Char('-'))) {
+            // removed line — does not advance new-file line counter
+        } else if (!line.isEmpty()) {
+            hunkOffset++; // context line
         }
     }
     return findings;
@@ -453,6 +522,31 @@ QString RepoSecurity::severityText(RepoSecuritySeverity severity)
         return QStringLiteral("Critical");
     }
     return QStringLiteral("Info");
+}
+
+QList<RepoSecurityFinding> RepoSecurity::findSecretsInPush(
+    const QString &localPath, const QString &upstreamRef)
+{
+    if (localPath.trimmed().isEmpty())
+        return {};
+
+    if (!upstreamRef.trimmed().isEmpty()) {
+        QProcess git;
+        git.start(QStringLiteral("git"),
+                  {QStringLiteral("-C"), localPath, QStringLiteral("diff"),
+                   upstreamRef + QStringLiteral("..HEAD")});
+        if (git.waitForFinished(15000) && git.exitCode() == 0) {
+            const QString diff = QString::fromUtf8(git.readAllStandardOutput());
+            if (!diff.trimmed().isEmpty())
+                return secretFindingsFromDiff(diff);
+            return {};
+        }
+    }
+
+    // Fallback (relay repos / no upstream): scan all tracked text files.
+    RepoSecurityInput input;
+    input.localPath = localPath;
+    return secretFindings(trackedTextFiles(input));
 }
 
 RepoSecuritySeverity RepoSecurity::highestSeverity(

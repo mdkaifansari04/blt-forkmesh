@@ -166,6 +166,8 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.secretScanningEnabled =
+            settings.value("secretScanningEnabled", true).toBool();
         repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
         repo.hostedSinceMs = settings.value("hostedSinceMs").toLongLong();
         repo.lastSyncMs = settings.value("lastSyncMs").toLongLong();
@@ -202,6 +204,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("secretScanningEnabled", repo.secretScanningEnabled);
         settings.setValue("disabledWorkflows", repo.disabledWorkflows);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
         settings.setValue("lastSyncMs", repo.lastSyncMs);
@@ -1363,6 +1366,30 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     outer->addSpacing(10);
 
+    // --- Secret scanning --------------------------------------------------
+    auto *secretHeading = new QLabel("Secret scanning");
+    secretHeading->setObjectName("sectionLabel");
+    outer->addWidget(secretHeading);
+
+    m_secretScanCheck = new QCheckBox("Block push if secrets are detected");
+    m_secretScanCheck->setCursor(Qt::PointingHandCursor);
+    m_secretScanCheck->setToolTip(
+        "Before each push ForkMesh scans the commits being pushed for API keys, "
+        "private keys, and other high-confidence secrets. If any are found you "
+        "will be warned and can cancel or push anyway.");
+    connect(m_secretScanCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoSecretScanningEnabled(on); });
+    outer->addWidget(m_secretScanCheck);
+
+    auto *secretHint = new QLabel(
+        "Detects GitHub tokens, AWS access keys, Slack tokens, and PEM private "
+        "keys. Rotate any exposed credentials immediately.");
+    secretHint->setObjectName("statusLine");
+    secretHint->setWordWrap(true);
+    outer->addWidget(secretHint);
+
+    outer->addSpacing(10);
+
     // --- Coves (encrypted vaults) -----------------------------------------
     outer->addWidget(buildCoveSection());
 
@@ -1423,6 +1450,24 @@ void MainWindow::setRepoActionsEnabled(bool on)
     }
 }
 
+void MainWindow::setRepoSecretScanningEnabled(bool on)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (m_repositories[m_repoDetailIndex].secretScanningEnabled == on)
+        return;
+    m_repositories[m_repoDetailIndex].secretScanningEnabled = on;
+    saveRepositories();
+    logSystem(QStringLiteral("Secret scanning push protection %1 for %2/%3.")
+                  .arg(on ? "enabled" : "disabled",
+                       m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
+    if (m_secretScanCheck) {
+        QSignalBlocker block(m_secretScanCheck);
+        m_secretScanCheck->setChecked(on);
+    }
+}
+
 bool MainWindow::isWorkflowDisabled(const QString &path) const
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -1470,6 +1515,12 @@ void MainWindow::refreshRepoSettings()
         m_settingsActionsCheck->setEnabled(haveRepo);
         m_settingsActionsCheck->setChecked(
             haveRepo && m_repositories.at(m_repoDetailIndex).actionsEnabled);
+    }
+    if (m_secretScanCheck) {
+        QSignalBlocker block(m_secretScanCheck);
+        m_secretScanCheck->setEnabled(haveRepo);
+        m_secretScanCheck->setChecked(
+            !haveRepo || m_repositories.at(m_repoDetailIndex).secretScanningEnabled);
     }
     // Show/hide + reload the collaborator list for the open repo (issue #9).
     refreshRepoCollaborators();
