@@ -516,6 +516,17 @@ QWidget *MainWindow::buildRepoOverviewPage()
             loadBranchesPanel();
         }
     });
+    m_toolbarCommitsButton = new QPushButton("Commits");
+    m_toolbarCommitsButton->setObjectName("ghostButton");
+    m_toolbarCommitsButton->setCursor(Qt::PointingHandCursor);
+    m_toolbarCommitsButton->setToolTip("Show the full commit history");
+    setOcticon(m_toolbarCommitsButton, "history", 16);
+    connect(m_toolbarCommitsButton, &QPushButton::clicked, this, [this] {
+        // Reuse the commit strip's toggle: it already handles the deferred
+        // list build (loadCommits/refreshSourceControl + openMostRecentCommit).
+        if (m_historyButton && !m_historyButton->isChecked())
+            m_historyButton->click();
+    });
     m_tagsButton = new QPushButton("Tags");
     m_tagsButton->setObjectName("ghostButton");
     m_tagsButton->setCursor(Qt::PointingHandCursor);
@@ -550,6 +561,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->setSpacing(8);
     toolbar->addWidget(m_branchButton);
     toolbar->addWidget(m_branchesButton);
+    toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
 
@@ -2418,6 +2430,9 @@ void MainWindow::showRepoOverview()
         m_filesModeOverviewButton->setChecked(true);
     if (m_filesModeExplorerButton)
         m_filesModeExplorerButton->setChecked(false);
+    // "Code overview" always means the file list + README: if the commits
+    // panel was left showing (via the commit strip's toggle), swap it back.
+    showOverviewFiles();
 }
 
 void MainWindow::showRepoEditor()
@@ -6692,6 +6707,22 @@ QWidget *MainWindow::buildRepoDetailSection()
     // changes never reflows the tab content below — that shift is what read as the
     // whole view "resizing" on small screens, most visibly on Mirror nodes.
     m_repoPublishBar = nullptr; // no separate row: the button floats over Code
+
+    // Eye icon riding beside the Sync button: a one-click shortcut to the
+    // commits panel while the pending-commits state is already on screen.
+    m_repoPushEyeButton = new QPushButton(this);
+    m_repoPushEyeButton->setObjectName("ghostButton");
+    m_repoPushEyeButton->setProperty("buttonSize", "sm");
+    m_repoPushEyeButton->setCursor(Qt::PointingHandCursor);
+    m_repoPushEyeButton->hide();
+    setOcticon(m_repoPushEyeButton, "eye", 14);
+    m_repoPushEyeButton->setToolTip("View the commit history");
+    connect(m_repoPushEyeButton, &QPushButton::clicked, this, [this] {
+        if (m_historyButton && !m_historyButton->isChecked())
+            m_historyButton->click();
+        else
+            showOverviewCommits();
+    });
 
     // Issue-looper toggle (adhoc #130): a compact switch floating in the band
     // just above the Issues tab, mirroring how the Sync button floats over
