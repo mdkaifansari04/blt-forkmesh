@@ -691,6 +691,56 @@ int main(int argc, char *argv[])
               QStringLiteral("opening the Mirror-nodes tab focuses its table for "
                              "arrow-key navigation"));
 
+        // adhoc #46: a node that re-registers (reinstall → new key) transiently
+        // sits in the roster under two identities with the same name while the
+        // old key's session still heartbeats. The Mirror nodes list must show
+        // such a node once, and the newer identity wins the row.
+        {
+            QList<MemberInfo> dupRoster;
+            dupRoster.append(testMember(QStringLiteral("self-node"),
+                                        QStringLiteral("Self Node"), true));
+            MirrorAdvert advert;
+            advert.ownerName = QStringLiteral("mirror1/wtrepo");
+            advert.source = QStringLiteral("me/wtrepo");
+            advert.branch = QStringLiteral("main");
+            advert.commit =
+                QStringLiteral("1111111111111111111111111111111111111111");
+            advert.updatedMs = 1000;
+            MemberInfo oldIdentity = testMember(QStringLiteral("mirror1-old-key"),
+                                                QStringLiteral("mirror1"));
+            oldIdentity.version = QStringLiteral("0.5.9");
+            oldIdentity.mirrorDetails.append(advert);
+            MemberInfo newIdentity = testMember(QStringLiteral("mirror1-new-key"),
+                                                QStringLiteral("mirror1"));
+            newIdentity.version = QStringLiteral("0.5.30");
+            newIdentity.mirrorDetails.append(advert);
+            dupRoster.append(oldIdentity);
+            dupRoster.append(newIdentity);
+            // Set the roster directly and rebuild just the Mirror nodes panel:
+            // routing this through the full setRoster (which also rebuilds the
+            // repo/node switcher) isn't needed to exercise loadMirrorNodesPanel's
+            // row-building, and the switcher rebuild would close the open repo
+            // detail since the repo-owning node ("me") isn't in this synthetic
+            // roster snapshot.
+            window.testSetHomeRosterAndReloadMirrorPanel(dupRoster);
+            const QStringList mirrorRows = window.testMirrorNodeRows();
+            int mirror1Rows = 0;
+            QString mirror1Id;
+            for (const QString &row : mirrorRows) {
+                if (row.startsWith(QStringLiteral("mirror1"))) {
+                    ++mirror1Rows;
+                    mirror1Id = row.section(QLatin1Char('|'), 1);
+                }
+            }
+            check(mirror1Rows == 1,
+                  QString("a node re-registered under a new key shows one Mirror "
+                          "nodes row, not one per identity (rows: %1)")
+                      .arg(mirrorRows.join(QStringLiteral(" ; "))));
+            check(mirror1Id == QStringLiteral("mirror1-new-key"),
+                  QString("the newer identity wins the deduped Mirror nodes row "
+                          "(got id %1)").arg(mirror1Id));
+        }
+
         // issue #172: the Branches list must also surface the worktree a branch
         // is checked out in, so an agent's isolated working tree is visible
         // without a trip to the Worktrees tab.
@@ -719,8 +769,11 @@ int main(int argc, char *argv[])
         issueSession.issueTitle = QStringLiteral("show attachment in branches list");
         window.testAddAgentSession(issueSession);
         window.testReloadBranchesPanel();
-        check(window.testBranchAttachmentText(
-                  QStringLiteral("feature/keep-selected")) == QStringLiteral("#191"),
+        // The cell reads "#191 · <status>" — the status word rides along since
+        // the Branches tab started showing agent status text — so anchor on the
+        // issue number rather than pinning the whole string.
+        check(window.testBranchAttachmentText(QStringLiteral("feature/keep-selected"))
+                  .startsWith(QStringLiteral("#191")),
               QString("branches list names the issue a branch is attached to "
                       "(adhoc #191, cell = %1)")
                   .arg(window.testBranchAttachmentText(
