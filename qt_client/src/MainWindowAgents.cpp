@@ -3001,35 +3001,7 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentMeta->setText(lines.join(sep));
     }
     setAgentUsageLabel(*session);
-    // Connected / working status pill.
-    if (m_agentStatusPill) {
-        const QString s = session->status;
-        QString dotColor = agentStatusColor(s).name();
-        QString label;
-        if (s == AgentStatus::Running)
-            label = "Connected \xC2\xB7 working on the task\xE2\x80\xA6";
-        else if (s == AgentStatus::Queued)
-            label = "Queued";
-        else if (s == AgentStatus::Waiting)
-            label = "Waiting";
-        else if (s == AgentStatus::Success)
-            label = "Done";
-        else if (s == AgentStatus::Failed)
-            label = "Failed";
-        else
-            label = agentStatusText(s);
-        QString pill =
-            QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
-                              "<span style='color:#8b949e'>%2</span>")
-                .arg(dotColor, label.toHtmlEscaped());
-        // Issue #291: once the worktree/PR has landed in the base branch, flag
-        // it right on the status pill in the merged-purple used elsewhere.
-        if (session->merged)
-            pill += QString::fromUtf8(
-                        " <span style='color:#a371f7'>\xE2\x97\x8F merged into %1</span>")
-                        .arg(agentMergeBase(*session).toHtmlEscaped());
-        m_agentStatusPill->setText(pill);
-    }
+    refreshAgentStatusPill(sessionId);
 
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
@@ -5324,8 +5296,54 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         applyAgentStatusCell(cell, *s);
         break;
     }
-    if (sessionId == m_selectedAgentSessionId)
+    if (sessionId == m_selectedAgentSessionId) {
         updateAgentActionState();
+        // The list row is only half the picture: when this session's detail
+        // view is open, the "Connected · working…" pill above the transcript
+        // is what the user is actually looking at (adhoc #33 — a status flip
+        // like a resumed session going back to Running otherwise left that
+        // pill on its stale text until the next full showAgentSession()).
+        refreshAgentStatusPill(sessionId);
+    }
+}
+
+// Rebuild the "Connected · working on the task…" pill in the session detail
+// header from the session's current status. Split out of showAgentSession so
+// a targeted status flip (updateAgentStatusCell) can refresh just this pill
+// without paying for a full header/meta rebuild.
+void MainWindow::refreshAgentStatusPill(int sessionId)
+{
+    if (!m_agentStatusPill || sessionId != m_selectedAgentSessionId)
+        return;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return;
+    const QString s = session->status;
+    QString dotColor = agentStatusColor(s).name();
+    QString label;
+    if (s == AgentStatus::Running)
+        label = "Connected \xC2\xB7 working on the task\xE2\x80\xA6";
+    else if (s == AgentStatus::Queued)
+        label = "Queued";
+    else if (s == AgentStatus::Waiting)
+        label = "Waiting";
+    else if (s == AgentStatus::Success)
+        label = "Done";
+    else if (s == AgentStatus::Failed)
+        label = "Failed";
+    else
+        label = agentStatusText(s);
+    QString pill =
+        QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
+                          "<span style='color:#8b949e'>%2</span>")
+            .arg(dotColor, label.toHtmlEscaped());
+    // Issue #291: once the worktree/PR has landed in the base branch, flag
+    // it right on the status pill in the merged-purple used elsewhere.
+    if (session->merged)
+        pill += QString::fromUtf8(
+                    " <span style='color:#a371f7'>\xE2\x97\x8F merged into %1</span>")
+                    .arg(agentMergeBase(*session).toHtmlEscaped());
+    m_agentStatusPill->setText(pill);
 }
 
 // Spin the green "sync" glyph on every running row's Status cell so the agents
