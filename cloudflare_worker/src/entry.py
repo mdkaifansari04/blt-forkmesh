@@ -7908,19 +7908,22 @@ class Default(WorkerEntrypoint):
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
                         if served and served.lower() != owner.lower():
-                            forwarded = await self._forward_to_node(
-                                request, url, repo, served,
-                                "/api/repo/%s/%s/%s" % (
-                                    served, repo, host_match.group(3)))
+                            # A failed forward (exception or 503/504: the pick's
+                            # presence row outlived its tunnel) falls through to
+                            # the named owner's own route, whose failure handler
+                            # below tries the remaining mirrors — a broken
+                            # mirror hop must degrade, never take the page down.
+                            forwarded = None
                             try:
+                                forwarded = await self._forward_to_node(
+                                    request, url, repo, served,
+                                    "/api/repo/%s/%s/%s" % (
+                                        served, repo, host_match.group(3)))
                                 fstatus = int(forwarded.status)
                             except Exception:
                                 fstatus = 0
-                            # The rotated pick couldn't serve after all (its
-                            # presence row outlived its tunnel) — fall through
-                            # to the named owner's own route, whose failure
-                            # handler below tries the remaining mirrors.
-                            if fstatus not in (503, 504):
+                            if forwarded is not None and \
+                                    fstatus not in (0, 503, 504):
                                 return forwarded
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
@@ -7931,7 +7934,8 @@ class Default(WorkerEntrypoint):
                 # reality for up to HOST_PRESENCE_STALE_MS, during which the
                 # rotation above still picks it — so on failure, serve once more
                 # in place from an online mirror of the same logical repo,
-                # excluding the node that just failed.
+                # excluding the node that just failed. Best-effort: if that
+                # forward fails too, return the named node's original error.
                 try:
                     status = int(response.status)
                 except Exception:
@@ -7940,10 +7944,13 @@ class Default(WorkerEntrypoint):
                     fallback = await self._select_browse_mirror(
                         owner, repo, exclude=owner)
                     if fallback and fallback.lower() != owner.lower():
-                        return await self._forward_to_node(
-                            request, url, repo, fallback,
-                            "/api/repo/%s/%s/%s" % (
-                                fallback, repo, host_match.group(3)))
+                        try:
+                            return await self._forward_to_node(
+                                request, url, repo, fallback,
+                                "/api/repo/%s/%s/%s" % (
+                                    fallback, repo, host_match.group(3)))
+                        except Exception:
+                            pass
             return response
 
         room = room_key_from_path(url.path)
@@ -8101,9 +8108,15 @@ class Default(WorkerEntrypoint):
                     owner, repo, refresh=is_info)
                 if serving and serving.lower() != owner.lower():
                     tail = "info/refs" if is_info else "git-upload-pack"
-                    return await self._forward_to_node(
-                        request, url, repo, serving,
-                        "/%s/%s/%s" % (serving, repo, tail))
+                    try:
+                        return await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/%s" % (serving, repo, tail))
+                    except Exception:
+                        # Best-effort: fall through to the named owner's route,
+                        # which answers with git's clean "no host" advertisement
+                        # instead of taking the whole request down.
+                        pass
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
@@ -8136,18 +8149,36 @@ class Default(WorkerEntrypoint):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host
         # DO with the path rewritten into its namespace. The client never sees a
         # redirect — the mirror's bytes stream back on the URL that was asked
-        # for. Rebuilding the Request (JsRequest.new(url, request)) carries the
-        # method, headers and body across, so git's upload-pack POST forwards
-        # intact. The rewritten path is also what the DO derives its repo
-        # identity from, so presence marking, the servedBy tag and the clone
-        # integrity gate (_state_pins) all evaluate against the node actually
-        # serving.
+        # for. The rewritten path is also what the DO derives its repo identity
+        # from, so presence marking, the servedBy tag and the clone integrity
+        # gate (_state_pins) all evaluate against the node actually serving.
+        #
+        # The forwarded request is rebuilt from PRIMITIVES only — a bare URL
+        # string for GETs (the DO reads everything from the path + query, the
+        # same shape _source_has_live_host uses), and url + a plain init dict
+        # for the git upload-pack POST. It must never be constructed around the
+        # incoming Python-wrapped request object: JsRequest.new(target, request)
+        # kills the isolate at the JS boundary (Cloudflare error 1101) before
+        # Python can even catch it, which is exactly how the first deploy of
+        # this fallback took every forwarded browse/clone down.
         target = url.scheme + "://" + url.netloc + new_path
         if url.query:
             target += "?" + url.query
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{node}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
-        return await host_object.fetch(JsRequest.new(target, request))
+        if method_name(request) != "POST":
+            return await host_object.fetch(target)
+        body = bytes(await request.bytes())
+        headers = {}
+        for name in ("content-type", "content-encoding"):
+            value = request.headers.get(name)
+            if value:
+                headers[name] = value
+        return await host_object.fetch(JsRequest.new(target, to_js({
+            "method": "POST",
+            "headers": headers,
+            "body": body,
+        })))
 
     async def _sticky_clone_fallback(self, owner, repo, refresh):
         # Which mirror serves owner/repo's clones while its named node is down.

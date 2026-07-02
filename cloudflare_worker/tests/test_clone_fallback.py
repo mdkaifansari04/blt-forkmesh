@@ -271,7 +271,8 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "public_browse" in browse
-    assert browse.count("(503, 504)") >= 2  # rotated pick AND named owner
+    assert "(0, 503, 504)" in browse  # rotated pick failed/errored -> named owner
+    assert "(503, 504)" in browse     # named owner failed -> remaining mirrors
     assert "exclude=owner" in browse
     assert "_forward_to_node" in browse
 
@@ -354,12 +355,31 @@ def test_sticky_clone_pick_is_pinned_and_live_checked():
 
 def test_forward_to_node_serves_through_the_original_url():
     # In-place serving: the request is re-dispatched to the chosen node's host
-    # DO with the path rewritten into its namespace, carrying method/headers/
-    # body across — the client never sees a redirect.
+    # DO with the path rewritten into its namespace — the client never sees a
+    # redirect. The forwarded request is rebuilt from PRIMITIVES: a bare URL
+    # string for GETs, url + a plain init dict (method/headers/body bytes) for
+    # the upload-pack POST. It must NEVER be constructed around the incoming
+    # Python-wrapped request object — JsRequest.new(target, request) crashed
+    # the isolate (Cloudflare error 1101) on every forwarded browse/clone.
     src = _worker_method_source("_forward_to_node")
-    assert "JsRequest.new" in src
     assert "host:{node}/{repo}" in src
     assert "url.query" in src
+    assert "host_object.fetch(target)" in src        # GET: bare URL string
+    assert "JsRequest.new(target, request)" not in src
+    assert "to_js" in src and "'body'" in src        # POST: primitive init dict
+    assert "content-encoding" in src                 # DO decodes the pack body
+
+
+def test_forward_failures_degrade_instead_of_erroring():
+    # Every forward call site is guarded: a mirror hop that throws (or answers
+    # 503/504 on the rotation leg) falls back to the named owner's own route —
+    # a broken forward must degrade to the old behaviour, never 500 the page
+    # or the clone.
+    route = _route_source().split("REPO_HOST_RE")[-1]
+    git_host = _worker_method_source("_git_host")
+    for src in (route, git_host):
+        assert "_forward_to_node" in src
+        assert "except Exception" in src
 
 
 def test_source_has_live_host_probes_the_host_do_not_presence():
