@@ -62,6 +62,13 @@ curl -fsSL https://forkmesh.com/install.sh | bash
 
 Force a from-source build instead with `FORKMESH_FROM_SOURCE=1`.
 
+If no prebuilt binary is published for the platform, the installer falls back
+to a source build by default. Set `FORKMESH_NO_SOURCE_FALLBACK=1` to disable
+that fallback and fail instead — this is already the default on headless
+Linux (no `DISPLAY`/`WAYLAND_DISPLAY`), since an unattended mirror-node deploy
+should always use a verified binary rather than pulling in a build toolchain.
+Headful Linux and macOS still default to allowing the fallback.
+
 ## Download endpoint
 
 ```

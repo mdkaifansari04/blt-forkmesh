@@ -4238,6 +4238,16 @@ void MainWindow::queueIssueAttachment(const QString &path)
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // A Claude model combo's popup list view was shown: re-fetch the live model
+    // list so the dropdown always reflects the provider's current line-up.
+    if (event->type() == QEvent::Show) {
+        if (auto *w = qobject_cast<QWidget *>(obj)) {
+            if (auto *combo = qobject_cast<QComboBox *>(w->parent())) {
+                if (combo->property("claudeModelCombo").toBool())
+                    refreshClaudeModelCombo();
+            }
+        }
+    }
     // First expose of the top-level window: its first frame is now on screen, so
     // it's safe to run the deferred git-backed startup without a black frame.
     if (event->type() == QEvent::Expose && obj == windowHandle()) {
