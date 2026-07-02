@@ -390,17 +390,25 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // previous roster), and skip the very first fill so we don't alert for every
     // node that was already online when we connected.
     const bool firstRoster = m_homeRoster.isEmpty();
+    const QString ownId = m_profileIdentity.publicKey();
+    const QString ownName = accountOwner();
     QSet<QString> previouslyOnline;
-    for (const MemberInfo &m : std::as_const(m_homeRoster))
+    for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+        if (m.self)
+            continue;
+        if (!ownId.isEmpty() && m.id == ownId)
+            continue;
+        if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
+            continue;
         if (m.online && !m.id.isEmpty())
             previouslyOnline.insert(m.id);
-    if (!firstRoster &&
+    }
+    const bool firstPeerRoster = previouslyOnline.isEmpty();
+    if (!firstPeerRoster &&
         QDateTime::currentMSecsSinceEpoch() >= m_nodeAlertGraceUntilMs) {
         // Never notify about our own node coming online. The roster's "self"
         // flag isn't always set (e.g. on reconnect), so also match our own node
         // id (public key) and account name defensively.
-        const QString ownId = m_profileIdentity.publicKey();
-        const QString ownName = accountOwner();
         const bool showNodeConnectAlert =
             QSettings().value(kNodeConnectAlertSetting, false).toBool();
         for (const MemberInfo &m : visibleMembers) {
@@ -986,4 +994,3 @@ void MainWindow::saveIncomingFile(const QString &fileName, const QByteArray &dat
         return;
     }
 }
-

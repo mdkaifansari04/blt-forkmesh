@@ -2607,15 +2607,20 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionFixModelCombo->setObjectName("issueControlSm");
     m_actionFixModelCombo->setCursor(Qt::PointingHandCursor);
     m_actionFixModelCombo->setToolTip("Which model the agent uses");
+    m_actionFixModelCombo->setProperty("claudeModelCombo", true);
+    m_actionFixModelCombo->view()->installEventFilter(this);
     m_actionFixModelCombo->hide();
     fillAgentFixModelCombo(m_actionFixModelCombo,
                           m_actionFixAgentCombo->currentData().toString());
+    refreshClaudeModelCombo();
     connect(m_actionFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
-                if (m_actionFixAgentCombo && m_actionFixModelCombo)
+                if (m_actionFixAgentCombo && m_actionFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_actionFixModelCombo,
                         m_actionFixAgentCombo->currentData().toString());
+                    refreshClaudeModelCombo();
+                }
             });
 
     auto *titleRow = new QHBoxLayout;
