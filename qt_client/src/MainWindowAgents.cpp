@@ -3362,18 +3362,13 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     reloadAgents();
     reloadIssues();
     if (!quiet) {
-        const bool autoSwitch =
-            QSettings().value(kAutoSwitchToAgentSetting, true).toBool();
-        const bool onAgentsTab =
-            m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-        if (autoSwitch && !onAgentsTab) {
-            switchToAgentsTab(sessionId);
-        } else {
-            setIssueInlineNotice(
-                QStringLiteral("Assigned %1 session #%2.")
-                    .arg(agentProviderName(provider))
-                    .arg(sessionId));
-        }
+        // Stay on the issue detail page after assigning — the inline notice
+        // confirms the session was created; jumping to the Agents tab yanked the
+        // user away from the issue they were reading (adhoc #8).
+        setIssueInlineNotice(
+            QStringLiteral("Assigned %1 session #%2.")
+                .arg(agentProviderName(provider))
+                .arg(sessionId));
     }
     processAgentQueue();
     return sessionId;
