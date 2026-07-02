@@ -689,7 +689,7 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        selectTab(1); // Commits
+        showOverviewCommits(); // the commits panel inside the Code overview
         if (!link.ref.isEmpty())
             showCommit(link.ref);
     }
