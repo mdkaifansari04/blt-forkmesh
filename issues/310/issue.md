@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 310
 title: Show the correct read me on the website currently it has a placeholder
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
