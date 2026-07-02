@@ -107,6 +107,17 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
+/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
+   checked state while the commits panel is showing under the commit bar. */
+QPushButton#commitsToggle {
+    background: transparent; border: 1px solid transparent; color: #8b949e;
+    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
+}
+QPushButton#commitsToggle:hover { color: #e6edf3; }
+QPushButton#commitsToggle:checked {
+    color: #e6edf3; background: rgba(46,160,67,0.18);
+    border: 1px solid #2ea043;
+}
 
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
@@ -1110,6 +1121,17 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
+/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
+   checked state while the commits panel is showing under the commit bar. */
+QPushButton#commitsToggle {
+    background: transparent; border: 1px solid transparent; color: #656d76;
+    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
+}
+QPushButton#commitsToggle:hover { color: #1f2328; }
+QPushButton#commitsToggle:checked {
+    color: #1f2328; background: rgba(31,136,61,0.14);
+    border: 1px solid #1f883d;
+}
 
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,

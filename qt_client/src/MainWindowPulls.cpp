@@ -421,10 +421,7 @@ QWidget *MainWindow::buildPullsTab()
                                          : QString();
                 if (sha.isEmpty())
                     return;
-                if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-                    m_repoDetailTabs->button(1)->setChecked(true);
-                if (m_repoDetailStack)
-                    m_repoDetailStack->setCurrentIndex(1);
+                showOverviewCommits();
                 showCommit(sha);
             });
     // Right-click a commit to copy its full hash or message — the row only shows
