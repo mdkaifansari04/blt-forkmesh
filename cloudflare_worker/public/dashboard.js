@@ -1878,8 +1878,38 @@
       }).join("");
       navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
+      if (!path) {
+        const readmeEntry = entries.find((e) => e.type === "blob" && /^readme(\.md|\.txt|\.rst)?$/i.test(String(e.name || "")));
+        const readmeBody = detail.querySelector("[data-repo-readme-body]");
+        const readmeFilename = detail.querySelector("[data-repo-readme-filename]");
+        if (readmeBody) {
+          if (readmeEntry) {
+            if (readmeFilename) readmeFilename.innerHTML = `<i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>${escapeHtml(readmeEntry.name)}`;
+            try {
+              const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: readmeEntry.name }));
+              const text = blobText(blob);
+              readmeBody.className = "whitespace-pre-wrap p-4 font-mono text-xs leading-5 text-foreground overflow-auto max-h-[40rem]";
+              readmeBody.textContent = text;
+            } catch (_) {
+              readmeBody.className = "p-4 text-sm leading-6 text-muted-foreground";
+              readmeBody.innerHTML = `<p class="mt-1">${escapeHtml(repo.description || "This repository has not published a README preview yet.")}</p>`;
+            }
+          } else {
+            readmeBody.className = "p-4 text-sm leading-6 text-muted-foreground";
+            readmeBody.innerHTML = `<p class="text-foreground font-medium">${escapeHtml(repo.name || "repository")}</p><p class="mt-1">${escapeHtml(repo.description || "This repository has not published a README preview yet.")}</p>`;
+          }
+          window.lucide?.createIcons();
+        }
+      }
     } catch (_) {
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
+      if (!path) {
+        const readmeBody = detail.querySelector("[data-repo-readme-body]");
+        if (readmeBody) {
+          readmeBody.className = "p-4 text-sm leading-6 text-muted-foreground";
+          readmeBody.innerHTML = `<p class="mt-1">${escapeHtml(repo.description || "This repository has not published a README preview yet.")}</p>`;
+        }
+      }
     }
   }
 
@@ -2961,10 +2991,9 @@
 	                  </div>
 	                  <div data-repo-blob class="hidden"></div>
 	                  <section data-repo-readme class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
-	                    <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>README.md</div>
-	                    <div class="p-4 text-sm leading-6 text-muted-foreground">
-	                      <p class="text-foreground font-medium">${escapeHtml(repo.name || "repository")}</p>
-	                      <p class="mt-1">${escapeHtml(repo.description || "This repository has not published a README preview yet.")}</p>
+	                    <div data-repo-readme-filename class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>README.md</div>
+	                    <div data-repo-readme-body class="p-4 text-sm leading-6 text-muted-foreground">
+	                      <p class="mt-1">Loading README...</p>
 	                    </div>
 	                  </section>
 	                </div>
