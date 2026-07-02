@@ -31,6 +31,7 @@
     notificationUnread: 0,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [] },
+    claimNode: { pendingNodeId: "" },
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -369,6 +370,9 @@
         : Boolean(base.hasPayoutAddress),
       avatarPng: body.avatarPng || "",
       avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
+      kind: body.kind || base.kind || "",
+      owner: body.owner ?? base.owner ?? "",
+      nodes: Array.isArray(body.nodes) ? body.nodes : (base.nodes || []),
       at: Date.now(),
     };
     if (!Object.prototype.hasOwnProperty.call(body, "avatarPng")) {
@@ -613,6 +617,7 @@
       setRenameStatus("Enter a new node name to check availability.", "");
     }
     updateRenameButton();
+    renderClaimNodePanel(session);
   }
 
   function profilePayload(extra = {}, passwordOverride) {
@@ -817,6 +822,145 @@
     } finally {
       if (button) { button.disabled = false; button.textContent = "Update node name"; }
       updateRenameButton();
+    }
+  }
+
+  // Users vs nodes (adhoc #53): claim a node (e.g. a headless mirror you
+  // installed) by its node ID, then confirm the code that appears on that
+  // node itself to complete the link.
+  function renderClaimNodePanel(session) {
+    const list = $("[data-claim-node-list]");
+    if (!list) return;
+    const nodes = Array.isArray(session?.nodes) ? session.nodes : [];
+    list.innerHTML = "";
+    if (!nodes.length) {
+      const li = document.createElement("li");
+      li.className = "text-muted-foreground";
+      li.textContent = "No linked nodes yet.";
+      list.appendChild(li);
+      return;
+    }
+    for (const node of nodes) {
+      const li = document.createElement("li");
+      li.className = "font-mono";
+      li.textContent = node;
+      list.appendChild(li);
+    }
+  }
+
+  async function claimNode() {
+    const input = $("[data-claim-node-input]");
+    const nodeId = (input?.value || "").trim().toLowerCase();
+    const password = profilePassword("[data-claim-node-password]");
+    if (!validNodeName(nodeId)) {
+      setProfilePageHint("[data-claim-node-status]", "Enter a valid node ID.", "bad");
+      return;
+    }
+    if (!password) {
+      setProfilePageHint("[data-claim-node-status]", "Enter your current password to claim a node.", "bad");
+      return;
+    }
+    const button = $("[data-claim-node-send]");
+    if (button) { button.disabled = true; button.textContent = "Sending…"; }
+    try {
+      const response = await fetch("/api/accounts/claim-node", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          identifier: state.session?.email || state.session?.nodeName || "",
+          password, nodeId,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.error || `HTTP ${response.status}`);
+      const codeRow = $("[data-claim-code-row]");
+      if (body.alreadyLinked) {
+        state.claimNode.pendingNodeId = "";
+        if (codeRow) codeRow.classList.add("hidden");
+        setProfilePageHint("[data-claim-node-status]", `"${nodeId}" is already linked to your account.`, "good");
+        await refreshPublicProfile();
+      } else {
+        state.claimNode.pendingNodeId = nodeId;
+        if (codeRow) codeRow.classList.remove("hidden");
+        setProfilePageHint(
+          "[data-claim-node-status]",
+          `Confirmation code sent to "${nodeId}". Check that node's app for the code, then enter it below.`,
+          "good");
+      }
+    } catch (error) {
+      const messages = {
+        invalid_credentials: "Incorrect password.",
+        invalid_node_id: "Enter a valid node ID.",
+        cannot_claim_self: "You can't claim your own account.",
+        no_such_node: "No node with that ID was found.",
+        not_a_node: "That ID belongs to a user account, not a claimable node.",
+        node_already_owned: "That node is already linked to another account.",
+      };
+      setProfilePageHint(
+        "[data-claim-node-status]",
+        messages[error.message] || "Could not send a claim code. Check the node ID and your password.",
+        "bad");
+    } finally {
+      if (button) { button.disabled = false; button.textContent = "Send claim code"; }
+    }
+  }
+
+  async function confirmClaimCode() {
+    const nodeId = state.claimNode.pendingNodeId;
+    const code = ($("[data-claim-code-input]")?.value || "").trim();
+    const password = profilePassword("[data-claim-node-password]");
+    if (!nodeId) {
+      setProfilePageHint("[data-claim-node-status]", "Send a claim code first.", "bad");
+      return;
+    }
+    if (!/^[0-9]{6}$/.test(code)) {
+      setProfilePageHint("[data-claim-node-status]", "Enter the 6-digit code shown on the node.", "bad");
+      return;
+    }
+    if (!password) {
+      setProfilePageHint("[data-claim-node-status]", "Enter your current password to link this node.", "bad");
+      return;
+    }
+    const button = $("[data-claim-code-confirm]");
+    if (button) { button.disabled = true; button.textContent = "Linking…"; }
+    try {
+      const response = await fetch("/api/accounts/claim-confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          identifier: state.session?.email || state.session?.nodeName || "",
+          password, nodeId, code,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.error || `HTTP ${response.status}`);
+      const nextSession = {
+        ...(state.session || {}),
+        nodes: Array.isArray(body.nodes) ? body.nodes : state.session?.nodes,
+      };
+      writeSession(nextSession);
+      renderProfile(nextSession);
+      state.claimNode.pendingNodeId = "";
+      const codeRow = $("[data-claim-code-row]");
+      if (codeRow) codeRow.classList.add("hidden");
+      const nodeInput = $("[data-claim-node-input]");
+      if (nodeInput) nodeInput.value = "";
+      const codeInput = $("[data-claim-code-input]");
+      if (codeInput) codeInput.value = "";
+      setProfilePageHint("[data-claim-node-status]", `Linked "${nodeId}" to your account.`, "good");
+    } catch (error) {
+      const messages = {
+        invalid_credentials: "Incorrect password.",
+        no_such_node: "No node with that ID was found.",
+        no_pending_claim: "No pending claim for that node. Send a new claim code.",
+        bad_code: "That code is incorrect.",
+      };
+      setProfilePageHint(
+        "[data-claim-node-status]",
+        messages[error.message] || "Could not link the node. Check the code and try again.",
+        "bad");
+    } finally {
+      if (button) { button.disabled = false; button.textContent = "Link node"; }
     }
   }
 
@@ -3609,6 +3753,16 @@
 
     if (event.target.closest("[data-profile-rename-save]")) {
       renameNodeName();
+      return;
+    }
+
+    if (event.target.closest("[data-claim-node-send]")) {
+      claimNode();
+      return;
+    }
+
+    if (event.target.closest("[data-claim-code-confirm]")) {
+      confirmClaimCode();
       return;
     }
 
