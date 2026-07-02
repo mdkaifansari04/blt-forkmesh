@@ -1063,13 +1063,14 @@ private:
     // (etc.) per session.
     bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
                                   const QString &base) const;
-    void assignIssueToAgent(const QString &provider);
+    void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
     // on failure. quiet suppresses the inline notice + Agents-tab switch the
-    // manual assign path shows.
+    // manual assign path shows. model is the provider-specific model id/alias
+    // picked in the sidebar; empty leaves the provider's own default.
     int startAgentForIssue(const Issue &issue, const QString &provider, bool createPr,
-                           bool quiet = false);
+                           bool quiet = false, const QString &model = QString());
     // Issue looper (adhoc #92): start an agent on the next open issue, watch it to
     // completion, then automatically start the next — working through the open
     // backlog one issue at a time until toggled off or the backlog is exhausted.
@@ -3731,6 +3732,7 @@ private:
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
     QComboBox *m_issueAgentProvider = nullptr;   // OpenAI API | Claude API
+    QComboBox *m_issueAgentModel = nullptr;      // model for the picked provider
     QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;
     // "Run in IDE" hand-off (shown only when IDE integration is on + detected).
