@@ -18,6 +18,27 @@ namespace {
 constexpr int kCommitShaRole = Qt::UserRole;
 constexpr int kCommitMessageRole = Qt::UserRole + 1;
 constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
+
+// Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
+// QTextDocument::find only searches visible text, and an anchor carries none,
+// so finding one means walking fragments and checking their char format for it
+// directly. Used by applyAutoMarkViewedOnScroll to find each file's on-screen
+// position without an anchor-to-position API.
+bool locateAnchorCursor(QTextDocument *doc, const QString &name, QTextCursor &out)
+{
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment frag = it.fragment();
+            if (frag.isValid() && frag.charFormat().isAnchor() &&
+                frag.charFormat().anchorNames().contains(name)) {
+                out = QTextCursor(doc);
+                out.setPosition(frag.position());
+                return true;
+            }
+        }
+    }
+    return false;
+}
 } // namespace
 
 // ---- Pull requests ---------------------------------------------------------
@@ -378,7 +399,21 @@ QWidget *MainWindow::buildPullsTab()
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    for (QPushButton *b : {m_pullPrevButton, m_pullNextButton, diffZoomOut, diffZoomIn}) {
+    // Auto-mark-viewed toggle: while checked, files scrolled entirely above the
+    // diff viewport get checked off "Viewed" without hand-clicking each one.
+    m_pullAutoViewedButton = new QPushButton;
+    m_pullAutoViewedButton->setCheckable(true);
+    m_pullAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
+    setOcticon(m_pullAutoViewedButton, "eye", 14);
+    m_pullAutoViewedButton->setToolTip(
+        "Automatically mark files as viewed while scrolling");
+    connect(m_pullAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
+        setAutoMarkViewedOnScrollPref(on);
+        if (on)
+            applyAutoMarkViewedOnScroll(); // catch up on the current scroll position
+    });
+    for (QPushButton *b : {m_pullPrevButton, m_pullNextButton, diffZoomOut, diffZoomIn,
+                          m_pullAutoViewedButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -391,6 +426,7 @@ QWidget *MainWindow::buildPullsTab()
     filesHeader->addStretch();
     filesHeader->addWidget(diffZoomOut);
     filesHeader->addWidget(diffZoomIn);
+    filesHeader->addWidget(m_pullAutoViewedButton);
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
@@ -409,6 +445,19 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
+    // Debounce the auto-mark-viewed scan off scroll ticks: re-rendering (which
+    // collapses newly-viewed files) is too heavy to run on every pixel of a
+    // fast scroll, so wait for scrolling to settle before checking.
+    m_pullAutoViewedDebounce = new QTimer(this);
+    m_pullAutoViewedDebounce->setSingleShot(true);
+    m_pullAutoViewedDebounce->setInterval(400);
+    connect(m_pullAutoViewedDebounce, &QTimer::timeout, this,
+            &MainWindow::applyAutoMarkViewedOnScroll);
+    connect(m_pullDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this] {
+                if (m_pullAutoViewedButton && m_pullAutoViewedButton->isChecked())
+                    m_pullAutoViewedDebounce->start();
+            });
 
     auto *diffSplit = new QSplitter(Qt::Horizontal);
     diffSplit->setChildrenCollapsible(false);
@@ -1037,11 +1086,12 @@ void MainWindow::refreshPullList()
         }
         m_pullTable->setItem(row, 7, costItem);
 
-        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
-        // tooltip carries the friendly "x ago" form. Mirrors the issue list.
+        // Created date: full ISO-ish "yyyy-MM-dd HH:mm" sorts chronologically
+        // as plain text and shows the exact moment at a glance; the tooltip
+        // carries the friendly "x ago" form. Mirrors the issue list.
         auto *created = new QTableWidgetItem(
             pr.ts > 0
-                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd HH:mm")
                 : QString());
         created->setToolTip(formatIssueRelativeTime(pr.ts));
         m_pullTable->setItem(row, 8, created);
@@ -1053,7 +1103,7 @@ void MainWindow::refreshPullList()
             updatedAt = qMax(updatedAt, ev.ts);
         auto *modified = new QTableWidgetItem(
             updatedAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         modified->setToolTip(formatIssueRelativeTime(updatedAt));
         m_pullTable->setItem(row, 9, modified);
@@ -1338,6 +1388,7 @@ void MainWindow::showPull(int number)
         m_pullDiff->setProperty("fm_diffSource", QString()); // not a rendered diff
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
         m_pullFileAnchors.clear();
+        m_pullFileOrder.clear();
     }
     renderPullCommits(*found);
     renderPullThread(*found);
@@ -1548,10 +1599,15 @@ void MainWindow::renderPullDiff()
                                         QString(), QStringLiteral("*"), notes, viewed);
 
     // Map each file path to its "file-N" anchor so the list and Prev/Next can
-    // scroll straight to a file's section in the combined view.
+    // scroll straight to a file's section in the combined view. m_pullFileOrder
+    // keeps the same paths in on-screen order for auto-mark-viewed-on-scroll,
+    // which needs to know what's above/below the current file.
     m_pullFileAnchors.clear();
-    for (const DiffFileEntry &f : files)
+    m_pullFileOrder.clear();
+    for (const DiffFileEntry &f : files) {
         m_pullFileAnchors.insert(f.path, f.anchor);
+        m_pullFileOrder.append(f.path);
+    }
 
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
     // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays it
@@ -1570,8 +1626,10 @@ void MainWindow::renderPullDiff()
             : html.isEmpty()
                   ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
                   : html;
-    if (html.size() > kMaxDiffHtmlChars)
+    if (html.size() > kMaxDiffHtmlChars) {
         m_pullFileAnchors.clear(); // notice has no per-file anchors to jump to
+        m_pullFileOrder.clear();
+    }
 
     // Laying out a large diff's HTML table in QTextDocument can block the GUI
     // thread for a second or more. A background PR refresh re-runs showPull(),
@@ -1598,6 +1656,68 @@ void MainWindow::scrollPullDiffToFile(const QString &filePath)
     if (anchor.isEmpty())
         return;
     m_pullDiff->scrollToAnchor(anchor);
+}
+
+// Debounced off the diff view's scrollbar (see m_pullAutoViewedDebounce): marks
+// every file that has scrolled entirely above the viewport as "Viewed" (only
+// while m_pullAutoViewedButton is checked), matching GitHub's "Automatically
+// mark files as viewed" toggle. Re-renders once for the whole batch — not per
+// file — and then restores the scroll position to whichever file is still on
+// screen, since collapsing viewed files above it shifts the document up.
+void MainWindow::applyAutoMarkViewedOnScroll()
+{
+    if (!m_pullAutoViewedButton || !m_pullAutoViewedButton->isChecked())
+        return;
+    if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
+        return;
+    QScrollBar *vbar = m_pullDiff->verticalScrollBar();
+    if (!vbar)
+        return;
+
+    const int viewTop = vbar->value();
+    QTextDocument *doc = m_pullDiff->document();
+    const int docHeight = doc->documentLayout()->documentSize().height();
+
+    // Absolute document y-position (viewport-independent) of each file's header,
+    // in on-screen order; -1 when a file's anchor wasn't found (e.g. dropped from
+    // a size-capped render).
+    QList<int> tops;
+    tops.reserve(m_pullFileOrder.size());
+    for (const QString &path : std::as_const(m_pullFileOrder)) {
+        const QString anchor = m_pullFileAnchors.value(path);
+        QTextCursor cur;
+        tops.append(!anchor.isEmpty() && locateAnchorCursor(doc, anchor, cur)
+                        ? m_pullDiff->cursorRect(cur).top() + viewTop
+                        : -1);
+    }
+
+    const QString context =
+        QStringLiteral("pull/") + QString::number(m_currentPullNumber);
+    const QSet<QString> viewed = loadDiffViewed(context);
+    QString currentFile; // first file still at least partly on screen
+    QStringList newlyViewed;
+    for (int i = 0; i < m_pullFileOrder.size(); ++i) {
+        if (tops[i] < 0)
+            continue;
+        // A file's content runs to the next file's header, or the document end
+        // for the last file.
+        const int bottom = (i + 1 < tops.size() && tops[i + 1] >= 0) ? tops[i + 1]
+                                                                     : docHeight;
+        if (bottom <= viewTop) {
+            if (!viewed.contains(m_pullFileOrder.at(i)))
+                newlyViewed << m_pullFileOrder.at(i);
+        } else if (currentFile.isEmpty()) {
+            currentFile = m_pullFileOrder.at(i);
+        }
+    }
+    if (newlyViewed.isEmpty())
+        return;
+
+    for (const QString &path : std::as_const(newlyViewed))
+        setDiffViewed(context, path, true);
+    renderPullDiff();
+    if (!currentFile.isEmpty())
+        scrollPullDiffToFile(currentFile);
 }
 
 void MainWindow::pullSelectAdjacentChange(int delta)

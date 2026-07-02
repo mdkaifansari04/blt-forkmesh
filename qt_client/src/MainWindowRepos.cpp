@@ -2086,8 +2086,16 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                     return;
                 }
 
-                const QString detail =
-                    QString::fromUtf8(body).trimmed().left(500);
+                const QString contentType =
+                    reply->header(QNetworkRequest::ContentTypeHeader).toString();
+                QString detail = QString::fromUtf8(body).trimmed();
+                if (contentType.contains("text/html", Qt::CaseInsensitive) ||
+                    detail.startsWith("<!doctype", Qt::CaseInsensitive) ||
+                    detail.startsWith("<html", Qt::CaseInsensitive)) {
+                    detail = status == 429 ? "rate limited" : "unexpected HTML response";
+                } else {
+                    detail = detail.left(500);
+                }
                 const QString message =
                     "Catalog publish failed for " + repo.owner + "/" + repo.name +
                     (status > 0 ? " (HTTP " + QString::number(status) + ")" :
