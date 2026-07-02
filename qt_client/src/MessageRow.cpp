@@ -1,82 +1,35 @@
 #include "MessageRow.h"
 
+#include "ReactionEmoji.h"
+
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
 #include <QDateTime>
 #include <QEvent>
+#include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
-#include <QMenu>
 #include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScreen>
 #include <QSettings>
 #include <QStyleHints>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int kAvatarSize = 36;
 constexpr int kMaxMediaWidth = 360;
-
-struct ReactionChoice {
-    const char *value;
-    const char *label;
-};
-
-const ReactionChoice kReactionChoices[] = {{"like", "Like"},
-                                           {"love", "Love"},
-                                           {"laugh", "Laugh"},
-                                           {"celebrate", "Celebrate"},
-                                           {"surprised", "Surprised"},
-                                           {"sad", "Sad"},
-                                           {"thanks", "Thanks"},
-                                           {"hot", "Hot"}};
-
-QString fromCodepoint(char32_t codepoint)
-{
-    const char32_t points[] = {codepoint};
-    return QString::fromUcs4(points, 1);
-}
-
-QString fromCodepoints(char32_t first, char32_t second)
-{
-    const char32_t points[] = {first, second};
-    return QString::fromUcs4(points, 2);
-}
-
-QString reactionDisplayName(const QString &value)
-{
-    for (const ReactionChoice &choice : kReactionChoices) {
-        if (value == QString::fromLatin1(choice.value))
-            return QString::fromLatin1(choice.label);
-    }
-
-    // Legacy reaction payloads used emoji values; display those as text labels.
-    if (value == fromCodepoint(0x1F44D))
-        return QStringLiteral("Like");
-    if (value == fromCodepoints(0x2764, 0xFE0F))
-        return QStringLiteral("Love");
-    if (value == fromCodepoint(0x1F602))
-        return QStringLiteral("Laugh");
-    if (value == fromCodepoint(0x1F389))
-        return QStringLiteral("Celebrate");
-    if (value == fromCodepoint(0x1F62E))
-        return QStringLiteral("Surprised");
-    if (value == fromCodepoint(0x1F622))
-        return QStringLiteral("Sad");
-    if (value == fromCodepoint(0x1F64F))
-        return QStringLiteral("Thanks");
-    if (value == fromCodepoint(0x1F525))
-        return QStringLiteral("Hot");
-    return value;
-}
+constexpr int kPickerColumns = 6;
 
 // A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
 QPixmap initialsAvatar(const QString &name, const QString &color)
@@ -321,8 +274,11 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         m_reactionsBar = new QHBoxLayout(reactionsRow);
         m_reactionsBar->setContentsMargins(0, 2, 0, 0);
         m_reactionsBar->setSpacing(4);
-        auto *addReaction = new QPushButton("+");
+        auto *addReaction = new QPushButton;
         addReaction->setObjectName("reactionAdd");
+        addReaction->setIcon(QIcon(reactions::addGlyph(
+            16, devicePixelRatio(), QColor(0x8b, 0x94, 0x9e))));
+        addReaction->setIconSize(QSize(16, 16));
         addReaction->setCursor(Qt::PointingHandCursor);
         addReaction->setToolTip("Add reaction");
         connect(addReaction, &QPushButton::clicked, this,
@@ -445,7 +401,7 @@ void MessageRow::setAvatar(const QPixmap &pixmap)
     m_avatarLabel->setPixmap(rounded);
 }
 
-void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
+void MessageRow::setReactions(const QMap<QString, QStringList> &reactionMap)
 {
     if (!m_reactionsBar)
         return;
@@ -457,13 +413,26 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
         delete item;
     }
     int insertAt = 0;
-    for (auto it = reactions.constBegin(); it != reactions.constEnd(); ++it) {
-        auto *chip = new QPushButton(reactionDisplayName(it.key()) + " " +
-                                     QString::number(it.value().size()));
-        chip->setObjectName("reactionChip");
-        chip->setCursor(Qt::PointingHandCursor);
-        chip->setToolTip(it.value().join(", "));
+    for (auto it = reactionMap.constBegin(); it != reactionMap.constEnd();
+         ++it) {
         const QString reaction = it.key();
+        const int count = it.value().size();
+        auto *chip = new QPushButton(QString::number(count));
+        chip->setObjectName("reactionChip");
+        const QPixmap emoji =
+            reactions::emojiPixmap(reaction, 16, devicePixelRatio());
+        if (!emoji.isNull()) {
+            chip->setIcon(QIcon(emoji));
+            chip->setIconSize(QSize(16, 16));
+        } else {
+            // Unknown value from another client: fall back to a text label.
+            chip->setText(reactions::displayName(reaction) + " " +
+                          QString::number(count));
+        }
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setToolTip(reactions::displayName(reaction) +
+                         QString::fromUtf8(" \xC2\xB7 ") +
+                         it.value().join(", "));
         connect(chip, &QPushButton::clicked, this,
                 [this, reaction] { emit reactionToggled(m_message.id, reaction); });
         m_reactionsBar->insertWidget(insertAt++, chip);
@@ -472,12 +441,45 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
 
 void MessageRow::showReactionPicker()
 {
-    QMenu menu(this);
-    for (const ReactionChoice &choice : kReactionChoices) {
-        QAction *action = menu.addAction(QString::fromLatin1(choice.label));
-        const QString value = QString::fromLatin1(choice.value);
-        connect(action, &QAction::triggered, this,
-                [this, value] { emit reactionToggled(m_message.id, value); });
+    // A Discord-style emoji palette: a floating grid of painted emoji.
+    auto *popup = new QFrame(this, Qt::Popup);
+    popup->setObjectName("reactionPicker");
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    auto *grid = new QGridLayout(popup);
+    grid->setContentsMargins(8, 8, 8, 8);
+    grid->setSpacing(2);
+    int index = 0;
+    for (const reactions::Choice &choice : reactions::choices()) {
+        auto *button = new QToolButton(popup);
+        button->setObjectName("reactionPickerButton");
+        button->setAutoRaise(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(choice.label);
+        button->setIcon(QIcon(
+            reactions::emojiPixmap(choice.value, 22, devicePixelRatio())));
+        button->setIconSize(QSize(22, 22));
+        button->setFixedSize(34, 34);
+        const QString value = choice.value;
+        connect(button, &QToolButton::clicked, this, [this, popup, value] {
+            emit reactionToggled(m_message.id, value);
+            popup->close();
+        });
+        grid->addWidget(button, index / kPickerColumns,
+                        index % kPickerColumns);
+        ++index;
     }
-    menu.exec(QCursor::pos());
+    popup->adjustSize();
+    // Prefer opening above the cursor; fall back below and clamp to the
+    // screen so the palette never opens half off-screen.
+    const QPoint cursor = QCursor::pos();
+    QPoint pos = cursor - QPoint(10, popup->height() + 6);
+    if (QScreen *screen = QGuiApplication::screenAt(cursor)) {
+        const QRect avail = screen->availableGeometry();
+        pos.setX(qBound(avail.left(), pos.x(),
+                        avail.right() - popup->width()));
+        if (pos.y() < avail.top())
+            pos.setY(cursor.y() + 6);
+    }
+    popup->move(pos);
+    popup->show();
 }

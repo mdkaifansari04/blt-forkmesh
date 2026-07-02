@@ -1286,9 +1286,10 @@ void MainWindow::maybeAutoUpdate()
         return; // no upstream branch configured to compare against
 
     // Fetch quietly in the background (no blocking wait — this can take a while
-    // on a slow connection) and only fall through to the visible update flow when
-    // it actually finds a new commit, so a fully up-to-date install never
-    // rebuilds and relaunches for nothing.
+    // on a slow connection) and only fall through to the visible update flow
+    // when it actually finds a new tagged release, so a node never rebuilds and
+    // relaunches for every ordinary commit landing on main — only when a real
+    // release is cut (adhoc #50).
     m_autoUpdateChecking = true;
     auto *fetch = new QProcess(this);
     fetch->setWorkingDirectory(clientDir);
@@ -1309,11 +1310,30 @@ void MainWindow::maybeAutoUpdate()
                 if (status != QProcess::NormalExit || exitCode != 0)
                     return; // offline, or the remote is unreachable right now; retry next tick
 
-                QString localHead, remoteHead;
-                if (!gitOutput(clientDir, {"rev-parse", "HEAD"}, &localHead) ||
-                    !gitOutput(clientDir, {"rev-parse", "@{u}"}, &remoteHead) ||
-                    remoteHead.isEmpty() || remoteHead == localHead)
-                    return; // already current
+                // Newest release tag, same "sort=-creatordate" idiom the Releases
+                // tab uses to pick the current release. No tags at all means this
+                // checkout predates tagged releases; leave it alone rather than
+                // updating on ordinary commits.
+                QString latestTag;
+                if (!gitOutput(clientDir,
+                               {"for-each-ref", "--sort=-creatordate", "--count=1",
+                                "refs/tags", "--format=%(refname:short)"},
+                               &latestTag) ||
+                    latestTag.trimmed().isEmpty())
+                    return;
+                latestTag = latestTag.trimmed();
+
+                QString tagCommit;
+                if (!gitOutput(clientDir, {"rev-list", "-n1", latestTag}, &tagCommit) ||
+                    tagCommit.isEmpty())
+                    return;
+
+                // Already on (or ahead of) the latest release: nothing to do,
+                // even if unreleased commits have since landed on main.
+                if (gitOutput(clientDir,
+                              {"merge-base", "--is-ancestor", tagCommit, "HEAD"},
+                              nullptr))
+                    return;
 
                 // Re-check: the fetch may have taken a while, so the gating
                 // conditions could have changed while it was in flight.
@@ -1321,11 +1341,12 @@ void MainWindow::maybeAutoUpdate()
                     anyAgentRunning())
                     return;
 
-                logSystem(QStringLiteral("Auto-update: a new version is "
-                                         "available; updating in the background."));
+                logSystem(QStringLiteral("Auto-update: release %1 is available; "
+                                         "updating in the background.")
+                             .arg(latestTag));
                 updateRebuildRestart();
             });
-    fetch->start(QStringLiteral("git"), {"fetch", "--quiet"});
+    fetch->start(QStringLiteral("git"), {"fetch", "--quiet", "--tags"});
 }
 
 void MainWindow::attachBackend(ChatBackend *backend)
