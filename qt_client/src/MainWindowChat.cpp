@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 
@@ -3860,7 +3861,75 @@ void MainWindow::pushCurrentRepoUpstream()
     // git-receive-pack), so a `git push` to it 404s ("repository not found").
     // Publish instead by syncing the served mirror from this working copy; the
     // host then serves the new commits and peers fetch them.
-    if (relayPublishRepo(repo, nullptr, nullptr)) {
+    const bool isRelay = relayPublishRepo(repo, nullptr, nullptr);
+
+    // Determine the upstream ref before scanning so we can diff only the
+    // commits being pushed (more precise than scanning all tracked files).
+    QString upstream;
+    if (!isRelay) {
+        QByteArray upstreamOut;
+        if (!runGitCapture(repo.localPath,
+                           {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                            QStringLiteral("--symbolic-full-name"),
+                            QStringLiteral("@{upstream}")},
+                           &upstreamOut, nullptr)) {
+            flashMessage(QStringLiteral("No upstream branch is configured for %1/%2.")
+                             .arg(repo.owner, repo.name),
+                         true);
+            updateRepoPushButton();
+            return;
+        }
+        upstream = QString::fromUtf8(upstreamOut).trimmed();
+    }
+
+    // Secret scanning push protection: scan new commits (or all tracked files
+    // for relay repos) and warn the user before any data leaves this node.
+    if (repo.secretScanningEnabled) {
+        const QList<RepoSecurityFinding> findings =
+            RepoSecurity::findSecretsInPush(repo.localPath, upstream);
+        if (!findings.isEmpty()) {
+            QString detail;
+            const int shown = qMin(findings.size(), 5);
+            for (int i = 0; i < shown; ++i) {
+                const RepoSecurityFinding &f = findings.at(i);
+                detail += QStringLiteral("• %1 in %2 (line %3)\n")
+                              .arg(f.title, f.path)
+                              .arg(f.line);
+            }
+            if (findings.size() > shown)
+                detail += QStringLiteral("  … and %1 more\n")
+                              .arg(findings.size() - shown);
+
+            QMessageBox box(this);
+            box.setWindowTitle(QStringLiteral("Secret scanning: push blocked"));
+            box.setIcon(QMessageBox::Critical);
+            box.setText(
+                QStringLiteral(
+                    "Push protection detected %1 probable secret%2 in the "
+                    "commits being pushed for %3/%4.\n\n%5\n"
+                    "Rotate any exposed credentials before pushing.")
+                    .arg(findings.size())
+                    .arg(findings.size() == 1 ? QString() : QStringLiteral("s"))
+                    .arg(repo.owner, repo.name, detail));
+            auto *cancelBtn =
+                box.addButton(QStringLiteral("Cancel push"), QMessageBox::RejectRole);
+            auto *bypassBtn =
+                box.addButton(QStringLiteral("Push anyway"), QMessageBox::DestructiveRole);
+            box.setDefaultButton(cancelBtn);
+            box.exec();
+            if (box.clickedButton() != bypassBtn) {
+                updateRepoPushButton();
+                return;
+            }
+            logSystem(QStringLiteral(
+                          "Git: secret-scan bypass: pushing %1/%2 despite %3 finding%4.")
+                          .arg(repo.owner, repo.name)
+                          .arg(findings.size())
+                          .arg(findings.size() == 1 ? QString() : QStringLiteral("s")));
+        }
+    }
+
+    if (isRelay) {
         logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to the "
                                  "served mirror.")
                       .arg(repo.owner, repo.name));
@@ -3868,20 +3937,6 @@ void MainWindow::pushCurrentRepoUpstream()
         updateRepoPushButton();
         return;
     }
-
-    QByteArray upstreamOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
-                        QStringLiteral("--symbolic-full-name"),
-                        QStringLiteral("@{upstream}")},
-                       &upstreamOut, nullptr)) {
-        flashMessage(QStringLiteral("No upstream branch is configured for %1/%2.")
-                         .arg(repo.owner, repo.name),
-                     true);
-        updateRepoPushButton();
-        return;
-    }
-    const QString upstream = QString::fromUtf8(upstreamOut).trimmed();
 
     QByteArray countOut;
     runGitCapture(repo.localPath,
