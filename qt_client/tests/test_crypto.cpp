@@ -1263,76 +1263,76 @@ int main(int argc, char *argv[])
         };
 
         // Per-provider checks (file-scan path)
-        check(runSecretTest("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        check(runSecretTest("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("GitHub token")),
               "secret scan detects GitHub PAT (ghp_)");
-        check(runSecretTest("GITHUB_TOKEN=github_pat_AAAAAAAAAAAAAAAAAAAAAA\n",
+        check(runSecretTest("GITHUB_TOKEN=github_pat_AAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("GitHub fine-grained PAT")),
               "secret scan detects GitHub fine-grained PAT (github_pat_)");
-        check(runSecretTest("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+        check(runSecretTest("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("AWS access key")),
               "secret scan detects AWS long-term access key (AKIA)");
-        check(runSecretTest("KEY=ASIAQFI2EXAMPLE123456789012345\n",
+        check(runSecretTest("KEY=ASIAQFI2EXAMPLE123456789012345\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("AWS temporary access key")),
               "secret scan detects AWS temporary STS key (ASIA)");
         check(runSecretTest(
-                  "SLACK_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx\n",
+                  "SLACK_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("Slack token")),
               "secret scan detects Slack token (xoxb-)");
         check(runSecretTest(
-                  "OPENAI_KEY=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\n",
+                  "OPENAI_KEY=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("OpenAI API key")),
               "secret scan detects OpenAI project key (sk-proj-)");
         check(runSecretTest(
-                  "OPENAI_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv\n",
+                  "OPENAI_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("OpenAI API key")),
               "secret scan detects OpenAI legacy key (sk- + 48 chars)");
         check(runSecretTest(
-                  "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcde\n",
+                  "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcde\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("Anthropic API key")),
               "secret scan detects Anthropic API key (sk-ant-)");
-        check(runSecretTest("STRIPE_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
+        check(runSecretTest("STRIPE_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Stripe secret key")),
               "secret scan detects Stripe secret key (sk_live_)");
-        check(runSecretTest("STRIPE_KEY=rk_test_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
+        check(runSecretTest("STRIPE_KEY=rk_test_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Stripe restricted key")),
               "secret scan detects Stripe restricted key (rk_test_)");
-        check(runSecretTest("GOOGLE_KEY=AIzaSyDOCAbC123dEf456GhI789jKl012-MnOAB\n",
+        check(runSecretTest("GOOGLE_KEY=AIzaSyDOCAbC123dEf456GhI789jKl012-MnOAB\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Google API key")),
               "secret scan detects Google API key (AIza)");
-        check(runSecretTest("GOOGLE_OAUTH=ya29.A0ARrda1ABCDEFGHIJKLMNOPQRSTUVWXYZ\n",
+        check(runSecretTest("GOOGLE_OAUTH=ya29.A0ARrda1ABCDEFGHIJKLMNOPQRSTUVWXYZ\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Google OAuth token")),
               "secret scan detects Google OAuth token (ya29.)");
-        check(runSecretTest("GOOGLE_SECRET=GOCSPX-ABCDEFGHIJKLMNOPQRSTUVWXabcde\n",
+        check(runSecretTest("GOOGLE_SECRET=GOCSPX-ABCDEFGHIJKLMNOPQRSTUVWXabcde\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Google OAuth client secret")),
               "secret scan detects Google OAuth client secret (GOCSPX-)");
         check(runSecretTest(
-                  "SG=SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
+                  "SG=SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("SendGrid API key")),
               "secret scan detects SendGrid API key (SG.)");
-        check(runSecretTest("TWILIO=SKabcdef1234567890abcdef1234567890\n",
+        check(runSecretTest("TWILIO=SKabcdef1234567890abcdef1234567890\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("Twilio auth token")),
               "secret scan detects Twilio auth token (SK + 32 hex chars)");
-        check(runSecretTest("NPM=npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        check(runSecretTest("NPM=npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("npm access token")),
               "secret scan detects npm access token (npm_)");
-        check(runSecretTest("VAULT=hvs.CAESIABC123defGHI456jklMNO789pqr\n",
+        check(runSecretTest("VAULT=hvs.CAESIABC123defGHI456jklMNO789pqr\n",  // forkmesh-secret-scan:ignore-line
                             QStringLiteral("HashiCorp Vault token")),
               "secret scan detects HashiCorp Vault service token (hvs.)");
         check(runSecretTest(
-                  "CLOUDFLARE_API_TOKEN=aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLMN\n",
+                  "CLOUDFLARE_API_TOKEN=aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLMN\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("Cloudflare API token")),
               "secret scan detects Cloudflare API token (env-var anchored)");
-        check(runSecretTest("-----BEGIN PRIVATE KEY-----\nMIIBIjANBg...\n"
+        check(runSecretTest("-----BEGIN PRIVATE KEY-----\nMIIBIjANBg...\n"  // forkmesh-secret-scan:ignore-line
                             "-----END PRIVATE KEY-----\n",
                             QStringLiteral("PEM private key")),
               "secret scan detects PKCS#8 PEM private key block");
-        check(runSecretTest("-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n"
+        check(runSecretTest("-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n"  // forkmesh-secret-scan:ignore-line
                             "-----END RSA PRIVATE KEY-----\n",
                             QStringLiteral("PEM private key")),
               "secret scan detects RSA PEM private key block");
         check(runSecretTest(
-                  "DATABASE_PASSWORD=\"s3cr3tPasswordThatIsLongEnough\"\n",
+                  "DATABASE_PASSWORD=\"s3cr3tPasswordThatIsLongEnough\"\n",  // forkmesh-secret-scan:ignore-line
                   QStringLiteral("Secret/token assignment")),
               "secret scan detects generic quoted secret assignment");
 
@@ -1363,6 +1363,36 @@ int main(int argc, char *argv[])
                   "secret scan produces no false positives on benign content");
         }
 
+        // A line carrying the "forkmesh-secret-scan:ignore-line" marker is
+        // skipped even though it matches a pattern — this is how the
+        // scanner's own per-provider test fixtures (above) avoid flagging
+        // themselves when this file is scanned as part of a tracked repo.
+        {
+            QTemporaryDir td;
+            const QString dir = td.path();
+            const auto git = [&](const QStringList &args) {
+                QProcess p;
+                p.start(QStringLiteral("git"),
+                        QStringList{QStringLiteral("-C"), dir} + args);
+                p.waitForFinished(10000);
+            };
+            git({QStringLiteral("init")});
+            git({QStringLiteral("config"), QStringLiteral("user.email"),
+                 QStringLiteral("t@t")});
+            git({QStringLiteral("config"), QStringLiteral("user.name"),
+                 QStringLiteral("T")});
+            {
+                QFile f(dir + QStringLiteral("/fixtures.cpp"));
+                f.open(QIODevice::WriteOnly);
+                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE // forkmesh-secret-scan:ignore-line\n");  // forkmesh-secret-scan:ignore-line
+            }
+            git({QStringLiteral("add"), QStringLiteral("fixtures.cpp")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("add")});
+            check(RepoSecurity::findSecretsInPush(dir, {}).isEmpty(),
+                  "secret scan skips lines carrying the ignore-line marker");
+        }
+
         // Diff-scan path: secrets introduced in HEAD commit are detected
         {
             QTemporaryDir td;
@@ -1391,7 +1421,7 @@ int main(int argc, char *argv[])
             {
                 QFile f(dir + QStringLiteral("/creds.env"));
                 f.open(QIODevice::WriteOnly);
-                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");  // forkmesh-secret-scan:ignore-line
             }
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
@@ -1426,7 +1456,7 @@ int main(int argc, char *argv[])
             {
                 QFile f(dir + QStringLiteral("/creds.env"));
                 f.open(QIODevice::WriteOnly);
-                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");  // forkmesh-secret-scan:ignore-line
             }
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
