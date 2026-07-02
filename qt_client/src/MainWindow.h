@@ -341,6 +341,9 @@ public:
     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
     bool testReleasesTableHasKeyboardFocus() const;
     bool testMirrorNodesTableHasKeyboardFocus() const;
+    // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
+    // node that re-registered under a new key shows exactly one row (adhoc #46).
+    Q_INVOKABLE QStringList testMirrorNodeRows() const;
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
