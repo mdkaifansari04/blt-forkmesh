@@ -2962,6 +2962,10 @@ private:
     // Signature (repo|path|branch|HEAD) of the overview currently rendered, so
     // re-entering the repo screen unchanged skips the expensive git re-read.
     QString m_overviewLoadedKey;
+    // Re-entrancy guard: loadRepoOverview's git reads pump the event loop
+    // (GitKeepAlive), so a queued slot serviced mid-load could call back in and
+    // interleave a second rebuild with the first.
+    bool m_overviewLoading = false;
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
     QPushButton *m_historyButton = nullptr;
