@@ -6290,13 +6290,20 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             return;
     }
 
+    QUrl url = issuesApiUrl(repo);
+    // Auto-polls back off exponentially while the relay is failing (offline /
+    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
+    const QString backoffKey = url.toString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
+        return;
+
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
 
-    QUrl url = issuesApiUrl(repo);
     QUrlQuery query;
     query.addQueryItem("owner", owner);
     query.addQueryItem("ts", ts);
@@ -6305,15 +6312,18 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive] {
+            [this, reply, url, repo, writable, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(backoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
             if (interactive)
                 setIssueInlineNotice("Could not reach the inbox: " +
                                          reply->errorString(),
                                      true);
             return;
         }
+        m_pollBackoff.noteSuccess(backoffKey);
         const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
                                        .object()
                                        .value("pending")
