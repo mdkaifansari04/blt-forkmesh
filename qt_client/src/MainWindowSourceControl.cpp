@@ -1592,6 +1592,36 @@ QWidget *MainWindow::buildRepoSecurityTab()
     m_securityFindingsTable->setMinimumHeight(220);
     layout->addWidget(m_securityFindingsTable);
     layout->addStretch();
+    connect(m_securityFindingsTable, &QTableWidget::cellClicked,
+            this, [this](int row, int /*col*/) {
+        auto *item = m_securityFindingsTable->item(row, 2);
+        if (!item)
+            return;
+        const QString path = item->data(Qt::UserRole).toString();
+        if (path.isEmpty())
+            return;
+        const int line = item->data(Qt::UserRole + 1).toInt();
+        openRepoFile(path);
+        if (line > 0) {
+            QTimer::singleShot(0, this, [this, path, line] {
+                auto *edit = qobject_cast<QPlainTextEdit *>(m_openFileTabs.value(path));
+                if (!edit)
+                    return;
+                QTextCursor lc(edit->document());
+                lc.movePosition(QTextCursor::Start);
+                if (line > 1)
+                    lc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, line - 1);
+                QTextEdit::ExtraSelection lineSel;
+                lineSel.cursor = lc;
+                lineSel.format.setBackground(QColor(31, 111, 235, 60));
+                lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
+                edit->setExtraSelections({lineSel});
+                edit->setTextCursor(lc);
+                edit->centerCursor();
+                edit->setFocus();
+            });
+        }
+    });
 
     scroll->setWidget(content);
     auto *pageLayout = new QVBoxLayout(page);
@@ -1927,8 +1957,17 @@ void MainWindow::refreshRepoSecurity()
             auto *detail =
                 new QTableWidgetItem(finding.title + QStringLiteral(": ") +
                                      finding.detail + location);
+            if (!finding.path.isEmpty()) {
+                detail->setData(Qt::UserRole, finding.path);
+                detail->setData(Qt::UserRole + 1, finding.line);
+                detail->setToolTip(
+                    QStringLiteral("Click to open %1:%2")
+                        .arg(finding.path)
+                        .arg(finding.line > 0 ? QString::number(finding.line)
+                                              : QStringLiteral("?")));
+            }
             auto *action = new QTableWidgetItem(finding.recommendedAction);
-            for (QTableWidgetItem *item : {severity, category, detail, action})
+            for (QTableWidgetItem *item : {severity, category, action})
                 item->setToolTip(item->text());
             m_securityFindingsTable->setItem(row, 0, severity);
             m_securityFindingsTable->setItem(row, 1, category);
