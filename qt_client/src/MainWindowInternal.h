@@ -695,7 +695,18 @@ public:
         refreshTooltip();
     }
 
+    // There's no background timer pulling fresh usage anymore (it only refreshes
+    // right after a prompt is sent), so the figures under the mouse can be stale
+    // by the time the user actually looks at them. Fire this on hover to pull a
+    // fresh reading on demand instead.
+    std::function<void()> onHover;
+
 protected:
+    void enterEvent(QEnterEvent *) override
+    {
+        if (onHover)
+            onHover();
+    }
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
