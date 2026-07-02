@@ -208,15 +208,6 @@ public:
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
-    // Sets the live roster directly (skipping setRoster's side effects, e.g.
-    // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
-    // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
-    // in isolation (adhoc #46).
-    void testSetHomeRosterAndReloadMirrorPanel(const QList<MemberInfo> &members)
-    {
-        m_homeRoster = members;
-        loadMirrorNodesPanel();
-    }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
@@ -350,9 +341,6 @@ public:
     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
     bool testReleasesTableHasKeyboardFocus() const;
     bool testMirrorNodesTableHasKeyboardFocus() const;
-    // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
-    // node that re-registered under a new key shows exactly one row (adhoc #46).
-    Q_INVOKABLE QStringList testMirrorNodeRows() const;
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -495,6 +483,15 @@ private:
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
+    // A user on forkmesh.com claimed this node's ID (adhoc #53): the heartbeat
+    // reply carried a confirmation code, shown on this machine so the person
+    // standing at both screens can type it back into the website.
+    void showNodeClaimCode(const QString &user, const QString &code);
+    // Installer link-code flow (adhoc #53): the hosts/SSH installer printed a
+    // link code on the fresh machine; confirm + submit it here, signed with
+    // this account's key, so the new node is attached to this user.
+    void promptHostLinkCode(const QString &code);
+    void submitHostLinkCode(const QString &code);
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -2186,10 +2183,6 @@ private:
     void saveChatHistory();
     void loadChatHistory();
     void scheduleChatSave();
-    // Drops messages past kChatMessageRetentionMs (7 days) from local history,
-    // so a node left running that long doesn't keep showing/serving messages
-    // the relay has already dropped.
-    void pruneExpiredChatHistory();
     // Avatars are cached to disk per peer (keyed by node id) so they survive a
     // restart and stay visible for peers who are currently offline — otherwise
     // an avatar only lives as long as the sender keeps re-broadcasting it.
@@ -2440,6 +2433,11 @@ private:
     bool m_hostInstallLogBold = false;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
+    // Installer link-code detection (adhoc #53): rolling tail of the install
+    // output so the "Link code: NNNNNN" line survives chunk splits, and a
+    // per-run guard so the link popup opens once.
+    QString m_hostInstallLinkTail;
+    bool m_hostLinkPrompted = false;
     // Relays section: live list of configured relays with status / latency / version.
     QTableWidget *m_relaysTable = nullptr;
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
@@ -3919,7 +3917,6 @@ private:
     QHash<QString, QList<ChatMessage>> m_history;
     QSet<QString> m_historyIds; // message ids already in m_history (dedup)
     QTimer *m_chatSaveTimer = nullptr;
-    QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;
@@ -3960,6 +3957,9 @@ private:
     bool m_isAdmin = false;
     QTimer *m_adminPollTimer = nullptr;
     QStringList m_seenPendingUsers;
+    // Last website-claim confirmation code already shown (adhoc #53), so the
+    // per-minute heartbeat doesn't reopen the popup for the same claim.
+    QString m_lastClaimCodeShown;
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;
