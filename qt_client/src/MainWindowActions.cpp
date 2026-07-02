@@ -1451,6 +1451,7 @@ void MainWindow::updateAgentsTabIndicator()
         name  = m_repositories.at(m_repoDetailIndex).name;
     }
     int n = 0;
+    int nRunning = 0, nWaiting = 0, nMerged = 0, nFailed = 0;
     QList<const AgentSession *> running;
     for (const AgentSession &s : std::as_const(m_agentSessions)) {
         if (s.owner != owner || s.name != name)
@@ -1458,10 +1459,34 @@ void MainWindow::updateAgentsTabIndicator()
         ++n;
         if (s.id <= kExternalIdBase)
             continue; // external (watch-only): its spinner comes from m_externalClaude
-        if (s.status == AgentStatus::Running)
-            running.append(&s);
+        if (s.merged) {
+            ++nMerged;
+        } else if (s.status == AgentStatus::Running || s.status == AgentStatus::Queued) {
+            ++nRunning;
+            if (s.status == AgentStatus::Running)
+                running.append(&s);
+        } else if (s.status == AgentStatus::Waiting) {
+            ++nWaiting;
+        } else if (s.status == AgentStatus::Failed || s.status == AgentStatus::Stopped) {
+            ++nFailed;
+        }
     }
-    m_repoAgentsTab->setText(QStringLiteral("Agents (%1)").arg(formatCount(n)));
+    {
+        // ↻ = running/queued, ✋ = waiting for user, ⎇ = merged, ✕ = failed
+        QString label = QStringLiteral("Agents");
+        QStringList parts;
+        if (nRunning > 0)
+            parts << QString::fromUtf8("%1 \xe2\x86\xbb").arg(nRunning);  // N↻
+        if (nWaiting > 0)
+            parts << QString::fromUtf8("%1 \xe2\x9c\x8b").arg(nWaiting);  // N✋
+        if (nMerged > 0)
+            parts << QString::fromUtf8("%1 \xe2\x8e\x87").arg(nMerged);   // N⎇
+        if (nFailed > 0)
+            parts << QString::fromUtf8("%1 \xe2\x9c\x95").arg(nFailed);   // N✕
+        if (!parts.isEmpty())
+            label += QLatin1Char(' ') + parts.join(QStringLiteral("  "));
+        m_repoAgentsTab->setText(label);
+    }
 
     ensureAgentSpinnerOverlay();
     const bool active = (!running.isEmpty() || !m_externalClaude.isEmpty()) &&
