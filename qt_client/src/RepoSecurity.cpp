@@ -159,6 +159,224 @@ QStringList dependencyManifests(const QList<RepoFile> &files)
     return found;
 }
 
+// ---- Dependency version scanning ----
+
+struct DependencyAlert {
+    QString name;
+    QString version;
+    QString path;
+    int line = 0;
+    QString reason;
+};
+
+// npm/yarn/pnpm: flag * / latest / open-ended >= without <
+static QList<DependencyAlert> scanPackageJson(const RepoFile &file)
+{
+    QList<DependencyAlert> alerts;
+    const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+
+    static const QRegularExpression kDepsSection(
+        QStringLiteral(
+            R"--("(?:dependencies|devDependencies|peerDependencies|optionalDependencies)"\s*:\s*\{)--"));
+    static const QRegularExpression kEntry(
+        QStringLiteral(R"--("([^"]+)"\s*:\s*"([^"]*)")--"));
+
+    bool inDeps = false;
+    int depth = 0;
+
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString &ln = lines[i];
+        if (!inDeps) {
+            if (kDepsSection.match(ln).hasMatch()) {
+                inDeps = true;
+                depth = 1;
+            }
+            continue;
+        }
+        for (const QChar c : ln) {
+            if (c == QLatin1Char('{'))
+                ++depth;
+            else if (c == QLatin1Char('}'))
+                --depth;
+        }
+        if (depth <= 0) {
+            inDeps = false;
+            depth = 0;
+            continue;
+        }
+        auto m = kEntry.match(ln);
+        if (!m.hasMatch())
+            continue;
+        const QString name = m.captured(1);
+        const QString ver = m.captured(2).trimmed();
+        if (ver.contains(QLatin1Char(':')))
+            continue; // file:, git+, etc.
+        QString reason;
+        if (ver.isEmpty() || ver == QLatin1String("*") || ver == QLatin1String("x"))
+            reason = QStringLiteral("unpinned (\"*\")");
+        else if (ver == QLatin1String("latest"))
+            reason = QStringLiteral("floating \"latest\" tag");
+        else if (ver.startsWith(QLatin1String(">=")) && !ver.contains(QLatin1Char('<')))
+            reason = QStringLiteral("open-ended range (no upper bound)");
+        if (!reason.isEmpty())
+            alerts.append({name, ver.isEmpty() ? QStringLiteral("*") : ver,
+                           file.path, i + 1, reason});
+    }
+    return alerts;
+}
+
+// pip: flag packages without == specifier
+static QList<DependencyAlert> scanRequirementsTxt(const RepoFile &file)
+{
+    QList<DependencyAlert> alerts;
+    const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+
+    static const QRegularExpression kEntry(
+        QStringLiteral(R"(^([A-Za-z0-9_\-\.]+)\s*([<>=!~\^].*)?$)"));
+    static const QRegularExpression kExtras(QStringLiteral(R"(\[[^\]]*\])"));
+
+    for (int i = 0; i < lines.size(); ++i) {
+        QString ln = lines[i].trimmed();
+        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#')) ||
+            ln.startsWith(QLatin1Char('-')))
+            continue;
+        const int hash = ln.indexOf(QLatin1Char('#'));
+        if (hash >= 0)
+            ln = ln.left(hash).trimmed();
+        const int semi = ln.indexOf(QLatin1Char(';'));
+        if (semi >= 0)
+            ln = ln.left(semi).trimmed();
+        ln.remove(kExtras);
+        auto m = kEntry.match(ln.trimmed());
+        if (!m.hasMatch())
+            continue;
+        const QString name = m.captured(1);
+        const QString spec = m.captured(2).trimmed();
+        QString reason;
+        if (spec.isEmpty())
+            reason = QStringLiteral("no version constraint");
+        else if (!spec.contains(QLatin1String("==")) &&
+                 (spec.startsWith(QLatin1Char('>')) ||
+                  spec.contains(QLatin1String(">="))) &&
+                 !spec.contains(QLatin1Char('<')))
+            reason = QStringLiteral("open-ended range (no upper bound)");
+        if (!reason.isEmpty())
+            alerts.append({name, spec.isEmpty() ? QStringLiteral("(any)") : spec,
+                           file.path, i + 1, reason});
+    }
+    return alerts;
+}
+
+// Cargo.toml: flag version = "*"
+static QList<DependencyAlert> scanCargoToml(const RepoFile &file)
+{
+    QList<DependencyAlert> alerts;
+    const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+
+    static const QRegularExpression kSimple(
+        QStringLiteral(R"(^\s*([A-Za-z0-9_\-]+)\s*=\s*"\*"\s*$)"));
+    static const QRegularExpression kTable(
+        QStringLiteral(R"(^\s*([A-Za-z0-9_\-]+)\s*=\s*\{[^}]*version\s*=\s*"\*")"));
+
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString &ln = lines[i];
+        auto m1 = kSimple.match(ln);
+        if (m1.hasMatch()) {
+            alerts.append({m1.captured(1), QStringLiteral("*"),
+                           file.path, i + 1, QStringLiteral("unpinned (\"*\")")});
+            continue;
+        }
+        auto m2 = kTable.match(ln);
+        if (m2.hasMatch())
+            alerts.append({m2.captured(1), QStringLiteral("*"),
+                           file.path, i + 1, QStringLiteral("unpinned (\"*\")")});
+    }
+    return alerts;
+}
+
+// pom.xml: flag LATEST, RELEASE, and -SNAPSHOT versions
+static QList<DependencyAlert> scanPomXml(const RepoFile &file)
+{
+    QList<DependencyAlert> alerts;
+    const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+
+    static const QRegularExpression kVersion(
+        QStringLiteral(R"(<version>(LATEST|RELEASE|[^<]*-SNAPSHOT)</version>)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    for (int i = 0; i < lines.size(); ++i) {
+        auto m = kVersion.match(lines[i]);
+        if (!m.hasMatch())
+            continue;
+        const QString ver = m.captured(1);
+        QString reason;
+        if (ver.compare(QLatin1String("LATEST"), Qt::CaseInsensitive) == 0)
+            reason = QStringLiteral("floating LATEST version");
+        else if (ver.compare(QLatin1String("RELEASE"), Qt::CaseInsensitive) == 0)
+            reason = QStringLiteral("floating RELEASE version");
+        else
+            reason = QStringLiteral("mutable SNAPSHOT version");
+        alerts.append({QStringLiteral("(dependency)"), ver, file.path, i + 1, reason});
+    }
+    return alerts;
+}
+
+// Gemfile: flag gems declared without any version constraint
+static QList<DependencyAlert> scanGemfile(const RepoFile &file)
+{
+    QList<DependencyAlert> alerts;
+    const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+
+    static const QRegularExpression kGem(
+        QStringLiteral(R"(^\s*gem\s+['"]([^'"]+)['"]\s*(?:,\s*(.+))?$)"));
+
+    for (int i = 0; i < lines.size(); ++i) {
+        QString ln = lines[i];
+        const int hash = ln.indexOf(QLatin1Char('#'));
+        if (hash >= 0)
+            ln = ln.left(hash);
+        auto m = kGem.match(ln.trimmed());
+        if (!m.hasMatch())
+            continue;
+        const QString name = m.captured(1);
+        const QString rest = m.captured(2).trimmed();
+        // Skip if rest looks like a version specifier (starts with quote containing
+        // a version constraint) rather than a keyword option
+        const bool hasVersionArg =
+            !rest.isEmpty() &&
+            !rest.startsWith(QLatin1String("require:")) &&
+            !rest.startsWith(QLatin1String("group:")) &&
+            !rest.startsWith(QLatin1String("path:")) &&
+            !rest.startsWith(QLatin1String("git:")) &&
+            !rest.startsWith(QLatin1String("github:")) &&
+            !rest.startsWith(QLatin1String("platforms:")) &&
+            rest.contains(QLatin1Char('"'));
+        if (!hasVersionArg)
+            alerts.append({name, QStringLiteral("(any)"), file.path, i + 1,
+                           QStringLiteral("no version constraint")});
+    }
+    return alerts;
+}
+
+static QList<DependencyAlert> collectDependencyAlerts(const QList<RepoFile> &files)
+{
+    QList<DependencyAlert> all;
+    for (const RepoFile &file : files) {
+        const QString base = QFileInfo(file.path).fileName().toLower();
+        if (base == QLatin1String("package.json"))
+            all += scanPackageJson(file);
+        else if (base == QLatin1String("requirements.txt"))
+            all += scanRequirementsTxt(file);
+        else if (base == QLatin1String("cargo.toml"))
+            all += scanCargoToml(file);
+        else if (base == QLatin1String("pom.xml"))
+            all += scanPomXml(file);
+        else if (base == QLatin1String("gemfile"))
+            all += scanGemfile(file);
+    }
+    return all;
+}
+
 int lineNumberForOffset(const QByteArray &content, qsizetype offset)
 {
     int line = 1;
@@ -397,24 +615,57 @@ RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
                      QStringLiteral("Matched values are redacted. Rotate any exposed keys.")));
 
     const QStringList manifests = dependencyManifests(files);
+    const QList<DependencyAlert> depAlerts = collectDependencyAlerts(files);
+
+    for (const DependencyAlert &alert : depAlerts) {
+        RepoSecurityFinding finding;
+        finding.id =
+            QStringLiteral("dep:%1:%2").arg(alert.path).arg(alert.line);
+        finding.category = QStringLiteral("Dependency");
+        finding.severity = RepoSecuritySeverity::Warning;
+        finding.title = alert.name;
+        finding.detail =
+            QStringLiteral("Loose version specifier: %1 (%2)")
+                .arg(alert.version, alert.reason);
+        finding.path = alert.path;
+        finding.line = alert.line;
+        finding.recommendedAction =
+            QStringLiteral("Pin to an exact version to reduce supply-chain risk.");
+        snapshot.findings.append(finding);
+    }
+
     if (manifests.isEmpty()) {
         snapshot.signalList.append(
             signal(QStringLiteral("dependencies"),
-                   QStringLiteral("Dependency inventory"),
+                   QStringLiteral("Dependency scan"),
                    RepoSecuritySeverity::Info,
                    QStringLiteral("No dependency manifests detected."),
-                   QStringLiteral("MVP does not perform external advisory matching.")));
-    } else {
-        RepoSecuritySignal dependencies =
+                   QStringLiteral("No supported manifests found in tracked files.")));
+    } else if (depAlerts.isEmpty()) {
+        RepoSecuritySignal depSig =
             signal(QStringLiteral("dependencies"),
-                   QStringLiteral("Dependency inventory"),
-                   RepoSecuritySeverity::Info,
+                   QStringLiteral("Dependency scan"),
+                   RepoSecuritySeverity::Pass,
                    plural(manifests.size(), QStringLiteral("manifest"),
                           QStringLiteral("manifests")) +
+                       QStringLiteral(" scanned - all versions pinned."),
+                   QStringLiteral(
+                       "No loose version specifiers found."));
+        depSig.items = manifests;
+        snapshot.signalList.append(depSig);
+    } else {
+        RepoSecuritySignal depSig =
+            signal(QStringLiteral("dependencies"),
+                   QStringLiteral("Dependency scan"),
+                   RepoSecuritySeverity::Warning,
+                   plural(depAlerts.size(), QStringLiteral("unpinned dependency"),
+                          QStringLiteral("unpinned dependencies")) +
                        QStringLiteral(" detected."),
-                   QStringLiteral("Check each manifest to review its declared dependencies."));
-        dependencies.items = manifests;
-        snapshot.signalList.append(dependencies);
+                   QStringLiteral(
+                       "Loose version specifiers increase supply-chain risk. "
+                       "Pin each to an exact version."));
+        depSig.items = manifests;
+        snapshot.signalList.append(depSig);
     }
 
     RepoSecuritySeverity actionsSeverity = RepoSecuritySeverity::Pass;
