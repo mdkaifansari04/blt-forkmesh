@@ -13,6 +13,7 @@ from js import Date
 from js import Object
 from js import Request as JsRequest
 from js import Response as JsResponse
+from js import TransformStream
 from js import Uint8Array
 from js import WebSocketPair
 from js import caches as js_caches
@@ -733,27 +734,6 @@ def git_bytes_response(data, content_type):
     )
 
 
-def release_bytes_response(data, sha256):
-    # A downloaded release asset. Content-addressed, so the bytes for a hash never
-    # change: cache forever at the edge and let the client verify against the
-    # manifest's sha256 (echoed back in x-content-sha256).
-    data = bytes(data)
-    return JsResponse.new(
-        _to_js(data),
-        to_js(
-            {
-                "status": 200,
-                "headers": {
-                    "content-type": "application/octet-stream",
-                    "content-length": str(len(data)),
-                    "cache-control": "public, max-age=31536000, immutable",
-                    "x-content-sha256": sha256.lower(),
-                },
-            }
-        ),
-    )
-
-
 REPO_BLOB_CONTENT_TYPES = {
     "3g2": "video/3gpp2",
     "3gp": "video/3gpp",
@@ -810,27 +790,6 @@ def repo_blob_filename(path):
     name = str(path or "").rsplit("/", 1)[-1].strip() or "file"
     cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
     return (cleaned or "file")[:180]
-
-
-def repo_blob_bytes_response(data, path):
-    data = bytes(data)
-    filename = repo_blob_filename(path)
-    return JsResponse.new(
-        _to_js(data),
-        to_js(
-            {
-                "status": 200,
-                "headers": {
-                    "content-type": repo_blob_content_type(path),
-                    "content-length": str(len(data)),
-                    "cache-control": "no-cache, max-age=0, must-revalidate",
-                    "content-disposition": 'inline; filename="%s"' % filename,
-                    "x-content-type-options": "nosniff",
-                    "content-security-policy": "sandbox",
-                },
-            }
-        ),
-    )
 
 
 def to_js(value):
@@ -8177,7 +8136,11 @@ class Default(WorkerEntrypoint):
         return await host_object.fetch(JsRequest.new(target, to_js({
             "method": "POST",
             "headers": headers,
-            "body": body,
+            # Copy the body into a JS-owned buffer: a to_js view into Python's
+            # WASM memory read later — after the GIL is released — is a
+            # runtime crash ("Attempted to use PyProxy when Python GIL not
+            # held"), not an exception.
+            "body": Uint8Array.new(_to_js(body)),
         })))
 
     async def _sticky_clone_fallback(self, owner, repo, refresh):
@@ -8414,6 +8377,15 @@ class ForkMeshHost(DurableObject):
             self.counter = 0
         if not hasattr(self, "git_buffers"):
             self.git_buffers = {}  # reqId -> bytearray for chunked git output
+        if not hasattr(self, "git_streams"):
+            # reqId -> {"writer": TransformStream writer, "last": ms}. Large
+            # transfers (upload-pack packs, release assets, raw blobs) stream
+            # each chunk straight into the response body instead of
+            # reassembling in git_buffers: buffering a full clone's pack (plus
+            # its base64 and bytes() copies) is what blew the Durable Object's
+            # 128 MB memory limit and reset the whole isolate — killing every
+            # unrelated in-flight request with it.
+            self.git_streams = {}
         if not hasattr(self, "_repo_bi"):
             self._repo_bi = None   # blind index of this DO's owner/repo
         if not hasattr(self, "_last_presence"):
@@ -8577,11 +8549,46 @@ class ForkMeshHost(DurableObject):
                 self._repo_bi = repo_bi
                 await self._mark_present()
         elif mtype == "response":
-            fut = self.pending.pop(msg.get("reqId"), None)
+            req_id = msg.get("reqId")
+            # A plain error response can arrive for a request we expected to
+            # stream (e.g. the host rejects the op) — tear the stream down so
+            # the client isn't left waiting on a body that will never come.
+            stream = self.git_streams.pop(req_id, None)
+            if stream is not None:
+                try:
+                    await stream["writer"].abort("host error")
+                except Exception:
+                    pass
+            fut = self.pending.pop(req_id, None)
             if fut is not None and not fut.done():
                 fut.set_result(msg)
         elif mtype == "git-chunk":
-            buffer = self.git_buffers.get(msg.get("reqId"))
+            req_id = msg.get("reqId")
+            stream = self.git_streams.get(req_id)
+            if stream is not None:
+                # First chunk doubles as the "host is answering" signal the
+                # request handler awaits before returning the streamed 200.
+                fut = self.pending.pop(req_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result({"ok": True})
+                try:
+                    data = base64.b64decode(msg.get("data", ""))
+                except Exception:
+                    data = b""
+                if data:
+                    stream["last"] = int(Date.now())
+                    try:
+                        # Copy into a JS-owned buffer before it crosses into the
+                        # response stream: a view into Python's WASM memory read
+                        # later, off the GIL, is a runtime crash.
+                        await stream["writer"].write(
+                            Uint8Array.new(_to_js(data)))
+                    except Exception:
+                        # Reader hung up (client aborted the download): drop the
+                        # stream so remaining chunks fall on the floor.
+                        self.git_streams.pop(req_id, None)
+                return
+            buffer = self.git_buffers.get(req_id)
             if buffer is not None:
                 try:
                     buffer += base64.b64decode(msg.get("data", ""))
@@ -8589,6 +8596,24 @@ class ForkMeshHost(DurableObject):
                     pass
         elif mtype == "git-end":
             req_id = msg.get("reqId")
+            stream = self.git_streams.pop(req_id, None)
+            if stream is not None:
+                fut = self.pending.pop(req_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result({"ok": bool(msg.get("ok")),
+                                    "error": msg.get("error")})
+                try:
+                    if msg.get("ok"):
+                        await stream["writer"].close()
+                    else:
+                        # Failure after bytes already streamed: the 200 headers
+                        # are gone, so abort the body — the client sees a
+                        # truncated transfer and fails cleanly.
+                        await stream["writer"].abort(
+                            str(msg.get("error") or "host error"))
+                except Exception:
+                    pass
+                return
             buffer = self.git_buffers.pop(req_id, None)
             fut = self.pending.pop(req_id, None)
             if fut is not None and not fut.done():
@@ -8617,6 +8642,16 @@ class ForkMeshHost(DurableObject):
         self._ensure()
         if self._live_host_count(skip=ws) > 0:
             return
+        # Whatever this host was mid-way through streaming can never finish;
+        # abort those bodies so downloading clients fail fast instead of
+        # hanging until the stall watchdog fires.
+        for req_id in list(self.git_streams.keys()):
+            stream = self.git_streams.pop(req_id, None)
+            if stream is not None:
+                try:
+                    await stream["writer"].abort("host disconnected")
+                except Exception:
+                    pass
         repo_bi = _ws_attr(ws, "repo_bi") or self._repo_bi
         if not repo_bi:
             return
@@ -8713,10 +8748,83 @@ class ForkMeshHost(DurableObject):
             payload["servedBy"] = served_by
         return json_response(payload)
 
+    async def _stream_request(self, host, message, headers):
+        # Send a chunked-transfer request to the host and return a Response
+        # whose body STREAMS the reply: each git-chunk is written straight
+        # through a TransformStream to the client as it arrives, so a full
+        # clone's pack or a large release asset never accumulates in DO memory
+        # (reassembling one is what used to exceed the 128 MB isolate limit and
+        # reset it, killing every in-flight request). Waits GIT_TIMEOUT_MS for
+        # the host's FIRST sign of life (chunk, end, or error); after that a
+        # per-chunk watchdog aborts a mid-stream stall so a dying host fails
+        # the one transfer instead of hanging the client.
+        #
+        # Returns (response, error_result): exactly one is non-None. A
+        # transport failure yields a ready error Response; a host-reported
+        # error yields the result dict so each endpoint maps its own status.
+        req_id = message["reqId"]
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        transform = TransformStream.new()
+        writer = transform.writable.getWriter()
+        self.git_streams[req_id] = {"writer": writer, "last": int(Date.now())}
+        try:
+            host.send(json.dumps(message))
+        except Exception:
+            self.pending.pop(req_id, None)
+            self.git_streams.pop(req_id, None)
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503), None
+        try:
+            result = await asyncio.wait_for(
+                future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            if self.git_streams.pop(req_id, None) is not None:
+                try:
+                    await writer.abort("host timed out")
+                except Exception:
+                    pass
+            return Response("Host timed out.", status=504), None
+        if not result.get("ok"):
+            if self.git_streams.pop(req_id, None) is not None:
+                try:
+                    await writer.abort("host error")
+                except Exception:
+                    pass
+            return None, result
+        asyncio.ensure_future(self._stream_watchdog(req_id))
+        return JsResponse.new(
+            transform.readable,
+            to_js({"status": 200, "headers": headers}),
+        ), None
+
+    async def _stream_watchdog(self, req_id):
+        # Abort a streamed transfer whose host went quiet mid-body, so the
+        # client sees a truncated transfer promptly instead of hanging (and the
+        # stream doesn't pin the Durable Object forever). The happy path — the
+        # stream already closed/errored and left git_streams — just exits.
+        while True:
+            await asyncio.sleep(GIT_TIMEOUT_MS / 1000)
+            stream = self.git_streams.get(req_id)
+            if stream is None:
+                return
+            if int(Date.now()) - stream["last"] > GIT_TIMEOUT_MS:
+                self.git_streams.pop(req_id, None)
+                try:
+                    await stream["writer"].abort("host stalled mid-stream")
+                except Exception:
+                    pass
+                return
+
     async def _release_blob(self, sha256):
-        # Stream a content-addressed release asset from a serving node. Reuses the
-        # chunked git-stream transport (git-chunk/git-end → self.git_buffers), so
-        # arbitrarily large binaries flow without the 4 MB inline /blob cap.
+        # Stream a content-addressed release asset from a serving node: each
+        # chunk flows straight to the client (see _stream_request), so
+        # arbitrarily large binaries download without the 4 MB inline /blob cap
+        # and without ever holding the whole asset in DO memory. Still cached
+        # forever at the edge — the URL is content-addressed — and the client
+        # verifies the bytes against the manifest sha256 (x-content-sha256).
         if not valid_sha256_hex(sha256):
             return Response("not found", status=404)
         self._ensure()
@@ -8726,35 +8834,27 @@ class ForkMeshHost(DurableObject):
                 "No host is currently serving this release.", status=503)
         self.counter += 1
         req_id = "r%d" % self.counter
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        self.git_buffers[req_id] = bytearray()
-        try:
-            host.send(json.dumps({
-                "type": "request", "reqId": req_id,
-                "op": "release-blob", "path": sha256.lower(),
-            }))
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            self._drop_host(host)
-            return Response("Host unavailable.", status=503)
-        try:
-            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            return Response("Host timed out.", status=504)
-        if not result.get("ok"):
-            err = str(result.get("error", ""))
-            status = 404 if err in ("not_found", "bad_hash") else 502
-            return Response("Release asset unavailable.", status=status)
-        return release_bytes_response(result.get("data", b""), sha256)
+        response, err = await self._stream_request(
+            host,
+            {"type": "request", "reqId": req_id,
+             "op": "release-blob", "path": sha256.lower()},
+            {
+                "content-type": "application/octet-stream",
+                "cache-control": "public, max-age=31536000, immutable",
+                "x-content-sha256": sha256.lower(),
+            },
+        )
+        if response is not None:
+            return response
+        status = 404 if str(err.get("error", "")) in (
+            "not_found", "bad_hash") else 502
+        return Response("Release asset unavailable.", status=status)
 
     async def _raw_blob(self, rel_path, ref=""):
         # Stream a repository blob from git as bytes so browser-native previews
-        # can load media without the capped JSON/base64 /blob response.
+        # can load media without the capped JSON/base64 /blob response — chunk
+        # by chunk (see _stream_request), so a large asset never sits whole in
+        # DO memory.
         if not rel_path or "\x00" in rel_path:
             return Response("not found", status=404)
         self._ensure()
@@ -8763,31 +8863,24 @@ class ForkMeshHost(DurableObject):
             return Response("No host is currently serving this file.", status=503)
         self.counter += 1
         req_id = "r%d" % self.counter
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        self.pending[req_id] = future
-        self.git_buffers[req_id] = bytearray()
-        try:
-            host.send(json.dumps({
-                "type": "request", "reqId": req_id,
-                "op": "raw-blob", "path": rel_path, "ref": ref,
-            }))
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            self._drop_host(host)
-            return Response("Host unavailable.", status=503)
-        try:
-            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
-        except Exception:
-            self.pending.pop(req_id, None)
-            self.git_buffers.pop(req_id, None)
-            return Response("Host timed out.", status=504)
-        if not result.get("ok"):
-            err = str(result.get("error", ""))
-            status = 404 if err in ("not_found", "bad_path") else 502
-            return Response("File unavailable.", status=status)
-        return repo_blob_bytes_response(result.get("data", b""), rel_path)
+        response, err = await self._stream_request(
+            host,
+            {"type": "request", "reqId": req_id,
+             "op": "raw-blob", "path": rel_path, "ref": ref},
+            {
+                "content-type": repo_blob_content_type(rel_path),
+                "cache-control": "no-cache, max-age=0, must-revalidate",
+                "content-disposition":
+                    'inline; filename="%s"' % repo_blob_filename(rel_path),
+                "x-content-type-options": "nosniff",
+                "content-security-policy": "sandbox",
+            },
+        )
+        if response is not None:
+            return response
+        status = 404 if str(err.get("error", "")) in (
+            "not_found", "bad_path") else 502
+        return Response("File unavailable.", status=status)
 
     def _drop_host(self, ws):
         # A send failed: force-close so the runtime drops it from getWebSockets.
@@ -8867,7 +8960,11 @@ class ForkMeshHost(DurableObject):
     async def _git(self, request, op, body=None):
         # Forward a git smart-HTTP request to the hosting client, which runs
         # git upload-pack on its local mirror and streams the result back in
-        # chunks (reassembled here).
+        # chunks. The upload-pack POST reply — the pack itself, hundreds of MB
+        # for a big repo — streams straight through to the client
+        # (_stream_request); only the small info/refs advertisement is still
+        # reassembled here, because the integrity gate must hash the complete
+        # advertisement before releasing it.
         self._ensure()
         host = self._best_host()
         if host is None:
@@ -8891,13 +8988,28 @@ class ForkMeshHost(DurableObject):
 
         self.counter += 1
         req_id = "g%d" % self.counter
+        message = {"type": "request", "reqId": req_id, "op": op}
+        if body:
+            message["body"] = base64.b64encode(body).decode()
+
+        if op != "git-info-refs":
+            response, err = await self._stream_request(
+                host, message,
+                {
+                    "content-type": "application/x-git-upload-pack-result",
+                    "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+            )
+            if response is not None:
+                return response
+            return Response(
+                "Host error: " + str(err.get("error", "")), status=502
+            )
+
         loop = asyncio.get_event_loop()
         future = loop.create_future()
         self.pending[req_id] = future
         self.git_buffers[req_id] = bytearray()
-        message = {"type": "request", "reqId": req_id, "op": op}
-        if body:
-            message["body"] = base64.b64encode(body).decode()
         try:
             host.send(json.dumps(message))
         except Exception:
@@ -8919,28 +9031,26 @@ class ForkMeshHost(DurableObject):
             )
 
         data = result.get("data", b"")
-        if op == "git-info-refs":
-            # Tamper/rollback gate: the refs this node advertises must hash to a
-            # state the repo's working-copy holder attested — a mirror is checked
-            # against the SOURCE's signed pins (current + recent history), never
-            # just its own self-published hash, so a forged or rolled-back mirror
-            # fails here and no clone ever receives it. (Fails open when nothing
-            # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.)
-            pinned = await self._state_pins(urlparse(request.url).path)
-            if pinned and await sha256_hex(advertised_refs_canonical(data)) not in pinned:
-                err = (b"ERR repository failed integrity check "
-                       b"(mirror may be tampered or out of date)\n")
-                body_out = (
-                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
-                    pkt_line(err)
-                )
-                return git_bytes_response(
-                    body_out, "application/x-git-upload-pack-advertisement"
-                )
+        # Tamper/rollback gate: the refs this node advertises must hash to a
+        # state the repo's working-copy holder attested — a mirror is checked
+        # against the SOURCE's signed pins (current + recent history), never
+        # just its own self-published hash, so a forged or rolled-back mirror
+        # fails here and no clone ever receives it. (Fails open when nothing
+        # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.)
+        pinned = await self._state_pins(urlparse(request.url).path)
+        if pinned and await sha256_hex(advertised_refs_canonical(data)) not in pinned:
+            err = (b"ERR repository failed integrity check "
+                   b"(mirror may be tampered or out of date)\n")
             body_out = (
-                pkt_line(b"# service=git-upload-pack\n") + b"0000" + data
+                pkt_line(b"# service=git-upload-pack\n") + b"0000" +
+                pkt_line(err)
             )
             return git_bytes_response(
                 body_out, "application/x-git-upload-pack-advertisement"
             )
-        return git_bytes_response(data, "application/x-git-upload-pack-result")
+        body_out = (
+            pkt_line(b"# service=git-upload-pack\n") + b"0000" + data
+        )
+        return git_bytes_response(
+            body_out, "application/x-git-upload-pack-advertisement"
+        )

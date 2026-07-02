@@ -929,7 +929,11 @@ def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
     assert 'if action == "raw":' in ENTRY_TEXT
     assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
     assert 'op": "raw-blob"' in ENTRY_TEXT
-    assert "repo_blob_bytes_response(result.get(\"data\", b\"\"), rel_path)" in ENTRY_TEXT
+    # Raw blobs stream chunk-by-chunk through the tunnel (never reassembled in
+    # DO memory — buffering large media is what blew the isolate memory limit),
+    # keeping the same content-type headers repo_blob_bytes_response used.
+    assert '"content-type": repo_blob_content_type(rel_path),' in ENTRY_TEXT
+    assert "response, err = await self._stream_request(" in ENTRY_TEXT
 
 
 def test_worker_and_desktop_host_route_live_repository_branches():
