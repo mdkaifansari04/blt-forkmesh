@@ -503,6 +503,10 @@ private:
     // rebuild and relaunch. Installs into the invoking non-root user's home even
     // when ForkMesh itself is running as root.
     void updateRebuildRestart();
+    // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
+    // commit on the update remote. Only ever triggers updateRebuildRestart() when
+    // one is actually found, and never while an agent is running.
+    void maybeAutoUpdate();
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
@@ -2472,6 +2476,8 @@ private:
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
     QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
+    QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
+    bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
 
     // Issues section widgets
     QLineEdit *m_issueSearch = nullptr;
