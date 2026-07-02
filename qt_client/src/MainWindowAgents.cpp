@@ -1152,25 +1152,15 @@ QWidget *MainWindow::buildAgentsTab()
     });
     m_agentHourlyTimer->start();
 
-    // Issue #290: the rolling 5-hour/weekly windows drift continuously (old
-    // usage ages out, other machines on the same plan add to it), so a value
-    // captured from the last rate-limit event goes stale fast. Re-pull the live
-    // figures from the OAuth usage endpoint every minute, and once right now, so
-    // the top-bar gauge is always current even with no agent running.
-    m_claudeUsageTimer = new QTimer(this);
-    m_claudeUsageTimer->setInterval(60 * 1000);
-    connect(m_claudeUsageTimer, &QTimer::timeout, this,
-            &MainWindow::refreshClaudeCodeUsage);
-    m_claudeUsageTimer->start();
-    // Populate the gauge promptly on launch. The very first request often misses
-    // on a restart: the network stack may not be up yet this early, and the
-    // top-bar chart widget itself is only created later in buildBreadcrumb. Either
-    // would otherwise leave the bars on their stale cached value until the next
-    // minute tick (which reads as "didn't update on restart"). Poll now and again
-    // a few seconds in so a restart refreshes the chart within seconds.
-    refreshClaudeCodeUsage();
-    for (int delayMs : {2000, 10000, 30000})
-        QTimer::singleShot(delayMs, this, &MainWindow::refreshClaudeCodeUsage);
+    // Issue #290 used to re-pull the OAuth usage endpoint on a steady one-minute
+    // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
+    // even with no agent running. That meant a network round trip every minute
+    // for the lifetime of the app. Polling is gone: the gauge now renders from
+    // the last cached figures on launch (restored in buildBreadcrumb) and only
+    // hits the network when there's a reason to believe usage moved — right
+    // after a prompt is sent (bumpClaudeCodeUsage) or when the user hovers the
+    // chart to check the current numbers (see the TokenUsageMiniChart::onHover
+    // wiring in buildBreadcrumb).
 
     m_agentPromptEdit = new QPlainTextEdit;
     m_agentPromptEdit->setPlaceholderText(
@@ -1817,11 +1807,11 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
 void MainWindow::bumpClaudeCodeUsage()
 {
     // A just-started agent (or a freshly sent prompt) hasn't consumed anything
-    // yet, so polling only at that instant leaves the top-bar gauge showing the
-    // pre-start figure — which reads as "not updating". Poll now for any usage
-    // already on the clock, then once more after the first turn has had time to
-    // land, so the gauge moves promptly rather than on the next minute boundary.
-    // The steady one-minute m_claudeUsageTimer keeps it current after that.
+    // yet, so refreshing only at that instant leaves the top-bar gauge showing
+    // the pre-start figure — which reads as "not updating". Refresh now for any
+    // usage already on the clock, then once more after the first turn has had
+    // time to land, so the gauge moves promptly. This (plus hovering the chart)
+    // is the only thing that hits the usage endpoint now — no background timer.
     refreshClaudeCodeUsage();
     QTimer::singleShot(10 * 1000, this, &MainWindow::refreshClaudeCodeUsage);
 }
