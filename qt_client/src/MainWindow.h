@@ -3846,6 +3846,7 @@ private:
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;
+    QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time
     // #welcome greeting this run, so the per-roster check stays cheap (issue #192).
     bool m_welcomeAnnounced = false;
