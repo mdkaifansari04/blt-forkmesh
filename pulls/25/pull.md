@@ -4,7 +4,7 @@ number: 25
 title: Fix Qt client roster alerts and test isolation
 base: main
 head: fix/qt-client
-status: open
+status: merged
 ts: 1782985734466
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -18,4 +18,3 @@ Summary:
 
 Test:
 - cd qt_client && ./run.sh test
-
