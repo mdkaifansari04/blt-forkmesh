@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 330
 title: Fix the diff viewer on the web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
