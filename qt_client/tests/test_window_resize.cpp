@@ -16,6 +16,7 @@
 #include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QWidget>
 
@@ -220,10 +221,24 @@ int main(int argc, char *argv[])
     }
     qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
 
+    QStandardPaths::setTestModeEnabled(true);
+
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     app.setOrganizationName("ForkMeshTests");
     app.setApplicationName("WindowResize");
+
+    const QString appDataPath =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appDataPath.isEmpty()) {
+        qCritical("FAIL: could not resolve temporary app data directory");
+        return 1;
+    }
+    QDir appDataDir(appDataPath);
+    if (appDataDir.exists() && !appDataDir.removeRecursively()) {
+        qCritical("FAIL: could not clear temporary app data directory");
+        return 1;
+    }
 
     // issue #300: the headless node runs on the offscreen QPA plugin, whose
     // propagateSizeHints() base implementation logs "This plugin does not support
