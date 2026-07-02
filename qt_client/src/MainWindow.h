@@ -495,6 +495,15 @@ private:
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
+    // A user on forkmesh.com claimed this node's ID (adhoc #53): the heartbeat
+    // reply carried a confirmation code, shown on this machine so the person
+    // standing at both screens can type it back into the website.
+    void showNodeClaimCode(const QString &user, const QString &code);
+    // Installer link-code flow (adhoc #53): the hosts/SSH installer printed a
+    // link code on the fresh machine; confirm + submit it here, signed with
+    // this account's key, so the new node is attached to this user.
+    void promptHostLinkCode(const QString &code);
+    void submitHostLinkCode(const QString &code);
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -2445,6 +2454,11 @@ private:
     bool m_hostInstallLogBold = false;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
+    // Installer link-code detection (adhoc #53): rolling tail of the install
+    // output so the "Link code: NNNNNN" line survives chunk splits, and a
+    // per-run guard so the link popup opens once.
+    QString m_hostInstallLinkTail;
+    bool m_hostLinkPrompted = false;
     // Relays section: live list of configured relays with status / latency / version.
     QTableWidget *m_relaysTable = nullptr;
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
@@ -3971,6 +3985,9 @@ private:
     bool m_isAdmin = false;
     QTimer *m_adminPollTimer = nullptr;
     QStringList m_seenPendingUsers;
+    // Last website-claim confirmation code already shown (adhoc #53), so the
+    // per-minute heartbeat doesn't reopen the popup for the same claim.
+    QString m_lastClaimCodeShown;
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;
