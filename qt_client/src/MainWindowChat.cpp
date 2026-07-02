@@ -392,9 +392,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // sticks across launches and feeds startClaudeCodeTranscript.
     m_quickAddClaudeModel = new QComboBox;
     m_quickAddClaudeModel->addItem(QStringLiteral("Default model"), QString());
-    m_quickAddClaudeModel->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
-    m_quickAddClaudeModel->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
-    m_quickAddClaudeModel->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    m_quickAddClaudeModel->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
+    m_quickAddClaudeModel->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
+    m_quickAddClaudeModel->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
     m_quickAddClaudeModel->setToolTip(
         "Claude model the Claude Code agent runs as (passed to the CLI as "
         "--model). 'Default model' leaves the CLI's choice untouched.");
