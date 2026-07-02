@@ -91,6 +91,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentRunner.cpp
     src/QrCode.h
     src/QrCode.cpp
+    src/ReactionEmoji.h
+    src/ReactionEmoji.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MarkdownEditor.cpp
