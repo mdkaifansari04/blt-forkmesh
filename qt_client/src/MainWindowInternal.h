@@ -125,6 +125,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSize>
+#include <QSysInfo>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringListModel>
@@ -215,6 +216,8 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
+bool autoMarkViewedOnScrollPref();
+void setAutoMarkViewedOnScrollPref(bool on);
 QString diffStickyStyleSheet(int fontPt);
 QString diffStickyPathHtml(const QString &path);
 QString agentCostText(double usd);

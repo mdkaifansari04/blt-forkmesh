@@ -876,6 +876,11 @@ private:
     void renderPullDiff();
     // Scroll the all-files diff so the given file's section is at the top.
     void scrollPullDiffToFile(const QString &filePath);
+    // Debounced off the diff view's scrollbar (issue: auto-mark viewed on
+    // scroll): while m_pullAutoViewedButton is checked, marks every file that
+    // has scrolled entirely above the viewport as "Viewed" and re-renders,
+    // restoring the scroll position to the file still on screen.
+    void applyAutoMarkViewedOnScroll();
     void adjustDiffFont(int delta); // +/- diff text-size zoom (issue #254)
     // Register a diff viewer so it shares the text-size zoom: tracks it for the
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
@@ -2448,6 +2453,10 @@ private:
     QLineEdit *m_hostUserEdit = nullptr;
     QLineEdit *m_hostPassEdit = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;
+    // Direct-upload install (adhoc #67): stream this app's own release binary
+    // to the host over the SSH session instead of the host downloading the
+    // release from the relay.
+    QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
@@ -3132,9 +3141,16 @@ private:
     // current PR: file path -> the "file-N" HTML anchor in the all-files diff,
     // so selecting a file in the list (or Prev/Next) can scroll straight to it.
     QHash<QString, QString> m_pullFileAnchors;
+    // Same files, in the order they appear in the rendered diff, so auto-mark-
+    // viewed-on-scroll can tell which files are above/below the current file.
+    QStringList m_pullFileOrder;
     // Set while the file list is being re-selected to follow the diff scroll, so
     // currentItemChanged doesn't scroll the diff back to the file header.
     bool m_pullSuppressFileScroll = false;
+    // "Auto-mark viewed" toggle + its scroll debounce (issue: mark files viewed
+    // while scrolling the PR diff, mirroring GitHub's same-named setting).
+    QPushButton *m_pullAutoViewedButton = nullptr;
+    QTimer *m_pullAutoViewedDebounce = nullptr;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     // Every diff viewer registered for shared text-size zoom (issue #254), so a
     // +/- click or Ctrl+wheel can re-render them all at the new size.
