@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Public /status page contracts (30-day per-system uptime history).
+
+record_status_sample (called once a minute by the cron) folds one health
+check per system into today's UTC-day bucket; status_history reads those
+buckets back into the 30-day series the /status page renders. These tests
+load the real functions straight out of src/entry.py (no Workers runtime)
+and drive them against in-memory D1 stubs.
+"""
+
+import ast
+import asyncio
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+
+DAY_MS = 86400000
+
+
+def _load(*names, extra_globals=None):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    want_assigns = {
+        "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
+        "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
+        "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
+    }
+    selected = []
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            alias.name == "re" for alias in node.names
+        ):
+            selected.append(node)
+        elif isinstance(node, ast.Assign):
+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if targets & want_assigns:
+                selected.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            selected.append(node)
+    found = {n.name for n in selected if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    missing = set(names) - found
+    assert not missing, "missing functions: %s" % sorted(missing)
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals or {})
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
+class _Clock:
+    value = 1_700_000_000_000  # arbitrary fixed instant
+
+    @classmethod
+    def now(cls):
+        return cls.value
+
+
+def _sample_env(now, error_paths, host_online=True, db_ok=True):
+    """Stub env for record_status_sample: error_log rows + host_presence count."""
+    inserted = []
+
+    async def d1_first(_env, sql, *_args):
+        if "SELECT 1 AS ok" in sql:
+            if not db_ok:
+                raise RuntimeError("db down")
+            return {"ok": 1}
+        if "host_presence" in sql:
+            return {"n": 1 if host_online else 0}
+        return {}
+
+    async def d1_all(_env, sql, *_args):
+        if "error_log" in sql:
+            return [{"path": p} for p in error_paths]
+        return []
+
+    async def d1_run(_env, sql, *args):
+        if sql.startswith("INSERT INTO system_status_daily"):
+            inserted.append({"system": args[1], "failure": args[2]})
+
+    async def noop(*_a, **_k):
+        return None
+
+    extra = {
+        "Date": _Clock,
+        "ensure_schema": noop,
+        "d1_first": d1_first,
+        "d1_all": d1_all,
+        "d1_run": d1_run,
+    }
+    return extra, inserted
+
+
+def _run_sample(error_paths=(), host_online=True, db_ok=True):
+    extra, inserted = _sample_env(_Clock.value, error_paths, host_online, db_ok)
+    g = _load("record_status_sample", extra_globals=extra)
+    asyncio.run(g["record_status_sample"](object()))
+    return {row["system"]: row["failure"] for row in inserted}
+
+
+# --- record_status_sample ---------------------------------------------------
+
+def test_all_systems_recorded_ok_with_no_errors_and_a_live_host():
+    results = _run_sample(error_paths=[], host_online=True, db_ok=True)
+    assert set(results) == {"website", "api", "database", "git_hosting", "realtime"}
+    assert all(failure == 0 for failure in results.values())
+
+
+def test_database_failure_is_isolated_to_the_database_system():
+    results = _run_sample(error_paths=[], host_online=True, db_ok=False)
+    assert results["database"] == 1
+    assert results["website"] == 0
+    assert results["api"] == 0
+
+
+def test_no_live_host_fails_only_git_hosting():
+    results = _run_sample(error_paths=[], host_online=False, db_ok=True)
+    assert results["git_hosting"] == 1
+    assert results["website"] == 0
+    assert results["api"] == 0
+
+
+def test_api_error_does_not_fail_website():
+    results = _run_sample(error_paths=["/api/repositories"])
+    assert results["api"] == 1
+    assert results["website"] == 0
+    assert results["realtime"] == 0
+
+
+def test_static_page_error_does_not_fail_api():
+    results = _run_sample(error_paths=["/dashboard/index.html"])
+    assert results["website"] == 1
+    assert results["api"] == 0
+
+
+def test_git_clone_and_room_errors_are_bucketed_as_realtime():
+    results = _run_sample(error_paths=[
+        "/someowner/somerepo/info/refs",
+        "/api/repo/owner/repo/rooms/main/ws",
+    ])
+    assert results["realtime"] == 1
+    assert results["website"] == 0
+    assert results["api"] == 0
+
+
+# --- status_history ----------------------------------------------------------
+
+def _history_env(rows):
+    async def noop(*_a, **_k):
+        return None
+
+    async def d1_all(_env, _sql, *_args):
+        return rows
+
+    captured = {}
+
+    def json_response(payload, cache_seconds=None):
+        captured.update(payload)
+        return payload
+
+    extra = {
+        "Date": _Clock,
+        "ensure_schema": noop,
+        "d1_all": d1_all,
+        "json_response": json_response,
+    }
+    return extra, captured
+
+
+def _run_history(rows):
+    extra, captured = _history_env(rows)
+    g = _load("status_history", extra_globals=extra)
+    asyncio.run(g["status_history"](object()))
+    return captured
+
+
+def test_no_data_yields_unknown_status_and_null_uptime():
+    out = _run_history([])
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["website"]["status"] == "unknown"
+    assert by_id["website"]["uptimePct"] is None
+    assert len(by_id["website"]["days"]) == 30
+
+
+def test_all_checks_passing_today_is_operational():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    rows = [{"day_ts": cur_day, "system": "website", "checks": 60, "failures": 0}]
+    out = _run_history(rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["website"]["status"] == "operational"
+    assert by_id["website"]["uptimePct"] == 100.0
+
+
+def test_all_checks_failing_today_is_down():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    rows = [{"day_ts": cur_day, "system": "api", "checks": 10, "failures": 10}]
+    out = _run_history(rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["api"]["status"] == "down"
+    assert by_id["api"]["uptimePct"] == 0.0
+
+
+def test_some_checks_failing_today_is_degraded():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    rows = [{"day_ts": cur_day, "system": "database", "checks": 10, "failures": 3}]
+    out = _run_history(rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["database"]["status"] == "degraded"
+    assert by_id["database"]["uptimePct"] == 70.0
+
+
+def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    old_day = cur_day - 20 * DAY_MS
+    rows = [
+        {"day_ts": old_day, "system": "website", "checks": 60, "failures": 60},
+        {"day_ts": cur_day, "system": "website", "checks": 60, "failures": 0},
+    ]
+    out = _run_history(rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    # Status reflects today (operational), even though the 30-day aggregate
+    # uptime is dragged down by the old incident.
+    assert by_id["website"]["status"] == "operational"
+    assert by_id["website"]["uptimePct"] < 100.0
+
+
+# --- static wiring -----------------------------------------------------------
+
+def test_worker_exposes_status_route_and_schema():
+    assert 'url.path in ("/api/status", "/api/status/")' in ENTRY_TEXT
+    assert "async def status_history" in ENTRY_TEXT
+    assert "async def record_status_sample" in ENTRY_TEXT
+    assert "CREATE TABLE IF NOT EXISTS system_status_daily" in ENTRY_TEXT
+    assert "idx_system_status_daily_day" in ENTRY_TEXT
+
+
+def test_cron_samples_status_every_tick():
+    assert "await record_status_sample(self.env)" in ENTRY_TEXT
+
+
+def test_status_page_asset_and_redirect_exist():
+    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
+    assert 'fetch("/api/status"' in status_html
+    assert "status-day" in status_html
+
+    redirects = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
+    assert "/status /status.html 200" in redirects
+
+
+def test_migration_file_matches_worker_schema():
+    migration = (ROOT / "migrations" / "0022_system_status.sql").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS system_status_daily" in migration
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+    print("ok")
