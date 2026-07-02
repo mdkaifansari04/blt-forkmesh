@@ -2160,6 +2160,7 @@ private:
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
     MessageRow *addMessageRow(const ChatMessage &message);
+    void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
     void scrollToBottom();
     void setChannels(const QStringList &channels);

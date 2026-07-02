@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
@@ -198,54 +199,50 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     if (!message.deleted)
         headerRow->addWidget(new ExpiryRing(message.timestampMs), 0, Qt::AlignVCenter);
     headerRow->addStretch();
-    // A quick Copy action on any message that carries text, regardless of who
-    // sent it, so the body can be lifted to the clipboard in one click.
-    if (!message.deleted && !message.text.isEmpty()) {
-        auto *copy = new QPushButton("Copy");
-        copy->setObjectName("messageAction");
-        copy->setCursor(Qt::PointingHandCursor);
-        copy->setToolTip("Copy message text");
-        connect(copy, &QPushButton::clicked, this, [this, copy] {
-            QApplication::clipboard()->setText(m_message.text);
-            copy->setText("Copied");
-        });
-        headerRow->addWidget(copy);
-    }
+    // Copy/Edit/Delete are tucked behind a single "..." menu button instead of
+    // sitting side-by-side, so the header row stays tidy even on a message that
+    // qualifies for all three.
     if (!message.deleted) {
+        const bool showCopy = !message.text.isEmpty();
         // Edit stays author-only (you can only rewrite your own words).
-        if (message.self && !message.text.isEmpty()) {
-            auto *edit = new QPushButton("Edit");
-            edit->setObjectName("messageAction");
-            edit->setCursor(Qt::PointingHandCursor);
-            edit->setToolTip("Edit message");
-            connect(edit, &QPushButton::clicked, this, [this] {
-                emit editRequested(m_message.id, m_message.text);
-            });
-            headerRow->addWidget(edit);
-        }
-        // Delete is shown on EVERY message for an admin (a full moderation
+        const bool showEdit = message.self && !message.text.isEmpty();
+        // Delete is offered on EVERY message for an admin (a full moderation
         // override that deletes any message, including the admin's own), and on
         // your own messages otherwise. The admin path goes through
         // moderateDeleteRequested, which deletes unconditionally; the self path
         // is the ordinary author delete.
-        if (canModerate) {
-            auto *del = new QPushButton("Delete");
-            del->setObjectName("messageAction");
-            del->setCursor(Qt::PointingHandCursor);
-            del->setToolTip("Delete this message as an administrator");
-            connect(del, &QPushButton::clicked, this, [this] {
-                emit moderateDeleteRequested(m_message.id);
-            });
-            headerRow->addWidget(del);
-        } else if (message.self) {
-            auto *del = new QPushButton("Delete");
-            del->setObjectName("messageAction");
-            del->setCursor(Qt::PointingHandCursor);
-            del->setToolTip("Delete message");
-            connect(del, &QPushButton::clicked, this, [this] {
-                emit deleteRequested(m_message.id);
-            });
-            headerRow->addWidget(del);
+        const bool showModerateDelete = canModerate;
+        const bool showSelfDelete = !canModerate && message.self;
+        if (showCopy || showEdit || showModerateDelete || showSelfDelete) {
+            auto *menuButton = new QToolButton;
+            menuButton->setObjectName("messageAction");
+            menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF")); // "⋯"
+            menuButton->setCursor(Qt::PointingHandCursor);
+            menuButton->setToolTip("More actions");
+            menuButton->setPopupMode(QToolButton::InstantPopup);
+            auto *menu = new QMenu(menuButton);
+            if (showCopy) {
+                QAction *copyAction = menu->addAction("Copy");
+                connect(copyAction, &QAction::triggered, this,
+                        [this] { QApplication::clipboard()->setText(m_message.text); });
+            }
+            if (showEdit) {
+                QAction *editAction = menu->addAction("Edit");
+                connect(editAction, &QAction::triggered, this, [this] {
+                    emit editRequested(m_message.id, m_message.text);
+                });
+            }
+            if (showModerateDelete) {
+                QAction *delAction = menu->addAction("Delete (admin)");
+                connect(delAction, &QAction::triggered, this,
+                        [this] { emit moderateDeleteRequested(m_message.id); });
+            } else if (showSelfDelete) {
+                QAction *delAction = menu->addAction("Delete");
+                connect(delAction, &QAction::triggered, this,
+                        [this] { emit deleteRequested(m_message.id); });
+            }
+            menuButton->setMenu(menu);
+            headerRow->addWidget(menuButton);
         }
     }
     column->addLayout(headerRow);
