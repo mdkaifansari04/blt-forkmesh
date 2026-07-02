@@ -820,7 +820,11 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueIdeCodexButton->hide();
 
     auto *metaLayout = new QVBoxLayout(meta);
-    metaLayout->setContentsMargins(22, 22, 10, 22);
+    // Tighter left gutter: the splitter handle (+ the thread pane's own right
+    // margin) already separate the sidebar from the issue thread, so a large
+    // left margin here just left an empty channel down every section. Keep it
+    // close to the right margin so the sections read as balanced.
+    metaLayout->setContentsMargins(12, 22, 10, 22);
     metaLayout->setSpacing(0);
     auto addDivider = [&] {
         auto *line = new QWidget(meta);
