@@ -728,7 +728,7 @@ void MainWindow::testShowPublishBar(bool on)
         if (on) {
             m_repoPushButton->setText(QStringLiteral("Sync"));
             m_repoPushButton->setEnabled(true);
-            positionRepoPushButton(); // floats it above the Commits tab
+            positionRepoPushButton(); // floats it above the Code tab
         }
         m_repoPushButton->setVisible(on);
     }
@@ -1458,14 +1458,24 @@ bool MainWindow::authenticateSilently(const QString &accountName)
                                   lookup.value("emailVerified").toBool());
         return true;
     }
-    // If the relay is unreachable, trust a previously authenticated marker so a
-    // returning user can still open the app shell offline. When the relay is
-    // reachable, do not treat a password-login cache as signed hosting auth unless
-    // the server pubkey matched above. Publishing and heartbeat require this
-    // desktop's Ed25519 key, not just an email/password session.
+    // The relay says the account is active but bound to another desktop key
+    // (e.g. a password login from a second device). That mismatch only blocks
+    // signed hosting auth from here — the account and its payout wallet are
+    // already verified network members, so reflect that instead of nagging
+    // "verify your payout wallet" on every launch.
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == "active")
+        m_accountSolanaVerified = true;
+    // Trust a previously authenticated marker whenever the relay gave no
+    // authoritative answer — unreachable (status 0), rate-limited or erroring
+    // (429/5xx) — so a transient lookup failure doesn't demote a returning user
+    // to unverified for the whole session. When the lookup DID answer, do not
+    // treat a password-login cache as signed hosting auth unless the server
+    // pubkey matched above. Publishing and heartbeat require this desktop's
+    // Ed25519 key, not just an email/password session.
     const bool cachedHere =
         QSettings().value(kAuthedAccountSetting).toString() == accountName;
-    if (cachedHere && status == 0) {
+    if (cachedHere && status != 200) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
