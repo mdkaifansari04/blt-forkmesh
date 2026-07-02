@@ -104,6 +104,12 @@ int main(int argc, char *argv[])
             if (!settings.contains(key))
                 settings.setValue(key, true);
         }
+        // Auto-update (kAutoUpdateSetting, MainWindowInternal.h) is likewise on by
+        // default for a headless install — no one is around to click "Update,
+        // rebuild & restart" on an operator-run VM — but off by default on
+        // desktop; seed once, same as the telemetry toggles above.
+        if (!settings.contains(QStringLiteral("update/autoUpdate")))
+            settings.setValue(QStringLiteral("update/autoUpdate"), true);
     }
 
     // Refuse to run as root: ForkMesh runs git, action workflows and shell
