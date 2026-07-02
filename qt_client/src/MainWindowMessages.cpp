@@ -378,11 +378,36 @@ void MainWindow::setChannels(const QStringList &channels)
 
 void MainWindow::setRoster(const QList<MemberInfo> &members)
 {
-    QList<MemberInfo> visibleMembers;
-    visibleMembers.reserve(members.size());
-    for (const MemberInfo &member : members) {
-        if (member.self || member.online)
-            visibleMembers.append(member);
+    // Build an index of freshly-received (online) members so we can detect which
+    // previously-known nodes have gone offline. Also un-remove any node that is
+    // back online (it was explicitly removed but has reconnected).
+    QSet<QString> freshIds, freshNames;
+    for (const MemberInfo &m : members) {
+        if (!m.id.isEmpty()) {
+            freshIds.insert(m.id);
+            m_removedPeerIds.remove(m.id);
+        }
+        if (!m.name.isEmpty())
+            freshNames.insert(m.name);
+    }
+
+    // Merge fresh (online) members with previously-known nodes that dropped out
+    // of the roster, so the Node dropdown keeps them selectable when offline.
+    // Skip nodes that were explicitly removed via removeChatMember.
+    QList<MemberInfo> newRoster = members;
+    for (const MemberInfo &prev : std::as_const(m_homeRoster)) {
+        if (prev.self)
+            continue;
+        if (!prev.id.isEmpty() && m_removedPeerIds.contains(prev.id))
+            continue;
+        const bool stillPresent =
+            (!prev.id.isEmpty() && freshIds.contains(prev.id)) ||
+            (!prev.name.isEmpty() && freshNames.contains(prev.name));
+        if (!stillPresent) {
+            MemberInfo offline = prev;
+            offline.online = false;
+            newRoster.append(offline);
+        }
     }
 
     // #33: optionally pop a desktop notification when another node comes online.
@@ -411,7 +436,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         // id (public key) and account name defensively.
         const bool showNodeConnectAlert =
             QSettings().value(kNodeConnectAlertSetting, false).toBool();
-        for (const MemberInfo &m : visibleMembers) {
+        for (const MemberInfo &m : members) {
             if (m.self || m.id.isEmpty() || !m.online)
                 continue;
             if (!ownId.isEmpty() && m.id == ownId)
@@ -430,14 +455,14 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    m_homeRoster = visibleMembers;
+    m_homeRoster = newRoster;
     // Now that the room link is live (a roster only arrives once connected), a
     // brand-new node greets the shared #welcome room — once, ever (issue #192).
     maybeAnnounceWelcome();
     refreshChatMembers();
     // The members list is gone (nodes are the members); keep DM tab titles in
     // sync with renamed/rediscovered nodes.
-    for (const MemberInfo &member : visibleMembers) {
+    for (const MemberInfo &member : members) {
         if (m_dmNames.contains(member.id) && m_dmNames.value(member.id) != member.name) {
             m_dmNames.insert(member.id, member.name);
             refreshDmList();
@@ -572,6 +597,10 @@ void MainWindow::removeChatMember(const QString &id, const QString &name)
 {
     if (id.isEmpty())
         return;
+
+    // Mark before forgetMember fires rosterChanged, so the retain loop in
+    // setRoster skips this id and doesn't bring it back as an offline entry.
+    m_removedPeerIds.insert(id);
 
     if (m_backend)
         m_backend->forgetMember(id);
