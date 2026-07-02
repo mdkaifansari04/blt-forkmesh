@@ -3410,6 +3410,7 @@ private:
     bool m_agentTableRefreshing = false;
     QHash<int, QString> m_lastAssistantText; // last assistant prose, for waiting/question
     void notifyAgentWaiting(int sessionId, bool needsPermission);
+    void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
     // User messages queued while a session has no live CLI (typed after the task
