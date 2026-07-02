@@ -59,6 +59,12 @@ struct MemberInfo {
     double cpuPercent = -1.0; // whole-host CPU utilization, 0..100
 };
 
+// How long a chat message is kept before it's treated as expired: pruned from
+// each node's local history and, independently, from the relay's retained
+// server-side history (CHAT_HISTORY_RETAIN_MS in entry.py). Message rows show
+// a countdown ring toward this deadline.
+constexpr qint64 kChatMessageRetentionMs = qint64(7) * 24 * 60 * 60 * 1000;
+
 // A single chat message delivered to the UI. `conversation` is either a
 // channel ("#general") or a direct chat keyed by the other party ("@<peerId>").
 // A message may carry text, a file attachment, or both.

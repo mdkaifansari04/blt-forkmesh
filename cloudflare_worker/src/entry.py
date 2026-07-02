@@ -7688,6 +7688,13 @@ class Default(WorkerEntrypoint):
             await _federation_cron(self.env)
         except Exception:
             pass
+        # Retained chat history is only pruned per-room on client join
+        # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
+        # gets its 7-day-old messages deleted.
+        try:
+            await chat_history_prune_expired(self.env)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -8419,6 +8426,17 @@ async def chat_history_prune(env, room_key):
         "ORDER BY ts DESC LIMIT ?)",
         room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
     )
+
+
+async def chat_history_prune_expired(env):
+    # chat_history_prune() above only runs when a client joins that specific
+    # room, so a room nobody reconnects to would otherwise retain messages
+    # past the 7-day window forever. Sweep every room's expired rows on the
+    # per-minute cron (adhoc #49) so retention is enforced regardless of
+    # traffic.
+    await ensure_schema(env)
+    cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
+    await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
 
 
 class ForkMeshRoom(DurableObject):
