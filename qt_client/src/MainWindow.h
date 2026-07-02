@@ -508,8 +508,9 @@ private:
     // when ForkMesh itself is running as root.
     void updateRebuildRestart();
     // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
-    // commit on the update remote. Only ever triggers updateRebuildRestart() when
-    // one is actually found, and never while an agent is running.
+    // tagged release on the update remote (ordinary commits on main don't count).
+    // Only ever triggers updateRebuildRestart() when one is actually found, and
+    // never while an agent is running.
     void maybeAutoUpdate();
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
