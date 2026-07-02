@@ -1652,6 +1652,145 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
     return html;
 }
 
+// Renders the dependency-scan signal as a rich table widget: one row per
+// manifest with outdated-count, vulnerable-count, and a per-row "Run scan"
+// button.  Placed full-width (spanning all 3 grid columns) below the other
+// signal cards.
+static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
+                                  const QList<RepoSecurityFinding> &findings,
+                                  qint64 generatedAtMs,
+                                  const QString &localBase,
+                                  QObject *context,
+                                  std::function<void()> runScan)
+{
+    auto *card = new QFrame;
+    card->setObjectName("insightsCard");
+    auto *vlay = new QVBoxLayout(card);
+    vlay->setContentsMargins(12, 12, 12, 12);
+    vlay->setSpacing(6);
+
+    // Title + severity + last-scanned time in one row
+    const QString color = repoSecuritySeverityColor(signal.severity);
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
+    auto *titleLbl = new QLabel(
+        QStringLiteral("<span style='font-weight:700;font-size:13px;color:%1'>%2</span>"
+                       "&nbsp;<span style='color:#8b949e;font-size:11px;font-weight:600;"
+                       "text-transform:uppercase'>%3</span>")
+            .arg(color, signal.title.toHtmlEscaped(),
+                 RepoSecurity::severityText(signal.severity).toHtmlEscaped()));
+    titleLbl->setTextFormat(Qt::RichText);
+    titleRow->addWidget(titleLbl, 1);
+    if (generatedAtMs > 0) {
+        const QString ts = QDateTime::fromMSecsSinceEpoch(generatedAtMs)
+                               .toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+        auto *timeLbl = new QLabel(
+            QStringLiteral("<span style='color:#8b949e;font-size:11px'>Last scanned: %1</span>")
+                .arg(ts));
+        timeLbl->setTextFormat(Qt::RichText);
+        titleRow->addWidget(timeLbl, 0);
+    }
+    vlay->addLayout(titleRow);
+
+    if (!signal.summary.isEmpty()) {
+        auto *summaryLbl = new QLabel(
+            QStringLiteral("<span style='color:#c9d1d9;font-size:12px'>%1</span>")
+                .arg(signal.summary.toHtmlEscaped()));
+        summaryLbl->setTextFormat(Qt::RichText);
+        vlay->addWidget(summaryLbl);
+    }
+
+    if (signal.items.isEmpty()) {
+        if (!signal.detail.isEmpty()) {
+            auto *detailLbl = new QLabel(
+                QStringLiteral("<span style='color:#8b949e;font-size:11px'>%1</span>")
+                    .arg(signal.detail.toHtmlEscaped()));
+            detailLbl->setTextFormat(Qt::RichText);
+            vlay->addWidget(detailLbl);
+        }
+        return card;
+    }
+
+    // Count outdated (loose-specifier) alerts per manifest from findings
+    QHash<QString, int> outdatedByPath;
+    for (const RepoSecurityFinding &f : findings) {
+        if (f.category == QLatin1String("Dependency"))
+            outdatedByPath[f.path]++;
+    }
+
+    // Manifest table: header row + one row per manifest
+    auto *grid = new QGridLayout;
+    grid->setContentsMargins(0, 8, 0, 0);
+    grid->setSpacing(4);
+    grid->setColumnStretch(0, 1);
+
+    auto makeHdr = [](const QString &text) {
+        auto *lbl = new QLabel(
+            QStringLiteral("<span style='color:#8b949e;font-size:11px;font-weight:600'>"
+                           "%1</span>")
+                .arg(text.toHtmlEscaped()));
+        lbl->setTextFormat(Qt::RichText);
+        return lbl;
+    };
+    grid->addWidget(makeHdr(QStringLiteral("Manifest")), 0, 0);
+    grid->addWidget(makeHdr(QStringLiteral("Outdated")), 0, 1, Qt::AlignRight);
+    grid->addWidget(makeHdr(QStringLiteral("Vulnerable")), 0, 2, Qt::AlignRight);
+    // column 3 reserved for buttons (no header needed)
+
+    int row = 1;
+    for (const QString &manifest : signal.items) {
+        const QString href = QString::fromUtf8(QUrl::toPercentEncoding(manifest));
+        auto *pathLbl = new QLabel(
+            QStringLiteral("<a style='color:#58a6ff;text-decoration:none' "
+                           "href='manifest:%1'>%2</a>")
+                .arg(href, manifest.toHtmlEscaped()));
+        pathLbl->setTextFormat(Qt::RichText);
+        pathLbl->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        if (!localBase.trimmed().isEmpty()) {
+            const QString abs = QDir(localBase).filePath(manifest);
+            QObject::connect(pathLbl, &QLabel::linkActivated, context,
+                             [abs](const QString &) {
+                                 if (QFileInfo::exists(abs))
+                                     QDesktopServices::openUrl(
+                                         QUrl::fromLocalFile(abs));
+                             });
+        }
+
+        const int outdated = outdatedByPath.value(manifest, 0);
+        const QString outdatedHtml =
+            outdated > 0
+                ? QStringLiteral("<span style='color:#d29922;font-size:12px'>%1</span>")
+                      .arg(outdated)
+                : QStringLiteral("<span style='color:#3fb950;font-size:12px'>0</span>");
+        auto *outdatedLbl = new QLabel(outdatedHtml);
+        outdatedLbl->setTextFormat(Qt::RichText);
+        outdatedLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        // Vulnerable count: not yet implemented (requires external advisory DB)
+        auto *vulnLbl = new QLabel(
+            QStringLiteral("<span style='color:#8b949e;font-size:12px'>&ndash;</span>"));
+        vulnLbl->setTextFormat(Qt::RichText);
+        vulnLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        auto *scanBtn = new QPushButton(QStringLiteral("Run scan"));
+        scanBtn->setObjectName("ghostButton");
+        scanBtn->setProperty("buttonSize", "sm");
+        scanBtn->setCursor(Qt::PointingHandCursor);
+        QObject::connect(scanBtn, &QPushButton::clicked, context,
+                         [runScan]() { runScan(); });
+
+        grid->addWidget(pathLbl, row, 0);
+        grid->addWidget(outdatedLbl, row, 1, Qt::AlignRight);
+        grid->addWidget(vulnLbl, row, 2, Qt::AlignRight);
+        grid->addWidget(scanBtn, row, 3, Qt::AlignRight);
+        ++row;
+    }
+
+    vlay->addLayout(grid);
+    return card;
+}
+
 void MainWindow::refreshRepoSecurity()
 {
     if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
@@ -1732,32 +1871,30 @@ void MainWindow::refreshRepoSecurity()
 
     int index = 0;
     const QString localBase = writable.localPath;
+    const RepoSecuritySignal *depSignal = nullptr;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
+        // Dependency scan gets a dedicated full-width table card (added below)
+        if (signal.key == QLatin1String("dependencies")) {
+            depSignal = &signal;
+            continue;
+        }
         auto *card = new QLabel(repoSecuritySignalHtml(signal));
         card->setObjectName("insightsCard");
         card->setTextFormat(Qt::RichText);
         card->setWordWrap(true);
         card->setMinimumHeight(92);
-        if (!signal.items.isEmpty()) {
-            card->setOpenExternalLinks(false);
-            card->setTextInteractionFlags(Qt::TextBrowserInteraction);
-            connect(card, &QLabel::linkActivated, this,
-                    [localBase](const QString &href) {
-                        if (!href.startsWith(QLatin1String("manifest:")))
-                            return;
-                        const QString rel = QUrl::fromPercentEncoding(
-                            href.mid(QStringLiteral("manifest:").size()).toUtf8());
-                        if (localBase.trimmed().isEmpty() || rel.isEmpty())
-                            return;
-                        const QString abs = QDir(localBase).filePath(rel);
-                        if (QFileInfo::exists(abs))
-                            QDesktopServices::openUrl(QUrl::fromLocalFile(abs));
-                    });
-        }
         const int row = index / 3;
         const int col = index % 3;
         m_securitySignalsGrid->addWidget(card, row, col);
         ++index;
+    }
+    // Place the dependency-scan card in a dedicated full-width row
+    if (depSignal) {
+        const int depRow = (index + 2) / 3;
+        auto *depCard = buildDepScanCard(
+            *depSignal, snapshot.findings, snapshot.generatedAtMs,
+            localBase, this, [this]() { refreshRepoSecurity(); });
+        m_securitySignalsGrid->addWidget(depCard, depRow, 0, 1, 3);
     }
 
     if (snapshot.findings.isEmpty()) {
