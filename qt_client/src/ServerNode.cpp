@@ -308,14 +308,19 @@ void ServerNode::scheduleReconnect()
 
     // Retry quickly at first so the node reconnects promptly after a brief
     // relay redeploy (adhoc #192), then back off exponentially — 1s, 2s, 4s …
-    // capped at 60s — while the relay keeps refusing. Without the backoff a
-    // quota-exhausted relay (Cloudflare answers every request with a 429 page)
-    // gets hammered once a second by every node, burning more of the very
-    // quota that is missing. Jitter keeps many nodes from reconnecting in
-    // lockstep; the counter resets once an upgrade succeeds.
-    const int shift = qMin(m_reconnectAttempts, 6);
+    // capped at 5 minutes — while the relay keeps refusing. A cap of 60s
+    // (the original adhoc #66 value) is reached after only ~6 attempts
+    // (about a minute), so a Cloudflare daily-quota 429 that lasts hours
+    // spent the rest of the outage hammering the relay every ~60-75s —
+    // barely different from no backoff at all, and the jitter on a fixed
+    // base made consecutive waits look random rather than growing (adhoc
+    // #68). Stretching the ramp out and raising the ceiling keeps genuine
+    // exponential growth visible for longer and cuts the steady-state
+    // request rate once it does plateau. Jitter keeps many nodes from
+    // reconnecting in lockstep; the counter resets once an upgrade succeeds.
+    const int shift = qMin(m_reconnectAttempts, 9);
     ++m_reconnectAttempts;
-    int delay = qMin(1000 << shift, 60000);
+    int delay = qMin(1000 << shift, 300000);
     delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
     if (delay >= 5000)
         emit statusChanged(
