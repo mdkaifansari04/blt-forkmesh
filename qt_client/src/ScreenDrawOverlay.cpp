@@ -124,63 +124,67 @@ void ScreenDrawOverlay::paintEvent(QPaintEvent *)
     paintScreenshotButton(painter);
 }
 
-// A floating "Screenshot" pill at the top of the primary screen. Clicking it hands
-// off to a region screenshot (see startCapture); it hides itself while a capture is
-// in progress so it never lands in the grabbed image.
-QRect ScreenDrawOverlay::screenshotButtonRect() const
+// One "Screenshot" pill rect per connected screen, centred at the top of each.
+// Widget-local coordinates (overlay origin = m_virtualGeom.topLeft()).
+QVector<QRect> ScreenDrawOverlay::screenshotButtonRects() const
 {
-    QScreen *primary = QGuiApplication::primaryScreen();
-    const QRect screen = primary ? primary->geometry() : m_virtualGeom;
-    // Work in widget-local coordinates: the overlay's origin is m_virtualGeom's.
-    const QRect local = screen.translated(-m_virtualGeom.topLeft());
-    const int w = 150;
-    const int h = 40;
-    const int x = local.x() + (local.width() - w) / 2;
-    const int y = local.y() + 24;
-    return QRect(x, y, w, h);
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    QVector<QRect> rects;
+    rects.reserve(screens.size());
+    const int w = 150, h = 40;
+    for (QScreen *s : screens) {
+        const QRect local = s->geometry().translated(-m_virtualGeom.topLeft());
+        const int x = local.x() + (local.width() - w) / 2;
+        const int y = local.y() + 24;
+        rects.append(QRect(x, y, w, h));
+    }
+    return rects;
 }
 
 void ScreenDrawOverlay::paintScreenshotButton(QPainter &painter)
 {
     if (m_capturing)
         return; // keep the button out of the grabbed screenshot
-    const QRect r = screenshotButtonRect();
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // Pill background with a faint border so it reads as a control over any wallpaper.
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(20, 22, 28, 225));
-    painter.drawRoundedRect(r, 9, 9);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(255, 255, 255, 45), 1));
-    painter.drawRoundedRect(r.adjusted(0, 0, -1, -1), 9, 9);
 
-    // A crop-frame glyph (corner brackets) echoing the nav screenshot icon.
-    const QRect icon(r.left() + 12, r.center().y() - 7, 16, 14);
-    QPen ip(QColor(255, 255, 255, 235));
-    ip.setWidth(2);
-    ip.setCapStyle(Qt::RoundCap);
-    painter.setPen(ip);
-    const int a = 5; // bracket arm length
-    const auto corner = [&](const QPoint &c, int dx, int dy) {
-        painter.drawLine(c, c + QPoint(dx, 0));
-        painter.drawLine(c, c + QPoint(0, dy));
-    };
-    corner(icon.topLeft(), a, a);
-    corner(icon.topRight(), -a, a);
-    corner(icon.bottomLeft(), a, -a);
-    corner(icon.bottomRight(), -a, -a);
+    for (const QRect &r : screenshotButtonRects()) {
+        // Pill background with a faint border so it reads as a control over any wallpaper.
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(20, 22, 28, 225));
+        painter.drawRoundedRect(r, 9, 9);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(255, 255, 255, 45), 1));
+        painter.drawRoundedRect(r.adjusted(0, 0, -1, -1), 9, 9);
 
-    // Label.
-    painter.setPen(QColor(255, 255, 255, 240));
-    QFont f = painter.font();
-    f.setBold(true);
-    painter.setFont(f);
-    const QRect textRect(icon.right() + 10, r.top(), r.right() - icon.right() - 18,
-                         r.height());
-    painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
-                     QStringLiteral("Screenshot"));
+        // A crop-frame glyph (corner brackets) echoing the nav screenshot icon.
+        const QRect icon(r.left() + 12, r.center().y() - 7, 16, 14);
+        QPen ip(QColor(255, 255, 255, 235));
+        ip.setWidth(2);
+        ip.setCapStyle(Qt::RoundCap);
+        painter.setPen(ip);
+        const int a = 5; // bracket arm length
+        const auto corner = [&](const QPoint &c, int dx, int dy) {
+            painter.drawLine(c, c + QPoint(dx, 0));
+            painter.drawLine(c, c + QPoint(0, dy));
+        };
+        corner(icon.topLeft(), a, a);
+        corner(icon.topRight(), -a, a);
+        corner(icon.bottomLeft(), a, -a);
+        corner(icon.bottomRight(), -a, -a);
+
+        // Label.
+        painter.setPen(QColor(255, 255, 255, 240));
+        QFont f = painter.font();
+        f.setBold(true);
+        painter.setFont(f);
+        const QRect textRect(icon.right() + 10, r.top(), r.right() - icon.right() - 18,
+                             r.height());
+        painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
+                         QStringLiteral("Screenshot"));
+    }
+
     painter.restore();
 }
 
@@ -225,10 +229,16 @@ void ScreenDrawOverlay::mousePressEvent(QMouseEvent *event)
     // mapToGlobal() uses the widget's actual on-screen position and is reliable
     // even when the bypass-WM window isn't placed exactly at m_virtualGeom.topLeft().
     const QPoint globalPos = mapToGlobal(pos);
+    const bool inButton = [&] {
+        for (const QRect &r : screenshotButtonRects())
+            if (r.contains(pos))
+                return true;
+        return false;
+    }();
     if (event->button() == Qt::LeftButton && !m_capturing &&
-        (screenshotButtonRect().contains(pos) ||
+        (inButton ||
          (!m_screenshotHotzone.isNull() && m_screenshotHotzone.contains(globalPos)))) {
-        startCapture(); // click the floating button or nav icon -> region screenshot with ink
+        startCapture(); // click any floating button or nav icon -> region screenshot with ink
         return;
     }
     if (event->button() != Qt::LeftButton) {
