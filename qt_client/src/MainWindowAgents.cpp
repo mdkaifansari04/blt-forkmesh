@@ -2908,6 +2908,10 @@ void MainWindow::showAgentSession(int sessionId)
         QStringList lines;
         lines << labeled(QStringLiteral("Agent"),
                          agentProviderName(session->provider).toHtmlEscaped());
+        // Which LLM actually did the work, next to the location (Worktree,
+        // below) so both show up in the same key/value list.
+        lines << labeled(QStringLiteral("Model"),
+                         agentModelLabel(session->model).toHtmlEscaped());
         lines << labeled(QStringLiteral("Repo"),
                          QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                                      session->name.toHtmlEscaped()));
