@@ -391,3 +391,22 @@ def test_wire_contracts_across_worker_qt_and_installer():
     # The heartbeat is the only channel that carries the claim code out.
     assert 'response["claim"]' in entry
     assert 'resp.value(QStringLiteral("claim")).toObject()' in qt_setup
+
+
+def test_dashboard_exposes_a_claim_node_panel():
+    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
+        encoding="utf-8")
+    for marker in ("claim-node", "claim-confirm", "renderClaimNodePanel",
+                   "data-claim-node-input", "data-claim-code-input"):
+        assert marker in dashboard_js
+
+    index_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
+                 "index.html").read_text(encoding="utf-8")
+    dashboard_html = (ROOT / "cloudflare_worker" / "public" / "dashboard.html").read_text(
+        encoding="utf-8")
+    for html in (index_html, dashboard_html):
+        assert "data-claim-node-input" in html
+        assert "data-claim-code-confirm" in html
+    # The two dashboard copies must stay byte-identical (one is served, the
+    # other 308-redirects to it; a frontend test elsewhere asserts equality).
+    assert index_html == dashboard_html
