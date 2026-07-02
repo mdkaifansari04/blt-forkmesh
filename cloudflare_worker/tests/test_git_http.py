@@ -108,3 +108,19 @@ def test_host_disconnect_aborts_inflight_streams():
     src = _method_source("ForkMeshHost", "_host_disconnected")
     assert "git_streams" in src
     assert "abort" in src
+
+
+def test_blobs_batch_endpoint_reads_many_files_in_one_request():
+    # /api/repo/o/r/blobs collects up to MAX_BLOB_BATCH files in ONE HTTP
+    # request (repeated ?path= params), fanned out concurrently over the live
+    # tunnel inside the DO — replacing the website's per-record /blob fan-out.
+    # When nothing can be served it surfaces 503/504 so the router's mirror
+    # fallback re-routes instead of caching a 200 full of nulls.
+    entry = ENTRY.read_text(encoding="utf-8")
+    assert "blobs|blob" in entry  # routed + gated like the other browse ops
+    assert 'if action == "blobs":' in entry
+    assert "MAX_BLOB_BATCH" in entry
+    assert "asyncio.gather" in entry
+    src = _method_source("ForkMeshHost", "fetch")
+    assert "_tunnel_result('blob', p, ref)" in src
+    assert "503 if 503 in stats else 504 if 504 in stats else 502" in src

@@ -671,14 +671,14 @@ def test_worker_routes_public_history_through_live_host_not_commit_inbox():
     owner_inbox_dispatch = route.index("commits_match = REPO_COMMITS_RE.match")
 
     assert owner_inbox_dispatch < live_history_dispatch
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
+    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
 
 def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
     assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in ENTRY_TEXT
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
-    assert 'elif host_match.group(3) in ("tree", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
+    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
+    assert 'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
     assert 'if action in ("tree", "blob", "history", "commit", "branches"):' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
@@ -924,8 +924,8 @@ def test_dashboard_repository_blob_viewer_previews_media_csv_pdf_and_binary():
 
 
 def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
-    assert 'elif host_match.group(3) in ("tree", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
+    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
+    assert 'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
     assert 'if action == "raw":' in ENTRY_TEXT
     assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
     assert 'op": "raw-blob"' in ENTRY_TEXT
@@ -941,8 +941,8 @@ def test_worker_and_desktop_host_route_live_repository_branches():
     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
 
     for marker in (
-        'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blob|raw|history|commit|branches)$"',
-        'elif host_match.group(3) in ("tree", "blob", "raw", "history", "commit", "branches"):',
+        'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"',
+        'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):',
         'if action in ("tree", "blob", "history", "commit", "branches"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
