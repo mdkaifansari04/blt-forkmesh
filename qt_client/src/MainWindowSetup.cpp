@@ -1047,7 +1047,48 @@ void MainWindow::sendNodeHeartbeat()
         // notification). Other refreshes happen on startup / address changes.
         if (resp.value(QStringLiteral("donationReceived")).toBool())
             updateNavSolanaBalance();
+        // A user on forkmesh.com is claiming this node (adhoc #53): the reply
+        // carries the confirmation code, which is shown on this machine only.
+        // Typing it into the website completes the link. Guard on the code so
+        // the per-minute heartbeat doesn't reopen the popup for one claim.
+        const QJsonObject claim = resp.value(QStringLiteral("claim")).toObject();
+        const QString claimCode = claim.value(QStringLiteral("code")).toString();
+        if (!claimCode.isEmpty() && claimCode != m_lastClaimCodeShown) {
+            m_lastClaimCodeShown = claimCode;
+            showNodeClaimCode(claim.value(QStringLiteral("user")).toString(),
+                              claimCode);
+        }
     });
+}
+
+void MainWindow::showNodeClaimCode(const QString &user, const QString &code)
+{
+    const QString who = user.isEmpty() ? QStringLiteral("A user") : user;
+    // Headless nodes (the usual claim target) have no screen: put the code on
+    // the console/log, which is what an SSH'd operator is looking at.
+    logSystem("Account: user \"" + who + "\" is claiming this node on the "
+              "website. Confirmation code: " + code + " — enter it there to "
+              "link this node to that account (expires in 10 minutes).");
+    if (m_headless)
+        return;
+    auto *box = new QMessageBox(this);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowTitle(QStringLiteral("Link this node?"));
+    box->setIcon(QMessageBox::Information);
+    box->setText(
+        QStringLiteral("<b>%1</b> is claiming this node on forkmesh.com.<br><br>"
+                       "Confirmation code:"
+                       "<div style='font-size:28px;letter-spacing:6px'><b>%2</b></div>"
+                       "Enter this code on the website to link this node to that "
+                       "account. If this isn't you, just close this window — the "
+                       "code expires in 10 minutes and is never sent anywhere "
+                       "else.")
+            .arg(who.toHtmlEscaped(), code.toHtmlEscaped()));
+    box->setStandardButtons(QMessageBox::Close);
+    box->setModal(false);
+    box->show();
+    box->raise();
+    box->activateWindow();
 }
 
 void MainWindow::pollPendingUsers()
@@ -1592,15 +1633,22 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     const QByteArray fcanon =
         ("forkmesh-finalize-v1\n" + accountName + "\n\n" + fts).toUtf8();
     int fstatus = 0;
-    const QJsonObject fresp = postAccountSync(
-        "finalize",
-        QJsonObject{{"nodeName", accountName},
-                    {"email", QString()},
-                    {"password", QString()},
-                    {"pubkey", m_profileIdentity.publicKey()},
-                    {"ts", fts},
-                    {"sig", m_profileIdentity.signData(fcanon)}},
-        &fstatus);
+    QJsonObject finalizeBody{{"nodeName", accountName},
+                             {"email", QString()},
+                             {"password", QString()},
+                             {"pubkey", m_profileIdentity.publicKey()},
+                             {"ts", fts},
+                             {"sig", m_profileIdentity.signData(fcanon)}};
+    // Installer link code (adhoc #53): install.sh printed a code on this
+    // machine and handed it to the daemon it launched. Presenting it at
+    // registration lets the relay attach this fresh node to the user whose
+    // desktop app drove the install (which offers the same code, key-signed).
+    const QString linkCode =
+        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
+    static const QRegularExpression linkCodeRe(QStringLiteral("^[0-9]{6}$"));
+    if (linkCodeRe.match(linkCode).hasMatch())
+        finalizeBody.insert(QStringLiteral("linkCode"), linkCode);
+    const QJsonObject fresp = postAccountSync("finalize", finalizeBody, &fstatus);
     if (fstatus != 201 || !fresp.value("ok").toBool()) {
         logSystem("Account: could not finalize headless registration for \"" +
                   accountName + "\".");
