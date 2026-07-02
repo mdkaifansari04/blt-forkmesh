@@ -195,3 +195,92 @@ def test_blob_url_falls_back_to_mirror_without_manifest():
     assert blob_url == (
         "https://relay.test/api/repo/alice/forkmesh"
         "/releases/blob/sha256/%s" % digest)
+
+
+# --- direct-upload install (adhoc #67) ---------------------------------------
+# The desktop app's Hosts panel can stream the release binary over the SSH
+# session and hand it to the installer as FORKMESH_LOCAL_BINARY (with the
+# uploader's platform in FORKMESH_LOCAL_OS/ARCH). install_local_binary() must
+# install a matching upload as-is and decline — falling back to the relay
+# download — on a platform mismatch or a missing/empty upload.
+
+
+def _local_binary_function():
+    """Extract install_local_binary() from install.sh."""
+    script = INSTALLER.read_text(encoding="utf-8")
+    start = script.index("install_local_binary() {")
+    end = script.index("\n}\n", start) + len("\n}\n")
+    return script[start:end]
+
+
+def _run_local(payload, *, os_decl="", arch_decl="", missing=False):
+    """Run install_local_binary against an uploaded temp file.
+
+    Returns (rc, installed BIN bytes or None, stderr). The fake environment
+    matches _run's PREAMBLE: the target machine is linux/x86_64.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        upload = tmp / "upload.bin"
+        if not missing:
+            upload.write_bytes(payload)
+        out_dir = tmp / "out"
+        out_dir.mkdir()
+        env = os.environ.copy()
+        env["OUT_DIR"] = str(out_dir)
+        script = (
+            PREAMBLE
+            + 'FORKMESH_LOCAL_BINARY="%s"\n' % upload
+            + 'FORKMESH_LOCAL_OS="%s"\n' % os_decl
+            + 'FORKMESH_LOCAL_ARCH="%s"\n' % arch_decl
+            + _release_functions()  # provides _install_binary
+            + _local_binary_function()
+            + "\ninstall_local_binary\n")
+        proc = subprocess.run(
+            ["bash", "-c", script], env=env, text=True, capture_output=True)
+        bin_path = out_dir / "bin" / "forkmesh"
+        installed = bin_path.read_bytes() if bin_path.exists() else None
+        return proc.returncode, installed, proc.stderr
+
+
+def test_local_binary_installs_matching_upload():
+    payload = b"\x7fELF uploaded forkmesh binary" * 40
+    rc, installed, _ = _run_local(payload, os_decl="linux", arch_decl="x86_64")
+    assert rc == 0
+    assert installed == payload
+
+
+def test_local_binary_installs_without_declared_platform():
+    # An uploader that declares no platform is trusted (older/manual uploads).
+    payload = b"\x7fELF undeclared platform upload"
+    rc, installed, _ = _run_local(payload)
+    assert rc == 0
+    assert installed == payload
+
+
+def test_local_binary_rejects_wrong_os():
+    payload = b"\xcf\xfa\xed\xfe mach-o bytes"
+    rc, installed, stderr = _run_local(
+        payload, os_decl="macos", arch_decl="x86_64")
+    assert rc != 0
+    assert installed is None
+    assert "falling back" in stderr
+
+
+def test_local_binary_rejects_wrong_arch():
+    payload = b"\x7fELF arm bytes"
+    rc, installed, stderr = _run_local(
+        payload, os_decl="linux", arch_decl="arm64")
+    assert rc != 0
+    assert installed is None
+    assert "falling back" in stderr
+
+
+def test_local_binary_missing_or_empty_upload_declines():
+    rc, installed, stderr = _run_local(b"", missing=True)
+    assert rc != 0
+    assert installed is None
+    assert "falling back" in stderr
+    rc, installed, _ = _run_local(b"")  # exists but empty
+    assert rc != 0
+    assert installed is None
