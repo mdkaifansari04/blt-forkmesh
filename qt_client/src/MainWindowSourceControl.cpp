@@ -1731,6 +1731,7 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
                                   qint64 generatedAtMs,
                                   const QString &localBase,
                                   QObject *context,
+                                  bool scanning,
                                   std::function<void()> runScan)
 {
     auto *card = new QFrame;
@@ -1752,7 +1753,13 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
                  RepoSecurity::severityText(signal.severity).toHtmlEscaped()));
     titleLbl->setTextFormat(Qt::RichText);
     titleRow->addWidget(titleLbl, 1);
-    if (generatedAtMs > 0) {
+    if (scanning) {
+        auto *scanningLbl = new QLabel(
+            QStringLiteral("<span style='color:#388bfd;font-size:11px;font-weight:600'>"
+                           "Scanning&#8230;</span>"));
+        scanningLbl->setTextFormat(Qt::RichText);
+        titleRow->addWidget(scanningLbl, 0);
+    } else if (generatedAtMs > 0) {
         const QString ts = QDateTime::fromMSecsSinceEpoch(generatedAtMs)
                                .toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
         auto *timeLbl = new QLabel(
@@ -1762,6 +1769,23 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         titleRow->addWidget(timeLbl, 0);
     }
     vlay->addLayout(titleRow);
+
+    if (scanning) {
+        // Indeterminate (range 0,0) progress bar: Qt animates a marquee chunk on
+        // its own timer, giving a genuine moving "scan in progress" indicator
+        // rather than a static icon (the scan itself runs off the GUI thread via
+        // MainWindow::runRepoDependencyScan, so this can actually animate).
+        auto *bar = new QProgressBar;
+        bar->setRange(0, 0);
+        bar->setTextVisible(false);
+        bar->setFixedHeight(4);
+        bar->setStyleSheet(
+            QStringLiteral("QProgressBar{border:none;border-radius:2px;"
+                           "background-color:#30363d;}"
+                           "QProgressBar::chunk{border-radius:2px;"
+                           "background-color:#388bfd;}"));
+        vlay->addWidget(bar);
+    }
 
     if (!signal.summary.isEmpty()) {
         auto *summaryLbl = new QLabel(
@@ -1843,10 +1867,12 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         vulnLbl->setTextFormat(Qt::RichText);
         vulnLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        auto *scanBtn = new QPushButton(QStringLiteral("Run scan"));
+        auto *scanBtn = new QPushButton(scanning ? QStringLiteral("Scanning\xE2\x80\xA6")
+                                                  : QStringLiteral("Run scan"));
         scanBtn->setObjectName("ghostButton");
         scanBtn->setProperty("buttonSize", "sm");
-        scanBtn->setCursor(Qt::PointingHandCursor);
+        scanBtn->setEnabled(!scanning);
+        scanBtn->setCursor(scanning ? Qt::BusyCursor : Qt::PointingHandCursor);
         QObject::connect(scanBtn, &QPushButton::clicked, context,
                          [runScan]() { runScan(); });
 
@@ -1861,32 +1887,9 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
     return card;
 }
 
-void MainWindow::refreshRepoSecurity()
+RepoSecurityInput MainWindow::buildRepoSecurityInput(const RepositoryRecord &selected,
+                                                     const RepositoryRecord &writable) const
 {
-    if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
-        return;
-
-    while (QLayoutItem *item = m_securitySignalsGrid->takeAt(0)) {
-        if (QWidget *widget = item->widget())
-            widget->deleteLater();
-        delete item;
-    }
-
-    TableRepaintGuard repaintGuard(m_securityFindingsTable);
-    m_securityFindingsTable->setSortingEnabled(false);
-    m_securityFindingsTable->setRowCount(0);
-
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        m_securitySummary->setText(
-            "<b>Security</b><br><span style='color:#8b949e'>"
-            "Select a repository to scan local evidence.</span>");
-        m_securityFindingsTable->setSortingEnabled(true);
-        return;
-    }
-
-    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
-    const RepositoryRecord &writable = writableRecordFor(selected);
-
     RepoSecurityInput input;
     input.owner = selected.owner;
     input.name = selected.name;
@@ -1905,8 +1908,24 @@ void MainWindow::refreshRepoSecurity()
     for (const ActionRun &run : std::as_const(m_actionRuns))
         if (run.owner == selected.owner && run.name == selected.name)
             input.actionRuns.append(run);
+    return input;
+}
 
-    const RepoSecuritySnapshot snapshot = RepoSecurity::scan(input);
+void MainWindow::applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
+                                           const QString &localBase)
+{
+    m_lastRepoSecuritySnapshot = snapshot;
+
+    while (QLayoutItem *item = m_securitySignalsGrid->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    TableRepaintGuard repaintGuard(m_securityFindingsTable);
+    m_securityFindingsTable->setSortingEnabled(false);
+    m_securityFindingsTable->setRowCount(0);
+
     const RepoSecuritySeverity highest = RepoSecurity::highestSeverity(snapshot);
     int warnings = 0;
     int severe = 0;
@@ -1940,7 +1959,6 @@ void MainWindow::refreshRepoSecurity()
             .arg(severe));
 
     int index = 0;
-    const QString localBase = writable.localPath;
     const RepoSecuritySignal *depSignal = nullptr;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
         // Dependency scan gets a dedicated full-width table card (added below)
@@ -1963,7 +1981,8 @@ void MainWindow::refreshRepoSecurity()
         const int depRow = (index + 2) / 3;
         auto *depCard = buildDepScanCard(
             *depSignal, snapshot.findings, snapshot.generatedAtMs,
-            localBase, this, [this]() { refreshRepoSecurity(); });
+            localBase, this, m_repoSecurityScanRunning,
+            [this]() { runRepoDependencyScan(); });
         m_securitySignalsGrid->addWidget(depCard, depRow, 0, 1, 3);
     }
 
@@ -1971,6 +1990,69 @@ void MainWindow::refreshRepoSecurity()
                           QStringLiteral("No local findings at this ref."));
 
     m_securityFindingsTable->setSortingEnabled(true);
+}
+
+void MainWindow::refreshRepoSecurity()
+{
+    if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
+        return;
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        while (QLayoutItem *item = m_securitySignalsGrid->takeAt(0)) {
+            if (QWidget *widget = item->widget())
+                widget->deleteLater();
+            delete item;
+        }
+        TableRepaintGuard repaintGuard(m_securityFindingsTable);
+        m_securityFindingsTable->setSortingEnabled(false);
+        m_securityFindingsTable->setRowCount(0);
+        m_securitySummary->setText(
+            "<b>Security</b><br><span style='color:#8b949e'>"
+            "Select a repository to scan local evidence.</span>");
+        m_securityFindingsTable->setSortingEnabled(true);
+        return;
+    }
+
+    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord &writable = writableRecordFor(selected);
+    m_repoSecurityScanRunning = false;
+    applyRepoSecuritySnapshot(
+        RepoSecurity::scan(buildRepoSecurityInput(selected, writable)),
+        writable.localPath);
+}
+
+void MainWindow::runRepoDependencyScan()
+{
+    if (m_repoSecurityScanRunning)
+        return;
+    if (!m_securitySummary || !m_securitySignalsGrid || !m_securityFindingsTable)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+
+    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord &writable = writableRecordFor(selected);
+    const RepoSecurityInput input = buildRepoSecurityInput(selected, writable);
+    const QString startOwner = selected.owner;
+    const QString startName = selected.name;
+
+    m_repoSecurityScanRunning = true;
+    // Re-render immediately using the last-known snapshot so the button/progress
+    // bar flip to their busy state right away, before the rescan itself (which
+    // runs off-thread below) has produced anything new.
+    applyRepoSecuritySnapshot(m_lastRepoSecuritySnapshot, writable.localPath);
+
+    runOffThread<RepoSecuritySnapshot>(
+        [input]() { return RepoSecurity::scan(input); },
+        [this, startOwner, startName](RepoSecuritySnapshot snapshot) {
+            m_repoSecurityScanRunning = false;
+            if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+                return;
+            const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
+            if (current.owner != startOwner || current.name != startName)
+                return; // user navigated to a different repo while the scan ran
+            applyRepoSecuritySnapshot(snapshot, writableRecordFor(current).localPath);
+        });
 }
 
 void MainWindow::openRepoFileAtLine(const QString &path, int line)
