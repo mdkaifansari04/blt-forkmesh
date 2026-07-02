@@ -1598,8 +1598,13 @@ QWidget *MainWindow::buildRepoSecurityTab()
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
-        if (!path.isEmpty())
-            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
+        if (path.isEmpty())
+            return;
+        // Switch to the Code tab (index 0) so the highlighted line is visible;
+        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
     scroll->setWidget(content);
@@ -1985,10 +1990,15 @@ void MainWindow::openRepoFileAtLine(const QString &path, int line)
         lineSel.cursor = lc;
         lineSel.format.setBackground(QColor(31, 111, 235, 60));
         lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
-        edit->setExtraSelections({lineSel});
+        // Move the cursor (and focus) first: CodePreviewEditor's own
+        // cursorPositionChanged handler calls highlightCurrentLine(), which
+        // replaces the extra-selection list with its neutral current-line
+        // background. Applying our highlight after that keeps the distinct
+        // blue finding highlight instead of it being silently overwritten.
         edit->setTextCursor(lc);
-        edit->centerCursor();
         edit->setFocus();
+        edit->centerCursor();
+        edit->setExtraSelections({lineSel});
     });
 }
 
@@ -2088,8 +2098,13 @@ QWidget *MainWindow::buildRepoQualityTab()
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
-        if (!path.isEmpty())
-            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
+        if (path.isEmpty())
+            return;
+        // Switch to the Code tab (index 0) so the highlighted line is visible;
+        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+        if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+            m_repoDetailTabs->button(0)->click();
+        openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
     scroll->setWidget(content);
