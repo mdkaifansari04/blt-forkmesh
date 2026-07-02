@@ -1721,7 +1721,6 @@ private:
     // running-agent spinners read clearly instead of washing out through it.
     void styleAgentSpinnerOverlay();
     void positionAgentSpinnerOverlay();
-    void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
@@ -2623,9 +2622,6 @@ private:
     QScrollArea *m_agentSpinnerScroll = nullptr;
     QHBoxLayout *m_agentSpinnerRow = nullptr;
     QList<int> m_agentSpinnerIds; // running session ids currently shown (skip rebuilds)
-    // Purple braille "snake" activity indicator overlaid on the Agents tab while
-    // an agent runs. A separate label so the tab text keeps its normal colour.
-    QLabel *m_agentSnake = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
     // Floating strip of thin bars above the Actions tab — one per in-flight run,
     // each labelled with the workflow name and growing to the right the longer
