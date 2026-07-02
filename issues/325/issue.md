@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 325
 title: issue from web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
