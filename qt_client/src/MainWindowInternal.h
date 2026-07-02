@@ -2644,7 +2644,7 @@ inline QString builtExecutablePath(const QString &buildDir)
 }
 
 #ifdef Q_OS_MACOS
-QString brewPrefix(const QString &formula)
+inline QString brewPrefix(const QString &formula)
 {
     const QString brew = QStandardPaths::findExecutable("brew");
     if (brew.isEmpty())
@@ -6113,7 +6113,7 @@ inline QString autostartDesktopPath()
 }
 
 #if defined(Q_OS_MACOS)
-QString launchAgentPath()
+inline QString launchAgentPath()
 {
     return QDir::homePath() + "/Library/LaunchAgents/com.forkmesh.app.plist";
 }
