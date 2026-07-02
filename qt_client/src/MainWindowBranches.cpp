@@ -13,31 +13,6 @@
 
 using namespace forkmesh::ui;
 
-// Refill the "Fix with agent" model dropdown for the agent/provider the sibling
-// combo currently shows (adhoc #56). Item data is the model id passed straight to
-// fixBranchConflictsWithAgent; the API providers fall back to their low-cost
-// default on an empty value, Claude Code's empty entry leaves the CLI's default.
-static void fillBranchFixModels(QComboBox *combo, const QString &provider)
-{
-    if (!combo)
-        return;
-    combo->clear();
-    if (provider == QLatin1String("claude-code")) {
-        combo->addItem(QStringLiteral("Default model"), QString());
-        combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
-        combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
-        combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
-    } else if (provider == QLatin1String("openai")) {
-        combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
-        combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
-        combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));
-    } else { // claude API
-        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
-        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6"));
-        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
-    }
-}
-
 // ---- Branches panel --------------------------------------------------------
 
 // Defined further down (next to pullBaseIntoAllBranches); declared here so
@@ -1864,12 +1839,12 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFixModelCombo->setCursor(Qt::PointingHandCursor);
     m_branchFixModelCombo->setToolTip("Which model the agent uses");
     m_branchFixModelCombo->hide();
-    fillBranchFixModels(m_branchFixModelCombo,
-                        m_branchFixAgentCombo->currentData().toString());
+    fillAgentFixModelCombo(m_branchFixModelCombo,
+                           m_branchFixAgentCombo->currentData().toString());
     connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (m_branchFixAgentCombo && m_branchFixModelCombo)
-                    fillBranchFixModels(
+                    fillAgentFixModelCombo(
                         m_branchFixModelCombo,
                         m_branchFixAgentCombo->currentData().toString());
             });

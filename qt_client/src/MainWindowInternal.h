@@ -2264,6 +2264,33 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
 }
 
+// Fill an agent-provider model combo for one of the three agent providers
+// (adhoc #56; shared by the branch "Fix with agent" bar and the Actions "Fix
+// with agent" bar). Item data is the model id/alias passed straight to the
+// caller's start function; the API providers fall back to their low-cost
+// default on an empty value, Claude Code's empty entry leaves the CLI's
+// default in place.
+inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    if (provider == QLatin1String("claude-code")) {
+        combo->addItem(QStringLiteral("Default model"), QString());
+        combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
+        combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
+        combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    } else if (provider == QLatin1String("openai")) {
+        combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
+        combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
+        combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));
+    } else { // claude API
+        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
+        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("claude-sonnet-4-6"));
+        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
+    }
+}
+
 // Fold the account's live provider model line-up (the `data` array from
 // /v1/models) into a model combo that already holds the static aliases from
 // populateClaudeModelCombo (or the quick-add bar's inline copies). A separator
