@@ -28,6 +28,9 @@
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
         avatarPng: body.avatarPng || "",
         avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
+        kind: body.kind || "",
+        owner: body.owner || "",
+        nodes: Array.isArray(body.nodes) ? body.nodes : [],
         at: Date.now(),
       }));
       document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";

@@ -727,48 +727,6 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
              viewed ? QStringLiteral(" viewed") : QString(), viewedLink);
 }
 
-// QTextEdit lays the whole rendered diff out synchronously on the GUI thread, so
-// HTML size is the freeze: real stall reports (~/.forkmesh/diagnostics/stalls.log)
-// show multi-second harfbuzz/doLayout hangs under big diffs. Budget the HTML at
-// the renderer so *every* diff view is bounded: per file, and across the whole
-// render. files[].adds/dels are still counted from the full patch, so the file
-// list, +/- stats and anchors stay exact — only row HTML past the budget is
-// replaced with a notice.
-constexpr qsizetype kMaxDiffFileBodyChars = 60'000;
-constexpr qsizetype kMaxDiffTotalChars = 250'000;
-
-// Cut a buffered file body at the last complete row inside the per-file budget
-// and append a hunk-styled notice. `columns` is the table's column count for the
-// current layout (unified 2/3, split 2/4).
-QString cappedFileBody(QString fileBody, int changedLines, int columns)
-{
-    if (fileBody.size() <= kMaxDiffFileBodyChars)
-        return fileBody;
-    const qsizetype cut =
-        fileBody.lastIndexOf(QLatin1String("</tr>"), kMaxDiffFileBodyChars);
-    fileBody.truncate(cut >= 0 ? cut + 5 : 0);
-    fileBody += QStringLiteral(
-                    "<tr><td class='ln hunk'></td><td class='code hunk' "
-                    "colspan='%1'>&#8230; large diff truncated (%2 changed lines "
-                    "in this file) &#8212; open the file to see the rest</td></tr>")
-                    .arg(columns - 1)
-                    .arg(changedLines);
-    return fileBody;
-}
-
-// Placeholder body for a file that lands after the whole-view budget is spent:
-// header + one row, like GitHub's "large diffs are not rendered by default".
-QString collapsedFileRow(int changedLines, int columns)
-{
-    return QStringLiteral(
-               "<tr><td class='ln hunk'></td><td class='code hunk' colspan='%1'>"
-               "Diff not rendered (view is at its size budget) &#8212; %2 changed "
-               "line%3</td></tr>")
-        .arg(columns - 1)
-        .arg(changedLines)
-        .arg(changedLines == 1 ? QString() : QStringLiteral("s"));
-}
-
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                               const QString &dir, const QString &base,
                               const QString &head,
@@ -780,10 +738,9 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
     const bool anchors = !anchorFile.isEmpty();
     QString html;
-    // Avoid repeated reallocation on big diffs; output is budget-capped, so
-    // never reserve more than the cap can produce.
-    html.reserve(qMin<qsizetype>(patch.size() * 3,
-                                 kMaxDiffTotalChars + 2 * kMaxDiffFileBodyChars));
+    // Avoid repeated reallocation on big diffs; rendered HTML runs a few times
+    // the size of the raw patch (row markup per line).
+    html.reserve(patch.size() * 3);
     QString fileBody;
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
@@ -819,14 +776,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             if (viewed) {
                 html += QStringLiteral("</div>");
             } else {
-                const bool oneSided = f.status == QLatin1String("added") ||
-                                      f.status == QLatin1String("deleted");
-                const int cols = oneSided ? 2 : 3;
-                if (html.size() > kMaxDiffTotalChars)
-                    html += collapsedFileRow(f.adds + f.dels, cols);
-                else
-                    html += cappedFileBody(std::move(fileBody), f.adds + f.dels,
-                                           cols);
+                html += fileBody;
                 html += QStringLiteral("</table></div>");
             }
             fileBody.clear();
@@ -932,11 +882,6 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             oldCell = QString::number(oldNo++);
             newCell = QString::number(newNo++);
         }
-        // Line numbers and +/- stats (above) always advance; but once this file
-        // is past its body budget, composing more row HTML is pure waste —
-        // closeFile() cuts it anyway.
-        if (fileBody.size() > kMaxDiffFileBodyChars)
-            continue;
         QString gutters;
         if (addOnly)
             gutters = gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
@@ -979,8 +924,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
     const bool anchors = !anchorFile.isEmpty();
     QString html;
-    html.reserve(qMin<qsizetype>(patch.size() * 3,
-                                 kMaxDiffTotalChars + 2 * kMaxDiffFileBodyChars));
+    html.reserve(patch.size() * 3);
     QString fileBody;
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
@@ -1024,21 +968,6 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         return 0;
     };
     const auto flushPairs = [&] {
-        // Past the per-file body budget only the line-number counters matter
-        // (closeFile() cuts the HTML anyway) — skip composing the rows.
-        if (fileBody.size() > kMaxDiffFileBodyChars) {
-            if (oneSidedKind() > 0)
-                newNo += pendingAdd.size();
-            else if (oneSidedKind() < 0)
-                oldNo += pendingDel.size();
-            else {
-                oldNo += pendingDel.size();
-                newNo += pendingAdd.size();
-            }
-            pendingDel.clear();
-            pendingAdd.clear();
-            return;
-        }
         if (const int kind = oneSidedKind()) {
             const bool addOnly = kind > 0;
             const QStringList &buf = addOnly ? pendingAdd : pendingDel;
@@ -1048,8 +977,6 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 addOnly ? QStringLiteral("new") : QStringLiteral("old");
             for (const QString &t : buf) {
                 const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
-                if (fileBody.size() > kMaxDiffFileBodyChars)
-                    continue; // one huge run: keep counting, stop composing
                 fileBody +=
                     QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
                         .arg(gut(cls, ln, side), cls, emitText(t));
@@ -1068,8 +995,6 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             const bool hasAdd = i < pendingAdd.size();
             const QString oldLn = hasDel ? QString::number(oldNo++) : QString();
             const QString newLn = hasAdd ? QString::number(newNo++) : QString();
-            if (fileBody.size() > kMaxDiffFileBodyChars)
-                continue; // one huge run: keep counting, stop composing
             const QString delCls = hasDel ? QStringLiteral("del") : QString();
             const QString addCls = hasAdd ? QStringLiteral("add") : QString();
             fileBody += QStringLiteral("<tr>%1<td class='code ocode %2'>%3</td>"
@@ -1105,13 +1030,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             if (viewed) {
                 html += QStringLiteral("</div>");
             } else {
-                const DiffFileEntry &f = files[fileIdx];
-                const int cols = oneSidedKind() ? 2 : 4;
-                if (html.size() > kMaxDiffTotalChars)
-                    html += collapsedFileRow(f.adds + f.dels, cols);
-                else
-                    html += cappedFileBody(std::move(fileBody), f.adds + f.dels,
-                                           cols);
+                html += fileBody;
                 html += QStringLiteral("</table></div>");
             }
             fileBody.clear();
