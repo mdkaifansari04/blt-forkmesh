@@ -159,6 +159,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             &MainWindow::updateNodeOnlineControls);
     m_relayLatencyTimer->start(60 * 1000);
     QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
+    // React to the OS's own connectivity signal so the radar flips to
+    // offline/online the moment the link changes, instead of lagging the
+    // minute cadence (adhoc #41).
+    initRelayReachabilityWatch();
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
