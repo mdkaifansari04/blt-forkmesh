@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../services/auth_service.dart';
 
 const _logoAsset = 'assets/images/logo.png';
 const _authBackground = Color(0xFFFBFAF9);
@@ -172,7 +175,7 @@ class _WelcomeScreen extends StatelessWidget {
   }
 }
 
-class _LoginScreen extends StatelessWidget {
+class _LoginScreen extends StatefulWidget {
   const _LoginScreen({
     super.key,
     required this.onAuthenticated,
@@ -185,10 +188,75 @@ class _LoginScreen extends StatelessWidget {
   final VoidCallback onBack;
 
   @override
+  State<_LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<_LoginScreen> {
+  final _identifier = TextEditingController();
+  final _password = TextEditingController();
+  final _totp = TextEditingController();
+  bool _loading = false;
+  bool _showTotp = false;
+  String _hint = '';
+  bool _bad = false;
+
+  @override
+  void dispose() {
+    _identifier.dispose();
+    _password.dispose();
+    _totp.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    final identifier = _identifier.text.trim();
+    final password = _password.text;
+    if (identifier.isEmpty && password.isEmpty) {
+      // Keep the design-preview path usable in widget tests and local mock demos.
+      widget.onAuthenticated();
+      return;
+    }
+    if (identifier.isEmpty || password.isEmpty) {
+      setState(() {
+        _hint = 'Enter your email or node name and password.';
+        _bad = true;
+      });
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _hint = '';
+      _bad = false;
+    });
+    try {
+      await context.read<AuthService>().login(
+        identifier: identifier,
+        password: password,
+        totp: _totp.text,
+      );
+      widget.onAuthenticated();
+    } on AuthException catch (e) {
+      setState(() {
+        _showTotp = e.code == 'bad_totp' || _showTotp;
+        _hint = e.message;
+        _bad = e.code != 'bad_totp';
+      });
+    } catch (_) {
+      setState(() {
+        _hint = 'Network error — please try again.';
+        _bad = true;
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return _AuthPageScaffold(
       pageTitle: 'Login',
-      onBack: onBack,
+      onBack: widget.onBack,
       child: _AuthContentColumn(
         children: [
           const SizedBox(height: 74),
@@ -199,24 +267,49 @@ class _LoginScreen extends StatelessWidget {
             subtitle: 'Continue with your ForkMesh account.',
           ),
           const SizedBox(height: 48),
-          const _AuthField(
-            label: 'Email',
-            initialText: 'alexsmith.mirror@forkmesh.dev',
+          _AuthField(
+            label: 'Email or node name',
+            controller: _identifier,
+            hintText: 'you@example.com',
+            textInputAction: TextInputAction.next,
+            keyboardType: TextInputType.emailAddress,
           ),
           const SizedBox(height: 24),
-          const _AuthField(
+          _AuthField(
             label: 'Password',
-            initialText: '••••••••••••••',
-            trailing: Icon(
-              Icons.visibility_off_outlined,
-              color: _authMuted,
-              size: 20,
-            ),
+            controller: _password,
+            hintText: 'Your password',
+            obscureText: true,
+            textInputAction: _showTotp
+                ? TextInputAction.next
+                : TextInputAction.done,
+            onSubmitted: _showTotp ? null : (_) => _submit(),
           ),
+          if (_showTotp) ...[
+            const SizedBox(height: 24),
+            _AuthField(
+              label: 'Authenticator code',
+              controller: _totp,
+              hintText: '123456',
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+          if (_hint.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            _AuthHint(text: _hint, bad: _bad),
+          ],
           const SizedBox(height: 42),
-          _PrimaryAuthButton(label: 'Continue', onPressed: onAuthenticated),
+          _PrimaryAuthButton(
+            label: _loading ? 'Logging in…' : 'Continue',
+            onPressed: _loading ? null : _submit,
+          ),
           const SizedBox(height: 18),
-          _SecondaryAuthButton(label: 'Create an account', onPressed: onSignup),
+          _SecondaryAuthButton(
+            label: 'Create an account',
+            onPressed: widget.onSignup,
+          ),
           const SizedBox(height: 72),
           const _TermsCopy(),
         ],
@@ -225,7 +318,7 @@ class _LoginScreen extends StatelessWidget {
   }
 }
 
-class _SignupScreen extends StatelessWidget {
+class _SignupScreen extends StatefulWidget {
   const _SignupScreen({
     super.key,
     required this.acceptedTerms,
@@ -242,10 +335,104 @@ class _SignupScreen extends StatelessWidget {
   final VoidCallback onBack;
 
   @override
+  State<_SignupScreen> createState() => _SignupScreenState();
+}
+
+class _SignupScreenState extends State<_SignupScreen> {
+  final _nodeName = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _loading = false;
+  String _nameHint =
+      'Lowercase letters, numbers and hyphens. This name is public.';
+  String _hint = '';
+  bool _nameOk = false;
+  bool _bad = false;
+
+  @override
+  void dispose() {
+    _nodeName.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkName() async {
+    final auth = context.read<AuthService>();
+    final availability = await auth.checkNodeName(_nodeName.text);
+    if (!mounted) return;
+    setState(() {
+      _nodeName.text = _nodeName.text.trim().toLowerCase();
+      _nameOk = availability.available;
+      _nameHint = availability.message;
+    });
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    final nodeName = _nodeName.text.trim().toLowerCase();
+    final email = _email.text.trim();
+    final password = _password.text;
+    if (!AuthService.nodeNamePattern.hasMatch(nodeName)) {
+      setState(() {
+        _hint = 'Choose a valid public node name first.';
+        _bad = true;
+      });
+      return;
+    }
+    if (!email.contains('@')) {
+      setState(() {
+        _hint = 'Enter a valid email address.';
+        _bad = true;
+      });
+      return;
+    }
+    if (password.length < 8) {
+      setState(() {
+        _hint = 'Password must be at least 8 characters.';
+        _bad = true;
+      });
+      return;
+    }
+    if (!widget.acceptedTerms) {
+      setState(() {
+        _hint = 'Accept the Terms and Privacy policy to continue.';
+        _bad = true;
+      });
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _hint = '';
+      _bad = false;
+    });
+    try {
+      await context.read<AuthService>().signup(
+        nodeName: nodeName,
+        email: email,
+        password: password,
+      );
+      widget.onAuthenticated();
+    } on AuthException catch (e) {
+      setState(() {
+        _hint = e.message;
+        _bad = true;
+      });
+    } catch (_) {
+      setState(() {
+        _hint = 'Network error — please try again.';
+        _bad = true;
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return _AuthPageScaffold(
       pageTitle: 'Sign up',
-      onBack: onBack,
+      onBack: widget.onBack,
       child: _AuthContentColumn(
         children: [
           const SizedBox(height: 58),
@@ -256,38 +443,43 @@ class _SignupScreen extends StatelessWidget {
             subtitle: 'Set your ForkMesh profile to continue.',
           ),
           const SizedBox(height: 42),
-          const _AuthField(
+          _AuthField(
             label: 'Public node name',
-            initialText: 'ada-lovelace',
+            controller: _nodeName,
+            hintText: 'ada-lovelace',
+            textInputAction: TextInputAction.next,
+            onChanged: (_) => _checkName(),
+          ),
+          const SizedBox(height: 8),
+          _AuthHint(
+            text: _nameHint,
+            bad: !_nameOk && _nodeName.text.isNotEmpty,
           ),
           const SizedBox(height: 20),
-          const _AuthField(
+          _AuthField(
             label: 'Email',
-            initialText: 'alexsmith.mirror@forkmesh.dev',
-            trailing: Text(
-              'Edit',
-              style: TextStyle(
-                color: Color(0xFF1B84A6),
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+            controller: _email,
+            hintText: 'you@example.com',
+            keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
           ),
           const SizedBox(height: 20),
-          const _AuthField(
+          _AuthField(
             label: 'Password',
-            initialText: '••••••••••••••',
-            trailing: Icon(
-              Icons.visibility_off_outlined,
-              color: _authMuted,
-              size: 20,
-            ),
+            controller: _password,
+            hintText: 'At least 8 characters',
+            obscureText: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
           ),
           const SizedBox(height: 22),
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Checkbox(value: acceptedTerms, onChanged: onTermsChanged),
+              Checkbox(
+                value: widget.acceptedTerms,
+                onChanged: widget.onTermsChanged,
+              ),
               const Expanded(
                 child: Text(
                   'I agree to ForkMesh Terms and Privacy.',
@@ -296,13 +488,17 @@ class _SignupScreen extends StatelessWidget {
               ),
             ],
           ),
+          if (_hint.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _AuthHint(text: _hint, bad: _bad),
+          ],
           const SizedBox(height: 18),
           _PrimaryAuthButton(
-            label: 'Create account',
-            onPressed: onAuthenticated,
+            label: _loading ? 'Creating…' : 'Create account',
+            onPressed: _loading ? null : _submit,
           ),
           const SizedBox(height: 18),
-          _SecondaryAuthButton(label: 'Back', onPressed: onLogin),
+          _SecondaryAuthButton(label: 'Back', onPressed: widget.onLogin),
           const SizedBox(height: 72),
           const _TermsCopy(),
         ],
@@ -473,13 +669,23 @@ class _AuthTitle extends StatelessWidget {
 class _AuthField extends StatelessWidget {
   const _AuthField({
     required this.label,
-    required this.initialText,
-    this.trailing,
+    required this.controller,
+    this.hintText = '',
+    this.obscureText = false,
+    this.keyboardType,
+    this.textInputAction,
+    this.onSubmitted,
+    this.onChanged,
   });
 
   final String label;
-  final String initialText;
-  final Widget? trailing;
+  final TextEditingController controller;
+  final String hintText;
+  final bool obscureText;
+  final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -495,45 +701,60 @@ class _AuthField extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        Container(
-          constraints: const BoxConstraints(minHeight: 54),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(7),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x05000000),
-                blurRadius: 2,
-                offset: Offset(0, 1),
-              ),
-            ],
+        TextField(
+          controller: controller,
+          obscureText: obscureText,
+          keyboardType: keyboardType,
+          textInputAction: textInputAction,
+          onSubmitted: onSubmitted,
+          onChanged: onChanged,
+          style: const TextStyle(
+            color: _authText,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
           ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    initialText,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: _authText,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ),
+          decoration: InputDecoration(
+            hintText: hintText,
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(7),
+              borderSide: BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(7),
+              borderSide: const BorderSide(
+                color: Color(0xFF4B4948),
+                width: 1.2,
               ),
-              if (trailing != null) ...[
-                Padding(
-                  padding: const EdgeInsets.only(right: 14),
-                  child: trailing,
-                ),
-              ],
-            ],
+            ),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AuthHint extends StatelessWidget {
+  const _AuthHint({required this.text, this.bad = false});
+
+  final String text;
+  final bool bad;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: TextStyle(
+        color: bad ? const Color(0xFFB42318) : const Color(0xFF1B7F45),
+        fontSize: 13,
+        height: 1.35,
+        fontWeight: FontWeight.w600,
+      ),
     );
   }
 }
@@ -542,7 +763,7 @@ class _PrimaryAuthButton extends StatelessWidget {
   const _PrimaryAuthButton({required this.label, required this.onPressed});
 
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
