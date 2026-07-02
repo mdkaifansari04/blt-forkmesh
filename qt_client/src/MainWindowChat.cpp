@@ -391,8 +391,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Populated by refreshClaudeModelCombo; choice persisted and fed to
     // startClaudeCodeTranscript.
     m_quickAddClaudeModel = new QComboBox;
-    m_quickAddClaudeModel->setMinimumWidth(170);
-    m_quickAddClaudeModel->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     populateClaudeModelCombo(m_quickAddClaudeModel);
     m_quickAddClaudeModel->setToolTip(
         "Claude model the Claude Code agent runs as (passed to the CLI as --model).");
