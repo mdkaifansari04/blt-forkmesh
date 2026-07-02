@@ -208,6 +208,15 @@ public:
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
+    // Sets the live roster directly (skipping setRoster's side effects, e.g.
+    // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
+    // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
+    // in isolation (adhoc #46).
+    void testSetHomeRosterAndReloadMirrorPanel(const QList<MemberInfo> &members)
+    {
+        m_homeRoster = members;
+        loadMirrorNodesPanel();
+    }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
@@ -341,6 +350,9 @@ public:
     int testMirrorNodesTabIndex() const { return m_mirrorNodesTabIndex; }
     bool testReleasesTableHasKeyboardFocus() const;
     bool testMirrorNodesTableHasKeyboardFocus() const;
+    // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
+    // node that re-registered under a new key shows exactly one row (adhoc #46).
+    Q_INVOKABLE QStringList testMirrorNodeRows() const;
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
