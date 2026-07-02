@@ -272,8 +272,12 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     assert "public_browse" in browse
     assert "(503, 504)" in browse
     assert "exclude=owner" in browse
-    assert "fmretry=1" in browse
     assert "already_retried" in browse
+    # The retry pin replaces (never appends to) the failed hop's fmserved, or
+    # the retried route would read the stale pin first and re-rotate.
+    assert "('fmserved', fallback)" in browse
+    assert "('fmretry', '1')" in browse
+    assert "not in ('fmserved', 'fmretry')" in browse
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
