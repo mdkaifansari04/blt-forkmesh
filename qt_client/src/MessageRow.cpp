@@ -19,6 +19,9 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QScreen>
+#include <QSettings>
+#include <QStyleHints>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -56,6 +59,97 @@ QString humanSize(qint64 bytes)
         return QString::number(bytes / 1024.0, 'f', 1) + " KB";
     return QString::number(bytes / (1024.0 * 1024.0), 'f', 1) + " MB";
 }
+
+// Mirrors forkmesh::ui::currentThemeIsDark() (MainWindowInternal.h), kept as a
+// standalone copy here so this widget doesn't have to pull in that header.
+bool themeIsDark()
+{
+    const QString pref =
+        QSettings().value(QStringLiteral("app/theme"), "system").toString();
+    if (pref == "light")
+        return false;
+    if (pref == "dark")
+        return true;
+    return QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+}
+
+// Ticks every message row's countdown ring on a single shared timer, rather
+// than one QTimer per row (a long-lived conversation can have hundreds).
+QTimer *expiryRingTicker()
+{
+    static QTimer *timer = [] {
+        auto *t = new QTimer;
+        t->start(60 * 1000);
+        return t;
+    }();
+    return timer;
+}
+
+// Small ring next to the timestamp showing how close a message is to its
+// 7-day retention cutoff (kChatMessageRetentionMs), after which it's pruned
+// from local history and the relay stops retaining it too.
+class ExpiryRing : public QWidget
+{
+public:
+    explicit ExpiryRing(qint64 timestampMs, QWidget *parent = nullptr)
+        : QWidget(parent), m_timestampMs(timestampMs)
+    {
+        setFixedSize(kDiameter, kDiameter);
+        refreshTooltip();
+        connect(expiryRingTicker(), &QTimer::timeout, this, [this] {
+            refreshTooltip();
+            update();
+        });
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        const qint64 elapsed =
+            QDateTime::currentMSecsSinceEpoch() - m_timestampMs;
+        const double frac = qBound(
+            0.0, double(elapsed) / double(kChatMessageRetentionMs), 1.0);
+
+        const bool dark = themeIsDark();
+        QRectF box(1, 1, kDiameter - 2, kDiameter - 2);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1.2));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(box);
+        if (frac > 0.004) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(dark ? "#8b949e" : "#9a6700"));
+            // Sweep clockwise from 12 o'clock; Qt pie angles are 1/16°, CCW+.
+            painter.drawPie(box, 90 * 16, -int(frac * 360.0 * 16));
+        }
+    }
+
+private:
+    void refreshTooltip()
+    {
+        const qint64 remainingMs =
+            qMax<qint64>(0, m_timestampMs + kChatMessageRetentionMs -
+                                QDateTime::currentMSecsSinceEpoch());
+        const qint64 days = remainingMs / (24 * 60 * 60 * 1000);
+        const qint64 hours = remainingMs / (60 * 60 * 1000);
+        QString text;
+        if (days >= 1)
+            text = QString("Disappears in %1 day%2")
+                       .arg(days)
+                       .arg(days == 1 ? "" : "s");
+        else if (hours >= 1)
+            text = QString("Disappears in %1 hour%2")
+                       .arg(hours)
+                       .arg(hours == 1 ? "" : "s");
+        else
+            text = QStringLiteral("Disappears soon");
+        setToolTip(text);
+    }
+
+    qint64 m_timestampMs;
+    static constexpr int kDiameter = 10;
+};
 
 } // namespace
 
@@ -101,6 +195,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->setSpacing(6);
     headerRow->addWidget(header);
+    if (!message.deleted)
+        headerRow->addWidget(new ExpiryRing(message.timestampMs), 0, Qt::AlignVCenter);
     headerRow->addStretch();
     // A quick Copy action on any message that carries text, regardless of who
     // sent it, so the body can be lifted to the clipboard in one click.
