@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en" class="dark h-full">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ForkMesh Community Chat</title>
+    <meta name="description" content="Join the ForkMesh community chat room — end-to-end encrypted, open to all." />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        --bg: #090909;
+        --surface: #111111;
+        --surface2: #1a1a1a;
+        --border: #2a2a2a;
+        --fg: #f0f0f0;
+        --muted: #888;
+        --accent: oklch(0.72 0.17 152);
+        --accent-dim: rgba(63, 185, 80, 0.12);
+        --danger: #f85149;
+        --radius: 10px;
+        --nav-h: 52px;
+        --input-h: 64px;
+      }
+
+      html, body {
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ── layout ── */
+      .chat-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+        height: 100vh; /* fallback */
+        max-width: 900px;
+        margin: 0 auto;
+      }
+
+      /* ── top nav ── */
+      .chat-nav {
+        flex-shrink: 0;
+        height: var(--nav-h);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg);
+      }
+
+      .chat-nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        text-decoration: none;
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 15px;
+      }
+
+      .chat-nav-brand img {
+        width: 28px;
+        height: 28px;
+      }
+
+      .chat-nav-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .chat-channel-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        font-size: 13px;
+        color: var(--muted);
+        font-family: ui-monospace, monospace;
+      }
+
+      .chat-channel-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+
+      .chat-nav-link {
+        font-size: 13px;
+        color: var(--muted);
+        text-decoration: none;
+        transition: color 150ms;
+      }
+
+      .chat-nav-link:hover { color: var(--fg); }
+
+      /* ── status bar ── */
+      .chat-status-bar {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      #chat-status {
+        font-size: 12px;
+        color: var(--muted);
+        font-family: ui-monospace, monospace;
+      }
+
+      .chat-status-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .chat-name-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .chat-name-label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      #chat-name {
+        width: 130px;
+        height: 28px;
+        padding: 0 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        color: var(--fg);
+        font-size: 13px;
+        outline: none;
+        transition: border-color 150ms;
+      }
+
+      #chat-name:focus {
+        border-color: var(--accent);
+      }
+
+      #chat-clear {
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+        cursor: pointer;
+        transition: color 150ms, border-color 150ms;
+      }
+
+      #chat-clear:hover {
+        color: var(--fg);
+        border-color: #444;
+      }
+
+      /* ── message log ── */
+      #chat-log {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 16px 16px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        scroll-behavior: smooth;
+      }
+
+      #chat-log::-webkit-scrollbar { width: 4px; }
+      #chat-log::-webkit-scrollbar-track { background: transparent; }
+      #chat-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+      .chat-empty {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 14px;
+        text-align: center;
+        gap: 8px;
+        flex-direction: column;
+        padding: 40px 0;
+      }
+
+      .chat-empty-icon {
+        opacity: 0.3;
+      }
+
+      .chat-msg {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 5px 10px;
+        border-radius: 8px;
+        font-size: 14px;
+        line-height: 1.5;
+        max-width: 100%;
+        word-break: break-word;
+      }
+
+      .chat-msg-self {
+        background: var(--accent-dim);
+        border: 1px solid rgba(63, 185, 80, 0.18);
+        flex-direction: row-reverse;
+        text-align: right;
+        align-self: flex-end;
+        max-width: 75%;
+      }
+
+      .chat-msg-peer {
+        align-self: flex-start;
+        max-width: 75%;
+        background: var(--surface);
+        border: 1px solid var(--border);
+      }
+
+      .chat-author {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
+      .chat-msg-self .chat-author { color: var(--accent); }
+      .chat-msg-peer .chat-author { color: #7c9cff; }
+
+      .chat-text { color: var(--fg); }
+
+      .chat-system {
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        padding: 4px 0;
+        font-style: italic;
+      }
+
+      /* ── input bar ── */
+      .chat-input-bar {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      #chat-input {
+        flex: 1;
+        height: 42px;
+        padding: 0 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--surface2);
+        color: var(--fg);
+        font-size: 14px;
+        outline: none;
+        transition: border-color 150ms;
+      }
+
+      #chat-input::placeholder { color: var(--muted); }
+
+      #chat-input:focus {
+        border-color: var(--accent);
+      }
+
+      #chat-send {
+        flex-shrink: 0;
+        height: 42px;
+        padding: 0 18px;
+        border-radius: 10px;
+        border: none;
+        background: var(--accent);
+        color: #06120a;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        transition: opacity 150ms;
+      }
+
+      #chat-send:hover { opacity: 0.85; }
+      #chat-send:active { opacity: 0.7; }
+
+      /* ── e2e note ── */
+      .chat-e2e-note {
+        flex-shrink: 0;
+        text-align: center;
+        font-size: 11px;
+        color: var(--muted);
+        padding: 6px 16px 10px;
+        background: var(--surface);
+      }
+
+      .chat-e2e-note a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
+      @media (max-width: 540px) {
+        .chat-status-bar { flex-direction: column; align-items: flex-start; gap: 6px; }
+        .chat-msg-self, .chat-msg-peer { max-width: 90%; }
+        #chat-name { width: 110px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chat-shell">
+
+      <!-- nav -->
+      <nav class="chat-nav">
+        <a class="chat-nav-brand" href="/" aria-label="ForkMesh home">
+          <img src="/assets/logo.png" alt="" aria-hidden="true" />
+          ForkMesh
+        </a>
+        <div class="chat-nav-right">
+          <span class="chat-channel-badge">
+            <span class="chat-channel-dot"></span>
+            #general
+          </span>
+          <a class="chat-nav-link" href="/docs">Docs</a>
+          <a class="chat-nav-link" href="/signup">Sign up</a>
+        </div>
+      </nav>
+
+      <!-- status / name row -->
+      <div class="chat-status-bar">
+        <span id="chat-status">Waiting to connect…</span>
+        <div class="chat-status-actions">
+          <div class="chat-name-wrap">
+            <label class="chat-name-label" for="chat-name">Name</label>
+            <input id="chat-name" type="text" maxlength="32" placeholder="web-guest" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="chat-clear" type="button">Clear</button>
+        </div>
+      </div>
+
+      <!-- message log -->
+      <div id="chat-log" aria-live="polite" aria-label="Chat messages">
+        <div class="chat-empty">
+          <svg class="chat-empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          Type below to join the room.
+        </div>
+      </div>
+
+      <!-- input -->
+      <div class="chat-input-bar">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Message #general…"
+          maxlength="16000"
+          autocomplete="off"
+          spellcheck="true"
+          aria-label="Message input"
+        />
+        <button id="chat-send" type="button" aria-label="Send message">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+          Send
+        </button>
+      </div>
+
+      <!-- e2e note -->
+      <div class="chat-e2e-note">
+        Messages are end-to-end encrypted before leaving your browser. The relay never sees plaintext. <a href="/docs">Learn more</a>
+      </div>
+
+    </div>
+    <script src="/chat.js"></script>
+  </body>
+</html>

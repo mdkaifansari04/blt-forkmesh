@@ -18,6 +18,7 @@
 /blog.html /blogs 308
 /network /network/index.html 200
 /network/ /network/index.html 200
+/chat /chat.html 200
 /desktop /desktop.html 200
 /about /about.html 200
 /careers /careers.html 200
