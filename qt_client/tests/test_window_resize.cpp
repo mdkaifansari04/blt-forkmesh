@@ -769,8 +769,11 @@ int main(int argc, char *argv[])
         issueSession.issueTitle = QStringLiteral("show attachment in branches list");
         window.testAddAgentSession(issueSession);
         window.testReloadBranchesPanel();
-        check(window.testBranchAttachmentText(
-                  QStringLiteral("feature/keep-selected")) == QStringLiteral("#191"),
+        // The cell reads "#191 · <status>" — the status word rides along since
+        // the Branches tab started showing agent status text — so anchor on the
+        // issue number rather than pinning the whole string.
+        check(window.testBranchAttachmentText(QStringLiteral("feature/keep-selected"))
+                  .startsWith(QStringLiteral("#191")),
               QString("branches list names the issue a branch is attached to "
                       "(adhoc #191, cell = %1)")
                   .arg(window.testBranchAttachmentText(
