@@ -18,10 +18,10 @@ class QPainter;
 // and left-drag lays down ink anywhere on the computer. The ink is a throwaway
 // scratch layer for pointing things out on screen.
 //
-// A small "Screenshot" button floats at the top of the primary screen: click it
-// to hand off to a region screenshot (ScreenCaptureOverlay) while this overlay
-// stays underneath, so the drawn ink is part of the captured region. The grab is
-// emitted via captured() and the overlay dismisses itself.
+// A small "Screenshot" button floats at the top of *every* screen: click it on
+// any monitor to hand off to a region screenshot (ScreenCaptureOverlay) while
+// this overlay stays underneath, so the drawn ink is part of the captured region.
+// The grab is emitted via captured() and the overlay dismisses itself.
 //
 // Esc, right-click, or the Backspace/Delete keys clear and dismiss the overlay;
 // while it's up, the whole screen belongs to the pen. Spans the union of every
@@ -53,7 +53,7 @@ private:
     explicit ScreenDrawOverlay(const QRect &virtualGeom);
     void popOverrideCursor(); // restore the pen cursor once
     void finish();
-    QRect screenshotButtonRect() const;        // widget-local floating button rect
+    QVector<QRect> screenshotButtonRects() const; // widget-local pill rects, one per screen
     void paintScreenshotButton(QPainter &painter);
     void startCapture(); // hand off to a region screenshot with the ink included
 
