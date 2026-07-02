@@ -214,11 +214,20 @@ void ScreenDrawOverlay::startCapture()
     });
 }
 
+void ScreenDrawOverlay::setScreenshotHotzone(const QRect &globalRect)
+{
+    // Translate from global screen coordinates to widget-local coordinates
+    // (the overlay's origin is m_virtualGeom.topLeft()).
+    m_screenshotHotzone = globalRect.translated(-m_virtualGeom.topLeft());
+}
+
 void ScreenDrawOverlay::mousePressEvent(QMouseEvent *event)
 {
+    const QPoint pos = event->position().toPoint();
     if (event->button() == Qt::LeftButton && !m_capturing &&
-        screenshotButtonRect().contains(event->position().toPoint())) {
-        startCapture(); // click the floating button -> region screenshot with ink
+        (screenshotButtonRect().contains(pos) ||
+         (!m_screenshotHotzone.isNull() && m_screenshotHotzone.contains(pos)))) {
+        startCapture(); // click the floating button or nav icon -> region screenshot with ink
         return;
     }
     if (event->button() != Qt::LeftButton) {

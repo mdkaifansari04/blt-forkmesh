@@ -2262,6 +2262,12 @@ void MainWindow::startScreenDraw()
         logSystem("Couldn't open the on-screen drawing overlay.");
         return;
     }
+    // Let clicks on the nav screenshot button open the capture selector rather than draw.
+    if (m_navScreenshotButton) {
+        const QRect globalRect(m_navScreenshotButton->mapToGlobal(QPoint(0, 0)),
+                               m_navScreenshotButton->size());
+        overlay->setScreenshotHotzone(globalRect);
+    }
     connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
                 const QString path = saveNewAgentPromptImage(image);
