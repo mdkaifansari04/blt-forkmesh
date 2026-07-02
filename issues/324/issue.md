@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 324
 title: testing create issue from web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
