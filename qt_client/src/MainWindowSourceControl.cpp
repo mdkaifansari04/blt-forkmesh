@@ -1519,13 +1519,13 @@ QWidget *MainWindow::buildRepoSecurityTab()
     layout->setContentsMargins(18, 18, 18, 18);
     layout->setSpacing(14);
 
-    auto *heading = new QLabel("Security and quality");
+    auto *heading = new QLabel("Security");
     heading->setObjectName("securityQualityTitle");
     heading->setProperty("class", "channelTitle");
     heading->setStyleSheet(QStringLiteral("font-size:16px;font-weight:700;"));
     auto *subtitle = new QLabel(
-        "Local security and quality evidence from this node. External advisory "
-        "matching is not part of the MVP.");
+        "Local security evidence from this node. External advisory matching is "
+        "not part of the MVP; quality metrics live on the Quality tab.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -1598,29 +1598,8 @@ QWidget *MainWindow::buildRepoSecurityTab()
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
-        if (path.isEmpty())
-            return;
-        const int line = item->data(Qt::UserRole + 1).toInt();
-        openRepoFile(path);
-        if (line > 0) {
-            QTimer::singleShot(0, this, [this, path, line] {
-                auto *edit = qobject_cast<QPlainTextEdit *>(m_openFileTabs.value(path));
-                if (!edit)
-                    return;
-                QTextCursor lc(edit->document());
-                lc.movePosition(QTextCursor::Start);
-                if (line > 1)
-                    lc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, line - 1);
-                QTextEdit::ExtraSelection lineSel;
-                lineSel.cursor = lc;
-                lineSel.format.setBackground(QColor(31, 111, 235, 60));
-                lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
-                edit->setExtraSelections({lineSel});
-                edit->setTextCursor(lc);
-                edit->centerCursor();
-                edit->setFocus();
-            });
-        }
+        if (!path.isEmpty())
+            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
     });
 
     scroll->setWidget(content);
@@ -1631,7 +1610,7 @@ QWidget *MainWindow::buildRepoSecurityTab()
     return page;
 }
 
-// Severity -> badge/text colour for the Security and quality tab. Mirrors the
+// Severity -> badge/text colour for the Security and Quality tabs. Mirrors the
 // palette used elsewhere (green pass, blue info, amber warning, orange/red severe).
 static QString repoSecuritySeverityColor(RepoSecuritySeverity severity)
 {
@@ -1680,6 +1659,62 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
                     .arg(href, item.toHtmlEscaped());
     }
     return html;
+}
+
+// Fill a Security/Quality findings table: one row per finding (or a single
+// "Pass" row when there are none). Column 2 carries the path/line payload the
+// tables' cellClicked handlers use to open the file.
+static void fillRepoFindingsTable(QTableWidget *table,
+                                  const QList<RepoSecurityFinding> &findings,
+                                  const QString &emptyText)
+{
+    if (findings.isEmpty()) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *severity = new QTableWidgetItem("Pass");
+        severity->setForeground(QColor(repoSecuritySeverityColor(
+            RepoSecuritySeverity::Pass)));
+        table->setItem(row, 0, severity);
+        table->setItem(row, 1, new QTableWidgetItem("Local scan"));
+        table->setItem(row, 2, new QTableWidgetItem(emptyText));
+        table->setItem(row, 3, new QTableWidgetItem("-"));
+        return;
+    }
+    for (const RepoSecurityFinding &finding : findings) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *severity =
+            new QTableWidgetItem(RepoSecurity::severityText(finding.severity));
+        severity->setForeground(QColor(repoSecuritySeverityColor(finding.severity)));
+        auto *category = new QTableWidgetItem(finding.category);
+        const QString location =
+            finding.path.isEmpty()
+                ? QString()
+                : QStringLiteral(" (%1%2)")
+                      .arg(finding.path,
+                           finding.line > 0
+                               ? QStringLiteral(":%1").arg(finding.line)
+                               : QString());
+        auto *detail =
+            new QTableWidgetItem(finding.title + QStringLiteral(": ") +
+                                 finding.detail + location);
+        if (!finding.path.isEmpty()) {
+            detail->setData(Qt::UserRole, finding.path);
+            detail->setData(Qt::UserRole + 1, finding.line);
+            detail->setToolTip(
+                QStringLiteral("Click to open %1:%2")
+                    .arg(finding.path)
+                    .arg(finding.line > 0 ? QString::number(finding.line)
+                                          : QStringLiteral("?")));
+        }
+        auto *action = new QTableWidgetItem(finding.recommendedAction);
+        for (QTableWidgetItem *item : {severity, category, action})
+            item->setToolTip(item->text());
+        table->setItem(row, 0, severity);
+        table->setItem(row, 1, category);
+        table->setItem(row, 2, detail);
+        table->setItem(row, 3, action);
+    }
 }
 
 // Renders the dependency-scan signal as a rich table widget: one row per
@@ -1838,7 +1873,7 @@ void MainWindow::refreshRepoSecurity()
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_securitySummary->setText(
-            "<b>Security and quality</b><br><span style='color:#8b949e'>"
+            "<b>Security</b><br><span style='color:#8b949e'>"
             "Select a repository to scan local evidence.</span>");
         m_securityFindingsTable->setSortingEnabled(true);
         return;
@@ -1927,56 +1962,238 @@ void MainWindow::refreshRepoSecurity()
         m_securitySignalsGrid->addWidget(depCard, depRow, 0, 1, 3);
     }
 
-    if (snapshot.findings.isEmpty()) {
-        const int row = m_securityFindingsTable->rowCount();
-        m_securityFindingsTable->insertRow(row);
-        auto *severity = new QTableWidgetItem("Pass");
-        severity->setForeground(QColor(repoSecuritySeverityColor(
-            RepoSecuritySeverity::Pass)));
-        m_securityFindingsTable->setItem(row, 0, severity);
-        m_securityFindingsTable->setItem(row, 1, new QTableWidgetItem("Local scan"));
-        m_securityFindingsTable->setItem(
-            row, 2, new QTableWidgetItem("No local findings at this ref."));
-        m_securityFindingsTable->setItem(row, 3, new QTableWidgetItem("-"));
-    } else {
-        for (const RepoSecurityFinding &finding : snapshot.findings) {
-            const int row = m_securityFindingsTable->rowCount();
-            m_securityFindingsTable->insertRow(row);
-            auto *severity =
-                new QTableWidgetItem(RepoSecurity::severityText(finding.severity));
-            severity->setForeground(QColor(repoSecuritySeverityColor(finding.severity)));
-            auto *category = new QTableWidgetItem(finding.category);
-            const QString location =
-                finding.path.isEmpty()
-                    ? QString()
-                    : QStringLiteral(" (%1%2)")
-                          .arg(finding.path,
-                               finding.line > 0
-                                   ? QStringLiteral(":%1").arg(finding.line)
-                                   : QString());
-            auto *detail =
-                new QTableWidgetItem(finding.title + QStringLiteral(": ") +
-                                     finding.detail + location);
-            if (!finding.path.isEmpty()) {
-                detail->setData(Qt::UserRole, finding.path);
-                detail->setData(Qt::UserRole + 1, finding.line);
-                detail->setToolTip(
-                    QStringLiteral("Click to open %1:%2")
-                        .arg(finding.path)
-                        .arg(finding.line > 0 ? QString::number(finding.line)
-                                              : QStringLiteral("?")));
-            }
-            auto *action = new QTableWidgetItem(finding.recommendedAction);
-            for (QTableWidgetItem *item : {severity, category, action})
-                item->setToolTip(item->text());
-            m_securityFindingsTable->setItem(row, 0, severity);
-            m_securityFindingsTable->setItem(row, 1, category);
-            m_securityFindingsTable->setItem(row, 2, detail);
-            m_securityFindingsTable->setItem(row, 3, action);
-        }
-    }
+    fillRepoFindingsTable(m_securityFindingsTable, snapshot.findings,
+                          QStringLiteral("No local findings at this ref."));
 
     m_securityFindingsTable->setSortingEnabled(true);
+}
+
+void MainWindow::openRepoFileAtLine(const QString &path, int line)
+{
+    openRepoFile(path);
+    if (line <= 0)
+        return;
+    QTimer::singleShot(0, this, [this, path, line] {
+        auto *edit = qobject_cast<QPlainTextEdit *>(m_openFileTabs.value(path));
+        if (!edit)
+            return;
+        QTextCursor lc(edit->document());
+        lc.movePosition(QTextCursor::Start);
+        if (line > 1)
+            lc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, line - 1);
+        QTextEdit::ExtraSelection lineSel;
+        lineSel.cursor = lc;
+        lineSel.format.setBackground(QColor(31, 111, 235, 60));
+        lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
+        edit->setExtraSelections({lineSel});
+        edit->setTextCursor(lc);
+        edit->centerCursor();
+        edit->setFocus();
+    });
+}
+
+QWidget *MainWindow::buildRepoQualityTab()
+{
+    auto *page = new QWidget;
+    page->setObjectName("mainContent");
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("mainContent");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+
+    auto *content = new QWidget;
+    content->setObjectName("insightsPage");
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(14);
+
+    auto *heading = new QLabel("Quality");
+    heading->setObjectName("qualityTitle");
+    heading->setProperty("class", "channelTitle");
+    heading->setStyleSheet(QStringLiteral("font-size:16px;font-weight:700;"));
+    auto *subtitle = new QLabel(
+        "Local quality metrics for this repository: check runs, code volume, "
+        "documentation, tests, maintenance markers, file sizes, commit "
+        "activity and issue hygiene.");
+    subtitle->setObjectName("statusLine");
+    subtitle->setWordWrap(true);
+
+    m_qualityRefreshButton = new QPushButton("Refresh");
+    m_qualityRefreshButton->setObjectName("ghostButton");
+    m_qualityRefreshButton->setProperty("buttonSize", "sm");
+    m_qualityRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_qualityRefreshButton, "sync", 16);
+    connect(m_qualityRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshRepoQuality);
+
+    auto *headingCol = new QVBoxLayout;
+    headingCol->setContentsMargins(0, 0, 0, 0);
+    headingCol->setSpacing(3);
+    headingCol->addWidget(heading);
+    headingCol->addWidget(subtitle);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addLayout(headingCol, 1);
+    headerRow->addWidget(m_qualityRefreshButton, 0, Qt::AlignTop);
+    layout->addLayout(headerRow);
+
+    m_qualitySummary = new QLabel;
+    m_qualitySummary->setObjectName("insightsCard");
+    m_qualitySummary->setTextFormat(Qt::RichText);
+    m_qualitySummary->setWordWrap(true);
+    m_qualitySummary->setMinimumHeight(92);
+    layout->addWidget(m_qualitySummary);
+
+    auto *metricsLabel = new QLabel("METRICS");
+    metricsLabel->setObjectName("sectionLabel");
+    layout->addWidget(metricsLabel);
+
+    m_qualitySignalsPanel = new QWidget;
+    m_qualitySignalsGrid = new QGridLayout(m_qualitySignalsPanel);
+    m_qualitySignalsGrid->setContentsMargins(0, 0, 0, 0);
+    m_qualitySignalsGrid->setSpacing(10);
+    layout->addWidget(m_qualitySignalsPanel);
+
+    auto *findingsLabel = new QLabel("FINDINGS");
+    findingsLabel->setObjectName("sectionLabel");
+    layout->addWidget(findingsLabel);
+
+    m_qualityFindingsTable = new QTableWidget(0, 4);
+    m_qualityFindingsTable->setObjectName("issueTable");
+    enableHoverRowHighlight(m_qualityFindingsTable);
+    m_qualityFindingsTable->setHorizontalHeaderLabels(
+        {"Severity", "Category", "Finding", "Suggestion"});
+    m_qualityFindingsTable->verticalHeader()->setVisible(false);
+    m_qualityFindingsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_qualityFindingsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_qualityFindingsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_qualityFindingsTable->setShowGrid(false);
+    m_qualityFindingsTable->setWordWrap(false);
+    QHeaderView *header = m_qualityFindingsTable->horizontalHeader();
+    header->setHighlightSections(false);
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(2, QHeaderView::Stretch);
+    header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_qualityFindingsTable);
+    m_qualityFindingsTable->setMinimumHeight(220);
+    layout->addWidget(m_qualityFindingsTable);
+    layout->addStretch();
+    connect(m_qualityFindingsTable, &QTableWidget::cellClicked,
+            this, [this](int row, int /*col*/) {
+        auto *item = m_qualityFindingsTable->item(row, 2);
+        if (!item)
+            return;
+        const QString path = item->data(Qt::UserRole).toString();
+        if (!path.isEmpty())
+            openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
+    });
+
+    scroll->setWidget(content);
+    auto *pageLayout = new QVBoxLayout(page);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->addWidget(scroll);
+    refreshRepoQuality();
+    return page;
+}
+
+void MainWindow::refreshRepoQuality()
+{
+    if (!m_qualitySummary || !m_qualitySignalsGrid || !m_qualityFindingsTable)
+        return;
+
+    while (QLayoutItem *item = m_qualitySignalsGrid->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    TableRepaintGuard repaintGuard(m_qualityFindingsTable);
+    m_qualityFindingsTable->setSortingEnabled(false);
+    m_qualityFindingsTable->setRowCount(0);
+
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_qualitySummary->setText(
+            "<b>Quality</b><br><span style='color:#8b949e'>"
+            "Select a repository to compute quality metrics.</span>");
+        m_qualityFindingsTable->setSortingEnabled(true);
+        return;
+    }
+
+    const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord &writable = writableRecordFor(selected);
+
+    RepoSecurityInput input;
+    input.owner = selected.owner;
+    input.name = selected.name;
+    input.localPath = writable.localPath;
+    input.mirrorPath = writable.mirrorPath.isEmpty() ? selected.mirrorPath
+                                                     : writable.mirrorPath;
+    input.publishToNetwork = selected.publishToNetwork;
+    input.isPrivate = selected.isPrivate;
+    input.previewOnly = selected.previewOnly;
+    input.actionsEnabled = selected.actionsEnabled;
+    input.issues =
+        IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
+            .loadAll();
+    input.workflows = availableWorkflowsForRepo(writable);
+    for (const ActionRun &run : std::as_const(m_actionRuns))
+        if (run.owner == selected.owner && run.name == selected.name)
+            input.actionRuns.append(run);
+
+    const RepoSecuritySnapshot snapshot = RepoQuality::scan(input);
+    const RepoSecuritySeverity highest = RepoSecurity::highestSeverity(snapshot);
+    int warnings = 0;
+    int severe = 0;
+    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+        if (signal.severity == RepoSecuritySeverity::Warning)
+            ++warnings;
+        else if (signal.severity == RepoSecuritySeverity::High ||
+                 signal.severity == RepoSecuritySeverity::Critical)
+            ++severe;
+    }
+    for (const RepoSecurityFinding &finding : snapshot.findings) {
+        if (finding.severity == RepoSecuritySeverity::Warning)
+            ++warnings;
+        else if (finding.severity == RepoSecuritySeverity::High ||
+                 finding.severity == RepoSecuritySeverity::Critical)
+            ++severe;
+    }
+
+    m_qualitySummary->setText(
+        QStringLiteral(
+            "<div style='font-size:21px; font-weight:800; color:%1'>%2</div>"
+            "<div style='color:#8b949e; font-size:12px; font-weight:600'>"
+            "%3 at %4. %5 finding%6, %7 warning%8, %9 severe.</div>")
+            .arg(repoSecuritySeverityColor(highest),
+                 RepoSecurity::severityText(highest).toHtmlEscaped(),
+                 snapshot.repoKey.toHtmlEscaped(), snapshot.ref.toHtmlEscaped())
+            .arg(snapshot.findings.size())
+            .arg(snapshot.findings.size() == 1 ? QString() : QStringLiteral("s"))
+            .arg(warnings)
+            .arg(warnings == 1 ? QString() : QStringLiteral("s"))
+            .arg(severe));
+
+    int index = 0;
+    for (const RepoSecuritySignal &signal : snapshot.signalList) {
+        auto *card = new QLabel(repoSecuritySignalHtml(signal));
+        card->setObjectName("insightsCard");
+        card->setTextFormat(Qt::RichText);
+        card->setWordWrap(true);
+        card->setMinimumHeight(92);
+        const int row = index / 3;
+        const int col = index % 3;
+        m_qualitySignalsGrid->addWidget(card, row, col);
+        ++index;
+    }
+
+    fillRepoFindingsTable(m_qualityFindingsTable, snapshot.findings,
+                          QStringLiteral("No quality findings at this ref."));
+
+    m_qualityFindingsTable->setSortingEnabled(true);
 }
 
 QWidget *MainWindow::buildInsightsTab()
