@@ -43,6 +43,7 @@ def _load(*names):
 
 NS = _load(
     "RELEASE_TAG_RE", "SHA256_HEX_RE", "RELEASE_SEMVER_RE", "RELEASE_BLOB_RE",
+    "REPO_RELEASE_DOWNLOADS_RE",
     "valid_release_tag", "valid_asset_name", "valid_sha256_hex",
     "cas_blob_relpath", "release_asset_line", "release_manifest_content",
     "release_signing_message", "generate_shasums", "release_semver_key",
@@ -59,6 +60,7 @@ release_semver_key = NS["release_semver_key"]
 resolve_latest_release = NS["resolve_latest_release"]
 asset_upload_decision = NS["asset_upload_decision"]
 RELEASE_BLOB_RE = NS["RELEASE_BLOB_RE"]
+REPO_RELEASE_DOWNLOADS_RE = NS["REPO_RELEASE_DOWNLOADS_RE"]
 
 
 H1 = "a" * 64
@@ -216,6 +218,15 @@ def test_release_blob_route():
     assert RELEASE_BLOB_RE.match(
         "/api/repo/a/b/releases/blob/sha256/" + "A" * 64) is None  # must be lowercase
     assert RELEASE_BLOB_RE.match("/api/repo/a/b/releases/blob/md5/" + H1) is None
+
+
+def test_release_downloads_route():
+    m = REPO_RELEASE_DOWNLOADS_RE.match("/api/repo/alice/widget/releases/downloads")
+    assert m is not None
+    assert m.group(1) == "alice"
+    assert m.group(2) == "widget"
+    assert REPO_RELEASE_DOWNLOADS_RE.match(
+        "/api/repo/alice/widget/releases/blob/sha256/" + H1) is None
 
 
 # --- same-name re-upload (§7) ---------------------------------------------

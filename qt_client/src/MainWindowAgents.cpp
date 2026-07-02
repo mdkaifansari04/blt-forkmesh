@@ -1279,9 +1279,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentModelCombo = new QComboBox;
     m_agentModelCombo->setObjectName("agentModel");
     m_agentModelCombo->setCursor(Qt::PointingHandCursor);
-    // Seed with the always-available alias defaults, then ask the provider which
-    // models it currently serves and merge those in so the dropdown reflects the
-    // live line-up (new releases show up without an app update).
+    m_agentModelCombo->setProperty("claudeModelCombo", true);
+    m_agentModelCombo->view()->installEventFilter(this);
     populateClaudeModelCombo(m_agentModelCombo);
     refreshClaudeModelCombo();
     m_agentModelCombo->setToolTip(
@@ -1857,38 +1856,56 @@ void MainWindow::refreshClaudeCodeUsage()
     });
 }
 
+// Apply the cached live model list to all claude-code model combos. Used both
+// at startup (to apply an already-fetched list to a freshly built combo) and
+// from the eventFilter popup-open path (throttle keeps it from hammering the API).
 void MainWindow::refreshClaudeModelCombo()
 {
-    // Fold any already-fetched line-up into both model combos first, so a combo
-    // built after the fetch (the composer's m_agentModelCombo vs the quick-add
-    // bar's m_quickAddClaudeModel) still shows the live models even while the
-    // re-fetch throttle below is armed. Both calls are no-ops if the combo is
-    // absent or the cache is empty.
-    mergeLiveClaudeModels(m_agentModelCombo, m_liveClaudeModels);
-    mergeLiveClaudeModels(m_quickAddClaudeModel, m_liveClaudeModels);
+    auto applyToAllCombos = [this](const QJsonArray &models) {
+        mergeLiveClaudeModels(m_agentModelCombo, models);
+        mergeLiveClaudeModels(m_quickAddClaudeModel, models);
+        // Restore saved quick-add model after replacing the list.
+        if (m_quickAddClaudeModel) {
+            const QString saved =
+                QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+            const int idx = m_quickAddClaudeModel->findData(saved);
+            if (idx >= 0) {
+                QSignalBlocker b(m_quickAddClaudeModel);
+                m_quickAddClaudeModel->setCurrentIndex(idx);
+            }
+        }
+        // Branch and action fix combos: only update when set to claude-code.
+        const QString claudeCode = QStringLiteral("claude-code");
+        if (m_branchFixModelCombo && m_branchFixAgentCombo &&
+            m_branchFixAgentCombo->currentData().toString() == claudeCode)
+            mergeLiveClaudeModels(m_branchFixModelCombo, models);
+        if (m_actionFixModelCombo && m_actionFixAgentCombo &&
+            m_actionFixAgentCombo->currentData().toString() == claudeCode)
+            mergeLiveClaudeModels(m_actionFixModelCombo, models);
+    };
 
-    if (!m_networkAccess || (!m_agentModelCombo && !m_quickAddClaudeModel))
+    // Apply whatever we have cached so combos built after the last fetch still
+    // show the live list without waiting for a new network round-trip.
+    if (!m_liveClaudeModels.isEmpty())
+        applyToAllCombos(m_liveClaudeModels);
+
+    if (!m_networkAccess)
         return;
-    // Throttle: at most one live fetch every 10 minutes. buildAgentsTab() fires
-    // the first one; showAgentSession() re-arms it as the user works, so the list
-    // stays current in real time without hitting /v1/models on every click.
+    // Throttle: at most one live fetch every 60 seconds. The dropdown-open
+    // event filter calls this each time any model combo is opened so the list
+    // stays current without hammering /v1/models on every click.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_claudeModelsFetchedMs > 0 &&
-        now - m_claudeModelsFetchedMs < 10LL * 60 * 1000)
+        now - m_claudeModelsFetchedMs < 60LL * 1000)
         return;
     // Claude Code authenticates with the claude.ai OAuth token in
-    // ~/.claude/.credentials.json (the same source the usage gauge reads). Without
-    // it (API-key login, or not signed in) we can't query the account's model
-    // list, so the static alias defaults are all we show.
+    // ~/.claude/.credentials.json. Without it we can't query the model list.
     const QString token = claudeCodeOAuthToken();
     if (token.isEmpty())
         return;
-    // Arm the throttle on send (not only on success) so a persistently failing
-    // request doesn't retry on every call.
+    // Arm the throttle on send so a persistently failing request doesn't retry.
     m_claudeModelsFetchedMs = now;
 
-    // The provider's Models API lists exactly the models this account can drive
-    // right now, newest first; limit=1000 grabs them all in one page.
     QNetworkRequest req(QUrl(
         QStringLiteral("https://api.anthropic.com/v1/models?limit=1000")));
     req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
@@ -1897,22 +1914,17 @@ void MainWindow::refreshClaudeModelCombo()
     req.setRawHeader("Accept", "application/json");
 
     QNetworkReply *reply = m_networkAccess->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, applyToAllCombos] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
-        // A failed request just leaves the static defaults untouched.
         if (reply->error() != QNetworkReply::NoError)
             return;
         const QJsonArray models =
             QJsonDocument::fromJson(body).object().value("data").toArray();
         if (models.isEmpty())
             return;
-        // Cache for combos built later, then merge into any that exist now. The
-        // helper blocks signals and restores the current pick so the merge never
-        // disturbs the selection; combos torn down mid-flight are no-ops.
         m_liveClaudeModels = models;
-        mergeLiveClaudeModels(m_agentModelCombo, models);
-        mergeLiveClaudeModels(m_quickAddClaudeModel, models);
+        applyToAllCombos(models);
     });
 }
 
