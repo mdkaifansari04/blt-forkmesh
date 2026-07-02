@@ -5604,6 +5604,23 @@ static QLabel *makeProfileSection(const QString &text)
     return label;
 }
 
+// QLabel word-wrap only breaks at whitespace: a long unbroken string (public
+// key, wallet address) has no break points, so it reports one giant "word" as
+// its minimum size and forces the whole scroll panel wider than the window
+// instead of wrapping (the profile getting cut off on the right). Zero-width
+// spaces give the layout break points without changing the copied text.
+static QString withSoftBreaks(const QString &text, int chunkSize = 4)
+{
+    QString out;
+    out.reserve(text.size() + text.size() / chunkSize);
+    for (int i = 0; i < text.size(); ++i) {
+        out += text.at(i);
+        if ((i + 1) % chunkSize == 0 && i + 1 < text.size())
+            out += QChar(0x200B);
+    }
+    return out;
+}
+
 QWidget *MainWindow::buildNodeProfileSection()
 {
     // Center the profile scroll area horizontally with stretchers so the content
@@ -5956,7 +5973,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         nodeKey = m_profileIdentity.publicKey();
     m_profileNodeId = nodeKey; // keep the copy button in sync with what's shown
     m_profileNodeKey->setText(nodeKey.isEmpty() ? QStringLiteral("unknown")
-                                                : nodeKey);
+                                                : withSoftBreaks(nodeKey));
 
     // --- Headline stat tiles (self only): repos / mirrored / online / chats.
     if (info.self) {
@@ -6105,7 +6122,7 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileSolanaSection->hide();
     } else {
         m_profileSolanaSection->show();
-        m_profileSolanaAddr->setText(solana);
+        m_profileSolanaAddr->setText(withSoftBreaks(solana));
         const QImage qr = QrCode::encodeToImage(QStringLiteral("solana:%1").arg(solana), 4, 3);
         if (!qr.isNull())
             m_profileQr->setPixmap(QPixmap::fromImage(qr));
