@@ -1096,6 +1096,9 @@ QWidget *MainWindow::buildSettingsSection()
     secretsCol->addStretch();
     addTab(secretsTab, "Secrets & Coves");
 
+    // Security: private vulnerability reporting form.
+    addTab(buildVulnReportTab(), "Security");
+
     // Data: where configuration data lives, per-directory breakdown, backup and
     // cleanup. Built in its own translation unit (MainWindowData.cpp).
     addTab(buildDataSection(), "Data");
@@ -2581,5 +2584,157 @@ void MainWindow::notifyIfInactive(const QString &title, const QString &body)
     if (cleanBody.size() > 180)
         cleanBody = cleanBody.left(177) + "...";
     postNotification(title, cleanBody);
+}
+
+// ----------------------------------------------------------------- security tab
+
+QWidget *MainWindow::buildVulnReportTab()
+{
+    auto *body = new QWidget;
+    auto *col = new QVBoxLayout(body);
+    col->setContentsMargins(2, 14, 2, 14);
+    col->setSpacing(10);
+
+    auto *headLabel = new QLabel("REPORT A VULNERABILITY");
+    headLabel->setObjectName("sectionLabel");
+
+    auto *hint = new QLabel(
+        "Submit a private, encrypted vulnerability report directly to the ForkMesh "
+        "security team. Your report is stored encrypted and never published. "
+        "Please do not file security issues in the public issue tracker.");
+    hint->setObjectName("statusLine");
+    hint->setWordWrap(true);
+
+    m_vulnComponentCombo = new QComboBox;
+    m_vulnComponentCombo->addItem("Identity & signing",      QStringLiteral("identity"));
+    m_vulnComponentCombo->addItem("Relay / Durable Objects", QStringLiteral("relay"));
+    m_vulnComponentCombo->addItem("Mirroring",               QStringLiteral("mirroring"));
+    m_vulnComponentCombo->addItem("Encrypted chat",          QStringLiteral("chat"));
+    m_vulnComponentCombo->addItem("Donations / Solana",      QStringLiteral("donations"));
+    m_vulnComponentCombo->addItem("Website / dashboard",     QStringLiteral("website"));
+    m_vulnComponentCombo->addItem("Desktop client",          QStringLiteral("client"));
+    m_vulnComponentCombo->addItem("Other",                   QStringLiteral("other"));
+    m_vulnComponentCombo->setToolTip("Which part of ForkMesh is affected.");
+
+    m_vulnTitleEdit = new QLineEdit;
+    m_vulnTitleEdit->setMaxLength(200);
+    m_vulnTitleEdit->setPlaceholderText("Short title, e.g. \"RCE via crafted git pack\"");
+
+    m_vulnBodyEdit = new QPlainTextEdit;
+    m_vulnBodyEdit->setPlaceholderText(
+        "Describe the vulnerability: what it is, how to reproduce it, and its "
+        "potential impact. Proof-of-concept code or steps are very helpful.");
+    m_vulnBodyEdit->setMinimumHeight(160);
+    m_vulnBodyEdit->setMaximumHeight(300);
+
+    m_vulnContactEdit = new QLineEdit;
+    m_vulnContactEdit->setMaxLength(254);
+    m_vulnContactEdit->setPlaceholderText(
+        "Optional contact \xe2\x80\x94 email or handle for follow-up");
+
+    auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignLeft);
+    form->setSpacing(8);
+    form->addRow("Component",          m_vulnComponentCombo);
+    form->addRow("Title",              m_vulnTitleEdit);
+    form->addRow("Description",        m_vulnBodyEdit);
+    form->addRow("Contact (optional)", m_vulnContactEdit);
+
+    m_vulnSubmitButton = new QPushButton("Submit report");
+    m_vulnSubmitButton->setObjectName("primaryButton");
+    m_vulnSubmitButton->setCursor(Qt::PointingHandCursor);
+    m_vulnSubmitButton->setToolTip(
+        "Send an encrypted vulnerability report to the ForkMesh security team.");
+    connect(m_vulnSubmitButton, &QPushButton::clicked, this,
+            &MainWindow::submitVulnerabilityReport);
+
+    m_vulnStatusLabel = new QLabel;
+    m_vulnStatusLabel->setObjectName("modeHint");
+    m_vulnStatusLabel->setWordWrap(true);
+    m_vulnStatusLabel->hide();
+
+    auto *btnRow = new QHBoxLayout;
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    btnRow->addWidget(m_vulnSubmitButton);
+    btnRow->addStretch();
+
+    col->addWidget(headLabel);
+    col->addWidget(hint);
+    col->addSpacing(4);
+    col->addLayout(form);
+    col->addLayout(btnRow);
+    col->addWidget(m_vulnStatusLabel);
+    col->addStretch();
+    return body;
+}
+
+void MainWindow::submitVulnerabilityReport()
+{
+    if (!m_vulnTitleEdit || !m_vulnBodyEdit || !m_vulnComponentCombo
+        || !m_vulnSubmitButton || !m_vulnStatusLabel)
+        return;
+
+    const QString title     = m_vulnTitleEdit->text().trimmed();
+    const QString body      = m_vulnBodyEdit->toPlainText().trimmed();
+    const QString component = m_vulnComponentCombo->currentData().toString();
+    const QString contact   = m_vulnContactEdit ? m_vulnContactEdit->text().trimmed()
+                                                : QString();
+
+    auto setStatus = [this](const QString &msg, bool bad) {
+        m_vulnStatusLabel->setText(msg);
+        m_vulnStatusLabel->setProperty("bad", bad);
+        m_vulnStatusLabel->style()->unpolish(m_vulnStatusLabel);
+        m_vulnStatusLabel->style()->polish(m_vulnStatusLabel);
+        m_vulnStatusLabel->show();
+    };
+
+    if (title.isEmpty()) {
+        setStatus("Please enter a title for the vulnerability.", true);
+        return;
+    }
+    if (body.isEmpty()) {
+        setStatus("Please describe the vulnerability in the Description field.", true);
+        return;
+    }
+
+    m_vulnSubmitButton->setEnabled(false);
+    m_vulnSubmitButton->setText(QString::fromUtf8("Sending\xe2\x80\xa6"));
+    m_vulnStatusLabel->hide();
+
+    const QJsonObject payload{
+        {QStringLiteral("title"),     title},
+        {QStringLiteral("body"),      body},
+        {QStringLiteral("component"), component},
+        {QStringLiteral("contact"),   contact},
+    };
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/security/report"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, setStatus] {
+        reply->deleteLater();
+        m_vulnSubmitButton->setEnabled(true);
+        m_vulnSubmitButton->setText("Submit report");
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status == 200 || status == 201) {
+            setStatus(
+                "Your report has been submitted. Thank you for helping keep "
+                "ForkMesh secure. We\xe2\x80\x99ll follow up if you provided "
+                "contact details.",
+                false);
+            m_vulnTitleEdit->clear();
+            m_vulnBodyEdit->clear();
+            m_vulnContactEdit->clear();
+        } else {
+            setStatus("Could not submit the report. Please check your connection "
+                      "and try again, or email security@forkmesh.com directly.",
+                      true);
+        }
+    });
 }
 

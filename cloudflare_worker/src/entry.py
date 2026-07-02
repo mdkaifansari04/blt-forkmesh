@@ -48,6 +48,8 @@ MAX_ERROR_LOG = 500
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
 INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
+# Private vulnerability reports: bounded so the open endpoint can't grow D1.
+MAX_SECURITY_REPORTS = 1000
 MAX_FILES = 5000
 # Issue inbox: a single signed event body is small text; cap it and the number
 # of un-merged submissions a repo's inbox will hold.
@@ -2424,6 +2426,16 @@ SCHEMA_STATEMENTS = [
         sha256 TEXT NOT NULL, ts INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_release_downloads_repo_sha "
     "ON release_downloads(repo_bi, sha256)",
+    # Private vulnerability reports submitted via /api/security/report. The body
+    # is AES-GCM encrypted at rest (DATA_KEY); only the operator can read the
+    # plaintext. No IP or identifying information is stored beyond what the
+    # reporter voluntarily provides (contact field). Bounded by MAX_SECURITY_REPORTS
+    # so the unauthenticated endpoint can't grow D1 without limit.
+    """CREATE TABLE IF NOT EXISTS security_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_security_reports_ts ON security_reports(ts)",
 ]
 
 
@@ -6799,6 +6811,20 @@ INSTALL_DIAG_STEPS = (
 )
 
 
+# Known component labels for private vulnerability reports. Restricting the
+# set prevents arbitrary strings from appearing in notification emails.
+SECURITY_REPORT_COMPONENTS = frozenset({
+    "identity",     # Ed25519 keys, signing
+    "relay",        # Cloudflare relay / Durable Objects
+    "mirroring",    # bare-git mirror fetch/serve
+    "chat",         # encrypted relay chat
+    "donations",    # Solana custody / sweep
+    "website",      # forkmesh.com frontend / dashboard
+    "client",       # desktop Qt node
+    "other",        # anything else
+})
+
+
 def _sanitize_diag_field(value, max_length=64):
     # Coarse, non-identifying tokens only (platform/pm/distro/version/detail).
     # Strip to a safe charset so a crafted POST can't smuggle markup or control
@@ -6871,6 +6897,87 @@ async def install_diag_handler(env, request):
                (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
             MAX_INSTALL_DIAG,
         )
+    except Exception:
+        pass
+    return json_response({"ok": True}, cache_control="no-store")
+
+
+def _validate_security_report(payload):
+    """Validate and sanitize a vulnerability report payload. Pure (no I/O).
+
+    Returns a normalized dict on success, or None if the payload is invalid.
+    Accepted fields:
+      title     (required, 1-200 chars)
+      body      (required, 1-16 384 chars — the vulnerability description)
+      component (required, one of SECURITY_REPORT_COMPONENTS)
+      contact   (optional, max 254 chars — e.g. an email or handle)
+    """
+    if not isinstance(payload, dict):
+        return None
+    title = (payload.get("title") or "").strip()[:200]
+    if not title:
+        return None
+    body = (payload.get("body") or "").strip()[:16384]
+    if not body:
+        return None
+    component = (payload.get("component") or "").strip().lower()
+    if component not in SECURITY_REPORT_COMPONENTS:
+        return None
+    contact = (payload.get("contact") or "").strip()[:254]
+    return {"title": title, "body": body, "component": component, "contact": contact}
+
+
+async def security_report_handler(env, request):
+    """Accept a private vulnerability report via POST /api/security/report.
+
+    Unauthenticated: anyone can submit a report. The payload is AES-GCM
+    encrypted before storage so only the operator (with DATA_KEY) can read it.
+    An email is sent to SECURITY_EMAIL (or security@forkmesh.com) if configured.
+    Always returns 200 {"ok": true} to avoid leaking internal state to probers.
+    """
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    report = _validate_security_report(payload)
+    if not report:
+        return json_response({"error": "invalid_report"}, status=400)
+    try:
+        await ensure_schema(env)
+        encrypted = await encrypt_row(env, {
+            "title": report["title"],
+            "body": report["body"],
+            "component": report["component"],
+            "contact": report["contact"],
+            "ts": int(Date.now()),
+        })
+        await d1_run(
+            env,
+            "INSERT INTO security_reports (ts, data) VALUES (?, ?)",
+            int(Date.now()), encrypted,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM security_reports WHERE id NOT IN
+               (SELECT id FROM security_reports ORDER BY id DESC LIMIT ?)""",
+            MAX_SECURITY_REPORTS,
+        )
+    except Exception:
+        pass
+    # Best-effort email notification to the security team.
+    try:
+        dest = (getattr(env, "SECURITY_EMAIL", "") or "security@forkmesh.com").strip()
+        contact_line = ("Contact: " + report["contact"] + "\n") if report["contact"] else ""
+        subject = "[ForkMesh Security] " + report["title"]
+        text = (
+            "A private vulnerability report was submitted via forkmesh.com.\n\n"
+            "Component: " + report["component"] + "\n"
+            + contact_line +
+            "\n" + report["body"]
+        )
+        await _send_email(env, dest, subject, text)
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
@@ -7780,6 +7887,10 @@ class Default(WorkerEntrypoint):
         # Anonymous per-step diagnostics posted by install.sh (no auth, no IP).
         if url.path in ("/api/install-diag", "/api/install-diag/"):
             return await install_diag_handler(self.env, request)
+
+        # Private vulnerability reports — stored encrypted, emailed to security@.
+        if url.path in ("/api/security/report", "/api/security/report/"):
+            return await security_report_handler(self.env, request)
 
         # Persistent data lives in D1, not Durable Objects.
         if url.path in ("/api/repositories", "/api/repositories/"):

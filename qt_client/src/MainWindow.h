@@ -700,6 +700,9 @@ private:
     QWidget *buildIssuesSection();
     QWidget *buildChatSection();
     QWidget *buildSettingsSection();
+    // Settings -> Security tab: private vulnerability reporting form.
+    QWidget *buildVulnReportTab();
+    void submitVulnerabilityReport();
     // Settings -> Data tab: where configuration data is stored, per-directory
     // file/folder breakdown, open/delete, and export/import as a .tar.gz backup.
     QWidget *buildDataSection();
@@ -2791,6 +2794,13 @@ private:
     QGridLayout *m_securitySignalsGrid = nullptr;
     QTableWidget *m_securityFindingsTable = nullptr;
     QPushButton *m_securityRefreshButton = nullptr;
+    // Private vulnerability report form (Settings → Security tab).
+    QLineEdit *m_vulnTitleEdit = nullptr;
+    QPlainTextEdit *m_vulnBodyEdit = nullptr;
+    QLineEdit *m_vulnContactEdit = nullptr;
+    QComboBox *m_vulnComponentCombo = nullptr;
+    QPushButton *m_vulnSubmitButton = nullptr;
+    QLabel *m_vulnStatusLabel = nullptr;
     QPushButton *m_aboutEditButton = nullptr;
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
