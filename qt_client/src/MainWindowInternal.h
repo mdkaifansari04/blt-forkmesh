@@ -5722,6 +5722,25 @@ inline void pruneNonStableMirrorRefs(const QString &mirrorPath)
     process.waitForFinished(8000);
 }
 
+// Parse `git count-objects -v` output (loose-object + packed totals, both in
+// KiB) into a byte count. Split out of mirrorRepoSizeBytes so an async caller
+// (updateRepoCodeSize, via runGitDetached) can reuse the parsing without
+// re-running the blocking runGitCapture path below.
+inline qint64 parseCountObjectsSizeBytes(const QByteArray &countObjectsOutput)
+{
+    qint64 sizeKiB = 0;
+    for (const QString &line :
+         QString::fromUtf8(countObjectsOutput).split(QLatin1Char('\n'))) {
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon < 0)
+            continue;
+        const QString key = line.left(colon).trimmed();
+        if (key == QLatin1String("size") || key == QLatin1String("size-pack"))
+            sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
+    }
+    return sizeKiB * 1024;
+}
+
 // On-disk size of a bare git mirror, in bytes: the loose-object total plus the
 // packed total reported by `git count-objects -v` (both given in KiB). This is
 // the storage a node spends mirroring the repo, and what it advertises to peers
@@ -5733,16 +5752,7 @@ inline qint64 mirrorRepoSizeBytes(const QString &mirrorPath)
     QByteArray out;
     if (!runGitCapture(mirrorPath, {"count-objects", "-v"}, &out, nullptr))
         return 0;
-    qint64 sizeKiB = 0;
-    for (const QString &line : QString::fromUtf8(out).split(QLatin1Char('\n'))) {
-        const int colon = line.indexOf(QLatin1Char(':'));
-        if (colon < 0)
-            continue;
-        const QString key = line.left(colon).trimmed();
-        if (key == QLatin1String("size") || key == QLatin1String("size-pack"))
-            sizeKiB += line.mid(colon + 1).trimmed().toLongLong();
-    }
-    return sizeKiB * 1024;
+    return parseCountObjectsSizeBytes(out);
 }
 
 // The content-addressed release store a node keeps alongside its bare mirror.
