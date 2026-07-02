@@ -1361,6 +1361,20 @@ void MainWindow::positionRepoPushButton()
         x = qMax(0, page->width() - w);
     m_repoPushButton->setGeometry(x, y, w, h);
     m_repoPushButton->raise();
+
+    // The eye icon rides just to the right of Sync, same row, same reveal.
+    if (m_repoPushEyeButton) {
+        if (m_repoPushEyeButton->parentWidget() != page)
+            m_repoPushEyeButton->setParent(page);
+        const int ew = m_repoPushEyeButton->sizeHint().width();
+        const int eh = m_repoPushEyeButton->sizeHint().height();
+        int ex = x + w + 4;
+        int ey = y + (h - eh) / 2;
+        if (ex + ew > page->width())
+            ex = qMax(0, page->width() - ew);
+        m_repoPushEyeButton->setGeometry(ex, ey, ew, eh);
+        m_repoPushEyeButton->raise();
+    }
 }
 
 void MainWindow::ensureAgentSpinnerOverlay()
