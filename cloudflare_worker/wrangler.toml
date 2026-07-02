@@ -82,6 +82,17 @@ database_name = "forkmesh"
 database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
 migrations_dir = "migrations"
 
+# Separate D1 database for a "dev" environment (`pywrangler dev --env dev` /
+# `pywrangler deploy --env dev`), kept apart from the production database above
+# so dev work never reads or writes production data.
+# Create once with:  uvx --from workers-py pywrangler d1 create forkmesh-dev
+# then paste the printed database_id below.
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "forkmesh-dev"
+database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ForkMeshRoom"]
