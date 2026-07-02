@@ -2453,6 +2453,10 @@ private:
     QLineEdit *m_hostUserEdit = nullptr;
     QLineEdit *m_hostPassEdit = nullptr;
     QLineEdit *m_hostNameEdit = nullptr;
+    // Direct-upload install (adhoc #67): stream this app's own release binary
+    // to the host over the SSH session instead of the host downloading the
+    // release from the relay.
+    QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
