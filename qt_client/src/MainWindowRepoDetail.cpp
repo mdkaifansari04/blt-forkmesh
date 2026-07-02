@@ -6579,16 +6579,16 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync" button floats in the band just above the Commits tab
+    // The "Sync" button floats in the band just above the Code tab
     // (see positionRepoPushButton) rather than living in the tab row: it's an
     // overlay raised one above the tabs, so showing/hiding it as sync state
     // changes never reflows the tab content below — that shift is what read as the
     // whole view "resizing" on small screens, most visibly on Mirror nodes.
-    m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
+    m_repoPublishBar = nullptr; // no separate row: the button floats over Code
 
     // Issue-looper toggle (adhoc #130): a compact switch floating in the band
     // just above the Issues tab, mirroring how the Sync button floats over
-    // Commits. It both shows the loop's state and toggles it, so the loop is
+    // Code. It both shows the loop's state and toggles it, so the loop is
     // controllable and visible from any tab without an in-page banner. Created
     // parented to the window; positionLooperToggle reparents it onto the page.
     auto *looperToggle = new LooperToggle(this);
