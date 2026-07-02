@@ -34,6 +34,10 @@ public:
     // are no screens. The widget deletes itself once it is dismissed.
     static ScreenDrawOverlay *begin();
 
+    // Register a widget-area (in global screen coordinates) where a click should
+    // open the screenshot selector rather than draw. Call after begin().
+    void setScreenshotHotzone(const QRect &globalRect);
+
 signals:
     void dismissed();
     void captured(const QImage &image); // a region (with ink) was screenshotted
@@ -61,4 +65,5 @@ private:
     bool m_cursorPushed = false; // an override "pen" cursor is on the stack
     bool m_capturing = false;    // a region screenshot is in progress
     bool m_done = false;         // guards against emitting twice
+    QRect m_screenshotHotzone;   // extra click-target that opens capture (widget-local)
 };
