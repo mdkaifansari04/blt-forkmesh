@@ -116,3 +116,37 @@ def test_homepage_links_to_active_nodes():
     # The homepage surfaces a link to the live network/active-nodes page.
     assert 'href="/network"' in INDEX
     assert "View active nodes" in INDEX
+
+
+def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
+    # Record lists (issues/pulls/discussions) must fetch their markdown files
+    # through ONE batched /blobs request — fetching each record as its own
+    # /blob call fired 50+ parallel requests per page view and tripped the
+    # relay's per-repo rate limit — and must only load on the tab's FIRST
+    # view, not eagerly on every repo open.
+    assert "async function fetchRepoBlobs(repo, paths)" in DASHBOARD_JS
+    assert "/blobs?" in DASHBOARD_JS
+    assert 'query.append("path", path)' in DASHBOARD_JS
+    # Both list loaders go through the batch, never a per-record /blob loop.
+    load = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoIssues")
+        : DASHBOARD_JS.index("async function loadRepoCollection")
+    ]
+    assert "fetchRepoBlobs(" in load
+    assert 'repoLiveUrl(repo, "blob"' not in load
+    records = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoRecordsFromMirror")
+        : DASHBOARD_JS.index("function renderRepoCollectionPagination")
+    ]
+    assert "fetchRepoBlobs(" in records
+    assert 'repoLiveUrl(repo, "blob"' not in records
+    # Issues are lazy like pulls/discussions: repo open loads commits+mirrors
+    # only; the issue list waits for the first Issues-tab view.
+    panels = DASHBOARD_JS[
+        DASHBOARD_JS.index("function loadRepoFeaturePanels")
+        : DASHBOARD_JS.index("function updateRepoLiveCounts")
+    ]
+    assert "state.loadedRepoTabs = {};" in panels
+    assert '["issues", "pulls", "discussions"].includes(tab)' in DASHBOARD_JS
+    # The tab badge still fills immediately from the root tree's bundled counts.
+    assert 'setRepoTabCount("issues", Number(counts.issues));' in DASHBOARD_JS
