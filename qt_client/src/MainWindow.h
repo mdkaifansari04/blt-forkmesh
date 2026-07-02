@@ -558,6 +558,7 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void probeRelayLatency();      // measure round-trip to the active relay (radar)
+    void initRelayReachabilityWatch(); // OS reachability → instant radar flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
