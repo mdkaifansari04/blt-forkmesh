@@ -5630,7 +5630,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // Width: wide enough for all content, narrow enough to look centered on wide
     // windows when flanked by the stretchers in buildNodeProfileSection.
     scroll->setMinimumWidth(340);
-    scroll->setMaximumWidth(660);
+    scroll->setMaximumWidth(840);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
