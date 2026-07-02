@@ -153,9 +153,11 @@ private:
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
     QTimer *m_presenceTimer = nullptr; // periodic presence beat + stale-peer sweep
-    // Auto-reconnect: the node stays online across drops, retrying about once a
-    // second until the relay returns or the user explicitly leaves (adhoc #192).
+    // Auto-reconnect: the node stays online across drops, retrying quickly at
+    // first and backing off exponentially while the relay keeps refusing, until
+    // it returns or the user explicitly leaves (adhoc #192, adhoc #66).
     QTimer *m_reconnectTimer = nullptr;
+    int m_reconnectAttempts = 0; // consecutive failures since the last upgrade
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
 
