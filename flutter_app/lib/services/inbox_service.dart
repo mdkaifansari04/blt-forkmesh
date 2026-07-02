@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
 
 import 'identity.dart';
+import 'performance_monitor_service.dart';
 import 'settings_service.dart';
 
 /// Signed write paths to a repo's relay inbox, mirroring the Qt client's
@@ -15,10 +16,15 @@ import 'settings_service.dart';
 /// content layout below must match cloudflare_worker/src/entry.py byte-for-byte
 /// or the relay rejects with 401 bad_signature.
 class InboxService {
-  InboxService(this._settings, this._identity);
+  InboxService(
+    this._settings,
+    this._identity, {
+    PerformanceMonitorService? performanceMonitor,
+  }) : _performanceMonitor = performanceMonitor;
 
   final SettingsService _settings;
   final Identity _identity;
+  final PerformanceMonitorService? _performanceMonitor;
 
   String get _author => _identity.publicKeyB64url;
   int get _now => DateTime.now().millisecondsSinceEpoch;
@@ -373,19 +379,29 @@ class InboxService {
   // ---- transport ----------------------------------------------------------
 
   Future<void> _post(Uri uri, Map<String, dynamic> body) async {
-    final resp = await http
-        .post(
-          uri,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 20));
-    if (resp.statusCode == 200 || resp.statusCode == 201) return;
-    String detail = 'HTTP ${resp.statusCode}';
-    try {
-      final j = jsonDecode(resp.body);
-      if (j is Map && j['error'] != null) detail = j['error'].toString();
-    } catch (_) {}
-    throw Exception(detail);
+    Future<void> send() async {
+      final resp = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (resp.statusCode == 200 || resp.statusCode == 201) return;
+      String detail = 'HTTP ${resp.statusCode}';
+      try {
+        final j = jsonDecode(resp.body);
+        if (j is Map && j['error'] != null) detail = j['error'].toString();
+      } catch (_) {}
+      throw Exception(detail);
+    }
+
+    final monitor = _performanceMonitor;
+    if (monitor == null) return send();
+    return monitor.track(
+      'inbox.POST ${uri.path}',
+      send,
+      details: {'path': uri.path, 'host': uri.host},
+    );
   }
 }
