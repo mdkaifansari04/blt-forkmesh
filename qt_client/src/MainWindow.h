@@ -677,8 +677,9 @@ private:
     void fetchFavicon(int index);
     QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
-    // Slack-style node profile panel (right side of Home).
-    QWidget *buildNodeProfilePanel();
+    // Node profile: full-page centered section (index 9 in m_sectionStack).
+    QWidget *buildNodeProfileSection();
+    QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
     void rescaleProfileAvatar();       // re-render the full-width avatar banner
