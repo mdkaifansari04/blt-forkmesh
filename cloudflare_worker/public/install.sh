@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.5 (2026-07-02)"
+INSTALLER_VERSION="0.12.6 (2026-07-02)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -206,6 +206,28 @@ resolve_install_node() {
   FORKMESH_NODE="${valid%% *}"
 }
 
+# Resolve REPO/REPO_CANDIDATES from an online mirror, if not already resolved.
+# Called eagerly below unless a direct-upload binary (FORKMESH_LOCAL_BINARY)
+# makes it unnecessary, and lazily as a fallback if that upload turns out to
+# be unusable (e.g. platform mismatch) and a mirror download or source build
+# is needed after all.
+ensure_mirror_candidates() {
+  [ "${#REPO_CANDIDATES[@]}" -gt 0 ] && return 0
+  CURRENT_STEP="mirror"
+  say "Resolving an online ForkMesh mirror to clone from…"
+  resolve_install_node
+  local _node
+  for _node in $FORKMESH_NODES; do
+    REPO_CANDIDATES+=("${FORKMESH_HOST%/}/${_node}/${FORKMESH_NAME}")
+  done
+  REPO="${REPO_CANDIDATES[0]}"
+  say "Using mirror node: $FORKMESH_NODE"
+  if [ "${#REPO_CANDIDATES[@]}" -gt 1 ]; then
+    say "  ${#REPO_CANDIDATES[@]} online mirrors available; will fall back if one is unreachable: $FORKMESH_NODES"
+  fi
+  diag mirror 1
+}
+
 # --- uninstall --------------------------------------------------------------
 # Remove ForkMesh completely: the binary, the cloned source, the desktop
 # launcher + icons, the login-autostart entry, AND every byte of user data
@@ -294,26 +316,17 @@ else
 fi
 diag start 1
 
-if [ -z "$REPO" ]; then
-  CURRENT_STEP="mirror"
-  say "Resolving an online ForkMesh mirror to clone from…"
-  resolve_install_node
-  # Turn each resolved node into a clone URL, best first. The installer clones
-  # from the first and falls back through the rest if a mirror is unreachable.
-  for _node in $FORKMESH_NODES; do
-    REPO_CANDIDATES+=("${FORKMESH_HOST%/}/${_node}/${FORKMESH_NAME}")
-  done
-  REPO="${REPO_CANDIDATES[0]}"
-  say "Using mirror node: $FORKMESH_NODE"
-  if [ "${#REPO_CANDIDATES[@]}" -gt 1 ]; then
-    say "  ${#REPO_CANDIDATES[@]} online mirrors available; will fall back if one is unreachable: $FORKMESH_NODES"
-  fi
-  diag mirror 1
+# Skip resolving a mirror up front when a binary is being streamed straight
+# onto this machine over the SSH session (adhoc #67 direct-upload install):
+# nothing needs to be cloned unless that upload later turns out to be
+# unusable, in which case ensure_mirror_candidates resolves one lazily.
+if [ -z "$REPO" ] && [ -z "$FORKMESH_LOCAL_BINARY" ]; then
+  ensure_mirror_candidates
 fi
 # An explicit FORKMESH_REPO (or the override path above leaving it unset) means
 # there is exactly one URL to try; make it the sole candidate so clean_clone has
 # a non-empty list to iterate.
-[ "${#REPO_CANDIDATES[@]}" -eq 0 ] && REPO_CANDIDATES=("$REPO")
+[ "${#REPO_CANDIDATES[@]}" -eq 0 ] && [ -n "$REPO" ] && REPO_CANDIDATES=("$REPO")
 
 # --- privilege escalation ---------------------------------------------------
 # Resolve how to run a package manager that needs root. Empty when we are
@@ -575,6 +588,7 @@ _install_binary() {
 # non-zero when git is unavailable or no mirror can serve a verified asset.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
+  ensure_mirror_candidates
   local tmp repo sums manifest canon hash url bin got
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
