@@ -1901,6 +1901,135 @@ button.issue-row {
   font-size: 12px;
 }
 
+/* ===== Status page (/status) ===== */
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+}
+
+.status-banner-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.status-banner-text {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.status-banner-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-banner.is-operational .status-banner-dot { background: var(--accent-bright); }
+.status-banner.is-degraded .status-banner-dot { background: var(--warning); }
+.status-banner.is-down .status-banner-dot { background: var(--danger); }
+
+.status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.status-row {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-row:last-child {
+  border-bottom: none;
+}
+
+.status-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.status-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.status-dot.is-operational { background: var(--accent-bright); }
+.status-dot.is-degraded { background: var(--warning); }
+.status-dot.is-down { background: var(--danger); }
+
+.status-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-days {
+  display: flex;
+  gap: 3px;
+}
+
+.status-day {
+  flex: 1;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--border);
+  cursor: default;
+}
+
+.status-day.is-operational { background: var(--accent-bright); }
+.status-day.is-degraded { background: var(--warning); }
+.status-day.is-down { background: var(--danger); }
+.status-day.is-unknown { background: var(--border); }
+
+.status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-empty {
+  color: var(--muted);
+  padding: 24px 4px;
+  text-align: center;
+}
+
 /* ===== Docs layout ===== */
 .docs-layout {
   display: grid;
