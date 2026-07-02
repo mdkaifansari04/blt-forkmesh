@@ -3855,10 +3855,10 @@ void MainWindow::continueSelectedAgentSession()
 
 void MainWindow::deleteSelectedAgentSession()
 {
-    // External (watch-only) rows aren't in the store — Delete just drops the
-    // temporary mirror; the real session keeps running in its own process.
+    // External (watch-only) rows aren't in the store — Delete kills the real CLI
+    // process it mirrors (if still running), then drops the temporary mirror.
     if (isExternalSession(m_selectedAgentSessionId)) {
-        unsurfaceExternalSession(m_selectedAgentSessionId);
+        deleteExternalSession(m_selectedAgentSessionId);
         return;
     }
     if (!deleteStoredAgentSession(m_selectedAgentSessionId))
@@ -4840,8 +4840,9 @@ void MainWindow::surfaceExternalSession(const QString &uuid)
     }
 }
 
-// Delete on an external row just drops the temporary mirror (the real session,
-// owned by another process, is untouched).
+// Delete on an external row: if the real process is still live, kill it first
+// (same as Stop) so deleting the row doesn't leave it running invisibly outside
+// ForkMesh; then drop the temporary mirror either way.
 void MainWindow::unsurfaceExternalSession(int sessionId)
 {
     if (!isExternalSession(sessionId))
@@ -4855,10 +4856,23 @@ void MainWindow::unsurfaceExternalSession(int sessionId)
     reloadAgents();
 }
 
+// Send SIGTERM to every pid, with a delayed SIGKILL fallback for whichever are
+// still alive after the grace period. kill(pid, 0) probes liveness without
+// signalling. Shared by Stop and Delete on an external row.
+void MainWindow::killExternalSessionPids(const QList<qint64> &pids)
+{
+    for (const qint64 pid : pids)
+        ::kill(static_cast<pid_t>(pid), SIGTERM);
+    QTimer::singleShot(4000, this, [pids] {
+        for (const qint64 pid : pids)
+            if (::kill(static_cast<pid_t>(pid), 0) == 0)
+                ::kill(static_cast<pid_t>(pid), SIGKILL);
+    });
+}
+
 // Stop on an external row terminates the real `claude` CLI process. ForkMesh
 // holds no QProcess handle for it (it was started elsewhere), so we locate the
-// process by uuid/cwd and signal it directly. SIGTERM lets the CLI shut down
-// cleanly; a SIGKILL fallback fires if it ignores that within the grace period.
+// process by uuid/cwd and signal it directly.
 void MainWindow::stopExternalSession(int sessionId)
 {
     auto it = m_externalSurfaced.constFind(sessionId);
@@ -4879,16 +4893,7 @@ void MainWindow::stopExternalSession(int sessionId)
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
 
-    for (const qint64 pid : pids)
-        ::kill(static_cast<pid_t>(pid), SIGTERM);
-    // Don't leave a wedged session running: if it's still alive after the grace
-    // period, force it down. kill(pid, 0) probes liveness without signalling.
-    QTimer::singleShot(4000, this, [pids] {
-        for (const qint64 pid : pids)
-            if (::kill(static_cast<pid_t>(pid), 0) == 0)
-                ::kill(static_cast<pid_t>(pid), SIGKILL);
-    });
-
+    killExternalSessionPids(pids);
     // Reflect the stop immediately rather than waiting ~90s for the transcript to
     // fall out of the active window.
     m_externalStopped.insert(ext.uuid);
@@ -4896,6 +4901,34 @@ void MainWindow::stopExternalSession(int sessionId)
     flashMessage(QStringLiteral("Stopping external Claude Code session…"));
     reloadAgents();
     updateAgentActionState();
+}
+
+// Delete on an external row: kill the real `claude` CLI process (SIGTERM, then
+// SIGKILL if it's still alive after the grace period) so it doesn't keep running
+// unseen once its row is gone, then drop the temporary mirror. If the process
+// already exited (row is idle, or the pid lookup comes up empty), just unsurface
+// it without prompting — there's nothing left to kill.
+void MainWindow::deleteExternalSession(int sessionId)
+{
+    auto it = m_externalSurfaced.constFind(sessionId);
+    if (it == m_externalSurfaced.constEnd())
+        return;
+    const ExternalClaudeSession ext = it.value();
+    if (externalIsLive(ext.uuid)) {
+        const QList<qint64> pids = ClaudeSessionScan::findSessionPids(ext.uuid, ext.cwd);
+        if (!pids.isEmpty()) {
+            if (QMessageBox::warning(
+                    this, QStringLiteral("Delete external Claude Code session"),
+                    QStringLiteral("This Claude Code session is still running in\n%1.\n\n"
+                                   "Deleting it will stop that process completely "
+                                   "(ForkMesh didn't start it). Continue?").arg(ext.cwd),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            killExternalSessionPids(pids);
+            m_externalStopped.insert(ext.uuid);
+        }
+    }
+    unsurfaceExternalSession(sessionId);
 }
 
 // Periodic rescan: refresh spinners always (cheap, guarded internally) and the
@@ -6350,8 +6383,8 @@ void MainWindow::updateAgentActionState()
 {
     const bool selected = m_selectedAgentSessionId > 0;
     // External (watch-only) rows carry negative synthetic ids, so `selected` is
-    // false for them — but Delete still applies: it drops the local mirror (the
-    // real session keeps running in its own process).
+    // false for them — but Delete still applies: it kills the real CLI process
+    // (if still running) and drops the local mirror. See deleteExternalSession.
     const bool externalSelected = isExternalSession(m_selectedAgentSessionId);
     // A session is "running" if a headless AgentRunner is driving it, OR a live
     // Claude Code stream-json session (no runner) is still attached.
