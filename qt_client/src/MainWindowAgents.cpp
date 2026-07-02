@@ -2943,7 +2943,7 @@ void MainWindow::showAgentSession(int sessionId)
         else if (s == AgentStatus::Waiting)
             label = "Waiting";
         else if (s == AgentStatus::Success)
-            label = "Completed";
+            label = "Done";
         else if (s == AgentStatus::Failed)
             label = "Failed";
         else
