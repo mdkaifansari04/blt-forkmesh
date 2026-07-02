@@ -74,6 +74,9 @@ public:
     // Scan commits about to be pushed for secrets.  upstreamRef is the remote
     // tracking ref (e.g. "refs/remotes/origin/main"); if empty, all tracked
     // text files in localPath are scanned instead.
+    // To intentionally include a fake/example credential (e.g. a test
+    // fixture), append a comment containing "forkmesh-secret-scan:ignore-line"
+    // to that line; matches on that line are skipped.
     static QList<RepoSecurityFinding> findSecretsInPush(const QString &localPath,
                                                         const QString &upstreamRef);
 };
