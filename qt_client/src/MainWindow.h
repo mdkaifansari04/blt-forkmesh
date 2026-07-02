@@ -3574,6 +3574,7 @@ private:
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     QPushButton *m_agentContinueButton = nullptr;
+    QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Above the session list: wipe every merged session's worktree, branch and
