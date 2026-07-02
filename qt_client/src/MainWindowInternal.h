@@ -125,6 +125,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSize>
+#include <QSysInfo>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringListModel>
