@@ -1,16 +1,19 @@
 #include "RepoHost.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QRandomGenerator>
 #include <QSslSocket>
 #include <QSet>
 #include <QTcpSocket>
+#include <QThread>
 #include <QTimer>
 
 namespace {
@@ -96,6 +99,101 @@ bool runGit(const QString &mirrorPath, const QStringList &args, QByteArray &outp
         return false;
     }
     return true;
+}
+
+// Free (non-member) equivalents of RepoHost::baseRef/branchRefCandidates/
+// refForBranch/buildBlobReply, parameterized on `mirrorPath` instead of reading
+// `this`. A blob fetch chains several of these git spawns back to back (issue:
+// StallWatchdog caught it blocking the GUI thread for 500-700ms), so it runs on
+// a worker thread (RepoHost::runOffThread) — these must not touch `this`, since
+// un-hosting a repo mid-fetch can deleteLater() the RepoHost while that thread
+// is still running. The RepoHost member functions below delegate to these.
+QString baseRefFor(const QString &mirrorPath)
+{
+    QByteArray output;
+    if (runGit(mirrorPath, {"rev-parse", "--verify", "-q", "HEAD"}, output) &&
+        !output.trimmed().isEmpty())
+        return QStringLiteral("HEAD");
+    for (const QString &refsRoot :
+         {QStringLiteral("refs/heads/"), QStringLiteral("refs/remotes/")}) {
+        if (runGit(mirrorPath,
+                   {"for-each-ref", "--format=%(refname)", "--count=1", refsRoot},
+                   output)) {
+            const QString ref = QString::fromUtf8(output).trimmed();
+            if (!ref.isEmpty())
+                return ref;
+        }
+    }
+    return QString();
+}
+
+QStringList branchRefCandidatesFor(const QString &mirrorPath, const QString &branch)
+{
+    const QString raw = branch.trimmed();
+    if (raw.isEmpty() || raw.contains(QChar('\0')))
+        return {};
+    if (raw.startsWith(QLatin1String("refs/heads/")) ||
+        raw.startsWith(QLatin1String("refs/remotes/")))
+        return {raw};
+
+    QStringList refs{QStringLiteral("refs/heads/%1").arg(raw),
+                     QStringLiteral("refs/remotes/%1").arg(raw)};
+    QByteArray output;
+    if (runGit(mirrorPath, {"for-each-ref", "--format=%(refname)", "refs/remotes/"},
+               output)) {
+        for (const QByteArray &line : output.split('\n')) {
+            const QString ref = QString::fromUtf8(line).trimmed();
+            if (!ref.isEmpty() && displayBranchNameForRef(ref) == raw &&
+                !refs.contains(ref))
+                refs.append(ref);
+        }
+    }
+    return refs;
+}
+
+QString refForBranchIn(const QString &mirrorPath, const QString &branch)
+{
+    if (branch.trimmed().isEmpty())
+        return baseRefFor(mirrorPath);
+    QByteArray output;
+    for (const QString &ref : branchRefCandidatesFor(mirrorPath, branch)) {
+        if (runGit(mirrorPath,
+                   {"rev-parse", "--verify", "-q", ref + QStringLiteral("^{commit}")},
+                   output))
+            return QString::fromUtf8(output).trimmed();
+    }
+    return QString();
+}
+
+QJsonObject blobReplyFor(const QString &mirrorPath, const QString &path,
+                         const QString &branch)
+{
+    if (path.isEmpty())
+        return {{"ok", false}, {"error", "not_found"}};
+    const QString ref = refForBranchIn(mirrorPath, branch);
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "not_found"}};
+    QByteArray output;
+    QString gitErr;
+    if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + path}, output, &gitErr))
+        return {{"ok", false}, {"error", gitErr.isEmpty() ? "not_found" : gitErr}};
+
+    bool truncated = false;
+    if (output.size() > kMaxBlobBytes) {
+        output = output.left(kMaxBlobBytes);
+        truncated = true;
+    }
+
+    QJsonObject reply{{"ok", true}, {"size", double(output.size())},
+                      {"truncated", truncated}};
+    if (output.contains('\0')) {
+        reply.insert("encoding", "base64");
+        reply.insert("content", QString::fromLatin1(output.toBase64()));
+    } else {
+        reply.insert("encoding", "utf8");
+        reply.insert("content", QString::fromUtf8(output));
+    }
+    return reply;
 }
 
 // Count the numbered sub-directories (1/, 2/, …) under a top-level folder such
@@ -443,14 +541,41 @@ void RepoHost::handleRequest(const QJsonObject &request)
         streamRawBlob(reqId, path, branch);
         return;
     }
+    // "blob" is the op the StallWatchdog caught freezing the GUI thread: refForBranch
+    // (baseRef + a rev-parse per candidate ref) plus a cat-file -p is several
+    // synchronous git spawns deep for one request. Run that chain on a worker thread
+    // and reply once it lands back here; the other ops below are a single fast git
+    // call each and stay synchronous. blobReplyFor takes mirrorPath by value instead
+    // of reading `this` so it stays safe even if the repo is un-hosted (RepoHost
+    // deleteLater()'d) mid-fetch.
+    if (op == "blob") {
+        if (!isSafeRepoPath(path)) {
+            QJsonObject reply{{"ok", false}, {"error", "bad_path"}};
+            reply.insert("type", "response");
+            reply.insert("reqId", reqId);
+            reply.insert("op", op);
+            reply.insert("path", path);
+            sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            return;
+        }
+        const QString mirrorPath = m_mirrorPath;
+        runOffThread(
+            [mirrorPath, path, branch] { return blobReplyFor(mirrorPath, path, branch); },
+            [this, reqId, op, path](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", path);
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
 
     QJsonObject reply;
     if (!isSafeRepoPath(path)) {
         reply = QJsonObject{{"ok", false}, {"error", "bad_path"}};
     } else if (op == "tree") {
         reply = buildTreeReply(path, branch);
-    } else if (op == "blob") {
-        reply = buildBlobReply(path, branch);
     } else if (op == "commits") {
         reply = buildCommitsReply(branch);
     } else if (op == "commit") {
@@ -594,63 +719,49 @@ void RepoHost::sendGitEnd(const QString &reqId, bool ok, const QString &error)
     sendText(QJsonDocument(message).toJson(QJsonDocument::Compact));
 }
 
+void RepoHost::runOffThread(std::function<QJsonObject()> work,
+                            std::function<void(QJsonObject)> apply)
+{
+    // Guard is constructed here (GUI thread) and only ever read back on the GUI
+    // thread inside the queued lambda below, so QPointer's auto-null-on-destroy
+    // never races: the worker thread never touches it, and never touches `this`.
+    QPointer<RepoHost> guard(this);
+    QThread *worker = QThread::create(
+        [work = std::move(work), apply = std::move(apply), guard]() mutable {
+            QJsonObject result = work();
+            // qApp, not `this`: un-hosting can deleteLater() this RepoHost while
+            // this thread is still running, and invokeMethod's context must be
+            // alive at the moment it's called (not just when the event is later
+            // delivered). qApp always is; `guard` gates the actual delivery.
+            QMetaObject::invokeMethod(
+                qApp,
+                [apply = std::move(apply), result = std::move(result),
+                 guard]() mutable {
+                    if (guard)
+                        apply(std::move(result));
+                },
+                Qt::QueuedConnection);
+        });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
 QString RepoHost::baseRef() const
 {
     // A bare mirror's HEAD can point at a branch that doesn't resolve (e.g. the
     // source's default branch differs from the refs actually present), so fall
     // back to the first available branch when HEAD can't be verified.
-    QByteArray output;
-    if (runGit(m_mirrorPath, {"rev-parse", "--verify", "-q", "HEAD"}, output) &&
-        !output.trimmed().isEmpty())
-        return QStringLiteral("HEAD");
-    for (const QString &refsRoot :
-         {QStringLiteral("refs/heads/"), QStringLiteral("refs/remotes/")}) {
-        if (runGit(m_mirrorPath,
-                   {"for-each-ref", "--format=%(refname)", "--count=1", refsRoot},
-                   output)) {
-            const QString ref = QString::fromUtf8(output).trimmed();
-            if (!ref.isEmpty())
-                return ref;
-        }
-    }
-    return QString();
+    return baseRefFor(m_mirrorPath);
 }
 
 QStringList RepoHost::branchRefCandidates(const QString &branch) const
 {
-    const QString raw = branch.trimmed();
-    if (raw.isEmpty() || raw.contains(QChar('\0')))
-        return {};
-    if (raw.startsWith(QLatin1String("refs/heads/")) ||
-        raw.startsWith(QLatin1String("refs/remotes/")))
-        return {raw};
-
-    QStringList refs{QStringLiteral("refs/heads/%1").arg(raw),
-                     QStringLiteral("refs/remotes/%1").arg(raw)};
-    QByteArray output;
-    if (runGit(m_mirrorPath, {"for-each-ref", "--format=%(refname)", "refs/remotes/"},
-               output)) {
-        for (const QByteArray &line : output.split('\n')) {
-            const QString ref = QString::fromUtf8(line).trimmed();
-            if (!ref.isEmpty() && displayBranchNameForRef(ref) == raw && !refs.contains(ref))
-                refs.append(ref);
-        }
-    }
-    return refs;
+    return branchRefCandidatesFor(m_mirrorPath, branch);
 }
 
 QString RepoHost::refForBranch(const QString &branch) const
 {
-    if (branch.trimmed().isEmpty())
-        return baseRef();
-    QByteArray output;
-    for (const QString &ref : branchRefCandidates(branch)) {
-        if (runGit(m_mirrorPath,
-                   {"rev-parse", "--verify", "-q", ref + QStringLiteral("^{commit}")},
-                   output))
-            return QString::fromUtf8(output).trimmed();
-    }
-    return QString();
+    return refForBranchIn(m_mirrorPath, branch);
 }
 
 QJsonObject RepoHost::buildBranchesReply() const
@@ -741,32 +852,7 @@ QJsonObject RepoHost::buildRootCounts(const QString &ref) const
 
 QJsonObject RepoHost::buildBlobReply(const QString &path, const QString &branch) const
 {
-    if (path.isEmpty())
-        return {{"ok", false}, {"error", "not_found"}};
-    const QString ref = refForBranch(branch);
-    if (ref.isEmpty())
-        return {{"ok", false}, {"error", "not_found"}};
-    QByteArray output;
-    QString gitErr;
-    if (!runGit(m_mirrorPath, {"cat-file", "-p", ref + ":" + path}, output, &gitErr))
-        return {{"ok", false}, {"error", gitErr.isEmpty() ? "not_found" : gitErr}};
-
-    bool truncated = false;
-    if (output.size() > kMaxBlobBytes) {
-        output = output.left(kMaxBlobBytes);
-        truncated = true;
-    }
-
-    QJsonObject reply{{"ok", true}, {"size", double(output.size())},
-                      {"truncated", truncated}};
-    if (output.contains('\0')) {
-        reply.insert("encoding", "base64");
-        reply.insert("content", QString::fromLatin1(output.toBase64()));
-    } else {
-        reply.insert("encoding", "utf8");
-        reply.insert("content", QString::fromUtf8(output));
-    }
-    return reply;
+    return blobReplyFor(m_mirrorPath, path, branch);
 }
 
 QJsonObject RepoHost::buildCommitsReply(const QString &branch) const
