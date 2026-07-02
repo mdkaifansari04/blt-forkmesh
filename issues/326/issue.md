@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 326
 title: issue to the mirror hopefully it syncs to SOT
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
