@@ -2571,12 +2571,13 @@ async def encrypt_row(env, obj):
     return base64.b64encode(blob).decode()
 
 
-async def decrypt_row(env, stored):
+async def decrypt_row(env, stored, key=None):
     try:
         blob = base64.b64decode(stored)
         iv = _to_js(blob[:12])
         cipher = _to_js(blob[12:])
-        key = await _data_key(env)
+        if key is None:
+            key = await _data_key(env)
         plain = await js_crypto.subtle.decrypt(
             to_js({"name": "AES-GCM", "iv": iv}), key, cipher
         )
@@ -6362,8 +6363,13 @@ async def notifications_handler(env, request):
         )
         items = []
         unread = 0
+        # Derive the AES key once for the whole page instead of per row: each
+        # derivation is its own async WebCrypto round trip, and this endpoint is
+        # polled often enough that N sequential round trips (one per notification)
+        # measurably drags out the request.
+        row_key = await _data_key(env) if rows else None
         for row in rows:
-            rec = await decrypt_row(env, row.get("data", ""))
+            rec = await decrypt_row(env, row.get("data", ""), key=row_key)
             if not rec:
                 continue
             read_at = int(row.get("read_at") or 0)
