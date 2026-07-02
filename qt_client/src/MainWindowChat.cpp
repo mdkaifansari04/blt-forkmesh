@@ -5426,6 +5426,8 @@ void MainWindow::runHostInstall()
     m_hostInstallLogCarry.clear();
     m_hostInstallLogFg = -1;
     m_hostInstallLogBold = false;
+    m_hostInstallLinkTail.clear();
+    m_hostLinkPrompted = false;
     // Echo the command we run (the password lives in the SSHPASS env / stdin, so
     // nothing here leaks it).
     appendHostInstallLog(
@@ -5449,7 +5451,22 @@ void MainWindow::runHostInstall()
     proc->setProcessEnvironment(env);
 
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
-        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+        const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
+        appendHostInstallLog(chunk);
+        // The installer prints "FORKMESH LINK CODE: NNNNNN" on the fresh
+        // machine (adhoc #53). Watch the stream for it — through a rolling
+        // tail so a code split across read chunks still matches — and offer
+        // to link the new node to this account. Once per run.
+        if (!m_hostLinkPrompted) {
+            m_hostInstallLinkTail = (m_hostInstallLinkTail + chunk).right(512);
+            static const QRegularExpression linkRe(
+                QStringLiteral("FORKMESH LINK CODE:\\s*([0-9]{6})"));
+            const QRegularExpressionMatch m = linkRe.match(m_hostInstallLinkTail);
+            if (m.hasMatch()) {
+                m_hostLinkPrompted = true;
+                promptHostLinkCode(m.captured(1));
+            }
+        }
     });
     connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
@@ -5620,6 +5637,91 @@ void MainWindow::runHostUninstall()
     if (needSudo)
         proc->write((pass + QStringLiteral("\n")).toUtf8());
     proc->closeWriteChannel();
+}
+
+// The freshly-installed node printed a link code (adhoc #53). Confirming here
+// offers that code to the relay signed with THIS account's key, so the new
+// node is attached to the user behind this account. The code is prefilled from
+// the install stream but stays editable — the person at the keyboard can also
+// type a code read off any machine's screen.
+void MainWindow::promptHostLinkCode(const QString &code)
+{
+    const QString owner = accountOwner();
+    if (owner.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Link new node to your account"));
+    auto *layout = new QVBoxLayout(dialog);
+    auto *label = new QLabel(
+        QStringLiteral("The machine being installed shows a link code. Confirm "
+                       "it below to register the new node under your account "
+                       "(<b>%1</b>).").arg(owner.toHtmlEscaped()));
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto *codeEdit = new QLineEdit(code);
+    codeEdit->setAlignment(Qt::AlignCenter);
+    codeEdit->setMaxLength(6);
+    codeEdit->setPlaceholderText(QStringLiteral("6-digit code"));
+    layout->addWidget(codeEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto *linkButton =
+        buttons->addButton(QStringLiteral("Link node"), QDialogButtonBox::AcceptRole);
+    linkButton->setDefault(true);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, codeEdit] {
+        const QString entered = codeEdit->text().trimmed();
+        static const QRegularExpression sixDigits(QStringLiteral("^[0-9]{6}$"));
+        if (!sixDigits.match(entered).hasMatch())
+            return;
+        submitHostLinkCode(entered);
+        dialog->accept();
+    });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::submitHostLinkCode(const QString &code)
+{
+    const QString owner = accountOwner();
+    if (owner.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-link-v1\n" + owner + "\n" + code + "\n" + ts).toUtf8();
+    const QJsonObject body{{"nodeName", owner},
+                           {"code", code},
+                           {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("link-node"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        QString message;
+        if (resp.value(QStringLiteral("linked")).toBool()) {
+            message = QString::fromUtf8(
+                "\n\xE2\x9C\x94 Node \"%1\" is now linked to your account.\n")
+                .arg(resp.value(QStringLiteral("node")).toString());
+        } else if (resp.value(QStringLiteral("pending")).toBool()) {
+            message = QString::fromUtf8(
+                "\n\xE2\x9C\x94 Link code accepted; the new node will be linked "
+                "to your account as soon as it registers.\n");
+        } else {
+            message = QString::fromUtf8(
+                "\n\xE2\x9C\x98 Could not link the new node (%1).\n")
+                .arg(resp.value(QStringLiteral("error"))
+                         .toString(QStringLiteral("network error")));
+        }
+        appendHostInstallLog(message);
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(message.trimmed());
+    });
 }
 
 QWidget *MainWindow::buildHomeSection()
