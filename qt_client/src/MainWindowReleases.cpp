@@ -121,10 +121,11 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 5);
+    m_releasesTable = new QTableWidget(0, 7);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
-    m_releasesTable->setHorizontalHeaderLabels({"Tag", "Released", "Release notes", "Artifacts", ""});
+    m_releasesTable->setHorizontalHeaderLabels(
+        {"Tag", "Commit", "Released", "Release notes", "Compare", "Artifacts", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -135,9 +136,11 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setHighlightSections(false);
     rh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    rh->setSectionResizeMode(2, QHeaderView::Stretch);
+    rh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(3, QHeaderView::Stretch);
     rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(5, QHeaderView::Stretch);
+    rh->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the release too, matching the arrow-key
@@ -524,18 +527,29 @@ void MainWindow::loadReleasesPanel()
     int count = 0;
     QString currentTag;
     QByteArray out;
+    // One batched for-each-ref call carries everything the row needs, including
+    // the tag's target commit (peeled short sha for an annotated tag, or its own
+    // short sha for a lightweight one) and tagger — spawning a git process per row
+    // to fetch these froze the UI on repos with many refs before (issue #152), so
+    // nothing extra is shelled out here per release.
     if (!dir.isEmpty() &&
         runGitCapture(dir,
                       {"for-each-ref", "--sort=-creatordate", "refs/tags",
                        "--format=%(refname:short)%1f"
                        "%(creatordate:format:%Y-%m-%d %H:%M)%1f"
-                       "%(contents:subject)"},
+                       "%(contents:subject)%1f"
+                       "%(*objectname:short)%1f"
+                       "%(objectname:short)%1f"
+                       "%(taggername)"},
                       &out, nullptr)) {
+        QStringList tagLines;
         for (const QByteArray &line : out.split('\n')) {
             const QString text = QString::fromUtf8(line);
-            if (text.trimmed().isEmpty())
-                continue;
-            const QStringList f = text.split(QLatin1Char('\x1f'));
+            if (!text.trimmed().isEmpty())
+                tagLines << text;
+        }
+        for (int i = 0; i < tagLines.size(); ++i) {
+            const QStringList f = tagLines.at(i).split(QLatin1Char('\x1f'));
             if (f.isEmpty())
                 continue;
             const QString tag = f.value(0).trimmed();
@@ -545,13 +559,66 @@ void MainWindow::loadReleasesPanel()
             // release shown at the top of the panel header (issue #226).
             if (currentTag.isEmpty())
                 currentTag = tag;
+
+            // The previous release (next-older tag by creation date) is the
+            // Compare link's diff base — same ordering showReleaseDetail uses
+            // (issue #284), just read off the row already fetched below instead
+            // of another git call.
+            QString prevTag;
+            for (int j = i + 1; j < tagLines.size(); ++j) {
+                const QString cand =
+                    tagLines.at(j).split(QLatin1Char('\x1f')).value(0).trimmed();
+                if (!cand.isEmpty()) {
+                    prevTag = cand;
+                    break;
+                }
+            }
+
             const int row = m_releasesTable->rowCount();
             m_releasesTable->insertRow(row);
             auto *tagItem = new QTableWidgetItem(tag);
             tagItem->setIcon(themedOcticon("tag", QColor("#a371f7"), 14));
             m_releasesTable->setItem(row, 0, tagItem);
-            m_releasesTable->setItem(row, 1, new QTableWidgetItem(f.value(1).trimmed()));
-            m_releasesTable->setItem(row, 2, new QTableWidgetItem(f.value(2).trimmed()));
+
+            // Commit column: the tag's target commit. Peeled short sha for an
+            // annotated tag (%(*objectname:short)); a lightweight tag's own
+            // objectname is already the commit.
+            QString commitSha = f.value(3).trimmed();
+            if (commitSha.isEmpty())
+                commitSha = f.value(4).trimmed();
+            auto *commitItem = new QTableWidgetItem(commitSha);
+            commitItem->setFont(QFont(QStringLiteral("monospace")));
+            commitItem->setForeground(QColor("#8b949e"));
+            m_releasesTable->setItem(row, 1, commitItem);
+
+            auto *whenItem = new QTableWidgetItem(f.value(1).trimmed());
+            const QString tagger = f.value(5).trimmed();
+            if (!tagger.isEmpty())
+                whenItem->setToolTip(QStringLiteral("Tagged by %1").arg(tagger));
+            m_releasesTable->setItem(row, 2, whenItem);
+            m_releasesTable->setItem(row, 3, new QTableWidgetItem(f.value(2).trimmed()));
+
+            // Compare column: a GitHub-style link to the diff since the previous
+            // release. The actual diff is computed on demand by showReleaseDetail
+            // (the same dialog a row click opens) rather than here, so listing
+            // releases never spawns a diff per row.
+            if (prevTag.isEmpty()) {
+                auto *initial = new QTableWidgetItem("Initial release");
+                initial->setForeground(QColor("#8b949e"));
+                m_releasesTable->setItem(row, 4, initial);
+            } else {
+                auto *compare = new QLabel(
+                    QStringLiteral("<a href=\"#\" style=\"color:#58a6ff;"
+                                   "text-decoration:none\">Compare %1...%2</a>")
+                        .arg(prevTag.toHtmlEscaped(), tag.toHtmlEscaped()));
+                compare->setTextFormat(Qt::RichText);
+                compare->setContentsMargins(6, 0, 6, 0);
+                compare->setCursor(Qt::PointingHandCursor);
+                compare->setStyleSheet(QStringLiteral("background:transparent;"));
+                connect(compare, &QLabel::linkActivated, this,
+                        [this, tag] { showReleaseDetail(tag); });
+                m_releasesTable->setCellWidget(row, 4, compare);
+            }
 
             // Artifacts for this tag come from the channel manifest scanned above
             // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
@@ -572,7 +639,7 @@ void MainWindow::loadReleasesPanel()
                         .arg(latestChannelTag.toHtmlEscaped());
             }
             if (artifactsHtml.isEmpty()) {
-                m_releasesTable->setItem(row, 3, new QTableWidgetItem(QString()));
+                m_releasesTable->setItem(row, 5, new QTableWidgetItem(QString()));
             } else {
                 auto *artifacts = new QLabel(artifactsHtml);
                 artifacts->setTextFormat(Qt::RichText);
@@ -581,7 +648,7 @@ void MainWindow::loadReleasesPanel()
                 artifacts->setContentsMargins(6, 0, 6, 0);
                 artifacts->setCursor(Qt::PointingHandCursor);
                 artifacts->setStyleSheet(QStringLiteral("background:transparent;"));
-                m_releasesTable->setCellWidget(row, 3, artifacts);
+                m_releasesTable->setCellWidget(row, 5, artifacts);
             }
 
             auto *del = new QPushButton;
@@ -593,7 +660,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 4, del);
+            m_releasesTable->setCellWidget(row, 6, del);
             ++count;
         }
     }
@@ -1787,9 +1854,65 @@ void MainWindow::promptNewRelease()
     auto *notesEdit = new QPlainTextEdit;
     notesEdit->setPlaceholderText("Describe this release...");
     notesEdit->setMinimumHeight(120);
+    auto *genNotesButton = new QPushButton("Generate release notes");
+    genNotesButton->setObjectName("ghostButton");
+    genNotesButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(genNotesButton, "list-unordered", 14);
+    // GitHub-style auto-generated notes: every non-merge commit since the
+    // previous release (or, for the very first release, a capped recent window),
+    // as a "What's Changed" list, plus a compare link at the bottom. Replaces
+    // whatever is currently typed in Notes so it can be regenerated after
+    // switching Target.
+    connect(genNotesButton, &QPushButton::clicked, &dialog,
+            [dir, prevTag, tagEdit, targetEdit, notesEdit] {
+                const QString targetRef = targetEdit->currentText().trimmed();
+                if (targetRef.isEmpty())
+                    return;
+                QStringList args{"log", "--no-merges", "--date-order",
+                                 "--format=%s%x1f%h%x1f%an"};
+                // No previous tag to diff from (the first release) — cap the
+                // window so a large repo's whole history doesn't get dumped in.
+                if (prevTag.isEmpty())
+                    args << QStringLiteral("--max-count=250") << targetRef;
+                else
+                    args << QStringLiteral("%1..%2").arg(prevTag, targetRef);
+                QByteArray log;
+                runGitCapture(dir, args, &log, nullptr);
+
+                QString text = QStringLiteral("## What's Changed\n");
+                int shown = 0;
+                for (const QByteArray &line : log.split('\n')) {
+                    const QString entry = QString::fromUtf8(line).trimmed();
+                    if (entry.isEmpty())
+                        continue;
+                    const QStringList f = entry.split(QLatin1Char('\x1f'));
+                    const QString subject = f.value(0).trimmed();
+                    const QString sha = f.value(1).trimmed();
+                    const QString author = f.value(2).trimmed();
+                    if (subject.isEmpty())
+                        continue;
+                    text += QStringLiteral("* %1 (`%2`)").arg(subject, sha);
+                    if (!author.isEmpty())
+                        text += QStringLiteral(" by %1").arg(author);
+                    text += QLatin1Char('\n');
+                    ++shown;
+                }
+                if (shown == 0)
+                    text += prevTag.isEmpty()
+                                ? QStringLiteral("* No commits yet.\n")
+                                : QStringLiteral("* No changes since %1.\n")
+                                      .arg(prevTag);
+                if (!prevTag.isEmpty()) {
+                    const QString newTag = tagEdit->text().trimmed();
+                    text += QStringLiteral("\n**Full Changelog**: %1...%2")
+                                .arg(prevTag, newTag.isEmpty() ? targetRef : newTag);
+                }
+                notesEdit->setPlainText(text);
+            });
     form->addRow("Tag", tagEdit);
     form->addRow("Target", targetEdit);
     form->addRow("Title", titleEdit);
+    form->addRow(QString(), genNotesButton);
     form->addRow("Notes", notesEdit);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText("Publish release");
