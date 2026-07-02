@@ -6492,7 +6492,8 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Pull requests", "git-pull-request"},
                                 {"Discussions", "comment"},
                                 {"Actions", "workflow"},
-                                {"Security and quality", "shield-check"},
+                                {"Security", "shield-check"},
+                                {"Quality", "check-circle"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
                                 {"Worktrees", "file-directory"},
@@ -6531,13 +6532,13 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoDiscussionsTab = b;
         if (i == 6)
             m_repoActionsTab = b; // handle for the Actions (N) badge
-        if (i == 9)
-            m_repoBranchesTab = b; // handle for the Branches (N) badge
         if (i == 10)
-            m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
+            m_repoBranchesTab = b; // handle for the Branches (N) badge
         if (i == 11)
-            m_repoReleasesTab = b; // handle for the Releases (N) badge
+            m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
         if (i == 12)
+            m_repoReleasesTab = b; // handle for the Releases (N) badge
+        if (i == 13)
             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
         m_repoDetailTabs->addButton(b, i);
         tabRow->addWidget(b);
@@ -6625,21 +6626,22 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
     m_repoDetailStack->addWidget(buildDiscussionsTab());                 // 5 Discussions
     m_repoDetailStack->addWidget(buildRepoActionsTab());                 // 6 Actions
-    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 7 Security and quality
+    m_repoDetailStack->addWidget(buildRepoSecurityTab());                // 7 Security
+    m_repoDetailStack->addWidget(buildRepoQualityTab());                 // 8 Quality
     m_insightsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildInsightsTab());                    // 8
+    m_repoDetailStack->addWidget(buildInsightsTab());                    // 9
     m_branchesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildBranchesTab());                    // 9 Branches
+    m_repoDetailStack->addWidget(buildBranchesTab());                    // 10 Branches
     m_worktreesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildWorktreesTab());                   // 10 Worktrees
+    m_repoDetailStack->addWidget(buildWorktreesTab());                   // 11 Worktrees
     m_releasesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildReleasesTab());                    // 11 Releases
+    m_repoDetailStack->addWidget(buildReleasesTab());                    // 12 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 12 Mirror nodes
+    m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 13 Mirror nodes
     m_artifactsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildArtifactsTab());                   // 13 Artifacts
+    m_repoDetailStack->addWidget(buildArtifactsTab());                   // 14 Artifacts
     m_settingsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 14 Settings
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 15 Settings
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -6715,6 +6717,8 @@ QWidget *MainWindow::buildRepoDetailSection()
         else if (id == 7)
             refreshRepoSecurity();
         else if (id == 8)
+            refreshRepoQuality();
+        else if (id == m_insightsTabIndex)
             loadRepoInsights();
         else if (id == m_branchesTabIndex)
             loadBranchesPanel();

@@ -77,3 +77,13 @@ public:
     static QList<RepoSecurityFinding> findSecretsInPush(const QString &localPath,
                                                         const QString &upstreamRef);
 };
+
+// Local quality evidence for the Quality tab: check-run health, code volume,
+// documentation/tests presence, TODO markers, file-size health, commit
+// activity and issue hygiene. Shares the signal/finding shapes (and the
+// snapshot container) with RepoSecurity so both tabs render the same way.
+class RepoQuality
+{
+public:
+    static RepoSecuritySnapshot scan(const RepoSecurityInput &input);
+};
