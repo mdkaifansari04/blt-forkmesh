@@ -25,6 +25,7 @@
 /changelog /changelog.html 200
 /privacy /privacy.html 200
 /terms /terms.html 200
+/status /status.html 200
 # Repo shortcut URLs (/owner/repo and /owner/repo/tree|blob/...) are deliberately
 # NOT redirected here. A /:owner/:repo rule also matches real two-segment static
 # assets like /assets/logo.png and /favicon/site.webmanifest, and Cloudflare

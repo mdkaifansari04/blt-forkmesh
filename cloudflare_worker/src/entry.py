@@ -1662,6 +1662,145 @@ async def online_history(env):
     )
 
 
+# --- System status page (/status) -------------------------------------------
+# A per-minute cron folds one health check per system into today's UTC-day
+# bucket, so the public /status page can show a 30-day history per system
+# (statuspage.io style) without any extra always-on monitoring infra. Every
+# system reuses a signal the relay already tracks:
+#   - database: a trivial D1 round trip.
+#   - git_hosting: at least one desktop host tunnel is live (host_presence).
+#   - website / api / realtime: unhandled/5xx errors logged this minute
+#     (log_error, see Default.fetch) bucketed by the path they hit, so an
+#     incident in one area doesn't paint the whole site down.
+STATUS_SYSTEMS = [
+    ("website", "Website"),
+    ("api", "API"),
+    ("database", "Database"),
+    ("git_hosting", "Git hosting network"),
+    ("realtime", "Realtime sync (chat & tunnels)"),
+]
+STATUS_HISTORY_DAYS = 30
+STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
+STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
+
+
+async def record_status_sample(env):
+    # Called once a minute by the scheduled (cron) handler. Best-effort per
+    # system so one failing check can't blank the rest of the page.
+    await ensure_schema(env)
+    now = int(Date.now())
+    day_ts = (now // 86400000) * 86400000
+    ok = {}
+
+    try:
+        await d1_first(env, "SELECT 1 AS ok")
+        ok["database"] = True
+    except Exception:
+        ok["database"] = False
+
+    try:
+        cutoff = now - HOST_PRESENCE_STALE_MS
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff,
+        )
+        ok["git_hosting"] = int((row or {}).get("n", 0) or 0) > 0
+    except Exception:
+        ok["git_hosting"] = False
+
+    try:
+        rows = await d1_all(
+            env, "SELECT path FROM error_log WHERE ts >= ?", now - STATUS_SAMPLE_WINDOW_MS,
+        )
+        failed = {"website": False, "api": False, "realtime": False}
+        for row in rows:
+            path = str(row.get("path") or "")
+            if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
+                    GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
+                failed["realtime"] = True
+            elif path.startswith("/api/"):
+                failed["api"] = True
+            else:
+                failed["website"] = True
+        ok["website"] = not failed["website"]
+        ok["api"] = not failed["api"]
+        ok["realtime"] = not failed["realtime"]
+    except Exception:
+        # A query hiccup here is not itself evidence of an outage — don't
+        # fabricate a false incident from it.
+        ok["website"] = ok["api"] = ok["realtime"] = True
+
+    for system_id, _label in STATUS_SYSTEMS:
+        failure = 0 if ok.get(system_id, True) else 1
+        await d1_run(
+            env,
+            "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(day_ts, system) DO UPDATE SET "
+            "checks = checks + 1, failures = failures + ?",
+            day_ts, system_id, failure, failure,
+        )
+    await d1_run(
+        env, "DELETE FROM system_status_daily WHERE day_ts < ?",
+        day_ts - STATUS_HISTORY_RETAIN_MS,
+    )
+
+
+async def status_history(env):
+    await ensure_schema(env)
+    now = int(Date.now())
+    cur_day = (now // 86400000) * 86400000
+    start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
+    rows = await d1_all(
+        env,
+        "SELECT day_ts, system, checks, failures FROM system_status_daily "
+        "WHERE day_ts >= ?",
+        start,
+    )
+    by_system = {}
+    for row in rows:
+        system_id = str(row.get("system") or "")
+        by_system.setdefault(system_id, {})[int(row["day_ts"])] = (
+            int(row.get("checks") or 0), int(row.get("failures") or 0),
+        )
+
+    systems = []
+    for system_id, label in STATUS_SYSTEMS:
+        days = []
+        total_checks = total_failures = 0
+        for i in range(STATUS_HISTORY_DAYS):
+            this_day = start + i * 86400000
+            checks, failures = by_system.get(system_id, {}).get(this_day, (0, 0))
+            total_checks += checks
+            total_failures += failures
+            uptime = round(((checks - failures) / checks) * 100, 2) if checks else None
+            days.append({
+                "dayTs": this_day, "checks": checks, "failures": failures,
+                "uptimePct": uptime,
+            })
+        # Current status comes from the most recent day with any data, not the
+        # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
+        # today's badge red.
+        latest = next((d for d in reversed(days) if d["checks"]), None)
+        if latest is None:
+            status = "unknown"
+        elif latest["failures"] == 0:
+            status = "operational"
+        elif latest["failures"] >= latest["checks"]:
+            status = "down"
+        else:
+            status = "degraded"
+        overall_uptime = (
+            round(((total_checks - total_failures) / total_checks) * 100, 2)
+            if total_checks else None
+        )
+        systems.append({
+            "id": system_id, "label": label, "status": status,
+            "uptimePct": overall_uptime, "days": days,
+        })
+
+    return json_response({"ok": True, "now": now, "systems": systems}, cache_seconds=60)
+
+
 # --- Leaderboards (/network/) ----------------------------------------------
 # Public ranking boards backing issue #11. Each board has a persisted data
 # source: node uptime (online_hourly_nodes), public repos per owner + most-
@@ -2485,6 +2624,15 @@ SCHEMA_STATEMENTS = [
         ts INTEGER NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_security_reports_ts ON security_reports(ts)",
+    # Public /status page (30-day history per system). A per-minute cron folds
+    # one health check per system into today's UTC-day bucket; checks/failures
+    # let the page compute an uptime percentage per day without storing every
+    # individual sample. day_ts is the epoch-ms start of the UTC day.
+    """CREATE TABLE IF NOT EXISTS system_status_daily (
+        day_ts INTEGER NOT NULL, system TEXT NOT NULL,
+        checks INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_ts, system))""",
+    "CREATE INDEX IF NOT EXISTS idx_system_status_daily_day ON system_status_daily(day_ts)",
 ]
 
 
@@ -8074,6 +8222,12 @@ class Default(WorkerEntrypoint):
             await record_online_sample(self.env)
         except Exception:
             pass
+        # Fold one health check per system into today's bucket for the public
+        # /status page's 30-day history.
+        try:
+            await record_status_sample(self.env)
+        except Exception:
+            pass
         # Keep blocked phantom catalog entries (and their host presence) purged
         # even if no one loads /network/.
         try:
@@ -8326,6 +8480,10 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+
+        # 30-day per-system uptime history for the public /status page.
+        if url.path in ("/api/status", "/api/status/"):
+            return await status_history(self.env)
 
         # Installer clone source: pick the currently-online forkmesh host with
         # the most retained uptime instead of baking one node id into install.sh.
