@@ -2403,6 +2403,19 @@ SCHEMA_STATEMENTS = [
     "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
+    """CREATE TABLE IF NOT EXISTS account_devices (
+        device_bi TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        pubkey TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'desktop_node',
+        label TEXT,
+        capabilities TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL DEFAULT 0,
+        revoked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_account_devices_account ON account_devices(account_bi)",
+    "CREATE INDEX IF NOT EXISTS idx_account_devices_pubkey ON account_devices(pubkey)",
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
@@ -4918,6 +4931,79 @@ async def _login_clear(env, id_bi):
     await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", id_bi)
 
 
+DESKTOP_NODE_CAPABILITIES = "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign"
+CLIENT_CAPABILITIES = "browse,comment,submit_issue,submit_pr"
+
+
+async def _register_account_device(env, account_bi, pubkey, kind="desktop_node", label=""):
+    if not account_bi or not pubkey:
+        return None
+    device_bi = await blind_index(env, account_bi + ":" + pubkey)
+    now = int(Date.now())
+    capabilities = DESKTOP_NODE_CAPABILITIES if kind == "desktop_node" else CLIENT_CAPABILITIES
+    await d1_run(
+        env,
+        """INSERT INTO account_devices
+             (device_bi, account_bi, pubkey, kind, label, capabilities, enabled,
+              created_at, last_seen, revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
+             ON CONFLICT(device_bi) DO UPDATE SET
+               last_seen=excluded.last_seen,
+               enabled=CASE WHEN account_devices.revoked_at=0 THEN 1 ELSE account_devices.enabled END""",
+        device_bi, account_bi, pubkey, kind, label, capabilities, now, now,
+    )
+    return {"id": device_bi[:16], "kind": kind, "pubkey": pubkey,
+            "capabilities": capabilities.split(",")}
+
+
+async def _account_device_for_pubkey(env, account_bi, pubkey):
+    if not account_bi or not pubkey:
+        return None
+    row = await d1_first(
+        env,
+        """SELECT device_bi, pubkey, kind, label, capabilities, enabled, last_seen, revoked_at
+             FROM account_devices WHERE account_bi=? AND pubkey=?""",
+        account_bi, pubkey,
+    )
+    return row
+
+
+async def _account_devices_list(env, account_bi):
+    rows = await d1_all(
+        env,
+        """SELECT device_bi, pubkey, kind, label, capabilities, enabled, last_seen, revoked_at
+             FROM account_devices WHERE account_bi=? ORDER BY created_at ASC""",
+        account_bi,
+    )
+    out = []
+    for row in rows:
+        caps = clean_string(row.get("capabilities", ""), 512)
+        out.append({
+            "id": clean_string(row.get("device_bi", ""), 128)[:16],
+            "pubkey": clean_string(row.get("pubkey", ""), 120),
+            "kind": clean_string(row.get("kind", ""), 40),
+            "label": clean_string(row.get("label", ""), 120),
+            "capabilities": [c for c in caps.split(",") if c],
+            "enabled": bool(row.get("enabled")) and not bool(row.get("revoked_at")),
+            "lastSeen": int(row.get("last_seen") or 0),
+        })
+    return out
+
+
+def _with_session_capabilities(payload, *, session_kind, device_kind="", key_matched=False,
+                               desktop_capable=False, capabilities=None):
+    caps = capabilities or (DESKTOP_NODE_CAPABILITIES.split(",") if desktop_capable else CLIENT_CAPABILITIES.split(","))
+    payload["sessionKind"] = session_kind
+    payload["deviceKind"] = device_kind
+    payload["deviceKeyMatched"] = bool(key_matched)
+    payload["desktopCapable"] = bool(desktop_capable)
+    payload["capabilities"] = caps
+    payload["canHost"] = "host_repo" in caps
+    payload["canPublish"] = "publish_repo" in caps
+    payload["canOwnerSign"] = "owner_sign" in caps
+    return payload
+
+
 async def _account_login(env, request):
     try:
         data = await request.json()
@@ -4975,18 +5061,39 @@ async def _account_login(env, request):
             return json_response({"error": "bad_totp"}, status=401)
     await _login_clear(env, id_bi)
 
-    # A web-created account can be active before any desktop node key is bound.
-    # When the desktop app logs in with the correct password, bind its Ed25519
-    # key exactly once so signed heartbeat, hosting, and catalog publishes work.
-    # Never silently replace an existing key. Rotation needs an explicit flow.
-    if not rec.get("pubkey") and pubkey:
-        rec["pubkey"] = pubkey
-        name_bi = await blind_index(env, rec.get("name", ""))
-        await _save_account(env, name_bi, rec)
-    elif pubkey and rec.get("pubkey") != pubkey:
-        return json_response({"error": "pubkey_mismatch"}, status=409)
+    # Multi-device account model: password/TOTP authenticates the human account;
+    # a supplied pubkey identifies/registers this particular desktop node. Any
+    # number of desktop nodes may be enabled for the same account. The legacy
+    # accounts.pubkey remains as the primary/first desktop key for compatibility,
+    # but a different registered desktop key is no longer a login failure.
+    name_bi = await blind_index(env, rec.get("name", ""))
+    device = None
+    desktop_capable = False
+    device_kind = ""
+    if pubkey:
+        device = await _account_device_for_pubkey(env, name_bi, pubkey)
+        if not device:
+            device = await _register_account_device(
+                env, name_bi, pubkey, "desktop_node",
+                clean_string(data.get("deviceLabel", ""), 120))
+        if not rec.get("pubkey"):
+            rec["pubkey"] = pubkey
+            await _save_account(env, name_bi, rec)
+        caps = device.get("capabilities", DESKTOP_NODE_CAPABILITIES) if device else DESKTOP_NODE_CAPABILITIES
+        if isinstance(caps, str):
+            caps = [c for c in caps.split(",") if c]
+        enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
+        desktop_capable = enabled and "owner_sign" in caps
+        device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
+        payload = await _account_public_payload(env, rec)
+        return json_response(_with_session_capabilities(
+            payload, session_kind="desktop_node", device_kind=device_kind,
+            key_matched=True, desktop_capable=desktop_capable, capabilities=caps))
 
-    return json_response(await _account_public_payload(env, rec))
+    payload = await _account_public_payload(env, rec)
+    return json_response(_with_session_capabilities(
+        payload, session_kind="account", device_kind="web_or_mobile",
+        key_matched=False, desktop_capable=False))
 
 
 def _random_bytes(n):
