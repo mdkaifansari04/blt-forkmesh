@@ -2008,18 +2008,31 @@ void MainWindow::loadBranchesPanel()
     // each row started its own git process serially (issue #152). for-each-ref
     // returns every branch tip's committer date in a single call.
     QHash<QString, qint64> branchTimes;
+    QHash<QString, QString> branchShortShas;
+    QHash<QString, QString> branchSubjects;
+    QHash<QString, QString> branchAuthors;
     if (!dir.isEmpty()) {
         QByteArray times;
-        if (runGitCapture(dir,
-                          {"for-each-ref",
-                           "--format=%(refname:short) %(committerdate:unix)",
-                           "refs/heads/", "refs/remotes/"},
-                          &times, nullptr)) {
+        if (runGitCapture(
+                dir,
+                {"for-each-ref",
+                 "--format=%(refname:short)%09%(committerdate:unix)%09"
+                 "%(objectname:short)%09%(subject)%09%(authorname)",
+                 "refs/heads/", "refs/remotes/"},
+                &times, nullptr)) {
             for (const QString &line :
                  QString::fromUtf8(times).split('\n', Qt::SkipEmptyParts)) {
-                const qsizetype sp = line.lastIndexOf(u' ');
-                if (sp > 0)
-                    branchTimes.insert(line.left(sp), line.sliced(sp + 1).toLongLong());
+                const QStringList parts = line.split(QLatin1Char('\t'));
+                if (parts.size() < 2)
+                    continue;
+                const QString ref = parts.at(0);
+                branchTimes.insert(ref, parts.at(1).toLongLong());
+                if (parts.size() >= 3)
+                    branchShortShas.insert(ref, parts.at(2));
+                if (parts.size() >= 4)
+                    branchSubjects.insert(ref, parts.at(3));
+                if (parts.size() >= 5)
+                    branchAuthors.insert(ref, parts.at(4));
             }
         }
     }
@@ -2121,6 +2134,20 @@ void MainWindow::loadBranchesPanel()
             name->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
         else
             name->setIcon(themedOcticon("git-branch", QColor("#8b949e"), 14));
+        {
+            const QString sha = branchShortShas.value(branch);
+            const QString subj = branchSubjects.value(branch);
+            const QString auth = branchAuthors.value(branch);
+            QString tip;
+            if (!sha.isEmpty())
+                tip = sha;
+            if (!subj.isEmpty())
+                tip += (tip.isEmpty() ? QString() : QStringLiteral(" \xC2\xB7 ")) + subj;
+            if (!auth.isEmpty())
+                tip += (tip.isEmpty() ? QString() : QStringLiteral(" \xC2\xB7 by ")) + auth;
+            if (!tip.isEmpty())
+                name->setToolTip(tip);
+        }
         m_branchesTable->setItem(row, 0, name);
 
         // Ahead/behind vs the default branch.
@@ -2163,6 +2190,17 @@ void MainWindow::loadBranchesPanel()
         }
         m_branchesTable->setItem(row, 1, statusItem);
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
+        {
+            const QString subj = branchSubjects.value(branch);
+            const QString auth = branchAuthors.value(branch);
+            QString utip;
+            if (!auth.isEmpty())
+                utip = QStringLiteral("by %1").arg(auth);
+            if (!subj.isEmpty())
+                utip += (utip.isEmpty() ? QString() : QStringLiteral(": ")) + subj;
+            if (!utip.isEmpty())
+                updated->setToolTip(utip);
+        }
         m_branchesTable->setItem(row, 2, updated);
 
         // Worktree this branch is checked out in (an agent's isolated tree), if
@@ -2191,14 +2229,20 @@ void MainWindow::loadBranchesPanel()
                                 : agentStatusText(session->status);
             QString detail;
             if (session->issueNumber > 0) {
-                attach->setText(QStringLiteral("#%1").arg(session->issueNumber));
+                // Show issue number + status word so you can tell at a glance
+                // whether the agent is still running or has finished.
+                attach->setText(
+                    QString::fromUtf8("#%1 \xC2\xB7 %2")
+                        .arg(session->issueNumber)
+                        .arg(statusWord));
                 detail = session->issueTitle.isEmpty()
                              ? QStringLiteral("Issue #%1").arg(session->issueNumber)
                              : QStringLiteral("Issue #%1: %2")
                                    .arg(session->issueNumber)
                                    .arg(session->issueTitle);
             } else {
-                attach->setText(QStringLiteral("Agent"));
+                attach->setText(
+                    QString::fromUtf8("Agent \xC2\xB7 %1").arg(statusWord));
                 detail = session->prompt;
             }
             attach->setIcon(agentStatusOcticon(*session));
@@ -2210,10 +2254,22 @@ void MainWindow::loadBranchesPanel()
             QFont linkFont = attach->font();
             linkFont.setUnderline(true);
             attach->setFont(linkFont);
-            const QString tip =
+            // Tooltip: status · issue/prompt · model · provider · cost · PR · turns.
+            QString tip =
                 detail.isEmpty()
                     ? statusWord
                     : QStringLiteral("%1 \xC2\xB7 %2").arg(statusWord, detail);
+            if (!session->model.isEmpty())
+                tip += QStringLiteral(" \xC2\xB7 model: %1").arg(session->model);
+            if (!session->provider.isEmpty())
+                tip += QStringLiteral(" \xC2\xB7 %1").arg(session->provider);
+            if (session->costUsd > 0.0)
+                tip += QStringLiteral(" \xC2\xB7 $%1")
+                           .arg(session->costUsd, 0, 'f', 4);
+            if (session->prNumber > 0)
+                tip += QStringLiteral(" \xC2\xB7 PR #%1").arg(session->prNumber);
+            if (session->numTurns > 0)
+                tip += QStringLiteral(" \xC2\xB7 %1 turns").arg(session->numTurns);
             attach->setToolTip(
                 QString::fromUtf8("%1 \xE2\x80\x94 click to open agent").arg(tip));
             attach->setForeground(session->merged ? QColor("#a371f7")
@@ -2294,7 +2350,19 @@ void MainWindow::loadBranchesPanel()
         auto *name = new QTableWidgetItem(branch);
         name->setIcon(themedOcticon("repo-forked", QColor("#8b949e"), 14));
         name->setForeground(QColor("#8b949e"));
-        name->setToolTip(QStringLiteral("Remote-tracking branch %1").arg(branch));
+        {
+            const QString rsha = branchShortShas.value(branch);
+            const QString rsubj = branchSubjects.value(branch);
+            const QString rauth = branchAuthors.value(branch);
+            QString rtname = QStringLiteral("Remote-tracking branch %1").arg(branch);
+            if (!rsha.isEmpty())
+                rtname += QStringLiteral("\n%1").arg(rsha);
+            if (!rsubj.isEmpty())
+                rtname += QStringLiteral(" \xC2\xB7 %1").arg(rsubj);
+            if (!rauth.isEmpty())
+                rtname += QStringLiteral(" \xC2\xB7 by %1").arg(rauth);
+            name->setToolTip(rtname);
+        }
         m_branchesTable->setItem(row, 0, name);
 
         // Ahead/behind vs the default branch when known, else a plain "Remote".
@@ -2322,10 +2390,20 @@ void MainWindow::loadBranchesPanel()
         statusItem->setToolTip(rtip);
         m_branchesTable->setItem(row, 1, statusItem);
 
-        m_branchesTable->setItem(
-            row, 2,
-            new QTableWidgetItem(
-                formatShortRelativeTime(branchTimes.value(branch, 0))));
+        {
+            auto *rupdated = new QTableWidgetItem(
+                formatShortRelativeTime(branchTimes.value(branch, 0)));
+            const QString rsubj = branchSubjects.value(branch);
+            const QString rauth = branchAuthors.value(branch);
+            QString rutip;
+            if (!rauth.isEmpty())
+                rutip = QStringLiteral("by %1").arg(rauth);
+            if (!rsubj.isEmpty())
+                rutip += (rutip.isEmpty() ? QString() : QStringLiteral(": ")) + rsubj;
+            if (!rutip.isEmpty())
+                rupdated->setToolTip(rutip);
+            m_branchesTable->setItem(row, 2, rupdated);
+        }
         m_branchesTable->setItem(row, 3, new QTableWidgetItem);
         m_branchesTable->setItem(row, 4, new QTableWidgetItem);
     }
