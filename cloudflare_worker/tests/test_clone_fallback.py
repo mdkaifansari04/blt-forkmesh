@@ -237,15 +237,16 @@ def _route_source():
 
 def test_browse_route_round_robins_across_online_mirrors():
     # A tree/blob/commits browse of a public repo must round-robin across every
-    # online mirror (the source included) via _select_browse_mirror and 302 to the
-    # chosen node when it isn't the named owner. The `fmserved` pin makes that
-    # redirect target serve in place instead of re-rotating (which would loop).
+    # online mirror (the source included) via _select_browse_mirror, and the
+    # chosen node serves IN PLACE through the requested URL: the request is
+    # dispatched to its host DO with the path rewritten (_forward_to_node),
+    # never via a client-visible redirect.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "_select_browse_mirror(owner, repo)" in browse
+    assert "_forward_to_node" in browse
     assert "/api/repo/%s/%s/%s" in browse
-    assert "status=302" in browse
-    assert "fmserved" in browse
+    assert "status=302" not in browse  # same-URL serving, no redirects
 
 
 def _method_source(class_name, method_name):
@@ -264,20 +265,15 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     # A downed source's host_presence row can lag reality for up to
     # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
     # whose host DO answers no_host (503) or times out (504). The router must
-    # then re-rotate once to an online mirror of the same logical repo —
-    # excluding the node that just failed — instead of surfacing the error while
-    # a live mirror sits unused. `fmretry` caps the redirect at one extra hop.
+    # then serve once more in place from an online mirror of the same logical
+    # repo — excluding the node that just failed — instead of surfacing the
+    # error while a live mirror sits unused.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "public_browse" in browse
-    assert "(503, 504)" in browse
+    assert browse.count("(503, 504)") >= 2  # rotated pick AND named owner
     assert "exclude=owner" in browse
-    assert "already_retried" in browse
-    # The retry pin replaces (never appends to) the failed hop's fmserved, or
-    # the retried route would read the stale pin first and re-rotate.
-    assert "('fmserved', fallback)" in browse
-    assert "('fmretry', '1')" in browse
-    assert "not in ('fmserved', 'fmretry')" in browse
+    assert "_forward_to_node" in browse
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
@@ -328,20 +324,42 @@ def _worker_method_source(name):
 
 
 def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
-    # The presence-based redirect only fires after the source's host_presence row
-    # ages out (10 min). A tunnel that dies uncleanly looks "online" that whole
-    # window, so _git_host must ALSO verify a host is really connected
-    # (_source_has_live_host) and, when it isn't, force a redirect to a live
-    # mirror regardless of the stale presence row — otherwise the clone hits the
-    # dead host DO and dies with "no host serving" (or an isolate crash).
+    # host_presence lags an unclean tunnel death by up to 10 minutes, so
+    # _git_host must verify a host is really connected (_source_has_live_host)
+    # and, when it isn't, serve the clone from a live mirror — otherwise the
+    # clone hits the dead host DO and dies with "no host serving" (or an
+    # isolate crash). The mirror serves IN PLACE through the same URL
+    # (_forward_to_node), never via a redirect, and the pick is sticky
+    # (_sticky_clone_fallback) so info/refs and the upload-pack POST reach the
+    # same node.
     src = _worker_method_source("_git_host")
     assert "_source_has_live_host(owner, repo)" in src
+    assert "_sticky_clone_fallback" in src
+    assert "_forward_to_node" in src
+    assert "git-upload-pack" in src
+    assert "status=302" not in src  # same-URL serving, no redirects
+
+
+def test_sticky_clone_pick_is_pinned_and_live_checked():
+    # The sticky pick: reuse a stored mirror while it's fresh (or on the POST leg
+    # regardless of age), verify it still has a live host before trusting it, and
+    # only re-pick/rotate (force=True past the stale presence row) on info/refs.
+    src = _worker_method_source("_sticky_clone_fallback")
+    assert "clone_sticky" in src
+    assert "CLONE_STICKY_MS" in src
+    assert "_source_has_live_host(pick, repo)" in src
     assert "force=True" in src
-    # The forced fallback still routes via a 302 to the mirror's info/refs.
-    assert "status=302" in src
-    # One-hop cap: two stale-presence, no-live-host peers must not 302 forever.
-    assert "fmretry" in src
-    assert "already_forced" in src
+    assert "ON CONFLICT(repo_bi)" in src
+
+
+def test_forward_to_node_serves_through_the_original_url():
+    # In-place serving: the request is re-dispatched to the chosen node's host
+    # DO with the path rewritten into its namespace, carrying method/headers/
+    # body across — the client never sees a redirect.
+    src = _worker_method_source("_forward_to_node")
+    assert "JsRequest.new" in src
+    assert "host:{node}/{repo}" in src
+    assert "url.query" in src
 
 
 def test_source_has_live_host_probes_the_host_do_not_presence():
