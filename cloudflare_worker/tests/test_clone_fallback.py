@@ -312,3 +312,50 @@ def test_host_disconnect_expires_presence_immediately():
     assert "_live_host_count" in src
     for handler in ("webSocketClose", "webSocketError"):
         assert "_host_disconnected" in _method_source("ForkMeshHost", handler)
+
+
+def _worker_method_source(name):
+    # _git_host / _source_has_live_host live on the WorkerEntrypoint class, whose
+    # name we don't hard-code; scan every class for the method.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == name):
+                    return ast.unparse(item)
+    raise AssertionError("%s not found in entry.py" % name)
+
+
+def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
+    # The presence-based redirect only fires after the source's host_presence row
+    # ages out (10 min). A tunnel that dies uncleanly looks "online" that whole
+    # window, so _git_host must ALSO verify a host is really connected
+    # (_source_has_live_host) and, when it isn't, force a redirect to a live
+    # mirror regardless of the stale presence row — otherwise the clone hits the
+    # dead host DO and dies with "no host serving" (or an isolate crash).
+    src = _worker_method_source("_git_host")
+    assert "_source_has_live_host(owner, repo)" in src
+    assert "force=True" in src
+    # The forced fallback still routes via a 302 to the mirror's info/refs.
+    assert "status=302" in src
+
+
+def test_source_has_live_host_probes_the_host_do_not_presence():
+    # Ground-truth liveness = the DO's connected host count, not the lagging
+    # host_presence row. One subrequest to the non-WebSocket /host endpoint;
+    # any failure counts as "not live" so a flapping/dead source never strands
+    # the clone.
+    src = _worker_method_source("_source_has_live_host")
+    assert "/host" in src
+    assert '"hosts"' in src or "'hosts'" in src
+    assert "return False" in src  # fail-closed on any error/non-200
+
+
+def test_select_clone_fallback_force_overrides_stale_presence():
+    # The DO wrapper must thread `force` into the source_online computation so a
+    # forced call (source confirmed not serving) ignores a still-fresh presence
+    # row and actually returns a mirror.
+    src = _worker_method_source("_select_clone_fallback")
+    assert "force=False" in src
+    assert "not force" in src  # source_online is ANDed with `not force`
