@@ -29,11 +29,13 @@ def _load(*names, extra_globals=None):
 (
     _mirror_ms,
     build_repo_mirrors_payload,
+    clone_state_pins,
     repo_mirror_group_key,
     repo_mirror_same_group,
 ) = _load(
     "_mirror_ms",
     "build_repo_mirrors_payload",
+    "clone_state_pins",
     "repo_mirror_group_key",
     "repo_mirror_same_group",
 )
@@ -41,7 +43,8 @@ def _load(*names, extra_globals=None):
 
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
-         node_id="", clones_served=None, website_served=None, artifact_count=None):
+         node_id="", clones_served=None, website_served=None, artifact_count=None,
+         state_hash="", source="local-node"):
     data = {
         "owner": owner,
         "name": name,
@@ -50,8 +53,10 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         "lastSync": synced,
         "rootCommit": root,
         "sizeBytes": size,
-        "source": "local-node",
+        "source": source,
     }
+    if state_hash:
+        data["stateHash"] = state_hash
     # Node facts the publishing node mirrors into its catalog record (adhoc #56);
     # only set when provided so legacy records without them are also exercised.
     for field, value in (("commit", commit), ("branch", branch),
@@ -167,6 +172,54 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["artifactCount"] == -1
 
 
+def test_payload_marks_mirrors_the_integrity_gate_rejects():
+    # A mirror must advertise a refs fingerprint some working-copy holder in its
+    # group attested (current pin or recent history) or the relay rejects every
+    # clone it serves ("repository failed integrity check"); the payload carries
+    # that verdict per node so the mirror list can show WHICH node is affected.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
+             state_hash="AAA"),
+        _row("b", "in-sync", "forkmesh", root="abc", synced="980000",
+             state_hash="aaa", source="remote-clone"),
+        _row("c", "lagging", "forkmesh", root="abc", synced="970000",
+             state_hash="old", source="remote-clone"),
+        _row("d", "tampered", "forkmesh", root="abc", synced="960000",
+             state_hash="bbb", source="remote-clone"),
+        _row("e", "legacy", "forkmesh", root="abc", synced="950000",
+             source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        history={"a": ["old"]},
+    )
+    verdicts = {m["node"]: m["integrity"] for m in payload["mirrors"]}
+    assert verdicts == {
+        "mainnode": "ok",        # the source matches its own attestation
+        "in-sync": "ok",         # matches the source's current pin (case-insensitive)
+        "lagging": "ok",         # matches a recent pin from the history window
+        "tampered": "rejected",  # matches nothing the source ever attested
+        "legacy": "unknown",     # no fingerprint published; gate checks live refs
+    }
+
+
+def test_payload_integrity_fails_open_without_source_attestation():
+    # When no working-copy holder in the group ever attested a state, the gate
+    # falls back to the mirror's own pins (legacy behaviour): nothing to compare
+    # against, so nobody is flagged.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
+        _row("b", "mirror", "forkmesh", root="abc", synced="980000",
+             state_hash="bbb", source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    assert all(m["integrity"] == "ok" for m in payload["mirrors"])
+
+
 def test_payload_groups_mirror_with_missing_root_commit_by_name():
     # A mirror cloned from the relay can have an unset HEAD and publish an empty
     # rootCommit (issue #243). It must still group with the source of truth (which
@@ -268,6 +321,7 @@ def _load_handler(*, rows, presence=None, first_hosted=None):
         "repo_mirror_group_key",
         "repo_mirror_same_group",
         "build_repo_mirrors_payload",
+        "clone_state_pins",
         extra_globals=namespace,
     )
     return handler, calls
@@ -304,6 +358,10 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     assert any("FROM repositories" in call for call in calls)
     assert any("FROM host_presence" in call for call in calls)
     assert any("FROM repo_first_hosted" in call for call in calls)
+    # The handler also gathers the attested-pin history so each mirror carries
+    # its clone-integrity verdict.
+    assert any("FROM repo_state_history" in call for call in calls)
+    assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
 
 
 def test_repo_mirrors_handler_returns_404_for_private_or_unpublished_target():

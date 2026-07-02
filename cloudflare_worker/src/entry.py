@@ -957,7 +957,8 @@ def repo_clone_online(rec, served_groups):
 
 
 def build_repo_mirrors_payload(
-    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms
+    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
+    history=None,
 ):
     owner_l = (owner or "").strip().lower()
     repo_l = (repo or "").strip().lower()
@@ -1012,6 +1013,22 @@ def build_repo_mirrors_payload(
         # (older peer or a record predating the counters), shown as an em-dash.
         clones_served = _int_field(rec, "clonesServed")
         website_served = _int_field(rec, "websiteServed")
+        # Would the clone integrity gate serve this node right now? Its published
+        # refs fingerprint (stateHash, the same one it signs on publish) must be
+        # a state some working-copy holder in the group attested — current pin or
+        # recent history — or every clone it serves is rejected with "repository
+        # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
+        # a pin, or nothing is pinned and the gate fails open), "rejected" (its
+        # fingerprint matches no attested state), "unknown" (legacy record with
+        # no fingerprint; the gate checks its live refs, which we can't see here).
+        state_hash = str(rec.get("stateHash") or "").strip().lower()
+        pins = clone_state_pins(rec, key, public_rows, history)
+        if not pins or state_hash in pins:
+            integrity = "ok"
+        elif not state_hash:
+            integrity = "unknown"
+        else:
+            integrity = "rejected"
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
@@ -1041,6 +1058,7 @@ def build_repo_mirrors_payload(
             "id": str(rec.get("nodeId") or "").strip(),
             "clonesServed": clones_served,
             "websiteServed": website_served,
+            "integrity": integrity,
         })
 
     mirrors.sort(
@@ -2968,6 +2986,14 @@ async def repo_mirrors_handler(env, request, owner, repo):
         for r in first_rows
         if r.get("repo_bi")
     }
+    # Recent owner-attested state pins, so the payload can mark which mirrors
+    # the clone integrity gate is rejecting (same gathering as _state_pins).
+    history = {}
+    hist_rows = await d1_all(
+        env, "SELECT key_bi, state_hash FROM repo_state_history")
+    for r in hist_rows:
+        history.setdefault(str(r.get("key_bi") or ""), []).append(
+            r.get("state_hash"))
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -2977,6 +3003,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         int(Date.now()),
         HOST_PRESENCE_STALE_MS,
         5 * 1000,
+        history,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -7661,6 +7688,13 @@ class Default(WorkerEntrypoint):
             await _federation_cron(self.env)
         except Exception:
             pass
+        # Retained chat history is only pruned per-room on client join
+        # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
+        # gets its 7-day-old messages deleted.
+        try:
+            await chat_history_prune_expired(self.env)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -8392,6 +8426,17 @@ async def chat_history_prune(env, room_key):
         "ORDER BY ts DESC LIMIT ?)",
         room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
     )
+
+
+async def chat_history_prune_expired(env):
+    # chat_history_prune() above only runs when a client joins that specific
+    # room, so a room nobody reconnects to would otherwise retain messages
+    # past the 7-day window forever. Sweep every room's expired rows on the
+    # per-minute cron (adhoc #49) so retention is enforced regardless of
+    # traffic.
+    await ensure_schema(env)
+    cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
+    await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
 
 
 class ForkMeshRoom(DurableObject):

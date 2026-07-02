@@ -1,78 +1,35 @@
 #include "MessageRow.h"
 
+#include "ReactionEmoji.h"
+
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
 #include <QDateTime>
 #include <QEvent>
+#include <QGridLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
-#include <QMenu>
 #include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScreen>
+#include <QSettings>
+#include <QStyleHints>
+#include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int kAvatarSize = 36;
 constexpr int kMaxMediaWidth = 360;
-
-struct ReactionChoice {
-    const char *value;
-    const char *label;
-};
-
-const ReactionChoice kReactionChoices[] = {{"like", "Like"},
-                                           {"love", "Love"},
-                                           {"laugh", "Laugh"},
-                                           {"celebrate", "Celebrate"},
-                                           {"surprised", "Surprised"},
-                                           {"sad", "Sad"},
-                                           {"thanks", "Thanks"},
-                                           {"hot", "Hot"}};
-
-QString fromCodepoint(char32_t codepoint)
-{
-    const char32_t points[] = {codepoint};
-    return QString::fromUcs4(points, 1);
-}
-
-QString fromCodepoints(char32_t first, char32_t second)
-{
-    const char32_t points[] = {first, second};
-    return QString::fromUcs4(points, 2);
-}
-
-QString reactionDisplayName(const QString &value)
-{
-    for (const ReactionChoice &choice : kReactionChoices) {
-        if (value == QString::fromLatin1(choice.value))
-            return QString::fromLatin1(choice.label);
-    }
-
-    // Legacy reaction payloads used emoji values; display those as text labels.
-    if (value == fromCodepoint(0x1F44D))
-        return QStringLiteral("Like");
-    if (value == fromCodepoints(0x2764, 0xFE0F))
-        return QStringLiteral("Love");
-    if (value == fromCodepoint(0x1F602))
-        return QStringLiteral("Laugh");
-    if (value == fromCodepoint(0x1F389))
-        return QStringLiteral("Celebrate");
-    if (value == fromCodepoint(0x1F62E))
-        return QStringLiteral("Surprised");
-    if (value == fromCodepoint(0x1F622))
-        return QStringLiteral("Sad");
-    if (value == fromCodepoint(0x1F64F))
-        return QStringLiteral("Thanks");
-    if (value == fromCodepoint(0x1F525))
-        return QStringLiteral("Hot");
-    return value;
-}
+constexpr int kPickerColumns = 6;
 
 // A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
 QPixmap initialsAvatar(const QString &name, const QString &color)
@@ -102,6 +59,97 @@ QString humanSize(qint64 bytes)
         return QString::number(bytes / 1024.0, 'f', 1) + " KB";
     return QString::number(bytes / (1024.0 * 1024.0), 'f', 1) + " MB";
 }
+
+// Mirrors forkmesh::ui::currentThemeIsDark() (MainWindowInternal.h), kept as a
+// standalone copy here so this widget doesn't have to pull in that header.
+bool themeIsDark()
+{
+    const QString pref =
+        QSettings().value(QStringLiteral("app/theme"), "system").toString();
+    if (pref == "light")
+        return false;
+    if (pref == "dark")
+        return true;
+    return QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+}
+
+// Ticks every message row's countdown ring on a single shared timer, rather
+// than one QTimer per row (a long-lived conversation can have hundreds).
+QTimer *expiryRingTicker()
+{
+    static QTimer *timer = [] {
+        auto *t = new QTimer;
+        t->start(60 * 1000);
+        return t;
+    }();
+    return timer;
+}
+
+// Small ring next to the timestamp showing how close a message is to its
+// 7-day retention cutoff (kChatMessageRetentionMs), after which it's pruned
+// from local history and the relay stops retaining it too.
+class ExpiryRing : public QWidget
+{
+public:
+    explicit ExpiryRing(qint64 timestampMs, QWidget *parent = nullptr)
+        : QWidget(parent), m_timestampMs(timestampMs)
+    {
+        setFixedSize(kDiameter, kDiameter);
+        refreshTooltip();
+        connect(expiryRingTicker(), &QTimer::timeout, this, [this] {
+            refreshTooltip();
+            update();
+        });
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        const qint64 elapsed =
+            QDateTime::currentMSecsSinceEpoch() - m_timestampMs;
+        const double frac = qBound(
+            0.0, double(elapsed) / double(kChatMessageRetentionMs), 1.0);
+
+        const bool dark = themeIsDark();
+        QRectF box(1, 1, kDiameter - 2, kDiameter - 2);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1.2));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(box);
+        if (frac > 0.004) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(dark ? "#8b949e" : "#9a6700"));
+            // Sweep clockwise from 12 o'clock; Qt pie angles are 1/16°, CCW+.
+            painter.drawPie(box, 90 * 16, -int(frac * 360.0 * 16));
+        }
+    }
+
+private:
+    void refreshTooltip()
+    {
+        const qint64 remainingMs =
+            qMax<qint64>(0, m_timestampMs + kChatMessageRetentionMs -
+                                QDateTime::currentMSecsSinceEpoch());
+        const qint64 days = remainingMs / (24 * 60 * 60 * 1000);
+        const qint64 hours = remainingMs / (60 * 60 * 1000);
+        QString text;
+        if (days >= 1)
+            text = QString("Disappears in %1 day%2")
+                       .arg(days)
+                       .arg(days == 1 ? "" : "s");
+        else if (hours >= 1)
+            text = QString("Disappears in %1 hour%2")
+                       .arg(hours)
+                       .arg(hours == 1 ? "" : "s");
+        else
+            text = QStringLiteral("Disappears soon");
+        setToolTip(text);
+    }
+
+    qint64 m_timestampMs;
+    static constexpr int kDiameter = 10;
+};
 
 } // namespace
 
@@ -147,6 +195,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->setSpacing(6);
     headerRow->addWidget(header);
+    if (!message.deleted)
+        headerRow->addWidget(new ExpiryRing(message.timestampMs), 0, Qt::AlignVCenter);
     headerRow->addStretch();
     // A quick Copy action on any message that carries text, regardless of who
     // sent it, so the body can be lifted to the clipboard in one click.
@@ -224,8 +274,11 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         m_reactionsBar = new QHBoxLayout(reactionsRow);
         m_reactionsBar->setContentsMargins(0, 2, 0, 0);
         m_reactionsBar->setSpacing(4);
-        auto *addReaction = new QPushButton("+");
+        auto *addReaction = new QPushButton;
         addReaction->setObjectName("reactionAdd");
+        addReaction->setIcon(QIcon(reactions::addGlyph(
+            16, devicePixelRatio(), QColor(0x8b, 0x94, 0x9e))));
+        addReaction->setIconSize(QSize(16, 16));
         addReaction->setCursor(Qt::PointingHandCursor);
         addReaction->setToolTip("Add reaction");
         connect(addReaction, &QPushButton::clicked, this,
@@ -348,7 +401,7 @@ void MessageRow::setAvatar(const QPixmap &pixmap)
     m_avatarLabel->setPixmap(rounded);
 }
 
-void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
+void MessageRow::setReactions(const QMap<QString, QStringList> &reactionMap)
 {
     if (!m_reactionsBar)
         return;
@@ -360,13 +413,26 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
         delete item;
     }
     int insertAt = 0;
-    for (auto it = reactions.constBegin(); it != reactions.constEnd(); ++it) {
-        auto *chip = new QPushButton(reactionDisplayName(it.key()) + " " +
-                                     QString::number(it.value().size()));
-        chip->setObjectName("reactionChip");
-        chip->setCursor(Qt::PointingHandCursor);
-        chip->setToolTip(it.value().join(", "));
+    for (auto it = reactionMap.constBegin(); it != reactionMap.constEnd();
+         ++it) {
         const QString reaction = it.key();
+        const int count = it.value().size();
+        auto *chip = new QPushButton(QString::number(count));
+        chip->setObjectName("reactionChip");
+        const QPixmap emoji =
+            reactions::emojiPixmap(reaction, 16, devicePixelRatio());
+        if (!emoji.isNull()) {
+            chip->setIcon(QIcon(emoji));
+            chip->setIconSize(QSize(16, 16));
+        } else {
+            // Unknown value from another client: fall back to a text label.
+            chip->setText(reactions::displayName(reaction) + " " +
+                          QString::number(count));
+        }
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setToolTip(reactions::displayName(reaction) +
+                         QString::fromUtf8(" \xC2\xB7 ") +
+                         it.value().join(", "));
         connect(chip, &QPushButton::clicked, this,
                 [this, reaction] { emit reactionToggled(m_message.id, reaction); });
         m_reactionsBar->insertWidget(insertAt++, chip);
@@ -375,12 +441,45 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactions)
 
 void MessageRow::showReactionPicker()
 {
-    QMenu menu(this);
-    for (const ReactionChoice &choice : kReactionChoices) {
-        QAction *action = menu.addAction(QString::fromLatin1(choice.label));
-        const QString value = QString::fromLatin1(choice.value);
-        connect(action, &QAction::triggered, this,
-                [this, value] { emit reactionToggled(m_message.id, value); });
+    // A Discord-style emoji palette: a floating grid of painted emoji.
+    auto *popup = new QFrame(this, Qt::Popup);
+    popup->setObjectName("reactionPicker");
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    auto *grid = new QGridLayout(popup);
+    grid->setContentsMargins(8, 8, 8, 8);
+    grid->setSpacing(2);
+    int index = 0;
+    for (const reactions::Choice &choice : reactions::choices()) {
+        auto *button = new QToolButton(popup);
+        button->setObjectName("reactionPickerButton");
+        button->setAutoRaise(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(choice.label);
+        button->setIcon(QIcon(
+            reactions::emojiPixmap(choice.value, 22, devicePixelRatio())));
+        button->setIconSize(QSize(22, 22));
+        button->setFixedSize(34, 34);
+        const QString value = choice.value;
+        connect(button, &QToolButton::clicked, this, [this, popup, value] {
+            emit reactionToggled(m_message.id, value);
+            popup->close();
+        });
+        grid->addWidget(button, index / kPickerColumns,
+                        index % kPickerColumns);
+        ++index;
     }
-    menu.exec(QCursor::pos());
+    popup->adjustSize();
+    // Prefer opening above the cursor; fall back below and clamp to the
+    // screen so the palette never opens half off-screen.
+    const QPoint cursor = QCursor::pos();
+    QPoint pos = cursor - QPoint(10, popup->height() + 6);
+    if (QScreen *screen = QGuiApplication::screenAt(cursor)) {
+        const QRect avail = screen->availableGeometry();
+        pos.setX(qBound(avail.left(), pos.x(),
+                        avail.right() - popup->width()));
+        if (pos.y() < avail.top())
+            pos.setY(cursor.y() + 6);
+    }
+    popup->move(pos);
+    popup->show();
 }

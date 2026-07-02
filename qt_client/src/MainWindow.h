@@ -520,8 +520,9 @@ private:
     // when ForkMesh itself is running as root.
     void updateRebuildRestart();
     // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
-    // commit on the update remote. Only ever triggers updateRebuildRestart() when
-    // one is actually found, and never while an agent is running.
+    // tagged release on the update remote (ordinary commits on main don't count).
+    // Only ever triggers updateRebuildRestart() when one is actually found, and
+    // never while an agent is running.
     void maybeAutoUpdate();
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
@@ -1750,7 +1751,7 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // grow each bar by its run's elapsed time
-    void positionRepoPushButton(); // float "Sync" just above the Commits tab
+    void positionRepoPushButton(); // float "Sync" just above the Code tab
     void updateActionStrip();    // build/show/hide the bars for in-flight runs
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
@@ -2185,6 +2186,10 @@ private:
     void saveChatHistory();
     void loadChatHistory();
     void scheduleChatSave();
+    // Drops messages past kChatMessageRetentionMs (7 days) from local history,
+    // so a node left running that long doesn't keep showing/serving messages
+    // the relay has already dropped.
+    void pruneExpiredChatHistory();
     // Avatars are cached to disk per peer (keyed by node id) so they survive a
     // restart and stay visible for peers who are currently offline — otherwise
     // an avatar only lives as long as the sender keeps re-broadcasting it.
@@ -2973,6 +2978,10 @@ private:
     // Signature (repo|path|branch|HEAD) of the overview currently rendered, so
     // re-entering the repo screen unchanged skips the expensive git re-read.
     QString m_overviewLoadedKey;
+    // Re-entrancy guard: loadRepoOverview's git reads pump the event loop
+    // (GitKeepAlive), so a queued slot serviced mid-load could call back in and
+    // interleave a second rebuild with the first.
+    bool m_overviewLoading = false;
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
     QPushButton *m_historyButton = nullptr;
@@ -3187,7 +3196,7 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
-    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Commits
+    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Code
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -3910,6 +3919,7 @@ private:
     QHash<QString, QList<ChatMessage>> m_history;
     QSet<QString> m_historyIds; // message ids already in m_history (dedup)
     QTimer *m_chatSaveTimer = nullptr;
+    QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;

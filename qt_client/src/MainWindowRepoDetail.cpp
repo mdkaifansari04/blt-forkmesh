@@ -2427,6 +2427,14 @@ void MainWindow::loadRepoOverview(const QString &path)
     if (!m_overviewList)
         return;
 
+    // The rebuild below pumps the event loop between its git reads
+    // (GitKeepAlive), so a queued slot serviced mid-load could call back in
+    // here and interleave a second rebuild with the first — visible as extra
+    // redraw churn. Drop the re-entrant call: the in-flight load finishes a
+    // consistent view, and anything it missed re-keys the next load.
+    if (m_overviewLoading)
+        return;
+
     const QString dir = repoGitDir();
 
     // Re-entering the repo screen (e.g. back from Chat) re-runs this whole
@@ -2452,14 +2460,19 @@ void MainWindow::loadRepoOverview(const QString &path)
     // Past the skip check we do the full rebuild: a whole-tree --numstat diff plus a
     // `git log -1` per entry (and the README read). Serviced on a button click, so
     // pump the event loop across those reads to keep the window responsive (adhoc #83).
+    ScopedFlag loading(m_overviewLoading);
     GitKeepAlive keepAlive;
 
     m_overviewPath = path;
-    m_overviewList->clear();
-    if (m_readmeView)
-        m_readmeView->clear();
+
+    // Gather phase: every git read below lands in locals only. The keep-alive
+    // pump services paint events between reads, so any widget cleared or
+    // written here would repaint mid-load — the old "flash of blank page, then
+    // piecewise redraws" jank. The previous overview stays on screen untouched
+    // until the new one is applied in one shot at the end.
 
     // Latest commit strip: "<subject> · <author> committed <relative time>".
+    QString commitBarText;
     if (m_commitBar) {
         QByteArray logOut;
         QStringList logArgs{"log", "-1", "--format=%H%x1f%an%x1f%ar%x1f%s",
@@ -2475,71 +2488,60 @@ void MainWindow::loadRepoOverview(const QString &path)
             const QString subject = f.value(3);
             // Latest commit: subject, author and "x ago", plus the action/check
             // status glyph for this (the first/most-recent) commit.
-            m_commitBar->setText(
+            commitBarText =
                 QStringLiteral("%1<b>%2</b> &nbsp; <span style='color:#8b949e'>%3 "
                                "committed %4</span>")
                     .arg(commitStatusGlyph(fullHash),
                          subject.toHtmlEscaped(), author.toHtmlEscaped(),
-                         when.toHtmlEscaped()));
+                         when.toHtmlEscaped());
         } else {
-            m_commitBar->setText("<span style='color:#8b949e'>No commits yet</span>");
+            commitBarText = "<span style='color:#8b949e'>No commits yet</span>";
         }
     }
+    QString historyText = QStringLiteral("Commits");
     if (m_historyButton) {
         QByteArray countOut;
         QString count;
         if (!dir.isEmpty() &&
             runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
             count = QString::fromUtf8(countOut).trimmed();
-        m_historyButton->setText(
-            count.isEmpty()
-                ? QStringLiteral("Commits")
-                : QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong())));
+        if (!count.isEmpty())
+            historyText = QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong()));
     }
 
     // Breadcrumb for directory navigation.
-    if (m_overviewCrumb) {
-        QString crumb = QStringLiteral("<a href=\"/\">root</a>");
+    QString crumbText = QStringLiteral("<a href=\"/\">root</a>");
+    {
         QString acc;
         for (const QString &part : path.split('/', Qt::SkipEmptyParts)) {
             acc = acc.isEmpty() ? part : acc + "/" + part;
-            crumb += " / <a href=\"" + acc.toHtmlEscaped() + "\">" +
-                     part.toHtmlEscaped() + "</a>";
+            crumbText += " / <a href=\"" + acc.toHtmlEscaped() + "\">" +
+                         part.toHtmlEscaped() + "</a>";
         }
-        m_overviewCrumb->setText(crumb);
     }
 
-    m_overviewRows.clear();
-    m_overviewRepoBytes = 0;
-    if (dir.isEmpty()) {
-        if (m_overviewList) {
-            m_overviewList->clear();
-            new QTreeWidgetItem(m_overviewList,
-                                {"No local copy of this repository to browse."});
-        }
-        return;
-    }
+    QList<OverviewRow> rows;
+    qint64 repoBytes = 0;
+    QString messageRow; // non-empty: the file list shows this single row instead
+    if (dir.isEmpty())
+        messageRow = QStringLiteral("No local copy of this repository to browse.");
 
     const QString treeish = path.isEmpty() ? currentRef() : currentRef() + ":" + path;
     QByteArray out;
     QString err;
-    if (!runGitCapture(dir, {"ls-tree", "-z", treeish}, &out, &err)) {
-        if (m_overviewList) {
-            m_overviewList->clear();
-            new QTreeWidgetItem(
-                m_overviewList,
-                {err.isEmpty() ? "This repository has no commits yet."
-                               : "Could not read files: " + err.left(120)});
-        }
-        return;
-    }
+    if (messageRow.isEmpty() &&
+        !runGitCapture(dir, {"ls-tree", "-z", treeish}, &out, &err))
+        messageRow = err.isEmpty()
+                         ? QStringLiteral("This repository has no commits yet.")
+                         : "Could not read files: " + err.left(120);
 
     // Per-entry blob sizes (directories = recursive sum) and the whole-repo total,
     // from a single recursive ls-tree. The total is the size-bar denominator so a
     // bar shows each entry's share of the entire repository.
     QHash<QString, qint64> childBytes;
     QByteArray sizeOut;
-    if (runGitCapture(dir, {"ls-tree", "-r", "-l", "-z", currentRef()}, &sizeOut,
+    if (messageRow.isEmpty() &&
+        runGitCapture(dir, {"ls-tree", "-r", "-l", "-z", currentRef()}, &sizeOut,
                       nullptr)) {
         const QString prefix = path.isEmpty() ? QString() : path + "/";
         for (const QByteArray &record : sizeOut.split('\0')) {
@@ -2553,7 +2555,7 @@ void MainWindow::loadRepoOverview(const QString &path)
             if (meta.size() < 4)
                 continue;
             const qint64 sz = meta.at(3).toLongLong(); // '-' (submodule) -> 0
-            m_overviewRepoBytes += sz;
+            repoBytes += sz;
             const QString blob = QString::fromUtf8(record.mid(tab + 1));
             if (!prefix.isEmpty() && !blob.startsWith(prefix))
                 continue;
@@ -2570,7 +2572,8 @@ void MainWindow::loadRepoOverview(const QString &path)
     QHash<QString, qint64> childLoc;
     QByteArray locOut;
     static const QByteArray kEmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    if (runGitCapture(dir,
+    if (messageRow.isEmpty() &&
+        runGitCapture(dir,
                       {"diff", "--numstat", "--no-renames", "-z",
                        QString::fromLatin1(kEmptyTree), currentRef()},
                       &locOut, nullptr)) {
@@ -2597,51 +2600,81 @@ void MainWindow::loadRepoOverview(const QString &path)
     }
 
     QString readmePath;
-    for (const QByteArray &record : out.split('\0')) {
-        if (record.isEmpty())
-            continue;
-        const int tab = record.indexOf('\t');
-        if (tab < 0)
-            continue;
-        const QStringList meta =
-            QString::fromUtf8(record.left(tab)).split(' ', Qt::SkipEmptyParts);
-        if (meta.size() < 2)
-            continue;
-        OverviewRow e;
-        e.name = QString::fromUtf8(record.mid(tab + 1));
-        e.isDir = meta.at(1) == "tree";
-        e.path = path.isEmpty() ? e.name : path + "/" + e.name;
-        e.size = childBytes.value(e.name, 0);
-        e.loc = childLoc.value(e.name, 0);
-        // Last commit that touched this entry: timestamp (for sorting), relative
-        // "x ago" and subject (shown in the row).
-        QByteArray logOut;
-        if (runGitCapture(dir,
-                          {"log", "-1", "--format=%ct%x1f%cr%x1f%s", currentRef(),
-                           "--", e.path},
-                          &logOut, nullptr) &&
-            !logOut.trimmed().isEmpty()) {
-            const QStringList f = QString::fromUtf8(logOut).trimmed().split('\x1f');
-            e.commitTs = f.value(0).toLongLong();
-            e.whenText = f.value(1);
-            e.subject = f.value(2);
+    if (messageRow.isEmpty()) {
+        for (const QByteArray &record : out.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QStringList meta =
+                QString::fromUtf8(record.left(tab)).split(' ', Qt::SkipEmptyParts);
+            if (meta.size() < 2)
+                continue;
+            OverviewRow e;
+            e.name = QString::fromUtf8(record.mid(tab + 1));
+            e.isDir = meta.at(1) == "tree";
+            e.path = path.isEmpty() ? e.name : path + "/" + e.name;
+            e.size = childBytes.value(e.name, 0);
+            e.loc = childLoc.value(e.name, 0);
+            // Last commit that touched this entry: timestamp (for sorting), relative
+            // "x ago" and subject (shown in the row).
+            QByteArray logOut;
+            if (runGitCapture(dir,
+                              {"log", "-1", "--format=%ct%x1f%cr%x1f%s", currentRef(),
+                               "--", e.path},
+                              &logOut, nullptr) &&
+                !logOut.trimmed().isEmpty()) {
+                const QStringList f = QString::fromUtf8(logOut).trimmed().split('\x1f');
+                e.commitTs = f.value(0).toLongLong();
+                e.whenText = f.value(1);
+                e.subject = f.value(2);
+            }
+            rows.append(e);
+            if (!e.isDir && e.name.compare("README.md", Qt::CaseInsensitive) == 0)
+                readmePath = e.path;
         }
-        m_overviewRows.append(e);
-        if (!e.isDir && e.name.compare("README.md", Qt::CaseInsensitive) == 0)
-            readmePath = e.path;
     }
 
-    populateOverviewTree();
-    m_overviewLoadedKey = key; // overview is now in sync with this commit
-
-    // Render the directory's README beneath the file list (GitHub-style).
-    if (m_readmeView && !readmePath.isEmpty()) {
+    // The directory's README, rendered beneath the file list (GitHub-style).
+    QString readmeMarkdown;
+    if (!readmePath.isEmpty()) {
         QByteArray readme;
         if (runGitCapture(dir, {"show", currentRef() + ":" + readmePath}, &readme,
                           nullptr) &&
             !readme.contains('\0'))
-            m_readmeView->setMarkdown(QString::fromUtf8(readme));
+            readmeMarkdown = QString::fromUtf8(readme);
     }
+
+    // Apply phase: all the git reads are done, so swap the widgets from the old
+    // overview to the new one together. Updates stay disabled across the swap so
+    // the page repaints exactly once — no cleared-then-refilled flicker.
+    QWidget *page = m_filesStack ? m_filesStack->widget(0) : nullptr;
+    if (page)
+        page->setUpdatesEnabled(false);
+    if (m_commitBar)
+        m_commitBar->setText(commitBarText);
+    if (m_historyButton)
+        m_historyButton->setText(historyText);
+    if (m_overviewCrumb)
+        m_overviewCrumb->setText(crumbText);
+    m_overviewRows = rows;
+    m_overviewRepoBytes = repoBytes;
+    if (!messageRow.isEmpty()) {
+        m_overviewList->clear();
+        new QTreeWidgetItem(m_overviewList, {messageRow});
+    } else {
+        populateOverviewTree();
+        m_overviewLoadedKey = key; // overview is now in sync with this commit
+    }
+    if (m_readmeView) {
+        if (!readmeMarkdown.isEmpty())
+            m_readmeView->setMarkdown(readmeMarkdown);
+        else
+            m_readmeView->clear();
+    }
+    if (page)
+        page->setUpdatesEnabled(true);
 }
 
 // Build the small per-row size bar widget shown in the overview's Size column:
@@ -2676,6 +2709,10 @@ void MainWindow::populateOverviewTree()
 {
     if (!m_overviewList)
         return;
+    // The rebuild is a clear plus an item insert and a size-bar widget per row;
+    // hold repaints until the tree is complete so it redraws once instead of
+    // flashing empty and repainting as rows land (also hit on sort clicks).
+    m_overviewList->setUpdatesEnabled(false);
     m_overviewList->clear();
 
     // A ".." row to step up a directory (kept pinned at the top, above the sort).
@@ -2742,6 +2779,7 @@ void MainWindow::populateOverviewTree()
                                 .arg(formatByteSize(e.size),
                                      QString::number(pct, 'f', pct < 10 ? 1 : 0)));
     }
+    m_overviewList->setUpdatesEnabled(true);
 }
 
 QString MainWindow::currentRef() const
@@ -6579,16 +6617,16 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync" button floats in the band just above the Commits tab
+    // The "Sync" button floats in the band just above the Code tab
     // (see positionRepoPushButton) rather than living in the tab row: it's an
     // overlay raised one above the tabs, so showing/hiding it as sync state
     // changes never reflows the tab content below — that shift is what read as the
     // whole view "resizing" on small screens, most visibly on Mirror nodes.
-    m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
+    m_repoPublishBar = nullptr; // no separate row: the button floats over Code
 
     // Issue-looper toggle (adhoc #130): a compact switch floating in the band
     // just above the Issues tab, mirroring how the Sync button floats over
-    // Commits. It both shows the loop's state and toggles it, so the loop is
+    // Code. It both shows the loop's state and toggles it, so the loop is
     // controllable and visible from any tab without an in-page banner. Created
     // parented to the window; positionLooperToggle reparents it onto the page.
     auto *looperToggle = new LooperToggle(this);

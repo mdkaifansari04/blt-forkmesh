@@ -141,12 +141,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
     // Settings → "Automatically update ForkMesh" (off by default on desktop, on
     // by default headless — see kAutoUpdateSetting): hourly check for a new
-    // commit, plus one shortly after launch so a stale headless install catches
-    // up quickly. maybeAutoUpdate() is a no-op whenever the setting is off.
+    // tagged release, plus one shortly after launch so a stale headless install
+    // catches up quickly. maybeAutoUpdate() is a no-op whenever the setting is
+    // off.
     m_autoUpdateTimer = new QTimer(this);
     connect(m_autoUpdateTimer, &QTimer::timeout, this, &MainWindow::maybeAutoUpdate);
     m_autoUpdateTimer->start(60 * 60 * 1000);
     QTimer::singleShot(5 * 60 * 1000, this, &MainWindow::maybeAutoUpdate);
+    // Chat messages are retained for 7 days (kChatMessageRetentionMs); sweep
+    // local history hourly so a node left running that long doesn't keep
+    // showing/serving messages the relay has already dropped (adhoc #49).
+    m_chatExpiryTimer = new QTimer(this);
+    connect(m_chatExpiryTimer, &QTimer::timeout, this,
+            &MainWindow::pruneExpiredChatHistory);
+    m_chatExpiryTimer->start(60 * 60 * 1000);
     // Radar: probe the active relay's round-trip latency once a minute (issue
     // #144), plus a first reading shortly after launch so the dish isn't stuck
     // on "…" while the UI settles.
