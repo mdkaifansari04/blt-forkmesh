@@ -200,6 +200,10 @@ if(FORKMESH_BUILD_TESTS)
         src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/ActionStore.h
+        src/ActionStore.cpp
+        src/RepoSecurity.h
+        src/RepoSecurity.cpp
         src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
