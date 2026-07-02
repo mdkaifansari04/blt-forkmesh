@@ -2545,8 +2545,16 @@ void MainWindow::probeRelayLatency()
                 radar->setUnreachable();
                 // While offline, re-probe on a short leash instead of waiting
                 // out the minute timer, so the dish flips back within seconds
-                // of the relay answering again (adhoc #41).
-                QTimer::singleShot(3000, this, &MainWindow::probeRelayLatency);
+                // of the relay answering again (adhoc #41). But a relay that's
+                // down for minutes shouldn't get hammered every 3s the whole
+                // time: back off exponentially (3s, 6s, 12s, ...) capped at
+                // the regular one-minute cadence. initRelayReachabilityWatch
+                // still fires an immediate probe the moment the OS reports the
+                // link back, so real recoveries aren't delayed by the backoff.
+                const int backoffSteps = qMax(0, m_relayProbeFailures - 2);
+                const qint64 delayMs =
+                    qMin<qint64>(3000LL << qMin(backoffSteps, 10), 60000);
+                QTimer::singleShot(delayMs, this, &MainWindow::probeRelayLatency);
             } else {
                 QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
             }
