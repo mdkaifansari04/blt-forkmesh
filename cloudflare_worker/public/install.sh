@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.4 (2026-07-02)"
+INSTALLER_VERSION="0.12.5 (2026-07-02)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -39,6 +39,15 @@ FORKMESH_NODE_NAME="${FORKMESH_NODE_NAME:-${FORKMESH_NODE:-}}"
 # the same code signed with its own key; the relay pairs the two halves and
 # records the new node under that user.
 FORKMESH_LINK_CODE="${FORKMESH_LINK_CODE:-}"
+# Direct-upload install (adhoc #67): the desktop app's Hosts panel can stream
+# the release binary over the SSH session itself instead of this machine
+# downloading it from the relay. FORKMESH_LOCAL_BINARY names the pre-uploaded
+# file; FORKMESH_LOCAL_OS / FORKMESH_LOCAL_ARCH record the platform the
+# uploader says it targets, so a mismatched upload falls back to the normal
+# relay download instead of installing a binary this machine cannot run.
+FORKMESH_LOCAL_BINARY="${FORKMESH_LOCAL_BINARY:-}"
+FORKMESH_LOCAL_OS="${FORKMESH_LOCAL_OS:-}"
+FORKMESH_LOCAL_ARCH="${FORKMESH_LOCAL_ARCH:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
@@ -614,10 +623,38 @@ install_prebuilt_release() {
   return 1
 }
 
+# Direct-upload fast path (adhoc #67): install a binary the deploying desktop
+# app already streamed onto this machine over the SSH session, skipping the
+# relay download entirely (useful when this host can't reach the release
+# endpoint, or to push exactly the build the operator is running). The
+# uploader's declared platform must match this machine; on any mismatch — or a
+# missing/empty upload — return non-zero so the normal download path runs.
+install_local_binary() {
+  [ -n "$FORKMESH_LOCAL_BINARY" ] || return 1
+  if [ ! -s "$FORKMESH_LOCAL_BINARY" ]; then
+    warn "Uploaded binary $FORKMESH_LOCAL_BINARY is missing or empty; falling back to a relay download."
+    return 1
+  fi
+  if [ -n "$FORKMESH_LOCAL_OS" ] && [ "$FORKMESH_LOCAL_OS" != "$ASSET_OS" ]; then
+    warn "Uploaded binary targets $FORKMESH_LOCAL_OS but this machine is $ASSET_OS; falling back to a relay download."
+    return 1
+  fi
+  if [ -n "$FORKMESH_LOCAL_ARCH" ] && [ "$FORKMESH_LOCAL_ARCH" != "$ASSET_ARCH" ]; then
+    warn "Uploaded binary targets $FORKMESH_LOCAL_ARCH but this machine is $ASSET_ARCH; falling back to a relay download."
+    return 1
+  fi
+  _install_binary "$FORKMESH_LOCAL_BINARY" || return 1
+  say "Installed the directly-uploaded ForkMesh binary to $BIN"
+  return 0
+}
+
 detect_release_asset
 if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
   CURRENT_STEP="prebuilt"
-  if install_prebuilt_release; then
+  if install_local_binary; then
+    INSTALLED_PREBUILT=1
+    diag prebuilt 1 "uploaded"
+  elif install_prebuilt_release; then
     INSTALLED_PREBUILT=1
     diag prebuilt 1 "$ASSET_NAME"
   elif [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
