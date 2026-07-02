@@ -63,7 +63,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     return row;
 }
 
-void MainWindow::rebuildConversationView()
+void MainWindow::renderConversationRows()
 {
     // Drop existing rows (keep the trailing stretch at the end).
     m_visibleRows.clear();
@@ -75,6 +75,11 @@ void MainWindow::rebuildConversationView()
     }
     for (const ChatMessage &message : m_history.value(m_currentConversation))
         addMessageRow(message);
+}
+
+void MainWindow::rebuildConversationView()
+{
+    renderConversationRows();
     // Switching into a conversation always lands at the newest message.
     scrollToBottom();
 }
@@ -118,14 +123,26 @@ void MainWindow::onMessage(const ChatMessage &message)
         }
     }
 
-    m_history[conversation].append(message);
+    // Keep history sorted oldest-to-newest by send time, so the transcript
+    // always reads with the most recent message at the bottom even when a
+    // message arrives out of order (e.g. a peer replaying missed history after
+    // a reconnect delivers something older than what's already shown).
+    QList<ChatMessage> &conversationHistory = m_history[conversation];
+    int insertAt = conversationHistory.size();
+    while (insertAt > 0 && conversationHistory.at(insertAt - 1).timestampMs > message.timestampMs)
+        --insertAt;
+    conversationHistory.insert(insertAt, message);
+    const bool appendedAtEnd = insertAt == conversationHistory.size() - 1;
 
     // Keep the live transcript current when this conversation is loaded, even if
     // the chat view isn't on screen right now (so returning to it shows the new
     // rows without a rebuild).
     if (conversation == m_currentConversation) {
         const bool wasAtBottom = m_stickToBottom;
-        addMessageRow(message);
+        if (appendedAtEnd)
+            addMessageRow(message);
+        else
+            renderConversationRows(); // landed earlier in the transcript
         // Follow new arrivals only when already reading the latest; the
         // rangeChanged handler does the actual scrolling once the row lays out.
         if (wasAtBottom)
