@@ -1577,6 +1577,11 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Fetch the worker's per-artifact release download counts (logged each time
+    // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
+    // show how many times each artifact has been downloaded.
+    void fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
+                                    const QString &source);
     // Mirror the repo's release artifacts: pull any content-addressed binary blobs
     // this node doesn't already hold (the metadata is in git, the bytes are not —
     // issue #304) into its release store, so a mirror can serve downloads too and
@@ -3834,6 +3839,13 @@ private:
     QJsonArray m_catalogMirrorsCache;      // last /mirrors payload's "mirrors"
     QString m_catalogMirrorsFetchSource;   // source the last fetch was kicked for
     qint64 m_catalogMirrorsFetchedMs = 0;  // throttle: last fetch kick time
+    // Per-artifact release download counts for the repo currently shown in the
+    // Releases panel (sha256 -> times downloaded), from the worker's
+    // /releases/downloads endpoint.
+    QString m_releaseDownloadsSource;      // "owner/name" the cache holds
+    QHash<QString, int> m_releaseDownloadsCache; // sha256 -> download count
+    QString m_releaseDownloadsFetchSource; // source the last fetch was kicked for
+    qint64 m_releaseDownloadsFetchedMs = 0; // throttle: last fetch kick time
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
     QSet<int> m_syncingRepos;
