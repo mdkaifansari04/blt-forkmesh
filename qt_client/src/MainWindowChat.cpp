@@ -4542,6 +4542,15 @@ QString MainWindow::installScriptUrl() const
     return url.toString();
 }
 
+QString MainWindow::uninstallScriptUrl() const
+{
+    QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
+    url.setPath(QStringLiteral("/uninstall.sh"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url.toString();
+}
+
 QWidget *MainWindow::buildHostsSection()
 {
     auto *page = new QWidget;
@@ -4659,8 +4668,10 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *hostsHint = new QLabel(QString::fromUtf8(
         "Click Update on a saved host to re-run the installer and bring it up to "
-        "the latest ForkMesh release. Double-click a host instead to reload it "
-        "into the form above for editing."));
+        "the latest ForkMesh release. Click Uninstall to completely remove "
+        "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
+        "that host. Double-click a host instead to reload it into the form "
+        "above for editing."));
     hostsHint->setObjectName("mutedLabel");
     hostsHint->setWordWrap(true);
     bodyCol->addWidget(hostsHint);
@@ -4733,6 +4744,33 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(updateBtn);
+
+        // Per-row Uninstall button: reload the saved host into the form and run
+        // the hosted uninstaller against it, after a confirmation prompt since it
+        // wipes the node's identity key and all mirrored data on that host.
+        auto *uninstallBtn = new QPushButton(QStringLiteral("Uninstall"));
+        uninstallBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(uninstallBtn, "trash", 12);
+        connect(uninstallBtn, &QPushButton::clicked, this, [this, i] {
+            const QString name =
+                m_hostsTable->item(i, 0) ? m_hostsTable->item(i, 0)->text() : QString();
+            const auto reply = QMessageBox::question(
+                this, QStringLiteral("Uninstall ForkMesh"),
+                QString::fromUtf8(
+                    "This completely removes ForkMesh from \"%1\": the binary, "
+                    "launcher, node identity key and ALL mirrored repositories "
+                    "and chat history on that host. This cannot be undone. "
+                    "Continue?")
+                    .arg(name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (reply != QMessageBox::Yes)
+                return;
+            QTimer::singleShot(0, this, [this, i] {
+                loadHostIntoForm(i, 0);
+                runHostUninstall();
+            });
+        });
+        cellRow->addWidget(uninstallBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
 }
@@ -5347,6 +5385,133 @@ void MainWindow::runHostInstall()
     proc->start(QStringLiteral("sshpass"), sshArgs);
     // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
     // the remote shell. Closing the channel hands the installer a clean EOF.
+    if (needSudo)
+        proc->write((pass + QStringLiteral("\n")).toUtf8());
+    proc->closeWriteChannel();
+}
+
+void MainWindow::runHostUninstall()
+{
+    if (m_hostInstallProcess &&
+        m_hostInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host session is already running."));
+        return;
+    }
+
+    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
+    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
+    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
+    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QString::fromUtf8(
+                "Enter the host IP, SSH username, password and a node name "
+                "first."));
+        return;
+    }
+    const QString uninstallUrl = uninstallScriptUrl();
+    if (uninstallUrl.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not resolve the uninstaller URL."));
+        return;
+    }
+
+    auto shq = [](const QString &s) {
+        QString out = s;
+        out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QStringLiteral("'") + out + QStringLiteral("'");
+    };
+    // FORKMESH_ASSUME_YES=1 skips the uninstaller's interactive "Type DELETE"
+    // confirmation: this SSH session has no tty attached, so the script would
+    // otherwise refuse to run non-interactively. The Qt-side confirmation
+    // dialog (shown before this is called) is the real gate.
+    const QString pipeline = QStringLiteral("curl -fsSL %1 | FORKMESH_ASSUME_YES=1 bash")
+                                  .arg(shq(uninstallUrl));
+    const bool needSudo = user != QStringLiteral("root");
+    const QString remoteCmd =
+        needSudo
+            ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
+            : pipeline;
+
+    const QStringList sshArgs = {
+        QStringLiteral("-e"), QStringLiteral("ssh"),
+        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
+        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+        user + QStringLiteral("@") + ip, remoteCmd};
+
+    rememberHost(node, ip, user, pass, QStringLiteral("uninstalling"));
+
+    m_hostInstallLog->clear();
+    m_hostInstallLogCarry.clear();
+    m_hostInstallLogFg = -1;
+    m_hostInstallLogBold = false;
+    appendHostInstallLog(
+        QStringLiteral("$ ssh %1@%2 %3\n").arg(user, ip, remoteCmd));
+    appendHostInstallLog(
+        QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
+            .arg(ip, user, uninstallUrl));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Uninstalling from %1\xE2\x80\xA6").arg(ip));
+    if (m_hostInstallButton)
+        m_hostInstallButton->setEnabled(false);
+
+    auto *proc = new QProcess(this);
+    m_hostInstallProcess = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    // Hand the SSH password to sshpass via the environment so it never lands in
+    // argv or on disk.
+    env.insert(QStringLiteral("SSHPASS"), pass);
+    proc->setProcessEnvironment(env);
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        appendHostInstallLog(QString::fromUtf8(proc->readAllStandardOutput()));
+    });
+    connect(proc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart)
+            appendHostInstallLog(QString::fromUtf8(
+                "\n[error] Could not start sshpass/ssh. Install openssh-client "
+                "and sshpass on this machine and try again.\n"));
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, ip, user, node, pass](int code, QProcess::ExitStatus status) {
+                if (m_hostInstallButton)
+                    m_hostInstallButton->setEnabled(true);
+                const bool ok = status == QProcess::NormalExit && code == 0;
+                if (ok) {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\n\xE2\x9C\x94 Uninstall finished. ForkMesh has been "
+                        "removed from \"%1\".\n").arg(node));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(QString::fromUtf8(
+                            "\xE2\x9C\x94 Uninstalled from %1.").arg(ip));
+                    rememberHost(node, ip, user, pass, QStringLiteral("uninstalled"));
+                } else {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\n\xE2\x9C\x98 Uninstall failed (exit %1).\n").arg(code));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(QString::fromUtf8(
+                            "\xE2\x9C\x98 Uninstall failed \xE2\x80\x94 see the "
+                            "output above."));
+                    rememberHost(node, ip, user, pass, QStringLiteral("uninstall failed"));
+                }
+                if (m_hostInstallProcess) {
+                    m_hostInstallProcess->deleteLater();
+                    m_hostInstallProcess = nullptr;
+                }
+            });
+
+    proc->start(QStringLiteral("sshpass"), sshArgs);
+    // Feed sudo's password on stdin (consumed by `sudo -S`); ssh forwards it to
+    // the remote shell. Closing the channel hands the uninstaller a clean EOF.
     if (needSudo)
         proc->write((pass + QStringLiteral("\n")).toUtf8());
     proc->closeWriteChannel();

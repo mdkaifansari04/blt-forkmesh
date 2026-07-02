@@ -719,6 +719,9 @@ private:
     // up in the per-repo Mirror nodes list on its own.
     QWidget *buildHostsSection();
     void runHostInstall();
+    // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
+    // which removes the ForkMesh binary, launcher and ALL of that host's data.
+    void runHostUninstall();
     void appendHostInstallLog(const QString &text);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
@@ -732,6 +735,8 @@ private:
     void loadHostIntoForm(int row, int column);
     // URL of the hosted installer script the remote host curls and runs.
     QString installScriptUrl() const;
+    // URL of the hosted uninstaller script the remote host curls and runs.
+    QString uninstallScriptUrl() const;
 
     // Relays: a sibling of Hosts that lists the configured mainnode relays with
     // their live online status, round-trip response time and running version.
