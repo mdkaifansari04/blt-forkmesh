@@ -121,11 +121,12 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 7);
+    m_releasesTable = new QTableWidget(0, 10);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels(
-        {"Tag", "Commit", "Released", "Release notes", "Compare", "Artifacts", ""});
+        {"Tag", "Commit", "Released", "Release notes", "Compare", "Artifacts",
+         "Size", "SHA-256", "Downloads", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -141,6 +142,9 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(5, QHeaderView::Stretch);
     rh->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(7, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(8, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(9, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the release too, matching the arrow-key
@@ -434,13 +438,24 @@ void MainWindow::loadReleasesPanel()
                                     m_releaseDownloadsSource == dlSource;
 
     // Artifacts column holds rich-text links, so key it on the rendered HTML.
+    // Size/SHA-256/Downloads get their own plain-text columns (one comma-joined
+    // entry per asset, positionally matching the Artifacts links) instead of
+    // being crammed into the Artifacts cell.
     QHash<QString, QString> artifactsByTag;
+    QHash<QString, QString> sizeByTag;
+    QHash<QString, QString> shaByTag;
+    QHash<QString, QString> shaTooltipByTag;
+    QHash<QString, QString> downloadsByTag;
     // The "latest" channel is what install.sh actually downloads as the current
     // release, regardless of which tag it was cut from. Remember its rendered
     // artifacts (and source tag) so the newest release row can surface them even
     // when that release's own build hasn't published a manifest yet.
     QString latestChannelHtml;
     QString latestChannelTag;
+    QString latestChannelSize;
+    QString latestChannelSha;
+    QString latestChannelShaTooltip;
+    QString latestChannelDownloads;
     if (!dir.isEmpty()) {
         const QDir releasesDir(dir + QStringLiteral("/releases"));
         const QStringList channels =
@@ -464,6 +479,10 @@ void MainWindow::loadReleasesPanel()
             const QString manifestRepo =
                 obj.value(QStringLiteral("repo")).toString().trimmed();
             QStringList assetLinks;
+            QStringList sizeParts;
+            QStringList shaParts;
+            QStringList shaTooltipParts;
+            QStringList downloadParts;
             const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
             for (const QJsonValue &asset : assets) {
                 const QJsonObject a = asset.toObject();
@@ -489,36 +508,46 @@ void MainWindow::loadReleasesPanel()
                 } else {
                     entry = escaped;
                 }
-                // Show the sha256 checksum next to each artifact so it can be
-                // eyeballed against the value install.sh verifies. The full
-                // 64-char digest would blow out the column width, so render an
-                // abbreviated form and keep the full hash in the hover tooltip.
-                if (hashValid) {
-                    entry += QStringLiteral(
-                                 " <span title=\"sha256:%1\" "
-                                 "style=\"color:#8b949e;font-family:monospace;"
-                                 "font-size:11px\">sha256:%2</span>")
-                                 .arg(hash, hash.left(12));
-                    // Download tally the relay has logged for this exact blob.
-                    if (haveDownloadCounts) {
-                        const int downloads = m_releaseDownloadsCache.value(hash, 0);
-                        entry += QStringLiteral(
-                                     " <span style=\"color:#8b949e;"
-                                     "font-size:11px\">&middot; %1 "
-                                     "download%2</span>")
-                                     .arg(downloads)
-                                     .arg(downloads == 1 ? "" : "s");
-                    }
-                }
                 assetLinks.append(entry);
+
+                // Artifact byte size, as recorded by
+                // tools/forkmesh-release-publish.sh when it staged the blob.
+                const qint64 size =
+                    static_cast<qint64>(a.value(QStringLiteral("size")).toDouble());
+                sizeParts.append(size > 0 ? QLocale().formattedDataSize(size)
+                                          : QStringLiteral("—"));
+
+                // Abbreviated sha256 for the column, full digest in the tooltip —
+                // the full 64-char hex would blow out the column width.
+                shaParts.append(hashValid ? hash.left(12) : QStringLiteral("—"));
+                shaTooltipParts.append(hashValid ? QStringLiteral("sha256:%1").arg(hash)
+                                                 : QString());
+
+                // Download tally the relay has logged for this exact blob.
+                if (hashValid && haveDownloadCounts)
+                    downloadParts.append(
+                        QString::number(m_releaseDownloadsCache.value(hash, 0)));
+                else
+                    downloadParts.append(QStringLiteral("—"));
             }
             if (!assetLinks.isEmpty()) {
                 const QString joined = assetLinks.join(QStringLiteral(", "));
                 artifactsByTag.insert(manifestTag, joined);
+                sizeByTag.insert(manifestTag, sizeParts.join(QStringLiteral(", ")));
+                shaByTag.insert(manifestTag, shaParts.join(QStringLiteral(", ")));
+                shaTooltipByTag.insert(
+                    manifestTag,
+                    shaTooltipParts.join(QStringLiteral("\n")).trimmed());
+                downloadsByTag.insert(manifestTag,
+                                      downloadParts.join(QStringLiteral(", ")));
                 if (channel.compare(QStringLiteral("latest"),
                                     Qt::CaseInsensitive) == 0) {
                     latestChannelHtml = joined;
                     latestChannelTag = manifestTag;
+                    latestChannelSize = sizeByTag.value(manifestTag);
+                    latestChannelSha = shaByTag.value(manifestTag);
+                    latestChannelShaTooltip = shaTooltipByTag.value(manifestTag);
+                    latestChannelDownloads = downloadsByTag.value(manifestTag);
                 }
             }
         }
@@ -540,13 +569,18 @@ void MainWindow::loadReleasesPanel()
                        "%(contents:subject)%1f"
                        "%(*objectname:short)%1f"
                        "%(objectname:short)%1f"
-                       "%(taggername)"},
+                       "%(taggername)%1f"
+                       "%(contents:body)%1e"},
                       &out, nullptr)) {
+        // Records are RS-separated (%1e) rather than newline-separated, because
+        // the trailing contents:body field can itself contain embedded newlines
+        // (the "What's Changed" bullet list) — splitting on '\n' would otherwise
+        // shred one release's record into several bogus rows.
         QStringList tagLines;
-        for (const QByteArray &line : out.split('\n')) {
-            const QString text = QString::fromUtf8(line);
-            if (!text.trimmed().isEmpty())
-                tagLines << text;
+        for (const QString &record :
+             QString::fromUtf8(out).split(QLatin1Char('\x1e'))) {
+            if (!record.trimmed().isEmpty())
+                tagLines << record;
         }
         for (int i = 0; i < tagLines.size(); ++i) {
             const QStringList f = tagLines.at(i).split(QLatin1Char('\x1f'));
@@ -596,7 +630,38 @@ void MainWindow::loadReleasesPanel()
             if (!tagger.isEmpty())
                 whenItem->setToolTip(QStringLiteral("Tagged by %1").arg(tagger));
             m_releasesTable->setItem(row, 2, whenItem);
-            m_releasesTable->setItem(row, 3, new QTableWidgetItem(f.value(2).trimmed()));
+
+            // Release notes column: promptNewRelease defaults the tag message's
+            // title to the tag name itself when the user leaves Title blank (the
+            // usual case for auto-generated releases), so contents:subject alone
+            // is almost always just a copy of the Tag column — not the release's
+            // actual notes, which live in the tag body below the title. Prefer a
+            // real title when one was typed; otherwise fall back to the first
+            // line of the body (skipping the auto-generated "## What's Changed"
+            // heading) so this column shows something distinct from Tag.
+            const QString subject = f.value(2).trimmed();
+            const QString body = f.value(6).trimmed();
+            QString notesPreview = subject;
+            if (notesPreview.isEmpty() ||
+                notesPreview.compare(tag, Qt::CaseInsensitive) == 0) {
+                for (const QString &rawLine : body.split(QLatin1Char('\n'))) {
+                    QString line = rawLine.trimmed();
+                    if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+                        continue;
+                    if (line.startsWith(QStringLiteral("* ")))
+                        line = line.mid(2).trimmed();
+                    notesPreview = line;
+                    break;
+                }
+            }
+            if (notesPreview.isEmpty())
+                notesPreview = QStringLiteral("—");
+            auto *notesItem = new QTableWidgetItem(notesPreview);
+            const QString notesTooltip =
+                body.isEmpty() ? subject : subject + QStringLiteral("\n\n") + body;
+            if (!notesTooltip.trimmed().isEmpty())
+                notesItem->setToolTip(notesTooltip);
+            m_releasesTable->setItem(row, 3, notesItem);
 
             // Compare column: a GitHub-style link to the diff since the previous
             // release. The actual diff is computed on demand by showReleaseDetail
@@ -625,6 +690,10 @@ void MainWindow::loadReleasesPanel()
             // The asset names are rendered as live-download links, so use a
             // rich-text label cell that opens the URL in the browser on click.
             QString artifactsHtml = artifactsByTag.value(tag);
+            QString sizeText = sizeByTag.value(tag);
+            QString shaText = shaByTag.value(tag);
+            QString shaTooltip = shaTooltipByTag.value(tag);
+            QString downloadsText = downloadsByTag.value(tag);
             // The newest release should always show a downloadable artifact when
             // one exists. If this top row has no manifest of its own yet (its
             // build hasn't published, so the tag-keyed lookup is empty), fall back
@@ -637,6 +706,10 @@ void MainWindow::loadReleasesPanel()
                     QStringLiteral(" <span style=\"color:#8b949e;"
                                    "font-size:11px\">latest &middot; %1</span>")
                         .arg(latestChannelTag.toHtmlEscaped());
+                sizeText = latestChannelSize;
+                shaText = latestChannelSha;
+                shaTooltip = latestChannelShaTooltip;
+                downloadsText = latestChannelDownloads;
             }
             if (artifactsHtml.isEmpty()) {
                 m_releasesTable->setItem(row, 5, new QTableWidgetItem(QString()));
@@ -651,6 +724,29 @@ void MainWindow::loadReleasesPanel()
                 m_releasesTable->setCellWidget(row, 5, artifacts);
             }
 
+            auto *sizeItem = new QTableWidgetItem(
+                sizeText.isEmpty() ? QStringLiteral("—") : sizeText);
+            sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            sizeItem->setForeground(QColor("#8b949e"));
+            m_releasesTable->setItem(row, 6, sizeItem);
+
+            auto *shaItem = new QTableWidgetItem(
+                shaText.isEmpty() ? QStringLiteral("—") : shaText);
+            shaItem->setFont(QFont(QStringLiteral("monospace")));
+            shaItem->setForeground(QColor("#8b949e"));
+            if (!shaTooltip.isEmpty())
+                shaItem->setToolTip(shaTooltip);
+            m_releasesTable->setItem(row, 7, shaItem);
+
+            // Downloads only reads as "0" once the relay's per-hash tally has
+            // actually loaded (haveDownloadCounts); until then every asset shows
+            // "—" rather than a misleading zero.
+            auto *downloadsItem = new QTableWidgetItem(
+                downloadsText.isEmpty() ? QStringLiteral("—") : downloadsText);
+            downloadsItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            downloadsItem->setForeground(QColor("#8b949e"));
+            m_releasesTable->setItem(row, 8, downloadsItem);
+
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
             del->setFlat(true);
@@ -660,7 +756,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 6, del);
+            m_releasesTable->setCellWidget(row, 9, del);
             ++count;
         }
     }
