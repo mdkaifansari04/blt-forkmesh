@@ -484,6 +484,28 @@ QString diffImageMimeForPath(const QString &path)
     return QString();
 }
 
+// A diff can carry an attacker-influenced image straight into an auto-rendered
+// view (an untrusted PR's asset, or a file an issue agent fetched), so it isn't
+// enough to trust the ".png" extension and hand the bytes to QTextDocument's
+// image loader. QImageReader::canRead() sniffs the actual content, and size()
+// reads just the format header for PNG/JPEG/GIF/BMP — no pixel decode yet — so
+// this rejects both non-images and "decompression bomb" images (a small file
+// whose declared dimensions would blow up to a huge pixel buffer once decoded)
+// without paying the decode cost ourselves.
+bool diffImageSafeToDecode(const QByteArray &bytes)
+{
+    QBuffer buf;
+    buf.setData(bytes);
+    buf.open(QIODevice::ReadOnly);
+    QImageReader reader(&buf);
+    if (!reader.canRead())
+        return false;
+    const QSize size = reader.size();
+    constexpr qint64 kMaxPixels = 40'000'000; // ~40MP, comfortably above any diff asset
+    return !size.isValid() ||
+           qint64(size.width()) * qint64(size.height()) <= kMaxPixels;
+}
+
 QString diffImageCellHtml(const QString &label, const QString &path,
                           const QString &mime, const QByteArray &bytes)
 {
@@ -493,6 +515,11 @@ QString diffImageCellHtml(const QString &label, const QString &path,
         return QStringLiteral("<td class='imgcell'><div class='imgempty'>Not "
                               "present</div>%1</td>")
             .arg(caption);
+    if (!diffImageSafeToDecode(bytes))
+        return QStringLiteral("<td class='imgcell'><div class='imgempty'>Preview "
+                              "skipped (unrecognized or oversized image)</div>%1"
+                              "</td>")
+            .arg(caption);
     return QStringLiteral("<td class='imgcell'><img alt=\"%1: %2\" src=\"data:%3;"
                           "base64,%4\">%5</td>")
         .arg(label.toHtmlEscaped(), path.toHtmlEscaped(), mime,
@@ -500,21 +527,41 @@ QString diffImageCellHtml(const QString &label, const QString &path,
 }
 
 QString diffImagePreviewHtml(const QString &dir, const QString &base,
-                             const QString &head, const QString &path)
+                             const QString &head, const DiffFileEntry &f)
 {
     constexpr int kMaxInlineImageBytes = 512 * 1024;
+    const QString &path = f.path;
     const QString mime = diffImageMimeForPath(path);
     if (mime.isEmpty())
         return QString();
 
+    // An empty base/head isn't "read the index" (what `git show :path` would do)
+    // — it means the caller has no commit for that side at all: the Source
+    // Control and live agent-diff views pass "" for whichever side is the
+    // uncommitted working tree, and `:path` is simply missing for a brand-new
+    // untracked file. Read the intended content directly instead so a freshly
+    // added/edited image actually previews (adhoc #61).
     QByteArray oldBytes;
-    if (!runGitCapture(dir, {"show", base + ":" + path}, &oldBytes, nullptr) ||
-        oldBytes.size() > kMaxInlineImageBytes)
-        oldBytes.clear();
+    if (f.status != QLatin1String("added") && !dir.isEmpty()) {
+        const QString oldRef = base.isEmpty() ? QStringLiteral("HEAD") : base;
+        if (!runGitCapture(dir, {"show", oldRef + ":" + path}, &oldBytes, nullptr) ||
+            oldBytes.size() > kMaxInlineImageBytes)
+            oldBytes.clear();
+    }
     QByteArray newBytes;
-    if (!runGitCapture(dir, {"show", head + ":" + path}, &newBytes, nullptr) ||
-        newBytes.size() > kMaxInlineImageBytes)
-        newBytes.clear();
+    if (f.status != QLatin1String("deleted")) {
+        if (head.isEmpty()) {
+            if (!dir.isEmpty()) {
+                QFile file(QDir(dir).filePath(path));
+                if (file.open(QIODevice::ReadOnly))
+                    newBytes = file.readAll();
+            }
+        } else {
+            runGitCapture(dir, {"show", head + ":" + path}, &newBytes, nullptr);
+        }
+        if (newBytes.size() > kMaxInlineImageBytes)
+            newBytes.clear();
+    }
     if (oldBytes.isEmpty() && newBytes.isEmpty())
         return QString();
 
@@ -716,7 +763,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         const bool viewed = viewedFiles.contains(f.path);
         html += diffFileHeaderHtml(f, viewed, anchors);
         if (!viewed) {
-            html += diffImagePreviewHtml(dir, base, head, f.path);
+            html += diffImagePreviewHtml(dir, base, head, f);
             html += QStringLiteral(
                 "<table class='difftable' cellspacing='0' cellpadding='0'>");
         }
@@ -970,7 +1017,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         const bool viewed = viewedFiles.contains(f.path);
         html += diffFileHeaderHtml(f, viewed, anchors);
         if (!viewed) {
-            html += diffImagePreviewHtml(dir, base, head, f.path);
+            html += diffImagePreviewHtml(dir, base, head, f);
             html += QStringLiteral(
                 "<table class='difftable' cellspacing='0' cellpadding='0'>");
         }
