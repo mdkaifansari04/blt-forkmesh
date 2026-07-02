@@ -37,7 +37,8 @@ class InboxService {
   String _sha256Hex(String content) =>
       crypto.sha256.convert(utf8.encode(content)).toString();
 
-  Future<String> _sign(String canonical) => _identity.sign(utf8.encode(canonical));
+  Future<String> _sign(String canonical) =>
+      _identity.sign(utf8.encode(canonical));
 
   // ---- issues -------------------------------------------------------------
 
@@ -74,7 +75,10 @@ class InboxService {
   }
 
   Future<Map<String, dynamic>> _signedIssueEvent(
-      int number, String type, Map<String, dynamic> fields) async {
+    int number,
+    String type,
+    Map<String, dynamic> fields,
+  ) async {
     final ts = _now;
     final ev = <String, dynamic>{'type': type, ...fields};
     final contentHash = _sha256Hex(_issueContent(type, ev));
@@ -115,22 +119,41 @@ class InboxService {
     });
   }
 
-  Future<void> commentOnIssue(String owner, String name, int number, String body) async {
+  Future<void> commentOnIssue(
+    String owner,
+    String name,
+    int number,
+    String body,
+  ) async {
     final event = await _signedIssueEvent(number, 'comment', {
       'body': body,
       'attachments': const <String>[],
     });
-    await _post(_repoEndpoint(owner, name, 'issues'), {'number': number, 'event': event});
+    await _post(_repoEndpoint(owner, name, 'issues'), {
+      'number': number,
+      'event': event,
+    });
   }
 
   Future<void> voteOnIssue(String owner, String name, int number) async {
     final event = await _signedIssueEvent(number, 'vote', const {});
-    await _post(_repoEndpoint(owner, name, 'issues'), {'number': number, 'event': event});
+    await _post(_repoEndpoint(owner, name, 'issues'), {
+      'number': number,
+      'event': event,
+    });
   }
 
-  Future<void> setIssueStatus(String owner, String name, int number, String status) async {
+  Future<void> setIssueStatus(
+    String owner,
+    String name,
+    int number,
+    String status,
+  ) async {
     final event = await _signedIssueEvent(number, 'status', {'status': status});
-    await _post(_repoEndpoint(owner, name, 'issues'), {'number': number, 'event': event});
+    await _post(_repoEndpoint(owner, name, 'issues'), {
+      'number': number,
+      'event': event,
+    });
   }
 
   // ---- pull requests ------------------------------------------------------
@@ -170,7 +193,12 @@ class InboxService {
         return [ev['state'] ?? '', ev['body'] ?? ''].join('\x00');
       case 'line-comment':
         final line = '${(ev['line'] as num?)?.toInt() ?? 0}';
-        return [ev['path'] ?? '', ev['side'] ?? '', line, ev['body'] ?? ''].join('\x00');
+        return [
+          ev['path'] ?? '',
+          ev['side'] ?? '',
+          line,
+          ev['body'] ?? '',
+        ].join('\x00');
       case 'thread-comment':
         final lineStart = '${(ev['lineStart'] as num?)?.toInt() ?? 0}';
         final lineEnd = '${(ev['lineEnd'] as num?)?.toInt() ?? 0}';
@@ -184,11 +212,17 @@ class InboxService {
           ev['suggestionPatch'] ?? '',
         ].join('\x00');
       case 'thread-reply':
-        return [ev['threadId'] ?? '', ev['parentId'] ?? '', ev['body'] ?? '']
-            .join('\x00');
+        return [
+          ev['threadId'] ?? '',
+          ev['parentId'] ?? '',
+          ev['body'] ?? '',
+        ].join('\x00');
       case 'thread-state':
-        return [ev['threadId'] ?? '', ev['state'] ?? '', ev['body'] ?? '']
-            .join('\x00');
+        return [
+          ev['threadId'] ?? '',
+          ev['state'] ?? '',
+          ev['body'] ?? '',
+        ].join('\x00');
       case 'suggestion-state':
         return [
           ev['threadId'] ?? '',
@@ -202,7 +236,10 @@ class InboxService {
   }
 
   Future<Map<String, dynamic>> _signedPullComment(
-      int number, String type, Map<String, dynamic> fields) async {
+    int number,
+    String type,
+    Map<String, dynamic> fields,
+  ) async {
     final ts = _now;
     final ev = <String, dynamic>{'type': type, ...fields};
     final contentHash = _sha256Hex(_pullCommentContent(type, ev));
@@ -215,24 +252,133 @@ class InboxService {
     return ev;
   }
 
-  Future<void> commentOnPull(String owner, String name, int number, String body) async {
+  Future<void> commentOnPull(
+    String owner,
+    String name,
+    int number,
+    String body,
+  ) async {
     final event = await _signedPullComment(number, 'comment', {'body': body});
-    await _post(_repoEndpoint(owner, name, 'pulls'), {'number': number, 'event': event});
+    await _post(_repoEndpoint(owner, name, 'pulls'), {
+      'number': number,
+      'event': event,
+    });
   }
 
   /// [state] is "approve" | "request-changes" | "comment".
   Future<void> reviewPull(
-      String owner, String name, int number, String state, String body) async {
-    final event = await _signedPullComment(number, 'review', {'state': state, 'body': body});
-    await _post(_repoEndpoint(owner, name, 'pulls'), {'number': number, 'event': event});
+    String owner,
+    String name,
+    int number,
+    String state,
+    String body,
+  ) async {
+    final event = await _signedPullComment(number, 'review', {
+      'state': state,
+      'body': body,
+    });
+    await _post(_repoEndpoint(owner, name, 'pulls'), {
+      'number': number,
+      'event': event,
+    });
+  }
+
+  // ---- commit comments -----------------------------------------------------
+
+  Future<void> commentOnCommit(
+    String owner,
+    String name,
+    String sha,
+    String body,
+  ) async {
+    final ts = _now;
+    final contentHash = _sha256Hex(body);
+    final canonical =
+        'forkmesh-commit-comment-v1\n$sha\n$_author\n$ts\n$contentHash';
+    final sig = await _sign(canonical);
+    await _post(_repoEndpoint(owner, name, 'commits'), {
+      'sha': sha,
+      'comment': {'body': body, 'author': _author, 'ts': ts, 'sig': sig},
+    });
+  }
+
+  // ---- discussions ---------------------------------------------------------
+
+  String _discussionContent(String type, Map<String, dynamic> ev) {
+    switch (type) {
+      case 'open':
+        return [
+          ev['title'] ?? '',
+          ev['body'] ?? '',
+          ev['category'] ?? '',
+        ].join('\x00');
+      case 'comment':
+        return (ev['body'] ?? '').toString();
+      default:
+        return '';
+    }
+  }
+
+  Future<Map<String, dynamic>> _signedDiscussionEvent(
+    int number,
+    String type,
+    Map<String, dynamic> fields,
+  ) async {
+    final ts = _now;
+    final ev = <String, dynamic>{'type': type, ...fields};
+    final contentHash = _sha256Hex(_discussionContent(type, ev));
+    final canonical =
+        'forkmesh-discussion-event-v1\n$type\n$number\n$_author\n$ts\n$contentHash';
+    final sig = await _sign(canonical);
+    ev['author'] = _author;
+    ev['ts'] = ts;
+    ev['sig'] = sig;
+    return ev;
+  }
+
+  Future<void> submitNewDiscussion(
+    String owner,
+    String name, {
+    required String title,
+    required String body,
+    String category = 'general',
+  }) async {
+    final event = await _signedDiscussionEvent(0, 'open', {
+      'title': title,
+      'body': body,
+      'category': category,
+    });
+    await _post(_repoEndpoint(owner, name, 'discussions'), {
+      'number': 0,
+      'titleIfNew': title,
+      'event': event,
+    });
+  }
+
+  Future<void> commentOnDiscussion(
+    String owner,
+    String name,
+    int number,
+    String body,
+  ) async {
+    final event = await _signedDiscussionEvent(number, 'comment', {
+      'body': body,
+    });
+    await _post(_repoEndpoint(owner, name, 'discussions'), {
+      'number': number,
+      'event': event,
+    });
   }
 
   // ---- transport ----------------------------------------------------------
 
   Future<void> _post(Uri uri, Map<String, dynamic> body) async {
     final resp = await http
-        .post(uri,
-            headers: {'Content-Type': 'application/json'}, body: jsonEncode(body))
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 20));
     if (resp.statusCode == 200 || resp.statusCode == 201) return;
     String detail = 'HTTP ${resp.statusCode}';

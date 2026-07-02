@@ -1,3 +1,46 @@
+From 3be025ada5151d7e0ee1a1d0e37c18d2e7c3f6ad Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM@forkmesh>
+Date: Thu, 2 Jul 2026 17:32:08 -0400
+Subject: [PATCH] feat: polish mobile app experience and add QA coverage
+ (code/tests)
+
+Split from the original mobile polish PR because the full payload exceeded the remote pull inbox storage path. This part contains the Flutter code, tests, pubspec, and issue metadata changes; local pulls/* metadata and QA screenshot binaries are excluded.
+---
+ flutter_app/lib/main.dart                     |   78 +-
+ flutter_app/lib/screens/activity_screen.dart  |  221 +++
+ flutter_app/lib/screens/auth_mock_flow.dart   |  162 ++-
+ flutter_app/lib/screens/chat_screen.dart      |  276 ++--
+ flutter_app/lib/screens/home_shell.dart       |  333 ++++-
+ .../lib/screens/notifications_screen.dart     |  490 +++----
+ .../lib/screens/repo_detail_screen.dart       | 1275 +++++++++++++----
+ flutter_app/lib/screens/repos_screen.dart     |  238 +--
+ flutter_app/lib/screens/settings_screen.dart  |  421 +++---
+ flutter_app/lib/services/api_service.dart     |  162 ++-
+ flutter_app/lib/services/auth_service.dart    |   62 +-
+ flutter_app/lib/services/identity.dart        |    4 +-
+ flutter_app/lib/services/inbox_service.dart   |   46 +-
+ .../services/performance_monitor_service.dart |  172 +++
+ flutter_app/lib/services/relay_service.dart   |  111 +-
+ flutter_app/lib/services/room_crypto.dart     |   10 +-
+ flutter_app/lib/theme.dart                    |  314 +++-
+ flutter_app/lib/widgets/connection_dot.dart   |   26 +-
+ .../lib/widgets/dev_performance_overlay.dart  |  485 +++++++
+ flutter_app/lib/widgets/fm_ui.dart            |  325 +++++
+ flutter_app/pubspec.lock                      |    8 +
+ flutter_app/pubspec.yaml                      |    1 +
+ flutter_app/test/chat_screen_test.dart        |  211 +++
+ flutter_app/test/fm_theme_test.dart           |   83 ++
+ flutter_app/test/mock_auth_flow_test.dart     |  306 +++-
+ .../test/performance_monitor_test.dart        |  271 ++++
+ 26 files changed, 4953 insertions(+), 1138 deletions(-)
+ create mode 100644 flutter_app/lib/screens/activity_screen.dart
+ create mode 100644 flutter_app/lib/services/performance_monitor_service.dart
+ create mode 100644 flutter_app/lib/widgets/dev_performance_overlay.dart
+ create mode 100644 flutter_app/lib/widgets/fm_ui.dart
+ create mode 100644 flutter_app/test/chat_screen_test.dart
+ create mode 100644 flutter_app/test/fm_theme_test.dart
+ create mode 100644 flutter_app/test/performance_monitor_test.dart
+
 diff --git a/flutter_app/lib/main.dart b/flutter_app/lib/main.dart
 index 7163029e..ff3bcd0b 100644
 --- a/flutter_app/lib/main.dart
@@ -7609,3 +7652,6 @@ index 00000000..4a307dcb
 +    );
 +  });
 +}
+-- 
+2.47.3
+

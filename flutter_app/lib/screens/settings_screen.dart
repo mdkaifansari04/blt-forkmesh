@@ -48,6 +48,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final relay = context.watch<RelayService>();
     final auth = context.watch<AuthService>();
     final session = auth.session;
+    final accountName = session?.nodeName.isNotEmpty == true
+        ? session!.nodeName
+        : session?.email ?? '';
+    if (accountName.isNotEmpty &&
+        (_name.text.isEmpty || _name.text == 'preview-node')) {
+      _name.text = accountName;
+    }
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -191,14 +198,18 @@ class _ProfileAccountCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = session?.nodeName.isNotEmpty == true
+    final title = session?.sessionKind == 'preview'
+        ? 'Preview mode'
+        : session?.nodeName.isNotEmpty == true
         ? session!.nodeName
         : session?.email.isNotEmpty == true
         ? session!.email
-        : 'Signed in';
-    final subtitle = session?.email.isNotEmpty == true
+        : 'Not signed in';
+    final subtitle = session?.sessionKind == 'preview'
+        ? 'This is local preview data. Sign out and log in to show your Worker account.'
+        : session?.email.isNotEmpty == true
         ? session!.email
-        : 'Worker account session saved on this device';
+        : 'No Worker account session found on this device';
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
