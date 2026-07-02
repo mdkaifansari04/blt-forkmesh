@@ -8,6 +8,7 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/NetworkBackoff.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
 #include "../src/ReferenceLinks.h"
@@ -399,6 +400,38 @@ int main(int argc, char *argv[])
     inboxBackoff.clear(discussionInboxKey);
     check(!inboxBackoff.shouldBackOff(discussionInboxKey, 2000),
           "successful discussion inbox sync clears the unsupported backoff");
+
+    // --- Exponential poll backoff ----------------------------------------
+    // NetworkBackoff spaces out retries after a run of failures. Delay for the
+    // nth failure is min(base*2^(n-1), cap) plus <base/8 jitter, so we assert on
+    // bounds that hold for any jitter value: still blocked strictly before the
+    // base delay, and definitely ready once base + its jitter span has elapsed.
+    NetworkBackoff pollBackoff;
+    const QString pollKey = "https://forkmesh.com/api/repo/alice/project/pulls";
+    check(pollBackoff.ready(pollKey, 0),
+          "a fresh poll channel is ready with no backoff");
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 1st failure: ~1000ms
+    check(!pollBackoff.ready(pollKey, 999),
+          "poll backoff blocks a retry before the base delay elapses");
+    check(pollBackoff.ready(pollKey, 1125),
+          "poll backoff clears once the base delay (+jitter span) elapses");
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 2nd failure: ~2000ms
+    check(!pollBackoff.ready(pollKey, 1999),
+          "a second consecutive failure at least doubles the backoff");
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 3rd failure: ~4000ms
+    check(!pollBackoff.ready(pollKey, 3999),
+          "the backoff keeps growing exponentially with each failure");
+    // Independent channels don't inherit each other's backoff.
+    check(pollBackoff.ready("https://forkmesh.com/api/accounts/heartbeat", 0),
+          "poll backoff is tracked per channel");
+    // Many failures stay bounded by the cap, never exploding past it.
+    for (int i = 0; i < 20; ++i)
+        pollBackoff.noteFailure(pollKey, 0, 1000, 8000);
+    check(pollBackoff.ready(pollKey, 9000),
+          "poll backoff is capped and does not grow without bound");
+    pollBackoff.noteSuccess(pollKey);
+    check(pollBackoff.ready(pollKey, 0),
+          "a successful poll clears the exponential backoff");
 
     // --- Commit comment signing ------------------------------------------
     CommitComment commitVec;

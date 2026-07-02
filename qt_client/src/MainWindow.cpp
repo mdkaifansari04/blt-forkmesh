@@ -45,7 +45,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                                          : QStringLiteral("REQ");
                 QString status;
                 if (reply->error() != QNetworkReply::NoError) {
-                    status = QStringLiteral("ERR ") + reply->errorString();
+                    // Lead with the HTTP status code when the server answered
+                    // (e.g. "ERR 429 …" for a rate-limit) so the log shows *why*
+                    // a request failed, not just that it did. A pure transport
+                    // failure (offline, DNS) has no code — fall back to the
+                    // Qt error string alone.
+                    const QVariant code = reply->attribute(
+                        QNetworkRequest::HttpStatusCodeAttribute);
+                    status = code.isValid()
+                                 ? QStringLiteral("ERR %1 %2")
+                                       .arg(code.toString(), reply->errorString())
+                                 : QStringLiteral("ERR ") + reply->errorString();
                 } else {
                     const QVariant code = reply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute);

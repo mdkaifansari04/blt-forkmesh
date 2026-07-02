@@ -1838,6 +1838,11 @@ void MainWindow::refreshClaudeCodeUsage()
     const QString token = claudeCodeOAuthToken();
     if (token.isEmpty())
         return;
+    // Back off exponentially while the usage endpoint is failing (offline /
+    // HTTP 429) instead of re-polling it every minute regardless.
+    if (!m_pollBackoff.ready(QStringLiteral("claude-usage"),
+                             QDateTime::currentMSecsSinceEpoch()))
+        return;
 
     QNetworkRequest req(
         QUrl(QStringLiteral("https://api.anthropic.com/api/oauth/usage")));
@@ -1850,9 +1855,14 @@ void MainWindow::refreshClaudeCodeUsage()
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         // On any error (expired token, offline) keep the last-known figures
-        // rather than blanking the gauge; the next poll retries.
-        if (reply->error() != QNetworkReply::NoError)
+        // rather than blanking the gauge; the next poll retries — with a
+        // growing backoff so a sustained failure stops hammering the endpoint.
+        if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(QStringLiteral("claude-usage"),
+                                      QDateTime::currentMSecsSinceEpoch());
             return;
+        }
+        m_pollBackoff.noteSuccess(QStringLiteral("claude-usage"));
         const QJsonObject root = QJsonDocument::fromJson(body).object();
         auto pctOf = [&root](const QString &key) {
             return qRound(root.value(key)
