@@ -1337,7 +1337,7 @@ void MainWindow::positionActionStrip()
     m_actionStrip->raise();
 }
 
-// Float the "Sync changes" button in the band just above the Commits tab, raised
+// Float the "Sync" button in the band just above the Commits tab, raised
 // one above the tab bar. As an overlay it occupies no layout space, so toggling
 // it never shifts the tabs or page content.
 void MainWindow::positionRepoPushButton()

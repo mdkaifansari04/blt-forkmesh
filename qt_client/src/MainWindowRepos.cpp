@@ -2228,6 +2228,14 @@ void MainWindow::propagateRepoUpdate(int index)
         return;
     if (m_syncingRepos.contains(index))
         return;
+    // Repaint the "Sync" button's pending count right away rather than waiting on
+    // the mirror-fetch round-trip below (prep thread + fetch subprocess +
+    // housekeeping thread) to reach refreshRepositoryList's updateRepoPushButton()
+    // call: that left the button visibly lagging the "N commits not yet synced"
+    // banner, which loadCommits() already paints synchronously the instant a
+    // commit lands.
+    if (index == m_repoDetailIndex)
+        updateRepoPushButton();
     // syncRepository fetches the bare mirror from the local working copy, so the
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
@@ -2511,8 +2519,8 @@ void MainWindow::syncRepository(int index, bool quiet)
     const QString mirrorPath = repo.mirrorPath;
 
     // Flag the repo "syncing" and reflect it in the UI right away — before any git
-    // subprocess runs — so clicking "Sync changes" flips the button to "Syncing
-    // changes" instantly and never blocks the GUI thread. The insert also guards
+    // subprocess runs — so clicking "Sync" flips the button to "Syncing…"
+    // instantly and never blocks the GUI thread. The insert also guards
     // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
     m_syncingRepos.insert(index);
     refreshRepositoryList();
