@@ -404,16 +404,36 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_commitBar->setTextFormat(Qt::RichText);
     m_commitBar->setWordWrap(true);
     m_historyButton = new QPushButton("Commits");
-    m_historyButton->setObjectName("ghostButton");
+    // Ghost-button look plus a scoped :checked highlight (see Theme.h) — the
+    // shared #ghostButton style can't take a :checked rule without also
+    // restyling the split-diff and Issues sub-tab toggles.
+    m_historyButton->setObjectName("commitsToggle");
+    m_historyButton->setCheckable(true); // lit while the commits panel shows
     m_historyButton->setCursor(Qt::PointingHandCursor);
-    m_historyButton->setToolTip("View the full commit history");
+    m_historyButton->setToolTip(
+        "Show the full commit history below; click again for the file list");
     setOcticon(m_historyButton, "git-branch", 16);
-    connect(m_historyButton, &QPushButton::clicked, this, [this] {
-        if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-            m_repoDetailTabs->button(1)->setChecked(true);
-        if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(1);
-        loadCommits();
+    connect(m_historyButton, &QPushButton::clicked, this, [this](bool checked) {
+        if (!checked) {
+            showOverviewFiles();
+            return;
+        }
+        showOverviewCommits();
+        // Same deferred build the old Commits tab click ran: the panel paints
+        // first, then the table work runs. Rebuilding an identical 300-row
+        // table is the expensive part, so skip it when nothing changed.
+        QTimer::singleShot(0, this, [this] {
+            if (commitsListIsCurrent()) {
+                // The list may be current, but the working tree can still have
+                // moved (an agent staged/edited files) — always rescan the
+                // changes panel so it's fresh on open.
+                refreshSourceControl();
+            } else {
+                loadCommits();
+            }
+            // Land on the newest commit's change view, not an empty list.
+            openMostRecentCommit();
+        });
     });
     auto *commitRow = new QHBoxLayout(commitCard);
     commitRow->setContentsMargins(12, 8, 8, 8);
@@ -533,16 +553,30 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
 
-    // Left column: toolbar, latest commit, file list, README.
+    // Everything below the latest-commit bar swaps between the file browser
+    // (crumb + file list + README) and the commits panel: the commit strip's
+    // "N Commits" button toggles between them now that Commits no longer has
+    // its own top-level tab.
+    auto *filesBody = new QWidget;
+    auto *filesBodyLayout = new QVBoxLayout(filesBody);
+    filesBodyLayout->setContentsMargins(0, 0, 0, 0);
+    filesBodyLayout->setSpacing(8);
+    filesBodyLayout->addWidget(m_overviewCrumb);
+    filesBodyLayout->addWidget(m_overviewList, 2);
+    filesBodyLayout->addWidget(m_readmeView, 3);
+
+    m_overviewBodyStack = new QStackedWidget;
+    m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
+    m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
+
+    // Left column: toolbar, latest commit, then the swappable body.
     auto *leftColumn = new QWidget;
     auto *leftLayout = new QVBoxLayout(leftColumn);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
     leftLayout->addLayout(toolbar);
     leftLayout->addWidget(commitCard);
-    leftLayout->addWidget(m_overviewCrumb);
-    leftLayout->addWidget(m_overviewList, 2);
-    leftLayout->addWidget(m_readmeView, 3);
+    leftLayout->addWidget(m_overviewBodyStack, 1);
 
     auto *body = new QHBoxLayout;
     body->setContentsMargins(0, 0, 0, 0);
@@ -1185,10 +1219,13 @@ void MainWindow::openRepoDetail(int repoIndex)
     // default). Each candidate tab's data was eagerly loaded above, so we only
     // need to select it. Reset the editor tabs/tree for the new repo.
     const int defaultTab = defaultRepoTabIndex();
-    if (m_repoDetailTabs && m_repoDetailTabs->button(defaultTab))
-        m_repoDetailTabs->button(defaultTab)->setChecked(true);
+    // "Commits" (1) lives inside the Code overview now, under the latest-commit
+    // bar — land on Code and swap the overview body to the commits panel below.
+    const int landingTab = defaultTab == 1 ? 0 : defaultTab;
+    if (m_repoDetailTabs && m_repoDetailTabs->button(landingTab))
+        m_repoDetailTabs->button(landingTab)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(defaultTab);
+        m_repoDetailStack->setCurrentIndex(landingTab);
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -1224,7 +1261,10 @@ void MainWindow::openRepoDetail(int repoIndex)
     // this repo when its Commits tab is first opened.
     if (defaultTab == 1) {
         loadCommits();
+        showOverviewCommits();
     } else {
+        // A previously open repo may have left the commits panel showing.
+        showOverviewFiles();
         updateRepoCommitCount();
         if (m_commitsTable)
             m_commitsTable->setRowCount(0);
@@ -1292,7 +1332,9 @@ void MainWindow::updateRepoCodeSize()
 
 void MainWindow::updateRepoCommitCount()
 {
-    if (!m_repoCommitsTab)
+    // The count badge lives on the commit strip's "N Commits" toggle now that
+    // the top-bar Commits tab is gone (same text loadRepoOverview renders).
+    if (!m_historyButton)
         return;
     const QString dir = repoGitDir();
     QByteArray out;
@@ -1300,7 +1342,9 @@ void MainWindow::updateRepoCommitCount()
     if (!dir.isEmpty() &&
         runGitCapture(dir, {"rev-list", "--count", currentRef()}, &out, nullptr))
         count = QString::fromUtf8(out).trimmed().toInt();
-    m_repoCommitsTab->setText(QStringLiteral("Commits (%1)").arg(formatCount(count)));
+    m_historyButton->setText(
+        count > 0 ? QStringLiteral("%1 Commits").arg(formatCount(count))
+                  : QStringLiteral("Commits"));
 }
 
 void MainWindow::updateRepoIssueCount()
@@ -2395,6 +2439,40 @@ void MainWindow::showRepoEditor()
         m_filesModeExplorerButton->setChecked(true);
 }
 
+// Show the commits panel in the Code overview, under the latest-commit bar,
+// and light up the commit strip's "N Commits" toggle. Pure navigation — no
+// loading — so callers that jump straight to one commit (showCommit) aren't
+// clobbered by an openMostRecentCommit; the history-button click handler and
+// the repo-open landing path layer the list build on top.
+void MainWindow::showOverviewCommits()
+{
+    // Callers can be anywhere (another tab, the explorer, a search result):
+    // land on the Code tab's overview page first.
+    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+        m_repoDetailTabs->button(0)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0);
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(true);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
+    if (m_overviewBodyStack)
+        m_overviewBodyStack->setCurrentIndex(1);
+    if (m_historyButton)
+        m_historyButton->setChecked(true);
+}
+
+// Swap the overview body back to the file list + README and dim the toggle.
+void MainWindow::showOverviewFiles()
+{
+    if (m_overviewBodyStack)
+        m_overviewBodyStack->setCurrentIndex(0);
+    if (m_historyButton)
+        m_historyButton->setChecked(false);
+}
+
 void MainWindow::openRepoReadme()
 {
     if (!m_repoFileTabs)
@@ -2857,7 +2935,7 @@ bool MainWindow::commitsListIsCurrent()
 void MainWindow::refreshCommitMarkersIfStale()
 {
     // Only while the commit list is actually on screen — isVisible() is false
-    // unless the Commits tab is selected *and* the repo-detail view is the active
+    // unless the commits panel is showing *and* the repo-detail view is the active
     // section, so this stays a cheap no-op everywhere else. When it isn't visible
     // the next visit reloads it anyway (commitsListIsCurrent now tracks the
     // mirror tip), so there's nothing to keep in sync in the background.
@@ -3820,7 +3898,7 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
         if (repoOpen) { showSection(0); clickRepoTab(0); openRepoFile(s1); }
         break;
     case GsCommit:
-        if (repoOpen) { showSection(0); clickRepoTab(1); showCommit(s1); }
+        if (repoOpen) { showSection(0); showOverviewCommits(); showCommit(s1); }
         break;
     default:
         break;
@@ -4259,8 +4337,7 @@ void MainWindow::onSearchResultActivated(QTreeWidgetItem *item, int)
             edit->setFocus();
         });
     } else if (kind == SrCommit) {
-        if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-            m_repoDetailTabs->button(1)->click();
+        showOverviewCommits();
         showCommit(payload);
         // Highlight every occurrence of the term in the rendered diff and scroll
         // to the first, so the matched line/area is obvious.
@@ -4729,10 +4806,7 @@ void MainWindow::openCommitHashReference(const QString &hash)
     const QString ref = hash.trimmed();
     if (ref.isEmpty())
         return;
-    if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-        m_repoDetailTabs->button(1)->setChecked(true);
-    if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(1);
+    showOverviewCommits();
     showCommit(ref);
 }
 
@@ -4827,10 +4901,7 @@ void MainWindow::openBodyReference(const QString &href)
         const QString sha = href.mid(16);
         if (sha.isEmpty())
             return;
-        if (m_repoDetailTabs && m_repoDetailTabs->button(1)) // 1 = Commits
-            m_repoDetailTabs->button(1)->setChecked(true);
-        if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(1);
+        showOverviewCommits();
         showCommit(sha);
         return;
     }
@@ -5727,7 +5798,7 @@ void MainWindow::showInsightsContributorMenu(const QPoint &pos)
         reassignContributorIdentity(name);
 }
 
-// Jump from an Insights contributor row to the Commits tab, filtered to that
+// Jump from an Insights contributor row to the commits panel, filtered to that
 // author. Drives the existing commit search box (which deepens the list to the
 // whole history and re-applies on textChanged); filterCommits matches the author
 // column too, so the list narrows to that contributor's commits.
@@ -5736,12 +5807,7 @@ void MainWindow::openCommitsForContributor(const QString &author)
     const QString name = author.trimmed();
     if (name.isEmpty())
         return;
-    // Switch to the Commits tab (m_repoDetailStack index 1). Setting the button
-    // checked alone won't fire idClicked, so move the stack explicitly too.
-    if (m_repoDetailTabs && m_repoDetailTabs->button(1))
-        m_repoDetailTabs->button(1)->setChecked(true);
-    if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(1);
+    showOverviewCommits();
     if (m_commitSearch) {
         m_commitSearch->setText(name);
         m_commitSearch->setFocus();
@@ -6532,7 +6598,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // profile panel, so this band stays hidden in the repo view.
     metaBand->hide();
 
-    // --- Tab bar (GitHub order; Commits gets its own tab).
+    // --- Tab bar (GitHub order; Commits lives inside the Code overview).
     struct TabDef {
         const char *label;
         const char *icon;
@@ -6562,6 +6628,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabRow->setContentsMargins(12, 0, 12, 0);
     tabRow->setSpacing(2);
     for (int i = 0; i < tabs.size(); ++i) {
+        // Commits (id 1) no longer gets a top-bar tab: its panel lives inside
+        // the Code overview, toggled by the commit strip's "N Commits" button.
+        // The entry stays in the list so every later tab keeps its positional id.
+        if (i == 1)
+            continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
         b->setObjectName("repoTab");
@@ -6571,9 +6642,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 0)
             b->setChecked(true);
         if (i == 0)
-            m_repoCodeTab = b; // visible pill next to Commits; also shows repo size
-        if (i == 1)
-            m_repoCommitsTab = b;
+            m_repoCodeTab = b; // also shows the on-disk repo size
         if (i == 2)
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge; the
                                  // looper toggle floats just above this tab
@@ -6675,7 +6744,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new QStackedWidget;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
-    m_repoDetailStack->addWidget(buildRepoCommitsTab());                 // 1 Commits
+    // 1 — placeholder. The commits panel lives inside the Code overview (built
+    // by buildRepoOverviewPage, under the latest-commit bar); this empty page
+    // keeps the positional ids of every later tab (Issues=2 …) unchanged.
+    m_repoDetailStack->addWidget(new QWidget);
     m_repoDetailStack->addWidget(buildIssuesSection());                  // 2 Issues
     m_repoDetailStack->addWidget(buildAgentsTab());                      // 3 Agents
     m_repoDetailStack->addWidget(buildPullsTab());                       // 4 Pull requests
@@ -6708,6 +6780,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
+        if (id == 0) {
+            // A Code click always lands on the file browser: if the overview
+            // body was left on the commits panel, swap it back (and dim the
+            // commit strip's toggle). The explorer/overview mode is untouched.
+            showOverviewFiles();
+        }
         if (id == 2) {
             // Opening Issues: clear any filter the user left set on a prior visit
             // (status/label/milestone/search) so the full list shows again.
@@ -6717,31 +6795,9 @@ QWidget *MainWindow::buildRepoDetailSection()
                 // other nodes show immediately instead of next poll tick.
                 drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
         }
-        if (id == 1) {
-            // The repo's commits were already loaded when it opened, so a tab
-            // click usually rebuilds an identical 300-row table (4 git
-            // subprocesses + per-row widgets). Skip that when nothing changed.
-            //
-            // Run inline, this whole block (git status + the openMostRecentCommit
-            // diff read) blocks before the tab can paint — setCurrentIndex(1)
-            // above only queues the paint, which can't process until this slot
-            // returns, so the Commits page stays blank (still showing the prior
-            // tab) for the delay, then snaps in. Defer to the next event-loop tick
-            // like the Agents tab below: the tab paints first, then the work runs
-            // (openMostRecentCommit shows its own spinner across the diff read).
-            QTimer::singleShot(0, this, [this] {
-                if (commitsListIsCurrent()) {
-                    // The commit list may be current, but the working tree can
-                    // still have moved (an agent staged/edited files) — always
-                    // rescan the changes panel so it's fresh on tab open.
-                    refreshSourceControl();
-                } else {
-                    loadCommits();
-                }
-                // Land on the newest commit's change view, not an empty list.
-                openMostRecentCommit();
-            });
-        }
+        // id 1 (Commits) has no top-bar button anymore; the equivalent deferred
+        // list build lives in the commit strip's "N Commits" click handler
+        // (see buildRepoOverviewPage).
         else if (id == 3) {
             // issue #289: reloadAgents() shells two git reads per session to
             // compute Diff cells, blocking the GUI thread for a beat. Run inline
