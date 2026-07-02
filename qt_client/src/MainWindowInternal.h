@@ -2059,6 +2059,11 @@ const QString kSolanaLastBalanceSettingPrefix =
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
 // Opt-in: show a small rebuild+restart button in the top nav (off by default).
 const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton");
+// Opt-in: log every HTTP request that flows through the shared network manager
+// to the network log (method + status + URL). Off by default; a diagnostic aid
+// for spotting chatty background traffic (adhoc #74).
+const QString kVerboseNetworkLogSetting =
+    QStringLiteral("diagnostics/verboseNetworkLog");
 // On by default: when the periodic inbox poll finds new issues, merge and
 // commit them automatically — but only while the owner's working tree has no
 // uncommitted tracked changes, so issue commits never interleave with work in

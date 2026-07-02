@@ -2517,9 +2517,21 @@ void MainWindow::probeRelayLatency()
             // reading is elevated, keep re-probing on a short leash (same
             // idea as the offline fast-retry below) so the indicator either
             // confirms the slowdown or snaps back to green within a second or
-            // two instead of lagging reality.
-            if (elapsed >= 300)
-                QTimer::singleShot(1000, this, &MainWindow::probeRelayLatency);
+            // two instead of lagging reality. But a link that's simply *far*
+            // from the relay (a 300ms+ round-trip is normal from across an
+            // ocean) would otherwise get re-probed every single second
+            // forever — that's the "too many network requests" flood. So back
+            // the confirm loop off exponentially (1s, 2s, 4s, ...) up to the
+            // normal once-a-minute cadence, and reset the moment latency drops
+            // back to healthy (adhoc #74).
+            if (elapsed >= 300) {
+                const int steps = qMin(m_relayProbeElevated++, 6);
+                const qint64 delayMs = qMin<qint64>(1000LL << steps, 60 * 1000);
+                QTimer::singleShot(static_cast<int>(delayMs), this,
+                                   &MainWindow::probeRelayLatency);
+            } else {
+                m_relayProbeElevated = 0;
+            }
         } else {
             // Drop any pooled keep-alive connection so the next probe dials a
             // fresh socket: otherwise QNetworkAccessManager can keep reusing a
