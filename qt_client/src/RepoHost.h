@@ -69,6 +69,12 @@ private:
     void sendGitChunk(const QString &reqId, const QByteArray &data);
     void sendGitEnd(const QString &reqId, bool ok, const QString &error);
     void scheduleReconnect();
+    // Run `work` (must not touch `this` — see blobReplyFor in RepoHost.cpp) on a
+    // detached worker thread, then deliver `apply(result)` back on this object's
+    // thread. Keeps a request's chain of git spawns from blocking the socket's
+    // event loop (see StallWatchdog reports naming buildBlobReply/refForBranch).
+    void runOffThread(std::function<QJsonObject()> work,
+                      std::function<void(QJsonObject)> apply);
 
     QTcpSocket *m_socket = nullptr;
     QUrl m_url;
