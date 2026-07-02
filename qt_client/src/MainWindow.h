@@ -573,7 +573,7 @@ private:
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateRepoPushButton();   // show pending local commits for the open repo
-    // Git-derived inputs to the "Sync changes" button. Computing them shells several
+    // Git-derived inputs to the "Sync" button. Computing them shells several
     // rev-list/rev-parse subprocesses on the working copy + served mirror, so it runs
     // off the GUI thread (computeRepoPushState) and the result is painted back on the
     // main thread (applyRepoPushButtonState) — see updateRepoPushButton.
@@ -1736,7 +1736,7 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // grow each bar by its run's elapsed time
-    void positionRepoPushButton(); // float "Sync changes" just above the Commits tab
+    void positionRepoPushButton(); // float "Sync" just above the Commits tab
     void updateActionStrip();    // build/show/hide the bars for in-flight runs
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
@@ -3173,7 +3173,7 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
-    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync changes" pinned over Commits
+    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Commits
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -3881,7 +3881,7 @@ private:
     QSet<int> m_syncingRepos;
     QSet<int> m_pushingRepos;
     // Last push state computed for m_pushStateIndex, so updateRepoPushButton can
-    // paint the "Sync changes" button instantly from cache (e.g. flip to "Syncing
+    // paint the "Sync" button instantly from cache (e.g. flip to "Syncing
     // changes…" the moment Sync is clicked) while a worker recomputes off-thread.
     RepoPushState m_pushState;
     int m_pushStateIndex = -1;        // repo index m_pushState describes (-1 = none)

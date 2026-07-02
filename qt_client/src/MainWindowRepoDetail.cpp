@@ -6562,7 +6562,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync changes" button floats in the band just above the Commits tab
+    // The "Sync" button floats in the band just above the Commits tab
     // (see positionRepoPushButton) rather than living in the tab row: it's an
     // overlay raised one above the tabs, so showing/hiding it as sync state
     // changes never reflows the tab content below — that shift is what read as the
