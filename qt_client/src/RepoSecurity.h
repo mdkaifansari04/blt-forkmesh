@@ -71,4 +71,9 @@ public:
     static RepoSecuritySnapshot scan(const RepoSecurityInput &input);
     static QString severityText(RepoSecuritySeverity severity);
     static RepoSecuritySeverity highestSeverity(const RepoSecuritySnapshot &snapshot);
+    // Scan commits about to be pushed for secrets.  upstreamRef is the remote
+    // tracking ref (e.g. "refs/remotes/origin/main"); if empty, all tracked
+    // text files in localPath are scanned instead.
+    static QList<RepoSecurityFinding> findSecretsInPush(const QString &localPath,
+                                                        const QString &upstreamRef);
 };
