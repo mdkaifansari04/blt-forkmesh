@@ -1201,11 +1201,14 @@ void MainWindow::openRepoDetail(int repoIndex)
     // path, and ls-tree -r is the single heaviest git read on a large repo —
     // build it just after the repo paints so it never delays first view. Re-check
     // the index so a fast follow-up switch doesn't index the wrong repo.
+    // loadFileSearchIndex() itself is fully async (runGitDetached) now, so no
+    // GitKeepAlive scope is needed here — StallWatchdog still caught this ls-tree
+    // stalling the GUI thread even under a keep-alive poll, because the pumped
+    // event loop can land on an unrelated slow paint (see loadFileSearchIndex).
     const int searchIndexFor = m_repoDetailIndex;
     QTimer::singleShot(0, this, [this, searchIndexFor] {
         if (m_repoDetailIndex != searchIndexFor)
             return;
-        GitKeepAlive keepAlive;
         loadFileSearchIndex();
     });
     nodeSwitchStep(QStringLiteral("Loading README & about…"));
@@ -1270,7 +1273,21 @@ void MainWindow::updateRepoCodeSize()
         return;
     }
 
-    showSize(formatByteSize(mirrorRepoSizeBytes(repo.mirrorPath)));
+    // `git count-objects -v` walks the whole object store; on a large mirror
+    // that single call was the blocking git read StallWatchdog caught freezing
+    // the GUI thread from inside openRepoDetail's eager (non-deferred) load —
+    // even under GitKeepAlive, whose polling pump can itself get stuck behind a
+    // slow paint. Fetch it fully off the GUI thread instead (see
+    // runGitDetached) and only apply the result if still showing this repo.
+    showSize(QStringLiteral("…"));
+    const int forIndex = m_repoDetailIndex;
+    runGitDetached(repo.mirrorPath, {"count-objects", "-v"},
+                   [this, forIndex, showSize](bool ok, const QByteArray &out) {
+                       if (forIndex != m_repoDetailIndex || !m_repoCodeTab)
+                           return;
+                       showSize(ok ? formatByteSize(parseCountObjectsSizeBytes(out))
+                                   : QStringLiteral("0 B"));
+                   });
 }
 
 void MainWindow::updateRepoCommitCount()
@@ -6562,16 +6579,16 @@ QWidget *MainWindow::buildRepoDetailSection()
     setOcticon(m_repoPushButton, "sync", 14);
     connect(m_repoPushButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    // The "Sync" button floats in the band just above the Commits tab
+    // The "Sync" button floats in the band just above the Code tab
     // (see positionRepoPushButton) rather than living in the tab row: it's an
     // overlay raised one above the tabs, so showing/hiding it as sync state
     // changes never reflows the tab content below — that shift is what read as the
     // whole view "resizing" on small screens, most visibly on Mirror nodes.
-    m_repoPublishBar = nullptr; // no separate row: the button floats over Commits
+    m_repoPublishBar = nullptr; // no separate row: the button floats over Code
 
     // Issue-looper toggle (adhoc #130): a compact switch floating in the band
     // just above the Issues tab, mirroring how the Sync button floats over
-    // Commits. It both shows the loop's state and toggles it, so the loop is
+    // Code. It both shows the loop's state and toggles it, so the loop is
     // controllable and visible from any tab without an in-page banner. Created
     // parented to the window; positionLooperToggle reparents it onto the page.
     auto *looperToggle = new LooperToggle(this);
@@ -7234,17 +7251,32 @@ void MainWindow::loadFileSearchIndex()
 {
     if (!m_fileCompleter)
         return;
-    QStringList paths;
     const QString dir = repoGitDir();
-    QByteArray out;
-    if (!dir.isEmpty() &&
-        runGitCapture(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()}, &out,
-                      nullptr)) {
-        for (const QByteArray &record : out.split('\0'))
-            if (!record.isEmpty())
-                paths << QString::fromUtf8(record);
+    if (dir.isEmpty()) {
+        m_fileCompleter->setModel(new QStringListModel(QStringList(), m_fileCompleter));
+        return;
     }
-    m_fileCompleter->setModel(new QStringListModel(paths, m_fileCompleter));
+    // A whole-tree ls-tree -r is the heaviest single git read on a large repo
+    // (see the singleShot call site in openRepoDetail) — StallWatchdog caught it
+    // freezing the GUI thread even though the caller already ran it under a
+    // GitKeepAlive scope. That scope only pumps the event loop between polls; it
+    // doesn't bound how long any *one* pumped event (a paint, a text layout
+    // elsewhere in the app) can take, so a slow unrelated repaint landing mid-poll
+    // still stalled the frame. runGitDetached avoids the blocking wait entirely.
+    const int forIndex = m_repoDetailIndex;
+    runGitDetached(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()},
+                   [this, forIndex](bool ok, const QByteArray &out) {
+                       if (forIndex != m_repoDetailIndex || !m_fileCompleter)
+                           return;
+                       QStringList paths;
+                       if (ok) {
+                           for (const QByteArray &record : out.split('\0'))
+                               if (!record.isEmpty())
+                                   paths << QString::fromUtf8(record);
+                       }
+                       m_fileCompleter->setModel(
+                           new QStringListModel(paths, m_fileCompleter));
+                   });
 }
 
 void MainWindow::loadAboutSidebar()

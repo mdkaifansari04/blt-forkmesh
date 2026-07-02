@@ -728,7 +728,7 @@ void MainWindow::testShowPublishBar(bool on)
         if (on) {
             m_repoPushButton->setText(QStringLiteral("Sync"));
             m_repoPushButton->setEnabled(true);
-            positionRepoPushButton(); // floats it above the Commits tab
+            positionRepoPushButton(); // floats it above the Code tab
         }
         m_repoPushButton->setVisible(on);
     }
