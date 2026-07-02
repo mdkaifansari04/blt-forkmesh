@@ -262,6 +262,7 @@ bool ServerNode::start()
     }
 
     emit statusChanged("Connecting to " + m_url.host() + "...");
+    m_reconnectAttempts = 0; // a fresh join starts with fast retries
     openConnection();
     return true;
 }
@@ -305,12 +306,24 @@ void ServerNode::scheduleReconnect()
         });
     }
 
-    // While offline, retry about once a second so the node reconnects promptly
-    // the moment the relay returns (adhoc #192). A little jitter keeps many nodes
-    // from reconnecting in lockstep and hammering the relay in sync.
-    const int delay = 1000 + int(QRandomGenerator::global()->bounded(250));
-    emit statusChanged(
-        QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting\xE2\x80\xA6"));
+    // Retry quickly at first so the node reconnects promptly after a brief
+    // relay redeploy (adhoc #192), then back off exponentially — 1s, 2s, 4s …
+    // capped at 60s — while the relay keeps refusing. Without the backoff a
+    // quota-exhausted relay (Cloudflare answers every request with a 429 page)
+    // gets hammered once a second by every node, burning more of the very
+    // quota that is missing. Jitter keeps many nodes from reconnecting in
+    // lockstep; the counter resets once an upgrade succeeds.
+    const int shift = qMin(m_reconnectAttempts, 6);
+    ++m_reconnectAttempts;
+    int delay = qMin(1000 << shift, 60000);
+    delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
+    if (delay >= 5000)
+        emit statusChanged(
+            QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting in %1s\xE2\x80\xA6")
+                .arg((delay + 500) / 1000));
+    else
+        emit statusChanged(
+            QString::fromUtf8("Disconnected \xE2\x80\x94 reconnecting\xE2\x80\xA6"));
     m_reconnectTimer->start(delay);
 }
 
@@ -373,12 +386,19 @@ void ServerNode::onSocketReadyRead()
         m_readBuffer.remove(0, headerEnd + 4);
         if (!header.startsWith("HTTP/1.1 101") && !header.startsWith("HTTP/1.0 101")) {
             // A non-101 here is almost always transient — the mainnode is
-            // redeploying or briefly returning an error/HTML page. Treat it like
-            // any other dropped link and reconnect with backoff instead of a
-            // fatal error, which would kick the user all the way back to the
-            // onboarding screen every time the relay is deployed.
+            // redeploying, quota-limited (Cloudflare 429 page) or briefly
+            // returning an error/HTML page. Treat it like any other dropped
+            // link and reconnect with backoff instead of a fatal error, which
+            // would kick the user all the way back to the onboarding screen
+            // every time the relay is deployed. Include the status line so a
+            // quota 429 is distinguishable from a genuine routing bug.
+            const int lineEnd = header.indexOf("\r\n");
+            const QString statusLine = QString::fromLatin1(
+                (lineEnd < 0 ? header : header.left(lineEnd)).left(80)).trimmed();
             emit systemMessage(
-                "Mainnode did not accept the WebSocket upgrade; reconnecting\xE2\x80\xA6");
+                "Mainnode did not accept the WebSocket upgrade ("
+                + (statusLine.isEmpty() ? QStringLiteral("no status") : statusLine)
+                + "); reconnecting\xE2\x80\xA6");
             m_wsReady = false;
             if (m_socket)
                 m_socket->abort();
@@ -386,6 +406,7 @@ void ServerNode::onSocketReadyRead()
             return;
         }
         m_wsReady = true;
+        m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
         if (m_pingTimer)
             m_pingTimer->start();
         if (m_presenceTimer)
