@@ -2356,6 +2356,11 @@ void MainWindow::saveNetworkLog()
 
 void MainWindow::logSystem(const QString &text)
 {
+    // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or
+    // whitespace-only text; skip those instead of leaving a blank log entry.
+    if (text.trimmed().isEmpty())
+        return;
+
     const QString time =
         QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
     QString plain = text;
