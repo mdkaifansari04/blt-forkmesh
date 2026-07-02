@@ -1829,7 +1829,7 @@ void MainWindow::refreshClaudeCodeUsage()
     if (token.isEmpty())
         return;
     // Back off exponentially while the usage endpoint is failing (offline /
-    // HTTP 429) instead of re-polling it every minute regardless.
+    // HTTP 429) so a burst of prompt-send / hover refreshes doesn't hammer it.
     if (!m_pollBackoff.ready(QStringLiteral("claude-usage"),
                              QDateTime::currentMSecsSinceEpoch()))
         return;
