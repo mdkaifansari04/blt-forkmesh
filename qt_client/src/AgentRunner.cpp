@@ -685,7 +685,7 @@ QString AgentRunner::expandCommand(const QString &promptPath) const
     command.replace(QStringLiteral("{promptFile}"), shellQuote(promptPath));
     command.replace(QStringLiteral("{issueNumber}"),
                     QString::number(m_session.issueNumber));
-    command.replace(QStringLiteral("{provider}"), m_session.provider);
+    command.replace(QStringLiteral("{provider}"), shellQuote(m_session.provider));
     command.replace(QStringLiteral("{contextWindow}"),
                     QString::number(m_config.contextWindow));
     command.replace(QStringLiteral("{maxOutputTokens}"),
