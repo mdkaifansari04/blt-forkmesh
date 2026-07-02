@@ -411,6 +411,23 @@ void MainWindow::loadReleasesPanel()
                   relayHost);
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
 
+    // The relay logs one row per completed download of a release asset (see the
+    // worker's /releases/blob/sha256/<hash> route), keyed by this repo's
+    // owner/name — the same identity the artifact links above are built from.
+    // Fetched below (throttled) and rendered next to each artifact's checksum.
+    QString dlOwner;
+    QString dlRepo;
+    QString dlSource;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &openRepo = m_repositories.at(m_repoDetailIndex);
+        dlOwner = repoSegment(openRepo.owner, QStringLiteral("owner"));
+        dlRepo = repoSegment(openRepo.name, QStringLiteral("repository"));
+        if (!dlOwner.isEmpty() && !dlRepo.isEmpty())
+            dlSource = dlOwner + QLatin1Char('/') + dlRepo;
+    }
+    const bool haveDownloadCounts = !dlSource.isEmpty() &&
+                                    m_releaseDownloadsSource == dlSource;
+
     // Artifacts column holds rich-text links, so key it on the rendered HTML.
     QHash<QString, QString> artifactsByTag;
     // The "latest" channel is what install.sh actually downloads as the current
@@ -477,6 +494,16 @@ void MainWindow::loadReleasesPanel()
                                  "style=\"color:#8b949e;font-family:monospace;"
                                  "font-size:11px\">sha256:%2</span>")
                                  .arg(hash, hash.left(12));
+                    // Download tally the relay has logged for this exact blob.
+                    if (haveDownloadCounts) {
+                        const int downloads = m_releaseDownloadsCache.value(hash, 0);
+                        entry += QStringLiteral(
+                                     " <span style=\"color:#8b949e;"
+                                     "font-size:11px\">&middot; %1 "
+                                     "download%2</span>")
+                                     .arg(downloads)
+                                     .arg(downloads == 1 ? "" : "s");
+                    }
                 }
                 assetLinks.append(entry);
             }
@@ -598,6 +625,18 @@ void MainWindow::loadReleasesPanel()
             "No releases yet. Draft one to tag a commit in the repository.");
         empty->setForeground(QColor("#8b949e"));
         m_releasesTable->setItem(0, 0, empty);
+    }
+    // Refresh this repo's per-artifact download counts (throttled); the async
+    // reply re-renders this panel so a freshly logged download shows up without
+    // the user having to hit Refresh.
+    if (!dlSource.isEmpty()) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_releaseDownloadsFetchSource != dlSource ||
+            nowMs - m_releaseDownloadsFetchedMs > 15000) {
+            m_releaseDownloadsFetchSource = dlSource;
+            m_releaseDownloadsFetchedMs = nowMs;
+            fetchReleaseDownloadCounts(dlOwner, dlRepo, dlSource);
+        }
     }
 }
 
@@ -1370,6 +1409,44 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                 repoSegment(r.name, QStringLiteral("repository"));
             if (cur == source)
                 loadMirrorNodesPanel();
+        }
+    });
+}
+
+void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
+                                            const QString &source)
+{
+    // The relay logs a row every time it streams a release asset out of a
+    // node's content-addressed store (its /releases/blob/sha256/<hash> route)
+    // and exposes the per-hash tally here. We cache the result and merge it
+    // into loadReleasesPanel(). Public read — no auth token required.
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty())
+        return;
+    QUrl url = catalogApiUrl(); // same host/scheme as the catalog
+    url.setPath(QStringLiteral("/api/repo/%1/%2/releases/downloads")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo))));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source]() {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject resp = QJsonDocument::fromJson(body).object();
+        if (!resp.value("ok").toBool())
+            return;
+        m_releaseDownloadsSource = source;
+        m_releaseDownloadsCache.clear();
+        const QJsonObject counts = resp.value("counts").toObject();
+        for (auto it = counts.constBegin(); it != counts.constEnd(); ++it)
+            m_releaseDownloadsCache.insert(it.key(), it.value().toInt());
+        // Re-render only if the user is still viewing this repo's Releases tab,
+        // so a freshly logged download shows up without a manual refresh.
+        if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+            const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
+            const QString cur =
+                repoSegment(r.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(r.name, QStringLiteral("repository"));
+            if (cur == source)
+                loadReleasesPanel();
         }
     });
 }
