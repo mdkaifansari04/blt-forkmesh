@@ -57,6 +57,8 @@ class Repository {
     this.mirrors = 1,
     this.defaultBranch = 'main',
     this.isPrivate = false,
+    this.liveHost = false,
+    this.cloneOnline = false,
     this.updatedMs = 0,
   });
 
@@ -69,6 +71,8 @@ class Repository {
   final int mirrors;
   final String defaultBranch;
   final bool isPrivate;
+  final bool liveHost;
+  final bool cloneOnline;
   final int updatedMs;
 
   String get fullName => '$owner/$name';
@@ -86,6 +90,8 @@ class Repository {
       mirrors: asInt(j['mirrors'] ?? 1),
       defaultBranch: (j['defaultBranch'] ?? 'main').toString(),
       isPrivate: j['isPrivate'] == true,
+      liveHost: j['liveHost'] == true,
+      cloneOnline: j['cloneOnline'] == true,
       updatedMs: asInt(j['updatedAt'] ?? j['publishedAt'] ?? 0),
     );
   }
