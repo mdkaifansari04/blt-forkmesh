@@ -2265,9 +2265,9 @@ inline void populateClaudeModelCombo(QComboBox *combo)
         return;
     combo->clear();
     combo->addItem(QStringLiteral("Default model"), QString());
-    combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
-    combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
-    combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+    combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
+    combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
+    combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
 }
 
 // Fill an agent-provider model combo for one of the three agent providers
@@ -2283,9 +2283,9 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     combo->clear();
     if (provider == QLatin1String("claude-code")) {
         combo->addItem(QStringLiteral("Default model"), QString());
-        combo->addItem(QStringLiteral("Opus"), QStringLiteral("opus"));
-        combo->addItem(QStringLiteral("Sonnet"), QStringLiteral("sonnet"));
-        combo->addItem(QStringLiteral("Haiku"), QStringLiteral("haiku"));
+        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
+        combo->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
+        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
     } else if (provider == QLatin1String("openai")) {
         combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
         combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
