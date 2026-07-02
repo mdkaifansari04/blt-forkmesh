@@ -2060,6 +2060,12 @@ const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton")
 // progress (issue #193). Off → incoming issues wait in the inbox for a manual
 // "Sync inbox" click. The manual button is never gated by this.
 const QString kAutoSyncIssuesSetting = QStringLiteral("repos/autoSyncIssues");
+// When on, MainWindow::maybeAutoUpdate() periodically checks the update remote
+// and, on finding a new commit, runs the same update/rebuild/relaunch flow as
+// the manual "Update, rebuild & restart" button — quietly, and never while an
+// agent is running. Off by default on desktop; seeded on for headless installs
+// in main.cpp (an operator-run VM has no one around to click "update").
+const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // When a new UI stall is detected, hand its backtrace to a coding agent so the
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =

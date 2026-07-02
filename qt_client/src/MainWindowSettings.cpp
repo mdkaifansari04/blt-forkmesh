@@ -97,6 +97,24 @@ QWidget *MainWindow::buildSettingsSection()
         setAutostartEnabled(enabled);
     });
 
+    // Auto-update (adhoc #120): quietly check for a new version and update,
+    // rebuild and relaunch when one is found — the same flow as the manual
+    // "Update, rebuild & restart" button below, just automatic. Off by default
+    // on desktop so a personal machine never relaunches out from under you
+    // unannounced; on by default for headless installs (seeded in main.cpp),
+    // since an operator-run VM has no one around to click update.
+    auto *autoUpdateCheck = new QCheckBox("Automatically update ForkMesh");
+    autoUpdateCheck->setChecked(
+        QSettings().value(kAutoUpdateSetting, false).toBool());
+    autoUpdateCheck->setToolTip(
+        "Check for a new version in the background and update, rebuild and "
+        "relaunch automatically when one is found. Never interrupts a running "
+        "agent — the update waits for it to finish. Off by default; on by "
+        "default for headless installs.");
+    connect(autoUpdateCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoUpdateSetting, enabled);
+    });
+
     // Default tab a repository opens on. Stored as the repo-detail tab index;
     // defaults to Agents (see defaultRepoTabIndex()).
     auto *defaultTabLabel = new QLabel("Open repositories on tab");
@@ -984,6 +1002,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(autoUpdateCheck);
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addSpacing(6);
@@ -1227,6 +1246,71 @@ void MainWindow::rebuildAndRelaunch()
     setUpdateStatus("Clearing build cache...");
     QDir(clientDir + "/build").removeRecursively();
     buildAndRelaunch(clientDir);
+}
+
+void MainWindow::maybeAutoUpdate()
+{
+    if (!QSettings().value(kAutoUpdateSetting, false).toBool())
+        return;
+    if (m_autoUpdateChecking)
+        return; // a check from an earlier tick is still in flight
+    if (m_rebuildButton && !m_rebuildButton->isEnabled())
+        return; // a rebuild (manual or auto) is already running
+    if (anyAgentRunning())
+        return; // never yank an in-progress agent session out from under itself
+
+    const QString clientDir = updateClientDir();
+    if (!QDir(clientDir).exists("CMakeLists.txt"))
+        return; // no local checkout yet; first install goes through the manual/headless flow
+
+    QString upstream;
+    if (!gitOutput(clientDir,
+                   {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"},
+                   &upstream) ||
+        upstream.isEmpty())
+        return; // no upstream branch configured to compare against
+
+    // Fetch quietly in the background (no blocking wait — this can take a while
+    // on a slow connection) and only fall through to the visible update flow when
+    // it actually finds a new commit, so a fully up-to-date install never
+    // rebuilds and relaunches for nothing.
+    m_autoUpdateChecking = true;
+    auto *fetch = new QProcess(this);
+    fetch->setWorkingDirectory(clientDir);
+    auto *timeoutGuard = new QTimer(fetch);
+    timeoutGuard->setSingleShot(true);
+    connect(timeoutGuard, &QTimer::timeout, fetch, &QProcess::kill);
+    timeoutGuard->start(45000);
+
+    auto finish = [this, fetch] {
+        m_autoUpdateChecking = false;
+        fetch->deleteLater();
+    };
+    connect(fetch, &QProcess::errorOccurred, this,
+            [finish](QProcess::ProcessError) { finish(); });
+    connect(fetch, &QProcess::finished, this,
+            [this, clientDir, finish](int exitCode, QProcess::ExitStatus status) {
+                finish();
+                if (status != QProcess::NormalExit || exitCode != 0)
+                    return; // offline, or the remote is unreachable right now; retry next tick
+
+                QString localHead, remoteHead;
+                if (!gitOutput(clientDir, {"rev-parse", "HEAD"}, &localHead) ||
+                    !gitOutput(clientDir, {"rev-parse", "@{u}"}, &remoteHead) ||
+                    remoteHead.isEmpty() || remoteHead == localHead)
+                    return; // already current
+
+                // Re-check: the fetch may have taken a while, so the gating
+                // conditions could have changed while it was in flight.
+                if ((m_rebuildButton && !m_rebuildButton->isEnabled()) ||
+                    anyAgentRunning())
+                    return;
+
+                logSystem(QStringLiteral("Auto-update: a new version is "
+                                         "available; updating in the background."));
+                updateRebuildRestart();
+            });
+    fetch->start(QStringLiteral("git"), {"fetch", "--quiet"});
 }
 
 void MainWindow::attachBackend(ChatBackend *backend)
