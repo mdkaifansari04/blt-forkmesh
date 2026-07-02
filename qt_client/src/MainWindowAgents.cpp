@@ -2943,7 +2943,7 @@ void MainWindow::showAgentSession(int sessionId)
         else if (s == AgentStatus::Waiting)
             label = "Waiting";
         else if (s == AgentStatus::Success)
-            label = "Completed";
+            label = "Done";
         else if (s == AgentStatus::Failed)
             label = "Failed";
         else
@@ -3244,7 +3244,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     return config;
 }
 
-void MainWindow::assignIssueToAgent(const QString &provider)
+void MainWindow::assignIssueToAgent(const QString &provider, const QString &model)
 {
     if (m_currentIssueNumber < 0)
         return;
@@ -3256,11 +3256,11 @@ void MainWindow::assignIssueToAgent(const QString &provider)
         return;
     const bool createPr =
         m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
-    startAgentForIssue(*issue, provider, createPr);
+    startAgentForIssue(*issue, provider, createPr, /*quiet=*/false, model);
 }
 
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
-                                   bool createPr, bool quiet)
+                                   bool createPr, bool quiet, const QString &model)
 {
     if (!m_agentStore || issue.number <= 0)
         return 0;
@@ -3287,6 +3287,7 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.issueTitle = issue.title;
     session.provider = provider;
     session.createPr = createPr;
+    session.model = model.trimmed(); // empty leaves the provider's own default
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
@@ -4043,6 +4044,10 @@ void MainWindow::processAgentQueue()
         // anchor them so the agent sessions screen can count down the time left.
         markAgentLimitWindow(snapshot.provider);
         AgentRunner::Config config = agentConfigForProvider(session->provider);
+        // A model picked when the session was started (e.g. the issue sidebar's
+        // agent/model dropdown) overrides the provider's default.
+        if (!snapshot.model.isEmpty())
+            config.model = snapshot.model;
         // Ad-hoc API-key runs ride their saved task through the config override,
         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())

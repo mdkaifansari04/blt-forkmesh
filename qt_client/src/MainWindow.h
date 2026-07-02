@@ -503,6 +503,10 @@ private:
     // rebuild and relaunch. Installs into the invoking non-root user's home even
     // when ForkMesh itself is running as root.
     void updateRebuildRestart();
+    // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
+    // commit on the update remote. Only ever triggers updateRebuildRestart() when
+    // one is actually found, and never while an agent is running.
+    void maybeAutoUpdate();
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
@@ -677,8 +681,9 @@ private:
     void fetchFavicon(int index);
     QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
-    // Slack-style node profile panel (right side of Home).
-    QWidget *buildNodeProfilePanel();
+    // Node profile: full-page centered section (index 9 in m_sectionStack).
+    QWidget *buildNodeProfileSection();
+    QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
     void rescaleProfileAvatar();       // re-render the full-width avatar banner
@@ -1062,13 +1067,14 @@ private:
     // (etc.) per session.
     bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
                                   const QString &base) const;
-    void assignIssueToAgent(const QString &provider);
+    void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
     // on failure. quiet suppresses the inline notice + Agents-tab switch the
-    // manual assign path shows.
+    // manual assign path shows. model is the provider-specific model id/alias
+    // picked in the sidebar; empty leaves the provider's own default.
     int startAgentForIssue(const Issue &issue, const QString &provider, bool createPr,
-                           bool quiet = false);
+                           bool quiet = false, const QString &model = QString());
     // Issue looper (adhoc #92): start an agent on the next open issue, watch it to
     // completion, then automatically start the next — working through the open
     // backlog one issue at a time until toggled off or the backlog is exhausted.
@@ -1720,7 +1726,6 @@ private:
     // running-agent spinners read clearly instead of washing out through it.
     void styleAgentSpinnerOverlay();
     void positionAgentSpinnerOverlay();
-    void positionAgentSnake();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
@@ -2471,6 +2476,8 @@ private:
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
     QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
+    QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
+    bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
 
     // Issues section widgets
     QLineEdit *m_issueSearch = nullptr;
@@ -2622,9 +2629,6 @@ private:
     QScrollArea *m_agentSpinnerScroll = nullptr;
     QHBoxLayout *m_agentSpinnerRow = nullptr;
     QList<int> m_agentSpinnerIds; // running session ids currently shown (skip rebuilds)
-    // Purple braille "snake" activity indicator overlaid on the Agents tab while
-    // an agent runs. A separate label so the tab text keeps its normal colour.
-    QLabel *m_agentSnake = nullptr;
     QPushButton *m_repoActionsTab = nullptr;
     // Floating strip of thin bars above the Actions tab — one per in-flight run,
     // each labelled with the workflow name and growing to the right the longer
@@ -3734,6 +3738,7 @@ private:
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
     QComboBox *m_issueAgentProvider = nullptr;   // OpenAI API | Claude API
+    QComboBox *m_issueAgentModel = nullptr;      // model for the picked provider
     QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;
     // "Run in IDE" hand-off (shown only when IDE integration is on + detected).

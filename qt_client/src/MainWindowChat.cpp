@@ -266,6 +266,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: hosts section built"));
     m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
     logStartup(QStringLiteral("  buildChatPage: relays section built"));
+    m_sectionStack->addWidget(buildNodeProfileSection()); // 9 Node profile (full page)
+    logStartup(QStringLiteral("  buildChatPage: node profile section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -5353,31 +5355,13 @@ void MainWindow::runHostInstall()
 QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
-
-    // Everything on one page, left to right: a Nodes column, a Repositories
-    // column (the repos for the selected node), then the repo detail panel whose
-    // tabs (Code, Commits, Issues, …, Chat) are the only thing that swaps as you
-    // navigate — the two columns stay visible the whole time. The node profile
-    // panel slides in on the far right when a node is clicked.
-    auto *splitter = new QSplitter(Qt::Horizontal);
-    splitter->setObjectName("homeSplitter");
-    splitter->setChildrenCollapsible(false);
-    // Nodes and repositories are now top-bar dropdowns (see buildBreadcrumb);
-    // the repo detail panel fills the page, with the node profile sliding in.
+    // Node profile is now its own section (index 9), so home just holds the repo
+    // detail panel filling the full width.
     m_repoDetailSection = buildRepoDetailSection();
-    splitter->addWidget(m_repoDetailSection);
-    splitter->addWidget(buildNodeProfilePanel()); // hidden until a node is clicked
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 0);
-    // Two widgets now (repo detail + profile); give the profile panel its full
-    // intended width rather than the leftover 4-panel sizes, which clamped it to
-    // its 300px minimum and clipped the right edge of its content.
-    splitter->setSizes({900, 380});
-
     auto *layout = new QHBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(splitter);
+    layout->addWidget(m_repoDetailSection);
     return page;
 }
 
@@ -5404,20 +5388,33 @@ static QLabel *makeProfileSection(const QString &text)
     return label;
 }
 
+QWidget *MainWindow::buildNodeProfileSection()
+{
+    // Center the profile scroll area horizontally with stretchers so the content
+    // sits in a comfortable fixed-width column regardless of window width.
+    auto *page = new QWidget;
+    auto *outer = new QHBoxLayout(page);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    outer->addStretch(1);
+    outer->addWidget(buildNodeProfilePanel(), 0);
+    outer->addStretch(1);
+    return page;
+}
+
 QWidget *MainWindow::buildNodeProfilePanel()
 {
     // The panel can grow tall (mirrors, hosting, Solana, QR), so it lives in a
-    // scroll area; the scroll area itself is what we show/hide.
+    // scroll area; the section wrapper (buildNodeProfileSection) centers it.
     auto *scroll = new QScrollArea;
     scroll->setObjectName("nodeProfilePanel");
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Min width must leave room for the side margins (14*2) and the 10px vertical
-    // scrollbar plus the widest non-wrapping control (the verify-wallet button),
-    // otherwise the right edge of the content gets clipped.
+    // Width: wide enough for all content, narrow enough to look centered on wide
+    // windows when flanked by the stretchers in buildNodeProfileSection.
     scroll->setMinimumWidth(340);
-    scroll->setMaximumWidth(400);
+    scroll->setMaximumWidth(660);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -5663,21 +5660,15 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->addStretch();
 
     scroll->setWidget(content);
-    scroll->hide();
     return scroll;
 }
 
 void MainWindow::hideNodeProfile()
 {
-    if (m_nodeProfilePanel) {
-        m_nodeProfilePanel->setMaximumWidth(400);
-        m_nodeProfilePanel->hide();
-    }
-    if (m_repoDetailSection)
-        m_repoDetailSection->show();
     m_profileNodeId.clear();
     m_profileNodeName.clear();
     m_profileSolanaValue.clear();
+    showSection(0);
 }
 
 void MainWindow::rescaleProfileAvatar()
@@ -5910,12 +5901,8 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileBalanceButton->setText("Check balance");
     }
 
-    // Slide the profile in on the right at its natural width; keep the code/repo
-    // area visible to its left rather than taking over the whole page.
-    if (m_repoDetailSection)
-        m_repoDetailSection->show();
-    m_nodeProfilePanel->setMaximumWidth(400);
-    m_nodeProfilePanel->show();
+    // Show the profile as its own full page (section 9 in m_sectionStack).
+    showSection(9);
 }
 
 void MainWindow::refreshProfileHostingStats()
