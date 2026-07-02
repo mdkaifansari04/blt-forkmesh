@@ -3411,12 +3411,12 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         if (m_repoPublishBar)
             m_repoPublishBar->hide();
     };
-    // Reveal the floating sync button positioned just above the Commits tab. As an
+    // Reveal the floating sync button positioned just above the Code tab. As an
     // overlay (not a laid-out widget) it never reflows the page underneath — even
     // while a mirror picks up a push on the Mirror nodes screen. A modest timer
     // keeps it pinned over the tab as the window resizes or tabs reflow.
     auto reveal = [this] {
-        positionRepoPushButton(); // reparents to the page + anchors over Commits
+        positionRepoPushButton(); // reparents to the page + anchors over Code
         m_repoPushButton->show();
         m_repoPushButton->raise();
         if (m_repoPublishBar)
