@@ -62,6 +62,9 @@ set(FORKMESH_APP_SOURCES
     src/CoveStore.cpp
     src/ServerNode.h
     src/ServerNode.cpp
+    src/NetworkBackoff.h
+    src/BackoffNetworkAccessManager.h
+    src/BackoffNetworkAccessManager.cpp
     src/RepoHost.h
     src/RepoHost.cpp
     src/RepoSecurity.h

@@ -29,7 +29,8 @@ class SettingsService extends ChangeNotifier {
   }
 
   static const defaultRoom = 'general';
-  static const defaultPassphrase = 'forkmesh-public-room';
+  static const defaultPassphrase = '';
+  static const legacyPublicRoomPassphrase = 'forkmesh-public-room';
 
   static Future<SettingsService> create() async =>
       SettingsService(await SharedPreferences.getInstance());
@@ -37,8 +38,15 @@ class SettingsService extends ChangeNotifier {
   String get displayName => _prefs.getString('profile/name') ?? '';
   String get serverUrl => _prefs.getString('server/url') ?? defaultServerUrl;
   String get room => _prefs.getString('server/room') ?? defaultRoom;
-  String get passphrase =>
-      _prefs.getString('server/passphrase') ?? defaultPassphrase;
+  String get passphrase {
+    final stored = _prefs.getString('server/passphrase');
+    // Earlier Flutter builds saved this legacy value, which made mobile derive a
+    // different room key from Qt's passphrase-free public room. Treat it as empty
+    // so chat interoperates with desktop nodes and retained Worker history.
+    if (stored == legacyPublicRoomPassphrase) return '';
+    return stored ?? defaultPassphrase;
+  }
+
   String get solanaAddress => _prefs.getString('profile/solana') ?? '';
   String get githubToken => _prefs.getString('import/githubToken') ?? '';
   String get gitlabToken => _prefs.getString('import/gitlabToken') ?? '';
@@ -46,7 +54,11 @@ class SettingsService extends ChangeNotifier {
   Future<void> setDisplayName(String v) => _set('profile/name', v);
   Future<void> setServerUrl(String v) => _set('server/url', v);
   Future<void> setRoom(String v) => _set('server/room', v);
-  Future<void> setPassphrase(String v) => _set('server/passphrase', v);
+  Future<void> setPassphrase(String v) async {
+    final clean = v == legacyPublicRoomPassphrase ? '' : v;
+    await _set('server/passphrase', clean);
+  }
+
   Future<void> setSolanaAddress(String v) => _set('profile/solana', v);
   Future<void> setGithubToken(String v) => _set('import/githubToken', v);
   Future<void> setGitlabToken(String v) => _set('import/gitlabToken', v);
