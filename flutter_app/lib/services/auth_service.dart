@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -222,6 +223,7 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> authenticatePreview() async {
+    if (_session != null && _session!.sessionKind != 'preview') return;
     await _saveSession(
       AuthSession(
         nodeName: 'preview-node',
@@ -256,6 +258,10 @@ class AuthService extends ChangeNotifier {
       final json = jsonDecode(raw);
       if (json is Map<String, dynamic>) {
         final session = AuthSession.fromJson(json);
+        if (session.sessionKind == 'preview') {
+          unawaited(_prefs.remove(_sessionKey));
+          return null;
+        }
         if (session.nodeName.isNotEmpty || session.email.isNotEmpty) {
           return session;
         }
