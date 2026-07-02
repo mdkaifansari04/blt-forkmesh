@@ -4,7 +4,7 @@ number: 5
 title: fix: improve mobile repo, chat, and notification reliability
 base: pr/mobile-collaboration-auth-finish
 head: pr/mobile-reliability
-status: open
+status: merged
 ts: 1783027804848
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

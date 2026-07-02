@@ -715,7 +715,10 @@ class _CodeTabState extends State<_CodeTab> {
     widget.repo.name,
   );
 
-  void _openDir(String path) {
+  void _openDir(String path, {bool refresh = false}) {
+    if (refresh) {
+      widget.api.clearRepoCache(widget.repo.owner, widget.repo.name);
+    }
     setState(() {
       _path = path;
       _future = widget.api.tree(
@@ -751,7 +754,7 @@ class _CodeTabState extends State<_CodeTab> {
             else if (snap.hasError)
               _ErrorCard(
                 message: 'Could not load files: ${snap.error}',
-                onRetry: () => _openDir(_path),
+                onRetry: () => _openDir(_path, refresh: true),
               )
             else if (tree == null || tree.entries.isEmpty)
               const _EmptyCard(message: 'No files found in this folder.')
@@ -808,30 +811,149 @@ class RepoFileScreen extends StatelessWidget {
             );
           }
           final blob = snap.data ?? RepoBlob(path: path, content: '');
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              _InfoCard(
-                title: path,
-                children: [
-                  SelectableText(
-                    blob.content.isEmpty
-                        ? 'Empty file or binary content.'
-                        : blob.content,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 13,
-                      height: 1.45,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          );
+          return _FilePreview(api: api, repo: repo, blob: blob);
         },
       ),
     );
   }
+}
+
+class _FilePreview extends StatelessWidget {
+  const _FilePreview({
+    required this.api,
+    required this.repo,
+    required this.blob,
+  });
+
+  final ApiService api;
+  final Repository repo;
+  final RepoBlob blob;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = blob.path;
+    final kind = _previewKind(path);
+    if (kind == _PreviewKind.image) {
+      return Center(
+        child: InteractiveViewer(
+          minScale: .5,
+          maxScale: 5,
+          child: Image.network(
+            api.rawUri(repo.owner, repo.name, path).toString(),
+            fit: BoxFit.contain,
+            errorBuilder: (_, error, _) => _UnsupportedPreview(
+              path: path,
+              message:
+                  'Could not render this image preview. ${error.toString()}',
+            ),
+          ),
+        ),
+      );
+    }
+    if (kind == _PreviewKind.video) {
+      return _UnsupportedPreview(
+        path: path,
+        message:
+            'Video preview is not bundled in the mobile app yet. Use the raw file URL below to open or download it.',
+        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
+      );
+    }
+    final decoded = _decodedText(blob);
+    if (decoded == null) {
+      return _UnsupportedPreview(
+        path: path,
+        message:
+            'This looks like a binary file, so ForkMesh is not showing it as text.',
+        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _InfoCard(
+          title: path,
+          children: [
+            SelectableText(
+              decoded.isEmpty ? 'Empty file.' : decoded,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 13,
+                height: 1.45,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  String? _decodedText(RepoBlob blob) {
+    final content = blob.content;
+    if (blob.encoding.toLowerCase() == 'base64') {
+      try {
+        final bytes = base64.decode(content.replaceAll(RegExp(r'\s+'), ''));
+        if (bytes.take(512).contains(0)) return null;
+        return utf8.decode(bytes, allowMalformed: true);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (content.runes.take(512).contains(0)) return null;
+    return content;
+  }
+}
+
+enum _PreviewKind { text, image, video }
+
+_PreviewKind _previewKind(String path) {
+  final lower = path.toLowerCase();
+  if (lower.endsWith('.png') ||
+      lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg') ||
+      lower.endsWith('.gif') ||
+      lower.endsWith('.webp') ||
+      lower.endsWith('.bmp')) {
+    return _PreviewKind.image;
+  }
+  if (lower.endsWith('.mp4') ||
+      lower.endsWith('.mov') ||
+      lower.endsWith('.webm') ||
+      lower.endsWith('.mkv')) {
+    return _PreviewKind.video;
+  }
+  return _PreviewKind.text;
+}
+
+class _UnsupportedPreview extends StatelessWidget {
+  const _UnsupportedPreview({
+    required this.path,
+    required this.message,
+    this.rawUrl = '',
+  });
+
+  final String path;
+  final String message;
+  final String rawUrl;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: _InfoCard(
+        title: path.split('/').last,
+        children: [
+          Text(message),
+          if (rawUrl.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SelectableText(
+              rawUrl,
+              style: TextStyle(color: Theme.of(context).colorScheme.secondary),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
 }
 
 class _IssuesTab extends StatelessWidget {

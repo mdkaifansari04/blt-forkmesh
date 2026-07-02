@@ -55,8 +55,9 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   final Set<String> unread = {};
 
   String get _nodeId => _identity.nodeId;
-  String get _name =>
-      _settings.displayName.isEmpty ? _identity.shortKey : _settings.displayName;
+  String get _name => _settings.displayName.isEmpty
+      ? _identity.shortKey
+      : _settings.displayName;
 
   String _platform() {
     if (kIsWeb) return 'web';
@@ -83,15 +84,17 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     for (final entry in _peers.entries) {
       final p = entry.value;
       if (!p.online || now - p.lastSeenMs > _staleMs) continue;
-      list.add(Member(
-        id: entry.key,
-        name: p.name,
-        online: true,
-        platform: p.platform,
-        version: p.version,
-        solanaAddress: p.solana,
-        mirrors: p.mirrors,
-      ));
+      list.add(
+        Member(
+          id: entry.key,
+          name: p.name,
+          online: true,
+          platform: p.platform,
+          version: p.version,
+          solanaAddress: p.solana,
+          mirrors: p.mirrors,
+        ),
+      );
     }
     return list;
   }
@@ -100,6 +103,16 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
 
   List<ChatMessage> messages(String conversation) =>
       _history[conversation] ?? const [];
+
+  List<ChatMessage> get recentMessages {
+    final items = _history.values.expand((m) => m).toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return items;
+  }
+
+  List<ChatMessage> get unreadMessages => recentMessages
+      .where((m) => !m.self && unread.contains(m.conversation))
+      .toList();
 
   // ---- lifecycle ----------------------------------------------------------
 
@@ -226,12 +239,23 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     return m;
   }
 
-  Future<void> _send(Map<String, dynamic> plain) async {
+  Future<bool> _send(Map<String, dynamic> plain) async {
     final crypto = _crypto;
     final channel = _channel;
-    if (crypto == null || channel == null) return;
-    final env = await crypto.encrypt(plain);
-    channel.sink.add(jsonEncode(env));
+    if (crypto == null ||
+        channel == null ||
+        _state != RelayConnectionState.connected) {
+      return false;
+    }
+    try {
+      final env = await crypto.encrypt(plain);
+      channel.sink.add(jsonEncode(env));
+      return true;
+    } catch (e) {
+      _logLine('Send failed: $e');
+      _onClosed();
+      return false;
+    }
   }
 
   Future<void> _sendHello() async {
@@ -244,30 +268,39 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     await _send(_envelopeBase('presence'));
   }
 
-  Future<void> sendMessage(String text) async {
+  Future<bool> sendMessage(String text) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty) return;
+    if (trimmed.isEmpty) return false;
     final conversation = currentConversation;
     final msg = _envelopeBase(conversation.startsWith('@') ? 'dm' : 'chat')
       ..['text'] = trimmed
-      ..['conversation'] = conversation;
+      ..['conversation'] = conversation
+      ..['persist'] = true;
     if (conversation.startsWith('#')) {
       msg['channel'] = conversation;
     } else {
       msg['to'] = conversation.substring(1);
     }
     // Optimistically show our own message.
-    _appendMessage(ChatMessage(
-      id: msg['id'] as String,
-      conversation: conversation,
-      senderId: _nodeId,
-      senderName: _name,
-      text: trimmed,
-      timestamp: DateTime.now(),
-      self: true,
-    ));
+    _appendMessage(
+      ChatMessage(
+        id: msg['id'] as String,
+        conversation: conversation,
+        senderId: _nodeId,
+        senderName: _name,
+        text: trimmed,
+        timestamp: DateTime.now(),
+        self: true,
+      ),
+    );
     _seenIds.add(msg['id'] as String);
-    await _send(msg);
+    final sent = await _send(msg);
+    if (!sent) {
+      _history[conversation]?.removeWhere((m) => m.id == msg['id']);
+      _seenIds.remove(msg['id']);
+      notifyListeners();
+    }
+    return sent;
   }
 
   void switchConversation(String conversation) {
@@ -317,7 +350,8 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
 
     switch (type) {
       case 'hello':
-        final incoming = (m['channels'] as List?)?.map((e) => e.toString()) ?? const [];
+        final incoming =
+            (m['channels'] as List?)?.map((e) => e.toString()) ?? const [];
         for (final c in incoming) {
           if (c.isNotEmpty && !channels.contains(c)) channels.add(c);
         }

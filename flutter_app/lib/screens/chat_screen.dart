@@ -25,10 +25,18 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  void _send(RelayService relay) {
+  Future<void> _send(RelayService relay) async {
     final text = _composer.text;
     if (text.trim().isEmpty) return;
-    relay.sendMessage(text);
+    final sent = await relay.sendMessage(text);
+    if (!mounted) return;
+    if (!sent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chat is offline. Reconnecting...')),
+      );
+      relay.connect();
+      return;
+    }
     _composer.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
