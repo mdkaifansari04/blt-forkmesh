@@ -554,15 +554,20 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
 }
 #reactionChip {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 11px;
-    padding: 1px 8px; font-size: 12px; color: #e6edf3;
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 2px 9px; font-size: 12px; color: #e6edf3;
 }
-#reactionChip:hover { border-color: #58a6ff; }
+#reactionChip:hover { border-color: #58a6ff; background-color: #1c2433; }
 #reactionAdd {
-    background: transparent; border: none; color: #6e7681;
-    font-size: 13px; padding: 1px 4px;
+    background: transparent; border: 1px solid transparent; border-radius: 12px;
+    padding: 2px 7px;
 }
-#reactionAdd:hover { color: #e6edf3; }
+#reactionAdd:hover { border-color: #30363d; background-color: #161b22; }
+#reactionPicker {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+}
+#reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
+#reactionPickerButton:hover { background-color: #21262d; }
 #messageAction {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     color: #8b949e; font-size: 11px; padding: 2px 7px;
@@ -1532,15 +1537,20 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
 }
 #reactionChip {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 11px;
-    padding: 1px 8px; font-size: 12px; color: #1f2328;
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px;
+    padding: 2px 9px; font-size: 12px; color: #1f2328;
 }
-#reactionChip:hover { border-color: #0969da; }
+#reactionChip:hover { border-color: #0969da; background-color: #eef4fb; }
 #reactionAdd {
-    background: transparent; border: none; color: #8c959f;
-    font-size: 13px; padding: 1px 4px;
+    background: transparent; border: 1px solid transparent; border-radius: 12px;
+    padding: 2px 7px;
 }
-#reactionAdd:hover { color: #1f2328; }
+#reactionAdd:hover { border-color: #d0d7de; background-color: #f6f8fa; }
+#reactionPicker {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
+}
+#reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
+#reactionPickerButton:hover { background-color: #eaeef2; }
 #messageAction {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     color: #656d76; font-size: 11px; padding: 2px 7px;
