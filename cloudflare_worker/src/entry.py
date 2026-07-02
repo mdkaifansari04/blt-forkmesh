@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from js import Date
 from js import Object
+from js import Request as JsRequest
 from js import Response as JsResponse
 from js import Uint8Array
 from js import WebSocketPair
@@ -128,6 +129,10 @@ FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
 # active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
 HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
 HOST_PRESENCE_REFRESH_MS = 60 * 1000
+# How long a downed repo's clone traffic stays pinned to one chosen mirror (see
+# clone_sticky). Long enough that a clone's info/refs and upload-pack POST land
+# on the same node; short enough that the load still rotates across mirrors.
+CLONE_STICKY_MS = 5 * 60 * 1000
 
 
 # Public node name = username = a single DNS-like label: lowercase letters,
@@ -1211,6 +1216,77 @@ def browse_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
     return ordered
 
 
+# How many recent owner-attested state pins are kept (and accepted) per repo.
+# The window is the availability/rollback trade: a mirror may lag the source by
+# up to this many publishes and still clone, while a rollback older than the
+# window is rejected.
+STATE_PIN_HISTORY = 10
+
+
+def clone_state_pins(target, target_key, rows, history=None):
+    # The set of repo-state hashes (sha256 over the canonical heads+tags
+    # advertisement) the relay accepts from the node serving a clone of the
+    # `target` catalog record, or None when the repo is unpinned (fail-open, e.g.
+    # a never-attested legacy repo). `rows` are decrypted catalog records
+    # [{"key_bi", "data"}]; `history` maps key_bi -> recent attested hashes from
+    # repo_state_history.
+    #
+    # A working-copy holder ("local-node" — the source of truth for its
+    # namespace) is validated against ITS OWN attestations: current pin plus
+    # recent history. Self-attestation is fine there — the node holds the signing
+    # key either way, so the pin is a consistency check, and the history absorbs
+    # the push-to-republish lag.
+    #
+    # A MIRROR ("remote-clone") must serve a state some working-copy holder in
+    # its logical-repo group (root commit, name fallback — see
+    # repo_mirror_same_group) actually attested. Its own self-signed pin proves
+    # nothing: a tampered mirror can always republish a hash matching its forged
+    # refs. Mirrors sync with `fetch --prune refs/heads/* refs/tags/*`, so a
+    # faithful mirror's full ref set — and therefore its hash — equals the
+    # source's. Only when NO group source has ever attested (legacy clients)
+    # does the mirror's own pin still apply, preserving the old behaviour.
+    #
+    # Residual limits, by design: a registered account that publishes a
+    # local-node record grouped with the repo can inject acceptable pins (raising
+    # the bar from "compromise one mirror" to "register a visible fake source"),
+    # and a mirror-run agent's local branches make its ref set diverge from the
+    # source until the next pruning sync (~5 min) — clones of that mirror fail
+    # the check for that window.
+    if not isinstance(target, dict) or not target:
+        return None
+
+    def _clean(value):
+        return str(value or "").strip().lower()
+
+    hist = history or {}
+
+    def _pins_for(key, rec):
+        pins = set()
+        if cur := _clean(rec.get("stateHash")):
+            pins.add(cur)
+        for h in hist.get(str(key or ""), []) or []:
+            if h := _clean(h):
+                pins.add(h)
+        return pins
+
+    # Records published before the field existed default to "local-node" (the
+    # same default safe_catalog_record applies on write).
+    if _clean(target.get("source") or "local-node") == "local-node":
+        return _pins_for(target_key, target) or None
+
+    source_pins = set()
+    for row in rows or []:
+        rec = (row or {}).get("data") or {}
+        if _clean(rec.get("source") or "local-node") != "local-node":
+            continue
+        if not repo_mirror_same_group(target, rec):
+            continue
+        source_pins |= _pins_for(row.get("key_bi"), rec)
+    if source_pins:
+        return source_pins
+    return _pins_for(target_key, target) or None
+
+
 async def touch_host_presence(env, repo_bi):
     # Mark a repo's tunnel as live (or refresh its timestamp). Called when a host
     # connects and, throttled, while it serves traffic.
@@ -2258,6 +2334,23 @@ SCHEMA_STATEMENTS = [
     # all piling onto the single freshest one. repo_bi is the same blind index
     # host_presence uses; n is a monotonically increasing rotation cursor.
     "CREATE TABLE IF NOT EXISTS clone_rr (repo_bi TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
+    # Which mirror is currently serving a downed repo's clones IN PLACE (same
+    # URL, no redirect). git clones are two requests (info/refs then the
+    # upload-pack POST) that must reach the SAME node, so the pick is pinned
+    # here for a short window instead of rotating per request; rotation happens
+    # when the pin expires. The owner name is public catalog data.
+    "CREATE TABLE IF NOT EXISTS clone_sticky ("
+    "repo_bi TEXT PRIMARY KEY, owner TEXT NOT NULL, ts INTEGER NOT NULL)",
+    # Recent owner-attested repo-state pins (sha256 of the canonical heads+tags
+    # advertisement), appended on every catalog publish by a working-copy holder
+    # ("local-node"). Mirrors are integrity-checked against the SOURCE's pins —
+    # current plus this short history — instead of their own self-attested hash,
+    # so a tampered mirror can't just publish a matching pin for its forged refs,
+    # while an honest mirror that lags the source by a few publishes still clones
+    # (see clone_state_pins). Pruned to the newest STATE_PIN_HISTORY per repo.
+    "CREATE TABLE IF NOT EXISTS repo_state_history ("
+    "key_bi TEXT NOT NULL, state_hash TEXT NOT NULL, ts INTEGER NOT NULL, "
+    "PRIMARY KEY (key_bi, state_hash))",
     # Account-level presence: a node heartbeats here while it is online so it can
     # be included in the reward split. Keyed by the account blind index.
     "CREATE TABLE IF NOT EXISTS account_presence (name_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)",
@@ -2781,6 +2874,30 @@ async def catalog_handler(env, request):
                  is_private=excluded.is_private""",
             key_bi, owner_bi, enc, is_private,
         )
+        # A working-copy holder's verified attestation also lands in the pin
+        # history, which is what lets an honest mirror lag the source by a few
+        # publishes without failing the clone integrity gate (clone_state_pins).
+        # Mirrors' ("remote-clone") self-attestations are deliberately NOT
+        # recorded — they must match a source pin. Best-effort: a failure here
+        # must never fail the publish itself.
+        if state_hash and record.get("source") == "local-node":
+            try:
+                await d1_run(
+                    env,
+                    "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
+                    "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
+                    "DO UPDATE SET ts=excluded.ts",
+                    key_bi, state_hash.strip().lower(), int(Date.now()),
+                )
+                await d1_run(
+                    env,
+                    "DELETE FROM repo_state_history WHERE key_bi=? "
+                    "AND state_hash NOT IN (SELECT state_hash FROM "
+                    "repo_state_history WHERE key_bi=? ORDER BY ts DESC LIMIT ?)",
+                    key_bi, key_bi, STATE_PIN_HISTORY,
+                )
+            except Exception:
+                pass
         # Cap: keep only the most-recent MAX_CATALOG_REPOS.
         rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
         if len(rows) > MAX_CATALOG_REPOS:
@@ -3223,6 +3340,15 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
                  is_private=excluded.is_private""",
             new_repo_bi, new_owner_bi, enc, int(row.get("is_private") or 0))
         await _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo)
+        # Carry the attested pin history to the new namespace so mirrors of a
+        # renamed source keep clearing the integrity gate without waiting for
+        # fresh publishes to rebuild it.
+        try:
+            await d1_run(
+                env, "UPDATE repo_state_history SET key_bi=? WHERE key_bi=?",
+                new_repo_bi, old_repo_bi)
+        except Exception:
+            pass
         await d1_run(
             env, "UPDATE issue_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
@@ -7765,29 +7891,37 @@ class Default(WorkerEntrypoint):
                 else:
                     # Public repo browse (tree/blob/raw/commits): round-robin the
                     # request across every ONLINE mirror of the logical repo,
-                    # including the named source, so consecutive page loads spread
-                    # over all live nodes and the website can show which node served
-                    # it (the host DO tags the response with servedBy). When the
-                    # chosen node isn't the named owner, 302 to its route; the
-                    # `fmserved` pin makes that route serve in place instead of
-                    # re-rotating (which would loop). An offline source with an
-                    # online mirror still lands on the mirror, as the clone fallback
-                    # in _git_host does.
+                    # including the named source, so consecutive page loads
+                    # spread over all live nodes. The chosen node serves IN
+                    # PLACE, through the URL that was requested: the request is
+                    # dispatched to its host DO with the path rewritten into its
+                    # namespace — never a client-visible redirect. The DO tags
+                    # the response with servedBy (derived from the rewritten
+                    # path), so the website still shows which node answered. An
+                    # offline source with an online mirror is covered the same
+                    # way, as the clone fallback in _git_host does. `fmserved`
+                    # survives as a legacy pin: a URL that carries it skips the
+                    # rotation (old redirected links keep working).
                     public_browse = True
                     params = parse_qs(url.query)
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
                         if served and served.lower() != owner.lower():
-                            query = url.query
-                            tail = (query + "&" if query else "") + \
-                                "fmserved=" + served
-                            location = "/api/repo/%s/%s/%s?%s" % (
-                                served, repo, host_match.group(3), tail)
-                            return Response(
-                                "", status=302,
-                                headers={"location": location,
-                                         "cache-control": "no-store"})
+                            forwarded = await self._forward_to_node(
+                                request, url, repo, served,
+                                "/api/repo/%s/%s/%s" % (
+                                    served, repo, host_match.group(3)))
+                            try:
+                                fstatus = int(forwarded.status)
+                            except Exception:
+                                fstatus = 0
+                            # The rotated pick couldn't serve after all (its
+                            # presence row outlived its tunnel) — fall through
+                            # to the named owner's own route, whose failure
+                            # handler below tries the remaining mirrors.
+                            if fstatus not in (503, 504):
+                                return forwarded
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(request)
@@ -7795,42 +7929,21 @@ class Default(WorkerEntrypoint):
                 # The routed node couldn't serve (no host connected: 503, or a
                 # dead-but-lingering tunnel: 504). Its host_presence row can lag
                 # reality for up to HOST_PRESENCE_STALE_MS, during which the
-                # rotation above still picks it — so on failure, re-rotate once
-                # to an online mirror of the same logical repo, excluding the
-                # node that just failed. `fmretry` caps this at a single extra
-                # hop so two stale mirrors can't bounce a request forever.
+                # rotation above still picks it — so on failure, serve once more
+                # in place from an online mirror of the same logical repo,
+                # excluding the node that just failed.
                 try:
                     status = int(response.status)
                 except Exception:
                     status = 0
-                params = parse_qs(url.query)
-                already_retried = bool(params.get("fmretry", [""])[0])
-                if status in (503, 504) and not already_retried:
+                if status in (503, 504):
                     fallback = await self._select_browse_mirror(
                         owner, repo, exclude=owner)
                     if fallback and fallback.lower() != owner.lower():
-                        # Rebuild the query without any fmserved pin the failed
-                        # hop carried: parse_qs keeps values in appearance
-                        # order, so merely appending a second fmserved would
-                        # leave the retried route reading the stale pin first
-                        # and re-rotating instead of serving in place.
-                        keep = [
-                            (k, v)
-                            for k, vals in params.items()
-                            if k not in ("fmserved", "fmretry")
-                            for v in vals
-                        ]
-                        keep.append(("fmserved", fallback))
-                        keep.append(("fmretry", "1"))
-                        tail = "&".join(
-                            quote(k, safe="") + "=" + quote(v, safe="")
-                            for k, v in keep)
-                        location = "/api/repo/%s/%s/%s?%s" % (
-                            fallback, repo, host_match.group(3), tail)
-                        return Response(
-                            "", status=302,
-                            headers={"location": location,
-                                     "cache-control": "no-store"})
+                        return await self._forward_to_node(
+                            request, url, repo, fallback,
+                            "/api/repo/%s/%s/%s" % (
+                                fallback, repo, host_match.group(3)))
             return response
 
         room = room_key_from_path(url.path)
@@ -7966,46 +8079,31 @@ class Default(WorkerEntrypoint):
             if not await _basic_auth_view_ok(self.env, owner, repo, request):
                 return _basic_auth_challenge()
         else:
-            # Public repo whose named host is offline: redirect the clone to a
-            # healthy mirror of the same logical repo so the code survives the
-            # source of truth going down (forkmesh's core promise). Only the
-            # initial info/refs probe is redirected; git then rebases on the
-            # mirror's URL and talks to it directly for the upload-pack POST.
+            # Public repo whose named node can't serve right now: serve the clone
+            # from a healthy mirror of the same logical repo THROUGH THIS SAME
+            # URL — the request is dispatched to the mirror's host DO with the
+            # path rewritten to its namespace, never a client-visible redirect.
+            # Liveness is ground truth (a subrequest to the named node's host DO
+            # for its connected-host count), not the host_presence row, which
+            # lags an unclean tunnel death by up to HOST_PRESENCE_STALE_MS —
+            # during that window the old presence-based check kept forwarding
+            # clones into the dead tunnel ("no host serving" / isolate crash).
+            # A git clone is two requests (info/refs, then the upload-pack POST)
+            # that must reach the SAME mirror, so the pick is pinned per repo for
+            # CLONE_STICKY_MS (see _sticky_clone_fallback) instead of rotating
+            # per request. The integrity gate still applies on the serving node:
+            # a mirror must advertise a source-attested state (clone_state_pins),
+            # so serving in place never weakens the tamper check.
             url = urlparse(request.url)
-            if url.path.endswith("/info/refs"):
-                fallback = await self._select_clone_fallback(owner, repo)
-                if fallback and fallback.lower() != owner.lower():
-                    query = url.query or "service=git-upload-pack"
-                    location = "/%s/%s/info/refs?%s" % (fallback, repo, query)
-                    return Response(
-                        "", status=302,
-                        headers={"location": location, "cache-control": "no-store"})
-                # The presence-based fallback above only fires once the source's
-                # host_presence row has aged out (10 min). A tunnel that died
-                # uncleanly still looks "online" for that whole window, during
-                # which forwarding the probe to its host DO returns "no host
-                # serving" (or, when the DO is mid-flap, an isolate crash) and the
-                # clone dies instead of using a live mirror. So verify a host is
-                # actually connected right now; if not, force a redirect to a
-                # healthy mirror regardless of the stale presence row. `fmretry`
-                # caps this at one hop: if two group members both have a fresh but
-                # stale presence row and no live host, they must not 302 to each
-                # other forever — after one forced hop we forward and let the node
-                # return its clean no-host advertisement instead.
-                already_forced = bool(
-                    parse_qs(url.query).get("fmretry", [""])[0])
-                if not already_forced and \
-                        not await self._source_has_live_host(owner, repo):
-                    alt = await self._select_clone_fallback(
-                        owner, repo, force=True)
-                    if alt and alt.lower() != owner.lower():
-                        query = url.query or "service=git-upload-pack"
-                        location = "/%s/%s/info/refs?%s&fmretry=1" % (
-                            alt, repo, query)
-                        return Response(
-                            "", status=302,
-                            headers={"location": location,
-                                     "cache-control": "no-store"})
+            is_info = url.path.endswith("/info/refs")
+            if not await self._source_has_live_host(owner, repo):
+                serving = await self._sticky_clone_fallback(
+                    owner, repo, refresh=is_info)
+                if serving and serving.lower() != owner.lower():
+                    tail = "info/refs" if is_info else "git-upload-pack"
+                    return await self._forward_to_node(
+                        request, url, repo, serving,
+                        "/%s/%s/%s" % (serving, repo, tail))
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
@@ -8033,6 +8131,61 @@ class Default(WorkerEntrypoint):
             return int(hosts or 0) > 0
         except Exception:
             return False
+
+    async def _forward_to_node(self, request, url, repo, node, new_path):
+        # Serve THROUGH the original URL: dispatch this request to `node`'s host
+        # DO with the path rewritten into its namespace. The client never sees a
+        # redirect — the mirror's bytes stream back on the URL that was asked
+        # for. Rebuilding the Request (JsRequest.new(url, request)) carries the
+        # method, headers and body across, so git's upload-pack POST forwards
+        # intact. The rewritten path is also what the DO derives its repo
+        # identity from, so presence marking, the servedBy tag and the clone
+        # integrity gate (_state_pins) all evaluate against the node actually
+        # serving.
+        target = url.scheme + "://" + url.netloc + new_path
+        if url.query:
+            target += "?" + url.query
+        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{node}/{repo}")
+        host_object = self.env.FORKMESH_HOST.get(host_id)
+        return await host_object.fetch(JsRequest.new(target, request))
+
+    async def _sticky_clone_fallback(self, owner, repo, refresh):
+        # Which mirror serves owner/repo's clones while its named node is down.
+        # Sticky per repo for CLONE_STICKY_MS: git's info/refs and upload-pack
+        # POST are separate requests that must hit the SAME node (the pack is
+        # negotiated against the refs the first request advertised), so per-
+        # request rotation is replaced by a pinned pick that rotates only when
+        # it expires. `refresh` is True on info/refs (a new clone may re-pick);
+        # the POST reuses whatever pick exists, however old, as long as that
+        # node is still live. Best-effort: any failure returns None and the
+        # request just falls through to the named owner's route.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT owner, ts FROM clone_sticky WHERE repo_bi=?", repo_bi)
+            pick = str((row or {}).get("owner") or "")
+            fresh = bool(row) and now - int(row.get("ts") or 0) <= CLONE_STICKY_MS
+            if pick and (fresh or not refresh):
+                if await self._source_has_live_host(pick, repo):
+                    return pick
+            # No usable pick: choose a live mirror. force=True because the
+            # caller already confirmed the named node has no connected host —
+            # a fresh-but-stale presence row must not veto the fallback.
+            choice = await self._select_clone_fallback(owner, repo, force=True)
+            if choice and refresh:
+                await d1_run(
+                    self.env,
+                    "INSERT INTO clone_sticky (repo_bi, owner, ts) VALUES (?,?,?) "
+                    "ON CONFLICT(repo_bi) DO UPDATE SET "
+                    "owner=excluded.owner, ts=excluded.ts",
+                    repo_bi, choice, now,
+                )
+            return choice
+        except Exception:
+            return None
 
 
 async def chat_history_recent(env, room_key):
@@ -8630,9 +8783,16 @@ class ForkMeshHost(DurableObject):
         except Exception:
             pass
 
-    async def _state_pin(self, path):
-        # The owner-signed stateHash pinned for this repo (sha256 of its canonical
-        # heads+tags advertisement), or None if the owner has not attested one.
+    async def _state_pins(self, path):
+        # The set of acceptable repo-state hashes for the node serving this clone
+        # path, or None when the repo is unpinned. A working-copy holder is
+        # checked against its own attestations; a MIRROR must match a pin some
+        # working-copy holder in its logical-repo group signed — its own
+        # self-attested hash proves nothing (a tampered mirror can republish a
+        # matching pin at will). Selection logic lives in the pure
+        # clone_state_pins(); this wrapper gathers the catalog rows + recent pin
+        # history it needs. Best-effort: any failure returns None (fail-open),
+        # matching the pre-existing behaviour for unreadable records.
         match = GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)
         if not match:
             return None
@@ -8641,15 +8801,37 @@ class ForkMeshHost(DurableObject):
         if not owner or not repo:
             return None
         try:
+            await ensure_schema(self.env)
             key_bi = await blind_index(self.env, owner + "/" + repo)
             row = await d1_first(
                 self.env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
             if not row:
                 return None
-            rec = await decrypt_row(self.env, row["data"])
+            target = await decrypt_row(self.env, row["data"])
+            if not target:
+                return None
+            # Fast path: the serving node holds the working copy — no need to
+            # scan the catalog for group members.
+            source = str(target.get("source") or "local-node")
+            catalog_rows = []
+            if source != "local-node":
+                rows = await d1_all(
+                    self.env, "SELECT key_bi, data FROM repositories")
+                for r in rows:
+                    rec = await decrypt_row(self.env, r.get("data"))
+                    if rec:
+                        catalog_rows.append(
+                            {"key_bi": r.get("key_bi"), "data": rec})
+            history = {}
+            hist_rows = await d1_all(
+                self.env,
+                "SELECT key_bi, state_hash FROM repo_state_history")
+            for r in hist_rows:
+                history.setdefault(str(r.get("key_bi") or ""), []).append(
+                    r.get("state_hash"))
+            return clone_state_pins(target, key_bi, catalog_rows, history)
         except Exception:
             return None
-        return (rec or {}).get("stateHash") or None
 
     async def _git(self, request, op, body=None):
         # Forward a git smart-HTTP request to the hosting client, which runs
@@ -8707,12 +8889,14 @@ class ForkMeshHost(DurableObject):
 
         data = result.get("data", b"")
         if op == "git-info-refs":
-            # Tamper/rollback gate: if the owner has pinned a repo-state hash,
-            # the refs this mirror advertises must hash to it. A node serving a
-            # forged or stale mirror fails here, so no clone ever receives it.
-            # (Fails open when nothing is pinned, e.g. a not-yet-attested repo.)
-            pinned = await self._state_pin(urlparse(request.url).path)
-            if pinned and await sha256_hex(advertised_refs_canonical(data)) != pinned:
+            # Tamper/rollback gate: the refs this node advertises must hash to a
+            # state the repo's working-copy holder attested — a mirror is checked
+            # against the SOURCE's signed pins (current + recent history), never
+            # just its own self-published hash, so a forged or rolled-back mirror
+            # fails here and no clone ever receives it. (Fails open when nothing
+            # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.)
+            pinned = await self._state_pins(urlparse(request.url).path)
+            if pinned and await sha256_hex(advertised_refs_canonical(data)) not in pinned:
                 err = (b"ERR repository failed integrity check "
                        b"(mirror may be tampered or out of date)\n")
                 body_out = (
