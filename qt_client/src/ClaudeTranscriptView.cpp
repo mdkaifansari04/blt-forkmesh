@@ -1255,7 +1255,7 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
     const double ms = ev.value(QStringLiteral("duration_ms")).toDouble();
     const int turns = ev.value(QStringLiteral("num_turns")).toInt();
-    auto *l = new QLabel(QStringLiteral("%1 done · %2 turns · %3s · $%4")
+    auto *l = new QLabel(QStringLiteral("%1 Done · %2 turns · %3s · $%4")
                              .arg(err ? QStringLiteral("✗") : QStringLiteral("✓"))
                              .arg(turns)
                              .arg(ms / 1000.0, 0, 'f', 1)
