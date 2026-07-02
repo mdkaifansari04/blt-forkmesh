@@ -138,6 +138,12 @@ void MainWindow::loadChatHistory()
         return;
     const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
 
+    // Messages already past the 7-day retention window (e.g. the app was shut
+    // down for a while) are skipped entirely rather than reloaded and pruned
+    // later.
+    const qint64 expiryCutoff =
+        QDateTime::currentMSecsSinceEpoch() - kChatMessageRetentionMs;
+
     const QJsonObject conversations = root.value("conversations").toObject();
     for (auto it = conversations.constBegin(); it != conversations.constEnd(); ++it) {
         const QString conversation = it.key();
@@ -159,6 +165,8 @@ void MainWindow::loadChatHistory()
             if (obj.contains("fileData"))
                 m.fileData = QByteArray::fromBase64(
                     obj.value("fileData").toString().toLatin1());
+            if (m.timestampMs <= expiryCutoff)
+                continue;
             if (!m.id.isEmpty()) {
                 if (m_historyIds.contains(m.id))
                     continue;
@@ -203,6 +211,35 @@ void MainWindow::scheduleChatSave()
                 &MainWindow::saveChatHistory);
     }
     m_chatSaveTimer->start(1500);
+}
+
+void MainWindow::pruneExpiredChatHistory()
+{
+    const qint64 cutoff =
+        QDateTime::currentMSecsSinceEpoch() - kChatMessageRetentionMs;
+    bool changedCurrent = false;
+    bool changedAny = false;
+    for (auto it = m_history.begin(); it != m_history.end(); ++it) {
+        QList<ChatMessage> &messages = it.value();
+        // Messages are appended in arrival order, so expired ones are always a
+        // prefix; evict from the front instead of scanning the whole list.
+        bool changed = false;
+        while (!messages.isEmpty() && messages.first().timestampMs <= cutoff) {
+            m_historyIds.remove(messages.first().id);
+            messages.removeFirst();
+            changed = true;
+        }
+        if (changed) {
+            changedAny = true;
+            if (it.key() == m_currentConversation)
+                changedCurrent = true;
+        }
+    }
+    if (!changedAny)
+        return;
+    if (changedCurrent)
+        rebuildConversationView();
+    scheduleChatSave();
 }
 
 // ---------------------------------------------------------------- setup page
