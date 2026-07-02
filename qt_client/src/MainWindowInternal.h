@@ -53,6 +53,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -87,6 +88,7 @@
 #include <QSslSocket>
 #include <QSslError>
 #include <QImage>
+#include <QImageReader>
 #include <QKeyEvent>
 #include <QHelpEvent>
 #include <QToolTip>
