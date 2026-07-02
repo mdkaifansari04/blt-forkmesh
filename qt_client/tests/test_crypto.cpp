@@ -11,6 +11,7 @@
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
 #include "../src/ReferenceLinks.h"
+#include "../src/RepoSecurity.h"
 #include "../src/RoomCrypto.h"
 
 #include <QByteArray>
@@ -1222,6 +1223,226 @@ int main(int argc, char *argv[])
                            "      - run: echo hi\n"));
         check(push.triggersOnPush(), "on: push sets triggersOnPush()");
         check(!push.triggersOnRelease(), "on: push does not trigger on release");
+    }
+
+    // --- Secret scanning -------------------------------------------------------
+    {
+        // Helper: init a fresh git repo, commit fileContent, then call
+        // findSecretsInPush with no upstream ref (full tracked-file scan).
+        const auto runSecretTest = [](const QByteArray &fileContent,
+                                      const QString &expectedTitle) -> bool {
+            QTemporaryDir td;
+            if (!td.isValid())
+                return false;
+            const QString dir = td.path();
+            const auto git = [&](const QStringList &args) {
+                QProcess p;
+                p.start(QStringLiteral("git"),
+                        QStringList{QStringLiteral("-C"), dir} + args);
+                p.waitForFinished(10000);
+            };
+            git({QStringLiteral("init")});
+            git({QStringLiteral("config"), QStringLiteral("user.email"),
+                 QStringLiteral("t@t")});
+            git({QStringLiteral("config"), QStringLiteral("user.name"),
+                 QStringLiteral("T")});
+            {
+                QFile f(dir + QStringLiteral("/secret.env"));
+                f.open(QIODevice::WriteOnly);
+                f.write(fileContent);
+            }
+            git({QStringLiteral("add"), QStringLiteral("secret.env")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("add")});
+            const QList<RepoSecurityFinding> findings =
+                RepoSecurity::findSecretsInPush(dir, {});
+            for (const RepoSecurityFinding &f : findings)
+                if (f.title == expectedTitle)
+                    return true;
+            return false;
+        };
+
+        // Per-provider checks (file-scan path)
+        check(runSecretTest("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+                            QStringLiteral("GitHub token")),
+              "secret scan detects GitHub PAT (ghp_)");
+        check(runSecretTest("GITHUB_TOKEN=github_pat_AAAAAAAAAAAAAAAAAAAAAA\n",
+                            QStringLiteral("GitHub fine-grained PAT")),
+              "secret scan detects GitHub fine-grained PAT (github_pat_)");
+        check(runSecretTest("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+                            QStringLiteral("AWS access key")),
+              "secret scan detects AWS long-term access key (AKIA)");
+        check(runSecretTest("KEY=ASIAQFI2EXAMPLE123456789012345\n",
+                            QStringLiteral("AWS temporary access key")),
+              "secret scan detects AWS temporary STS key (ASIA)");
+        check(runSecretTest(
+                  "SLACK_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx\n",
+                  QStringLiteral("Slack token")),
+              "secret scan detects Slack token (xoxb-)");
+        check(runSecretTest(
+                  "OPENAI_KEY=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\n",
+                  QStringLiteral("OpenAI API key")),
+              "secret scan detects OpenAI project key (sk-proj-)");
+        check(runSecretTest(
+                  "OPENAI_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv\n",
+                  QStringLiteral("OpenAI API key")),
+              "secret scan detects OpenAI legacy key (sk- + 48 chars)");
+        check(runSecretTest(
+                  "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcde\n",
+                  QStringLiteral("Anthropic API key")),
+              "secret scan detects Anthropic API key (sk-ant-)");
+        check(runSecretTest("STRIPE_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
+                            QStringLiteral("Stripe secret key")),
+              "secret scan detects Stripe secret key (sk_live_)");
+        check(runSecretTest("STRIPE_KEY=rk_test_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
+                            QStringLiteral("Stripe restricted key")),
+              "secret scan detects Stripe restricted key (rk_test_)");
+        check(runSecretTest("GOOGLE_KEY=AIzaSyDOCAbC123dEf456GhI789jKl012-MnOAB\n",
+                            QStringLiteral("Google API key")),
+              "secret scan detects Google API key (AIza)");
+        check(runSecretTest("GOOGLE_OAUTH=ya29.A0ARrda1ABCDEFGHIJKLMNOPQRSTUVWXYZ\n",
+                            QStringLiteral("Google OAuth token")),
+              "secret scan detects Google OAuth token (ya29.)");
+        check(runSecretTest("GOOGLE_SECRET=GOCSPX-ABCDEFGHIJKLMNOPQRSTUVWXabcde\n",
+                            QStringLiteral("Google OAuth client secret")),
+              "secret scan detects Google OAuth client secret (GOCSPX-)");
+        check(runSecretTest(
+                  "SG=SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
+                  QStringLiteral("SendGrid API key")),
+              "secret scan detects SendGrid API key (SG.)");
+        check(runSecretTest("TWILIO=SKabcdef1234567890abcdef1234567890\n",
+                            QStringLiteral("Twilio auth token")),
+              "secret scan detects Twilio auth token (SK + 32 hex chars)");
+        check(runSecretTest("NPM=npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+                            QStringLiteral("npm access token")),
+              "secret scan detects npm access token (npm_)");
+        check(runSecretTest("VAULT=hvs.CAESIABC123defGHI456jklMNO789pqr\n",
+                            QStringLiteral("HashiCorp Vault token")),
+              "secret scan detects HashiCorp Vault service token (hvs.)");
+        check(runSecretTest(
+                  "CLOUDFLARE_API_TOKEN=aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLMN\n",
+                  QStringLiteral("Cloudflare API token")),
+              "secret scan detects Cloudflare API token (env-var anchored)");
+        check(runSecretTest("-----BEGIN PRIVATE KEY-----\nMIIBIjANBg...\n"
+                            "-----END PRIVATE KEY-----\n",
+                            QStringLiteral("PEM private key")),
+              "secret scan detects PKCS#8 PEM private key block");
+        check(runSecretTest("-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n"
+                            "-----END RSA PRIVATE KEY-----\n",
+                            QStringLiteral("PEM private key")),
+              "secret scan detects RSA PEM private key block");
+        check(runSecretTest(
+                  "DATABASE_PASSWORD=\"s3cr3tPasswordThatIsLongEnough\"\n",
+                  QStringLiteral("Secret/token assignment")),
+              "secret scan detects generic quoted secret assignment");
+
+        // Benign content must not trigger a false positive
+        {
+            QTemporaryDir td;
+            const QString dir = td.path();
+            const auto git = [&](const QStringList &args) {
+                QProcess p;
+                p.start(QStringLiteral("git"),
+                        QStringList{QStringLiteral("-C"), dir} + args);
+                p.waitForFinished(10000);
+            };
+            git({QStringLiteral("init")});
+            git({QStringLiteral("config"), QStringLiteral("user.email"),
+                 QStringLiteral("t@t")});
+            git({QStringLiteral("config"), QStringLiteral("user.name"),
+                 QStringLiteral("T")});
+            {
+                QFile f(dir + QStringLiteral("/readme.txt"));
+                f.open(QIODevice::WriteOnly);
+                f.write("This is a benign file with no secrets.\nname: ForkMesh\n");
+            }
+            git({QStringLiteral("add"), QStringLiteral("readme.txt")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("add")});
+            check(RepoSecurity::findSecretsInPush(dir, {}).isEmpty(),
+                  "secret scan produces no false positives on benign content");
+        }
+
+        // Diff-scan path: secrets introduced in HEAD commit are detected
+        {
+            QTemporaryDir td;
+            const QString dir = td.path();
+            const auto git = [&](const QStringList &args) {
+                QProcess p;
+                p.start(QStringLiteral("git"),
+                        QStringList{QStringLiteral("-C"), dir} + args);
+                p.waitForFinished(10000);
+            };
+            git({QStringLiteral("init")});
+            git({QStringLiteral("config"), QStringLiteral("user.email"),
+                 QStringLiteral("t@t")});
+            git({QStringLiteral("config"), QStringLiteral("user.name"),
+                 QStringLiteral("T")});
+            // Base commit — clean
+            {
+                QFile f(dir + QStringLiteral("/readme.txt"));
+                f.open(QIODevice::WriteOnly);
+                f.write("placeholder\n");
+            }
+            git({QStringLiteral("add"), QStringLiteral("readme.txt")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("base")});
+            // HEAD commit introduces a secret
+            {
+                QFile f(dir + QStringLiteral("/creds.env"));
+                f.open(QIODevice::WriteOnly);
+                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+            }
+            git({QStringLiteral("add"), QStringLiteral("creds.env")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("add creds")});
+            const QList<RepoSecurityFinding> diffFindings =
+                RepoSecurity::findSecretsInPush(dir, QStringLiteral("HEAD~1"));
+            bool found = false;
+            for (const RepoSecurityFinding &f : diffFindings)
+                if (f.title == QStringLiteral("AWS access key"))
+                    found = true;
+            check(found, "diff-scan detects secrets added in pushed commits");
+            check(RepoSecurity::findSecretsInPush(dir, QStringLiteral("HEAD")).isEmpty(),
+                  "diff-scan reports no findings when HEAD has no new commits to push");
+        }
+
+        // Diff-scan path: secrets removed in a commit must NOT trigger
+        {
+            QTemporaryDir td;
+            const QString dir = td.path();
+            const auto git = [&](const QStringList &args) {
+                QProcess p;
+                p.start(QStringLiteral("git"),
+                        QStringList{QStringLiteral("-C"), dir} + args);
+                p.waitForFinished(10000);
+            };
+            git({QStringLiteral("init")});
+            git({QStringLiteral("config"), QStringLiteral("user.email"),
+                 QStringLiteral("t@t")});
+            git({QStringLiteral("config"), QStringLiteral("user.name"),
+                 QStringLiteral("T")});
+            // Base commit WITH a secret (already in history)
+            {
+                QFile f(dir + QStringLiteral("/creds.env"));
+                f.open(QIODevice::WriteOnly);
+                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+            }
+            git({QStringLiteral("add"), QStringLiteral("creds.env")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("base")});
+            // HEAD commit removes the secret (remediation commit)
+            {
+                QFile f(dir + QStringLiteral("/creds.env"));
+                f.open(QIODevice::WriteOnly);
+                f.write("# credentials removed\n");
+            }
+            git({QStringLiteral("add"), QStringLiteral("creds.env")});
+            git({QStringLiteral("commit"), QStringLiteral("-m"),
+                 QStringLiteral("remove creds")});
+            check(RepoSecurity::findSecretsInPush(dir, QStringLiteral("HEAD~1")).isEmpty(),
+                  "diff-scan ignores secrets removed (not added) in commits");
+        }
     }
 
     if (failures) {
