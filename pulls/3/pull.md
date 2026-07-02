@@ -4,7 +4,7 @@ number: 3
 title: feat: add mobile auth foundation and repo tabs
 base: pr/flutter-ui-refresh
 head: pr/mobile-foundation-auth-repos
-status: open
+status: merged
 ts: 1783027804778
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

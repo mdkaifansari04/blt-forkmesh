@@ -13,10 +13,16 @@ class ApiService {
 
   final SettingsService _settings;
 
-  Uri _base(String path) {
+  Uri _base(String path, [Map<String, String>? query]) {
     final ws = Uri.parse(_settings.serverUrl);
     final scheme = ws.scheme == 'ws' ? 'http' : 'https';
-    return Uri(scheme: scheme, host: ws.host, port: ws.hasPort ? ws.port : null, path: path);
+    return Uri(
+      scheme: scheme,
+      host: ws.host,
+      port: ws.hasPort ? ws.port : null,
+      path: path,
+      queryParameters: query?.isEmpty == true ? null : query,
+    );
   }
 
   Future<List<Repository>> repositories() async {
@@ -39,18 +45,16 @@ class ApiService {
 
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
-    return _asList(data)
-        .whereType<Map<String, dynamic>>()
-        .map(Issue.fromJson)
-        .toList();
+    return _asList(
+      data,
+    ).whereType<Map<String, dynamic>>().map(Issue.fromJson).toList();
   }
 
   Future<List<PullRequest>> pulls(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/pulls'));
-    return _asList(data)
-        .whereType<Map<String, dynamic>>()
-        .map(PullRequest.fromJson)
-        .toList();
+    return _asList(
+      data,
+    ).whereType<Map<String, dynamic>>().map(PullRequest.fromJson).toList();
   }
 
   Future<List<Map<String, dynamic>>> commits(String owner, String name) async {
@@ -58,11 +62,195 @@ class ApiService {
     return _asList(data).whereType<Map<String, dynamic>>().toList();
   }
 
+  Future<RepoTree> tree(String owner, String name, {String path = ''}) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/tree', {'path': path}),
+    );
+    return RepoTree.fromJson(data, path: path);
+  }
+
+  Future<RepoBlob> blob(String owner, String name, String path) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/blob', {'path': path}),
+    );
+    return RepoBlob.fromJson(data, path: path);
+  }
+
+  Future<List<RepoBranch>> branches(String owner, String name) async {
+    final data = await _getJson(_base('/api/repo/$owner/$name/branches'));
+    return _asList(data)
+        .whereType<Map<String, dynamic>>()
+        .map(RepoBranch.fromJson)
+        .where((b) => b.name.isNotEmpty)
+        .toList();
+  }
+
+  Future<List<RepoMirror>> mirrors(String owner, String name) async {
+    final data = await _getJson(_base('/api/repo/$owner/$name/mirrors'));
+    return _asList(data)
+        .whereType<Map<String, dynamic>>()
+        .map(RepoMirror.fromJson)
+        .where((m) => m.label.isNotEmpty)
+        .toList();
+  }
+
+  Future<List<Issue>> publishedIssues(String owner, String name) async {
+    final dirs = await _numberedFolders(owner, name, 'issues');
+    final out = <Issue>[];
+    for (final dir in dirs) {
+      try {
+        final b = await blob(owner, name, 'issues/$dir/issue.md');
+        out.add(_issueFromMarkdown(dir, b.content));
+      } catch (_) {}
+    }
+    return out..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  Future<List<PublishedPull>> publishedPulls(String owner, String name) async {
+    final dirs = await _numberedFolders(owner, name, 'pulls');
+    final out = <PublishedPull>[];
+    for (final dir in dirs) {
+      try {
+        final b = await blob(owner, name, 'pulls/$dir/pull.md');
+        out.add(_pullFromMarkdown(dir, b.content));
+      } catch (_) {}
+    }
+    return out..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  Future<List<RepoDiscussion>> publishedDiscussions(
+    String owner,
+    String name,
+  ) async {
+    final dirs = await _numberedFolders(owner, name, 'discussions');
+    final out = <RepoDiscussion>[];
+    for (final dir in dirs) {
+      try {
+        final b = await blob(owner, name, 'discussions/$dir/discussion.md');
+        out.add(_discussionFromMarkdown(dir, b.content));
+      } catch (_) {}
+    }
+    return out..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  Future<List<String>> _numberedFolders(
+    String owner,
+    String name,
+    String path,
+  ) async {
+    try {
+      final t = await tree(owner, name, path: path);
+      return t.entries
+          .where((e) => e.isDirectory && int.tryParse(e.name) != null)
+          .map((e) => e.name)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Issue _issueFromMarkdown(String number, String md) {
+    final meta = _frontMatter(md);
+    final title = meta['title'] ?? _firstHeading(md) ?? 'Issue #$number';
+    final status =
+        meta['status'] ?? (md.contains('status: closed') ? 'closed' : 'open');
+    return Issue(
+      number: int.tryParse(number) ?? 0,
+      title: title,
+      status: status,
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? meta['authorName'] ?? '',
+      labels: (meta['labels'] ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(),
+    );
+  }
+
+  PublishedPull _pullFromMarkdown(String number, String md) {
+    final meta = _frontMatter(md);
+    final title = meta['title'] ?? _firstHeading(md) ?? 'Pull request #$number';
+    return PublishedPull(
+      number: int.tryParse(number) ?? 0,
+      title: title,
+      status: meta['status'] ?? 'open',
+      body: _bodyWithoutFrontMatter(md),
+      base: meta['base'] ?? '',
+      head: meta['head'] ?? '',
+      signed: (meta['sig'] ?? '').isNotEmpty,
+    );
+  }
+
+  RepoDiscussion _discussionFromMarkdown(String number, String md) {
+    final meta = _frontMatter(md);
+    return RepoDiscussion(
+      number: int.tryParse(number) ?? 0,
+      title: meta['title'] ?? _firstHeading(md) ?? 'Discussion #$number',
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? meta['authorName'] ?? '',
+      updatedMs: int.tryParse(meta['updatedAt'] ?? meta['ts'] ?? '') ?? 0,
+    );
+  }
+
+  Map<String, String> _frontMatter(String md) {
+    final lines = const LineSplitter().convert(md);
+    if (lines.isEmpty || lines.first.trim() != '---') return const {};
+    final out = <String, String>{};
+    for (var i = 1; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.trim() == '---') break;
+      final idx = line.indexOf(':');
+      if (idx > 0) {
+        out[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+      }
+    }
+    return out;
+  }
+
+  String? _firstHeading(String md) {
+    for (final line in const LineSplitter().convert(md)) {
+      final clean = line.trim();
+      if (clean.startsWith('#')) {
+        return clean.replaceFirst(RegExp(r'^#+\s*'), '').trim();
+      }
+      if (clean.isNotEmpty && clean != '---' && !clean.contains(':')) {
+        return clean;
+      }
+    }
+    return null;
+  }
+
+  String _bodyWithoutFrontMatter(String md) {
+    final lines = const LineSplitter().convert(md);
+    if (lines.isEmpty || lines.first.trim() != '---') return md.trim();
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) {
+      if (lines[i].trim() == '---') {
+        end = i;
+        break;
+      }
+    }
+    return end >= 0 ? lines.skip(end + 1).join('\n').trim() : md.trim();
+  }
+
   // Catalog endpoints sometimes wrap the array in {repositories:[...]} / {data:[...]}.
   List<dynamic> _asList(dynamic data) {
     if (data is List) return data;
     if (data is Map<String, dynamic>) {
-      for (final key in ['repositories', 'issues', 'pulls', 'commits', 'data', 'items']) {
+      for (final key in [
+        'repositories',
+        'issues',
+        'pulls',
+        'commits',
+        'discussions',
+        'mirrors',
+        'branches',
+        'entries',
+        'tree',
+        'data',
+        'items',
+      ]) {
         if (data[key] is List) return data[key] as List;
       }
     }

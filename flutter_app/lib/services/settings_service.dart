@@ -8,8 +8,26 @@ class SettingsService extends ChangeNotifier {
 
   final SharedPreferences _prefs;
 
-  static const defaultServerUrl =
+  static const productionServerUrl =
       'wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws';
+  static const localWorkerServerUrl =
+      'ws://localhost:8787/api/repo/mainnode/forkmesh/rooms/general/ws';
+  static const androidEmulatorLocalWorkerServerUrl =
+      'ws://10.0.2.2:8787/api/repo/mainnode/forkmesh/rooms/general/ws';
+  static const configuredServerUrl = String.fromEnvironment(
+    'FORKMESH_SERVER_URL',
+    defaultValue: '',
+  );
+
+  static String get defaultServerUrl {
+    if (configuredServerUrl.isNotEmpty) return configuredServerUrl;
+    if (kReleaseMode) return productionServerUrl;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return androidEmulatorLocalWorkerServerUrl;
+    }
+    return localWorkerServerUrl;
+  }
+
   static const defaultRoom = 'general';
   static const defaultPassphrase = 'forkmesh-public-room';
 

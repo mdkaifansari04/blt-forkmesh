@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auth_service.dart';
 import '../services/identity.dart';
 import '../services/relay_service.dart';
 import '../services/settings_service.dart';
@@ -45,10 +46,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final identity = context.read<Identity>();
     final relay = context.watch<RelayService>();
+    final auth = context.watch<AuthService>();
+    final session = auth.session;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const _SectionLabel('PROFILE'),
+        _ProfileAccountCard(session: session),
+        const SizedBox(height: 12),
         _field('Display name', _name, onSaved: _settings.setDisplayName),
         _field(
           'Solana address (payouts/donations, optional)',
@@ -118,6 +123,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onSaved: _settings.setGitlabToken,
           obscure: true,
         ),
+        const SizedBox(height: 20),
+        const _SectionLabel('ACCOUNT'),
+        _SignOutCard(
+          signedInAs: session?.nodeName.isNotEmpty == true
+              ? session!.nodeName
+              : session?.email ?? 'Current account',
+          onSignOut: () => _confirmSignOut(context, auth),
+        ),
       ],
     );
   }
@@ -138,6 +151,170 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+
+  Future<void> _confirmSignOut(BuildContext context, AuthService auth) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: const Text(
+          'This clears the saved mobile session on this device. Your identity key, relay settings, and tokens stay local.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await auth.logout();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Signed out. Sign in with another account.'),
+        ),
+      );
+    }
+  }
+}
+
+class _ProfileAccountCard extends StatelessWidget {
+  const _ProfileAccountCard({required this.session});
+
+  final AuthSession? session;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = session?.nodeName.isNotEmpty == true
+        ? session!.nodeName
+        : session?.email.isNotEmpty == true
+        ? session!.email
+        : 'Signed in';
+    final subtitle = session?.email.isNotEmpty == true
+        ? session!.email
+        : 'Worker account session saved on this device';
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: FmColors.surface,
+        border: Border.all(color: FmColors.border),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: const BoxDecoration(
+              color: FmColors.text,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.person_outline, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: FmColors.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const _SessionBadge(),
+        ],
+      ),
+    );
+  }
+}
+
+class _SessionBadge extends StatelessWidget {
+  const _SessionBadge();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+    decoration: BoxDecoration(
+      color: const Color(0xFFEFF8F2),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: const Color(0xFFCFEBD8)),
+    ),
+    child: const Text(
+      'Active',
+      style: TextStyle(
+        color: FmColors.success,
+        fontSize: 11,
+        fontWeight: FontWeight.w800,
+      ),
+    ),
+  );
+}
+
+class _SignOutCard extends StatelessWidget {
+  const _SignOutCard({required this.signedInAs, required this.onSignOut});
+
+  final String signedInAs;
+  final VoidCallback onSignOut;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: FmColors.surface,
+      border: Border.all(color: FmColors.border),
+      borderRadius: BorderRadius.circular(18),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Signed in as $signedInAs',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Sign out to return to the login screen and test with another Cloudflare Worker account.',
+          style: TextStyle(
+            color: FmColors.textMuted,
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: onSignOut,
+          icon: const Icon(Icons.logout, size: 18),
+          label: const Text('Sign out'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: FmColors.danger,
+            side: const BorderSide(color: Color(0xFFF1C9C7)),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _SectionLabel extends StatelessWidget {
