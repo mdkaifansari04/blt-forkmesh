@@ -7,7 +7,7 @@ labels: []
 milestone: 
 priority: 0
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782961025
 author: wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4
 authorName: jett
