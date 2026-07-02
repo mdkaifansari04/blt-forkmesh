@@ -999,7 +999,12 @@ void MainWindow::sendNodeHeartbeat()
                              : m_accountName;
     if (name.isEmpty() || !m_profileIdentity.isValid())
         return;
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Back off exponentially while the relay is failing (offline / HTTP 429) so
+    // a rate-limited node stops beating every single minute into the flood.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!m_pollBackoff.ready(QStringLiteral("heartbeat"), nowMs))
+        return;
+    const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).toUtf8();
     const QString solana = savedSolanaAddress();
@@ -1011,6 +1016,13 @@ void MainWindow::sendNodeHeartbeat()
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(QStringLiteral("heartbeat"),
+                                      QDateTime::currentMSecsSinceEpoch());
+            reply->deleteLater();
+            return;
+        }
+        m_pollBackoff.noteSuccess(QStringLiteral("heartbeat"));
         const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
         // The server tells us whether this node is an admin; if so, start
