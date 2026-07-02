@@ -807,8 +807,10 @@ QWidget *MainWindow::buildAgentsTab()
                 s->sendToolResult(toolUseId, answer);
                 bumpClaudeCodeUsage();
                 if (AgentSession *as = findAgentSession(sid);
-                    as && as->status == AgentStatus::Waiting) {
+                    as && as->status != AgentStatus::Running) {
                     as->status = AgentStatus::Running;
+                    as->finishedAtMs = 0;
+                    as->lastError.clear();
                     if (m_agentStore)
                         m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
@@ -1212,10 +1214,14 @@ QWidget *MainWindow::buildAgentsTab()
             // it now (and once more shortly after) to keep the top-bar chart +
             // hover stats current rather than waiting for the next minute tick.
             bumpClaudeCodeUsage();
-            // Replying clears the "Waiting" state — the agent is working again.
+            // Replying puts the agent back to work — clear "Waiting", or the
+            // Failed left by an error result whose process stayed alive, so the
+            // list shows the session running again.
             if (AgentSession *as = findAgentSession(sid);
-                as && as->status == AgentStatus::Waiting) {
+                as && as->status != AgentStatus::Running) {
                 as->status = AgentStatus::Running;
+                as->finishedAtMs = 0;
+                as->lastError.clear();
                 if (m_agentStore)
                     m_agentStore->saveSession(*as);
                 updateAgentStatusCell(sid);
@@ -5113,6 +5119,36 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     if (type == QLatin1String("result") || type == QLatin1String("control_request"))
         notifyAgentWaiting(sessionId, type == QLatin1String("control_request"));
 
+    // A system/init event is the CLI announcing a (re)started session — the
+    // "● session started" transcript divider. Persisted history never replays
+    // through here (ensureStreamEventsLoaded fills the buffers directly), so
+    // this only fires for a live launch: make sure the session shows Running
+    // again instead of the previous run's terminal state (adhoc #33).
+    if (type == QLatin1String("system")
+        && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init"))
+        markAgentSessionRunning(sessionId);
+
+    // A live `system`/`init` event is the CLI announcing a (re)started process —
+    // the transcript's "● session started" divider. A session can start again
+    // without passing through startClaudeCodeTranscript's status write (e.g.
+    // steering a live stream whose last turn errored out and left it Failed), so
+    // pin the row to Running here: a CLI that just emitted its init event is
+    // running, whatever the list said. Persisted history is never replayed
+    // through this function (ensureStreamEventsLoaded only fills the buffers),
+    // so this only fires for a genuinely live process.
+    if (type == QLatin1String("system")
+        && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
+        if (AgentSession *as = findAgentSession(sessionId);
+            as && as->status != AgentStatus::Running) {
+            as->status = AgentStatus::Running;
+            as->finishedAtMs = 0;
+            as->lastError.clear();
+            if (m_agentStore && !isExternalSession(sessionId))
+                m_agentStore->saveSession(*as);
+            updateAgentStatusCell(sessionId);
+        }
+    }
+
     // The CLI's final `result` event carries the run summary the transcript shows
     // as "done · N turns · Ms · $X". Persist those figures on the session and
     // refresh the list cells in place so the summary survives a restart and shows
@@ -5210,6 +5246,27 @@ QString MainWindow::lastClaudeSessionId(int sessionId) const
             return id;
     }
     return QString();
+}
+
+// The session started working again — a resumed CLI announced itself
+// (system/init, the "session started" divider) or a new user turn was steered
+// into a live one. Whatever terminal state the previous turn left behind
+// (Waiting, Failed from an error result, Success), the list must show it
+// Running now (adhoc #33). Mirrors continueSelectedAgentSession's reset: the
+// stale error/finish stamps belong to the previous run.
+void MainWindow::markAgentSessionRunning(int sessionId)
+{
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s || s->status == AgentStatus::Running)
+        return;
+    s->status = AgentStatus::Running;
+    s->lastError.clear();
+    s->finishedAtMs = 0;
+    if (s->startedAtMs <= 0)
+        s->startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_agentStore && !isExternalSession(sessionId))
+        m_agentStore->saveSession(*s);
+    updateAgentStatusCell(sessionId);
 }
 
 // The agent's turn ended (or it needs permission) and it's now waiting on the
