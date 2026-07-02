@@ -7981,13 +7981,21 @@ class Default(WorkerEntrypoint):
                 # serving" (or, when the DO is mid-flap, an isolate crash) and the
                 # clone dies instead of using a live mirror. So verify a host is
                 # actually connected right now; if not, force a redirect to a
-                # healthy mirror regardless of the stale presence row.
-                if not await self._source_has_live_host(owner, repo):
+                # healthy mirror regardless of the stale presence row. `fmretry`
+                # caps this at one hop: if two group members both have a fresh but
+                # stale presence row and no live host, they must not 302 to each
+                # other forever — after one forced hop we forward and let the node
+                # return its clean no-host advertisement instead.
+                already_forced = bool(
+                    parse_qs(url.query).get("fmretry", [""])[0])
+                if not already_forced and \
+                        not await self._source_has_live_host(owner, repo):
                     alt = await self._select_clone_fallback(
                         owner, repo, force=True)
                     if alt and alt.lower() != owner.lower():
                         query = url.query or "service=git-upload-pack"
-                        location = "/%s/%s/info/refs?%s" % (alt, repo, query)
+                        location = "/%s/%s/info/refs?%s&fmretry=1" % (
+                            alt, repo, query)
                         return Response(
                             "", status=302,
                             headers={"location": location,
