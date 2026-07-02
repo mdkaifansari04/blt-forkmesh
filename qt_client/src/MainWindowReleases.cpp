@@ -1650,13 +1650,23 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
     url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(repo))));
+    // Mirror discovery re-fires on every roster flicker; back it off
+    // exponentially while the relay is failing (offline / HTTP 429) so a rate-
+    // limited relay isn't re-queried on each presence blip.
+    const QString backoffKey = url.toString();
+    if (!m_pollBackoff.ready(backoffKey, QDateTime::currentMSecsSinceEpoch()))
+        return;
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, source]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source, backoffKey]() {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         const QJsonObject resp = QJsonDocument::fromJson(body).object();
-        if (!resp.value("ok").toBool())
+        if (!resp.value("ok").toBool()) {
+            m_pollBackoff.noteFailure(backoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
             return;
+        }
+        m_pollBackoff.noteSuccess(backoffKey);
         m_catalogMirrorsSource = source;
         m_catalogMirrorsCache = resp.value("mirrors").toArray();
         // Re-render only if the user is still viewing this repo group, so the
