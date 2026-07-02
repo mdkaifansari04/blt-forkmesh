@@ -386,32 +386,20 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
-    // Claude model chooser (adhoc #261): pick which model the `claude` CLI runs
-    // as. The values are the CLI's own `--model` aliases ("opus"/"sonnet"/…);
-    // an empty value leaves it on the CLI default. Persisted so the choice
-    // sticks across launches and feeds startClaudeCodeTranscript.
+    // Claude model chooser (adhoc #261): live list of models from the provider.
+    // Populated by refreshClaudeModelCombo; choice persisted and fed to
+    // startClaudeCodeTranscript.
     m_quickAddClaudeModel = new QComboBox;
-    m_quickAddClaudeModel->addItem(QStringLiteral("Default model"), QString());
-    m_quickAddClaudeModel->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("opus"));
-    m_quickAddClaudeModel->addItem(QStringLiteral("Sonnet 4.6"), QStringLiteral("sonnet"));
-    m_quickAddClaudeModel->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("haiku"));
+    populateClaudeModelCombo(m_quickAddClaudeModel);
     m_quickAddClaudeModel->setToolTip(
-        "Claude model the Claude Code agent runs as (passed to the CLI as "
-        "--model). 'Default model' leaves the CLI's choice untouched.");
-    {
-        const QString savedModel =
-            QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
-        const int mi = m_quickAddClaudeModel->findData(savedModel);
-        m_quickAddClaudeModel->setCurrentIndex(mi >= 0 ? mi : 0);
-    }
+        "Claude model the Claude Code agent runs as (passed to the CLI as --model).");
+    m_quickAddClaudeModel->view()->installEventFilter(this);
+    m_quickAddClaudeModel->setProperty("claudeModelCombo", true);
     connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 QSettings().setValue(kClaudeCodeModelSetting,
                                      m_quickAddClaudeModel->currentData().toString());
             });
-    // Merge the account's live model line-up in beneath the static aliases, the
-    // same as the composer selector. Applies the cached list right away and
-    // arms a fetch (throttled) so this bar stays in sync (adhoc #114).
     refreshClaudeModelCombo();
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
