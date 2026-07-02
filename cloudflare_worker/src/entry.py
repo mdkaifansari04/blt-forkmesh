@@ -163,6 +163,15 @@ LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
 # How long a password-reset link stays valid after it is emailed.
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
+# Users-vs-nodes linking (adhoc #53). A website claim's confirmation code (shown
+# on the node, typed into the site) lives this long; an installer link code
+# (shown by install.sh, typed into the installing desktop app) lives longer
+# because the fresh node still has to build/launch/register before it can
+# present the code.
+CLAIM_CODE_TTL_MS = 10 * 60 * 1000
+CLAIM_CODE_MAX_ATTEMPTS = 5
+LINK_CODE_TTL_MS = 30 * 60 * 1000
+LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
@@ -2347,6 +2356,15 @@ SCHEMA_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS login_attempts (id_bi TEXT PRIMARY KEY, "
     "fails INTEGER NOT NULL DEFAULT 0, first_fail_ts INTEGER NOT NULL DEFAULT 0, "
     "locked_until INTEGER NOT NULL DEFAULT 0)",
+    # Installer link-code rendezvous (adhoc #53): install.sh mints a short code
+    # the fresh headless node registers with, and the installing user's desktop
+    # app offers the same code signed by its key. Whichever side arrives first
+    # parks its half here; the second side completes the link (node.owner =
+    # user, user.nodes += node) and deletes the row. code_bi is the blind index
+    # of "link:<code>"; data is the encrypted {node|user}; rows expire after
+    # LINK_CODE_TTL_MS and are pruned as they are looked up.
+    "CREATE TABLE IF NOT EXISTS link_codes (code_bi TEXT PRIMARY KEY, "
+    "data TEXT NOT NULL, ts INTEGER NOT NULL)",
     # Email-verification queue: newly finalized accounts land here until an admin
     # manually verifies them (placeholder until a real email service like SES is
     # wired up). data = encrypted {name, email, joinedAt}.
@@ -3550,6 +3568,21 @@ async def _delete_account_namespace(env, name_bi, rec):
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
 
 
+# Users vs nodes (adhoc #53). Both kinds live in the accounts table; the kind is
+# derived from the record: an account with login credentials is a "user" (a
+# person — their desktop node is intrinsically theirs), a key-bound-only account
+# (e.g. a headless mirror's auto-registration) is a "node" a user can claim.
+def _account_kind(rec):
+    return "user" if rec.get("pass_hash") else "node"
+
+
+def _owned_nodes(rec):
+    nodes = rec.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+    return [n for n in nodes if isinstance(n, str) and n]
+
+
 async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
@@ -3566,6 +3599,9 @@ async def _account_public_payload(env, rec):
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+        "kind": _account_kind(rec),
+        "owner": rec.get("owner", ""),
+        "nodes": _owned_nodes(rec),
     }
 
 
@@ -4343,6 +4379,16 @@ async def _account_finalize(env, request):
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
+    # Installer link code (adhoc #53): a hosts/SSH install prints a code on the
+    # fresh machine and hands it to the daemon, which presents it here when it
+    # registers. If the installing desktop's signed offer already arrived the
+    # node is linked to that user right now; otherwise the node's half is
+    # parked until the offer lands (see _redeem_or_park_link_code).
+    link_code = clean_string(data.get("linkCode", ""), 16).strip()
+    if key_bound and LINK_CODE_RE.match(link_code) and not rec.get("owner"):
+        result = await _redeem_or_park_link_code(env, link_code, node=name)
+        if result.get("linked"):
+            rec["owner"] = result.get("user", "")
     return json_response(await _account_public_payload(env, rec), status=201)
 
 
@@ -4438,6 +4484,245 @@ async def _account_profile(env, request):
     payload["verificationQueued"] = bool(verification_queued)
     payload["nodeNameChanged"] = bool(renamed)
     return json_response(payload)
+
+
+# --- Users vs nodes: claiming & linking (adhoc #53) --------------------------
+#
+# Two ways a user (an account with login credentials) becomes the owner of a
+# node (a key-bound-only account, e.g. a headless mirror registration):
+#
+#  1. Website claim: the user enters the node's ID (its account name) on the
+#     dashboard. The worker parks a short confirmation code on the node's
+#     record; the node learns of it in its next signed heartbeat reply and
+#     shows the code on the machine itself. Typing that code back into the
+#     website proves the user can see the node, and the records are linked.
+#
+#  2. Installer link code: a hosts/SSH install prints a code on the fresh
+#     machine and hands it to the launched daemon, which presents it when it
+#     registers. The desktop app that drove the install offers the same code
+#     signed by its own key; whichever side reaches the worker first parks its
+#     half in link_codes and the second side completes the link. The new node
+#     is attached to the USER behind the installing account (the account
+#     itself when it is a user, else that node's own recorded owner).
+
+
+def _generate_confirm_code():
+    return "%06d" % (int.from_bytes(_random_bytes(4), "big") % 1000000)
+
+
+def _claim_pending(rec, now):
+    pending = rec.get("claim_pending")
+    if not isinstance(pending, dict):
+        return None
+    try:
+        expires = int(pending.get("expires") or 0)
+    except (TypeError, ValueError):
+        return None
+    if now >= expires or not pending.get("user") or not pending.get("code"):
+        return None
+    return pending
+
+
+async def _resolve_user_by_password(env, data):
+    # Web-auth gate for the claim endpoints, matching _account_profile: a
+    # state-changing dashboard action re-proves the password on each request
+    # (the static site keeps no server-side session). Returns (name_bi, rec)
+    # for an active credentialed account, else (None, None).
+    identifier = clean_string(
+        data.get("identifier", "") or data.get("email", "") or
+        data.get("user", ""), 254).strip().lower()
+    password = (data.get("password", "") or "")[:256]
+    if not identifier or not password:
+        return None, None
+    name_bi, rec = "", None
+    if "@" in identifier:
+        email_bi = await blind_index(env, identifier)
+        row = await d1_first(
+            env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if row:
+            name_bi = row.get("name_bi", "")
+            rec = await decrypt_row(env, row.get("data"))
+    elif valid_node_name(identifier):
+        name_bi, rec = await _account_row(env, identifier)
+    if not rec or rec.get("status") != "active" or not rec.get("pass_hash"):
+        return None, None
+    if not await verify_password(password, rec.get("pass_salt", ""),
+                                 rec.get("pass_hash", "")):
+        return None, None
+    if not name_bi:
+        name_bi = await blind_index(env, rec.get("name", ""))
+    return name_bi, rec
+
+
+async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
+    # The one place ownership is written: node.owner = user and the node joins
+    # the user's nodes list. The user's record is loaded fresh so a stale
+    # caller copy can't clobber it.
+    node_rec["owner"] = user_name
+    node_rec.pop("claim_pending", None)
+    await _save_account(env, node_bi, node_rec)
+    user_bi, user_rec = await _account_row(env, user_name)
+    if user_rec is not None:
+        nodes = _owned_nodes(user_rec)
+        if node_name not in nodes:
+            nodes.append(node_name)
+        user_rec["nodes"] = nodes
+        await _save_account(env, user_bi, user_rec)
+
+
+async def _account_claim_node(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, user_rec = await _resolve_user_by_password(env, data)
+    if not user_rec:
+        return json_response({"error": "invalid_credentials"}, status=401)
+    user_name = user_rec.get("name", "")
+    node_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
+                           MAX_NODE_NAME).lower()
+    if not valid_node_name(node_id):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    if node_id == user_name:
+        return json_response({"error": "cannot_claim_self"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_id)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if _account_kind(node_rec) != "node":
+        # An account that can log in is a user in its own right, not claimable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if node_rec.get("owner") == user_name:
+        return json_response({"ok": True, "alreadyLinked": True,
+                              "nodeId": node_id})
+    if node_rec.get("owner"):
+        return json_response({"error": "node_already_owned"}, status=409)
+    now = int(Date.now())
+    node_rec["claim_pending"] = {
+        "user": user_name,
+        "code": _generate_confirm_code(),
+        "expires": now + CLAIM_CODE_TTL_MS,
+        "attempts": 0,
+    }
+    await _save_account(env, node_bi, node_rec)
+    # The code itself is deliberately NOT returned: it only ever travels
+    # worker -> node (heartbeat reply) -> the person standing at both screens.
+    return json_response({"ok": True, "pending": True, "nodeId": node_id,
+                          "expiresAt": now + CLAIM_CODE_TTL_MS}, status=201)
+
+
+async def _account_claim_confirm(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, user_rec = await _resolve_user_by_password(env, data)
+    if not user_rec:
+        return json_response({"error": "invalid_credentials"}, status=401)
+    user_name = user_rec.get("name", "")
+    node_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
+                           MAX_NODE_NAME).lower()
+    code = clean_string(data.get("code", ""), 16).strip()
+    if not valid_node_name(node_id):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_id)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if node_rec.get("owner") == user_name:
+        return json_response({"ok": True, "linked": True, "nodeId": node_id,
+                              "nodes": _owned_nodes(user_rec)})
+    pending = _claim_pending(node_rec, int(Date.now()))
+    if not pending or pending.get("user") != user_name:
+        return json_response({"error": "no_pending_claim"}, status=404)
+    if not code or code != pending.get("code"):
+        # A 6-digit code must not be guessable within its TTL: a few misses
+        # invalidate the claim entirely (restart it from the dashboard).
+        attempts = int(pending.get("attempts") or 0) + 1
+        if attempts >= CLAIM_CODE_MAX_ATTEMPTS:
+            node_rec.pop("claim_pending", None)
+        else:
+            pending["attempts"] = attempts
+            node_rec["claim_pending"] = pending
+        await _save_account(env, node_bi, node_rec)
+        return json_response({"error": "bad_code"}, status=401)
+    await _link_node_to_user(env, node_id, node_bi, node_rec, user_name)
+    _, fresh_user = await _account_row(env, user_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_id,
+                          "nodes": _owned_nodes(fresh_user or user_rec)})
+
+
+async def _redeem_or_park_link_code(env, code, node=None, user=None):
+    # Order-independent rendezvous for installer link codes: called with node=
+    # from the fresh node's registration and with user= from the installing
+    # desktop's signed offer. When the opposite half is already parked (and
+    # fresh), complete the link and burn the code; otherwise park this half.
+    # Returns {"linked": True, "node": ..., "user": ...} when the link
+    # completed now, else {"linked": False}.
+    code_bi = await blind_index(env, "link:" + code)
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT data, ts FROM link_codes WHERE code_bi=?", code_bi)
+    other = None
+    if row:
+        try:
+            fresh = now - int(row.get("ts") or 0) <= LINK_CODE_TTL_MS
+        except (TypeError, ValueError):
+            fresh = False
+        other = await decrypt_row(env, row.get("data")) if fresh else None
+    if node and other and other.get("user"):
+        node_bi, node_rec = await _account_row(env, node)
+        if node_rec is not None and not node_rec.get("owner"):
+            await _link_node_to_user(env, node, node_bi, node_rec,
+                                     other["user"])
+        await d1_run(env, "DELETE FROM link_codes WHERE code_bi=?", code_bi)
+        return {"linked": True, "node": node, "user": other["user"]}
+    if user and other and other.get("node"):
+        node_name = other["node"]
+        node_bi, node_rec = await _account_row(env, node_name)
+        if node_rec is not None and not node_rec.get("owner"):
+            await _link_node_to_user(env, node_name, node_bi, node_rec, user)
+        await d1_run(env, "DELETE FROM link_codes WHERE code_bi=?", code_bi)
+        return {"linked": True, "node": node_name, "user": user}
+    encrypted = await encrypt_row(env, {"node": node} if node else {"user": user})
+    await d1_run(
+        env,
+        "INSERT INTO link_codes (code_bi, data, ts) VALUES (?,?,?) "
+        "ON CONFLICT(code_bi) DO UPDATE SET data=excluded.data, ts=excluded.ts",
+        code_bi, encrypted, now)
+    return {"linked": False}
+
+
+async def _account_link_node(env, request):
+    # The installing desktop's half of the installer link-code flow: the code
+    # printed by install.sh on the fresh machine, offered here signed by the
+    # installing account's own key.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    code = clean_string(data.get("code", ""), 16).strip()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name) or not LINK_CODE_RE.match(code):
+        return json_response({"error": "invalid_request"}, status=400)
+    _, rec = await _account_row(env, name)
+    if not rec or rec.get("status") != "active":
+        return json_response({"error": "no_such_account"}, status=404)
+    pubkey = rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-link-v1\n" + name + "\n" + code + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    user = name if _account_kind(rec) == "user" else (rec.get("owner") or "")
+    if not user:
+        return json_response({"error": "no_user_account"}, status=403)
+    result = await _redeem_or_park_link_code(env, code, user=user)
+    if result.get("linked"):
+        return json_response({"ok": True, "linked": True,
+                              "node": result.get("node", ""), "user": user})
+    return json_response({"ok": True, "linked": False, "pending": True,
+                          "user": user}, status=202)
 
 
 async def _login_locked_until(env, id_bi):
@@ -4631,6 +4916,17 @@ async def _account_heartbeat(env, request):
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["donationReceived"] = donation_received
+    # A pending website claim (adhoc #53) rides back on the signed heartbeat:
+    # only the node's key holder ever sees the confirmation code, and the node
+    # shows it on its own screen for the claiming user to type into the site.
+    # Expired claims are cleaned off the record here.
+    claim = _claim_pending(rec, int(Date.now()))
+    if claim:
+        response["claim"] = {"user": claim.get("user", ""),
+                             "code": claim.get("code", "")}
+    elif rec.get("claim_pending"):
+        rec.pop("claim_pending", None)
+        await _save_account(env, name_bi, rec)
     return json_response(response)
 
 
@@ -6169,6 +6465,12 @@ async def accounts_handler(env, request):
         return await _account_forgot_password(env, request)
     if url.path == "/api/accounts/reset-password" and method == "POST":
         return await _account_reset_password(env, request)
+    if url.path == "/api/accounts/claim-node" and method == "POST":
+        return await _account_claim_node(env, request)
+    if url.path == "/api/accounts/claim-confirm" and method == "POST":
+        return await _account_claim_confirm(env, request)
+    if url.path == "/api/accounts/link-node" and method == "POST":
+        return await _account_link_node(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
@@ -6181,6 +6483,9 @@ async def accounts_handler(env, request):
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
         # isAdmin + pubkey let any client authenticate a signed admin-moderation
         # action (e.g. a chat admin-delete) made by this account's identity key.
+        # kind/owner let the dashboard's claim form tell "that's a user account,
+        # not a claimable node" (and "already owned") before starting a claim;
+        # node ownership is public catalog-adjacent data like the name itself.
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
@@ -6188,7 +6493,9 @@ async def accounts_handler(env, request):
              "isAdmin": await _is_admin(env, rec.get("name", name)),
              "avatarPng": rec.get("avatar_png", ""),
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
-             "createdAt": rec.get("created_at", 0)}
+             "createdAt": rec.get("created_at", 0),
+             "kind": _account_kind(rec),
+             "owner": rec.get("owner", "")}
         )
     return json_response({"error": "not_found"}, status=404)
 
