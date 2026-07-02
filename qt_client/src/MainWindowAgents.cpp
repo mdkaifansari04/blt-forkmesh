@@ -3612,7 +3612,8 @@ void MainWindow::updateIssueLooperButton()
 // the typed prompt becomes the agent's task verbatim. It still runs in its own
 // worktree/branch and opens a pull request on finish, like every transcript run.
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
-                                       const QString &provider, bool createPr)
+                                       const QString &provider, bool createPr,
+                                       const QString &model)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -3634,6 +3635,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = createPr;
+    session.model = model.trimmed(); // empty leaves the provider's own default
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     // A short title from the prompt's first line, for the list row and the PR.
@@ -3674,6 +3676,8 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         // anchor to, so the task rides through the config as an override prompt.
         AgentRunner::Config config = agentConfigForProvider(provider);
         config.taskOverride = task;
+        if (!session.model.isEmpty())
+            config.model = session.model;
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
@@ -4452,11 +4456,14 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
     const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
-    // Which model the CLI runs as, chosen in the footer quick-add bar (adhoc
+    // Which model the CLI runs as. A model set on the session itself (e.g. the
+    // agent/model dropdown a caller picked before starting this run) wins;
+    // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
     // #261). Empty leaves the CLI on its own default; otherwise it's passed
     // through as `--model`.
     const QString claudeModel =
-        QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+        !model.isEmpty() ? model
+                         : QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
                    claudeModel](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
