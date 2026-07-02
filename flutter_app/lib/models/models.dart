@@ -57,6 +57,8 @@ class Repository {
     this.mirrors = 1,
     this.defaultBranch = 'main',
     this.isPrivate = false,
+    this.liveHost = false,
+    this.cloneOnline = false,
     this.updatedMs = 0,
   });
 
@@ -69,6 +71,8 @@ class Repository {
   final int mirrors;
   final String defaultBranch;
   final bool isPrivate;
+  final bool liveHost;
+  final bool cloneOnline;
   final int updatedMs;
 
   String get fullName => '$owner/$name';
@@ -86,6 +90,8 @@ class Repository {
       mirrors: asInt(j['mirrors'] ?? 1),
       defaultBranch: (j['defaultBranch'] ?? 'main').toString(),
       isPrivate: j['isPrivate'] == true,
+      liveHost: j['liveHost'] == true,
+      cloneOnline: j['cloneOnline'] == true,
       updatedMs: asInt(j['updatedAt'] ?? j['publishedAt'] ?? 0),
     );
   }
@@ -99,6 +105,7 @@ class Issue {
     this.body = '',
     this.author = '',
     this.labels = const [],
+    this.events = const [],
     this.votes = 0,
     this.bountyUsd = 0,
   });
@@ -109,6 +116,7 @@ class Issue {
   final String body;
   final String author;
   final List<String> labels;
+  final List<IssueEvent> events;
   final int votes;
   final double bountyUsd;
 
@@ -125,10 +133,49 @@ class Issue {
       author: (j['author'] ?? '').toString(),
       labels:
           (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      events:
+          (j['events'] as List?)
+              ?.whereType<Map>()
+              .map((e) => IssueEvent.fromJson(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
       votes: asInt(j['votes']),
       bountyUsd: (j['bountyUsd'] is num)
           ? (j['bountyUsd'] as num).toDouble()
           : 0,
+    );
+  }
+}
+
+class IssueEvent {
+  IssueEvent({
+    required this.type,
+    this.body = '',
+    this.author = '',
+    this.authorName = '',
+    this.status = '',
+    this.ts = 0,
+  });
+
+  final String type;
+  final String body;
+  final String author;
+  final String authorName;
+  final String status;
+  final int ts;
+
+  String get displayAuthor => authorName.isNotEmpty ? authorName : author;
+
+  factory IssueEvent.fromJson(Map<String, dynamic> j) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return IssueEvent(
+      type: (j['type'] ?? '').toString(),
+      body: (j['body'] ?? '').toString(),
+      author: (j['author'] ?? '').toString(),
+      authorName: (j['authorName'] ?? '').toString(),
+      status: (j['status'] ?? '').toString(),
+      ts: asInt(j['ts']),
     );
   }
 }
@@ -376,6 +423,7 @@ class RepoDiscussion {
     this.body = '',
     this.author = '',
     this.updatedMs = 0,
+    this.events = const [],
   });
 
   final int number;
@@ -383,6 +431,25 @@ class RepoDiscussion {
   final String body;
   final String author;
   final int updatedMs;
+  final List<DiscussionEvent> events;
+}
+
+class DiscussionEvent {
+  DiscussionEvent({
+    required this.type,
+    this.body = '',
+    this.author = '',
+    this.authorName = '',
+    this.ts = 0,
+  });
+
+  final String type;
+  final String body;
+  final String author;
+  final String authorName;
+  final int ts;
+
+  String get displayAuthor => authorName.isNotEmpty ? authorName : author;
 }
 
 class PublishedPull {
@@ -393,6 +460,7 @@ class PublishedPull {
     this.body = '',
     this.base = '',
     this.head = '',
+    this.patch = '',
     this.signed = false,
   });
 
@@ -402,6 +470,7 @@ class PublishedPull {
   final String body;
   final String base;
   final String head;
+  final String patch;
   final bool signed;
 }
 
