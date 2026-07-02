@@ -808,6 +808,7 @@ private:
                              const QString &authorId = QString());
     QWidget *buildAboutSidebar();
     QWidget *buildRepoSecurityTab();
+    QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
     QWidget *buildPlaceholderTab(const QString &name);
 
@@ -1748,6 +1749,10 @@ private:
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
+    void refreshRepoQuality();
+    // Open a repo file in the editor and highlight/centre the given 1-based
+    // line (used by the Security and Quality findings tables).
+    void openRepoFileAtLine(const QString &path, int line);
     void loadRepoInsights();
     // Insights "Contributors & activity": right-click a row to reassign that
     // author's commits to a different identity (rewrites history via
@@ -2794,6 +2799,11 @@ private:
     QGridLayout *m_securitySignalsGrid = nullptr;
     QTableWidget *m_securityFindingsTable = nullptr;
     QPushButton *m_securityRefreshButton = nullptr;
+    QLabel *m_qualitySummary = nullptr;
+    QWidget *m_qualitySignalsPanel = nullptr;
+    QGridLayout *m_qualitySignalsGrid = nullptr;
+    QTableWidget *m_qualityFindingsTable = nullptr;
+    QPushButton *m_qualityRefreshButton = nullptr;
     // Private vulnerability report form (Settings → Security tab).
     QLineEdit *m_vulnTitleEdit = nullptr;
     QPlainTextEdit *m_vulnBodyEdit = nullptr;

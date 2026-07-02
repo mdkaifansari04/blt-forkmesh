@@ -778,23 +778,6 @@ RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
                                    QStringLiteral("Open Actions"),
                                    QStringLiteral("tab:actions")));
 
-    const RepoSecuritySeverity qSeverity = qualitySeverity(input.actionRuns);
-    QString qualitySummary;
-    if (qSeverity == RepoSecuritySeverity::High)
-        qualitySummary = QStringLiteral("Latest quality checks need attention.");
-    else if (qSeverity == RepoSecuritySeverity::Warning)
-        qualitySummary = QStringLiteral("No quality check run recorded.");
-    else if (qSeverity == RepoSecuritySeverity::Info)
-        qualitySummary = QStringLiteral("Quality checks are queued or running.");
-    else
-        qualitySummary = QStringLiteral("Quality checks passed.");
-    snapshot.signalList.append(signal(QStringLiteral("quality"),
-                                   QStringLiteral("Quality checks"), qSeverity,
-                                   qualitySummary,
-                                   QStringLiteral("Derived from local ForkMesh action runs."),
-                                   QStringLiteral("Open Actions"),
-                                   QStringLiteral("tab:actions")));
-
     const int securityIssues = openSecurityIssueCount(input.issues);
     snapshot.signalList.append(
         securityIssues > 0
@@ -901,4 +884,420 @@ RepoSecuritySeverity RepoSecurity::highestSeverity(
         if (rank(finding.severity) > rank(highest))
             highest = finding.severity;
     return highest;
+}
+
+// ---- Quality metrics (Quality tab) ----
+
+namespace {
+
+// Paths that look like automated-test sources: tests/ trees and
+// test_* / *_test.* / *.spec.* style file names.
+bool looksLikeTestPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    if (lower.startsWith(QLatin1String("test/")) ||
+        lower.startsWith(QLatin1String("tests/")) ||
+        lower.contains(QLatin1String("/test/")) ||
+        lower.contains(QLatin1String("/tests/")) ||
+        lower.contains(QLatin1String("/__tests__/")) ||
+        lower.contains(QLatin1String("/spec/")))
+        return true;
+    const QString base = QFileInfo(lower).fileName();
+    return base.startsWith(QLatin1String("test_")) ||
+           base.contains(QLatin1String("_test.")) ||
+           base.contains(QLatin1String(".test.")) ||
+           base.contains(QLatin1String(".spec.")) ||
+           base.contains(QLatin1String("_spec."));
+}
+
+bool isSourceCodePath(const QString &path)
+{
+    static const QSet<QString> kCodeExtensions{
+        QStringLiteral("c"),   QStringLiteral("cc"),    QStringLiteral("cpp"),
+        QStringLiteral("cxx"), QStringLiteral("h"),     QStringLiteral("hh"),
+        QStringLiteral("hpp"), QStringLiteral("hxx"),   QStringLiteral("m"),
+        QStringLiteral("mm"),  QStringLiteral("cs"),    QStringLiteral("java"),
+        QStringLiteral("kt"),  QStringLiteral("go"),    QStringLiteral("rs"),
+        QStringLiteral("py"),  QStringLiteral("rb"),    QStringLiteral("js"),
+        QStringLiteral("jsx"), QStringLiteral("ts"),    QStringLiteral("tsx"),
+        QStringLiteral("mjs"), QStringLiteral("cjs"),   QStringLiteral("php"),
+        QStringLiteral("swift"), QStringLiteral("scala"), QStringLiteral("sh"),
+        QStringLiteral("bash"), QStringLiteral("pl"),   QStringLiteral("lua"),
+        QStringLiteral("sql"), QStringLiteral("dart"),  QStringLiteral("ex"),
+        QStringLiteral("exs"), QStringLiteral("hs"),    QStringLiteral("vue"),
+        QStringLiteral("svelte"),
+    };
+    return kCodeExtensions.contains(QFileInfo(path).suffix().toLower());
+}
+
+} // namespace
+
+RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
+{
+    RepoSecuritySnapshot snapshot;
+    snapshot.repoKey = repoKey(input);
+    snapshot.ref = currentRefFor(input);
+    snapshot.generatedAtMs = QDateTime::currentMSecsSinceEpoch();
+
+    // --- Checks: local ForkMesh action runs (previously shown on the combined
+    // Security and quality tab).
+    int passedRuns = 0;
+    int failedRuns = 0;
+    int activeRuns = 0;
+    for (const ActionRun &run : input.actionRuns) {
+        if (run.status == ActionStatus::Success)
+            ++passedRuns;
+        else if (run.status == ActionStatus::Failed ||
+                 run.status == ActionStatus::Rejected)
+            ++failedRuns;
+        else if (run.status == ActionStatus::Running ||
+                 run.status == ActionStatus::Queued ||
+                 run.status == ActionStatus::AwaitingApproval)
+            ++activeRuns;
+    }
+    const RepoSecuritySeverity checksSeverity = qualitySeverity(input.actionRuns);
+    const QString checksSummary =
+        input.actionRuns.isEmpty()
+            ? QStringLiteral("No quality check run recorded.")
+            : QStringLiteral("%1 recorded: %2 passed, %3 failed, %4 active.")
+                  .arg(plural(input.actionRuns.size(), QStringLiteral("run"),
+                              QStringLiteral("runs")))
+                  .arg(passedRuns)
+                  .arg(failedRuns)
+                  .arg(activeRuns);
+    snapshot.signalList.append(
+        signal(QStringLiteral("checks"), QStringLiteral("Quality checks"),
+               checksSeverity, checksSummary,
+               QStringLiteral("Derived from local ForkMesh action runs."),
+               QStringLiteral("Open Actions"), QStringLiteral("tab:actions")));
+    for (const ActionRun &run : input.actionRuns) {
+        if (run.status != ActionStatus::Failed &&
+            run.status != ActionStatus::Rejected)
+            continue;
+        RepoSecurityFinding finding;
+        finding.id = QStringLiteral("check:%1").arg(run.id);
+        finding.category = QStringLiteral("Checks");
+        finding.severity = RepoSecuritySeverity::High;
+        finding.title = run.workflowName.isEmpty() ? run.workflowPath
+                                                   : run.workflowName;
+        finding.detail = run.status == ActionStatus::Rejected
+                             ? QStringLiteral("Run #%1 was rejected").arg(run.id)
+                             : QStringLiteral("Run #%1 failed").arg(run.id);
+        finding.path = run.workflowPath;
+        finding.recommendedAction =
+            QStringLiteral("Fix the failing workflow (see the Actions tab).");
+        snapshot.findings.append(finding);
+    }
+
+    // --- Tracked-file metrics: volume, tests, docs, TODO markers, file sizes.
+    const QList<RepoFile> files = trackedTextFiles(input);
+    static const QRegularExpression kTodoMarker(
+        QStringLiteral("\\b(TODO|FIXME|HACK|XXX)\\b"));
+    constexpr int kMaxTodoFindings = 120;
+    constexpr int kLongFileLines = 1200;
+    constexpr int kVeryLongFileLines = 3000;
+
+    qint64 totalLines = 0;
+    qint64 blankLines = 0;
+    int sourceFiles = 0;
+    int testFiles = 0;
+    int todoCount = 0;
+    int longFiles = 0;
+    QString largestPath;
+    int largestLines = 0;
+    bool hasReadme = false;
+    bool hasLicense = false;
+    bool hasContributing = false;
+    bool hasChangelog = false;
+    bool hasDocsDir = false;
+    QList<RepoSecurityFinding> todoFindings;
+    QList<RepoSecurityFinding> longFileFindings;
+
+    for (const RepoFile &file : files) {
+        const QString lowerPath = file.path.toLower();
+        const QString base = QFileInfo(lowerPath).fileName();
+        if (!file.path.contains(QLatin1Char('/'))) {
+            if (base.startsWith(QLatin1String("readme")))
+                hasReadme = true;
+            if (base.startsWith(QLatin1String("license")) ||
+                base.startsWith(QLatin1String("copying")))
+                hasLicense = true;
+            if (base.startsWith(QLatin1String("contributing")))
+                hasContributing = true;
+            if (base.startsWith(QLatin1String("changelog")) ||
+                base == QLatin1String("news") ||
+                base.startsWith(QLatin1String("news.")))
+                hasChangelog = true;
+        }
+        if (lowerPath.startsWith(QLatin1String("docs/")) ||
+            lowerPath.startsWith(QLatin1String("doc/")))
+            hasDocsDir = true;
+
+        const bool isSource = isSourceCodePath(file.path);
+        if (isSource) {
+            ++sourceFiles;
+            if (looksLikeTestPath(file.path))
+                ++testFiles;
+        }
+
+        const QStringList lines =
+            QString::fromUtf8(file.content).split(QLatin1Char('\n'));
+        int fileLines = lines.size();
+        if (!lines.isEmpty() && lines.last().isEmpty())
+            --fileLines;
+        totalLines += fileLines;
+        for (int i = 0; i < fileLines; ++i) {
+            const QString &line = lines.at(i);
+            if (line.trimmed().isEmpty()) {
+                ++blankLines;
+                continue;
+            }
+            const QRegularExpressionMatch match = kTodoMarker.match(line);
+            if (match.hasMatch()) {
+                ++todoCount;
+                if (todoFindings.size() < kMaxTodoFindings) {
+                    RepoSecurityFinding finding;
+                    finding.id = QStringLiteral("todo:%1:%2")
+                                     .arg(file.path)
+                                     .arg(i + 1);
+                    finding.category = QStringLiteral("Maintenance");
+                    finding.severity = RepoSecuritySeverity::Info;
+                    finding.title = match.captured(1);
+                    QString text = line.trimmed();
+                    if (text.size() > 140)
+                        text = text.left(139) + QStringLiteral("…");
+                    finding.detail = text;
+                    finding.path = file.path;
+                    finding.line = i + 1;
+                    finding.recommendedAction =
+                        QStringLiteral("Resolve the marker or track it as an issue.");
+                    todoFindings.append(finding);
+                }
+            }
+        }
+
+        if (fileLines > largestLines) {
+            largestLines = fileLines;
+            largestPath = file.path;
+        }
+        if (isSource && fileLines > kLongFileLines) {
+            ++longFiles;
+            RepoSecurityFinding finding;
+            finding.id = QStringLiteral("long:%1").arg(file.path);
+            finding.category = QStringLiteral("Large file");
+            finding.severity = fileLines > kVeryLongFileLines
+                                   ? RepoSecuritySeverity::Warning
+                                   : RepoSecuritySeverity::Info;
+            finding.title = QFileInfo(file.path).fileName();
+            finding.detail = QStringLiteral("%1 lines").arg(fileLines);
+            finding.path = file.path;
+            finding.recommendedAction =
+                QStringLiteral("Consider splitting into smaller modules.");
+            longFileFindings.append(finding);
+        }
+    }
+
+    // Code volume card
+    const int fileCount = files.size();
+    const int avgLines = fileCount > 0 ? int(totalLines / fileCount) : 0;
+    const int blankPct =
+        totalLines > 0 ? int(blankLines * 100 / totalLines) : 0;
+    QString volumeDetail;
+    if (fileCount > 0) {
+        volumeDetail = QStringLiteral("Average %1 lines per file; %2% blank.")
+                           .arg(avgLines)
+                           .arg(blankPct);
+        if (!largestPath.isEmpty())
+            volumeDetail += QStringLiteral(" Largest: %1 (%2 lines).")
+                                .arg(largestPath)
+                                .arg(largestLines);
+    }
+    snapshot.signalList.append(
+        signal(QStringLiteral("volume"), QStringLiteral("Code volume"),
+               RepoSecuritySeverity::Info,
+               fileCount > 0
+                   ? QStringLiteral("%1, %2 lines.")
+                         .arg(plural(fileCount, QStringLiteral("tracked text file"),
+                                     QStringLiteral("tracked text files")))
+                         .arg(totalLines)
+                   : QStringLiteral("No tracked text files found."),
+               volumeDetail));
+
+    // Documentation card + findings for missing core docs
+    const int coreDocs = int(hasReadme) + int(hasLicense) + int(hasContributing) +
+                         int(hasChangelog);
+    RepoSecuritySeverity docsSeverity = RepoSecuritySeverity::Pass;
+    if (!hasReadme)
+        docsSeverity = RepoSecuritySeverity::Warning;
+    else if (coreDocs < 4)
+        docsSeverity = RepoSecuritySeverity::Info;
+    QStringList missingDocs;
+    if (!hasReadme)
+        missingDocs << QStringLiteral("README");
+    if (!hasLicense)
+        missingDocs << QStringLiteral("LICENSE");
+    if (!hasContributing)
+        missingDocs << QStringLiteral("CONTRIBUTING");
+    if (!hasChangelog)
+        missingDocs << QStringLiteral("CHANGELOG");
+    QString docsDetail = missingDocs.isEmpty()
+                             ? QStringLiteral("README, LICENSE, CONTRIBUTING and "
+                                              "CHANGELOG are all present.")
+                             : QStringLiteral("Missing: %1.")
+                                   .arg(missingDocs.join(QStringLiteral(", ")));
+    if (hasDocsDir)
+        docsDetail += QStringLiteral(" A docs/ directory is present.");
+    snapshot.signalList.append(
+        signal(QStringLiteral("docs"), QStringLiteral("Documentation"),
+               docsSeverity,
+               QStringLiteral("%1 of 4 core docs present.").arg(coreDocs),
+               docsDetail));
+    for (const QString &doc : missingDocs) {
+        RepoSecurityFinding finding;
+        finding.id = QStringLiteral("doc:%1").arg(doc.toLower());
+        finding.category = QStringLiteral("Documentation");
+        finding.severity = doc == QLatin1String("README")
+                               ? RepoSecuritySeverity::Warning
+                               : RepoSecuritySeverity::Info;
+        finding.title = QStringLiteral("Missing %1").arg(doc);
+        finding.detail =
+            QStringLiteral("No root-level %1 file was found.").arg(doc);
+        finding.recommendedAction =
+            QStringLiteral("Add a %1 file at the repository root.").arg(doc);
+        snapshot.findings.append(finding);
+    }
+
+    // Tests card
+    RepoSecuritySeverity testsSeverity = RepoSecuritySeverity::Pass;
+    QString testsSummary;
+    QString testsDetail;
+    if (testFiles > 0) {
+        testsSummary = QStringLiteral("%1 across %2 source files.")
+                           .arg(plural(testFiles, QStringLiteral("test file"),
+                                       QStringLiteral("test files")))
+                           .arg(sourceFiles);
+        if (testFiles < sourceFiles)
+            testsDetail = QStringLiteral("About 1 test file per %1 source files.")
+                              .arg(qMax(1, sourceFiles / testFiles));
+    } else if (sourceFiles > 0) {
+        testsSeverity = RepoSecuritySeverity::Warning;
+        testsSummary = QStringLiteral("No test files detected.");
+        testsDetail = QStringLiteral(
+            "Add automated tests (tests/ directory or test_* files) to track "
+            "regressions.");
+    } else {
+        testsSeverity = RepoSecuritySeverity::Info;
+        testsSummary = QStringLiteral("No source files detected.");
+    }
+    snapshot.signalList.append(signal(QStringLiteral("tests"),
+                                   QStringLiteral("Tests"), testsSeverity,
+                                   testsSummary, testsDetail));
+
+    // Maintenance markers card
+    RepoSecuritySeverity todoSeverity = RepoSecuritySeverity::Pass;
+    if (todoCount > 50)
+        todoSeverity = RepoSecuritySeverity::Warning;
+    else if (todoCount > 0)
+        todoSeverity = RepoSecuritySeverity::Info;
+    snapshot.signalList.append(
+        signal(QStringLiteral("todos"), QStringLiteral("Maintenance markers"),
+               todoSeverity,
+               todoCount > 0
+                   ? plural(todoCount, QStringLiteral("TODO/FIXME/HACK marker"),
+                            QStringLiteral("TODO/FIXME/HACK markers")) +
+                         QStringLiteral(" in tracked files.")
+                   : QStringLiteral("No TODO/FIXME markers found."),
+               todoCount > 0
+                   ? QStringLiteral("Each marker is listed under findings with "
+                                    "its file and line.")
+                   : QString()));
+    snapshot.findings.append(todoFindings);
+
+    // File size health card
+    RepoSecuritySeverity sizeSeverity = RepoSecuritySeverity::Pass;
+    for (const RepoSecurityFinding &finding : longFileFindings)
+        if (finding.severity == RepoSecuritySeverity::Warning)
+            sizeSeverity = RepoSecuritySeverity::Warning;
+    if (sizeSeverity == RepoSecuritySeverity::Pass && longFiles > 0)
+        sizeSeverity = RepoSecuritySeverity::Info;
+    snapshot.signalList.append(
+        signal(QStringLiteral("filesize"), QStringLiteral("File size health"),
+               sizeSeverity,
+               longFiles > 0
+                   ? plural(longFiles, QStringLiteral("source file"),
+                            QStringLiteral("source files")) +
+                         QStringLiteral(" over %1 lines.").arg(kLongFileLines)
+                   : QStringLiteral("No source files over %1 lines.")
+                         .arg(kLongFileLines),
+               QStringLiteral("Long files are harder to review and merge.")));
+    snapshot.findings.append(longFileFindings);
+
+    // Commit activity card (works for both working-tree and bare mirror repos)
+    const QString gitDir = (!input.localPath.trimmed().isEmpty() &&
+                            QDir(input.localPath).exists())
+                               ? input.localPath
+                               : input.mirrorPath;
+    const int commits30 =
+        runGit(gitDir, {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                        QStringLiteral("--since=30 days ago"),
+                        QStringLiteral("HEAD")})
+            .toInt();
+    const QStringList authorLines =
+        runGit(gitDir, {QStringLiteral("shortlog"), QStringLiteral("-sn"),
+                        QStringLiteral("HEAD")})
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    const qint64 lastCommitSecs =
+        runGit(gitDir, {QStringLiteral("log"), QStringLiteral("-1"),
+                        QStringLiteral("--format=%ct"), QStringLiteral("HEAD")})
+            .toLongLong();
+    QString activityDetail;
+    if (!authorLines.isEmpty())
+        activityDetail = plural(authorLines.size(), QStringLiteral("contributor"),
+                                QStringLiteral("contributors")) +
+                         QStringLiteral(" over the repository history.");
+    if (lastCommitSecs > 0)
+        activityDetail +=
+            QStringLiteral(" Last commit %1.")
+                .arg(QDateTime::fromSecsSinceEpoch(lastCommitSecs)
+                         .toString(QStringLiteral("yyyy-MM-dd")));
+    snapshot.signalList.append(
+        signal(QStringLiteral("activity"), QStringLiteral("Commit activity"),
+               commits30 > 0 ? RepoSecuritySeverity::Pass
+                             : RepoSecuritySeverity::Info,
+               commits30 > 0
+                   ? plural(commits30, QStringLiteral("commit"),
+                            QStringLiteral("commits")) +
+                         QStringLiteral(" in the last 30 days.")
+                   : QStringLiteral("No commits in the last 30 days."),
+               activityDetail.trimmed()));
+
+    // Issue hygiene card
+    int openIssues = 0;
+    int closedIssues = 0;
+    for (const Issue &issue : input.issues) {
+        if (issue.status == QLatin1String("open"))
+            ++openIssues;
+        else
+            ++closedIssues;
+    }
+    QString issuesSummary;
+    QString issuesDetail;
+    if (openIssues + closedIssues == 0) {
+        issuesSummary = QStringLiteral("No issues recorded.");
+    } else {
+        issuesSummary = QStringLiteral("%1 open, %2 closed.")
+                            .arg(openIssues)
+                            .arg(closedIssues);
+        issuesDetail =
+            QStringLiteral("%1% of recorded issues are closed.")
+                .arg(closedIssues * 100 / (openIssues + closedIssues));
+    }
+    snapshot.signalList.append(
+        signal(QStringLiteral("issues"), QStringLiteral("Issue hygiene"),
+               openIssues == 0 ? RepoSecuritySeverity::Pass
+                               : RepoSecuritySeverity::Info,
+               issuesSummary, issuesDetail, QStringLiteral("Open Issues"),
+               QStringLiteral("tab:issues")));
+
+    return snapshot;
 }
