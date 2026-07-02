@@ -2511,6 +2511,15 @@ void MainWindow::probeRelayLatency()
         if (reply->error() == QNetworkReply::NoError) {
             m_relayProbeFailures = 0;
             radar->setLatency(static_cast<int>(elapsed));
+            // A one-off slow sample (first request on a cold connection, a
+            // momentary hiccup) paints the dish amber/red and then sits there
+            // unchanged for up to a minute — not "live" at all. Once the
+            // reading is elevated, keep re-probing on a short leash (same
+            // idea as the offline fast-retry below) so the indicator either
+            // confirms the slowdown or snaps back to green within a second or
+            // two instead of lagging reality.
+            if (elapsed >= 300)
+                QTimer::singleShot(1000, this, &MainWindow::probeRelayLatency);
         } else {
             // Drop any pooled keep-alive connection so the next probe dials a
             // fresh socket: otherwise QNetworkAccessManager can keep reusing a
