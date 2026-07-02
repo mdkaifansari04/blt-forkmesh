@@ -939,8 +939,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
     snapshot.ref = currentRefFor(input);
     snapshot.generatedAtMs = QDateTime::currentMSecsSinceEpoch();
 
-    // --- Checks: local ForkMesh action runs (previously shown on the combined
-    // Security and quality tab).
+    // --- Checks: health of the local ForkMesh action runs for this repo.
     int passedRuns = 0;
     int failedRuns = 0;
     int activeRuns = 0;

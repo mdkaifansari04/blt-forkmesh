@@ -1610,7 +1610,7 @@ QWidget *MainWindow::buildRepoSecurityTab()
     return page;
 }
 
-// Severity -> badge/text colour for the Security and quality tab. Mirrors the
+// Severity -> badge/text colour for the Security and Quality tabs. Mirrors the
 // palette used elsewhere (green pass, blue info, amber warning, orange/red severe).
 static QString repoSecuritySeverityColor(RepoSecuritySeverity severity)
 {
