@@ -237,15 +237,16 @@ def _route_source():
 
 def test_browse_route_round_robins_across_online_mirrors():
     # A tree/blob/commits browse of a public repo must round-robin across every
-    # online mirror (the source included) via _select_browse_mirror and 302 to the
-    # chosen node when it isn't the named owner. The `fmserved` pin makes that
-    # redirect target serve in place instead of re-rotating (which would loop).
+    # online mirror (the source included) via _select_browse_mirror, and the
+    # chosen node serves IN PLACE through the requested URL: the request is
+    # dispatched to its host DO with the path rewritten (_forward_to_node),
+    # never via a client-visible redirect.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "_select_browse_mirror(owner, repo)" in browse
+    assert "_forward_to_node" in browse
     assert "/api/repo/%s/%s/%s" in browse
-    assert "status=302" in browse
-    assert "fmserved" in browse
+    assert "status=302" not in browse  # same-URL serving, no redirects
 
 
 def _method_source(class_name, method_name):
@@ -264,20 +265,16 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     # A downed source's host_presence row can lag reality for up to
     # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
     # whose host DO answers no_host (503) or times out (504). The router must
-    # then re-rotate once to an online mirror of the same logical repo —
-    # excluding the node that just failed — instead of surfacing the error while
-    # a live mirror sits unused. `fmretry` caps the redirect at one extra hop.
+    # then serve once more in place from an online mirror of the same logical
+    # repo — excluding the node that just failed — instead of surfacing the
+    # error while a live mirror sits unused.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "public_browse" in browse
-    assert "(503, 504)" in browse
+    assert "(0, 503, 504)" in browse  # rotated pick failed/errored -> named owner
+    assert "(503, 504)" in browse     # named owner failed -> remaining mirrors
     assert "exclude=owner" in browse
-    assert "already_retried" in browse
-    # The retry pin replaces (never appends to) the failed hop's fmserved, or
-    # the retried route would read the stale pin first and re-rotate.
-    assert "('fmserved', fallback)" in browse
-    assert "('fmretry', '1')" in browse
-    assert "not in ('fmserved', 'fmretry')" in browse
+    assert "_forward_to_node" in browse
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
@@ -312,3 +309,94 @@ def test_host_disconnect_expires_presence_immediately():
     assert "_live_host_count" in src
     for handler in ("webSocketClose", "webSocketError"):
         assert "_host_disconnected" in _method_source("ForkMeshHost", handler)
+
+
+def _worker_method_source(name):
+    # _git_host / _source_has_live_host live on the WorkerEntrypoint class, whose
+    # name we don't hard-code; scan every class for the method.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == name):
+                    return ast.unparse(item)
+    raise AssertionError("%s not found in entry.py" % name)
+
+
+def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
+    # host_presence lags an unclean tunnel death by up to 10 minutes, so
+    # _git_host must verify a host is really connected (_source_has_live_host)
+    # and, when it isn't, serve the clone from a live mirror — otherwise the
+    # clone hits the dead host DO and dies with "no host serving" (or an
+    # isolate crash). The mirror serves IN PLACE through the same URL
+    # (_forward_to_node), never via a redirect, and the pick is sticky
+    # (_sticky_clone_fallback) so info/refs and the upload-pack POST reach the
+    # same node.
+    src = _worker_method_source("_git_host")
+    assert "_source_has_live_host(owner, repo)" in src
+    assert "_sticky_clone_fallback" in src
+    assert "_forward_to_node" in src
+    assert "git-upload-pack" in src
+    assert "status=302" not in src  # same-URL serving, no redirects
+
+
+def test_sticky_clone_pick_is_pinned_and_live_checked():
+    # The sticky pick: reuse a stored mirror while it's fresh (or on the POST leg
+    # regardless of age), verify it still has a live host before trusting it, and
+    # only re-pick/rotate (force=True past the stale presence row) on info/refs.
+    src = _worker_method_source("_sticky_clone_fallback")
+    assert "clone_sticky" in src
+    assert "CLONE_STICKY_MS" in src
+    assert "_source_has_live_host(pick, repo)" in src
+    assert "force=True" in src
+    assert "ON CONFLICT(repo_bi)" in src
+
+
+def test_forward_to_node_serves_through_the_original_url():
+    # In-place serving: the request is re-dispatched to the chosen node's host
+    # DO with the path rewritten into its namespace — the client never sees a
+    # redirect. The forwarded request is rebuilt from PRIMITIVES: a bare URL
+    # string for GETs, url + a plain init dict (method/headers/body bytes) for
+    # the upload-pack POST. It must NEVER be constructed around the incoming
+    # Python-wrapped request object — JsRequest.new(target, request) crashed
+    # the isolate (Cloudflare error 1101) on every forwarded browse/clone.
+    src = _worker_method_source("_forward_to_node")
+    assert "host:{node}/{repo}" in src
+    assert "url.query" in src
+    assert "host_object.fetch(target)" in src        # GET: bare URL string
+    assert "JsRequest.new(target, request)" not in src
+    assert "to_js" in src and "'body'" in src        # POST: primitive init dict
+    assert "content-encoding" in src                 # DO decodes the pack body
+
+
+def test_forward_failures_degrade_instead_of_erroring():
+    # Every forward call site is guarded: a mirror hop that throws (or answers
+    # 503/504 on the rotation leg) falls back to the named owner's own route —
+    # a broken forward must degrade to the old behaviour, never 500 the page
+    # or the clone.
+    route = _route_source().split("REPO_HOST_RE")[-1]
+    git_host = _worker_method_source("_git_host")
+    for src in (route, git_host):
+        assert "_forward_to_node" in src
+        assert "except Exception" in src
+
+
+def test_source_has_live_host_probes_the_host_do_not_presence():
+    # Ground-truth liveness = the DO's connected host count, not the lagging
+    # host_presence row. One subrequest to the non-WebSocket /host endpoint;
+    # any failure counts as "not live" so a flapping/dead source never strands
+    # the clone.
+    src = _worker_method_source("_source_has_live_host")
+    assert "/host" in src
+    assert '"hosts"' in src or "'hosts'" in src
+    assert "return False" in src  # fail-closed on any error/non-200
+
+
+def test_select_clone_fallback_force_overrides_stale_presence():
+    # The DO wrapper must thread `force` into the source_online computation so a
+    # forced call (source confirmed not serving) ignores a still-fresh presence
+    # row and actually returns a mirror.
+    src = _worker_method_source("_select_clone_fallback")
+    assert "force=False" in src
+    assert "not force" in src  # source_online is ANDed with `not force`

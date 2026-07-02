@@ -139,6 +139,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::pollOwnedInboxes);
     m_inboxPollTimer->start(60 * 1000);
     QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
+    // Settings → "Automatically update ForkMesh" (off by default on desktop, on
+    // by default headless — see kAutoUpdateSetting): hourly check for a new
+    // commit, plus one shortly after launch so a stale headless install catches
+    // up quickly. maybeAutoUpdate() is a no-op whenever the setting is off.
+    m_autoUpdateTimer = new QTimer(this);
+    connect(m_autoUpdateTimer, &QTimer::timeout, this, &MainWindow::maybeAutoUpdate);
+    m_autoUpdateTimer->start(60 * 60 * 1000);
+    QTimer::singleShot(5 * 60 * 1000, this, &MainWindow::maybeAutoUpdate);
     // Radar: probe the active relay's round-trip latency once a minute (issue
     // #144), plus a first reading shortly after launch so the dish isn't stuck
     // on "…" while the UI settles.

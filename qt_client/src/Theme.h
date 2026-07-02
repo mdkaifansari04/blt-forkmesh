@@ -492,7 +492,7 @@ QPushButton#memberDeleteButton:hover {
 #encryptionLabel { color: #8b949e; font-size: 12px; }
 
 /* --- Node profile control panel --- */
-#nodeProfilePanel { background: transparent; border-left: 1px solid #30363d; }
+#nodeProfilePanel { background: transparent; }
 #nodeProfileContent { background-color: #0d1117; }
 #profileBanner { border-radius: 16px; }
 #profileName { font-size: 17px; font-weight: 800; }
@@ -1469,7 +1469,7 @@ QPushButton#memberDeleteButton:hover {
 #encryptionLabel { color: #656d76; font-size: 12px; }
 
 /* --- Node profile control panel --- */
-#nodeProfilePanel { background: transparent; border-left: 1px solid #d0d7de; }
+#nodeProfilePanel { background: transparent; }
 #nodeProfileContent { background-color: #ffffff; }
 #profileBanner { border-radius: 16px; }
 #profileName { font-size: 17px; font-weight: 800; }
