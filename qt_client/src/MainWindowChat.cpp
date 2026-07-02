@@ -3460,6 +3460,8 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
     auto hideButton = [this] {
         m_repoPushButton->hide();
         m_repoPushButton->setEnabled(false);
+        if (m_repoPushEyeButton)
+            m_repoPushEyeButton->hide();
         if (m_repoPushTimer)
             m_repoPushTimer->stop(); // hidden: no need to keep repositioning it
         if (m_repoPublishBar)
@@ -3473,6 +3475,10 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         positionRepoPushButton(); // reparents to the page + anchors over Code
         m_repoPushButton->show();
         m_repoPushButton->raise();
+        if (m_repoPushEyeButton) {
+            m_repoPushEyeButton->show();
+            m_repoPushEyeButton->raise();
+        }
         if (m_repoPublishBar)
             m_repoPublishBar->show();
         if (!m_repoPushTimer) {
