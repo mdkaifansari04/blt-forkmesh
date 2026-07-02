@@ -208,6 +208,15 @@ public:
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
+    // Sets the live roster directly (skipping setRoster's side effects, e.g.
+    // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
+    // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
+    // in isolation (adhoc #46).
+    void testSetHomeRosterAndReloadMirrorPanel(const QList<MemberInfo> &members)
+    {
+        m_homeRoster = members;
+        loadMirrorNodesPanel();
+    }
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();

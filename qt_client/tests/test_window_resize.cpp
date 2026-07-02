@@ -716,26 +716,21 @@ int main(int argc, char *argv[])
             newIdentity.mirrorDetails.append(advert);
             dupRoster.append(oldIdentity);
             dupRoster.append(newIdentity);
-            window.testSetRoster(dupRoster);
-            // The panel rebuild is coalesced behind a ~500ms roster timer; pump
-            // events until the mirror1 row lands.
-            QStringList mirrorRows;
+            // Set the roster directly and rebuild just the Mirror nodes panel:
+            // routing this through the full setRoster (which also rebuilds the
+            // repo/node switcher) isn't needed to exercise loadMirrorNodesPanel's
+            // row-building, and the switcher rebuild would close the open repo
+            // detail since the repo-owning node ("me") isn't in this synthetic
+            // roster snapshot.
+            window.testSetHomeRosterAndReloadMirrorPanel(dupRoster);
+            const QStringList mirrorRows = window.testMirrorNodeRows();
             int mirror1Rows = 0;
             QString mirror1Id;
-            QElapsedTimer dupTimer;
-            dupTimer.start();
-            while (dupTimer.elapsed() < 3000) {
-                QApplication::processEvents();
-                mirrorRows = window.testMirrorNodeRows();
-                mirror1Rows = 0;
-                for (const QString &row : std::as_const(mirrorRows)) {
-                    if (row.startsWith(QStringLiteral("mirror1"))) {
-                        ++mirror1Rows;
-                        mirror1Id = row.section(QLatin1Char('|'), 1);
-                    }
+            for (const QString &row : mirrorRows) {
+                if (row.startsWith(QStringLiteral("mirror1"))) {
+                    ++mirror1Rows;
+                    mirror1Id = row.section(QLatin1Char('|'), 1);
                 }
-                if (mirror1Rows > 0)
-                    break;
             }
             check(mirror1Rows == 1,
                   QString("a node re-registered under a new key shows one Mirror "
