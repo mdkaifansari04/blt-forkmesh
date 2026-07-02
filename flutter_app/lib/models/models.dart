@@ -74,7 +74,8 @@ class Repository {
   String get fullName => '$owner/$name';
 
   factory Repository.fromJson(Map<String, dynamic> j) {
-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
     return Repository(
       owner: (j['owner'] ?? '').toString(),
       name: (j['name'] ?? '').toString(),
@@ -114,16 +115,20 @@ class Issue {
   bool get isOpen => status != 'closed';
 
   factory Issue.fromJson(Map<String, dynamic> j) {
-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
     return Issue(
       number: asInt(j['number']),
       title: (j['title'] ?? '').toString(),
       status: (j['status'] ?? 'open').toString(),
       body: (j['body'] ?? '').toString(),
       author: (j['author'] ?? '').toString(),
-      labels: (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      labels:
+          (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
       votes: asInt(j['votes']),
-      bountyUsd: (j['bountyUsd'] is num) ? (j['bountyUsd'] as num).toDouble() : 0,
+      bountyUsd: (j['bountyUsd'] is num)
+          ? (j['bountyUsd'] as num).toDouble()
+          : 0,
     );
   }
 }
@@ -160,7 +165,8 @@ class PullRequest {
   }
 
   factory PullRequest.fromJson(Map<String, dynamic> j) {
-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
     return PullRequest(
       number: asInt(j['number']),
       title: (j['title'] ?? '').toString(),
@@ -174,6 +180,231 @@ class PullRequest {
   }
 }
 
+class RepoTreeEntry {
+  RepoTreeEntry({
+    required this.name,
+    required this.path,
+    required this.type,
+    this.size = 0,
+    this.sha = '',
+  });
+
+  final String name;
+  final String path;
+  final String type; // file | dir | symlink | submodule
+  final int size;
+  final String sha;
+
+  bool get isDirectory => type == 'dir' || type == 'tree' || type == 'folder';
+
+  factory RepoTreeEntry.fromJson(Map<String, dynamic> j) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    final rawPath = (j['path'] ?? j['name'] ?? '').toString();
+    final name =
+        (j['name'] ??
+                rawPath.split('/').where((p) => p.isNotEmpty).lastOrNull ??
+                rawPath)
+            .toString();
+    final rawType = (j['type'] ?? j['kind'] ?? j['mode'] ?? '')
+        .toString()
+        .toLowerCase();
+    final type =
+        rawType.contains('tree') ||
+            rawType == 'directory' ||
+            rawType == 'folder' ||
+            rawType == 'dir'
+        ? 'dir'
+        : 'file';
+    return RepoTreeEntry(
+      name: name,
+      path: rawPath,
+      type: type,
+      size: asInt(j['size'] ?? j['bytes']),
+      sha: (j['sha'] ?? j['hash'] ?? j['oid'] ?? '').toString(),
+    );
+  }
+}
+
+class RepoTree {
+  RepoTree({
+    required this.path,
+    required this.entries,
+    this.source = '',
+    this.cachedAt = 0,
+  });
+
+  final String path;
+  final List<RepoTreeEntry> entries;
+  final String source;
+  final int cachedAt;
+
+  factory RepoTree.fromJson(dynamic data, {String path = ''}) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    List<dynamic> rawEntries = const [];
+    String source = '';
+    var cachedAt = 0;
+    if (data is List) {
+      rawEntries = data;
+    } else if (data is Map<String, dynamic>) {
+      for (final key in ['entries', 'tree', 'items', 'files', 'data']) {
+        if (data[key] is List) {
+          rawEntries = data[key] as List;
+          break;
+        }
+      }
+      source = (data['source'] ?? data['servedBy'] ?? '').toString();
+      cachedAt = asInt(data['cachedAt'] ?? data['ts']);
+      path = (data['path'] ?? path).toString();
+    }
+    final entries =
+        rawEntries
+            .whereType<Map<String, dynamic>>()
+            .map(RepoTreeEntry.fromJson)
+            .map((e) {
+              if (path.isEmpty || e.path.contains('/')) return e;
+              return RepoTreeEntry(
+                name: e.name,
+                path: '$path/${e.path}',
+                type: e.type,
+                size: e.size,
+                sha: e.sha,
+              );
+            })
+            .where((e) => e.name.isNotEmpty)
+            .toList()
+          ..sort((a, b) {
+            if (a.isDirectory != b.isDirectory) {
+              return a.isDirectory ? -1 : 1;
+            }
+            return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          });
+    return RepoTree(
+      path: path,
+      entries: entries,
+      source: source,
+      cachedAt: cachedAt,
+    );
+  }
+}
+
+class RepoBlob {
+  RepoBlob({
+    required this.path,
+    required this.content,
+    this.encoding = '',
+    this.size = 0,
+    this.source = '',
+  });
+
+  final String path;
+  final String content;
+  final String encoding;
+  final int size;
+  final String source;
+
+  factory RepoBlob.fromJson(dynamic data, {String path = ''}) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    if (data is String) {
+      return RepoBlob(path: path, content: data, size: data.length);
+    }
+    if (data is Map<String, dynamic>) {
+      return RepoBlob(
+        path: (data['path'] ?? path).toString(),
+        content: (data['content'] ?? data['text'] ?? data['data'] ?? '')
+            .toString(),
+        encoding: (data['encoding'] ?? '').toString(),
+        size: asInt(data['size'] ?? data['bytes']),
+        source: (data['source'] ?? data['servedBy'] ?? '').toString(),
+      );
+    }
+    return RepoBlob(path: path, content: '');
+  }
+}
+
+class RepoBranch {
+  RepoBranch({required this.name, this.sha = '', this.isDefault = false});
+
+  final String name;
+  final String sha;
+  final bool isDefault;
+
+  factory RepoBranch.fromJson(Map<String, dynamic> j) => RepoBranch(
+    name: (j['name'] ?? j['branch'] ?? '').toString(),
+    sha: (j['sha'] ?? j['hash'] ?? j['commit'] ?? '').toString(),
+    isDefault: j['default'] == true || j['isDefault'] == true,
+  );
+}
+
+class RepoMirror {
+  RepoMirror({
+    required this.owner,
+    required this.name,
+    this.online = false,
+    this.lastSeenMs = 0,
+    this.firstHostedMs = 0,
+  });
+
+  final String owner;
+  final String name;
+  final bool online;
+  final int lastSeenMs;
+  final int firstHostedMs;
+
+  String get label => owner.isEmpty ? name : '$owner/$name';
+
+  factory RepoMirror.fromJson(Map<String, dynamic> j) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return RepoMirror(
+      owner: (j['owner'] ?? j['node'] ?? j['name'] ?? '').toString(),
+      name: (j['repo'] ?? j['repository'] ?? j['name'] ?? '').toString(),
+      online:
+          j['online'] == true || j['live'] == true || j['status'] == 'online',
+      lastSeenMs: asInt(j['lastSeen'] ?? j['lastSeenAt'] ?? j['ts']),
+      firstHostedMs: asInt(j['firstHosted'] ?? j['firstHostedAt']),
+    );
+  }
+}
+
+class RepoDiscussion {
+  RepoDiscussion({
+    required this.number,
+    required this.title,
+    this.body = '',
+    this.author = '',
+    this.updatedMs = 0,
+  });
+
+  final int number;
+  final String title;
+  final String body;
+  final String author;
+  final int updatedMs;
+}
+
+class PublishedPull {
+  PublishedPull({
+    required this.number,
+    required this.title,
+    this.status = 'open',
+    this.body = '',
+    this.base = '',
+    this.head = '',
+    this.signed = false,
+  });
+
+  final int number;
+  final String title;
+  final String status;
+  final String body;
+  final String base;
+  final String head;
+  final bool signed;
+}
+
 class NetworkStats {
   NetworkStats({this.nodesOnline = 0, this.hostsOnline = 0, this.repos = 0});
   final int nodesOnline;
@@ -181,7 +412,8 @@ class NetworkStats {
   final int repos;
 
   factory NetworkStats.fromJson(Map<String, dynamic> j) {
-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
     return NetworkStats(
       nodesOnline: asInt(j['nodesOnline'] ?? j['clients'] ?? 0),
       hostsOnline: asInt(j['hostsOnline'] ?? j['hosts'] ?? 0),

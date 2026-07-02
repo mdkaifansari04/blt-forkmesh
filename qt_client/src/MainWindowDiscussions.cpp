@@ -756,17 +756,22 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
     QUrl url = discussionsApiUrl(repo);
     const QString inboxBackoffKey =
         url.toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
-    if (m_discussionInboxBackoff.shouldBackOff(
-            inboxBackoffKey, QDateTime::currentMSecsSinceEpoch())) {
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_discussionInboxBackoff.shouldBackOff(inboxBackoffKey, nowMs)) {
         if (interactive)
             setDiscussionInlineNotice(
                 "This relay does not expose discussion inbox sync for this repo "
                 "yet. Local discussions still work.");
         return;
     }
+    // Auto-polls also back off exponentially while the relay is failing (offline
+    // / HTTP 429) — distinct from the fixed "endpoint unsupported" cooldown
+    // above; a manual sync (interactive) still tries immediately.
+    if (!interactive && !m_pollBackoff.ready(inboxBackoffKey, nowMs))
+        return;
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
@@ -793,6 +798,8 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
                         "this repo yet. Local discussions still work.");
                 return;
             }
+            m_pollBackoff.noteFailure(inboxBackoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
             if (interactive)
                 setDiscussionInlineNotice("Could not reach the inbox: " +
                                               reply->errorString(),
@@ -800,6 +807,7 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
             return;
         }
         m_discussionInboxBackoff.clear(inboxBackoffKey);
+        m_pollBackoff.noteSuccess(inboxBackoffKey);
         const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
                                        .object()
                                        .value("pending")
