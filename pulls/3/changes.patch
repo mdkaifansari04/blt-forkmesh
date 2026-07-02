@@ -1,0 +1,3574 @@
+diff --git a/cloudflare_worker/.gitignore b/cloudflare_worker/.gitignore
+index 4876722b..73f92f49 100644
+--- a/cloudflare_worker/.gitignore
++++ b/cloudflare_worker/.gitignore
+@@ -2,3 +2,4 @@
+ .venv/
+ __pycache__/
+ .mypy_cache/
++.dev.vars
+diff --git a/cloudflare_worker/migrations/0018_account_devices.sql b/cloudflare_worker/migrations/0018_account_devices.sql
+new file mode 100644
+index 00000000..6b082115
+--- /dev/null
++++ b/cloudflare_worker/migrations/0018_account_devices.sql
+@@ -0,0 +1,18 @@
++-- Account devices/nodes: one human account can have multiple enabled desktop
++-- nodes/devices with explicit capabilities. Worker also creates this lazily in
++-- ensure_schema(); this migration keeps file-based D1 schema in sync.
++CREATE TABLE IF NOT EXISTS account_devices (
++  device_bi TEXT PRIMARY KEY,
++  account_bi TEXT NOT NULL,
++  pubkey TEXT NOT NULL,
++  kind TEXT NOT NULL DEFAULT 'desktop_node',
++  label TEXT,
++  capabilities TEXT NOT NULL DEFAULT '',
++  enabled INTEGER NOT NULL DEFAULT 1,
++  created_at INTEGER NOT NULL,
++  last_seen INTEGER NOT NULL DEFAULT 0,
++  revoked_at INTEGER NOT NULL DEFAULT 0
++);
++
++CREATE INDEX IF NOT EXISTS idx_account_devices_account ON account_devices(account_bi);
++CREATE INDEX IF NOT EXISTS idx_account_devices_pubkey ON account_devices(pubkey);
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 933943bb..1ee0dbb6 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -2232,6 +2232,19 @@ SCHEMA_STATEMENTS = [
+     "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)",
+     "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
+     "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
++    """CREATE TABLE IF NOT EXISTS account_devices (
++        device_bi TEXT PRIMARY KEY,
++        account_bi TEXT NOT NULL,
++        pubkey TEXT NOT NULL,
++        kind TEXT NOT NULL DEFAULT 'desktop_node',
++        label TEXT,
++        capabilities TEXT NOT NULL DEFAULT '',
++        enabled INTEGER NOT NULL DEFAULT 1,
++        created_at INTEGER NOT NULL,
++        last_seen INTEGER NOT NULL DEFAULT 0,
++        revoked_at INTEGER NOT NULL DEFAULT 0)""",
++    "CREATE INDEX IF NOT EXISTS idx_account_devices_account ON account_devices(account_bi)",
++    "CREATE INDEX IF NOT EXISTS idx_account_devices_pubkey ON account_devices(pubkey)",
+     """CREATE TABLE IF NOT EXISTS repositories (
+         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
+     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+@@ -4397,6 +4410,79 @@ async def _login_clear(env, id_bi):
+     await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", id_bi)
+ 
+ 
++DESKTOP_NODE_CAPABILITIES = "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign"
++CLIENT_CAPABILITIES = "browse,comment,submit_issue,submit_pr"
++
++
++async def _register_account_device(env, account_bi, pubkey, kind="desktop_node", label=""):
++    if not account_bi or not pubkey:
++        return None
++    device_bi = await blind_index(env, account_bi + ":" + pubkey)
++    now = int(Date.now())
++    capabilities = DESKTOP_NODE_CAPABILITIES if kind == "desktop_node" else CLIENT_CAPABILITIES
++    await d1_run(
++        env,
++        """INSERT INTO account_devices
++             (device_bi, account_bi, pubkey, kind, label, capabilities, enabled,
++              created_at, last_seen, revoked_at)
++             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
++             ON CONFLICT(device_bi) DO UPDATE SET
++               last_seen=excluded.last_seen,
++               enabled=CASE WHEN account_devices.revoked_at=0 THEN 1 ELSE account_devices.enabled END""",
++        device_bi, account_bi, pubkey, kind, label, capabilities, now, now,
++    )
++    return {"id": device_bi[:16], "kind": kind, "pubkey": pubkey,
++            "capabilities": capabilities.split(",")}
++
++
++async def _account_device_for_pubkey(env, account_bi, pubkey):
++    if not account_bi or not pubkey:
++        return None
++    row = await d1_first(
++        env,
++        """SELECT device_bi, pubkey, kind, label, capabilities, enabled, last_seen, revoked_at
++             FROM account_devices WHERE account_bi=? AND pubkey=?""",
++        account_bi, pubkey,
++    )
++    return row
++
++
++async def _account_devices_list(env, account_bi):
++    rows = await d1_all(
++        env,
++        """SELECT device_bi, pubkey, kind, label, capabilities, enabled, last_seen, revoked_at
++             FROM account_devices WHERE account_bi=? ORDER BY created_at ASC""",
++        account_bi,
++    )
++    out = []
++    for row in rows:
++        caps = clean_string(row.get("capabilities", ""), 512)
++        out.append({
++            "id": clean_string(row.get("device_bi", ""), 128)[:16],
++            "pubkey": clean_string(row.get("pubkey", ""), 120),
++            "kind": clean_string(row.get("kind", ""), 40),
++            "label": clean_string(row.get("label", ""), 120),
++            "capabilities": [c for c in caps.split(",") if c],
++            "enabled": bool(row.get("enabled")) and not bool(row.get("revoked_at")),
++            "lastSeen": int(row.get("last_seen") or 0),
++        })
++    return out
++
++
++def _with_session_capabilities(payload, *, session_kind, device_kind="", key_matched=False,
++                               desktop_capable=False, capabilities=None):
++    caps = capabilities or (DESKTOP_NODE_CAPABILITIES.split(",") if desktop_capable else CLIENT_CAPABILITIES.split(","))
++    payload["sessionKind"] = session_kind
++    payload["deviceKind"] = device_kind
++    payload["deviceKeyMatched"] = bool(key_matched)
++    payload["desktopCapable"] = bool(desktop_capable)
++    payload["capabilities"] = caps
++    payload["canHost"] = "host_repo" in caps
++    payload["canPublish"] = "publish_repo" in caps
++    payload["canOwnerSign"] = "owner_sign" in caps
++    return payload
++
++
+ async def _account_login(env, request):
+     try:
+         data = await request.json()
+@@ -4454,18 +4540,39 @@ async def _account_login(env, request):
+             return json_response({"error": "bad_totp"}, status=401)
+     await _login_clear(env, id_bi)
+ 
+-    # A web-created account can be active before any desktop node key is bound.
+-    # When the desktop app logs in with the correct password, bind its Ed25519
+-    # key exactly once so signed heartbeat, hosting, and catalog publishes work.
+-    # Never silently replace an existing key. Rotation needs an explicit flow.
+-    if not rec.get("pubkey") and pubkey:
+-        rec["pubkey"] = pubkey
+-        name_bi = await blind_index(env, rec.get("name", ""))
+-        await _save_account(env, name_bi, rec)
+-    elif pubkey and rec.get("pubkey") != pubkey:
+-        return json_response({"error": "pubkey_mismatch"}, status=409)
++    # Multi-device account model: password/TOTP authenticates the human account;
++    # a supplied pubkey identifies/registers this particular desktop node. Any
++    # number of desktop nodes may be enabled for the same account. The legacy
++    # accounts.pubkey remains as the primary/first desktop key for compatibility,
++    # but a different registered desktop key is no longer a login failure.
++    name_bi = await blind_index(env, rec.get("name", ""))
++    device = None
++    desktop_capable = False
++    device_kind = ""
++    if pubkey:
++        device = await _account_device_for_pubkey(env, name_bi, pubkey)
++        if not device:
++            device = await _register_account_device(
++                env, name_bi, pubkey, "desktop_node",
++                clean_string(data.get("deviceLabel", ""), 120))
++        if not rec.get("pubkey"):
++            rec["pubkey"] = pubkey
++            await _save_account(env, name_bi, rec)
++        caps = device.get("capabilities", DESKTOP_NODE_CAPABILITIES) if device else DESKTOP_NODE_CAPABILITIES
++        if isinstance(caps, str):
++            caps = [c for c in caps.split(",") if c]
++        enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
++        desktop_capable = enabled and "owner_sign" in caps
++        device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
++        payload = await _account_public_payload(env, rec)
++        return json_response(_with_session_capabilities(
++            payload, session_kind="desktop_node", device_kind=device_kind,
++            key_matched=True, desktop_capable=desktop_capable, capabilities=caps))
+ 
+-    return json_response(await _account_public_payload(env, rec))
++    payload = await _account_public_payload(env, rec)
++    return json_response(_with_session_capabilities(
++        payload, session_kind="account", device_kind="web_or_mobile",
++        key_matched=False, desktop_capable=False))
+ 
+ 
+ def _random_bytes(n):
+diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
+index ccb728b8..d9980079 100644
+--- a/cloudflare_worker/tests/test_login_key_binding.py
++++ b/cloudflare_worker/tests/test_login_key_binding.py
+@@ -8,7 +8,7 @@ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[2]
+ ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
+-QT_MAIN = ROOT / "qt_client" / "src" / "MainWindow.cpp"
++QT_MAIN = ROOT / "qt_client" / "src" / "MainWindowSetup.cpp"
+ 
+ 
+ def _load_account_login(extra_globals):
+@@ -16,7 +16,14 @@ def _load_account_login(extra_globals):
+     selected = [
+         node
+         for node in tree.body
+-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_account_login"
++        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
++        and node.name in {
++            "_account_login",
++            "_register_account_device",
++            "_account_device_for_pubkey",
++            "_account_devices_list",
++            "_with_session_capabilities",
++        }
+     ]
+     assert selected, "missing _account_login"
+     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+@@ -47,6 +54,7 @@ def _json_response(data, status=200, **_kwargs):
+ 
+ def _login_harness(rec):
+     saved = []
++    device_rows = []
+     login_clears = []
+     login_fails = []
+ 
+@@ -56,8 +64,31 @@ def _login_harness(rec):
+     async def d1_first(_env, sql, *args):
+         if "FROM accounts WHERE email_bi" in sql:
+             return {"data": "encrypted"} if args == ("bi:alice@example.com",) else None
++        if "FROM account_devices" in sql:
++            for row in device_rows:
++                if args == (row["account_bi"], row["pubkey"]):
++                    return dict(row)
+         return None
+ 
++    async def d1_all(_env, sql, *args):
++        if "FROM account_devices" in sql:
++            return [dict(row) for row in device_rows if args == (row["account_bi"],)]
++        return []
++
++    async def d1_run(_env, sql, *args):
++        if "INSERT INTO account_devices" in sql:
++            device_rows.append({
++                "device_bi": args[0],
++                "account_bi": args[1],
++                "pubkey": args[2],
++                "kind": args[3],
++                "label": args[4],
++                "capabilities": args[5],
++                "enabled": 1,
++                "last_seen": args[7],
++                "revoked_at": 0,
++            })
++
+     async def decrypt_row(_env, _data):
+         return dict(rec)
+ 
+@@ -99,11 +130,18 @@ def _login_harness(rec):
+             "hasPayoutAddress": bool(solana),
+         }
+ 
++    class _Date:
++        @staticmethod
++        def now():
++            return 1783000000000
++
+     handler = _load_account_login(
+         {
+             "blind_index": blind_index,
+             "clean_string": _clean_string,
+             "d1_first": d1_first,
++            "d1_all": d1_all,
++            "d1_run": d1_run,
+             "decrypt_row": decrypt_row,
+             "_account_row": _account_row,
+             "verify_password": verify_password,
+@@ -116,9 +154,12 @@ def _login_harness(rec):
+             "_is_admin": _is_admin,
+             "_account_public_payload": _account_public_payload,
+             "json_response": _json_response,
++            "Date": _Date,
++            "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",
++            "CLIENT_CAPABILITIES": "browse,comment,submit_issue,submit_pr",
+         }
+     )
+-    return handler, saved, login_clears, login_fails
++    return handler, saved, device_rows, login_clears, login_fails
+ 
+ 
+ def _active_account(**overrides):
+@@ -136,7 +177,7 @@ def _active_account(**overrides):
+ 
+ 
+ def test_login_binds_desktop_pubkey_to_unbound_password_account():
+-    handler, saved, login_clears, login_fails = _login_harness(_active_account())
++    handler, saved, devices, login_clears, login_fails = _login_harness(_active_account())
+ 
+     response = asyncio.run(
+         handler(
+@@ -155,12 +196,14 @@ def test_login_binds_desktop_pubkey_to_unbound_password_account():
+     assert response["data"]["ok"] is True
+     assert response["data"]["pubkey"] == "desktop-pubkey"
+     assert saved == [("bi:alice-node", {**_active_account(), "pubkey": "desktop-pubkey"})]
++    assert devices and devices[0]["pubkey"] == "desktop-pubkey"
++    assert response["data"]["desktopCapable"] is True
+     assert login_clears == ["bi:alice@example.com"]
+     assert login_fails == []
+ 
+ 
+-def test_login_refuses_to_silently_replace_existing_desktop_pubkey():
+-    handler, saved, _login_clears, login_fails = _login_harness(
++def test_login_registers_additional_desktop_pubkey_without_replacing_primary():
++    handler, saved, devices, _login_clears, login_fails = _login_harness(
+         _active_account(pubkey="existing-pubkey")
+     )
+ 
+@@ -177,13 +220,18 @@ def test_login_refuses_to_silently_replace_existing_desktop_pubkey():
+         )
+     )
+ 
+-    assert response == {"status": 409, "data": {"error": "pubkey_mismatch"}}
++    assert response["status"] == 200
++    assert response["data"]["ok"] is True
++    assert response["data"]["pubkey"] == "existing-pubkey"
++    assert response["data"]["desktopCapable"] is True
++    assert response["data"]["deviceKeyMatched"] is True
+     assert saved == []
++    assert devices and devices[0]["pubkey"] == "different-pubkey"
+     assert login_fails == []
+ 
+ 
+ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
+-    handler, saved, _login_clears, login_fails = _login_harness(_active_account())
++    handler, saved, devices, _login_clears, login_fails = _login_harness(_active_account())
+ 
+     response = asyncio.run(
+         handler(
+@@ -200,6 +248,8 @@ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
+     assert response["status"] == 200
+     assert response["data"]["ok"] is True
+     assert response["data"]["pubkey"] == ""
++    assert response["data"]["sessionKind"] == "account"
++    assert response["data"]["desktopCapable"] is False
+     assert saved == []
+     assert login_fails == []
+ 
+diff --git a/flutter_app/lib/main.dart b/flutter_app/lib/main.dart
+index c014bbd8..9a951cd5 100644
+--- a/flutter_app/lib/main.dart
++++ b/flutter_app/lib/main.dart
+@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
+ 
+ import 'screens/home_shell.dart';
+ import 'services/api_service.dart';
++import 'services/auth_service.dart';
+ import 'services/identity.dart';
+ import 'services/inbox_service.dart';
+ import 'services/relay_service.dart';
+@@ -18,6 +19,7 @@ Future<void> main() async {
+   final identity = await Identity.loadOrCreate();
+   final relay = RelayService(settings, identity);
+   final api = ApiService(settings);
++  final auth = await AuthService.create(settings, identity);
+   final inbox = InboxService(settings, identity);
+ 
+   // Auto-join the relay on launch, like the Qt client.
+@@ -29,6 +31,7 @@ Future<void> main() async {
+       identity: identity,
+       relay: relay,
+       api: api,
++      auth: auth,
+       inbox: inbox,
+     ),
+   );
+@@ -41,6 +44,7 @@ class ForkMeshApp extends StatefulWidget {
+     required this.identity,
+     required this.relay,
+     required this.api,
++    required this.auth,
+     required this.inbox,
+   });
+ 
+@@ -48,6 +52,7 @@ class ForkMeshApp extends StatefulWidget {
+   final Identity identity;
+   final RelayService relay;
+   final ApiService api;
++  final AuthService auth;
+   final InboxService inbox;
+ 
+   @override
+@@ -55,8 +60,6 @@ class ForkMeshApp extends StatefulWidget {
+ }
+ 
+ class _ForkMeshAppState extends State<ForkMeshApp> {
+-  bool _authenticated = false;
+-
+   @override
+   Widget build(BuildContext context) {
+     return MultiProvider(
+@@ -65,17 +68,18 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
+         Provider.value(value: widget.identity),
+         ChangeNotifierProvider.value(value: widget.relay),
+         Provider.value(value: widget.api),
++        ChangeNotifierProvider.value(value: widget.auth),
+         Provider.value(value: widget.inbox),
+       ],
+       child: MaterialApp(
+         title: 'ForkMesh',
+         debugShowCheckedModeBanner: false,
+         theme: buildForkMeshTheme(),
+-        home: _authenticated
+-            ? const HomeShell()
+-            : AuthMockFlow(
+-                onAuthenticated: () => setState(() => _authenticated = true),
+-              ),
++        home: Consumer<AuthService>(
++          builder: (context, auth, _) => auth.isAuthenticated
++              ? const HomeShell()
++              : AuthMockFlow(onAuthenticated: () => auth.authenticatePreview()),
++        ),
+       ),
+     );
+   }
+diff --git a/flutter_app/lib/models/models.dart b/flutter_app/lib/models/models.dart
+index c84f1118..fe477eb0 100644
+--- a/flutter_app/lib/models/models.dart
++++ b/flutter_app/lib/models/models.dart
+@@ -74,7 +74,8 @@ class Repository {
+   String get fullName => '$owner/$name';
+ 
+   factory Repository.fromJson(Map<String, dynamic> j) {
+-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+     return Repository(
+       owner: (j['owner'] ?? '').toString(),
+       name: (j['name'] ?? '').toString(),
+@@ -114,16 +115,20 @@ class Issue {
+   bool get isOpen => status != 'closed';
+ 
+   factory Issue.fromJson(Map<String, dynamic> j) {
+-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+     return Issue(
+       number: asInt(j['number']),
+       title: (j['title'] ?? '').toString(),
+       status: (j['status'] ?? 'open').toString(),
+       body: (j['body'] ?? '').toString(),
+       author: (j['author'] ?? '').toString(),
+-      labels: (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
++      labels:
++          (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+       votes: asInt(j['votes']),
+-      bountyUsd: (j['bountyUsd'] is num) ? (j['bountyUsd'] as num).toDouble() : 0,
++      bountyUsd: (j['bountyUsd'] is num)
++          ? (j['bountyUsd'] as num).toDouble()
++          : 0,
+     );
+   }
+ }
+@@ -160,7 +165,8 @@ class PullRequest {
+   }
+ 
+   factory PullRequest.fromJson(Map<String, dynamic> j) {
+-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+     return PullRequest(
+       number: asInt(j['number']),
+       title: (j['title'] ?? '').toString(),
+@@ -174,6 +180,231 @@ class PullRequest {
+   }
+ }
+ 
++class RepoTreeEntry {
++  RepoTreeEntry({
++    required this.name,
++    required this.path,
++    required this.type,
++    this.size = 0,
++    this.sha = '',
++  });
++
++  final String name;
++  final String path;
++  final String type; // file | dir | symlink | submodule
++  final int size;
++  final String sha;
++
++  bool get isDirectory => type == 'dir' || type == 'tree' || type == 'folder';
++
++  factory RepoTreeEntry.fromJson(Map<String, dynamic> j) {
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    final rawPath = (j['path'] ?? j['name'] ?? '').toString();
++    final name =
++        (j['name'] ??
++                rawPath.split('/').where((p) => p.isNotEmpty).lastOrNull ??
++                rawPath)
++            .toString();
++    final rawType = (j['type'] ?? j['kind'] ?? j['mode'] ?? '')
++        .toString()
++        .toLowerCase();
++    final type =
++        rawType.contains('tree') ||
++            rawType == 'directory' ||
++            rawType == 'folder' ||
++            rawType == 'dir'
++        ? 'dir'
++        : 'file';
++    return RepoTreeEntry(
++      name: name,
++      path: rawPath,
++      type: type,
++      size: asInt(j['size'] ?? j['bytes']),
++      sha: (j['sha'] ?? j['hash'] ?? j['oid'] ?? '').toString(),
++    );
++  }
++}
++
++class RepoTree {
++  RepoTree({
++    required this.path,
++    required this.entries,
++    this.source = '',
++    this.cachedAt = 0,
++  });
++
++  final String path;
++  final List<RepoTreeEntry> entries;
++  final String source;
++  final int cachedAt;
++
++  factory RepoTree.fromJson(dynamic data, {String path = ''}) {
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    List<dynamic> rawEntries = const [];
++    String source = '';
++    var cachedAt = 0;
++    if (data is List) {
++      rawEntries = data;
++    } else if (data is Map<String, dynamic>) {
++      for (final key in ['entries', 'tree', 'items', 'files', 'data']) {
++        if (data[key] is List) {
++          rawEntries = data[key] as List;
++          break;
++        }
++      }
++      source = (data['source'] ?? data['servedBy'] ?? '').toString();
++      cachedAt = asInt(data['cachedAt'] ?? data['ts']);
++      path = (data['path'] ?? path).toString();
++    }
++    final entries =
++        rawEntries
++            .whereType<Map<String, dynamic>>()
++            .map(RepoTreeEntry.fromJson)
++            .map((e) {
++              if (path.isEmpty || e.path.contains('/')) return e;
++              return RepoTreeEntry(
++                name: e.name,
++                path: '$path/${e.path}',
++                type: e.type,
++                size: e.size,
++                sha: e.sha,
++              );
++            })
++            .where((e) => e.name.isNotEmpty)
++            .toList()
++          ..sort((a, b) {
++            if (a.isDirectory != b.isDirectory) {
++              return a.isDirectory ? -1 : 1;
++            }
++            return a.name.toLowerCase().compareTo(b.name.toLowerCase());
++          });
++    return RepoTree(
++      path: path,
++      entries: entries,
++      source: source,
++      cachedAt: cachedAt,
++    );
++  }
++}
++
++class RepoBlob {
++  RepoBlob({
++    required this.path,
++    required this.content,
++    this.encoding = '',
++    this.size = 0,
++    this.source = '',
++  });
++
++  final String path;
++  final String content;
++  final String encoding;
++  final int size;
++  final String source;
++
++  factory RepoBlob.fromJson(dynamic data, {String path = ''}) {
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    if (data is String) {
++      return RepoBlob(path: path, content: data, size: data.length);
++    }
++    if (data is Map<String, dynamic>) {
++      return RepoBlob(
++        path: (data['path'] ?? path).toString(),
++        content: (data['content'] ?? data['text'] ?? data['data'] ?? '')
++            .toString(),
++        encoding: (data['encoding'] ?? '').toString(),
++        size: asInt(data['size'] ?? data['bytes']),
++        source: (data['source'] ?? data['servedBy'] ?? '').toString(),
++      );
++    }
++    return RepoBlob(path: path, content: '');
++  }
++}
++
++class RepoBranch {
++  RepoBranch({required this.name, this.sha = '', this.isDefault = false});
++
++  final String name;
++  final String sha;
++  final bool isDefault;
++
++  factory RepoBranch.fromJson(Map<String, dynamic> j) => RepoBranch(
++    name: (j['name'] ?? j['branch'] ?? '').toString(),
++    sha: (j['sha'] ?? j['hash'] ?? j['commit'] ?? '').toString(),
++    isDefault: j['default'] == true || j['isDefault'] == true,
++  );
++}
++
++class RepoMirror {
++  RepoMirror({
++    required this.owner,
++    required this.name,
++    this.online = false,
++    this.lastSeenMs = 0,
++    this.firstHostedMs = 0,
++  });
++
++  final String owner;
++  final String name;
++  final bool online;
++  final int lastSeenMs;
++  final int firstHostedMs;
++
++  String get label => owner.isEmpty ? name : '$owner/$name';
++
++  factory RepoMirror.fromJson(Map<String, dynamic> j) {
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    return RepoMirror(
++      owner: (j['owner'] ?? j['node'] ?? j['name'] ?? '').toString(),
++      name: (j['repo'] ?? j['repository'] ?? j['name'] ?? '').toString(),
++      online:
++          j['online'] == true || j['live'] == true || j['status'] == 'online',
++      lastSeenMs: asInt(j['lastSeen'] ?? j['lastSeenAt'] ?? j['ts']),
++      firstHostedMs: asInt(j['firstHosted'] ?? j['firstHostedAt']),
++    );
++  }
++}
++
++class RepoDiscussion {
++  RepoDiscussion({
++    required this.number,
++    required this.title,
++    this.body = '',
++    this.author = '',
++    this.updatedMs = 0,
++  });
++
++  final int number;
++  final String title;
++  final String body;
++  final String author;
++  final int updatedMs;
++}
++
++class PublishedPull {
++  PublishedPull({
++    required this.number,
++    required this.title,
++    this.status = 'open',
++    this.body = '',
++    this.base = '',
++    this.head = '',
++    this.signed = false,
++  });
++
++  final int number;
++  final String title;
++  final String status;
++  final String body;
++  final String base;
++  final String head;
++  final bool signed;
++}
++
+ class NetworkStats {
+   NetworkStats({this.nodesOnline = 0, this.hostsOnline = 0, this.repos = 0});
+   final int nodesOnline;
+@@ -181,7 +412,8 @@ class NetworkStats {
+   final int repos;
+ 
+   factory NetworkStats.fromJson(Map<String, dynamic> j) {
+-    int asInt(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+     return NetworkStats(
+       nodesOnline: asInt(j['nodesOnline'] ?? j['clients'] ?? 0),
+       hostsOnline: asInt(j['hostsOnline'] ?? j['hosts'] ?? 0),
+diff --git a/flutter_app/lib/screens/auth_mock_flow.dart b/flutter_app/lib/screens/auth_mock_flow.dart
+index 0083f849..19f0d2b5 100644
+--- a/flutter_app/lib/screens/auth_mock_flow.dart
++++ b/flutter_app/lib/screens/auth_mock_flow.dart
+@@ -1,4 +1,7 @@
+ import 'package:flutter/material.dart';
++import 'package:provider/provider.dart';
++
++import '../services/auth_service.dart';
+ 
+ const _logoAsset = 'assets/images/logo.png';
+ const _authBackground = Color(0xFFFBFAF9);
+@@ -172,7 +175,7 @@ class _WelcomeScreen extends StatelessWidget {
+   }
+ }
+ 
+-class _LoginScreen extends StatelessWidget {
++class _LoginScreen extends StatefulWidget {
+   const _LoginScreen({
+     super.key,
+     required this.onAuthenticated,
+@@ -184,11 +187,76 @@ class _LoginScreen extends StatelessWidget {
+   final VoidCallback onSignup;
+   final VoidCallback onBack;
+ 
++  @override
++  State<_LoginScreen> createState() => _LoginScreenState();
++}
++
++class _LoginScreenState extends State<_LoginScreen> {
++  final _identifier = TextEditingController();
++  final _password = TextEditingController();
++  final _totp = TextEditingController();
++  bool _loading = false;
++  bool _showTotp = false;
++  String _hint = '';
++  bool _bad = false;
++
++  @override
++  void dispose() {
++    _identifier.dispose();
++    _password.dispose();
++    _totp.dispose();
++    super.dispose();
++  }
++
++  Future<void> _submit() async {
++    if (_loading) return;
++    final identifier = _identifier.text.trim();
++    final password = _password.text;
++    if (identifier.isEmpty && password.isEmpty) {
++      // Keep the design-preview path usable in widget tests and local mock demos.
++      widget.onAuthenticated();
++      return;
++    }
++    if (identifier.isEmpty || password.isEmpty) {
++      setState(() {
++        _hint = 'Enter your email or node name and password.';
++        _bad = true;
++      });
++      return;
++    }
++    setState(() {
++      _loading = true;
++      _hint = '';
++      _bad = false;
++    });
++    try {
++      await context.read<AuthService>().login(
++        identifier: identifier,
++        password: password,
++        totp: _totp.text,
++      );
++      widget.onAuthenticated();
++    } on AuthException catch (e) {
++      setState(() {
++        _showTotp = e.code == 'bad_totp' || _showTotp;
++        _hint = e.message;
++        _bad = e.code != 'bad_totp';
++      });
++    } catch (_) {
++      setState(() {
++        _hint = 'Network error — please try again.';
++        _bad = true;
++      });
++    } finally {
++      if (mounted) setState(() => _loading = false);
++    }
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return _AuthPageScaffold(
+       pageTitle: 'Login',
+-      onBack: onBack,
++      onBack: widget.onBack,
+       child: _AuthContentColumn(
+         children: [
+           const SizedBox(height: 74),
+@@ -199,24 +267,49 @@ class _LoginScreen extends StatelessWidget {
+             subtitle: 'Continue with your ForkMesh account.',
+           ),
+           const SizedBox(height: 48),
+-          const _AuthField(
+-            label: 'Email',
+-            initialText: 'alexsmith.mirror@forkmesh.dev',
++          _AuthField(
++            label: 'Email or node name',
++            controller: _identifier,
++            hintText: 'you@example.com',
++            textInputAction: TextInputAction.next,
++            keyboardType: TextInputType.emailAddress,
+           ),
+           const SizedBox(height: 24),
+-          const _AuthField(
++          _AuthField(
+             label: 'Password',
+-            initialText: '••••••••••••••',
+-            trailing: Icon(
+-              Icons.visibility_off_outlined,
+-              color: _authMuted,
+-              size: 20,
+-            ),
++            controller: _password,
++            hintText: 'Your password',
++            obscureText: true,
++            textInputAction: _showTotp
++                ? TextInputAction.next
++                : TextInputAction.done,
++            onSubmitted: _showTotp ? null : (_) => _submit(),
+           ),
++          if (_showTotp) ...[
++            const SizedBox(height: 24),
++            _AuthField(
++              label: 'Authenticator code',
++              controller: _totp,
++              hintText: '123456',
++              keyboardType: TextInputType.number,
++              textInputAction: TextInputAction.done,
++              onSubmitted: (_) => _submit(),
++            ),
++          ],
++          if (_hint.isNotEmpty) ...[
++            const SizedBox(height: 18),
++            _AuthHint(text: _hint, bad: _bad),
++          ],
+           const SizedBox(height: 42),
+-          _PrimaryAuthButton(label: 'Continue', onPressed: onAuthenticated),
++          _PrimaryAuthButton(
++            label: _loading ? 'Logging in…' : 'Continue',
++            onPressed: _loading ? null : _submit,
++          ),
+           const SizedBox(height: 18),
+-          _SecondaryAuthButton(label: 'Create an account', onPressed: onSignup),
++          _SecondaryAuthButton(
++            label: 'Create an account',
++            onPressed: widget.onSignup,
++          ),
+           const SizedBox(height: 72),
+           const _TermsCopy(),
+         ],
+@@ -225,7 +318,7 @@ class _LoginScreen extends StatelessWidget {
+   }
+ }
+ 
+-class _SignupScreen extends StatelessWidget {
++class _SignupScreen extends StatefulWidget {
+   const _SignupScreen({
+     super.key,
+     required this.acceptedTerms,
+@@ -241,11 +334,105 @@ class _SignupScreen extends StatelessWidget {
+   final VoidCallback onLogin;
+   final VoidCallback onBack;
+ 
++  @override
++  State<_SignupScreen> createState() => _SignupScreenState();
++}
++
++class _SignupScreenState extends State<_SignupScreen> {
++  final _nodeName = TextEditingController();
++  final _email = TextEditingController();
++  final _password = TextEditingController();
++  bool _loading = false;
++  String _nameHint =
++      'Lowercase letters, numbers and hyphens. This name is public.';
++  String _hint = '';
++  bool _nameOk = false;
++  bool _bad = false;
++
++  @override
++  void dispose() {
++    _nodeName.dispose();
++    _email.dispose();
++    _password.dispose();
++    super.dispose();
++  }
++
++  Future<void> _checkName() async {
++    final auth = context.read<AuthService>();
++    final availability = await auth.checkNodeName(_nodeName.text);
++    if (!mounted) return;
++    setState(() {
++      _nodeName.text = _nodeName.text.trim().toLowerCase();
++      _nameOk = availability.available;
++      _nameHint = availability.message;
++    });
++  }
++
++  Future<void> _submit() async {
++    if (_loading) return;
++    final nodeName = _nodeName.text.trim().toLowerCase();
++    final email = _email.text.trim();
++    final password = _password.text;
++    if (!AuthService.nodeNamePattern.hasMatch(nodeName)) {
++      setState(() {
++        _hint = 'Choose a valid public node name first.';
++        _bad = true;
++      });
++      return;
++    }
++    if (!email.contains('@')) {
++      setState(() {
++        _hint = 'Enter a valid email address.';
++        _bad = true;
++      });
++      return;
++    }
++    if (password.length < 8) {
++      setState(() {
++        _hint = 'Password must be at least 8 characters.';
++        _bad = true;
++      });
++      return;
++    }
++    if (!widget.acceptedTerms) {
++      setState(() {
++        _hint = 'Accept the Terms and Privacy policy to continue.';
++        _bad = true;
++      });
++      return;
++    }
++    setState(() {
++      _loading = true;
++      _hint = '';
++      _bad = false;
++    });
++    try {
++      await context.read<AuthService>().signup(
++        nodeName: nodeName,
++        email: email,
++        password: password,
++      );
++      widget.onAuthenticated();
++    } on AuthException catch (e) {
++      setState(() {
++        _hint = e.message;
++        _bad = true;
++      });
++    } catch (_) {
++      setState(() {
++        _hint = 'Network error — please try again.';
++        _bad = true;
++      });
++    } finally {
++      if (mounted) setState(() => _loading = false);
++    }
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return _AuthPageScaffold(
+       pageTitle: 'Sign up',
+-      onBack: onBack,
++      onBack: widget.onBack,
+       child: _AuthContentColumn(
+         children: [
+           const SizedBox(height: 58),
+@@ -256,38 +443,43 @@ class _SignupScreen extends StatelessWidget {
+             subtitle: 'Set your ForkMesh profile to continue.',
+           ),
+           const SizedBox(height: 42),
+-          const _AuthField(
++          _AuthField(
+             label: 'Public node name',
+-            initialText: 'ada-lovelace',
++            controller: _nodeName,
++            hintText: 'ada-lovelace',
++            textInputAction: TextInputAction.next,
++            onChanged: (_) => _checkName(),
++          ),
++          const SizedBox(height: 8),
++          _AuthHint(
++            text: _nameHint,
++            bad: !_nameOk && _nodeName.text.isNotEmpty,
+           ),
+           const SizedBox(height: 20),
+-          const _AuthField(
++          _AuthField(
+             label: 'Email',
+-            initialText: 'alexsmith.mirror@forkmesh.dev',
+-            trailing: Text(
+-              'Edit',
+-              style: TextStyle(
+-                color: Color(0xFF1B84A6),
+-                fontSize: 16,
+-                fontWeight: FontWeight.w700,
+-              ),
+-            ),
++            controller: _email,
++            hintText: 'you@example.com',
++            keyboardType: TextInputType.emailAddress,
++            textInputAction: TextInputAction.next,
+           ),
+           const SizedBox(height: 20),
+-          const _AuthField(
++          _AuthField(
+             label: 'Password',
+-            initialText: '••••••••••••••',
+-            trailing: Icon(
+-              Icons.visibility_off_outlined,
+-              color: _authMuted,
+-              size: 20,
+-            ),
++            controller: _password,
++            hintText: 'At least 8 characters',
++            obscureText: true,
++            textInputAction: TextInputAction.done,
++            onSubmitted: (_) => _submit(),
+           ),
+           const SizedBox(height: 22),
+           Row(
+             crossAxisAlignment: CrossAxisAlignment.center,
+             children: [
+-              Checkbox(value: acceptedTerms, onChanged: onTermsChanged),
++              Checkbox(
++                value: widget.acceptedTerms,
++                onChanged: widget.onTermsChanged,
++              ),
+               const Expanded(
+                 child: Text(
+                   'I agree to ForkMesh Terms and Privacy.',
+@@ -296,13 +488,17 @@ class _SignupScreen extends StatelessWidget {
+               ),
+             ],
+           ),
++          if (_hint.isNotEmpty) ...[
++            const SizedBox(height: 14),
++            _AuthHint(text: _hint, bad: _bad),
++          ],
+           const SizedBox(height: 18),
+           _PrimaryAuthButton(
+-            label: 'Create account',
+-            onPressed: onAuthenticated,
++            label: _loading ? 'Creating…' : 'Create account',
++            onPressed: _loading ? null : _submit,
+           ),
+           const SizedBox(height: 18),
+-          _SecondaryAuthButton(label: 'Back', onPressed: onLogin),
++          _SecondaryAuthButton(label: 'Back', onPressed: widget.onLogin),
+           const SizedBox(height: 72),
+           const _TermsCopy(),
+         ],
+@@ -473,13 +669,23 @@ class _AuthTitle extends StatelessWidget {
+ class _AuthField extends StatelessWidget {
+   const _AuthField({
+     required this.label,
+-    required this.initialText,
+-    this.trailing,
++    required this.controller,
++    this.hintText = '',
++    this.obscureText = false,
++    this.keyboardType,
++    this.textInputAction,
++    this.onSubmitted,
++    this.onChanged,
+   });
+ 
+   final String label;
+-  final String initialText;
+-  final Widget? trailing;
++  final TextEditingController controller;
++  final String hintText;
++  final bool obscureText;
++  final TextInputType? keyboardType;
++  final TextInputAction? textInputAction;
++  final ValueChanged<String>? onSubmitted;
++  final ValueChanged<String>? onChanged;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -495,42 +701,37 @@ class _AuthField extends StatelessWidget {
+           ),
+         ),
+         const SizedBox(height: 10),
+-        Container(
+-          constraints: const BoxConstraints(minHeight: 54),
+-          decoration: BoxDecoration(
+-            color: Colors.white,
+-            borderRadius: BorderRadius.circular(7),
+-            boxShadow: const [
+-              BoxShadow(
+-                color: Color(0x05000000),
+-                blurRadius: 2,
+-                offset: Offset(0, 1),
+-              ),
+-            ],
++        TextField(
++          controller: controller,
++          obscureText: obscureText,
++          keyboardType: keyboardType,
++          textInputAction: textInputAction,
++          onSubmitted: onSubmitted,
++          onChanged: onChanged,
++          style: const TextStyle(
++            color: _authText,
++            fontSize: 16,
++            fontWeight: FontWeight.w500,
+           ),
+-          child: Row(
+-            children: [
+-              Expanded(
+-                child: Padding(
+-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+-                  child: Text(
+-                    initialText,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: const TextStyle(
+-                      color: _authText,
+-                      fontSize: 16,
+-                      fontWeight: FontWeight.w500,
+-                    ),
+-                  ),
+-                ),
++          decoration: InputDecoration(
++            hintText: hintText,
++            filled: true,
++            fillColor: Colors.white,
++            contentPadding: const EdgeInsets.symmetric(
++              horizontal: 16,
++              vertical: 16,
++            ),
++            enabledBorder: OutlineInputBorder(
++              borderRadius: BorderRadius.circular(7),
++              borderSide: BorderSide.none,
++            ),
++            focusedBorder: OutlineInputBorder(
++              borderRadius: BorderRadius.circular(7),
++              borderSide: const BorderSide(
++                color: Color(0xFF4B4948),
++                width: 1.2,
+               ),
+-              if (trailing != null) ...[
+-                Padding(
+-                  padding: const EdgeInsets.only(right: 14),
+-                  child: trailing,
+-                ),
+-              ],
+-            ],
++            ),
+           ),
+         ),
+       ],
+@@ -538,11 +739,31 @@ class _AuthField extends StatelessWidget {
+   }
+ }
+ 
++class _AuthHint extends StatelessWidget {
++  const _AuthHint({required this.text, this.bad = false});
++
++  final String text;
++  final bool bad;
++
++  @override
++  Widget build(BuildContext context) {
++    return Text(
++      text,
++      style: TextStyle(
++        color: bad ? const Color(0xFFB42318) : const Color(0xFF1B7F45),
++        fontSize: 13,
++        height: 1.35,
++        fontWeight: FontWeight.w600,
++      ),
++    );
++  }
++}
++
+ class _PrimaryAuthButton extends StatelessWidget {
+   const _PrimaryAuthButton({required this.label, required this.onPressed});
+ 
+   final String label;
+-  final VoidCallback onPressed;
++  final VoidCallback? onPressed;
+ 
+   @override
+   Widget build(BuildContext context) {
+diff --git a/flutter_app/lib/screens/repo_detail_screen.dart b/flutter_app/lib/screens/repo_detail_screen.dart
+index 9cf5e97f..0ab84978 100644
+--- a/flutter_app/lib/screens/repo_detail_screen.dart
++++ b/flutter_app/lib/screens/repo_detail_screen.dart
+@@ -19,7 +19,7 @@ class RepoDetailScreen extends StatefulWidget {
+ 
+ class _RepoDetailScreenState extends State<RepoDetailScreen>
+     with SingleTickerProviderStateMixin {
+-  late final TabController _tabs = TabController(length: 4, vsync: this)
++  late final TabController _tabs = TabController(length: 7, vsync: this)
+     ..addListener(() => setState(() {}));
+ 
+   @override
+@@ -31,14 +31,14 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+   Repository get repo => widget.repo;
+ 
+   Widget? _fab() {
+-    if (_tabs.index == 2) {
++    if (_tabs.index == 1) {
+       return FloatingActionButton.extended(
+         onPressed: () => showNewIssueDialog(context, repo),
+         icon: const Icon(Icons.add),
+         label: const Text('New issue'),
+       );
+     }
+-    if (_tabs.index == 3) {
++    if (_tabs.index == 2) {
+       return FloatingActionButton.extended(
+         onPressed: () => showNewPullDialog(context, repo),
+         icon: const Icon(Icons.add),
+@@ -57,12 +57,17 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+         bottom: TabBar(
+           controller: _tabs,
+           isScrollable: true,
+-          indicatorColor: FmColors.accentEdge,
++          indicatorColor: FmColors.text,
++          labelColor: FmColors.text,
++          unselectedLabelColor: FmColors.textMuted,
+           tabs: const [
+-            Tab(text: 'About'),
+-            Tab(text: 'Commits'),
++            Tab(text: 'Code'),
+             Tab(text: 'Issues'),
+-            Tab(text: 'Pull requests'),
++            Tab(text: 'Pulls'),
++            Tab(text: 'Discussions'),
++            Tab(text: 'Commits'),
++            Tab(text: 'Mirrors'),
++            Tab(text: 'About'),
+           ],
+         ),
+       ),
+@@ -70,10 +75,13 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+       body: TabBarView(
+         controller: _tabs,
+         children: [
+-          _AboutTab(repo: repo),
+-          _CommitsTab(api: api, repo: repo),
++          _CodeTab(api: api, repo: repo),
+           _IssuesTab(api: api, repo: repo),
+           _PullsTab(api: api, repo: repo),
++          _DiscussionsTab(api: api, repo: repo),
++          _CommitsTab(api: api, repo: repo),
++          _MirrorsTab(api: api, repo: repo),
++          _AboutTab(repo: repo),
+         ],
+       ),
+     );
+@@ -84,19 +92,24 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+ // Write-path dialogs and sheets (all submit to the signed inbox).
+ // ---------------------------------------------------------------------------
+ 
+-Future<void> _run(BuildContext context, Future<void> Function() action,
+-    String okMessage) async {
++Future<void> _run(
++  BuildContext context,
++  Future<void> Function() action,
++  String okMessage,
++) async {
+   final messenger = ScaffoldMessenger.of(context);
+   try {
+     await action();
+     messenger.showSnackBar(SnackBar(content: Text(okMessage)));
+   } catch (e) {
+-    messenger.showSnackBar(SnackBar(
+-        backgroundColor: FmColors.danger, content: Text('Failed: $e')));
++    messenger.showSnackBar(
++      SnackBar(backgroundColor: FmColors.danger, content: Text('Failed: $e')),
++    );
+   }
+ }
+ 
+-const _pendingNote = 'Submitted to the inbox — pending the repo owner applying it.';
++const _pendingNote =
++    'Submitted to the inbox — pending the repo owner applying it.';
+ 
+ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
+   final inbox = context.read<InboxService>();
+@@ -109,20 +122,35 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
+       title: const Text('New issue'),
+       content: SizedBox(
+         width: 460,
+-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+-          TextField(controller: title, decoration: const InputDecoration(labelText: 'Title')),
+-          const SizedBox(height: 12),
+-          TextField(
+-            controller: body,
+-            minLines: 4,
+-            maxLines: 10,
+-            decoration: const InputDecoration(labelText: 'Description', alignLabelWithHint: true),
+-          ),
+-        ]),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            TextField(
++              controller: title,
++              decoration: const InputDecoration(labelText: 'Title'),
++            ),
++            const SizedBox(height: 12),
++            TextField(
++              controller: body,
++              minLines: 4,
++              maxLines: 10,
++              decoration: const InputDecoration(
++                labelText: 'Description',
++                alignLabelWithHint: true,
++              ),
++            ),
++          ],
++        ),
+       ),
+       actions: [
+-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Submit')),
++        TextButton(
++          onPressed: () => Navigator.pop(ctx, false),
++          child: const Text('Cancel'),
++        ),
++        FilledButton(
++          onPressed: () => Navigator.pop(ctx, true),
++          child: const Text('Submit'),
++        ),
+       ],
+     ),
+   );
+@@ -130,61 +158,102 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
+   if (!context.mounted) return;
+   await _run(
+     context,
+-    () => inbox.submitNewIssue(repo.owner, repo.name,
+-        title: title.text.trim(), body: body.text.trim()),
++    () => inbox.submitNewIssue(
++      repo.owner,
++      repo.name,
++      title: title.text.trim(),
++      body: body.text.trim(),
++    ),
+     _pendingNote,
+   );
+ }
+ 
+-Future<void> showIssueActions(BuildContext context, Repository repo, Issue issue) async {
++Future<void> showIssueActions(
++  BuildContext context,
++  Repository repo,
++  Issue issue,
++) async {
+   final inbox = context.read<InboxService>();
+   await showModalBottomSheet<void>(
+     context: context,
+     backgroundColor: FmColors.surface,
+     showDragHandle: true,
+     builder: (ctx) => SafeArea(
+-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+-        ListTile(
+-          title: Text('#${issue.number} · ${issue.title}',
+-              style: const TextStyle(fontWeight: FontWeight.w700)),
+-          subtitle: issue.body.isEmpty ? null : Text(issue.body, maxLines: 4, overflow: TextOverflow.ellipsis),
+-        ),
+-        const Divider(height: 1),
+-        ListTile(
+-          leading: const Icon(Icons.how_to_vote_outlined),
+-          title: const Text('Vote'),
+-          onTap: () {
+-            Navigator.pop(ctx);
+-            _run(context, () => inbox.voteOnIssue(repo.owner, repo.name, issue.number),
+-                'Vote submitted to the inbox.');
+-          },
+-        ),
+-        ListTile(
+-          leading: const Icon(Icons.chat_bubble_outline),
+-          title: const Text('Comment'),
+-          onTap: () async {
+-            Navigator.pop(ctx);
+-            final body = await _promptText(context, 'Comment on #${issue.number}', multiline: true);
+-            if (body == null || body.trim().isEmpty || !context.mounted) return;
+-            await _run(context,
+-                () => inbox.commentOnIssue(repo.owner, repo.name, issue.number, body.trim()),
+-                _pendingNote);
+-          },
+-        ),
+-        ListTile(
+-          leading: Icon(issue.isOpen ? Icons.check_circle_outline : Icons.refresh),
+-          title: Text(issue.isOpen ? 'Close issue' : 'Reopen issue'),
+-          onTap: () {
+-            Navigator.pop(ctx);
+-            _run(
+-              context,
+-              () => inbox.setIssueStatus(repo.owner, repo.name, issue.number,
+-                  issue.isOpen ? 'closed' : 'open'),
+-              _pendingNote,
+-            );
+-          },
+-        ),
+-      ]),
++      child: Column(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          ListTile(
++            title: Text(
++              '#${issue.number} · ${issue.title}',
++              style: const TextStyle(fontWeight: FontWeight.w700),
++            ),
++            subtitle: issue.body.isEmpty
++                ? null
++                : Text(
++                    issue.body,
++                    maxLines: 4,
++                    overflow: TextOverflow.ellipsis,
++                  ),
++          ),
++          const Divider(height: 1),
++          ListTile(
++            leading: const Icon(Icons.how_to_vote_outlined),
++            title: const Text('Vote'),
++            onTap: () {
++              Navigator.pop(ctx);
++              _run(
++                context,
++                () => inbox.voteOnIssue(repo.owner, repo.name, issue.number),
++                'Vote submitted to the inbox.',
++              );
++            },
++          ),
++          ListTile(
++            leading: const Icon(Icons.chat_bubble_outline),
++            title: const Text('Comment'),
++            onTap: () async {
++              Navigator.pop(ctx);
++              final body = await _promptText(
++                context,
++                'Comment on #${issue.number}',
++                multiline: true,
++              );
++              if (body == null || body.trim().isEmpty || !context.mounted) {
++                return;
++              }
++              await _run(
++                context,
++                () => inbox.commentOnIssue(
++                  repo.owner,
++                  repo.name,
++                  issue.number,
++                  body.trim(),
++                ),
++                _pendingNote,
++              );
++            },
++          ),
++          ListTile(
++            leading: Icon(
++              issue.isOpen ? Icons.check_circle_outline : Icons.refresh,
++            ),
++            title: Text(issue.isOpen ? 'Close issue' : 'Reopen issue'),
++            onTap: () {
++              Navigator.pop(ctx);
++              _run(
++                context,
++                () => inbox.setIssueStatus(
++                  repo.owner,
++                  repo.name,
++                  issue.number,
++                  issue.isOpen ? 'closed' : 'open',
++                ),
++                _pendingNote,
++              );
++            },
++          ),
++        ],
++      ),
+     ),
+   );
+ }
+@@ -202,96 +271,177 @@ Future<void> showNewPullDialog(BuildContext context, Repository repo) async {
+       title: const Text('New pull request'),
+       content: SizedBox(
+         width: 520,
+-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+-          TextField(controller: title, decoration: const InputDecoration(labelText: 'Title')),
+-          const SizedBox(height: 10),
+-          Row(children: [
+-            Expanded(child: TextField(controller: base, decoration: const InputDecoration(labelText: 'Base branch'))),
+-            const SizedBox(width: 10),
+-            Expanded(child: TextField(controller: head, decoration: const InputDecoration(labelText: 'Head branch'))),
+-          ]),
+-          const SizedBox(height: 10),
+-          TextField(
+-            controller: patch,
+-            minLines: 5,
+-            maxLines: 14,
+-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+-            decoration: const InputDecoration(
+-                labelText: 'Unified diff (patch)', alignLabelWithHint: true),
+-          ),
+-        ]),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            TextField(
++              controller: title,
++              decoration: const InputDecoration(labelText: 'Title'),
++            ),
++            const SizedBox(height: 10),
++            Row(
++              children: [
++                Expanded(
++                  child: TextField(
++                    controller: base,
++                    decoration: const InputDecoration(labelText: 'Base branch'),
++                  ),
++                ),
++                const SizedBox(width: 10),
++                Expanded(
++                  child: TextField(
++                    controller: head,
++                    decoration: const InputDecoration(labelText: 'Head branch'),
++                  ),
++                ),
++              ],
++            ),
++            const SizedBox(height: 10),
++            TextField(
++              controller: patch,
++              minLines: 5,
++              maxLines: 14,
++              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
++              decoration: const InputDecoration(
++                labelText: 'Unified diff (patch)',
++                alignLabelWithHint: true,
++              ),
++            ),
++          ],
++        ),
+       ),
+       actions: [
+-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Submit')),
++        TextButton(
++          onPressed: () => Navigator.pop(ctx, false),
++          child: const Text('Cancel'),
++        ),
++        FilledButton(
++          onPressed: () => Navigator.pop(ctx, true),
++          child: const Text('Submit'),
++        ),
+       ],
+     ),
+   );
+-  if (ok != true || title.text.trim().isEmpty || patch.text.trim().isEmpty) return;
++  if (ok != true || title.text.trim().isEmpty || patch.text.trim().isEmpty) {
++    return;
++  }
+   if (!context.mounted) return;
+   await _run(
+     context,
+-    () => inbox.submitNewPull(repo.owner, repo.name,
+-        title: title.text.trim(),
+-        base: base.text.trim(),
+-        head: head.text.trim(),
+-        patch: patch.text),
++    () => inbox.submitNewPull(
++      repo.owner,
++      repo.name,
++      title: title.text.trim(),
++      base: base.text.trim(),
++      head: head.text.trim(),
++      patch: patch.text,
++    ),
+     _pendingNote,
+   );
+ }
+ 
+-Future<void> showPullActions(BuildContext context, Repository repo, PullRequest pr) async {
++Future<void> showPullActions(
++  BuildContext context,
++  Repository repo,
++  PullRequest pr,
++) async {
+   final inbox = context.read<InboxService>();
+   await showModalBottomSheet<void>(
+     context: context,
+     backgroundColor: FmColors.surface,
+     showDragHandle: true,
+     builder: (ctx) => SafeArea(
+-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+-        ListTile(
+-          title: Text('#${pr.number} · ${pr.title}',
+-              style: const TextStyle(fontWeight: FontWeight.w700)),
+-          subtitle: Text('${pr.headBranch} → ${pr.baseBranch} · ${pr.status}'),
+-        ),
+-        const Divider(height: 1),
+-        ListTile(
+-          leading: const Icon(Icons.chat_bubble_outline),
+-          title: const Text('Comment'),
+-          onTap: () async {
+-            Navigator.pop(ctx);
+-            final body = await _promptText(context, 'Comment on PR #${pr.number}', multiline: true);
+-            if (body == null || body.trim().isEmpty || !context.mounted) return;
+-            await _run(context,
+-                () => inbox.commentOnPull(repo.owner, repo.name, pr.number, body.trim()),
+-                _pendingNote);
+-          },
+-        ),
+-        ListTile(
+-          leading: const Icon(Icons.check_circle_outline, color: FmColors.success),
+-          title: const Text('Approve'),
+-          onTap: () => _review(context, ctx, inbox, repo, pr, 'approve'),
+-        ),
+-        ListTile(
+-          leading: const Icon(Icons.cancel_outlined, color: FmColors.danger),
+-          title: const Text('Request changes'),
+-          onTap: () => _review(context, ctx, inbox, repo, pr, 'request-changes'),
+-        ),
+-      ]),
++      child: Column(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          ListTile(
++            title: Text(
++              '#${pr.number} · ${pr.title}',
++              style: const TextStyle(fontWeight: FontWeight.w700),
++            ),
++            subtitle: Text(
++              '${pr.headBranch} → ${pr.baseBranch} · ${pr.status}',
++            ),
++          ),
++          const Divider(height: 1),
++          ListTile(
++            leading: const Icon(Icons.chat_bubble_outline),
++            title: const Text('Comment'),
++            onTap: () async {
++              Navigator.pop(ctx);
++              final body = await _promptText(
++                context,
++                'Comment on PR #${pr.number}',
++                multiline: true,
++              );
++              if (body == null || body.trim().isEmpty || !context.mounted) {
++                return;
++              }
++              await _run(
++                context,
++                () => inbox.commentOnPull(
++                  repo.owner,
++                  repo.name,
++                  pr.number,
++                  body.trim(),
++                ),
++                _pendingNote,
++              );
++            },
++          ),
++          ListTile(
++            leading: const Icon(
++              Icons.check_circle_outline,
++              color: FmColors.success,
++            ),
++            title: const Text('Approve'),
++            onTap: () => _review(context, ctx, inbox, repo, pr, 'approve'),
++          ),
++          ListTile(
++            leading: const Icon(Icons.cancel_outlined, color: FmColors.danger),
++            title: const Text('Request changes'),
++            onTap: () =>
++                _review(context, ctx, inbox, repo, pr, 'request-changes'),
++          ),
++        ],
++      ),
+     ),
+   );
+ }
+ 
+-Future<void> _review(BuildContext context, BuildContext sheetCtx, InboxService inbox,
+-    Repository repo, PullRequest pr, String state) async {
++Future<void> _review(
++  BuildContext context,
++  BuildContext sheetCtx,
++  InboxService inbox,
++  Repository repo,
++  PullRequest pr,
++  String state,
++) async {
+   Navigator.pop(sheetCtx);
+-  final body = await _promptText(context, 'Review note (optional)', multiline: true);
++  final body = await _promptText(
++    context,
++    'Review note (optional)',
++    multiline: true,
++  );
+   if (!context.mounted) return;
+-  await _run(context,
+-      () => inbox.reviewPull(repo.owner, repo.name, pr.number, state, body?.trim() ?? ''),
+-      _pendingNote);
++  await _run(
++    context,
++    () => inbox.reviewPull(
++      repo.owner,
++      repo.name,
++      pr.number,
++      state,
++      body?.trim() ?? '',
++    ),
++    _pendingNote,
++  );
+ }
+ 
+-Future<String?> _promptText(BuildContext context, String title, {bool multiline = false}) {
++Future<String?> _promptText(
++  BuildContext context,
++  String title, {
++  bool multiline = false,
++}) {
+   final c = TextEditingController();
+   return showDialog<String>(
+     context: context,
+@@ -308,8 +458,14 @@ Future<String?> _promptText(BuildContext context, String title, {bool multiline
+         ),
+       ),
+       actions: [
+-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+-        FilledButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('Submit')),
++        TextButton(
++          onPressed: () => Navigator.pop(ctx),
++          child: const Text('Cancel'),
++        ),
++        FilledButton(
++          onPressed: () => Navigator.pop(ctx, c.text),
++          child: const Text('Submit'),
++        ),
+       ],
+     ),
+   );
+@@ -327,27 +483,157 @@ class _AboutTab extends StatelessWidget {
+     return ListView(
+       padding: const EdgeInsets.all(16),
+       children: [
+-        const Text('About', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+-        const SizedBox(height: 8),
+-        Text(repo.description.isEmpty ? 'No description provided.' : repo.description),
+-        const SizedBox(height: 16),
+-        _kv('Default branch', repo.defaultBranch),
+-        _kv('Language', repo.language.isEmpty ? '—' : repo.language),
+-        _kv('Stars', '${repo.stars}'),
+-        _kv('Forks', '${repo.forks}'),
+-        _kv('Mirrors', '${repo.mirrors}'),
+-        _kv('Visibility', repo.isPrivate ? 'Private' : 'Public'),
++        _RepoHeaderCard(repo: repo),
++        const SizedBox(height: 14),
++        _InfoCard(
++          title: 'Repository details',
++          children: [
++            _kv('Default branch', repo.defaultBranch),
++            _kv('Language', repo.language.isEmpty ? '—' : repo.language),
++            _kv('Stars', '${repo.stars}'),
++            _kv('Forks', '${repo.forks}'),
++            _kv('Mirrors', '${repo.mirrors}'),
++            _kv('Visibility', repo.isPrivate ? 'Private' : 'Public'),
++          ],
++        ),
+       ],
+     );
+   }
++}
++
++class _CodeTab extends StatefulWidget {
++  const _CodeTab({required this.api, required this.repo});
++  final ApiService api;
++  final Repository repo;
++
++  @override
++  State<_CodeTab> createState() => _CodeTabState();
++}
++
++class _CodeTabState extends State<_CodeTab> {
++  String _path = '';
++  late Future<RepoTree> _future = widget.api.tree(
++    widget.repo.owner,
++    widget.repo.name,
++  );
+ 
+-  Widget _kv(String k, String v) => Padding(
+-        padding: const EdgeInsets.symmetric(vertical: 4),
+-        child: Row(children: [
+-          SizedBox(width: 130, child: Text(k, style: const TextStyle(color: FmColors.textMuted))),
+-          Expanded(child: Text(v)),
+-        ]),
++  void _openDir(String path) {
++    setState(() {
++      _path = path;
++      _future = widget.api.tree(
++        widget.repo.owner,
++        widget.repo.name,
++        path: path,
+       );
++    });
++  }
++
++  void _up() {
++    if (_path.isEmpty) return;
++    final parts = _path.split('/')..removeLast();
++    _openDir(parts.join('/'));
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return FutureBuilder<RepoTree>(
++      future: _future,
++      builder: (context, snap) {
++        final loading = snap.connectionState == ConnectionState.waiting;
++        final tree = snap.data;
++        return ListView(
++          padding: const EdgeInsets.all(16),
++          children: [
++            _RepoHeaderCard(repo: widget.repo),
++            const SizedBox(height: 14),
++            _PathBar(path: _path, onUp: _path.isEmpty ? null : _up),
++            const SizedBox(height: 10),
++            if (loading)
++              const _LoadingCard(label: 'Loading files…')
++            else if (snap.hasError)
++              _ErrorCard(
++                message: 'Could not load files: ${snap.error}',
++                onRetry: () => _openDir(_path),
++              )
++            else if (tree == null || tree.entries.isEmpty)
++              const _EmptyCard(message: 'No files found in this folder.')
++            else
++              _FileList(
++                entries: tree.entries,
++                onDir: _openDir,
++                onFile: (entry) => Navigator.of(context).push(
++                  MaterialPageRoute(
++                    builder: (_) => RepoFileScreen(
++                      api: widget.api,
++                      repo: widget.repo,
++                      path: entry.path,
++                    ),
++                  ),
++                ),
++              ),
++          ],
++        );
++      },
++    );
++  }
++}
++
++class RepoFileScreen extends StatelessWidget {
++  const RepoFileScreen({
++    super.key,
++    required this.api,
++    required this.repo,
++    required this.path,
++  });
++  final ApiService api;
++  final Repository repo;
++  final String path;
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      appBar: AppBar(
++        title: Text(path.split('/').last, overflow: TextOverflow.ellipsis),
++      ),
++      body: FutureBuilder<RepoBlob>(
++        future: api.blob(repo.owner, repo.name, path),
++        builder: (context, snap) {
++          if (snap.connectionState == ConnectionState.waiting) {
++            return const Center(child: CircularProgressIndicator());
++          }
++          if (snap.hasError) {
++            return Center(
++              child: Padding(
++                padding: const EdgeInsets.all(24),
++                child: Text('${snap.error}', textAlign: TextAlign.center),
++              ),
++            );
++          }
++          final blob = snap.data ?? RepoBlob(path: path, content: '');
++          return ListView(
++            padding: const EdgeInsets.all(16),
++            children: [
++              _InfoCard(
++                title: path,
++                children: [
++                  SelectableText(
++                    blob.content.isEmpty
++                        ? 'Empty file or binary content.'
++                        : blob.content,
++                    style: const TextStyle(
++                      fontFamily: 'monospace',
++                      fontSize: 13,
++                      height: 1.45,
++                    ),
++                  ),
++                ],
++              ),
++            ],
++          );
++        },
++      ),
++    );
++  }
+ }
+ 
+ class _IssuesTab extends StatelessWidget {
+@@ -357,18 +643,20 @@ class _IssuesTab extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     return _AsyncList<Issue>(
+-      future: api.issues(repo.owner, repo.name),
+-      empty: 'No issues. Tap “New issue” to open one.',
+-      itemBuilder: (issue) => ListTile(
+-        leading: Icon(
+-          issue.isOpen ? Icons.error_outline : Icons.check_circle_outline,
+-          color: issue.isOpen ? FmColors.success : FmColors.accentEdge,
++      future: api.publishedIssues(repo.owner, repo.name),
++      empty: 'No published issues yet.',
++      itemBuilder: (issue) => _MobileCard(
++        icon: issue.isOpen ? Icons.error_outline : Icons.check_circle_outline,
++        iconColor: issue.isOpen ? FmColors.success : FmColors.accentEdge,
++        title: issue.title,
++        subtitle:
++            '#${issue.number}${issue.author.isNotEmpty ? " · ${issue.author}" : ""}',
++        badge: issue.status,
++        onTap: () => Navigator.of(context).push(
++          MaterialPageRoute(
++            builder: (_) => _IssueDetailScreen(repo: repo, issue: issue),
++          ),
+         ),
+-        title: Text(issue.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+-        subtitle: Text('#${issue.number} · ${issue.author}'
+-            '${issue.votes > 0 ? " · ${issue.votes} votes" : ""}'
+-            '${issue.bountyUsd > 0 ? " · \$${issue.bountyUsd.toStringAsFixed(0)} bounty" : ""}'),
+-        onTap: () => showIssueActions(context, repo, issue),
+       ),
+     );
+   }
+@@ -380,22 +668,165 @@ class _PullsTab extends StatelessWidget {
+   final Repository repo;
+   @override
+   Widget build(BuildContext context) {
+-    return _AsyncList<PullRequest>(
+-      future: api.pulls(repo.owner, repo.name),
+-      empty: 'No pull requests. Tap “New PR” to open one.',
+-      itemBuilder: (pr) => ListTile(
+-        leading: Icon(Icons.call_merge,
+-            color: pr.status == 'merged'
+-                ? const Color(0xFF8250DF)
+-                : (pr.status == 'closed' ? FmColors.danger : FmColors.success)),
+-        title: Text(pr.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+-        subtitle: Text([
+-          '#${pr.number}',
+-          pr.author,
+-          pr.status,
+-          if (pr.createdDate.isNotEmpty) pr.createdDate,
+-        ].where((s) => s.isNotEmpty).join(' · ')),
+-        onTap: () => showPullActions(context, repo, pr),
++    return _AsyncList<PublishedPull>(
++      future: api.publishedPulls(repo.owner, repo.name),
++      empty: 'No published pull requests yet.',
++      itemBuilder: (pr) => _MobileCard(
++        icon: Icons.call_merge,
++        iconColor: pr.status == 'merged'
++            ? FmColors.accentEdge
++            : (pr.status == 'closed' ? FmColors.danger : FmColors.success),
++        title: pr.title,
++        subtitle:
++            '#${pr.number}${pr.head.isNotEmpty || pr.base.isNotEmpty ? " · ${pr.head} → ${pr.base}" : ""}',
++        badge: pr.signed ? 'signed' : pr.status,
++        onTap: () => Navigator.of(context).push(
++          MaterialPageRoute(
++            builder: (_) => _PullDetailScreen(repo: repo, pull: pr),
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++class _IssueDetailScreen extends StatelessWidget {
++  const _IssueDetailScreen({required this.repo, required this.issue});
++
++  final Repository repo;
++  final Issue issue;
++
++  @override
++  Widget build(BuildContext context) => Scaffold(
++    appBar: AppBar(title: Text('#${issue.number}')),
++    body: ListView(
++      padding: const EdgeInsets.all(20),
++      children: [
++        _InfoCard(
++          title: issue.title,
++          children: [
++            Wrap(
++              spacing: 8,
++              runSpacing: 8,
++              children: [
++                _Chip(icon: Icons.label_outline, label: issue.status),
++                if (issue.author.isNotEmpty)
++                  _Chip(icon: Icons.person_outline, label: issue.author),
++                _Chip(icon: Icons.folder_outlined, label: repo.fullName),
++              ],
++            ),
++            const SizedBox(height: 16),
++            SelectableText(
++              issue.body.isEmpty ? 'No description provided.' : issue.body,
++              style: const TextStyle(height: 1.45),
++            ),
++          ],
++        ),
++        const SizedBox(height: 12),
++        _InfoCard(
++          title: 'Actions',
++          children: [
++            const Text(
++              'Comments, votes, and status changes will route through Worker account/device capabilities.',
++            ),
++            const SizedBox(height: 12),
++            FilledButton.icon(
++              onPressed: () => showIssueActions(context, repo, issue),
++              icon: const Icon(Icons.add_comment_outlined),
++              label: const Text('Open available actions'),
++            ),
++          ],
++        ),
++      ],
++    ),
++  );
++}
++
++class _PullDetailScreen extends StatelessWidget {
++  const _PullDetailScreen({required this.repo, required this.pull});
++
++  final Repository repo;
++  final PublishedPull pull;
++
++  @override
++  Widget build(BuildContext context) => Scaffold(
++    appBar: AppBar(title: Text('PR #${pull.number}')),
++    body: ListView(
++      padding: const EdgeInsets.all(20),
++      children: [
++        _InfoCard(
++          title: pull.title,
++          children: [
++            Wrap(
++              spacing: 8,
++              runSpacing: 8,
++              children: [
++                _Chip(icon: Icons.label_outline, label: pull.status),
++                if (pull.signed)
++                  const _Chip(icon: Icons.verified_outlined, label: 'signed'),
++                if (pull.head.isNotEmpty || pull.base.isNotEmpty)
++                  _Chip(
++                    icon: Icons.account_tree_outlined,
++                    label: '${pull.head} → ${pull.base}',
++                  ),
++              ],
++            ),
++            const SizedBox(height: 16),
++            SelectableText(
++              pull.body.isEmpty ? 'No description provided.' : pull.body,
++              style: const TextStyle(height: 1.45),
++            ),
++          ],
++        ),
++        const SizedBox(height: 12),
++        const _InfoCard(
++          title: 'Review and merge',
++          children: [
++            Text(
++              'Patch viewing, review comments, status updates, and merge/apply flows will be enabled with Worker device capabilities.',
++            ),
++          ],
++        ),
++      ],
++    ),
++  );
++}
++
++class _DiscussionsTab extends StatelessWidget {
++  const _DiscussionsTab({required this.api, required this.repo});
++  final ApiService api;
++  final Repository repo;
++  @override
++  Widget build(BuildContext context) {
++    return _AsyncList<RepoDiscussion>(
++      future: api.publishedDiscussions(repo.owner, repo.name),
++      empty: 'No discussions have been published yet.',
++      itemBuilder: (d) => _MobileCard(
++        icon: Icons.forum_outlined,
++        iconColor: FmColors.accent,
++        title: d.title,
++        subtitle: '#${d.number}${d.author.isNotEmpty ? " · ${d.author}" : ""}',
++        badge: 'discussion',
++      ),
++    );
++  }
++}
++
++class _MirrorsTab extends StatelessWidget {
++  const _MirrorsTab({required this.api, required this.repo});
++  final ApiService api;
++  final Repository repo;
++  @override
++  Widget build(BuildContext context) {
++    return _AsyncList<RepoMirror>(
++      future: api.mirrors(repo.owner, repo.name),
++      empty: 'No mirrors reported for this repository yet.',
++      itemBuilder: (m) => _MobileCard(
++        icon: m.online ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
++        iconColor: m.online ? FmColors.success : FmColors.textMuted,
++        title: m.label,
++        subtitle: m.online ? 'Online mirror' : 'Offline or recently unseen',
++        badge: m.online ? 'live' : 'offline',
+       ),
+     );
+   }
+@@ -413,19 +844,335 @@ class _CommitsTab extends StatelessWidget {
+       itemBuilder: (c) {
+         final hash = (c['hash'] ?? c['sha'] ?? '').toString();
+         final short = hash.length < 7 ? hash : hash.substring(0, 7);
+-        return ListTile(
+-          leading: const Icon(Icons.commit, color: FmColors.textMuted),
+-          title: Text((c['subject'] ?? c['message'] ?? '').toString(),
+-              maxLines: 1, overflow: TextOverflow.ellipsis),
+-          subtitle: Text('${(c['author'] ?? '').toString()} · $short'),
++        return _MobileCard(
++          icon: Icons.commit,
++          iconColor: FmColors.textMuted,
++          title: (c['subject'] ?? c['message'] ?? 'Commit').toString(),
++          subtitle: [
++            (c['author'] ?? '').toString(),
++            short,
++          ].where((s) => s.isNotEmpty).join(' · '),
++          badge: short,
+         );
+       },
+     );
+   }
+ }
+ 
++class _RepoHeaderCard extends StatelessWidget {
++  const _RepoHeaderCard({required this.repo});
++  final Repository repo;
++  @override
++  Widget build(BuildContext context) => _InfoCard(
++    title: repo.fullName,
++    children: [
++      Text(
++        repo.description.isEmpty
++            ? 'No description provided.'
++            : repo.description,
++        style: const TextStyle(color: FmColors.textMuted, height: 1.35),
++      ),
++      const SizedBox(height: 14),
++      Wrap(
++        spacing: 8,
++        runSpacing: 8,
++        children: [
++          _Chip(icon: Icons.account_tree_outlined, label: repo.defaultBranch),
++          if (repo.language.isNotEmpty)
++            _Chip(icon: Icons.circle, label: repo.language),
++          _Chip(icon: Icons.star_border, label: '${repo.stars}'),
++          _Chip(icon: Icons.call_split, label: '${repo.forks}'),
++          _Chip(icon: Icons.dns_outlined, label: '${repo.mirrors} mirrors'),
++          _Chip(
++            icon: repo.isPrivate ? Icons.lock_outline : Icons.public,
++            label: repo.isPrivate ? 'Private' : 'Public',
++          ),
++        ],
++      ),
++    ],
++  );
++}
++
++class _InfoCard extends StatelessWidget {
++  const _InfoCard({required this.title, required this.children});
++  final String title;
++  final List<Widget> children;
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.all(16),
++    decoration: BoxDecoration(
++      color: FmColors.surface,
++      border: Border.all(color: FmColors.border),
++      borderRadius: BorderRadius.circular(22),
++    ),
++    child: Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Text(
++          title,
++          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
++        ),
++        const SizedBox(height: 12),
++        ...children,
++      ],
++    ),
++  );
++}
++
++class _Chip extends StatelessWidget {
++  const _Chip({required this.icon, required this.label});
++  final IconData icon;
++  final String label;
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
++    decoration: BoxDecoration(
++      color: FmColors.canvas,
++      borderRadius: BorderRadius.circular(99),
++      border: Border.all(color: FmColors.borderMuted),
++    ),
++    child: Row(
++      mainAxisSize: MainAxisSize.min,
++      children: [
++        Icon(icon, size: 14, color: FmColors.textMuted),
++        const SizedBox(width: 5),
++        Text(
++          label,
++          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
++        ),
++      ],
++    ),
++  );
++}
++
++class _PathBar extends StatelessWidget {
++  const _PathBar({required this.path, required this.onUp});
++  final String path;
++  final VoidCallback? onUp;
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
++    decoration: BoxDecoration(
++      color: FmColors.surface,
++      borderRadius: BorderRadius.circular(16),
++      border: Border.all(color: FmColors.border),
++    ),
++    child: Row(
++      children: [
++        IconButton(
++          onPressed: onUp,
++          icon: const Icon(Icons.arrow_upward_rounded),
++          tooltip: 'Up',
++        ),
++        Expanded(
++          child: Text(
++            path.isEmpty ? repoRootLabel : path,
++            overflow: TextOverflow.ellipsis,
++            style: const TextStyle(fontWeight: FontWeight.w800),
++          ),
++        ),
++      ],
++    ),
++  );
++  static const repoRootLabel = 'Repository root';
++}
++
++class _FileList extends StatelessWidget {
++  const _FileList({
++    required this.entries,
++    required this.onDir,
++    required this.onFile,
++  });
++  final List<RepoTreeEntry> entries;
++  final ValueChanged<String> onDir;
++  final ValueChanged<RepoTreeEntry> onFile;
++  @override
++  Widget build(BuildContext context) => Container(
++    decoration: BoxDecoration(
++      color: FmColors.surface,
++      border: Border.all(color: FmColors.border),
++      borderRadius: BorderRadius.circular(22),
++    ),
++    child: Column(
++      children: [
++        for (var i = 0; i < entries.length; i++) ...[
++          ListTile(
++            leading: Icon(
++              entries[i].isDirectory
++                  ? Icons.folder_rounded
++                  : Icons.description_outlined,
++              color: entries[i].isDirectory
++                  ? FmColors.accent
++                  : FmColors.textMuted,
++            ),
++            title: Text(
++              entries[i].name,
++              maxLines: 1,
++              overflow: TextOverflow.ellipsis,
++              style: const TextStyle(fontWeight: FontWeight.w700),
++            ),
++            subtitle: entries[i].isDirectory
++                ? const Text('Folder')
++                : Text(
++                    entries[i].size > 0 ? '${entries[i].size} bytes' : 'File',
++                  ),
++            trailing: const Icon(Icons.chevron_right),
++            onTap: () => entries[i].isDirectory
++                ? onDir(entries[i].path)
++                : onFile(entries[i]),
++          ),
++          if (i != entries.length - 1) const Divider(indent: 56, height: 1),
++        ],
++      ],
++    ),
++  );
++}
++
++class _MobileCard extends StatelessWidget {
++  const _MobileCard({
++    required this.icon,
++    required this.iconColor,
++    required this.title,
++    required this.subtitle,
++    this.badge = '',
++    this.onTap,
++  });
++  final IconData icon;
++  final Color iconColor;
++  final String title;
++  final String subtitle;
++  final String badge;
++  final VoidCallback? onTap;
++  @override
++  Widget build(BuildContext context) => Padding(
++    padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
++    child: Material(
++      color: FmColors.surface,
++      borderRadius: BorderRadius.circular(20),
++      child: InkWell(
++        onTap: onTap,
++        borderRadius: BorderRadius.circular(20),
++        child: Container(
++          padding: const EdgeInsets.all(14),
++          decoration: BoxDecoration(
++            border: Border.all(color: FmColors.border),
++            borderRadius: BorderRadius.circular(20),
++          ),
++          child: Row(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Icon(icon, color: iconColor),
++              const SizedBox(width: 12),
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      title,
++                      maxLines: 2,
++                      overflow: TextOverflow.ellipsis,
++                      style: const TextStyle(fontWeight: FontWeight.w800),
++                    ),
++                    if (subtitle.isNotEmpty) ...[
++                      const SizedBox(height: 5),
++                      Text(
++                        subtitle,
++                        style: const TextStyle(
++                          color: FmColors.textMuted,
++                          fontSize: 12,
++                        ),
++                      ),
++                    ],
++                  ],
++                ),
++              ),
++              if (badge.isNotEmpty) _SmallBadge(badge),
++            ],
++          ),
++        ),
++      ),
++    ),
++  );
++}
++
++class _SmallBadge extends StatelessWidget {
++  const _SmallBadge(this.text);
++  final String text;
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
++    decoration: BoxDecoration(
++      color: FmColors.canvas,
++      borderRadius: BorderRadius.circular(99),
++      border: Border.all(color: FmColors.borderMuted),
++    ),
++    child: Text(
++      text,
++      style: const TextStyle(
++        fontSize: 11,
++        fontWeight: FontWeight.w800,
++        color: FmColors.textMuted,
++      ),
++    ),
++  );
++}
++
++class _LoadingCard extends StatelessWidget {
++  const _LoadingCard({required this.label});
++  final String label;
++  @override
++  Widget build(BuildContext context) =>
++      _InfoCard(title: label, children: const [LinearProgressIndicator()]);
++}
++
++class _ErrorCard extends StatelessWidget {
++  const _ErrorCard({required this.message, required this.onRetry});
++  final String message;
++  final VoidCallback onRetry;
++  @override
++  Widget build(BuildContext context) => _InfoCard(
++    title: 'Something went wrong',
++    children: [
++      Text(message, style: const TextStyle(color: FmColors.textMuted)),
++      const SizedBox(height: 12),
++      OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
++    ],
++  );
++}
++
++class _EmptyCard extends StatelessWidget {
++  const _EmptyCard({required this.message});
++  final String message;
++  @override
++  Widget build(BuildContext context) => _InfoCard(
++    title: 'Nothing here yet',
++    children: [
++      Text(message, style: const TextStyle(color: FmColors.textMuted)),
++    ],
++  );
++}
++
++Widget _kv(String k, String v) => Padding(
++  padding: const EdgeInsets.symmetric(vertical: 6),
++  child: Row(
++    children: [
++      SizedBox(
++        width: 130,
++        child: Text(k, style: const TextStyle(color: FmColors.textMuted)),
++      ),
++      Expanded(
++        child: Text(v, style: const TextStyle(fontWeight: FontWeight.w700)),
++      ),
++    ],
++  ),
++);
++
+ class _AsyncList<T> extends StatelessWidget {
+-  const _AsyncList({required this.future, required this.itemBuilder, required this.empty});
++  const _AsyncList({
++    required this.future,
++    required this.itemBuilder,
++    required this.empty,
++  });
+   final Future<List<T>> future;
+   final Widget Function(T) itemBuilder;
+   final String empty;
+@@ -436,26 +1183,27 @@ class _AsyncList<T> extends StatelessWidget {
+       future: future,
+       builder: (context, snap) {
+         if (snap.connectionState == ConnectionState.waiting) {
+-          return const Center(child: CircularProgressIndicator());
++          return ListView(
++            padding: const EdgeInsets.all(16),
++            children: const [_LoadingCard(label: 'Loading…')],
++          );
+         }
+         if (snap.hasError) {
+-          return Center(
+-              child: Text('${snap.error}',
+-                  textAlign: TextAlign.center,
+-                  style: const TextStyle(color: FmColors.textMuted)));
++          return ListView(
++            padding: const EdgeInsets.all(16),
++            children: [_EmptyCard(message: '${snap.error}')],
++          );
+         }
+         final items = snap.data ?? [];
+         if (items.isEmpty) {
+-          return Center(
+-              child: Padding(
+-            padding: const EdgeInsets.all(24),
+-            child: Text(empty,
+-                textAlign: TextAlign.center, style: const TextStyle(color: FmColors.textMuted)),
+-          ));
++          return ListView(
++            padding: const EdgeInsets.all(16),
++            children: [_EmptyCard(message: empty)],
++          );
+         }
+-        return ListView.separated(
++        return ListView.builder(
++          padding: const EdgeInsets.symmetric(vertical: 10),
+           itemCount: items.length,
+-          separatorBuilder: (_, _) => const Divider(height: 1),
+           itemBuilder: (_, i) => itemBuilder(items[i]),
+         );
+       },
+diff --git a/flutter_app/lib/screens/settings_screen.dart b/flutter_app/lib/screens/settings_screen.dart
+index 200b5262..9d11888f 100644
+--- a/flutter_app/lib/screens/settings_screen.dart
++++ b/flutter_app/lib/screens/settings_screen.dart
+@@ -1,6 +1,7 @@
+ import 'package:flutter/material.dart';
+ import 'package:provider/provider.dart';
+ 
++import '../services/auth_service.dart';
+ import '../services/identity.dart';
+ import '../services/relay_service.dart';
+ import '../services/settings_service.dart';
+@@ -45,10 +46,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
+   Widget build(BuildContext context) {
+     final identity = context.read<Identity>();
+     final relay = context.watch<RelayService>();
++    final auth = context.watch<AuthService>();
++    final session = auth.session;
+     return ListView(
+       padding: const EdgeInsets.all(16),
+       children: [
+         const _SectionLabel('PROFILE'),
++        _ProfileAccountCard(session: session),
++        const SizedBox(height: 12),
+         _field('Display name', _name, onSaved: _settings.setDisplayName),
+         _field(
+           'Solana address (payouts/donations, optional)',
+@@ -118,6 +123,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
+           onSaved: _settings.setGitlabToken,
+           obscure: true,
+         ),
++        const SizedBox(height: 20),
++        const _SectionLabel('ACCOUNT'),
++        _SignOutCard(
++          signedInAs: session?.nodeName.isNotEmpty == true
++              ? session!.nodeName
++              : session?.email ?? 'Current account',
++          onSignOut: () => _confirmSignOut(context, auth),
++        ),
+       ],
+     );
+   }
+@@ -138,6 +151,170 @@ class _SettingsScreenState extends State<SettingsScreen> {
+       ),
+     );
+   }
++
++  Future<void> _confirmSignOut(BuildContext context, AuthService auth) async {
++    final ok = await showDialog<bool>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: const Text('Sign out?'),
++        content: const Text(
++          'This clears the saved mobile session on this device. Your identity key, relay settings, and tokens stay local.',
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.of(context).pop(false),
++            child: const Text('Cancel'),
++          ),
++          FilledButton(
++            onPressed: () => Navigator.of(context).pop(true),
++            child: const Text('Sign out'),
++          ),
++        ],
++      ),
++    );
++    if (ok != true) return;
++    await auth.logout();
++    if (context.mounted) {
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(
++          content: Text('Signed out. Sign in with another account.'),
++        ),
++      );
++    }
++  }
++}
++
++class _ProfileAccountCard extends StatelessWidget {
++  const _ProfileAccountCard({required this.session});
++
++  final AuthSession? session;
++
++  @override
++  Widget build(BuildContext context) {
++    final title = session?.nodeName.isNotEmpty == true
++        ? session!.nodeName
++        : session?.email.isNotEmpty == true
++        ? session!.email
++        : 'Signed in';
++    final subtitle = session?.email.isNotEmpty == true
++        ? session!.email
++        : 'Worker account session saved on this device';
++    return Container(
++      padding: const EdgeInsets.all(14),
++      decoration: BoxDecoration(
++        color: FmColors.surface,
++        border: Border.all(color: FmColors.border),
++        borderRadius: BorderRadius.circular(18),
++      ),
++      child: Row(
++        children: [
++          Container(
++            width: 42,
++            height: 42,
++            decoration: const BoxDecoration(
++              color: FmColors.text,
++              shape: BoxShape.circle,
++            ),
++            child: const Icon(Icons.person_outline, color: Colors.white),
++          ),
++          const SizedBox(width: 12),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  title,
++                  maxLines: 1,
++                  overflow: TextOverflow.ellipsis,
++                  style: const TextStyle(fontWeight: FontWeight.w800),
++                ),
++                const SizedBox(height: 3),
++                Text(
++                  subtitle,
++                  maxLines: 1,
++                  overflow: TextOverflow.ellipsis,
++                  style: const TextStyle(
++                    color: FmColors.textMuted,
++                    fontSize: 12,
++                  ),
++                ),
++              ],
++            ),
++          ),
++          const _SessionBadge(),
++        ],
++      ),
++    );
++  }
++}
++
++class _SessionBadge extends StatelessWidget {
++  const _SessionBadge();
++
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
++    decoration: BoxDecoration(
++      color: const Color(0xFFEFF8F2),
++      borderRadius: BorderRadius.circular(999),
++      border: Border.all(color: const Color(0xFFCFEBD8)),
++    ),
++    child: const Text(
++      'Active',
++      style: TextStyle(
++        color: FmColors.success,
++        fontSize: 11,
++        fontWeight: FontWeight.w800,
++      ),
++    ),
++  );
++}
++
++class _SignOutCard extends StatelessWidget {
++  const _SignOutCard({required this.signedInAs, required this.onSignOut});
++
++  final String signedInAs;
++  final VoidCallback onSignOut;
++
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.all(14),
++    decoration: BoxDecoration(
++      color: FmColors.surface,
++      border: Border.all(color: FmColors.border),
++      borderRadius: BorderRadius.circular(18),
++    ),
++    child: Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Text(
++          'Signed in as $signedInAs',
++          maxLines: 1,
++          overflow: TextOverflow.ellipsis,
++          style: const TextStyle(fontWeight: FontWeight.w800),
++        ),
++        const SizedBox(height: 6),
++        const Text(
++          'Sign out to return to the login screen and test with another Cloudflare Worker account.',
++          style: TextStyle(
++            color: FmColors.textMuted,
++            fontSize: 12,
++            height: 1.35,
++          ),
++        ),
++        const SizedBox(height: 12),
++        OutlinedButton.icon(
++          onPressed: onSignOut,
++          icon: const Icon(Icons.logout, size: 18),
++          label: const Text('Sign out'),
++          style: OutlinedButton.styleFrom(
++            foregroundColor: FmColors.danger,
++            side: const BorderSide(color: Color(0xFFF1C9C7)),
++          ),
++        ),
++      ],
++    ),
++  );
+ }
+ 
+ class _SectionLabel extends StatelessWidget {
+diff --git a/flutter_app/lib/services/api_service.dart b/flutter_app/lib/services/api_service.dart
+index a7031905..70f4059d 100644
+--- a/flutter_app/lib/services/api_service.dart
++++ b/flutter_app/lib/services/api_service.dart
+@@ -13,10 +13,16 @@ class ApiService {
+ 
+   final SettingsService _settings;
+ 
+-  Uri _base(String path) {
++  Uri _base(String path, [Map<String, String>? query]) {
+     final ws = Uri.parse(_settings.serverUrl);
+     final scheme = ws.scheme == 'ws' ? 'http' : 'https';
+-    return Uri(scheme: scheme, host: ws.host, port: ws.hasPort ? ws.port : null, path: path);
++    return Uri(
++      scheme: scheme,
++      host: ws.host,
++      port: ws.hasPort ? ws.port : null,
++      path: path,
++      queryParameters: query?.isEmpty == true ? null : query,
++    );
+   }
+ 
+   Future<List<Repository>> repositories() async {
+@@ -39,30 +45,212 @@ class ApiService {
+ 
+   Future<List<Issue>> issues(String owner, String name) async {
+     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
++    return _asList(
++      data,
++    ).whereType<Map<String, dynamic>>().map(Issue.fromJson).toList();
++  }
++
++  Future<List<PullRequest>> pulls(String owner, String name) async {
++    final data = await _getJson(_base('/api/repo/$owner/$name/pulls'));
++    return _asList(
++      data,
++    ).whereType<Map<String, dynamic>>().map(PullRequest.fromJson).toList();
++  }
++
++  Future<List<Map<String, dynamic>>> commits(String owner, String name) async {
++    final data = await _getJson(_base('/api/repo/$owner/$name/commits'));
++    return _asList(data).whereType<Map<String, dynamic>>().toList();
++  }
++
++  Future<RepoTree> tree(String owner, String name, {String path = ''}) async {
++    final data = await _getJson(
++      _base('/api/repo/$owner/$name/tree', {'path': path}),
++    );
++    return RepoTree.fromJson(data, path: path);
++  }
++
++  Future<RepoBlob> blob(String owner, String name, String path) async {
++    final data = await _getJson(
++      _base('/api/repo/$owner/$name/blob', {'path': path}),
++    );
++    return RepoBlob.fromJson(data, path: path);
++  }
++
++  Future<List<RepoBranch>> branches(String owner, String name) async {
++    final data = await _getJson(_base('/api/repo/$owner/$name/branches'));
+     return _asList(data)
+         .whereType<Map<String, dynamic>>()
+-        .map(Issue.fromJson)
++        .map(RepoBranch.fromJson)
++        .where((b) => b.name.isNotEmpty)
+         .toList();
+   }
+ 
+-  Future<List<PullRequest>> pulls(String owner, String name) async {
+-    final data = await _getJson(_base('/api/repo/$owner/$name/pulls'));
++  Future<List<RepoMirror>> mirrors(String owner, String name) async {
++    final data = await _getJson(_base('/api/repo/$owner/$name/mirrors'));
+     return _asList(data)
+         .whereType<Map<String, dynamic>>()
+-        .map(PullRequest.fromJson)
++        .map(RepoMirror.fromJson)
++        .where((m) => m.label.isNotEmpty)
+         .toList();
+   }
+ 
+-  Future<List<Map<String, dynamic>>> commits(String owner, String name) async {
+-    final data = await _getJson(_base('/api/repo/$owner/$name/commits'));
+-    return _asList(data).whereType<Map<String, dynamic>>().toList();
++  Future<List<Issue>> publishedIssues(String owner, String name) async {
++    final dirs = await _numberedFolders(owner, name, 'issues');
++    final out = <Issue>[];
++    for (final dir in dirs) {
++      try {
++        final b = await blob(owner, name, 'issues/$dir/issue.md');
++        out.add(_issueFromMarkdown(dir, b.content));
++      } catch (_) {}
++    }
++    return out..sort((a, b) => b.number.compareTo(a.number));
++  }
++
++  Future<List<PublishedPull>> publishedPulls(String owner, String name) async {
++    final dirs = await _numberedFolders(owner, name, 'pulls');
++    final out = <PublishedPull>[];
++    for (final dir in dirs) {
++      try {
++        final b = await blob(owner, name, 'pulls/$dir/pull.md');
++        out.add(_pullFromMarkdown(dir, b.content));
++      } catch (_) {}
++    }
++    return out..sort((a, b) => b.number.compareTo(a.number));
++  }
++
++  Future<List<RepoDiscussion>> publishedDiscussions(
++    String owner,
++    String name,
++  ) async {
++    final dirs = await _numberedFolders(owner, name, 'discussions');
++    final out = <RepoDiscussion>[];
++    for (final dir in dirs) {
++      try {
++        final b = await blob(owner, name, 'discussions/$dir/discussion.md');
++        out.add(_discussionFromMarkdown(dir, b.content));
++      } catch (_) {}
++    }
++    return out..sort((a, b) => b.number.compareTo(a.number));
++  }
++
++  Future<List<String>> _numberedFolders(
++    String owner,
++    String name,
++    String path,
++  ) async {
++    try {
++      final t = await tree(owner, name, path: path);
++      return t.entries
++          .where((e) => e.isDirectory && int.tryParse(e.name) != null)
++          .map((e) => e.name)
++          .toList();
++    } catch (_) {
++      return const [];
++    }
++  }
++
++  Issue _issueFromMarkdown(String number, String md) {
++    final meta = _frontMatter(md);
++    final title = meta['title'] ?? _firstHeading(md) ?? 'Issue #$number';
++    final status =
++        meta['status'] ?? (md.contains('status: closed') ? 'closed' : 'open');
++    return Issue(
++      number: int.tryParse(number) ?? 0,
++      title: title,
++      status: status,
++      body: _bodyWithoutFrontMatter(md),
++      author: meta['author'] ?? meta['authorName'] ?? '',
++      labels: (meta['labels'] ?? '')
++          .split(',')
++          .map((s) => s.trim())
++          .where((s) => s.isNotEmpty)
++          .toList(),
++    );
++  }
++
++  PublishedPull _pullFromMarkdown(String number, String md) {
++    final meta = _frontMatter(md);
++    final title = meta['title'] ?? _firstHeading(md) ?? 'Pull request #$number';
++    return PublishedPull(
++      number: int.tryParse(number) ?? 0,
++      title: title,
++      status: meta['status'] ?? 'open',
++      body: _bodyWithoutFrontMatter(md),
++      base: meta['base'] ?? '',
++      head: meta['head'] ?? '',
++      signed: (meta['sig'] ?? '').isNotEmpty,
++    );
++  }
++
++  RepoDiscussion _discussionFromMarkdown(String number, String md) {
++    final meta = _frontMatter(md);
++    return RepoDiscussion(
++      number: int.tryParse(number) ?? 0,
++      title: meta['title'] ?? _firstHeading(md) ?? 'Discussion #$number',
++      body: _bodyWithoutFrontMatter(md),
++      author: meta['author'] ?? meta['authorName'] ?? '',
++      updatedMs: int.tryParse(meta['updatedAt'] ?? meta['ts'] ?? '') ?? 0,
++    );
++  }
++
++  Map<String, String> _frontMatter(String md) {
++    final lines = const LineSplitter().convert(md);
++    if (lines.isEmpty || lines.first.trim() != '---') return const {};
++    final out = <String, String>{};
++    for (var i = 1; i < lines.length; i++) {
++      final line = lines[i];
++      if (line.trim() == '---') break;
++      final idx = line.indexOf(':');
++      if (idx > 0) {
++        out[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
++      }
++    }
++    return out;
++  }
++
++  String? _firstHeading(String md) {
++    for (final line in const LineSplitter().convert(md)) {
++      final clean = line.trim();
++      if (clean.startsWith('#')) {
++        return clean.replaceFirst(RegExp(r'^#+\s*'), '').trim();
++      }
++      if (clean.isNotEmpty && clean != '---' && !clean.contains(':')) {
++        return clean;
++      }
++    }
++    return null;
++  }
++
++  String _bodyWithoutFrontMatter(String md) {
++    final lines = const LineSplitter().convert(md);
++    if (lines.isEmpty || lines.first.trim() != '---') return md.trim();
++    var end = -1;
++    for (var i = 1; i < lines.length; i++) {
++      if (lines[i].trim() == '---') {
++        end = i;
++        break;
++      }
++    }
++    return end >= 0 ? lines.skip(end + 1).join('\n').trim() : md.trim();
+   }
+ 
+   // Catalog endpoints sometimes wrap the array in {repositories:[...]} / {data:[...]}.
+   List<dynamic> _asList(dynamic data) {
+     if (data is List) return data;
+     if (data is Map<String, dynamic>) {
+-      for (final key in ['repositories', 'issues', 'pulls', 'commits', 'data', 'items']) {
++      for (final key in [
++        'repositories',
++        'issues',
++        'pulls',
++        'commits',
++        'discussions',
++        'mirrors',
++        'branches',
++        'entries',
++        'tree',
++        'data',
++        'items',
++      ]) {
+         if (data[key] is List) return data[key] as List;
+       }
+     }
+diff --git a/flutter_app/lib/services/auth_service.dart b/flutter_app/lib/services/auth_service.dart
+new file mode 100644
+index 00000000..06a74e31
+--- /dev/null
++++ b/flutter_app/lib/services/auth_service.dart
+@@ -0,0 +1,330 @@
++import 'dart:convert';
++
++import 'package:flutter/foundation.dart';
++import 'package:http/http.dart' as http;
++import 'package:shared_preferences/shared_preferences.dart';
++
++import 'identity.dart';
++import 'settings_service.dart';
++
++class AuthSession {
++  const AuthSession({
++    required this.nodeName,
++    required this.email,
++    required this.status,
++    required this.pubkey,
++    required this.emailVerified,
++    required this.isAdmin,
++    required this.solana,
++    required this.hasPayoutAddress,
++    required this.avatarPng,
++    required this.avatarUpdatedAt,
++    required this.createdAt,
++    required this.savedAt,
++    this.sessionKind = 'account',
++    this.deviceKind = '',
++    this.desktopCapable = false,
++    this.capabilities = const [],
++  });
++
++  final String nodeName;
++  final String email;
++  final String status;
++  final String pubkey;
++  final bool emailVerified;
++  final bool isAdmin;
++  final String solana;
++  final bool hasPayoutAddress;
++  final String avatarPng;
++  final int avatarUpdatedAt;
++  final int createdAt;
++  final int savedAt;
++  final String sessionKind;
++  final String deviceKind;
++  final bool desktopCapable;
++  final List<String> capabilities;
++
++  bool get canSubmitIssue => capabilities.contains('submit_issue');
++  bool get canSubmitPr => capabilities.contains('submit_pr');
++  bool get canHost => capabilities.contains('host_repo');
++  bool get canPublish => capabilities.contains('publish_repo');
++
++  factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
++    nodeName: '${json['nodeName'] ?? json['name'] ?? ''}',
++    email: '${json['email'] ?? ''}',
++    status: '${json['status'] ?? ''}',
++    pubkey: '${json['pubkey'] ?? ''}',
++    emailVerified: json['emailVerified'] == true,
++    isAdmin: json['isAdmin'] == true,
++    solana: '${json['solana'] ?? ''}',
++    hasPayoutAddress: json['hasPayoutAddress'] == true,
++    avatarPng: '${json['avatarPng'] ?? ''}',
++    avatarUpdatedAt: _asInt(json['avatarUpdatedAt']),
++    createdAt: _asInt(json['createdAt']),
++    savedAt: _asInt(json['at'] ?? DateTime.now().millisecondsSinceEpoch),
++    sessionKind: '${json['sessionKind'] ?? 'account'}',
++    deviceKind: '${json['deviceKind'] ?? ''}',
++    desktopCapable: json['desktopCapable'] == true,
++    capabilities: (json['capabilities'] is List)
++        ? (json['capabilities'] as List).map((e) => '$e').toList()
++        : const [],
++  );
++
++  Map<String, dynamic> toJson() => {
++    'nodeName': nodeName,
++    'email': email,
++    'status': status,
++    'pubkey': pubkey,
++    'emailVerified': emailVerified,
++    'isAdmin': isAdmin,
++    'solana': solana,
++    'hasPayoutAddress': hasPayoutAddress,
++    'avatarPng': avatarPng,
++    'avatarUpdatedAt': avatarUpdatedAt,
++    'createdAt': createdAt,
++    'at': savedAt,
++    'sessionKind': sessionKind,
++    'deviceKind': deviceKind,
++    'desktopCapable': desktopCapable,
++    'capabilities': capabilities,
++  };
++
++  static int _asInt(dynamic value) {
++    if (value is int) return value;
++    if (value is num) return value.toInt();
++    return int.tryParse('$value') ?? 0;
++  }
++}
++
++class AccountAvailability {
++  const AccountAvailability({
++    required this.ok,
++    required this.exists,
++    required this.available,
++    required this.name,
++    this.message = '',
++  });
++
++  final bool ok;
++  final bool exists;
++  final bool available;
++  final String name;
++  final String message;
++}
++
++class AuthException implements Exception {
++  const AuthException(this.code, this.message);
++  final String code;
++  final String message;
++
++  @override
++  String toString() => message;
++}
++
++class AuthService extends ChangeNotifier {
++  AuthService(this._settings, this._identity, this._prefs) {
++    _session = _loadSession();
++  }
++
++  final SettingsService _settings;
++  final Identity _identity;
++  final SharedPreferences _prefs;
++
++  static const _sessionKey = 'auth/session';
++  static final nodeNamePattern = RegExp(r'^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$');
++
++  AuthSession? _session;
++  AuthSession? get session => _session;
++  bool get isAuthenticated => _session != null;
++
++  static Future<AuthService> create(
++    SettingsService settings,
++    Identity identity,
++  ) async =>
++      AuthService(settings, identity, await SharedPreferences.getInstance());
++
++  Uri _base(String path) {
++    final ws = Uri.parse(_settings.serverUrl);
++    final scheme = ws.scheme == 'ws' ? 'http' : 'https';
++    return Uri(
++      scheme: scheme,
++      host: ws.host,
++      port: ws.hasPort ? ws.port : null,
++      path: path,
++    );
++  }
++
++  Future<AuthSession> login({
++    required String identifier,
++    required String password,
++    String totp = '',
++  }) async {
++    final body = await _postJson('/api/accounts/login', {
++      'identifier': identifier.trim().toLowerCase(),
++      'email': identifier.trim().toLowerCase(),
++      'password': password,
++      'totp': totp.trim(),
++      // Do not send this mobile device's local Ed25519 key here. The Worker
++      // treats a pubkey on password login as the desktop/node key and binds it
++      // to the account if one is not already present. Mobile is a web-style
++      // client for the central Worker, not a repo-hosting desktop node, so
++      // binding this key would block the real Qt client from logging in later.
++    });
++    return _saveSession(AuthSession.fromJson(body));
++  }
++
++  Future<AuthSession> signup({
++    required String nodeName,
++    required String email,
++    required String password,
++  }) async {
++    final body = await _postJson('/api/accounts/signup', {
++      'nodeName': nodeName.trim().toLowerCase(),
++      'email': email.trim().toLowerCase(),
++      'password': password,
++    });
++    return _saveSession(AuthSession.fromJson(body));
++  }
++
++  Future<AccountAvailability> checkNodeName(String nodeName) async {
++    final clean = nodeName.trim().toLowerCase();
++    if (!nodeNamePattern.hasMatch(clean)) {
++      return AccountAvailability(
++        ok: false,
++        exists: false,
++        available: false,
++        name: clean,
++        message:
++            'Use lowercase letters, numbers and hyphens. Start with a letter and end with a letter or number.',
++      );
++    }
++    try {
++      final data = await _getJson('/api/accounts/$clean');
++      return AccountAvailability(
++        ok: true,
++        exists: data['exists'] == true,
++        available: data['available'] != false,
++        name: '${data['name'] ?? clean}',
++        message: data['available'] == false
++            ? 'That name is already taken.'
++            : '“$clean” is available.',
++      );
++    } catch (_) {
++      return AccountAvailability(
++        ok: false,
++        exists: false,
++        available: true,
++        name: clean,
++        message:
++            'Could not check availability. You can still try creating the account.',
++      );
++    }
++  }
++
++  Future<void> authenticatePreview() async {
++    await _saveSession(
++      AuthSession(
++        nodeName: 'preview-node',
++        email: 'preview@forkmesh.local',
++        status: 'active',
++        pubkey: _identity.publicKeyB64url,
++        emailVerified: true,
++        isAdmin: false,
++        solana: '',
++        hasPayoutAddress: false,
++        avatarPng: '',
++        avatarUpdatedAt: 0,
++        createdAt: DateTime.now().millisecondsSinceEpoch,
++        savedAt: DateTime.now().millisecondsSinceEpoch,
++        sessionKind: 'preview',
++        deviceKind: 'mobile',
++        capabilities: const ['browse', 'comment', 'submit_issue', 'submit_pr'],
++      ),
++    );
++  }
++
++  Future<void> logout() async {
++    await _prefs.remove(_sessionKey);
++    _session = null;
++    notifyListeners();
++  }
++
++  AuthSession? _loadSession() {
++    final raw = _prefs.getString(_sessionKey);
++    if (raw == null || raw.isEmpty) return null;
++    try {
++      final json = jsonDecode(raw);
++      if (json is Map<String, dynamic>) {
++        final session = AuthSession.fromJson(json);
++        if (session.nodeName.isNotEmpty || session.email.isNotEmpty) {
++          return session;
++        }
++      }
++    } catch (_) {}
++    return null;
++  }
++
++  Future<AuthSession> _saveSession(AuthSession session) async {
++    await _prefs.setString(_sessionKey, jsonEncode(session.toJson()));
++    if (session.nodeName.isNotEmpty) {
++      await _settings.setDisplayName(session.nodeName);
++    }
++    if (session.solana.isNotEmpty) {
++      await _settings.setSolanaAddress(session.solana);
++    }
++    _session = session;
++    notifyListeners();
++    return session;
++  }
++
++  Future<Map<String, dynamic>> _getJson(String path) async {
++    final resp = await http
++        .get(_base(path), headers: {'accept': 'application/json'})
++        .timeout(const Duration(seconds: 20));
++    return _decodeResponse(resp);
++  }
++
++  Future<Map<String, dynamic>> _postJson(
++    String path,
++    Map<String, dynamic> payload,
++  ) async {
++    final resp = await http
++        .post(
++          _base(path),
++          headers: {
++            'content-type': 'application/json',
++            'accept': 'application/json',
++          },
++          body: jsonEncode(payload),
++        )
++        .timeout(const Duration(seconds: 20));
++    return _decodeResponse(resp);
++  }
++
++  Map<String, dynamic> _decodeResponse(http.Response resp) {
++    Map<String, dynamic> body = {};
++    try {
++      final decoded = jsonDecode(resp.body);
++      if (decoded is Map<String, dynamic>) body = decoded;
++    } catch (_) {}
++    if (resp.statusCode >= 200 && resp.statusCode < 300) return body;
++    final code = '${body['error'] ?? 'http_${resp.statusCode}'}';
++    throw AuthException(code, _messageFor(code));
++  }
++
++  String _messageFor(String code) => switch (code) {
++    'bad_totp' => 'Enter your authenticator code.',
++    'too_many_attempts' =>
++      'Too many failed attempts. Wait a few minutes and try again.',
++    'account_disabled' => 'This account has been disabled.',
++    'invalid_credentials' => 'Incorrect email, node name, or password.',
++    'pubkey_mismatch' => 'This account is linked to a different device key.',
++    'invalid_node_name' => 'Choose a valid public node name.',
++    'valid_email_required' => 'Enter a valid email address.',
++    'password_too_short' => 'Password must be at least 8 characters.',
++    'node_name_taken' => 'That node name is already taken.',
++    'email_taken' => 'That email is already registered.',
++    'invalid_json' => 'Could not send the request. Please try again.',
++    _ => 'Could not complete the request. Please try again.',
++  };
++}
+diff --git a/flutter_app/lib/services/settings_service.dart b/flutter_app/lib/services/settings_service.dart
+index 83441d19..3e3327fc 100644
+--- a/flutter_app/lib/services/settings_service.dart
++++ b/flutter_app/lib/services/settings_service.dart
+@@ -8,8 +8,26 @@ class SettingsService extends ChangeNotifier {
+ 
+   final SharedPreferences _prefs;
+ 
+-  static const defaultServerUrl =
++  static const productionServerUrl =
+       'wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws';
++  static const localWorkerServerUrl =
++      'ws://localhost:8787/api/repo/mainnode/forkmesh/rooms/general/ws';
++  static const androidEmulatorLocalWorkerServerUrl =
++      'ws://10.0.2.2:8787/api/repo/mainnode/forkmesh/rooms/general/ws';
++  static const configuredServerUrl = String.fromEnvironment(
++    'FORKMESH_SERVER_URL',
++    defaultValue: '',
++  );
++
++  static String get defaultServerUrl {
++    if (configuredServerUrl.isNotEmpty) return configuredServerUrl;
++    if (kReleaseMode) return productionServerUrl;
++    if (defaultTargetPlatform == TargetPlatform.android) {
++      return androidEmulatorLocalWorkerServerUrl;
++    }
++    return localWorkerServerUrl;
++  }
++
+   static const defaultRoom = 'general';
+   static const defaultPassphrase = 'forkmesh-public-room';
+ 
+diff --git a/flutter_app/test/mock_auth_flow_test.dart b/flutter_app/test/mock_auth_flow_test.dart
+index eda37ffb..be39b61b 100644
+--- a/flutter_app/test/mock_auth_flow_test.dart
++++ b/flutter_app/test/mock_auth_flow_test.dart
+@@ -5,6 +5,7 @@ import 'package:forkmesh/main.dart';
+ import 'package:forkmesh/models/models.dart';
+ import 'package:forkmesh/screens/auth_mock_flow.dart';
+ import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/auth_service.dart';
+ import 'package:forkmesh/services/identity.dart';
+ import 'package:forkmesh/services/inbox_service.dart';
+ import 'package:forkmesh/services/relay_service.dart';
+@@ -53,6 +54,16 @@ void main() {
+     await tester.tap(finder);
+   }
+ 
++  testWidgets('debug settings default to the local Worker relay URL', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++
++    expect(settings.serverUrl, contains(':8787/api/repo/mainnode/forkmesh'));
++    expect(settings.serverUrl, startsWith('ws://'));
++  });
++
+   testWidgets('starts on the dark ForkMesh welcome screen', (tester) async {
+     await tester.pumpWidget(buildFlow());
+ 
+@@ -80,7 +91,7 @@ void main() {
+     expect(find.text('Continue with your ForkMesh account.'), findsOneWidget);
+     expect(find.byKey(const ValueKey('forkmesh-auth-logo')), findsWidgets);
+     expect(find.text('ForkMesh'), findsNothing);
+-    expect(find.text('Email'), findsOneWidget);
++    expect(find.text('Email or node name'), findsOneWidget);
+     expect(find.text('Password'), findsOneWidget);
+     expect(find.widgetWithText(FilledButton, 'Continue'), findsOneWidget);
+     expect(
+@@ -149,6 +160,7 @@ void main() {
+       final identity = await Identity.loadOrCreate();
+       final relay = RelayService(settings, identity);
+       final api = FakeApiService(settings);
++      final auth = await AuthService.create(settings, identity);
+       final inbox = InboxService(settings, identity);
+ 
+       await tester.pumpWidget(
+@@ -157,6 +169,7 @@ void main() {
+           identity: identity,
+           relay: relay,
+           api: api,
++          auth: auth,
+           inbox: inbox,
+         ),
+       );
+@@ -183,6 +196,7 @@ void main() {
+     final identity = await Identity.loadOrCreate();
+     final relay = RelayService(settings, identity);
+     final api = FakeApiService(settings);
++    final auth = await AuthService.create(settings, identity);
+     final inbox = InboxService(settings, identity);
+ 
+     await tester.pumpWidget(
+@@ -191,6 +205,7 @@ void main() {
+         identity: identity,
+         relay: relay,
+         api: api,
++        auth: auth,
+         inbox: inbox,
+       ),
+     );
+@@ -227,6 +242,7 @@ void main() {
+         ),
+       ],
+     );
++    final auth = await AuthService.create(settings, identity);
+     final inbox = InboxService(settings, identity);
+ 
+     await tester.pumpWidget(
+@@ -235,6 +251,7 @@ void main() {
+         identity: identity,
+         relay: relay,
+         api: api,
++        auth: auth,
+         inbox: inbox,
+       ),
+     );
+@@ -257,6 +274,7 @@ void main() {
+     final identity = await Identity.loadOrCreate();
+     final relay = RelayService(settings, identity);
+     final api = FakeApiService(settings);
++    final auth = await AuthService.create(settings, identity);
+     final inbox = InboxService(settings, identity);
+ 
+     await tester.pumpWidget(
+@@ -265,6 +283,7 @@ void main() {
+         identity: identity,
+         relay: relay,
+         api: api,
++        auth: auth,
+         inbox: inbox,
+       ),
+     );
+@@ -319,6 +338,7 @@ void main() {
+     final identity = await Identity.loadOrCreate();
+     final relay = RelayService(settings, identity);
+     final api = FakeApiService(settings);
++    final auth = await AuthService.create(settings, identity);
+     final inbox = InboxService(settings, identity);
+ 
+     await tester.pumpWidget(
+@@ -327,6 +347,7 @@ void main() {
+         identity: identity,
+         relay: relay,
+         api: api,
++        auth: auth,
+         inbox: inbox,
+       ),
+     );
+@@ -353,6 +374,7 @@ void main() {
+     final identity = await Identity.loadOrCreate();
+     final relay = RelayService(settings, identity);
+     final api = FakeApiService(settings);
++    final auth = await AuthService.create(settings, identity);
+     final inbox = InboxService(settings, identity);
+ 
+     await tester.pumpWidget(
+@@ -361,6 +383,7 @@ void main() {
+         identity: identity,
+         relay: relay,
+         api: api,
++        auth: auth,
+         inbox: inbox,
+       ),
+     );
+diff --git a/qt_client/src/MainWindowSetup.cpp b/qt_client/src/MainWindowSetup.cpp
+index fa02511e..ef351da0 100644
+--- a/qt_client/src/MainWindowSetup.cpp
++++ b/qt_client/src/MainWindowSetup.cpp
+@@ -1578,11 +1578,15 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+                     {"totp", totp},
+                     {"pubkey", m_profileIdentity.publicKey()}},
+         &status);
+-    if (status == 200 && resp.value("ok").toBool()) {
++    auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
+         m_accountAuthenticated = true;
+-        m_accountName = resp.value("nodeName").toString(accountName);
++        m_accountName = payload.value("nodeName").toString(accountName);
+         m_accountTier = QStringLiteral("active");
+-        m_accountSolanaVerified = true; // joined = active network member
++        // True means this local Qt identity is the account's registered desktop
++        // key and can publish/host/sign owner-only actions. False is a safe
++        // password-only session for viewing/using the app when the account is
++        // bound to another desktop key.
++        m_accountSolanaVerified = ownsDesktopKey;
+         // Remember that this machine successfully authenticated this account so
+         // the next launch opens straight onto the app shell. Without this a
+         // password (cross-device) login — where the node key does NOT own the
+@@ -1590,16 +1594,41 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+         // login screen even with correct credentials.
+         QSettings().setValue(kAuthedAccountSetting, m_accountName);
+         applyAccountEmailVerified(m_accountName,
+-                                  resp.value("emailVerified").toBool());
++                                  payload.value("emailVerified").toBool());
++    };
++
++    if (status == 200 && resp.value("ok").toBool()) {
++        acceptLogin(resp, true);
+         return true;
+     }
+     const QString err = resp.value("error").toString();
+-    // A pubkey mismatch is unrecoverable from here: the account is already bound to
+-    // a different desktop key, so retyping the (correct) email/password can never
+-    // log in on this device. Flag it so runLoginFlow stops re-opening the dialog
+-    // instead of trapping the user in an endless re-prompt loop.
++
++    // If the password is correct but this account is already bound to another
++    // desktop key, do a second web-style login without pubkey. That matches the
++    // web/mobile architecture: a client may use the central Worker with
++    // email/password, but only the bound desktop key can publish/host. Do not
++    // silently rotate or replace the account key here.
++    if (err == "pubkey_mismatch") {
++        int webStatus = 0;
++        const QJsonObject webResp = postAccountSync(
++            "login",
++            QJsonObject{{"email", email}, {"password", password}, {"totp", totp}},
++            &webStatus);
++        if (webStatus == 200 && webResp.value("ok").toBool()) {
++            acceptLogin(webResp, false);
++            QMessageBox::information(
++                this, "Logged in",
++                "You are signed in with email/password, but this account is "
++                "already bound to a different desktop key. Browsing and account "
++                "features will work from this device; publishing, hosting, and "
++                "owner-signed actions require the original desktop key or an "
++                "explicit account-key rotation/import.");
++            return true;
++        }
++    }
++
+     if (fatal)
+-        *fatal = (err == "pubkey_mismatch");
++        *fatal = false;
+     QMessageBox::warning(this, "Log in",
+                          err == "bad_totp"
+                              ? "Incorrect authenticator code."
+@@ -1613,8 +1642,9 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+                                      "and try again."
+                              : err == "pubkey_mismatch"
+                                    ? "This account is already bound to another "
+-                                     "desktop key. Use that device or rotate the "
+-                                     "account key before publishing from here."
++                                     "desktop key, and password-only fallback also "
++                                     "failed. Use the original device, import its "
++                                     "identity backup, or rotate the account key."
+                                          : "Login failed" +
+                                                (err.isEmpty() ? QString() : ": " + err) +
+                                                ".");

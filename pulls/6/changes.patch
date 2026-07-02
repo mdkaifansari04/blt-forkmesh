@@ -1,0 +1,13 @@
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index fd9b4d51..13b00391 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -79,7 +79,7 @@ class_name = "ForkMeshHost"
+ [[d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh"
+-database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
++database_id = "54bb594f-a90c-4794-a8ea-7ad0cc9bff83"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
