@@ -246,3 +246,69 @@ def test_browse_route_round_robins_across_online_mirrors():
     assert "/api/repo/%s/%s/%s" in browse
     assert "status=302" in browse
     assert "fmserved" in browse
+
+
+def _method_source(class_name, method_name):
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == method_name):
+                    return ast.unparse(item)
+    raise AssertionError(
+        "%s.%s not found in entry.py" % (class_name, method_name))
+
+
+def test_browse_route_retries_a_failed_host_on_a_live_mirror():
+    # A downed source's host_presence row can lag reality for up to
+    # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
+    # whose host DO answers no_host (503) or times out (504). The router must
+    # then re-rotate once to an online mirror of the same logical repo —
+    # excluding the node that just failed — instead of surfacing the error while
+    # a live mirror sits unused. `fmretry` caps the redirect at one extra hop.
+    src = _route_source()
+    browse = src.split("REPO_HOST_RE")[-1]
+    assert "public_browse" in browse
+    assert "(503, 504)" in browse
+    assert "exclude=owner" in browse
+    assert "already_retried" in browse
+    # The retry pin replaces (never appends to) the failed hop's fmserved, or
+    # the retried route would read the stale pin first and re-rotate.
+    assert "('fmserved', fallback)" in browse
+    assert "('fmretry', '1')" in browse
+    assert "not in ('fmserved', 'fmretry')" in browse
+
+
+def test_select_browse_mirror_drops_the_excluded_node():
+    # The retry path passes exclude=<failed owner>; _select_browse_mirror must
+    # filter that node out of the candidate rotation or the retry could 302
+    # straight back to the dead node it just came from.
+    # _select_browse_mirror lives on the worker entrypoint class, whose name we
+    # don't want to hard-code; find it by scanning every class.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    src = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == "_select_browse_mirror"):
+                    src = ast.unparse(item)
+    assert src, "_select_browse_mirror not found in entry.py"
+    assert "exclude=None" in src
+    assert "c.lower() != exclude.lower()" in src
+
+
+def test_host_disconnect_expires_presence_immediately():
+    # When the LAST host socket closes, the DO must delete the repo's
+    # host_presence row right away (plus the deduped offline notification) so
+    # browse/clone fallback flips to a live mirror immediately instead of after
+    # the 10-minute staleness window — the source going down is exactly when the
+    # mirrors must take over.
+    src = _method_source("ForkMeshHost", "_host_disconnected")
+    assert "DELETE FROM host_presence" in src
+    assert "notify_host_status" in src
+    assert "host_offline" in src
+    assert "_live_host_count" in src
+    for handler in ("webSocketClose", "webSocketError"):
+        assert "_host_disconnected" in _method_source("ForkMeshHost", handler)

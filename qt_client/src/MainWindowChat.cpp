@@ -1654,13 +1654,17 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     filterScroll->setFixedHeight(34);
 
-    // Discover which categories the buffered history contains, build the chips,
-    // then render the (initially unfiltered) history as colored HTML.
+    // Discover which categories the buffered history contains and build the
+    // chips now, but leave rendering the history itself (up to kNetworkLogLimit
+    // lines of colored HTML, ~300ms) to the first visit of the Log section —
+    // it's pure constructor cost for a view most launches never open. Live
+    // logSystem() lines still append to the (empty) view immediately; the first
+    // visit's full rebuild re-renders the buffer in order, history included.
     m_logFilterCategories.clear();
     for (const QString &line : std::as_const(m_networkLog))
         m_logFilterCategories.insert(logBadgeFor(line));
     rebuildLogFilterButtons();
-    rebuildNetworkLogView();
+    m_networkLogViewStale = !m_networkLog.isEmpty();
 
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_networkLog.clear();
@@ -4265,6 +4269,14 @@ void MainWindow::showSection(int index)
     } else if (index == 3) {
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
+        // First visit renders the persisted history that buildLogSection()
+        // deliberately skipped (see m_networkLogViewStale) — the rebuild replays
+        // the whole in-memory buffer, so lines appended live since launch keep
+        // their place in order.
+        if (m_networkLogViewStale) {
+            m_networkLogViewStale = false;
+            rebuildNetworkLogView();
+        }
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
     } else if (index == 5) {
