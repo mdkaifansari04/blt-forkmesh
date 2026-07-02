@@ -1838,15 +1838,20 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFixModelCombo->setObjectName("issueControlSm");
     m_branchFixModelCombo->setCursor(Qt::PointingHandCursor);
     m_branchFixModelCombo->setToolTip("Which model the agent uses");
+    m_branchFixModelCombo->setProperty("claudeModelCombo", true);
+    m_branchFixModelCombo->view()->installEventFilter(this);
     m_branchFixModelCombo->hide();
     fillAgentFixModelCombo(m_branchFixModelCombo,
                            m_branchFixAgentCombo->currentData().toString());
+    refreshClaudeModelCombo();
     connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
-                if (m_branchFixAgentCombo && m_branchFixModelCombo)
+                if (m_branchFixAgentCombo && m_branchFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_branchFixModelCombo,
                         m_branchFixAgentCombo->currentData().toString());
+                    refreshClaudeModelCombo();
+                }
             });
 
     m_branchPrButton = new QPushButton("Create PR");
