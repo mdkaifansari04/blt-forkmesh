@@ -2042,6 +2042,13 @@ void MainWindow::showRun(int runId)
         m_actionStopButton->setVisible(run != nullptr &&
                                        (run->status == ActionStatus::Running ||
                                         run->status == ActionStatus::Queued));
+    const bool fixable = run != nullptr && run->status == ActionStatus::Failed;
+    if (m_actionFixButton)
+        m_actionFixButton->setVisible(fixable);
+    if (m_actionFixAgentCombo)
+        m_actionFixAgentCombo->setVisible(fixable);
+    if (m_actionFixModelCombo)
+        m_actionFixModelCombo->setVisible(fixable);
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -2211,6 +2218,41 @@ void MainWindow::stopSelectedRun()
         showRun(m_selectedRunId);
         updateNotificationButton();
     }
+}
+
+void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString &model)
+{
+    const ActionRun *run = findRun(m_selectedRunId);
+    if (!run)
+        return;
+    const int repoIndex = repoIndexFor(run->owner, run->name);
+    if (repoIndex < 0) {
+        flashMessage("Can't find this run's repository.", true);
+        return;
+    }
+
+    // Bound the log excerpt in the prompt — a full build log can run to
+    // thousands of lines, and a small model's context window would choke on it.
+    const QString log = m_actionStore ? m_actionStore->readLog(*run) : QString();
+    constexpr int kMaxLogChars = 12000;
+    const QString logTail =
+        log.size() <= kMaxLogChars
+            ? log
+            : QStringLiteral("...(log truncated; showing the tail)...\n") +
+                  log.right(kMaxLogChars);
+
+    const QString prompt =
+        QStringLiteral(
+            "The \"%1\" CI workflow failed for %2/%3 (commit %4, ref %5). Find "
+            "what broke and fix it so the workflow succeeds. Full run log:\n\n%6")
+            .arg(run->workflowName, run->owner, run->name, run->commit.left(8),
+                 run->ref, logTail);
+
+    const int sessionId =
+        startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true, model);
+    if (sessionId > 0)
+        flashMessage(QStringLiteral("Started a %1 agent to fix \"%2\".")
+                         .arg(agentProviderName(provider), run->workflowName));
 }
 
 void MainWindow::clearActionRuns()
@@ -2515,12 +2557,77 @@ QWidget *MainWindow::buildRepoActionsTab()
         QApplication::clipboard()->setText(log);
         flashMessage(QStringLiteral("Run log copied to the clipboard."));
     });
+
+    // Fix with agent: only relevant for a failed run (showRun() hides it
+    // otherwise). Starts a brand-new ad-hoc agent — its own worktree/branch/PR,
+    // same as any other agent run — with the failing run's log as its task. The
+    // agent and model are chosen in the two dropdowns beside it (adhoc #114).
+    m_actionFixButton = new QPushButton("Fix with agent");
+    m_actionFixButton->setObjectName("ghostButton");
+    m_actionFixButton->setProperty("buttonSize", "sm");
+    m_actionFixButton->setCursor(Qt::PointingHandCursor);
+    m_actionFixButton->setToolTip("Start a new coding agent to fix this failed run");
+    setOcticon(m_actionFixButton, "rocket", 16);
+    m_actionFixButton->hide();
+    connect(m_actionFixButton, &QPushButton::clicked, this, [this] {
+        const QString provider = m_actionFixAgentCombo
+                                     ? m_actionFixAgentCombo->currentData().toString()
+                                     : QStringLiteral("claude-code");
+        const QString model = m_actionFixModelCombo
+                                  ? m_actionFixModelCombo->currentData().toString()
+                                  : QString();
+        fixSelectedRunWithAgent(provider, model);
+    });
+
+    // Agent dropdown: which provider fixes the run. Data values match the
+    // strings startAdHocAgentForRepo/agentConfigForProvider expect ("claude" is
+    // the Claude API).
+    m_actionFixAgentCombo = new QComboBox;
+    m_actionFixAgentCombo->setObjectName("issueControlSm");
+    m_actionFixAgentCombo->setCursor(Qt::PointingHandCursor);
+    m_actionFixAgentCombo->setToolTip("Which agent fixes this run");
+    m_actionFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
+    m_actionFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
+    m_actionFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+                                   QStringLiteral("claude-code"));
+    m_actionFixAgentCombo->hide();
+    // Start on the user's configured default agent (Settings -> Agents), same as
+    // the branch "Fix with agent" bar.
+    {
+        const QString def = defaultAgentProvider();
+        const QString want = def == QLatin1String("claude-api")
+                                 ? QStringLiteral("claude")
+                                 : def;
+        const int idx = m_actionFixAgentCombo->findData(want);
+        m_actionFixAgentCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+
+    // Model dropdown: refilled to match the selected agent (e.g. Opus / Sonnet /
+    // Haiku for Claude).
+    m_actionFixModelCombo = new QComboBox;
+    m_actionFixModelCombo->setObjectName("issueControlSm");
+    m_actionFixModelCombo->setCursor(Qt::PointingHandCursor);
+    m_actionFixModelCombo->setToolTip("Which model the agent uses");
+    m_actionFixModelCombo->hide();
+    fillAgentFixModelCombo(m_actionFixModelCombo,
+                          m_actionFixAgentCombo->currentData().toString());
+    connect(m_actionFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (m_actionFixAgentCombo && m_actionFixModelCombo)
+                    fillAgentFixModelCombo(
+                        m_actionFixModelCombo,
+                        m_actionFixAgentCombo->currentData().toString());
+            });
+
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
     titleRow->addWidget(m_actionStopButton);
     titleRow->addWidget(m_actionCopyLogButton);
+    titleRow->addWidget(m_actionFixButton);
+    titleRow->addWidget(m_actionFixAgentCombo);
+    titleRow->addWidget(m_actionFixModelCombo);
     titleRow->addWidget(m_actionRerunButton);
 
     auto *detailLayout = new QVBoxLayout(detailPane);
