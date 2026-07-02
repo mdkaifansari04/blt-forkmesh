@@ -5575,12 +5575,19 @@ void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
+    QUrl url = commitsApiUrl(repo);
+    // Auto-polls back off exponentially while the relay is failing (offline /
+    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
+    const QString backoffKey = url.toString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
+        return;
+
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
-    QUrl url = commitsApiUrl(repo);
     QUrlQuery query;
     query.addQueryItem("owner", owner);
     query.addQueryItem("ts", ts);
@@ -5589,15 +5596,18 @@ void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive] {
+            [this, reply, url, repo, writable, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(backoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
             if (interactive)
                 QMessageBox::warning(this, "Sync inbox",
                                      "Could not reach the inbox: " +
                                          reply->errorString());
             return;
         }
+        m_pollBackoff.noteSuccess(backoffKey);
         const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
                                        .object()
                                        .value("pending")
@@ -5650,12 +5660,19 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             return;
     }
 
+    QUrl url = pullsApiUrl(repo);
+    // Auto-polls back off exponentially while the relay is failing (offline /
+    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
+    const QString backoffKey = url.toString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
+        return;
+
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
     const QString sig = m_profileIdentity.signData(canonical);
-    QUrl url = pullsApiUrl(repo);
     QUrlQuery query;
     query.addQueryItem("owner", owner);
     query.addQueryItem("ts", ts);
@@ -5664,15 +5681,18 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive] {
+            [this, reply, url, repo, writable, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(backoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
             if (interactive)
                 QMessageBox::warning(this, "Sync inbox",
                                      "Could not reach the inbox: " +
                                          reply->errorString());
             return;
         }
+        m_pollBackoff.noteSuccess(backoffKey);
         const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
                                        .object()
                                        .value("pending")

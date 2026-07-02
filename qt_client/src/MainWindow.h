@@ -2,6 +2,7 @@
 
 #include "ChatBackend.h"
 #include "DiscussionInboxBackoff.h"
+#include "NetworkBackoff.h"
 #include "DiscussionStore.h"
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
@@ -3074,6 +3075,11 @@ private:
     QList<Discussion> m_currentDiscussions;
     int m_currentDiscussionNumber = -1;
     DiscussionInboxBackoff m_discussionInboxBackoff;
+    // Exponential backoff for the app's periodic network pollers (owner-inbox
+    // drains, node heartbeat, live Claude usage, mirror discovery) so a relay
+    // that is offline or rate-limiting (HTTP 429) stops getting hammered on
+    // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
+    NetworkBackoff m_pollBackoff;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
