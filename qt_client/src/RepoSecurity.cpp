@@ -395,6 +395,31 @@ QString redacted(QString match)
     return match.left(4) + QStringLiteral("...") + match.right(4);
 }
 
+// Inline suppression marker: appending this token as a comment on the same
+// line as an intentional/example credential (e.g. a per-provider test
+// fixture) tells the scanner to skip it. This is what keeps the scanner's
+// own test suite (test_crypto.cpp), which embeds realistic-looking fake
+// keys to exercise each provider pattern, from flagging itself when a
+// ForkMesh checkout scans its own tracked files.
+const QString &secretScanIgnoreMarker()
+{
+    static const QString marker = QStringLiteral("forkmesh-secret-scan:ignore-line");
+    return marker;
+}
+
+// True if the physical line containing `offset` in `text` carries the
+// suppression marker anywhere on it (e.g. in a trailing "// ..." comment).
+bool lineHasIgnoreMarker(const QString &text, qsizetype offset)
+{
+    qsizetype lineStart = offset;
+    while (lineStart > 0 && text.at(lineStart - 1) != QLatin1Char('\n'))
+        --lineStart;
+    qsizetype lineEnd = offset;
+    while (lineEnd < text.size() && text.at(lineEnd) != QLatin1Char('\n'))
+        ++lineEnd;
+    return text.mid(lineStart, lineEnd - lineStart).contains(secretScanIgnoreMarker());
+}
+
 struct SecretPattern {
     QString name;
     QRegularExpression re;
@@ -499,6 +524,8 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
             auto matches = pattern.re.globalMatch(text);
             while (matches.hasNext()) {
                 const QRegularExpressionMatch match = matches.next();
+                if (lineHasIgnoreMarker(text, match.capturedStart()))
+                    continue;
                 RepoSecurityFinding finding;
                 finding.id = QStringLiteral("secret:%1:%2")
                                  .arg(file.path)
@@ -552,6 +579,10 @@ QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
         if (line.startsWith(QLatin1Char('+'))) {
             const int lineNum = hunkStart + hunkOffset;
             const QString content = line.mid(1);
+            if (content.contains(secretScanIgnoreMarker())) {
+                hunkOffset++;
+                continue;
+            }
             for (const SecretPattern &p : secretPatterns()) {
                 auto matches = p.re.globalMatch(content);
                 while (matches.hasNext()) {
