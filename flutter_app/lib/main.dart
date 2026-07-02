@@ -9,6 +9,7 @@ import 'services/identity.dart';
 import 'services/inbox_service.dart';
 import 'services/relay_service.dart';
 import 'services/settings_service.dart';
+import 'screens/auth_mock_flow.dart';
 import 'theme.dart';
 
 Future<void> main() async {
@@ -22,16 +23,18 @@ Future<void> main() async {
   // Auto-join the relay on launch, like the Qt client.
   unawaited(relay.connect());
 
-  runApp(ForkMeshApp(
-    settings: settings,
-    identity: identity,
-    relay: relay,
-    api: api,
-    inbox: inbox,
-  ));
+  runApp(
+    ForkMeshApp(
+      settings: settings,
+      identity: identity,
+      relay: relay,
+      api: api,
+      inbox: inbox,
+    ),
+  );
 }
 
-class ForkMeshApp extends StatelessWidget {
+class ForkMeshApp extends StatefulWidget {
   const ForkMeshApp({
     super.key,
     required this.settings,
@@ -48,20 +51,31 @@ class ForkMeshApp extends StatelessWidget {
   final InboxService inbox;
 
   @override
+  State<ForkMeshApp> createState() => _ForkMeshAppState();
+}
+
+class _ForkMeshAppState extends State<ForkMeshApp> {
+  bool _authenticated = false;
+
+  @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider.value(value: settings),
-        Provider.value(value: identity),
-        ChangeNotifierProvider.value(value: relay),
-        Provider.value(value: api),
-        Provider.value(value: inbox),
+        ChangeNotifierProvider.value(value: widget.settings),
+        Provider.value(value: widget.identity),
+        ChangeNotifierProvider.value(value: widget.relay),
+        Provider.value(value: widget.api),
+        Provider.value(value: widget.inbox),
       ],
       child: MaterialApp(
         title: 'ForkMesh',
         debugShowCheckedModeBanner: false,
         theme: buildForkMeshTheme(),
-        home: const HomeShell(),
+        home: _authenticated
+            ? const HomeShell()
+            : AuthMockFlow(
+                onAuthenticated: () => setState(() => _authenticated = true),
+              ),
       ),
     );
   }

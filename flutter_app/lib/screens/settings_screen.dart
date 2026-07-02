@@ -27,7 +27,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    for (final c in [_name, _solana, _server, _room, _passphrase, _github, _gitlab]) {
+    for (final c in [
+      _name,
+      _solana,
+      _server,
+      _room,
+      _passphrase,
+      _github,
+      _gitlab,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -42,40 +50,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         const _SectionLabel('PROFILE'),
         _field('Display name', _name, onSaved: _settings.setDisplayName),
-        _field('Solana address (payouts/donations, optional)', _solana,
-            onSaved: _settings.setSolanaAddress),
+        _field(
+          'Solana address (payouts/donations, optional)',
+          _solana,
+          onSaved: _settings.setSolanaAddress,
+        ),
         const SizedBox(height: 6),
-        Text('Node id: ${identity.publicKeyB64url}',
-            style: const TextStyle(fontSize: 12, color: FmColors.textMuted)),
+        Text(
+          'Node id: ${identity.publicKeyB64url}',
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12, color: FmColors.textMuted),
+        ),
         const SizedBox(height: 20),
 
         const _SectionLabel('RELAY'),
         _field('Relay WebSocket URL', _server, onSaved: _settings.setServerUrl),
         _field('Room', _room, onSaved: _settings.setRoom),
-        _field('Passphrase', _passphrase, onSaved: _settings.setPassphrase, obscure: true),
+        _field(
+          'Passphrase',
+          _passphrase,
+          onSaved: _settings.setPassphrase,
+          obscure: true,
+        ),
         const SizedBox(height: 10),
-        Row(children: [
-          FilledButton.icon(
-            onPressed: () => relay.connect(),
-            icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('Reconnect'),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton.icon(
-            onPressed: relay.state == RelayConnectionState.offline ? null : () => relay.disconnect(),
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Disconnect'),
-          ),
-          const SizedBox(width: 12),
-          Text(
-            switch (relay.state) {
+        Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            FilledButton.icon(
+              onPressed: () => relay.connect(),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Reconnect'),
+            ),
+            OutlinedButton.icon(
+              onPressed: relay.state == RelayConnectionState.offline
+                  ? null
+                  : () => relay.disconnect(),
+              icon: const Icon(Icons.logout, size: 18),
+              label: const Text('Disconnect'),
+            ),
+            Text(switch (relay.state) {
               RelayConnectionState.connected => 'Connected',
-              RelayConnectionState.connecting => 'Connecting…',
+              RelayConnectionState.connecting => 'Connecting...',
               RelayConnectionState.offline => 'Offline',
-            },
-            style: const TextStyle(color: FmColors.textMuted),
-          ),
-        ]),
+            }, style: const TextStyle(color: FmColors.textMuted)),
+          ],
+        ),
         const SizedBox(height: 20),
 
         const _SectionLabel('IMPORT TOKENS'),
@@ -85,14 +106,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(color: FmColors.textMuted, fontSize: 12),
         ),
         const SizedBox(height: 8),
-        _field('GitHub token', _github, onSaved: _settings.setGithubToken, obscure: true),
-        _field('GitLab token', _gitlab, onSaved: _settings.setGitlabToken, obscure: true),
+        _field(
+          'GitHub token',
+          _github,
+          onSaved: _settings.setGithubToken,
+          obscure: true,
+        ),
+        _field(
+          'GitLab token',
+          _gitlab,
+          onSaved: _settings.setGitlabToken,
+          obscure: true,
+        ),
       ],
     );
   }
 
-  Widget _field(String label, TextEditingController c,
-      {required Future<void> Function(String) onSaved, bool obscure = false}) {
+  Widget _field(
+    String label,
+    TextEditingController c, {
+    required Future<void> Function(String) onSaved,
+    bool obscure = false,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: TextField(
@@ -110,9 +145,15 @@ class _SectionLabel extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 6, top: 4),
-        child: Text(text,
-            style: const TextStyle(
-                fontSize: 12, fontWeight: FontWeight.w700, color: FmColors.textMuted, letterSpacing: 0.5)),
-      );
+    padding: const EdgeInsets.only(bottom: 6, top: 4),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: FmColors.textMuted,
+        letterSpacing: 0.5,
+      ),
+    ),
+  );
 }
