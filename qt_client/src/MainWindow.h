@@ -1181,8 +1181,9 @@ private:
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
     // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
-    // OAuth usage endpoint, on a one-minute timer, so the top-bar gauge stays
-    // accurate even when no agent is streaming rate-limit events.
+    // OAuth usage endpoint. No background timer drives this (adhoc #76) — it
+    // only runs right after a prompt is sent (bumpClaudeCodeUsage) or when the
+    // user hovers the top-bar chart to check the current figures.
     void refreshClaudeCodeUsage();
     // Ask the provider which models this account can drive right now
     // (GET /v1/models) and merge them into the composer's per-session model
@@ -1190,11 +1191,10 @@ private:
     // without an app update). Best-effort: on any failure the static defaults
     // from populateClaudeModelCombo() stand.
     void refreshClaudeModelCombo();
-    // Poll usage now and again a few seconds later. Use this the moment a new
+    // Refresh usage now and again a few seconds later. Use this the moment a new
     // agent starts or a prompt is sent: at that instant no tokens have been
-    // consumed yet, so an immediate poll still shows the pre-start figure — the
-    // delayed follow-up catches the first turn's usage without waiting for the
-    // next one-minute tick.
+    // consumed yet, so an immediate refresh still shows the pre-start figure —
+    // the delayed follow-up catches the first turn's usage.
     void bumpClaudeCodeUsage();
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
@@ -3441,7 +3441,6 @@ private:
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
-    QTimer *m_claudeUsageTimer = nullptr;        // polls live usage every minute
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.

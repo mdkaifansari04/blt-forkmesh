@@ -1780,10 +1780,13 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
-    // utilisation so it renders immediately; a one-minute poll of the OAuth usage
-    // endpoint and live rate-limit events keep it current (issue #290).
+    // utilisation so it renders immediately; from there it only updates when a
+    // prompt is sent (bumpClaudeCodeUsage) or live rate-limit events land — plus
+    // an on-demand refresh when the user hovers the chart to check it, since
+    // there's no background poll keeping it current between those.
     auto *tokenUsage = new TokenUsageMiniChart;
     m_navTokenUsage = tokenUsage;
+    tokenUsage->onHover = [this] { refreshClaudeCodeUsage(); };
     {
         QSettings settings;
         auto restore = [&](bool weekly, const QString &key) {
