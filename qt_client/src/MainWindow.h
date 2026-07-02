@@ -1334,6 +1334,11 @@ private:
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
+    // The commit history lives inside the Code overview (no top-bar tab): the
+    // commit strip's "N Commits" button toggles the area under the latest-commit
+    // bar between the file browser and the commits panel.
+    void showOverviewCommits();
+    void showOverviewFiles();
     void loadRepoFileTree();
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
@@ -2645,7 +2650,6 @@ private:
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
-    QPushButton *m_repoCommitsTab = nullptr;
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
@@ -2969,6 +2973,9 @@ private:
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
     QPushButton *m_historyButton = nullptr;
+    // Area under the latest-commit bar: 0 = crumb + file list + README,
+    // 1 = the commits panel (list + diff), toggled by m_historyButton.
+    QStackedWidget *m_overviewBodyStack = nullptr;
     QLabel *m_overviewCrumb = nullptr;
     // Code overview file list: a small table per directory (name, size bar, last
     // commit, when). Rows are cached so re-sorting doesn't re-shell out to git.
