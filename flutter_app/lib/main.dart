@@ -78,7 +78,7 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
         home: Consumer<AuthService>(
           builder: (context, auth, _) => auth.isAuthenticated
               ? const HomeShell()
-              : AuthMockFlow(onAuthenticated: () => auth.authenticatePreview()),
+              : AuthMockFlow(onAuthenticated: () {}),
         ),
       ),
     );

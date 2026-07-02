@@ -4,7 +4,7 @@ number: 4
 title: feat: finish mobile collaboration and auth session flows
 base: pr/mobile-foundation-auth-repos
 head: pr/mobile-collaboration-auth-finish
-status: open
+status: merged
 ts: 1783027804814
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

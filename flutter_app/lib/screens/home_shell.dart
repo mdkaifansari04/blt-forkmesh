@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auth_service.dart';
 import '../services/identity.dart';
 import '../services/relay_service.dart';
 import '../services/settings_service.dart';
@@ -32,10 +33,17 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final relay = context.watch<RelayService>();
+    final auth = context.watch<AuthService>();
     final settings = context.watch<SettingsService>();
     final identity = context.read<Identity>();
     final wide = MediaQuery.of(context).size.width >= 760;
-    final name = settings.displayName.isEmpty
+    final session = auth.session;
+    final accountName = session?.nodeName.isNotEmpty == true
+        ? session!.nodeName
+        : session?.email ?? '';
+    final name = accountName.isNotEmpty
+        ? accountName
+        : settings.displayName.isEmpty
         ? identity.shortKey
         : settings.displayName;
 

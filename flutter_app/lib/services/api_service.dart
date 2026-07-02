@@ -100,10 +100,41 @@ class ApiService {
     for (final dir in dirs) {
       try {
         final b = await blob(owner, name, 'issues/$dir/issue.md');
-        out.add(_issueFromMarkdown(dir, b.content));
+        final events = await _issueEvents(owner, name, dir);
+        out.add(_issueFromMarkdown(dir, b.content, events: events));
       } catch (_) {}
     }
     return out..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  Future<List<IssueEvent>> _issueEvents(
+    String owner,
+    String name,
+    String number,
+  ) async {
+    try {
+      final t = await tree(owner, name, path: 'issues/$number');
+      final eventFiles =
+          t.entries
+              .where(
+                (e) =>
+                    !e.isDirectory &&
+                    e.name.endsWith('.md') &&
+                    e.name != 'issue.md',
+              )
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+      final events = <IssueEvent>[];
+      for (final file in eventFiles) {
+        try {
+          final b = await blob(owner, name, file.path);
+          events.add(_issueEventFromMarkdown(b.content));
+        } catch (_) {}
+      }
+      return events;
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<List<PublishedPull>> publishedPulls(String owner, String name) async {
@@ -127,10 +158,41 @@ class ApiService {
     for (final dir in dirs) {
       try {
         final b = await blob(owner, name, 'discussions/$dir/discussion.md');
-        out.add(_discussionFromMarkdown(dir, b.content));
+        final events = await _discussionEvents(owner, name, dir);
+        out.add(_discussionFromMarkdown(dir, b.content, events: events));
       } catch (_) {}
     }
     return out..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  Future<List<DiscussionEvent>> _discussionEvents(
+    String owner,
+    String name,
+    String number,
+  ) async {
+    try {
+      final t = await tree(owner, name, path: 'discussions/$number');
+      final eventFiles =
+          t.entries
+              .where(
+                (e) =>
+                    !e.isDirectory &&
+                    e.name.endsWith('.md') &&
+                    e.name != 'discussion.md',
+              )
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+      final events = <DiscussionEvent>[];
+      for (final file in eventFiles) {
+        try {
+          final b = await blob(owner, name, file.path);
+          events.add(_discussionEventFromMarkdown(b.content));
+        } catch (_) {}
+      }
+      return events;
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<List<String>> _numberedFolders(
@@ -149,7 +211,11 @@ class ApiService {
     }
   }
 
-  Issue _issueFromMarkdown(String number, String md) {
+  Issue _issueFromMarkdown(
+    String number,
+    String md, {
+    List<IssueEvent> events = const [],
+  }) {
     final meta = _frontMatter(md);
     final title = meta['title'] ?? _firstHeading(md) ?? 'Issue #$number';
     final status =
@@ -159,37 +225,84 @@ class ApiService {
       title: title,
       status: status,
       body: _bodyWithoutFrontMatter(md),
-      author: meta['author'] ?? meta['authorName'] ?? '',
+      author: meta['authorName'] ?? meta['author'] ?? '',
       labels: (meta['labels'] ?? '')
+          .replaceAll('[', '')
+          .replaceAll(']', '')
           .split(',')
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty)
           .toList(),
+      events: events,
+    );
+  }
+
+  IssueEvent _issueEventFromMarkdown(String md) {
+    final meta = _frontMatter(md);
+    return IssueEvent(
+      type: meta['type'] ?? 'comment',
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? '',
+      authorName: meta['authorName'] ?? '',
+      status: meta['status'] ?? '',
+      ts: int.tryParse(meta['ts'] ?? '') ?? 0,
     );
   }
 
   PublishedPull _pullFromMarkdown(String number, String md) {
     final meta = _frontMatter(md);
+    final body = _bodyWithoutFrontMatter(md);
     final title = meta['title'] ?? _firstHeading(md) ?? 'Pull request #$number';
     return PublishedPull(
       number: int.tryParse(number) ?? 0,
       title: title,
       status: meta['status'] ?? 'open',
-      body: _bodyWithoutFrontMatter(md),
+      body: body,
       base: meta['base'] ?? '',
       head: meta['head'] ?? '',
+      patch: meta['patch'] ?? meta['diff'] ?? _extractPatch(body),
       signed: (meta['sig'] ?? '').isNotEmpty,
     );
   }
 
-  RepoDiscussion _discussionFromMarkdown(String number, String md) {
+  String _extractPatch(String body) {
+    final fenced = RegExp(
+      r'```(?:diff|patch)\s*\n([\s\S]*?)```',
+      multiLine: true,
+    ).firstMatch(body);
+    if (fenced != null) return fenced.group(1)?.trimRight() ?? '';
+    final lines = const LineSplitter().convert(body);
+    final start = lines.indexWhere(
+      (line) => line.startsWith('diff --git ') || line.startsWith('--- '),
+    );
+    if (start < 0) return '';
+    return lines.sublist(start).join('\n').trimRight();
+  }
+
+  RepoDiscussion _discussionFromMarkdown(
+    String number,
+    String md, {
+    List<DiscussionEvent> events = const [],
+  }) {
     final meta = _frontMatter(md);
     return RepoDiscussion(
       number: int.tryParse(number) ?? 0,
       title: meta['title'] ?? _firstHeading(md) ?? 'Discussion #$number',
       body: _bodyWithoutFrontMatter(md),
-      author: meta['author'] ?? meta['authorName'] ?? '',
+      author: meta['authorName'] ?? meta['author'] ?? '',
       updatedMs: int.tryParse(meta['updatedAt'] ?? meta['ts'] ?? '') ?? 0,
+      events: events,
+    );
+  }
+
+  DiscussionEvent _discussionEventFromMarkdown(String md) {
+    final meta = _frontMatter(md);
+    return DiscussionEvent(
+      type: meta['type'] ?? 'comment',
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? '',
+      authorName: meta['authorName'] ?? '',
+      ts: int.tryParse(meta['ts'] ?? '') ?? 0,
     );
   }
 

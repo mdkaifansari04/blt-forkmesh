@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -43,6 +45,13 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
         onPressed: () => showNewPullDialog(context, repo),
         icon: const Icon(Icons.add),
         label: const Text('New PR'),
+      );
+    }
+    if (_tabs.index == 3) {
+      return FloatingActionButton.extended(
+        onPressed: () => showNewDiscussionDialog(context, repo),
+        icon: const Icon(Icons.add),
+        label: const Text('New discussion'),
       );
     }
     return null;
@@ -340,6 +349,75 @@ Future<void> showNewPullDialog(BuildContext context, Repository repo) async {
   );
 }
 
+Future<void> showNewDiscussionDialog(
+  BuildContext context,
+  Repository repo,
+) async {
+  final inbox = context.read<InboxService>();
+  final title = TextEditingController();
+  final category = TextEditingController(text: 'general');
+  final body = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: FmColors.surface,
+      title: const Text('New discussion'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: title,
+              decoration: const InputDecoration(labelText: 'Title'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: category,
+              decoration: const InputDecoration(labelText: 'Category'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: body,
+              minLines: 5,
+              maxLines: 12,
+              decoration: const InputDecoration(
+                labelText: 'Body',
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Submit'),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || title.text.trim().isEmpty || body.text.trim().isEmpty) {
+    return;
+  }
+  if (!context.mounted) return;
+  await _run(
+    context,
+    () => inbox.submitNewDiscussion(
+      repo.owner,
+      repo.name,
+      title: title.text.trim(),
+      body: body.text.trim(),
+      category: category.text.trim().isEmpty ? 'general' : category.text.trim(),
+    ),
+    _pendingNote,
+  );
+}
+
 Future<void> showPullActions(
   BuildContext context,
   Repository repo,
@@ -406,6 +484,126 @@ Future<void> showPullActions(
         ],
       ),
     ),
+  );
+}
+
+Future<void> showPublishedPullActions(
+  BuildContext context,
+  Repository repo,
+  PublishedPull pull,
+) async {
+  final inbox = context.read<InboxService>();
+  await showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: FmColors.surface,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            title: Text(
+              '#${pull.number} · ${pull.title}',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            subtitle: Text('${pull.head} → ${pull.base} · ${pull.status}'),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.chat_bubble_outline),
+            title: const Text('Comment'),
+            onTap: () async {
+              Navigator.pop(ctx);
+              final body = await _promptText(
+                context,
+                'Comment on PR #${pull.number}',
+                multiline: true,
+              );
+              if (body == null || body.trim().isEmpty || !context.mounted) {
+                return;
+              }
+              await _run(
+                context,
+                () => inbox.commentOnPull(
+                  repo.owner,
+                  repo.name,
+                  pull.number,
+                  body.trim(),
+                ),
+                _pendingNote,
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(
+              Icons.check_circle_outline,
+              color: FmColors.success,
+            ),
+            title: const Text('Approve'),
+            onTap: () => _reviewPublishedPull(
+              context,
+              ctx,
+              inbox,
+              repo,
+              pull,
+              'approve',
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.cancel_outlined, color: FmColors.danger),
+            title: const Text('Request changes'),
+            onTap: () => _reviewPublishedPull(
+              context,
+              ctx,
+              inbox,
+              repo,
+              pull,
+              'request-changes',
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.rate_review_outlined),
+            title: const Text('Leave review comment'),
+            onTap: () => _reviewPublishedPull(
+              context,
+              ctx,
+              inbox,
+              repo,
+              pull,
+              'comment',
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+Future<void> _reviewPublishedPull(
+  BuildContext context,
+  BuildContext sheetCtx,
+  InboxService inbox,
+  Repository repo,
+  PublishedPull pull,
+  String state,
+) async {
+  Navigator.pop(sheetCtx);
+  final body = await _promptText(
+    context,
+    state == 'comment' ? 'Review comment' : 'Review note (optional)',
+    multiline: true,
+  );
+  if (!context.mounted) return;
+  await _run(
+    context,
+    () => inbox.reviewPull(
+      repo.owner,
+      repo.name,
+      pull.number,
+      state,
+      body?.trim() ?? '',
+    ),
+    _pendingNote,
   );
 }
 
@@ -724,21 +922,114 @@ class _IssueDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _InfoCard(
-          title: 'Actions',
+          title: 'Timeline',
           children: [
-            const Text(
-              'Comments, votes, and status changes will route through Worker account/device capabilities.',
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: () => showIssueActions(context, repo, issue),
-              icon: const Icon(Icons.add_comment_outlined),
-              label: const Text('Open available actions'),
-            ),
+            _IssueTimeline(issue: issue),
+            const SizedBox(height: 14),
+            _IssueQuickActions(repo: repo, issue: issue),
           ],
         ),
       ],
     ),
+  );
+}
+
+class _IssueTimeline extends StatelessWidget {
+  const _IssueTimeline({required this.issue});
+
+  final Issue issue;
+
+  @override
+  Widget build(BuildContext context) {
+    if (issue.events.isEmpty) {
+      return const Text('No timeline events have been published yet.');
+    }
+    return Column(
+      children: issue.events
+          .map((event) => _IssueTimelineTile(event: event))
+          .toList(),
+    );
+  }
+}
+
+class _IssueTimelineTile extends StatelessWidget {
+  const _IssueTimelineTile({required this.event});
+
+  final IssueEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final isStatus = event.type == 'status';
+    final title = isStatus
+        ? 'Status changed to ${event.status.isEmpty ? 'updated' : event.status}'
+        : event.type == 'vote'
+        ? 'Vote added'
+        : 'Comment';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: FmColors.canvas,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: FmColors.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isStatus ? Icons.sync_alt : Icons.chat_bubble_outline,
+            color: isStatus ? FmColors.accent : FmColors.textMuted,
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                if (event.displayAuthor.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    event.displayAuthor,
+                    style: const TextStyle(
+                      color: FmColors.textMuted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                if (event.body.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  SelectableText(event.body.trim()),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IssueQuickActions extends StatelessWidget {
+  const _IssueQuickActions({required this.repo, required this.issue});
+
+  final Repository repo;
+  final Issue issue;
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 10,
+    runSpacing: 10,
+    children: [
+      FilledButton.icon(
+        onPressed: () => showIssueActions(context, repo, issue),
+        icon: const Icon(Icons.add_comment_outlined),
+        label: const Text('Comment / vote / status'),
+      ),
+    ],
   );
 }
 
@@ -779,13 +1070,187 @@ class _PullDetailScreen extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        const _InfoCard(
-          title: 'Review and merge',
+        _InfoCard(
+          title: 'Patch',
           children: [
-            Text(
-              'Patch viewing, review comments, status updates, and merge/apply flows will be enabled with Worker device capabilities.',
+            if (pull.patch.isEmpty)
+              const Text(
+                'No patch content was published for this pull request yet.',
+              )
+            else
+              _DiffViewer(diff: pull.patch),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _InfoCard(
+          title: 'Review actions',
+          children: [
+            const Text(
+              'Submit comments, approvals, or requested changes through the signed Worker pull inbox.',
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FilledButton.icon(
+                  onPressed: () =>
+                      showPublishedPullActions(context, repo, pull),
+                  icon: const Icon(Icons.rate_review_outlined),
+                  label: const Text('Review / comment'),
+                ),
+              ],
             ),
           ],
+        ),
+      ],
+    ),
+  );
+}
+
+class _DiscussionDetailScreen extends StatelessWidget {
+  const _DiscussionDetailScreen({required this.repo, required this.discussion});
+
+  final Repository repo;
+  final RepoDiscussion discussion;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = TextEditingController();
+    final inbox = context.read<InboxService>();
+    return Scaffold(
+      appBar: AppBar(title: Text('Discussion #${discussion.number}')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: discussion.title,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  const _Chip(icon: Icons.forum_outlined, label: 'discussion'),
+                  if (discussion.author.isNotEmpty)
+                    _Chip(icon: Icons.person_outline, label: discussion.author),
+                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                ],
+              ),
+              const SizedBox(height: 16),
+              SelectableText(
+                discussion.body.isEmpty
+                    ? 'No description provided.'
+                    : discussion.body,
+                style: const TextStyle(height: 1.45),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InfoCard(
+            title: 'Timeline',
+            children: [_DiscussionTimeline(discussion: discussion)],
+          ),
+          const SizedBox(height: 12),
+          _InfoCard(
+            title: 'Reply',
+            children: [
+              TextField(
+                controller: body,
+                minLines: 3,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  labelText: 'Write a reply',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () {
+                  final text = body.text.trim();
+                  if (text.isEmpty) return;
+                  _run(
+                    context,
+                    () => inbox.commentOnDiscussion(
+                      repo.owner,
+                      repo.name,
+                      discussion.number,
+                      text,
+                    ),
+                    _pendingNote,
+                  );
+                },
+                icon: const Icon(Icons.reply_outlined),
+                label: const Text('Submit reply'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiscussionTimeline extends StatelessWidget {
+  const _DiscussionTimeline({required this.discussion});
+
+  final RepoDiscussion discussion;
+
+  @override
+  Widget build(BuildContext context) {
+    if (discussion.events.isEmpty) {
+      return const Text('No discussion replies have been published yet.');
+    }
+    return Column(
+      children: discussion.events
+          .map((event) => _DiscussionTimelineTile(event: event))
+          .toList(),
+    );
+  }
+}
+
+class _DiscussionTimelineTile extends StatelessWidget {
+  const _DiscussionTimelineTile({required this.event});
+
+  final DiscussionEvent event;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: FmColors.canvas,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: FmColors.border),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(Icons.forum_outlined, color: FmColors.textMuted, size: 18),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Reply',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              if (event.displayAuthor.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  event.displayAuthor,
+                  style: const TextStyle(
+                    color: FmColors.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              if (event.body.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                SelectableText(event.body.trim()),
+              ],
+            ],
+          ),
         ),
       ],
     ),
@@ -807,6 +1272,11 @@ class _DiscussionsTab extends StatelessWidget {
         title: d.title,
         subtitle: '#${d.number}${d.author.isNotEmpty ? " · ${d.author}" : ""}',
         badge: 'discussion',
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => _DiscussionDetailScreen(repo: repo, discussion: d),
+          ),
+        ),
       ),
     );
   }
@@ -853,10 +1323,98 @@ class _CommitsTab extends StatelessWidget {
             short,
           ].where((s) => s.isNotEmpty).join(' · '),
           badge: short,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => _CommitDetailScreen(repo: repo, commit: c),
+            ),
+          ),
         );
       },
     );
   }
+}
+
+class _CommitDetailScreen extends StatelessWidget {
+  const _CommitDetailScreen({required this.repo, required this.commit});
+
+  final Repository repo;
+  final Map<String, dynamic> commit;
+
+  @override
+  Widget build(BuildContext context) {
+    final hash = (commit['hash'] ?? commit['sha'] ?? '').toString();
+    final message = (commit['subject'] ?? commit['message'] ?? 'Commit')
+        .toString();
+    final author = (commit['author'] ?? commit['authorName'] ?? '').toString();
+    final body = (commit['body'] ?? commit['description'] ?? '').toString();
+    final short = hash.length < 7 ? hash : hash.substring(0, 7);
+    return Scaffold(
+      appBar: AppBar(title: Text(short.isEmpty ? 'Commit' : short)),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: message,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Chip(
+                    icon: Icons.tag,
+                    label: hash.isEmpty ? 'unknown' : hash,
+                  ),
+                  if (author.isNotEmpty)
+                    _Chip(icon: Icons.person_outline, label: author),
+                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                ],
+              ),
+              if (body.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                SelectableText(body, style: const TextStyle(height: 1.45)),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InfoCard(
+            title: 'Commit comments',
+            children: [
+              const Text(
+                'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: hash.isEmpty
+                    ? null
+                    : () => _commentOnCommit(context, repo, hash),
+                icon: const Icon(Icons.add_comment_outlined),
+                label: const Text('Comment on commit'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> _commentOnCommit(
+  BuildContext context,
+  Repository repo,
+  String hash,
+) async {
+  final inbox = context.read<InboxService>();
+  final body = await _promptText(
+    context,
+    'Comment on commit ${hash.length < 7 ? hash : hash.substring(0, 7)}',
+    multiline: true,
+  );
+  if (body == null || body.trim().isEmpty || !context.mounted) return;
+  await _run(
+    context,
+    () => inbox.commentOnCommit(repo.owner, repo.name, hash, body.trim()),
+    _pendingNote,
+  );
 }
 
 class _RepoHeaderCard extends StatelessWidget {
@@ -891,6 +1449,59 @@ class _RepoHeaderCard extends StatelessWidget {
       ),
     ],
   );
+}
+
+class _DiffViewer extends StatelessWidget {
+  const _DiffViewer({required this.diff});
+
+  final String diff;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = const LineSplitter().convert(diff);
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 420),
+      decoration: BoxDecoration(
+        color: FmColors.canvas,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: FmColors.border),
+      ),
+      child: ListView.builder(
+        shrinkWrap: true,
+        itemCount: lines.length,
+        itemBuilder: (context, index) {
+          final line = lines[index];
+          final color = line.startsWith('+') && !line.startsWith('+++')
+              ? FmColors.success.withValues(alpha: .12)
+              : line.startsWith('-') && !line.startsWith('---')
+              ? FmColors.danger.withValues(alpha: .10)
+              : line.startsWith('@@')
+              ? FmColors.accent.withValues(alpha: .10)
+              : Colors.transparent;
+          final textColor = line.startsWith('+') && !line.startsWith('+++')
+              ? FmColors.success
+              : line.startsWith('-') && !line.startsWith('---')
+              ? FmColors.danger
+              : line.startsWith('@@')
+              ? FmColors.accent
+              : FmColors.text;
+          return Container(
+            color: color,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+            child: SelectableText(
+              line,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.35,
+                color: textColor,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
 
 class _InfoCard extends StatelessWidget {
