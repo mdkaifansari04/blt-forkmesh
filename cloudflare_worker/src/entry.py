@@ -7803,9 +7803,22 @@ class Default(WorkerEntrypoint):
                     fallback = await self._select_browse_mirror(
                         owner, repo, exclude=owner)
                     if fallback and fallback.lower() != owner.lower():
-                        query = url.query
-                        tail = (query + "&" if query else "") + \
-                            "fmserved=" + fallback + "&fmretry=1"
+                        # Rebuild the query without any fmserved pin the failed
+                        # hop carried: parse_qs keeps values in appearance
+                        # order, so merely appending a second fmserved would
+                        # leave the retried route reading the stale pin first
+                        # and re-rotating instead of serving in place.
+                        keep = [
+                            (k, v)
+                            for k, vals in params.items()
+                            if k not in ("fmserved", "fmretry")
+                            for v in vals
+                        ]
+                        keep.append(("fmserved", fallback))
+                        keep.append(("fmretry", "1"))
+                        tail = "&".join(
+                            quote(k, safe="") + "=" + quote(v, safe="")
+                            for k, v in keep)
                         location = "/api/repo/%s/%s/%s?%s" % (
                             fallback, repo, host_match.group(3), tail)
                         return Response(
