@@ -216,17 +216,18 @@ void ScreenDrawOverlay::startCapture()
 
 void ScreenDrawOverlay::setScreenshotHotzone(const QRect &globalRect)
 {
-    // Translate from global screen coordinates to widget-local coordinates
-    // (the overlay's origin is m_virtualGeom.topLeft()).
-    m_screenshotHotzone = globalRect.translated(-m_virtualGeom.topLeft());
+    m_screenshotHotzone = globalRect; // stored in global screen coordinates
 }
 
 void ScreenDrawOverlay::mousePressEvent(QMouseEvent *event)
 {
     const QPoint pos = event->position().toPoint();
+    // mapToGlobal() uses the widget's actual on-screen position and is reliable
+    // even when the bypass-WM window isn't placed exactly at m_virtualGeom.topLeft().
+    const QPoint globalPos = mapToGlobal(pos);
     if (event->button() == Qt::LeftButton && !m_capturing &&
         (screenshotButtonRect().contains(pos) ||
-         (!m_screenshotHotzone.isNull() && m_screenshotHotzone.contains(pos)))) {
+         (!m_screenshotHotzone.isNull() && m_screenshotHotzone.contains(globalPos)))) {
         startCapture(); // click the floating button or nav icon -> region screenshot with ink
         return;
     }
