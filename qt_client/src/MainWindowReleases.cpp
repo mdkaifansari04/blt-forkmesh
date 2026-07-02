@@ -890,13 +890,20 @@ void MainWindow::loadMirrorNodesPanel()
     // for peers too (our own row reads the fresher local tally). Value = (clones,
     // website serves); -1 == the node hasn't advertised the count yet.
     QHash<QString, QPair<int, int>> serveCounts;
+    // Per-node clone-integrity verdict from the same /mirrors payload:
+    // "rejected" means the relay's integrity gate refuses every clone this node
+    // serves, because the refs fingerprint it published matches no state the
+    // source of truth attested (current pin or recent history).
+    QHash<QString, QString> integrityByNode;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
             const QJsonObject m = value.toObject();
             const QString n = m.value("node").toString().trimmed().toLower();
-            if (!n.isEmpty())
+            if (!n.isEmpty()) {
                 serveCounts.insert(n, {m.value("clonesServed").toInt(-1),
                                        m.value("websiteServed").toInt(-1)});
+                integrityByNode.insert(n, m.value("integrity").toString());
+            }
         }
     }
     // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
@@ -944,6 +951,25 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
         return item;
     };
+    // Mark a node the relay refuses to serve because of the integrity pin: the
+    // clone gate rejects every clone from it until the node syncs to a state the
+    // source of truth attested (or the owner resets the pin). Applied to the
+    // Node cell of both live-roster and catalog-backed rows.
+    int pinRejectedNodes = 0;
+    auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item) {
+        ++pinRejectedNodes;
+        item->setText(item->text() +
+                      QString::fromUtf8("  \xE2\x9A\xA0 failing integrity pin"));
+        item->setForeground(QColor("#f85149"));
+        const QString note = QString::fromUtf8(
+            "Clones from this node are being rejected: the refs it serves match "
+            "no state the source of truth attested (integrity pin). This clears "
+            "once the node syncs \xE2\x80\x94 or, if the node is already up to "
+            "date, when the owner resets the pin.");
+        item->setToolTip(item->toolTip().isEmpty()
+                             ? note
+                             : item->toolTip() + QStringLiteral("\n\n") + note);
+    };
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
@@ -978,6 +1004,9 @@ void MainWindow::loadMirrorNodesPanel()
                                  ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                                        .arg(online ? "online" : "offline")
                                  : (online ? "Online now" : "Offline"));
+        if (integrityByNode.value(node.name.trimmed().toLower()) ==
+            QLatin1String("rejected"))
+            markPinRejected(nameItem);
         m_mirrorNodesTable->setItem(row, 0, nameItem);
 
         // Latest commit: short hash + branch; tooltip carries the subject/date
@@ -1195,6 +1224,8 @@ void MainWindow::loadMirrorNodesPanel()
                 online
                     ? QStringLiteral("Online now")
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
+            if (m.value("integrity").toString() == QLatin1String("rejected"))
+                markPinRejected(nameItem);
             m_mirrorNodesTable->setItem(row, 0, nameItem);
             // Latest commit: the publishing node mirrors its served HEAD into the
             // catalog record, so even an offline node shows its commit (adhoc #56).
@@ -1349,6 +1380,15 @@ void MainWindow::loadMirrorNodesPanel()
                         "mirror node%2 out of sync</span>")
                         .arg(outOfSyncPeers)
                         .arg(outOfSyncPeers == 1 ? "" : "s");
+        // Nodes the relay's integrity gate is refusing to serve. Shown to every
+        // viewer (anyone cloning via one of these nodes is affected), not just
+        // the owner — the table rows carry the same per-node flag.
+        if (pinRejectedNodes > 0)
+            text += QString::fromUtf8(
+                        " \xC2\xB7 <span style='color:#f85149'>\xE2\x9A\xA0 %1 "
+                        "node%2 failing the integrity pin</span>")
+                        .arg(pinRejectedNodes)
+                        .arg(pinRejectedNodes == 1 ? "" : "s");
         // Local commits not yet copied into the mirror we serve (a just-made
         // comment/commit), shown until the background fetch catches the mirror up.
         if (pendingPush > 0)
