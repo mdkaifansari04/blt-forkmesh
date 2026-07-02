@@ -4524,10 +4524,15 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // start. A restart resume (m_agentQuietResume, see runDeferredStartup) must
     // not yank the user off the restored view, and the jump's openRepoDetail()
     // is exactly the cold ~2s git load the deferred resume exists to avoid.
+    // Skip the jump when the user is already viewing this session (e.g. they
+    // pressed Enter in the composer on the Agents tab): switchToAgentsTab fires
+    // extra reloadAgents() calls that can reset the table selection to row 0 and
+    // navigate away from the session the user was working with.
     if (!m_agentQuietResume) {
-        m_terminalSessionId = session.id;
-        switchToAgentsTab(session.id);
-        showAgentSession(session.id); // renders the buffered turn + selects the surface
+        m_terminalSessionId = sid;
+        if (m_selectedAgentSessionId != sid)
+            switchToAgentsTab(sid);
+        showAgentSession(sid); // renders the buffered turn + selects the surface
         if (m_transcriptModeButton)
             m_transcriptModeButton->setChecked(true);
         if (m_terminalModeButton)
