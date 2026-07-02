@@ -4724,6 +4724,22 @@ QWidget *MainWindow::buildHostsSection()
     m_hostNameEdit = new QLineEdit;
     m_hostNameEdit->setPlaceholderText(QStringLiteral("my-mirror-1"));
     form->addRow(QStringLiteral("Node name"), m_hostNameEdit);
+
+    // Direct-upload install (adhoc #67): instead of the host downloading the
+    // release from the relay, stream this app's own binary to it over the SSH
+    // session. The host still curls the small install script, which installs
+    // the uploaded file after checking it matches the host's OS/architecture
+    // (and falls back to the normal download when it doesn't).
+    m_hostUploadBinaryCheck =
+        new QCheckBox(QStringLiteral("Upload the release from this app"));
+    m_hostUploadBinaryCheck->setToolTip(QString::fromUtf8(
+        "Stream this app's own release binary to the host over the SSH "
+        "session, instead of the host downloading the release from the "
+        "network. Useful when the host cannot reach the release download, or "
+        "to push exactly the build you are running. If the host's OS or "
+        "architecture does not match this machine, the installer falls back "
+        "to the normal download."));
+    form->addRow(QString(), m_hostUploadBinaryCheck);
     formCol->addLayout(form);
 
     auto *runRow = new QHBoxLayout;
@@ -5361,6 +5377,14 @@ void MainWindow::appendHostInstallLog(const QString &text)
     m_hostInstallLog->ensureCursorVisible();
 }
 
+namespace {
+// Sentinel line separating the (possibly sudo-consumed) password from the
+// uploaded binary on the SSH session's stdin in direct-upload installs
+// (adhoc #67). The remote side discards lines until it sees this marker, so
+// the upload stays intact whether or not sudo actually read the password.
+const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
+} // namespace
+
 void MainWindow::runHostInstall()
 {
     if (m_hostInstallProcess &&
@@ -5390,6 +5414,26 @@ void MainWindow::runHostInstall()
         return;
     }
 
+    // Direct-upload mode (adhoc #67): stream this app's own release binary to
+    // the host over the SSH session's stdin instead of the host downloading it
+    // from the relay's release endpoint. Read the bytes up front so a locked or
+    // missing binary fails here, before anything touches the remote machine.
+    const bool uploadBinary =
+        m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked();
+    QByteArray uploadBytes;
+    if (uploadBinary) {
+        QFile self(QCoreApplication::applicationFilePath());
+        if (!self.open(QIODevice::ReadOnly) ||
+            (uploadBytes = self.readAll()).isEmpty()) {
+            if (m_hostInstallStatus)
+                m_hostInstallStatus->setText(
+                    QString::fromUtf8("Could not read this app's binary (%1) "
+                                      "to upload it.")
+                        .arg(QCoreApplication::applicationFilePath()));
+            return;
+        }
+    }
+
     // Build the remote command: curl the hosted installer and pipe it to bash
     // with the chosen node name. When the SSH user is not root, escalate the
     // whole installer to root with `sudo -S` (the password arrives on stdin, so
@@ -5405,10 +5449,35 @@ void MainWindow::runHostInstall()
     // clone-source mirror to auto-resolve to a real online one. The headless
     // installer then starts the node as a background daemon under this name so it
     // actually joins the network and shows up in the Mirror nodes list.
-    const QString pipeline =
+    QString pipeline =
         QStringLiteral("curl -fsSL %1 | FORKMESH_NODE_NAME=%2 bash")
             .arg(shq(installUrl), shq(node));
     const bool needSudo = user != QStringLiteral("root");
+    if (uploadBinary) {
+        // The binary follows on the SSH session's stdin. Everything before the
+        // marker line is discarded remotely: when sudo -S consumes the password
+        // line the marker arrives first, and under passwordless sudo (or a
+        // future keyed login) the stray password line is skipped instead of
+        // corrupting the upload. `cat` then lands the bytes in a remote temp
+        // file, which the installer consumes as FORKMESH_LOCAL_BINARY together
+        // with this machine's platform — so a cross-platform upload degrades
+        // into the installer's normal relay download instead of installing a
+        // binary the host can't run. The temp file is removed either way.
+        QString os = QSysInfo::kernelType(); // "linux" / "darwin" / "winnt"
+        if (os == QStringLiteral("darwin"))
+            os = QStringLiteral("macos");
+        else if (os == QStringLiteral("winnt"))
+            os = QStringLiteral("windows");
+        pipeline =
+            QStringLiteral(
+                "up=\"$(mktemp \"${TMPDIR:-/tmp}/forkmesh-upload.XXXXXX\")\" && "
+                "while IFS= read -r l; do [ \"$l\" = %1 ] && break; done && "
+                "cat > \"$up\" && curl -fsSL %2 | FORKMESH_NODE_NAME=%3 "
+                "FORKMESH_LOCAL_BINARY=\"$up\" FORKMESH_LOCAL_OS=%4 "
+                "FORKMESH_LOCAL_ARCH=%5 bash; st=$?; rm -f \"$up\"; exit $st")
+                .arg(shq(kHostUploadMarker), shq(installUrl), shq(node),
+                     shq(os), shq(QSysInfo::currentCpuArchitecture()));
+    }
     const QString remoteCmd =
         needSudo
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
@@ -5441,9 +5510,19 @@ void MainWindow::runHostInstall()
     appendHostInstallLog(
         QStringLiteral("Connecting to %1 as %2 and running %3 ...\n\n")
             .arg(ip, user, installUrl));
+    if (uploadBinary)
+        appendHostInstallLog(
+            QString::fromUtf8("Uploading this app's release binary (%1 MB) "
+                              "over the SSH session\xE2\x80\xA6\n")
+                .arg(QString::number(uploadBytes.size() / (1024.0 * 1024.0),
+                                     'f', 1)));
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(
-            QString::fromUtf8("Installing on %1\xE2\x80\xA6").arg(ip));
+            uploadBinary
+                ? QString::fromUtf8(
+                      "Uploading the release and installing on %1\xE2\x80\xA6")
+                      .arg(ip)
+                : QString::fromUtf8("Installing on %1\xE2\x80\xA6").arg(ip));
     if (m_hostInstallButton)
         m_hostInstallButton->setEnabled(false);
 
@@ -5515,6 +5594,15 @@ void MainWindow::runHostInstall()
     // the remote shell. Closing the channel hands the installer a clean EOF.
     if (needSudo)
         proc->write((pass + QStringLiteral("\n")).toUtf8());
+    // Direct-upload mode: the marker line then the release binary follow on the
+    // same channel; the remote side skips to the marker and `cat`s the rest
+    // into the temp file until the EOF the channel close below produces.
+    // QProcess buffers the write and drains it as ssh accepts it, and
+    // closeWriteChannel() only closes once everything queued has been written.
+    if (uploadBinary) {
+        proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
+        proc->write(uploadBytes);
+    }
     proc->closeWriteChannel();
 }
 
