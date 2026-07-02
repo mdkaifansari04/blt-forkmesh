@@ -2172,21 +2172,56 @@
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
-  function parsePatchStats(patch) {
+  // Shared unified-diff parser used by both the commit diff and the pull
+  // patch views. Groups lines per file and tracks real old/new line numbers
+  // per hunk so the viewer can render a GitHub-style dual gutter instead of
+  // a single running index.
+  const MAX_DIFF_LINES = 4000;
+
+  function parseDiffFiles(rawText) {
+    const allLines = String(rawText || "").split("\n");
+    if (allLines.length && allLines[allLines.length - 1] === "") allLines.pop();
+    const truncated = allLines.length > MAX_DIFF_LINES;
+    const lines = truncated ? allLines.slice(0, MAX_DIFF_LINES) : allLines;
     const files = [];
     let current = null;
-    String(patch || "").split("\n").forEach((line) => {
+    let oldLine = 0;
+    let newLine = 0;
+    lines.forEach((line) => {
       if (line.startsWith("diff --git ")) {
         const match = line.match(/^diff --git a\/(.*?) b\/(.*)$/);
-        current = { path: match?.[2] || match?.[1] || "file", adds: 0, dels: 0 };
+        current = { oldPath: match?.[1] || "", newPath: match?.[2] || match?.[1] || "file", status: "modified", binary: false, adds: 0, dels: 0, rows: [] };
         files.push(current);
+        oldLine = 0;
+        newLine = 0;
         return;
       }
-      if (!current || line.startsWith("+++") || line.startsWith("---")) return;
-      if (line.startsWith("+")) current.adds += 1;
-      if (line.startsWith("-")) current.dels += 1;
+      if (!current) return;
+      if (line.startsWith("new file mode")) { current.status = "added"; return; }
+      if (line.startsWith("deleted file mode")) { current.status = "deleted"; return; }
+      if (line.startsWith("rename from ")) { current.status = "renamed"; current.oldPath = line.slice("rename from ".length); return; }
+      if (line.startsWith("rename to ")) { current.newPath = line.slice("rename to ".length); return; }
+      if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) { current.binary = true; return; }
+      if (line.startsWith("similarity index") || line.startsWith("index ") ||
+          line.startsWith("old mode") || line.startsWith("new mode") ||
+          line.startsWith("--- ") || line.startsWith("+++ ")) return;
+      if (line.startsWith("@@")) {
+        const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (match) { oldLine = Number(match[1]); newLine = Number(match[2]); }
+        current.rows.push({ type: "hunk", text: line });
+        return;
+      }
+      const marker = line[0];
+      if (marker === "+") { current.rows.push({ type: "add", newLine: newLine++, text: line.slice(1) }); current.adds += 1; return; }
+      if (marker === "-") { current.rows.push({ type: "del", oldLine: oldLine++, text: line.slice(1) }); current.dels += 1; return; }
+      if (marker === "\\") { current.rows.push({ type: "meta", text: line }); return; }
+      current.rows.push({ type: "ctx", oldLine: oldLine++, newLine: newLine++, text: line.slice(1) });
     });
-    return files;
+    return { files, truncated };
+  }
+
+  function parsePatchStats(patch) {
+    return parseDiffFiles(patch).files.map((file) => ({ path: file.newPath || file.oldPath || "file", adds: file.adds, dels: file.dels }));
   }
 
   function renderRepoPullFiles(files) {
@@ -2200,15 +2235,79 @@
       </div>`).join("");
   }
 
+  function diffRowClass(type) {
+    if (type === "add") return "bg-emerald-950/40 text-emerald-300";
+    if (type === "del") return "bg-red-950/35 text-red-300";
+    if (type === "hunk") return "bg-primary/10 text-primary";
+    if (type === "meta") return "text-muted-foreground";
+    return "text-zinc-300";
+  }
+
+  function renderDiffFileRows(rows) {
+    if (!rows.length) return '<div class="px-3 py-2 text-xs text-muted-foreground">No line changes.</div>';
+    return rows.map((row) => {
+      const full = row.type === "hunk" || row.type === "meta";
+      return `<div class="grid min-w-max grid-cols-[3rem_3rem_minmax(40rem,1fr)] ${diffRowClass(row.type)}">
+        <span class="select-none border-r border-border/60 px-2 text-right font-mono text-muted-foreground">${full ? "" : (row.oldLine ?? "")}</span>
+        <span class="select-none border-r border-border/60 px-2 text-right font-mono text-muted-foreground">${full ? "" : (row.newLine ?? "")}</span>
+        <span class="whitespace-pre px-3 font-mono">${escapeHtml(row.text || " ")}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function diffFileHeaderPath(file) {
+    if (file.status === "renamed" && file.oldPath && file.newPath && file.oldPath !== file.newPath) {
+      return `${escapeHtml(file.oldPath)} &rarr; ${escapeHtml(file.newPath)}`;
+    }
+    return escapeHtml(file.newPath || file.oldPath || "file");
+  }
+
+  function diffFileStatusBadge(file) {
+    if (file.status === "added") return '<span class="ml-2 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] uppercase text-emerald-300">added</span>';
+    if (file.status === "deleted") return '<span class="ml-2 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] uppercase text-red-300">deleted</span>';
+    if (file.status === "renamed") return '<span class="ml-2 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">renamed</span>';
+    return "";
+  }
+
+  function renderDiffImagePreview(image) {
+    const frame = (label, data) => `
+      <figure class="m-0 grid gap-1">
+        ${data
+          ? `<img src="data:${escapeHtml(image.mime)};base64,${data}" alt="${label}" class="max-h-64 w-full rounded border border-border bg-background object-contain" />`
+          : '<div class="flex h-32 items-center justify-center rounded border border-dashed border-border text-xs text-muted-foreground">Not present</div>'}
+        <figcaption class="text-center text-[10px] text-muted-foreground">${label}</figcaption>
+      </figure>`;
+    return `<div class="grid gap-3 border-b border-border bg-background p-3 sm:grid-cols-2">${frame("Before", image.old)}${frame("After", image.new)}</div>`;
+  }
+
+  function renderDiffFileBlock(file, image) {
+    return `
+      <div class="overflow-hidden rounded-lg border border-border">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/50 px-3 py-2">
+          <span class="inline-flex min-w-0 items-center truncate font-mono text-xs font-medium text-foreground">${diffFileHeaderPath(file)}${diffFileStatusBadge(file)}</span>
+          <span class="shrink-0 font-mono text-[10px]"><span class="text-primary">+${formatCount(file.adds)}</span><span class="ml-1 text-destructive">-${formatCount(file.dels)}</span></span>
+        </div>
+        ${image ? renderDiffImagePreview(image) : ""}
+        ${file.binary
+          ? (image ? "" : '<div class="px-3 py-3 text-xs text-muted-foreground">Binary file not shown.</div>')
+          : `<div class="max-h-[34rem] overflow-auto text-xs leading-5">${renderDiffFileRows(file.rows)}</div>`}
+      </div>`;
+  }
+
+  function renderDiffFiles(parsed, imageDiffs) {
+    const { files, truncated } = parsed;
+    if (!files.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No changes to display.</div>';
+    const images = new Map();
+    (Array.isArray(imageDiffs) ? imageDiffs : []).forEach((item) => {
+      if (item?.path && item?.mime) images.set(item.path, item);
+    });
+    const note = truncated ? '<div class="border-t border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Diff truncated for display; showing the first portion of this change.</div>' : "";
+    return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>${note}`;
+  }
+
   function renderRepoPullPatch(patch) {
-    const text = String(patch || "");
-    if (!text.trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
-    const lines = text.split("\n").slice(0, 2000);
-    return `<pre data-repo-pull-patch class="max-h-[34rem] overflow-auto py-3 text-xs leading-5">${lines.map((line, index) => `
-      <div class="grid min-w-max grid-cols-[4rem_minmax(40rem,1fr)] ${diffLineClass(line)}">
-        <span class="select-none px-3 text-right font-mono text-muted-foreground">${index + 1}</span>
-        <span class="whitespace-pre px-4 font-mono">${escapeHtml(line || " ")}</span>
-      </div>`).join("")}</pre>`;
+    if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
+    return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
   }
 
   async function loadRepoPullPatch(repo, number) {
@@ -2532,23 +2631,9 @@
       </div>`).join("");
   }
 
-  function diffLineClass(line) {
-    if (line.startsWith("+++ ") || line.startsWith("--- ")) return "text-muted-foreground";
-    if (line.startsWith("@@")) return "bg-primary/10 text-primary";
-    if (line.startsWith("+")) return "bg-emerald-950/40 text-emerald-300";
-    if (line.startsWith("-")) return "bg-red-950/35 text-red-300";
-    if (line.startsWith("diff --git")) return "bg-secondary text-foreground";
-    return "text-zinc-300";
-  }
-
-  function renderRepoCommitDiff(diff) {
-    const lines = String(diff || "").split("\n");
+  function renderRepoCommitDiff(diff, imageDiffs) {
     if (!String(diff || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual diff is available for this commit.</div>';
-    return `<pre data-repo-commit-diff class="max-h-[40rem] overflow-auto py-3 text-xs leading-5">${lines.map((line, index) => `
-      <div class="grid min-w-max grid-cols-[4rem_minmax(40rem,1fr)] ${diffLineClass(line)}">
-        <span class="select-none px-3 text-right font-mono text-muted-foreground">${index + 1}</span>
-        <span class="whitespace-pre px-4 font-mono">${escapeHtml(line || " ")}</span>
-      </div>`).join("")}</pre>`;
+    return `<div data-repo-commit-diff>${renderDiffFiles(parseDiffFiles(diff), imageDiffs)}</div>`;
   }
 
   function renderRepoCommitDetail(repo, data) {
@@ -2581,7 +2666,7 @@
         ${data.truncated ? '<div data-repo-commit-truncated class="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">Large diff truncated by the live desktop host.</div>' : '<div data-repo-commit-truncated class="hidden"></div>'}
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Diff</div>
-          ${renderRepoCommitDiff(data.diff)}
+          ${renderRepoCommitDiff(data.diff, data.imageDiffs)}
         </section>
       </article>`;
   }

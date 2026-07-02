@@ -114,6 +114,9 @@ REPO_HOST_RE = re.compile(
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.
 RELEASE_BLOB_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
+# Per-artifact download counts for a repo's releases (issue: Releases tab).
+REPO_RELEASE_DOWNLOADS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/releases/downloads$")
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
@@ -2411,6 +2414,16 @@ SCHEMA_STATEMENTS = [
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_ts ON notifications(recipient_bi, ts)",
     "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_bi, read_at, ts)",
+    # One row per completed release-asset download (served by _release_blob), so
+    # the Releases tab can show a per-artifact download count and the admin
+    # dashboard has a plain event log of them (same treatment as install_diag).
+    # repo_bi is the blind index of "<owner>/<repo>"; sha256 is the content
+    # address of the asset. No account/IP is recorded.
+    """CREATE TABLE IF NOT EXISTS release_downloads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        sha256 TEXT NOT NULL, ts INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_release_downloads_repo_sha "
+    "ON release_downloads(repo_bi, sha256)",
 ]
 
 
@@ -2956,6 +2969,42 @@ async def repo_mirrors_handler(env, request, owner, repo):
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
     return json_response(payload)
+
+
+# --- Release download counts -------------------------------------------------
+
+async def record_release_download(env, repo_bi, sha256):
+    """Log one completed release-asset download. Best-effort; never raises —
+    called fire-and-forget from the streaming DO response, so a D1 hiccup must
+    never fail or delay the download itself."""
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "INSERT INTO release_downloads (repo_bi, sha256, ts) VALUES (?, ?, ?)",
+            repo_bi, sha256, int(Date.now()),
+        )
+    except Exception:
+        pass
+
+
+async def release_download_counts(env, repo_bi):
+    await ensure_schema(env)
+    rows = await d1_all(
+        env,
+        "SELECT sha256, COUNT(*) AS n FROM release_downloads "
+        "WHERE repo_bi=? GROUP BY sha256",
+        repo_bi,
+    )
+    return {str(r.get("sha256")): int(r.get("n") or 0) for r in rows if r.get("sha256")}
+
+
+async def release_downloads_handler(env, request, owner, repo):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    counts = await release_download_counts(env, repo_bi)
+    return json_response({"ok": True, "counts": counts})
 
 
 # --- Public waitlist (waitlist table) ---------------------------------------
@@ -7804,6 +7853,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
 
+        release_downloads_match = REPO_RELEASE_DOWNLOADS_RE.match(url.path)
+        if release_downloads_match:
+            owner = safe_segment(release_downloads_match.group(1))
+            repo = safe_segment(release_downloads_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await release_downloads_handler(self.env, request, owner, repo)
+
         release_blob_match = RELEASE_BLOB_RE.match(url.path)
         if release_blob_match:
             owner = safe_segment(release_blob_match.group(1))
@@ -8508,7 +8565,8 @@ class ForkMeshHost(DurableObject):
         release_blob_match = RELEASE_BLOB_RE.match(path)
         if release_blob_match:
             await self._mark_present(path)
-            return await self._release_blob(release_blob_match.group(3))
+            repo_bi = await self._repo_blind_index(path)
+            return await self._release_blob(release_blob_match.group(3), repo_bi)
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()
@@ -8861,7 +8919,7 @@ class ForkMeshHost(DurableObject):
                     pass
                 return
 
-    async def _release_blob(self, sha256):
+    async def _release_blob(self, sha256, repo_bi=None):
         # Stream a content-addressed release asset from a serving node: each
         # chunk flows straight to the client (see _stream_request), so
         # arbitrarily large binaries download without the 4 MB inline /blob cap
@@ -8888,6 +8946,11 @@ class ForkMeshHost(DurableObject):
             },
         )
         if response is not None:
+            if repo_bi:
+                # Fire-and-forget: log the download without delaying the
+                # already-streaming response on a D1 round-trip.
+                asyncio.ensure_future(
+                    record_release_download(self.env, repo_bi, sha256.lower()))
             return response
         status = 404 if str(err.get("error", "")) in (
             "not_found", "bad_hash") else 502
