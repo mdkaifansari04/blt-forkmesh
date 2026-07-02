@@ -558,6 +558,7 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void probeRelayLatency();      // measure round-trip to the active relay (radar)
+    void initRelayReachabilityWatch(); // OS reachability → instant radar flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
@@ -1737,7 +1738,7 @@ private:
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
     void positionActionStrip();  // grow each bar by its run's elapsed time
-    void positionRepoPushButton(); // float "Sync" just above the Commits tab
+    void positionRepoPushButton(); // float "Sync" just above the Code tab
     void updateActionStrip();    // build/show/hide the bars for in-flight runs
     // Spin the Agents tab label while any agent session is running.
     void updateAgentsTabIndicator();
@@ -3174,7 +3175,7 @@ private:
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
     QTimer *m_actionStripTimer = nullptr;        // grows the Actions strip while running
-    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Commits
+    QTimer *m_repoPushTimer = nullptr;           // keeps "Sync" pinned over Code
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,

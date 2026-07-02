@@ -11,6 +11,8 @@
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
 
+#include <QNetworkInformation>
+
 using namespace forkmesh::ui;
 
 // -------------------------------------------------------------- server rail
@@ -2523,15 +2525,58 @@ void MainWindow::probeRelayLatency()
             // shortly on the now-clean connection and only declare "offline"
             // once a second consecutive probe also fails. This stops the dish
             // getting stranded on "offline" while we're genuinely online.
-            if (++m_relayProbeFailures >= 2) {
+            // Exception: when the OS itself reports the machine has no network
+            // at all, the outage is real — skip the grace period and show it
+            // immediately (adhoc #41).
+            const auto *netInfo = QNetworkInformation::instance();
+            const bool osOffline =
+                netInfo && netInfo->reachability() ==
+                               QNetworkInformation::Reachability::Disconnected;
+            if (++m_relayProbeFailures >= 2 || osOffline) {
                 radar->setUnreachable();
-                // The steady once-a-minute timer keeps re-probing while offline
-                // so it reconnects on its own.
+                // While offline, re-probe on a short leash instead of waiting
+                // out the minute timer, so the dish flips back within seconds
+                // of the relay answering again (adhoc #41).
+                QTimer::singleShot(3000, this, &MainWindow::probeRelayLatency);
             } else {
                 QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
             }
         }
     });
+}
+
+// The once-a-minute probe alone makes the radar lag reality by up to a minute
+// in both directions (adhoc #41). The OS already knows the instant the link
+// drops or comes back, so subscribe to Qt's reachability signal: a
+// Disconnected report flips the dish straight to red "offline", and any
+// recovery fires an immediate probe so the green latency readout is back
+// within one round-trip. Platforms without a reachability backend still get
+// the fast offline re-probe loop in probeRelayLatency().
+void MainWindow::initRelayReachabilityWatch()
+{
+    if (!QNetworkInformation::loadBackendByFeatures(
+            QNetworkInformation::Feature::Reachability))
+        return;
+    connect(QNetworkInformation::instance(),
+            &QNetworkInformation::reachabilityChanged, this,
+            [this](QNetworkInformation::Reachability reachability) {
+                if (!m_relayRadar)
+                    return;
+                if (reachability ==
+                    QNetworkInformation::Reachability::Disconnected) {
+                    // Definitive: no network interface is up. No point probing;
+                    // mark the outage as established so a later probe failure
+                    // doesn't get the one-blip grace period.
+                    m_relayProbeFailures = 2;
+                    static_cast<RelayRadarWidget *>(m_relayRadar)
+                        ->setUnreachable();
+                } else {
+                    // Link is (possibly) back: confirm with a real probe right
+                    // away. The radar stays red until the probe succeeds, so a
+                    // half-up link never shows a false green.
+                    probeRelayLatency();
+                }
+            });
 }
 
 void MainWindow::openServerWebsite(int index)
@@ -3411,12 +3456,12 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         if (m_repoPublishBar)
             m_repoPublishBar->hide();
     };
-    // Reveal the floating sync button positioned just above the Commits tab. As an
+    // Reveal the floating sync button positioned just above the Code tab. As an
     // overlay (not a laid-out widget) it never reflows the page underneath — even
     // while a mirror picks up a push on the Mirror nodes screen. A modest timer
     // keeps it pinned over the tab as the window resizes or tabs reflow.
     auto reveal = [this] {
-        positionRepoPushButton(); // reparents to the page + anchors over Commits
+        positionRepoPushButton(); // reparents to the page + anchors over Code
         m_repoPushButton->show();
         m_repoPushButton->raise();
         if (m_repoPublishBar)
