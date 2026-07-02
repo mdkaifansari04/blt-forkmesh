@@ -251,16 +251,16 @@ void paintLike(QPainter &p)
     p.setBrush(handBrush());
     // Thumb: a tilted capsule rising from the fist's left shoulder.
     p.save();
-    p.translate(0.30, 0.32);
-    p.rotate(-18);
-    p.drawRoundedRect(QRectF(-0.08, -0.22, 0.16, 0.44), 0.08, 0.08);
+    p.translate(0.35, 0.34);
+    p.rotate(-14);
+    p.drawRoundedRect(QRectF(-0.08, -0.24, 0.16, 0.48), 0.08, 0.08);
     p.restore();
     // Fist.
-    p.drawRoundedRect(QRectF(0.30, 0.42, 0.48, 0.46), 0.10, 0.10);
+    p.drawRoundedRect(QRectF(0.30, 0.44, 0.48, 0.44), 0.10, 0.10);
     // Subtle finger separations.
     p.setPen(strokePen(QColor(0, 0, 0, 45), 0.018));
-    for (qreal y : {0.545, 0.66, 0.775})
-        p.drawLine(QLineF(0.40, y, 0.78, y));
+    for (qreal y : {0.555, 0.665, 0.775})
+        p.drawLine(QLineF(0.44, y, 0.78, y));
 }
 
 void paintDislike(QPainter &p)
@@ -275,21 +275,34 @@ void paintDislike(QPainter &p)
 
 void paintThanks(QPainter &p)
 {
-    // Praying hands: a pointed oval with a center seam, plus motion lines.
+    // Praying hands: palms pressed together, thumbs folded across the front.
     QPainterPath hands;
     hands.moveTo(0.5, 0.05);
-    hands.cubicTo(0.34, 0.20, 0.27, 0.44, 0.31, 0.64);
-    hands.cubicTo(0.33, 0.76, 0.38, 0.86, 0.42, 0.92);
-    hands.lineTo(0.58, 0.92);
-    hands.cubicTo(0.62, 0.86, 0.67, 0.76, 0.69, 0.64);
-    hands.cubicTo(0.73, 0.44, 0.66, 0.20, 0.5, 0.05);
+    hands.cubicTo(0.40, 0.14, 0.33, 0.32, 0.31, 0.50);
+    hands.cubicTo(0.29, 0.68, 0.35, 0.84, 0.40, 0.92);
+    hands.lineTo(0.60, 0.92);
+    hands.cubicTo(0.65, 0.84, 0.71, 0.68, 0.69, 0.50);
+    hands.cubicTo(0.67, 0.32, 0.60, 0.14, 0.5, 0.05);
     hands.closeSubpath();
     p.setPen(Qt::NoPen);
     p.setBrush(handBrush());
     p.drawPath(hands);
-    // Center seam between the palms.
-    p.setPen(strokePen(QColor(0, 0, 0, 55), 0.022));
-    p.drawLine(QLineF(0.5, 0.10, 0.5, 0.88));
+    // Seam between the pressed fingers, down to where the thumbs start.
+    p.setPen(strokePen(QColor(0, 0, 0, 60), 0.022));
+    p.drawLine(QLineF(0.5, 0.08, 0.5, 0.58));
+    // Thumbs: lighter, outlined capsules so they stand out from the palms.
+    p.setPen(strokePen(QColor(0, 0, 0, 40), 0.014));
+    p.setBrush(QColor(0xff, 0xd7, 0x66));
+    p.save();
+    p.translate(0.455, 0.66);
+    p.rotate(12);
+    p.drawRoundedRect(QRectF(-0.06, -0.20, 0.12, 0.40), 0.06, 0.06);
+    p.restore();
+    p.save();
+    p.translate(0.545, 0.66);
+    p.rotate(-12);
+    p.drawRoundedRect(QRectF(-0.06, -0.20, 0.12, 0.40), 0.06, 0.06);
+    p.restore();
     // Radiating lines either side, like the classic emoji.
     p.setPen(strokePen(QColor(0xf0, 0xa9, 0x2b), 0.05));
     p.drawLine(QLineF(0.13, 0.30, 0.22, 0.40));
