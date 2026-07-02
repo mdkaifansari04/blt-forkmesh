@@ -6524,15 +6524,6 @@ QWidget *MainWindow::buildRepoDetailSection()
                                  // (adhoc #130, created below).
         if (i == 3) {
             m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
-            // Purple braille snake overlaid at the tab's right edge while an agent
-            // runs; kept separate so "Agents (N)" stays its normal colour.
-            m_agentSnake = new QLabel(b);
-            m_agentSnake->setObjectName("agentSnake");
-            m_agentSnake->setAlignment(Qt::AlignCenter);
-            m_agentSnake->setAttribute(Qt::WA_TransparentForMouseEvents);
-            m_agentSnake->setStyleSheet(
-                "#agentSnake{color:#a371f7;background:transparent;}");
-            m_agentSnake->hide();
         }
         if (i == 4)
             m_repoPullsTab = b;
