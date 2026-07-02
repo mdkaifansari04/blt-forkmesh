@@ -2640,12 +2640,18 @@ void MainWindow::renderIssueThread(const Issue &issue)
             bodyLayout->addWidget(attach, 0, Qt::AlignLeft);
             auto *buttonRow = new QHBoxLayout;
             buttonRow->setContentsMargins(0, 0, 0, 0);
-            auto *cancel = new QPushButton("Cancel");
+            // Parent at construction (rather than picking one up implicitly when
+            // added to the layout) so the button is never briefly its own
+            // top-level widget — that transient state can leave the "primaryButton"
+            // QSS rule's background/text unpainted (border-only) on first show.
+            auto *cancel = new QPushButton("Cancel", bodyContainer);
             cancel->setObjectName("ghostButton");
             cancel->setCursor(Qt::PointingHandCursor);
-            auto *save = new QPushButton("Save");
+            auto *save = new QPushButton("Save", bodyContainer);
             save->setObjectName("primaryButton");
             save->setCursor(Qt::PointingHandCursor);
+            save->style()->unpolish(save);
+            save->style()->polish(save);
             buttonRow->addStretch();
             buttonRow->addWidget(cancel);
             buttonRow->addWidget(save);
