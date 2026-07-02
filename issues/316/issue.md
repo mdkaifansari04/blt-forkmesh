@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 316
 title: I created an issue from the website however it did not get created on the node.
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
