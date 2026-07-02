@@ -2173,6 +2173,10 @@ private:
     void saveChatHistory();
     void loadChatHistory();
     void scheduleChatSave();
+    // Drops messages past kChatMessageRetentionMs (7 days) from local history,
+    // so a node left running that long doesn't keep showing/serving messages
+    // the relay has already dropped.
+    void pruneExpiredChatHistory();
     // Avatars are cached to disk per peer (keyed by node id) so they survive a
     // restart and stay visible for peers who are currently offline — otherwise
     // an avatar only lives as long as the sender keeps re-broadcasting it.
@@ -3898,6 +3902,7 @@ private:
     QHash<QString, QList<ChatMessage>> m_history;
     QSet<QString> m_historyIds; // message ids already in m_history (dedup)
     QTimer *m_chatSaveTimer = nullptr;
+    QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;
