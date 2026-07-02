@@ -7844,10 +7844,15 @@ class Default(WorkerEntrypoint):
 
         return json_response({"error": "not_found"}, status=404)
 
-    async def _select_clone_fallback(self, owner, repo):
+    async def _select_clone_fallback(self, owner, repo, force=False):
         # When owner/repo's own host is offline, find a healthy online mirror of the
         # same logical repo to redirect a clone to. Best-effort: any failure returns
         # None so the request just falls through to the normal named-owner route.
+        # `force` overrides the presence fast-path: the caller has already
+        # confirmed the named source can't actually serve right now (its host DO
+        # reports no connected host), so a still-fresh-but-stale presence row must
+        # not veto the redirect — this is what routes a clone around a source whose
+        # tunnel died uncleanly, before host_presence ages out.
         try:
             await ensure_schema(self.env)
             now = int(Date.now())
@@ -7861,7 +7866,7 @@ class Default(WorkerEntrypoint):
             }
             source_ts = presence.get(repo_bi) or 0
             source_online = bool(
-                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS)
+                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS) and not force
             # Fast path: the named host is live, so serve it directly (and skip the
             # catalog decrypt entirely) — never redirect away from an online source.
             if source_online:
@@ -7969,9 +7974,59 @@ class Default(WorkerEntrypoint):
                     return Response(
                         "", status=302,
                         headers={"location": location, "cache-control": "no-store"})
+                # The presence-based fallback above only fires once the source's
+                # host_presence row has aged out (10 min). A tunnel that died
+                # uncleanly still looks "online" for that whole window, during
+                # which forwarding the probe to its host DO returns "no host
+                # serving" (or, when the DO is mid-flap, an isolate crash) and the
+                # clone dies instead of using a live mirror. So verify a host is
+                # actually connected right now; if not, force a redirect to a
+                # healthy mirror regardless of the stale presence row. `fmretry`
+                # caps this at one hop: if two group members both have a fresh but
+                # stale presence row and no live host, they must not 302 to each
+                # other forever — after one forced hop we forward and let the node
+                # return its clean no-host advertisement instead.
+                already_forced = bool(
+                    parse_qs(url.query).get("fmretry", [""])[0])
+                if not already_forced and \
+                        not await self._source_has_live_host(owner, repo):
+                    alt = await self._select_clone_fallback(
+                        owner, repo, force=True)
+                    if alt and alt.lower() != owner.lower():
+                        query = url.query or "service=git-upload-pack"
+                        location = "/%s/%s/info/refs?%s&fmretry=1" % (
+                            alt, repo, query)
+                        return Response(
+                            "", status=302,
+                            headers={"location": location,
+                                     "cache-control": "no-store"})
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
+
+    async def _source_has_live_host(self, owner, repo):
+        # Whether a desktop host is CONNECTED to this repo's host DO right now —
+        # the ground truth, not the host_presence row (which lags an unclean
+        # disconnect by up to HOST_PRESENCE_STALE_MS). One cheap subrequest to the
+        # DO's non-WebSocket /host endpoint, which returns {"hosts": N}. Any
+        # failure (including the DO throwing) is treated as "not live" so the
+        # caller falls back to a mirror rather than stranding the clone on a dead
+        # or flapping source.
+        try:
+            host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+            host_object = self.env.FORKMESH_HOST.get(host_id)
+            resp = await host_object.fetch(
+                "https://forkmesh.internal/api/repo/%s/%s/host" % (owner, repo))
+            if int(getattr(resp, "status", 0) or 0) != 200:
+                return False
+            data = await resp.json()
+            # workers Response.json() may cross the boundary as a dict or a
+            # JsProxy (see _flagship_client_count); accept both shapes.
+            hosts = (data.get("hosts", 0) if isinstance(data, dict)
+                     else getattr(data, "hosts", 0))
+            return int(hosts or 0) > 0
+        except Exception:
+            return False
 
 
 async def chat_history_recent(env, room_key):
