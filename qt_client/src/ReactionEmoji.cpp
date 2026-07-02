@@ -273,42 +273,59 @@ void paintDislike(QPainter &p)
     p.restore();
 }
 
-void paintThanks(QPainter &p)
+// One half of the praying-hands pair: four fanned fingers, a palm and a
+// thumb, occupying the right side of the unit square. Mirrored around
+// x=0.5 to draw the left hand, so the seam falls exactly at center.
+void paintPrayingHand(QPainter &p)
 {
-    // Praying hands: palms pressed together, thumbs folded across the front.
-    QPainterPath hands;
-    hands.moveTo(0.5, 0.05);
-    hands.cubicTo(0.40, 0.14, 0.33, 0.32, 0.31, 0.50);
-    hands.cubicTo(0.29, 0.68, 0.35, 0.84, 0.40, 0.92);
-    hands.lineTo(0.60, 0.92);
-    hands.cubicTo(0.65, 0.84, 0.71, 0.68, 0.69, 0.50);
-    hands.cubicTo(0.67, 0.32, 0.60, 0.14, 0.5, 0.05);
-    hands.closeSubpath();
     p.setPen(Qt::NoPen);
     p.setBrush(handBrush());
-    p.drawPath(hands);
-    // Seam between the pressed fingers, down to where the thumbs start.
-    p.setPen(strokePen(QColor(0, 0, 0, 60), 0.022));
-    p.drawLine(QLineF(0.5, 0.08, 0.5, 0.58));
-    // Thumbs: lighter, outlined capsules so they stand out from the palms.
-    p.setPen(strokePen(QColor(0, 0, 0, 40), 0.014));
-    p.setBrush(QColor(0xff, 0xd7, 0x66));
+    struct Finger { qreal x, tipY, angle; };
+    const Finger fingers[] = {
+        {0.545, 0.19, -4}, {0.600, 0.10, -1}, {0.655, 0.13, 2}, {0.710, 0.22, 6},
+    };
+    for (const Finger &f : fingers) {
+        p.save();
+        p.translate(f.x, 0.44);
+        p.rotate(f.angle);
+        p.drawRoundedRect(QRectF(-0.032, -(0.44 - f.tipY), 0.064, 0.44 - f.tipY),
+                          0.032, 0.032);
+        p.restore();
+    }
+    // Palm, tapering slightly toward the wrist.
+    QPainterPath palm;
+    palm.moveTo(0.503, 0.40);
+    palm.cubicTo(0.50, 0.58, 0.505, 0.72, 0.535, 0.90);
+    palm.lineTo(0.80, 0.90);
+    palm.cubicTo(0.815, 0.72, 0.80, 0.54, 0.79, 0.42);
+    palm.cubicTo(0.72, 0.37, 0.60, 0.36, 0.503, 0.40);
+    palm.closeSubpath();
+    p.drawPath(palm);
+    // Thumb, angled out from the base of the palm.
     p.save();
-    p.translate(0.455, 0.66);
-    p.rotate(12);
-    p.drawRoundedRect(QRectF(-0.06, -0.20, 0.12, 0.40), 0.06, 0.06);
+    p.translate(0.555, 0.63);
+    p.rotate(46);
+    p.drawRoundedRect(QRectF(-0.034, -0.01, 0.068, 0.22), 0.034, 0.034);
     p.restore();
+}
+
+void paintThanks(QPainter &p)
+{
+    paintPrayingHand(p);
     p.save();
-    p.translate(0.545, 0.66);
-    p.rotate(-12);
-    p.drawRoundedRect(QRectF(-0.06, -0.20, 0.12, 0.40), 0.06, 0.06);
+    p.translate(1.0, 0.0);
+    p.scale(-1.0, 1.0);
+    paintPrayingHand(p);
     p.restore();
+    // Seam where the fingers and palms meet.
+    p.setPen(strokePen(QColor(0, 0, 0, 60), 0.016));
+    p.drawLine(QLineF(0.5, 0.38, 0.5, 0.90));
     // Radiating lines either side, like the classic emoji.
-    p.setPen(strokePen(QColor(0xf0, 0xa9, 0x2b), 0.05));
-    p.drawLine(QLineF(0.13, 0.30, 0.22, 0.40));
-    p.drawLine(QLineF(0.07, 0.52, 0.19, 0.56));
-    p.drawLine(QLineF(0.87, 0.30, 0.78, 0.40));
-    p.drawLine(QLineF(0.93, 0.52, 0.81, 0.56));
+    p.setPen(strokePen(QColor(0xf0, 0xa9, 0x2b), 0.045));
+    p.drawLine(QLineF(0.14, 0.22, 0.24, 0.31));
+    p.drawLine(QLineF(0.06, 0.42, 0.19, 0.46));
+    p.drawLine(QLineF(0.86, 0.22, 0.76, 0.31));
+    p.drawLine(QLineF(0.94, 0.42, 0.81, 0.46));
 }
 
 // --- symbols ---------------------------------------------------------------
