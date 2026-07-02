@@ -8,6 +8,8 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QVersionNumber>
+
 using namespace forkmesh::ui;
 
 namespace {
@@ -863,13 +865,56 @@ void MainWindow::loadMirrorNodesPanel()
         return advert;
     };
 
+    // One row per node *name*: a node that re-registers (reinstall → new key)
+    // can transiently sit in the roster under two identities — the old key's
+    // session still heartbeating beside the new one — which listed the same
+    // node twice (adhoc #46). Keep the best entry per name: ourselves, else the
+    // one online, else the one actually advertising this repo, else the freshest
+    // advert, else the newer app version (a stale session lags after an upgrade).
+    QList<MemberInfo> rosterNodes;
+    QHash<QString, int> rosterIndexByName;
+    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+        bool namedOnly = false;
+        const MirrorAdvert *advert = matchAdvert(node, namedOnly);
+        if (!advert && !namedOnly)
+            continue; // not mirroring this repo; the row loop skips these anyway
+        const QString nameKey = node.name.trimmed().toLower();
+        if (nameKey.isEmpty()) {
+            rosterNodes.append(node);
+            continue;
+        }
+        const auto it = rosterIndexByName.constFind(nameKey);
+        if (it == rosterIndexByName.constEnd()) {
+            rosterIndexByName.insert(nameKey, rosterNodes.size());
+            rosterNodes.append(node);
+            continue;
+        }
+        const MemberInfo &kept = rosterNodes.at(it.value());
+        bool keptNamedOnly = false;
+        const MirrorAdvert *keptAdvert = matchAdvert(kept, keptNamedOnly);
+        bool replace;
+        if (node.self != kept.self)
+            replace = node.self;
+        else if (node.online != kept.online)
+            replace = node.online;
+        else if ((advert != nullptr) != (keptAdvert != nullptr))
+            replace = advert != nullptr;
+        else if (advert && keptAdvert && advert->updatedMs != keptAdvert->updatedMs)
+            replace = advert->updatedMs > keptAdvert->updatedMs;
+        else
+            replace = QVersionNumber::fromString(node.version) >
+                      QVersionNumber::fromString(kept.version);
+        if (replace)
+            rosterNodes[it.value()] = node;
+    }
+
     // The reference HEAD a node must match to count as "in sync": the source of
     // truth's commit if it advertises one, else the freshest-synced commit in the
     // group. Nodes whose commit differs are behind and get a heartbeat countdown.
     QString sourceCommit;
     QString newestCommit;
     qint64 newestMs = -1;
-    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+    for (const MemberInfo &node : std::as_const(rosterNodes)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert || advert->commit.isEmpty())
@@ -927,6 +972,9 @@ void MainWindow::loadMirrorNodesPanel()
     // Names already shown from the live chat roster, so the catalog-backed merge
     // below (issue #223) doesn't list a node twice when it's also present in chat.
     QSet<QString> shownNames;
+    // Node ids (keys) already shown, so a catalog record published under a node's
+    // former name doesn't add a second row for the same identity (adhoc #46).
+    QSet<QString> shownIds;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorActivityStrip::Dot> activityDots;
     // Build a right-aligned numeric count cell (Commits/Branches/Pulls/Discussions/
@@ -944,12 +992,14 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
         return item;
     };
-    for (const MemberInfo &node : std::as_const(m_homeRoster)) {
+    for (const MemberInfo &node : std::as_const(rosterNodes)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
             continue;
         shownNames.insert(node.name.trimmed().toLower());
+        if (!node.id.isEmpty())
+            shownIds.insert(node.id);
 
         // The source of truth: the node whose clone identity equals the shared
         // source (the owner advertises ownerName == source); also match by name.
@@ -1171,6 +1221,12 @@ void MainWindow::loadMirrorNodesPanel()
             const QJsonObject m = value.toObject();
             const QString nodeName = m.value("node").toString().trimmed();
             if (nodeName.isEmpty() || shownNames.contains(nodeName.toLower()))
+                continue;
+            // A record published under the node's former name: that identity is
+            // already listed from the live roster under its current name, so a
+            // second row would double-count the machine (adhoc #46).
+            const QString catalogId = m.value("id").toString().trimmed();
+            if (!catalogId.isEmpty() && shownIds.contains(catalogId))
                 continue;
             shownNames.insert(nodeName.toLower());
             const bool isSource =
@@ -1946,3 +2002,20 @@ void MainWindow::deleteTag(const QString &tag)
     setRepoDetailNotice(QStringLiteral("Deleted release %1.").arg(tag));
     loadBranchesAndTags();
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+QStringList MainWindow::testMirrorNodeRows() const
+{
+    QStringList rows;
+    if (!m_mirrorNodesTable)
+        return rows;
+    for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
+        const QTableWidgetItem *item = m_mirrorNodesTable->item(row, 0);
+        if (!item)
+            continue;
+        rows.append(item->text() + QLatin1Char('|') +
+                    item->data(Qt::UserRole).toString());
+    }
+    return rows;
+}
+#endif
