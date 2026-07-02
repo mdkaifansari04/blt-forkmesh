@@ -640,6 +640,32 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentContinueButton, &QPushButton::clicked, this,
             &MainWindow::continueSelectedAgentSession);
 
+    m_agentFixConflictsButton = new QPushButton("Fix conflicts with agent");
+    m_agentFixConflictsButton->setObjectName("primaryButton");
+    m_agentFixConflictsButton->setCursor(Qt::PointingHandCursor);
+    m_agentFixConflictsButton->setToolTip(
+        "Ask the agent to merge the base branch into this branch and resolve conflicts");
+    setOcticon(m_agentFixConflictsButton, "git-merge", 16);
+    m_agentFixConflictsButton->hide();
+    connect(m_agentFixConflictsButton, &QPushButton::clicked, this, [this] {
+        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s)
+            return;
+        const QString base = agentMergeBase(*s);
+        const QString prompt =
+            QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
+                           "Make sure the build and tests still pass, then commit.")
+                .arg(base);
+        const int sid = s->id;
+        m_pendingSteerMessage.insert(sid, prompt);
+        if (s->provider == QLatin1String("claude-code"))
+            applyTranscriptEvent(
+                sid,
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                            {QStringLiteral("text"), prompt}});
+        continueSelectedAgentSession();
+    });
+
     m_agentDeleteButton = new QPushButton("Delete");
     m_agentDeleteButton->setObjectName("dangerButton");
     m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -1312,8 +1338,15 @@ QWidget *MainWindow::buildAgentsTab()
     // conversation can be resumed at any time without hunting for it in the
     // header button row (adhoc #105). It stays enabled whenever a session is
     // selected; continueSelectedAgentSession() itself no-ops if the session is
-    // already running or queued.
-    composerCol->addWidget(m_agentContinueButton, 0, Qt::AlignLeft);
+    // already running or queued. Fix-conflicts sits alongside it and is only
+    // visible when the branch has a detected merge conflict with base (adhoc #28).
+    auto *continueRow = new QHBoxLayout;
+    continueRow->setContentsMargins(0, 0, 0, 0);
+    continueRow->setSpacing(6);
+    continueRow->addWidget(m_agentContinueButton);
+    continueRow->addWidget(m_agentFixConflictsButton);
+    continueRow->addStretch(1);
+    composerCol->addLayout(continueRow);
     composerCol->addWidget(m_agentPromptEdit);
     auto *composerBtns = new QHBoxLayout;
     composerBtns->setContentsMargins(0, 0, 0, 0);
@@ -2791,6 +2824,8 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
+        if (m_agentFixConflictsButton)
+            m_agentFixConflictsButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
         if (m_agentLog)
@@ -2920,10 +2955,23 @@ void MainWindow::showAgentSession(int sessionId)
         QStringList lines;
         lines << labeled(QStringLiteral("Agent"),
                          agentProviderName(session->provider).toHtmlEscaped());
-        // Which LLM actually did the work, next to the location (Worktree,
-        // below) so both show up in the same key/value list.
+        // Which LLM actually did the work. If the session was launched without an
+        // explicit model preference, fall back to the actual model reported by the
+        // CLI's system:init event (first event in the stream), so the header never
+        // shows a blank Model: line when the CLI used its own default.
+        QString displayModel = session->model;
+        if (displayModel.isEmpty()) {
+            const auto &evts = m_streamEvents.value(sessionId);
+            for (const QJsonObject &ev : evts) {
+                if (ev.value(QStringLiteral("type")).toString() == QLatin1String("system")
+                    && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
+                    displayModel = ev.value(QStringLiteral("model")).toString().trimmed();
+                    break;
+                }
+            }
+        }
         lines << labeled(QStringLiteral("Model"),
-                         agentModelLabel(session->model).toHtmlEscaped());
+                         agentModelLabel(displayModel).toHtmlEscaped());
         lines << labeled(QStringLiteral("Repo"),
                          QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                                      session->name.toHtmlEscaped()));
@@ -2938,10 +2986,10 @@ void MainWindow::showAgentSession(int sessionId)
             lines << labeled(QStringLiteral("Worktree"),
                              worktreeLinkHtml(session->branchName, worktreePath));
         lines << labeled(QStringLiteral("PR"), pr);
-        if (session->startedAtMs > 0 && session->finishedAtMs > session->startedAtMs)
+        const qint64 dur = agentEffectiveDurationMs(*session);
+        if (dur > 0)
             lines << labeled(QStringLiteral("Ran for"),
-                             QStringLiteral("%1s").arg(
-                                 (session->finishedAtMs - session->startedAtMs) / 1000));
+                             QStringLiteral("%1s").arg(dur / 1000));
         if (!mergedMeta.isEmpty())
             lines << mergedMeta;
         m_agentMeta->setText(lines.join(sep));
@@ -2983,6 +3031,15 @@ void MainWindow::showAgentSession(int sessionId)
         if (session->prNumber > 0)
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
+    }
+    // "Fix conflicts with agent": visible only when the cached diff stat says this
+    // branch conflicts with base (adhoc #28). The button is hidden until a stat is
+    // available; it becomes visible on the next refreshAgentTable() that computes it.
+    if (m_agentFixConflictsButton) {
+        auto statIt = m_agentDiffStats.constFind(sessionId);
+        const bool hasConflict =
+            statIt != m_agentDiffStats.constEnd() && statIt->conflicted;
+        m_agentFixConflictsButton->setVisible(hasConflict);
     }
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and

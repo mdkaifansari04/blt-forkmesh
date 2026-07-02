@@ -395,27 +395,107 @@ QString redacted(QString match)
     return match.left(4) + QStringLiteral("...") + match.right(4);
 }
 
-QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
+struct SecretPattern {
+    QString name;
+    QRegularExpression re;
+};
+
+const QList<SecretPattern> &secretPatterns()
 {
-    struct Pattern {
-        QString name;
-        QRegularExpression re;
-    };
-    const QList<Pattern> patterns{
+    // High-confidence patterns: specific prefixes + minimum-length constraints
+    // keep the false-positive rate low. All variable-suffix patterns use {n,}
+    // (at-least-n) so a word boundary always lands on a non-word character
+    // rather than in the middle of a long token. Grouped by provider.
+    static const QList<SecretPattern> kPatterns{
+        // ---- GitHub ----------------------------------------------------------
+        // Classic PATs (ghp_) and OAuth/user/server/refresh tokens
         {QStringLiteral("GitHub token"),
-         QRegularExpression(QStringLiteral("\\bgh[pousr]_[A-Za-z0-9_]{36}\\b"))},
+         QRegularExpression(QStringLiteral("\\bgh[pousr]_[A-Za-z0-9_]{36,}\\b"))},
+        // Fine-grained PATs introduced 2022 (github_pat_ prefix)
+        {QStringLiteral("GitHub fine-grained PAT"),
+         QRegularExpression(QStringLiteral("\\bgithub_pat_[A-Za-z0-9_]{22,}\\b"))},
+        // ---- AWS -------------------------------------------------------------
+        // Long-term IAM access key IDs are always AKIA + 16 uppercase/digit chars
         {QStringLiteral("AWS access key"),
-         QRegularExpression(QStringLiteral("\\bAKIA[0-9A-Z]{16}\\b"))},
+         QRegularExpression(QStringLiteral("\\bAKIA[0-9A-Z]{16,}\\b"))},
+        // Temporary STS/assumed-role credentials use ASIA prefix
+        {QStringLiteral("AWS temporary access key"),
+         QRegularExpression(QStringLiteral("\\bASIA[0-9A-Z]{16,}\\b"))},
+        // ---- Slack -----------------------------------------------------------
         {QStringLiteral("Slack token"),
          QRegularExpression(QStringLiteral("\\bxox[baprs]-[A-Za-z0-9-]{20,}\\b"))},
-        {QStringLiteral("Private key"),
-         QRegularExpression(QStringLiteral("-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----"))},
+        // ---- OpenAI ----------------------------------------------------------
+        // Project keys (sk-proj-) and legacy 48-char base64url keys
+        {QStringLiteral("OpenAI API key"),
+         QRegularExpression(QStringLiteral(
+             "\\bsk-proj-[A-Za-z0-9_-]{20,}\\b|\\bsk-[A-Za-z0-9]{48,}\\b"))},
+        // ---- Anthropic / Claude API ------------------------------------------
+        {QStringLiteral("Anthropic API key"),
+         QRegularExpression(QStringLiteral("\\bsk-ant-[A-Za-z0-9_-]{20,}\\b"))},
+        // ---- Stripe ----------------------------------------------------------
+        {QStringLiteral("Stripe secret key"),
+         QRegularExpression(QStringLiteral(
+             "\\bsk_(live|test)_[A-Za-z0-9]{24,}\\b"))},
+        {QStringLiteral("Stripe restricted key"),
+         QRegularExpression(QStringLiteral(
+             "\\brk_(live|test)_[A-Za-z0-9]{24,}\\b"))},
+        // ---- Google ----------------------------------------------------------
+        // Server/browser API keys — all Google products share the AIza prefix
+        {QStringLiteral("Google API key"),
+         QRegularExpression(QStringLiteral("\\bAIza[A-Za-z0-9_-]{35,}\\b"))},
+        // OAuth 2.0 access tokens issued by Google
+        {QStringLiteral("Google OAuth token"),
+         QRegularExpression(QStringLiteral("\\bya29\\.[A-Za-z0-9_-]{20,}\\b"))},
+        // OAuth client secrets from the Google Cloud console
+        {QStringLiteral("Google OAuth client secret"),
+         QRegularExpression(QStringLiteral("\\bGOCSPX-[A-Za-z0-9_-]{28,}\\b"))},
+        // ---- SendGrid --------------------------------------------------------
+        // Format: SG.<22-char key ID>.<43-char secret>
+        {QStringLiteral("SendGrid API key"),
+         QRegularExpression(QStringLiteral(
+             "\\bSG\\.[A-Za-z0-9_-]{22,}\\.[A-Za-z0-9_-]{43,}\\b"))},
+        // ---- Twilio ----------------------------------------------------------
+        // Auth tokens: SK prefix + 32 lowercase hex chars
+        {QStringLiteral("Twilio auth token"),
+         QRegularExpression(QStringLiteral("\\bSK[a-f0-9]{32,}\\b"))},
+        // ---- npm -------------------------------------------------------------
+        // npm automation / publish tokens introduced 2021
+        {QStringLiteral("npm access token"),
+         QRegularExpression(QStringLiteral("\\bnpm_[A-Za-z0-9]{36,}\\b"))},
+        // ---- HashiCorp Vault -------------------------------------------------
+        // hvs = service token, hvb = batch token, hvr = recovery token
+        {QStringLiteral("HashiCorp Vault token"),
+         QRegularExpression(QStringLiteral(
+             "\\bhv[sbr]\\.[A-Za-z0-9]{24,}\\b"))},
+        // ---- Cloudflare (anchored to the well-known env-var names) -----------
+        {QStringLiteral("Cloudflare API token"),
+         QRegularExpression(QStringLiteral(
+             "(?:CLOUDFLARE_API_TOKEN|CF_API_TOKEN)"
+             "\\s*=\\s*['\"]?([A-Za-z0-9_-]{40,})['\"]?"))},
+        // ---- Private / PEM keys ---------------------------------------------
+        // Covers RSA, EC, PKCS#8, OpenSSH, DSA, and PGP armored blocks
+        {QStringLiteral("PEM private key"),
+         QRegularExpression(QStringLiteral(
+             "-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |)PRIVATE KEY"
+             "(?:-----| BLOCK-----)"))},
+        // ---- Generic high-entropy assignments in config / .env files ---------
+        // The value must be ≥20 non-whitespace chars inside quotes to avoid
+        // flagging short placeholder defaults like password="changeme".
+        {QStringLiteral("Secret/token assignment"),
+         QRegularExpression(QStringLiteral(
+             "(?i)(?:password|passwd|api[_\\-]?(?:key|secret|token)|"
+             "auth[_\\-]?token|secret[_\\-]?key|access[_\\-]?token|"
+             "private[_\\-]?key)\\s*[:=]\\s*['\"]([^'\"\\s]{20,})['\"]"))},
     };
+    return kPatterns;
+}
 
+QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
+{
     QList<RepoSecurityFinding> findings;
     for (const RepoFile &file : files) {
         const QString text = QString::fromUtf8(file.content);
-        for (const Pattern &pattern : patterns) {
+        for (const SecretPattern &pattern : secretPatterns()) {
             auto matches = pattern.re.globalMatch(text);
             while (matches.hasNext()) {
                 const QRegularExpressionMatch match = matches.next();
@@ -435,6 +515,70 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
                     QStringLiteral("Rotate the credential and remove it from git.");
                 findings.append(finding);
             }
+        }
+    }
+    return findings;
+}
+
+// Scan a raw `git diff` output string for secrets introduced in added lines.
+QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
+{
+    static const QRegularExpression kHunkRe(
+        QStringLiteral(R"(@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@)"));
+
+    QList<RepoSecurityFinding> findings;
+    QString currentFile;
+    int hunkStart = 0;
+    int hunkOffset = 0;
+
+    for (const QString &line : diff.split(QLatin1Char('\n'))) {
+        if (line.startsWith(QStringLiteral("+++ b/"))) {
+            currentFile = line.mid(6).trimmed();
+            hunkStart = 0;
+            hunkOffset = 0;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("diff --git ")) ||
+            line.startsWith(QStringLiteral("--- ")) ||
+            line.startsWith(QStringLiteral("index "))) {
+            continue;
+        }
+        const QRegularExpressionMatch hunkMatch = kHunkRe.match(line);
+        if (hunkMatch.hasMatch()) {
+            hunkStart = hunkMatch.captured(1).toInt();
+            hunkOffset = 0;
+            continue;
+        }
+        if (line.startsWith(QLatin1Char('+'))) {
+            const int lineNum = hunkStart + hunkOffset;
+            const QString content = line.mid(1);
+            for (const SecretPattern &p : secretPatterns()) {
+                auto matches = p.re.globalMatch(content);
+                while (matches.hasNext()) {
+                    const QRegularExpressionMatch m = matches.next();
+                    RepoSecurityFinding finding;
+                    finding.id = QStringLiteral("secret:%1:%2:%3")
+                                     .arg(currentFile)
+                                     .arg(lineNum)
+                                     .arg(m.capturedStart());
+                    finding.category = QStringLiteral("Secret");
+                    finding.severity = RepoSecuritySeverity::Critical;
+                    finding.title = p.name;
+                    finding.detail =
+                        QStringLiteral("Possible %1 introduced in push: %2")
+                            .arg(p.name.toLower(), redacted(m.captured(0)));
+                    finding.path = currentFile;
+                    finding.line = lineNum;
+                    finding.recommendedAction =
+                        QStringLiteral("Rotate the credential and remove it from git.");
+                    findings.append(finding);
+                }
+            }
+            hunkOffset++;
+        } else if (line.startsWith(QLatin1Char('-'))) {
+            // removed line — does not advance new-file line counter
+        } else if (!line.isEmpty()) {
+            hunkOffset++; // context line
         }
     }
     return findings;
@@ -704,6 +848,31 @@ QString RepoSecurity::severityText(RepoSecuritySeverity severity)
         return QStringLiteral("Critical");
     }
     return QStringLiteral("Info");
+}
+
+QList<RepoSecurityFinding> RepoSecurity::findSecretsInPush(
+    const QString &localPath, const QString &upstreamRef)
+{
+    if (localPath.trimmed().isEmpty())
+        return {};
+
+    if (!upstreamRef.trimmed().isEmpty()) {
+        QProcess git;
+        git.start(QStringLiteral("git"),
+                  {QStringLiteral("-C"), localPath, QStringLiteral("diff"),
+                   upstreamRef + QStringLiteral("..HEAD")});
+        if (git.waitForFinished(15000) && git.exitCode() == 0) {
+            const QString diff = QString::fromUtf8(git.readAllStandardOutput());
+            if (!diff.trimmed().isEmpty())
+                return secretFindingsFromDiff(diff);
+            return {};
+        }
+    }
+
+    // Fallback (relay repos / no upstream): scan all tracked text files.
+    RepoSecurityInput input;
+    input.localPath = localPath;
+    return secretFindings(trackedTextFiles(input));
 }
 
 RepoSecuritySeverity RepoSecurity::highestSeverity(
