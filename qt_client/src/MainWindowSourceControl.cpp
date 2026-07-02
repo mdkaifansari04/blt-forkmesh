@@ -1990,10 +1990,15 @@ void MainWindow::openRepoFileAtLine(const QString &path, int line)
         lineSel.cursor = lc;
         lineSel.format.setBackground(QColor(31, 111, 235, 60));
         lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
-        edit->setExtraSelections({lineSel});
+        // Move the cursor (and focus) first: CodePreviewEditor's own
+        // cursorPositionChanged handler calls highlightCurrentLine(), which
+        // replaces the extra-selection list with its neutral current-line
+        // background. Applying our highlight after that keeps the distinct
+        // blue finding highlight instead of it being silently overwritten.
         edit->setTextCursor(lc);
-        edit->centerCursor();
         edit->setFocus();
+        edit->centerCursor();
+        edit->setExtraSelections({lineSel});
     });
 }
 
