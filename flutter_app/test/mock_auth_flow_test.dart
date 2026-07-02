@@ -5,6 +5,7 @@ import 'package:forkmesh/main.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/auth_mock_flow.dart';
 import 'package:forkmesh/services/api_service.dart';
+import 'package:forkmesh/services/auth_service.dart';
 import 'package:forkmesh/services/identity.dart';
 import 'package:forkmesh/services/inbox_service.dart';
 import 'package:forkmesh/services/relay_service.dart';
@@ -53,6 +54,16 @@ void main() {
     await tester.tap(finder);
   }
 
+  testWidgets('debug settings default to the local Worker relay URL', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+
+    expect(settings.serverUrl, contains(':8787/api/repo/mainnode/forkmesh'));
+    expect(settings.serverUrl, startsWith('ws://'));
+  });
+
   testWidgets('starts on the dark ForkMesh welcome screen', (tester) async {
     await tester.pumpWidget(buildFlow());
 
@@ -80,7 +91,7 @@ void main() {
     expect(find.text('Continue with your ForkMesh account.'), findsOneWidget);
     expect(find.byKey(const ValueKey('forkmesh-auth-logo')), findsWidgets);
     expect(find.text('ForkMesh'), findsNothing);
-    expect(find.text('Email'), findsOneWidget);
+    expect(find.text('Email or node name'), findsOneWidget);
     expect(find.text('Password'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Continue'), findsOneWidget);
     expect(
@@ -149,6 +160,7 @@ void main() {
       final identity = await Identity.loadOrCreate();
       final relay = RelayService(settings, identity);
       final api = FakeApiService(settings);
+      final auth = await AuthService.create(settings, identity);
       final inbox = InboxService(settings, identity);
 
       await tester.pumpWidget(
@@ -157,6 +169,7 @@ void main() {
           identity: identity,
           relay: relay,
           api: api,
+          auth: auth,
           inbox: inbox,
         ),
       );
@@ -183,6 +196,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
+    final auth = await AuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -191,6 +205,7 @@ void main() {
         identity: identity,
         relay: relay,
         api: api,
+        auth: auth,
         inbox: inbox,
       ),
     );
@@ -227,6 +242,7 @@ void main() {
         ),
       ],
     );
+    final auth = await AuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -235,6 +251,7 @@ void main() {
         identity: identity,
         relay: relay,
         api: api,
+        auth: auth,
         inbox: inbox,
       ),
     );
@@ -257,6 +274,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
+    final auth = await AuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -265,6 +283,7 @@ void main() {
         identity: identity,
         relay: relay,
         api: api,
+        auth: auth,
         inbox: inbox,
       ),
     );
@@ -319,6 +338,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
+    final auth = await AuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -327,6 +347,7 @@ void main() {
         identity: identity,
         relay: relay,
         api: api,
+        auth: auth,
         inbox: inbox,
       ),
     );
@@ -353,6 +374,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
+    final auth = await AuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -361,6 +383,7 @@ void main() {
         identity: identity,
         relay: relay,
         api: api,
+        auth: auth,
         inbox: inbox,
       ),
     );
