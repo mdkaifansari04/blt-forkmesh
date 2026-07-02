@@ -607,7 +607,7 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
     for marker in (
         "async function loadRepoCommitDetail(repo, hash)",
         "function renderRepoCommitDetail(repo, data)",
-        "function renderRepoCommitDiff(diff)",
+        "function renderRepoCommitDiff(diff, imageDiffs)",
         "function renderRepoCommitFiles(files)",
         "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
