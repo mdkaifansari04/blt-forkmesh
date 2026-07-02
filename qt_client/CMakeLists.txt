@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.32 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.33 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -91,6 +91,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentRunner.cpp
     src/QrCode.h
     src/QrCode.cpp
+    src/ReactionEmoji.h
+    src/ReactionEmoji.cpp
     src/MessageRow.h
     src/MessageRow.cpp
     src/MarkdownEditor.cpp
