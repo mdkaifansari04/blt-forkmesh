@@ -246,6 +246,17 @@
     return "";
   }
 
+  // Pushes a new history entry for real in-app navigations (opening a repo,
+  // browsing into a folder/file, leaving a repo for another section) so the
+  // browser Back/Forward buttons step through them one at a time instead of
+  // exiting the app entirely. No-ops when already on that URL (e.g. while
+  // restoring state from a popstate event) to avoid piling up duplicate
+  // entries that would otherwise make Back a no-op.
+  function navigateHistory(url) {
+    if (`${location.pathname}${location.search}` === url) return;
+    window.history.pushState(null, "", url);
+  }
+
   async function fetchJson(path) {
     const response = await fetch(path, {
       headers: { accept: "application/json" },
@@ -1726,7 +1737,7 @@
         <div data-repo-file-content>${content}</div>
       </div>`;
     bindRepoPreviewToolbar(viewer, meta);
-    window.history.replaceState(null, "", repoPathUrl(repo, "blob", path));
+    navigateHistory(repoPathUrl(repo, "blob", path));
     window.lucide?.createIcons();
     return true;
   }
@@ -1850,7 +1861,7 @@
       setRepoExplorerSelection(path, "tree");
       if (!entries.length) {
         treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">This directory is empty.</div>';
-        window.history.replaceState(null, "", repoPathUrl(repo, "tree", path));
+        navigateHistory(repoPathUrl(repo, "tree", path));
         window.lucide?.createIcons();
         return;
       }
@@ -1865,7 +1876,7 @@
               <span class="shrink-0 text-xs text-muted-foreground font-mono">${isTree ? "dir" : escapeHtml(formatSize(entry.size))}</span>
             </button>`;
       }).join("");
-      window.history.replaceState(null, "", repoPathUrl(repo, "tree", path));
+      navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
     } catch (_) {
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
@@ -1928,7 +1939,7 @@
         </div>`;
       setRepoFileMode(viewer, "code", lines, path, meta);
       bindRepoFileToolbar(viewer, repo, path, content, lines, meta);
-      window.history.replaceState(null, "", repoPathUrl(repo, "blob", path));
+      navigateHistory(repoPathUrl(repo, "blob", path));
       window.lucide?.createIcons();
     } catch (_) {
       viewer.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Could not load this file from a live host.</div>';
@@ -2845,7 +2856,7 @@
     // deep link) untouched so the tree/blob restore below still sees its path.
     const detailPath = repoPathUrl(repo);
     if (!location.pathname.startsWith(detailPath)) {
-      window.history.replaceState(null, "", detailPath);
+      navigateHistory(detailPath);
     }
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
@@ -3476,9 +3487,17 @@
 
     const sectionButton = event.target.closest("[data-section]");
     if (sectionButton) {
-      setSection(sectionButton.dataset.section);
+      const targetSection = sectionButton.dataset.section;
+      // Leaving a repo's /owner/name URL for a section without its own deep
+      // link (repos list, network, profile...) — push a /dashboard entry so
+      // Back returns to the repo instead of exiting the app.
+      if (targetSection !== "explore" && requestedRepoKey()) {
+        state.selectedRepo = null;
+        navigateHistory("/dashboard");
+      }
+      setSection(targetSection);
       closeMobileDrawers();
-      if (sectionButton.dataset.section === "profile") {
+      if (targetSection === "profile") {
         renderProfilePage(state.session);
         refreshPublicProfile(state.session);
       }
@@ -3742,6 +3761,30 @@
       event.preventDefault();
       openRepoFileFinder();
     }
+  });
+
+  window.addEventListener("popstate", () => {
+    const requested = requestedRepoKey();
+    const repo = requested ? findRepository(requested) : null;
+    if (!repo) {
+      state.selectedRepo = null;
+      setSection("repos");
+      return;
+    }
+    if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
+      // Same repo, only the tree/blob path changed — restore that path
+      // instead of tearing down and rebuilding the whole detail view.
+      const parts = location.pathname.split("/").filter(Boolean);
+      const kind = parts[2];
+      const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
+      if (kind === "blob" && path) {
+        loadRepositoryBlob(repo, path);
+      } else {
+        loadRepositoryTree(repo, kind === "tree" ? path : "");
+      }
+      return;
+    }
+    renderRepoDetail(repo);
   });
 
   applyDashboardTheme(readDashboardTheme());
