@@ -3600,6 +3600,10 @@
           state.loadedRepoTabs[tab] = true;
           if (tab === "issues") loadRepoIssues(state.selectedRepo);
           else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
+        } else if (tab === "issues" && state.selectedRepo) {
+          // Re-selecting the tab should return to the issues list even if the
+          // new-issue compose form was left open.
+          renderRepoIssues();
         }
         return;
       }
