@@ -3311,7 +3311,7 @@ void MainWindow::collectPushDetail(const QString &localPath, const QString &base
     }
 }
 
-// Resolve every git-derived count the "Sync changes" button needs — the relay /
+// Resolve every git-derived count the "Sync" button needs — the relay /
 // upstream classification, unpublished/ahead/behind walks. Each is a rev-list /
 // rev-parse subprocess on the working copy + served mirror, so this is the part
 // that used to freeze the window on every commit/sync; it runs on a worker thread
@@ -3395,9 +3395,9 @@ MainWindow::computeRepoPushState(const RepositoryRecord &repo) const
     return st;
 }
 
-// Paint the "Sync changes" button from an already-computed RepoPushState (no git).
+// Paint the "Sync" button from an already-computed RepoPushState (no git).
 // Runs on the GUI thread, reads the live m_pushingRepos/m_syncingRepos membership
-// so a Sync click flips it to "Syncing changes…" the instant the click marks the
+// so a Sync click flips it to "Syncing…" the instant the click marks the
 // repo, and hides the button whenever there's nothing pending.
 void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
 {
@@ -3497,7 +3497,7 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
 
     if (m_pushingRepos.contains(index)) {
         setOcticon(m_repoPushButton, "sync", 14);
-        m_repoPushButton->setText(QString::fromUtf8("Syncing changes")
+        m_repoPushButton->setText(QString::fromUtf8("Syncing")
                                   + arrow(1, behind) + QString::fromUtf8("\xE2\x80\xA6"));
         m_repoPushButton->setToolTip(
             behind > 0
@@ -3512,7 +3512,7 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         const int unpublished = state.unpublished;
         if (m_syncingRepos.contains(index)) {
             setOcticon(m_repoPushButton, "sync", 14);
-            m_repoPushButton->setText(QString::fromUtf8("Syncing changes")
+            m_repoPushButton->setText(QString::fromUtf8("Syncing")
                                       + arrow(qMax(unpublished, 1), behind)
                                       + QString::fromUtf8("\xE2\x80\xA6"));
             m_repoPushButton->setToolTip(
@@ -3530,7 +3530,7 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
         setOcticon(m_repoPushButton, "sync", 14);
         // Surface the pending count right on the button — a small number above the
         // Commits tab — instead of hiding it in the tooltip (issue #208).
-        m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(unpublished)
+        m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(unpublished)
                                   + arrow(unpublished, behind));
         m_repoPushButton->setToolTip(detailTip(
             unpublished, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
@@ -3545,12 +3545,12 @@ void MainWindow::applyRepoPushButtonState(int index, const RepoPushState &state)
     }
     const int ahead = state.ahead;
 
-    // A repo with a real upstream remote (origin/main, …). "Sync changes" with a
+    // A repo with a real upstream remote (origin/main, …). "Sync" with a
     // direction arrow — ⇅ when there's also incoming to pull. The count and target
     // move to the tooltip; pushCurrentRepoUpstream still does the push.
     setOcticon(m_repoPushButton, "sync", 14);
     // Show the pending commit count on the button itself (issue #208).
-    m_repoPushButton->setText(QStringLiteral("Sync changes (%1)").arg(ahead)
+    m_repoPushButton->setText(QStringLiteral("Sync (%1)").arg(ahead)
                               + arrow(ahead, behind));
     m_repoPushButton->setToolTip(detailTip(
         ahead, QStringLiteral("%1/%2").arg(repo.owner, repo.name), state));
