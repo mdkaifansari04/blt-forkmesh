@@ -2337,6 +2337,43 @@ inline void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// A QComboBox whose popup always opens tall enough to show every item, with no
+// up/down scroll-arrow buttons (issue #348). Once a Qt Style Sheet is applied
+// app-wide (Theme::kStyleSheet, set in MainWindow's ctor), Qt's CSS engine
+// renders combo popups as a short scrollable list with those scroller buttons
+// even when the whole list would fit — and the usual fix, forcing
+// QStyle::SH_ComboBox_Popup through a QProxyStyle, is silently ignored while a
+// stylesheet is active. Resizing the popup by hand right after it opens is the
+// reliable workaround: given room for every row plus the container's scroller
+// chrome, nothing needs scrolling so Qt hides the arrows. When the list is
+// genuinely taller than the screen the arrows correctly stay (we cap there).
+class FullPopupComboBox : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+
+protected:
+    void showPopup() override
+    {
+        QComboBox::showPopup();
+        QAbstractItemView *v = view();
+        QWidget *popup = v ? v->window() : nullptr;
+        if (!v || !popup || popup == v || count() == 0)
+            return;
+        // Every row, the view frame, and one extra row's worth of slack for the
+        // scroller buttons the styled container still reserves space for.
+        int height = 2 * v->frameWidth() + v->sizeHintForRow(0);
+        for (int i = 0; i < count(); ++i)
+            height += v->sizeHintForRow(i);
+        if (QScreen *scr = popup->screen())
+            height = qMin(height, scr->availableGeometry().height());
+        QRect geo = popup->geometry();
+        if (height > geo.height()) {
+            geo.setHeight(height);
+            popup->setGeometry(geo);
+        }
+    }
+};
+
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
 // launcher routes each task: a free local heuristic pass first, then a triage
 // ladder that asks Haiku whether it can handle the task and escalates through
