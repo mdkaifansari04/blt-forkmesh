@@ -191,24 +191,49 @@ verify_deploy() {
         return 0
     fi
     echo "Verifying $url is serving BUILD_REV=$expected ..."
-    local attempt body got
-    for attempt in $(seq 1 20); do
-        body="$(curl -fsS --max-time 15 "$url" 2>/dev/null || true)"
+    # 30 attempts * (up to 25s request + 6s sleep) gives a long runway before
+    # calling this a real failure. This Worker is a ~10k-line Python
+    # (Pyodide) module, and Cloudflare Python Workers are known to have much
+    # slower cold starts than JS Workers while the isolate compiles/loads the
+    # runtime on the FIRST hit of a freshly-deployed version at each colo — a
+    # too-tight per-request timeout here previously made the loop time out
+    # (curl exit 28) before the Worker ever got a chance to answer, reporting
+    # a false "never went live" even though the deploy had, in fact, landed.
+    local attempts=30 max_time=25 sleep_s=6
+    local attempt body got http_code curl_rc
+    for attempt in $(seq 1 "$attempts"); do
+        curl_rc=0
+        body="$(curl -sS --max-time "$max_time" -w $'\n%{http_code}' "$url" 2>/dev/null)" || curl_rc=$?
+        http_code="${body##*$'\n'}"
+        body="${body%$'\n'*}"
         # Pull "rev":"<value>" out of the JSON without needing jq.
         got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        if [ "$got" = "$expected" ]; then
+        if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && [ "$got" = "$expected" ]; then
             echo "Verified: live origin is serving build $expected."
             return 0
         fi
-        echo "  attempt $attempt/20: live rev='${got:-<none>}' (want '$expected'); retrying in 6s..." >&2
-        sleep 6
+        if [ "$curl_rc" != 0 ]; then
+            echo "  attempt $attempt/$attempts: curl failed (exit $curl_rc, e.g. timeout/DNS/TLS); retrying in ${sleep_s}s..." >&2
+        else
+            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}' (want '$expected'); retrying in ${sleep_s}s..." >&2
+        fi
+        sleep "$sleep_s"
     done
     echo "ERROR: $base never reported BUILD_REV=$expected after the deploy." >&2
-    echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
-    echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
-    echo "       custom domain still routes to an old Worker). Check that" >&2
-    echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
-    echo "       forkmesh.com, then redeploy." >&2
+    if [ "$curl_rc" != 0 ]; then
+        echo "       Last attempt failed to connect (curl exit $curl_rc) — check network egress" >&2
+        echo "       from the deploy runner and that forkmesh.com resolves and is reachable." >&2
+    elif [ "$http_code" != "200" ]; then
+        echo "       Last attempt got HTTP $http_code from $url (expected 200). That's a" >&2
+        echo "       server-side/routing error, not a stale-code mismatch — check the Worker's" >&2
+        echo "       error log (admin dashboard) for what's failing on that origin." >&2
+    else
+        echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
+        echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
+        echo "       custom domain still routes to an old Worker). Check that" >&2
+        echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
+        echo "       forkmesh.com, then redeploy." >&2
+    fi
     return 1
 }
 
