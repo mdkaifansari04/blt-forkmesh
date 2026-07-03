@@ -26,6 +26,8 @@ FUNCS = {
     "_account_claim_confirm", "_redeem_or_park_link_code", "_account_link_node",
     "_account_link_self", "_account_link_grant", "_account_heartbeat",
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
+    "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
+    "_account_ownership_transfer_confirm",
 }
 
 
@@ -130,8 +132,8 @@ def _harness(accounts):
     async def ed25519_verify(_pubkey, _sig, _canonical):
         return True
 
-    async def _is_admin(_env, _name):
-        return False
+    async def _is_admin(_env, name):
+        return bool(accounts.get(name, {}).get("is_admin"))
 
     def clean_avatar_png(_value):
         return "", ""
@@ -168,6 +170,7 @@ def _harness(accounts):
         "MAX_NODE_NAME": 63,
         "CLAIM_CODE_TTL_MS": 10 * 60 * 1000,
         "CLAIM_CODE_MAX_ATTEMPTS": 5,
+        "OWNERSHIP_TRANSFER_TTL_MS": 24 * 60 * 60 * 1000,
         "LINK_CODE_TTL_MS": 30 * 60 * 1000,
         "LINK_CODE_RE": re.compile(r"^[0-9]{6}$"),
         "SOLANA_RE": re.compile(r"^solana-[a-z0-9]{4,60}$"),
@@ -334,6 +337,110 @@ def test_too_many_wrong_codes_invalidate_the_claim():
         asyncio.run(ns["_account_claim_confirm"](
             env, _Request(_auth({"nodeId": "mirror1", "code": "000000"}))))
     assert "claim_pending" not in accounts["mirror1"]
+
+
+def _admin_rec(name="admin1"):
+    return {"name": name, "status": "active", "pubkey": "PK-" + name,
+            "is_admin": True}
+
+
+def test_admin_ownership_transfer_approved_via_node_heartbeat():
+    accounts = {"admin1": _admin_rec(), "mirror1": _node_rec()}
+    ns = _harness(accounts)
+    env = object()
+
+    requested = asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "mirror1", "ts": "1", "sig": "s"})))
+    assert requested["status"] == 201
+    pending = accounts["mirror1"]["ownership_transfer_pending"]
+    assert pending["admin"] == "admin1"
+
+    # The prompt only ever reaches the target node via its own heartbeat.
+    beat = asyncio.run(ns["_account_heartbeat"](env, _Request(
+        {"nodeName": "mirror1", "ts": "1", "sig": "s"})))
+    assert beat["data"]["ownershipTransfer"] == {"admin": "admin1"}
+
+    confirmed = asyncio.run(ns["_account_ownership_transfer_confirm"](
+        env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
+                      "action": "approve"})))
+    assert confirmed["status"] == 200
+    assert confirmed["data"]["owner"] == "admin1"
+    assert accounts["mirror1"]["owner"] == "admin1"
+    assert "ownership_transfer_pending" not in accounts["mirror1"]
+    assert accounts["admin1"]["nodes"] == ["mirror1"]
+
+
+def test_admin_ownership_transfer_denied_leaves_owner_unchanged():
+    accounts = {"admin1": _admin_rec(),
+               "mirror1": dict(_node_rec(), owner="bob")}
+    ns = _harness(accounts)
+    env = object()
+
+    asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "mirror1", "ts": "1", "sig": "s"})))
+
+    denied = asyncio.run(ns["_account_ownership_transfer_confirm"](
+        env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
+                      "action": "deny"})))
+    assert denied["status"] == 200
+    assert denied["data"]["denied"] is True
+    assert accounts["mirror1"]["owner"] == "bob"
+    assert "ownership_transfer_pending" not in accounts["mirror1"]
+
+
+def test_admin_ownership_transfer_rejections():
+    accounts = {
+        "admin1": _admin_rec(),
+        "alice": _user_rec(),
+        "mirror1": _node_rec(),
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    not_admin = asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "alice", "target": "mirror1", "ts": "1", "sig": "s"})))
+    assert not_admin["status"] == 401
+
+    not_a_node = asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "alice", "ts": "1", "sig": "s"})))
+    assert not_a_node["status"] == 403
+    assert not_a_node["data"]["error"] == "not_a_node"
+
+    self_request = asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "admin1", "ts": "1", "sig": "s"})))
+    assert self_request["status"] == 400
+    assert self_request["data"]["error"] == "cannot_request_self"
+
+    missing = asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "ghost", "ts": "1", "sig": "s"})))
+    assert missing["status"] == 404
+
+    # No pending marker at all -> confirm is a no-op 404.
+    no_pending = asyncio.run(ns["_account_ownership_transfer_confirm"](
+        env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
+                      "action": "approve"})))
+    assert no_pending["status"] == 404
+    assert no_pending["data"]["error"] == "no_pending_transfer"
+
+
+def test_expired_ownership_transfer_is_cleaned_up_by_heartbeat():
+    accounts = {"admin1": _admin_rec(), "mirror1": _node_rec()}
+    ns = _harness(accounts)
+    env = object()
+
+    asyncio.run(ns["_admin_request_ownership"](env, _Request(
+        {"node": "admin1", "target": "mirror1", "ts": "1", "sig": "s"})))
+    ns["_now"][0] += 25 * 60 * 60 * 1000  # past OWNERSHIP_TRANSFER_TTL_MS
+
+    confirm = asyncio.run(ns["_account_ownership_transfer_confirm"](
+        env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
+                      "action": "approve"})))
+    assert confirm["status"] == 404
+
+    beat = asyncio.run(ns["_account_heartbeat"](env, _Request(
+        {"nodeName": "mirror1", "ts": "1", "sig": "s"})))
+    assert "ownershipTransfer" not in beat["data"]
+    assert "ownership_transfer_pending" not in accounts["mirror1"]
 
 
 def test_link_self_attaches_node_with_node_key_and_user_password():
