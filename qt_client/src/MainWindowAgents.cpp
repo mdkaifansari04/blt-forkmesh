@@ -3345,15 +3345,25 @@ void MainWindow::assignIssueToAgent(const QString &provider, const QString &mode
 }
 
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
-                                   bool createPr, bool quiet, const QString &model)
+                                   bool createPr, bool quiet, const QString &model,
+                                   const RepositoryRecord *repoHint)
 {
     if (!m_agentStore || issue.number <= 0)
         return 0;
-    const int idx = issuesRepoIndex();
-    if (idx < 0 || idx >= m_repositories.size())
-        return 0;
-    const RepositoryRecord &repo = m_repositories.at(idx);
-    IssueStore issueStore = issueStoreForCurrentRepo();
+    RepositoryRecord repo;
+    IssueStore issueStore(QString(), QString(), &m_profileIdentity, m_userName);
+    if (repoHint) {
+        repo = *repoHint;
+        const RepositoryRecord &writable = writableRecordFor(repo);
+        issueStore = IssueStore(writable.localPath, writable.mirrorPath,
+                               &m_profileIdentity, m_userName);
+    } else {
+        const int idx = issuesRepoIndex();
+        if (idx < 0 || idx >= m_repositories.size())
+            return 0;
+        repo = m_repositories.at(idx);
+        issueStore = issueStoreForCurrentRepo();
+    }
     // A node that only mirrors this repo (no working tree) can still run an
     // agent: it builds the change in a throwaway worktree off the mirror and
     // opens a pull request to the owner. So require a local copy to work from —
