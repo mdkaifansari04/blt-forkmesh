@@ -5,9 +5,9 @@ title: Fix open closed count on web
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 7
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783048785
 author: HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE
 authorName: jett
