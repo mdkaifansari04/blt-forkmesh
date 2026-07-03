@@ -1737,34 +1737,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
-    // Reward-availability toggle, right next to the balance. A node only collects
-    // rewards while it is online and serving, so make that link unmistakable: the
-    // switch flips the node online/offline, a status line spells out whether it's
-    // "available for rewards" (green, the state we nudge the user toward) or
-    // "offline · not collecting rewards" (amber), and an uptime line shows how
-    // long the node has been online.
-    m_nodeOnlineToggle = new QPushButton;
-    m_nodeOnlineToggle->setObjectName("nodeOnlineToggle");
-    m_nodeOnlineToggle->setCheckable(true);
-    m_nodeOnlineToggle->setCursor(Qt::PointingHandCursor);
-    m_nodeOnlineToggle->setFixedWidth(148);
-    connect(m_nodeOnlineToggle, &QPushButton::clicked, this,
-            [this](bool checked) { setNodeOffline(!checked); });
-
-    m_nodeRewardStatus = new QLabel;
-    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
-    m_nodeRewardStatus->setAlignment(Qt::AlignCenter);
-    m_nodeRewardStatus->setFixedWidth(148);
-    m_nodeRewardStatus->setWordWrap(true);
-
-    m_nodeUptimeLabel = new QLabel;
-    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
-    m_nodeUptimeLabel->setAlignment(Qt::AlignCenter);
-    m_nodeUptimeLabel->setFixedWidth(148);
-    m_nodeUptimeLabel->setStyleSheet(
-        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
-    m_nodeUptimeLabel->setToolTip(
-        QStringLiteral("How long this node has been online this session"));
+    // The reward-availability toggle (online/offline switch, status line, uptime)
+    // used to live here beside the balance; it's now built in
+    // buildNodeProfilePanel(), right under "Get paid to mirror", as a clear
+    // on/off switch for the whole node rather than a small top-bar pill.
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
@@ -2147,19 +2123,9 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
-    // Online/reward cluster sits to the LEFT of the wallet balance: the
-    // online toggle, the "available for rewards" status line and the uptime
-    // stack beside the money rather than below it, so this row doesn't grow
-    // taller than the node name + balance it sits next to.
-    auto *rewardColumn = new QVBoxLayout;
-    rewardColumn->setContentsMargins(0, 0, 0, 0);
-    rewardColumn->setSpacing(0);
-    rewardColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
-    rewardColumn->addWidget(m_nodeRewardStatus);
-    rewardColumn->addWidget(m_nodeUptimeLabel);
-    mainRow->addLayout(rewardColumn);
-    mainRow->addSpacing(8);
-    // Stack the node name above the wallet balance — "this is your money".
+    // Stack the node name above the wallet balance — "this is your money". The
+    // online/reward toggle that used to sit here now lives in the node profile
+    // panel, under "Get paid to mirror".
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
@@ -2395,27 +2361,19 @@ void MainWindow::updateNodeOnlineControls()
     const bool online = !m_nodeOffline;
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
-    m_nodeOnlineToggle->setText(online ? QString::fromUtf8("\xE2\x97\x8F  Online")
-                                       : QString::fromUtf8("\xE2\x97\x8B  Offline"));
     m_nodeOnlineToggle->setToolTip(
         online ? QStringLiteral("This node is online and collecting rewards. "
                                 "Click to take it offline.")
                : QStringLiteral("This node is offline and not collecting "
                                 "rewards. Click to bring it back online."));
-    // Green pill when online (the state we want the user to keep), muted/amber when
-    // offline. Styled inline so the state colours don't depend on a QSS re-polish.
-    m_nodeOnlineToggle->setStyleSheet(
-        online
-            ? QStringLiteral(
-                  "#nodeOnlineToggle { background:#1a7f37; color:#ffffff; "
-                  "border:1px solid #2ea043; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#216e39; }")
-            : QStringLiteral(
-                  "#nodeOnlineToggle { background:transparent; color:#d29922; "
-                  "border:1px solid #9e6a03; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#161b22; }"));
+
+    if (m_nodeOnlineStatusLabel) {
+        m_nodeOnlineStatusLabel->setText(online ? QStringLiteral("Online")
+                                                : QStringLiteral("Offline"));
+        m_nodeOnlineStatusLabel->setStyleSheet(
+            online ? QStringLiteral("color:#3fb950; font-size:13px; font-weight:800;")
+                   : QStringLiteral("color:#d29922; font-size:13px; font-weight:800;"));
+    }
 
     if (m_nodeRewardStatus) {
         m_nodeRewardStatus->setText(online
@@ -5859,18 +5817,19 @@ QWidget *MainWindow::buildHomeSection()
     return page;
 }
 
-// Small helper: an icon-only quick-action button for the "THIS NODE" toolbar at
-// the top of the profile panel. Bigger tap target, tooltip-labelled.
-static QPushButton *makeProfileActionButton(const QString &icon,
+// Small helper: a labelled quick-action button for the "THIS NODE" toolbar at
+// the top of the profile panel. Icon + text (not icon-only) so the action is
+// clear at a glance; the tooltip carries the longer explanation.
+static QPushButton *makeProfileActionButton(const QString &icon, const QString &label,
                                             const QString &tooltip)
 {
-    auto *button = new QPushButton;
+    auto *button = new QPushButton(label);
     button->setObjectName("profileActionButton");
     button->setCursor(Qt::PointingHandCursor);
     button->setToolTip(tooltip);
     button->setFixedHeight(36);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setOcticon(button, icon, 18);
+    setOcticon(button, icon, 16);
     return button;
 }
 
@@ -5922,10 +5881,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Width: wide enough for all content, narrow enough to look centered on wide
-    // windows when flanked by the stretchers in buildNodeProfileSection.
+    // Width: wide enough for the two-column layout (identity/stats on the left,
+    // hosting/keys/Solana on the right) side by side, narrow enough to look
+    // centered on wide windows when flanked by the stretchers in
+    // buildNodeProfileSection.
     scroll->setMinimumWidth(340);
-    scroll->setMaximumWidth(840);
+    scroll->setMaximumWidth(1180);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -5988,23 +5949,64 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(m_profileGetPaidButton, &QPushButton::clicked, this,
             &MainWindow::enablePaidMirroring);
 
-    // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
-    // (rebuild, update, settings, logout) that used to be a stacked text menu.
+    // --- Node power switch: a plain on/off toggle sitting right under "Get paid
+    // to mirror", since that's exactly what it controls — whether this whole
+    // node is online and serving/collecting rewards, or parked offline. Used to
+    // be a small pill in the top-right nav cluster; moved here so it reads as
+    // the node's power switch rather than a stray status badge.
+    m_profileOnlineSection = new QWidget;
+    auto *onlineSectionLabel = makeProfileSection("THIS NODE'S POWER SWITCH");
+    auto *nodeOnlineSwitch = new ToggleSwitch;
+    m_nodeOnlineToggle = nodeOnlineSwitch;
+    connect(nodeOnlineSwitch, &QAbstractButton::clicked, this,
+            [this](bool checked) { setNodeOffline(!checked); });
+    m_nodeOnlineStatusLabel = new QLabel;
+    m_nodeRewardStatus = new QLabel;
+    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
+    m_nodeRewardStatus->setWordWrap(true);
+    m_nodeUptimeLabel = new QLabel;
+    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
+    m_nodeUptimeLabel->setStyleSheet(
+        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
+    m_nodeUptimeLabel->setToolTip(
+        QStringLiteral("How long this node has been online this session"));
+    auto *onlineStatusColumn = new QVBoxLayout;
+    onlineStatusColumn->setContentsMargins(0, 0, 0, 0);
+    onlineStatusColumn->setSpacing(0);
+    onlineStatusColumn->addWidget(m_nodeOnlineStatusLabel);
+    onlineStatusColumn->addWidget(m_nodeRewardStatus);
+    onlineStatusColumn->addWidget(m_nodeUptimeLabel);
+    auto *onlineSwitchRow = new QHBoxLayout;
+    onlineSwitchRow->setContentsMargins(0, 0, 0, 0);
+    onlineSwitchRow->setSpacing(10);
+    onlineSwitchRow->addWidget(nodeOnlineSwitch);
+    onlineSwitchRow->addLayout(onlineStatusColumn, 1);
+    auto *onlineSectionLayout = new QVBoxLayout(m_profileOnlineSection);
+    onlineSectionLayout->setContentsMargins(0, 0, 0, 0);
+    onlineSectionLayout->setSpacing(6);
+    onlineSectionLayout->addWidget(onlineSectionLabel);
+    onlineSectionLayout->addLayout(onlineSwitchRow);
+
+    // --- Self-only quick actions: a horizontal toolbar of labelled icon buttons
+    // (rebuild, update, settings, logout) that used to be a stacked text menu,
+    // then icon-only; labels came back so each action is clear at a glance.
     m_profileSelfActions = new QWidget;
     auto *selfLabel = makeProfileSection("THIS NODE");
     m_profileRebuildButton = makeProfileActionButton(
-        "sync",
+        "sync", "Rebuild",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
     connect(m_profileRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileRebuildButton); quickRebuildRestart(); });
     m_profileUpdateButton = makeProfileActionButton(
-        "download", "Pull the latest source, then rebuild and relaunch");
+        "download", "Update", "Pull the latest source, then rebuild and relaunch");
     connect(m_profileUpdateButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileUpdateButton); updateRebuildRestart(); });
-    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings");
+    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings",
+                                                        "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout");
+    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
+                                                      "Log out of this node");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
@@ -6146,31 +6148,56 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(m_profileEligibility);
     solanaLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
 
+    // Two-column body: identity/stats on the left, hosting/keys/Solana (what
+    // used to be one long stack at the bottom) on the right, side by side. Both
+    // columns share a common top edge so they read as one panel rather than
+    // two independently-scrolled halves.
+    auto *leftColumn = new QVBoxLayout;
+    leftColumn->setContentsMargins(0, 0, 0, 0);
+    leftColumn->setSpacing(6);
+    leftColumn->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileName);
+    leftColumn->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileOnlineSection);
+    leftColumn->addWidget(m_profileStatus);
+    leftColumn->addWidget(m_profileNote);
+    leftColumn->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileStatGrid);
+    leftColumn->addWidget(detailsLabel);
+    leftColumn->addWidget(m_profileDetails);
+    leftColumn->addWidget(m_profileMirrorsLabel);
+    leftColumn->addWidget(m_profileMirrors);
+    leftColumn->addStretch();
+
+    auto *rightColumn = new QVBoxLayout;
+    rightColumn->setContentsMargins(0, 0, 0, 0);
+    rightColumn->setSpacing(6);
+    rightColumn->addWidget(m_profileHostingLabel);
+    rightColumn->addWidget(m_profileHosting);
+    rightColumn->addWidget(nodeKeyLabel);
+    rightColumn->addWidget(m_profileNodeKey);
+    rightColumn->addWidget(copyKey, 0, Qt::AlignLeft);
+    rightColumn->addWidget(m_profileSolanaSection);
+    rightColumn->addStretch();
+
+    auto *columnsRow = new QHBoxLayout;
+    columnsRow->setContentsMargins(0, 0, 0, 0);
+    columnsRow->setSpacing(20);
+    columnsRow->addLayout(leftColumn, 1);
+    columnsRow->addLayout(rightColumn, 1);
+
     auto *layout = new QVBoxLayout(content);
     layout->setContentsMargins(14, 12, 14, 12);
     layout->setSpacing(6);
     layout->addLayout(topRow);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
-    layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileName);
-    layout->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatus);
-    layout->addWidget(m_profileNote);
-    layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatGrid);
-    layout->addWidget(detailsLabel);
-    layout->addWidget(m_profileDetails);
-    layout->addWidget(m_profileMirrorsLabel);
-    layout->addWidget(m_profileMirrors);
-    layout->addWidget(m_profileHostingLabel);
-    layout->addWidget(m_profileHosting);
-    layout->addWidget(nodeKeyLabel);
-    layout->addWidget(m_profileNodeKey);
-    layout->addWidget(copyKey, 0, Qt::AlignLeft);
-    layout->addWidget(m_profileSolanaSection);
-    layout->addStretch();
+    layout->addLayout(columnsRow);
 
     scroll->setWidget(content);
+    // The online switch, status line and uptime label are created here rather
+    // than in the always-visible top bar now, so give them their initial state
+    // as soon as they exist instead of waiting for the next online/offline event.
+    updateNodeOnlineControls();
     return scroll;
 }
 
@@ -6368,6 +6395,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);
+    // The online/offline power switch only controls your own node.
+    if (m_profileOnlineSection)
+        m_profileOnlineSection->setVisible(info.self);
 
     // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
     // (active account + a payout address set) it flips to an "earning" label so
