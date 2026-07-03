@@ -151,6 +151,17 @@ int main(int argc, char *argv[])
               "verifySignature rejects a tampered signature");
     }
 
+    // The #welcome greeting must survive a restart (a fresh ForkMeshIdentity
+    // reloading the same on-disk key), which was the point of colocating the
+    // flag with the identity key instead of QSettings (adhoc #109).
+    {
+        identity.markWelcomeAnnounced();
+        ForkMeshIdentity reloaded;
+        check(reloaded.load(), "identity reloads from the same on-disk key");
+        check(reloaded.hasAnnouncedWelcome(),
+              "welcome-announced flag survives a fresh identity load");
+    }
+
     RoomCrypto crypto("repo:mainnode/forkmesh:room:general",
                       "correct horse battery staple");
     check(crypto.isValid(), "mainnode room crypto key derives");
