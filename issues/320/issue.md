@@ -5,7 +5,7 @@ title: I clicked on verify my email however still in the profile settings it say
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 2
 progress: 0
 assignees: []
 createdAt: 1782920283476
