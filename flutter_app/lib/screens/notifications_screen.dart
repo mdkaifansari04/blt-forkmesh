@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:ming_cute_icons/ming_cute_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../fm_icons.dart';
 import '../models/models.dart';
 import '../services/relay_service.dart';
 import '../theme.dart';
@@ -238,7 +238,7 @@ class _NotificationRow extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              MingCuteIcons.mgc_notification_line,
+              FmIcons.notificationLine,
               color: FmTheme.textPrimary(context),
               size: 24,
             ),
@@ -319,7 +319,7 @@ class _NotificationsEmptyState extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(FmSpace.x5),
         child: FmEmptyState(
-          icon: MingCuteIcons.mgc_notification_line,
+          icon: FmIcons.notificationLine,
           title: title,
           message: message,
         ),
