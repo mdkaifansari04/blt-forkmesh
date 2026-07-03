@@ -705,6 +705,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentStatusRowLayout->setSpacing(6);
     agentStatusRowLayout->addWidget(m_agentStatusLabel);
     agentStatusRowLayout->addWidget(agentStatusScroll, 1);
+    // Small "fix conflicts with agent" icon button (adhoc #139): built earlier
+    // by buildAgentsTab() (called from buildHomeSection(), which runs before
+    // this dock in buildChatPage()); it stays hidden until the selected
+    // session's branch is flagged as conflicted (see showAgentSession()).
+    if (m_agentFixConflictsButton)
+        agentStatusRowLayout->addWidget(m_agentFixConflictsButton);
     m_agentStatusRow->setVisible(false); // shown once refreshAgentStatusRow() finds sessions
 
     // Card (right half): the "Agents:" strip on top of the prompt frame, whose
