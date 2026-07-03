@@ -1444,11 +1444,12 @@ async def _network_payout_nodes(env):
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
         first_wallet = has_wallet and wallet not in seen_wallets
+        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
+        verified_wallet = bool(balance is not None and balance >= MIN_ACTIVE_LAMPORTS)
         # A node only shares the split if it mirrors a repo for another node, so
         # its eligibility on /network/ must reflect that too (issue #94).
         mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
-        eligible = bool(online and first_wallet and mirrors_repo)
-        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
+        eligible = bool(online and first_wallet and verified_wallet and mirrors_repo)
         if has_wallet:
             seen_wallets.add(wallet)
         reason = "eligible"
@@ -1458,6 +1459,8 @@ async def _network_payout_nodes(env):
             reason = "missing_wallet"
         elif not first_wallet:
             reason = "duplicate_wallet"
+        elif not verified_wallet:
+            reason = "wallet_unverified"
         elif not mirrors_repo:
             reason = "no_mirrors"
         nodes.append({
@@ -5374,6 +5377,9 @@ async def _online_payout_addresses(env):
         solana = (rec.get("solana") or "").strip()
         if not solana or not SOLANA_RE.match(solana) or solana in seen:
             continue
+        balance = await _solana_balance_lamports(env, solana)
+        if balance is None or balance < MIN_ACTIVE_LAMPORTS:
+            continue
         seen.add(solana)
         addresses.append(solana)
     # Main relay: also disburse to every online node on every approved federated
@@ -5389,6 +5395,9 @@ async def _online_payout_addresses(env):
             for r in (fed or []):
                 wallet = (r.get("wallet") or "").strip()
                 if wallet and SOLANA_RE.match(wallet) and wallet not in seen:
+                    balance = await _solana_balance_lamports(env, wallet)
+                    if balance is None or balance < MIN_ACTIVE_LAMPORTS:
+                        continue
                     seen.add(wallet)
                     addresses.append(wallet)
         except Exception:
