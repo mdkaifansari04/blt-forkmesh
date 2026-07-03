@@ -2706,7 +2706,17 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             m_pendingAutoOpenRepoKey.compare(
                                 repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
                             m_pendingAutoOpenRepoKey.clear();
+                            // Select the flagship repo (the repo switcher then reads
+                            // it off m_repoDetailIndex), but land the new node on the
+                            // shared #welcome chat rather than an unfamiliar Code view
+                            // (adhoc #128) — openRepoDetailDeferred settles on its own
+                            // event-loop turn, so queue the chat switch one turn behind
+                            // it, same as restoreNavEntry's post-open follow-up.
                             openRepoDetailDeferred(index);
+                            QTimer::singleShot(0, this, [this] {
+                                showChatView();
+                                switchConversation(kWelcomeChannel);
+                            });
                         }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
