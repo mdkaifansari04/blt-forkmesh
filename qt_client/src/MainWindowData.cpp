@@ -590,6 +590,10 @@ void MainWindow::stopLiveServicesForDataOp()
 void MainWindow::relaunchForkMesh()
 {
     QDir::setCurrent(QDir::homePath());
+    // Release the instance lock before spawning the replacement process, or it
+    // bounces off the still-held lock (this process hasn't unwound yet) and
+    // exits into nothing instead of taking over.
+    forkmesh::releaseSingleInstance();
     QProcess::startDetached(QCoreApplication::applicationFilePath(),
                             QCoreApplication::arguments().mid(1));
     QCoreApplication::exit(0);
