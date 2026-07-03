@@ -5459,27 +5459,6 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init"))
         markAgentSessionRunning(sessionId);
 
-    // A live `system`/`init` event is the CLI announcing a (re)started process —
-    // the transcript's "● session started" divider. A session can start again
-    // without passing through startClaudeCodeTranscript's status write (e.g.
-    // steering a live stream whose last turn errored out and left it Failed), so
-    // pin the row to Running here: a CLI that just emitted its init event is
-    // running, whatever the list said. Persisted history is never replayed
-    // through this function (ensureStreamEventsLoaded only fills the buffers),
-    // so this only fires for a genuinely live process.
-    if (type == QLatin1String("system")
-        && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
-        if (AgentSession *as = findAgentSession(sessionId);
-            as && as->status != AgentStatus::Running) {
-            as->status = AgentStatus::Running;
-            as->finishedAtMs = 0;
-            as->lastError.clear();
-            if (m_agentStore && !isExternalSession(sessionId))
-                m_agentStore->saveSession(*as);
-            updateAgentStatusCell(sessionId);
-        }
-    }
-
     // The CLI's final `result` event carries the run summary the transcript shows
     // as "done · N turns · Ms · $X". Persist those figures on the session and
     // refresh the list cells in place so the summary survives a restart and shows
@@ -5647,14 +5626,20 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 3);
+        // Column 4 is Status (column 3 is Model — see applyAgentRowCells for the
+        // column layout); writing here used to stomp the Model cell instead.
+        QTableWidgetItem *cell = m_agentTable->item(r, 4);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 3, cell);
+            m_agentTable->setItem(r, 4, cell);
         }
         applyAgentStatusCell(cell, *s);
         break;
     }
+    // Keep the footer "Agents:" strip's per-session dot (the ones above the
+    // prompt) in step with every status flip, not just a full reloadAgents() —
+    // otherwise it only catches up once the user opens the Agents tab.
+    refreshAgentStatusRow();
     if (sessionId == m_selectedAgentSessionId) {
         updateAgentActionState();
         // The list row is only half the picture: when this session's detail
@@ -5826,10 +5811,12 @@ void MainWindow::updateAgentCostCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 6);
+        // Column 7 is Cost (column 6 is Time — see applyAgentRowCells for the
+        // column layout); this used to stomp the Time cell instead.
+        QTableWidgetItem *cell = m_agentTable->item(r, 7);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 6, cell);
+            m_agentTable->setItem(r, 7, cell);
         }
         cell->setData(Qt::DisplayRole, agentCostText(s->costUsd));
         cell->setData(Qt::UserRole, s->costUsd);
@@ -5853,12 +5840,15 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        if (QTableWidgetItem *turns = m_agentTable->item(r, 4))
+        // Turns/Time/Speed are columns 5/6/9 (see applyAgentRowCells for the
+        // column layout) — this used to write one column early into
+        // Status/Turns/Tokens instead.
+        if (QTableWidgetItem *turns = m_agentTable->item(r, 5))
             applyAgentTurnsCell(turns, *s);
-        if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
+        if (QTableWidgetItem *runTime = m_agentTable->item(r, 6))
             applyAgentTimeCell(runTime, *s);
         // Speed needs both the token total and the now-known run duration.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 8))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
             applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
     }

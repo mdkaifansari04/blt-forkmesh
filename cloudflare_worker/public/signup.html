@@ -7,7 +7,7 @@
     <title>Create account · ForkMesh</title>
     <meta
       name="description"
-      content="Create a ForkMesh account with your email, password, and public node name. Add payout details later from your dashboard profile."
+      content="Create a ForkMesh account with your email, password, and username. Add payout details later from your dashboard profile."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -252,29 +252,8 @@
             aria-hidden="true"
           />
         </a>
-        <h1 id="signup-title" class="join-title">Create your ForkMesh account</h1>
-        <p class="join-sub">
-          No credit card required. Add a Solana payout address later from your dashboard profile.
-        </p>
+        <h1 id="signup-title" class="join-title">Join ForkMesh</h1>
         <form id="signup-form" novalidate>
-          <div class="field">
-            <label for="node-name">Public node name</label>
-            <input
-              class="auth-input-sm"
-              id="node-name"
-              name="nodeName"
-              type="text"
-              inputmode="latin"
-              autocomplete="username"
-              spellcheck="false"
-              placeholder="e.g. ada-lovelace"
-              maxlength="63"
-            />
-            <div class="hint" id="name-hint">
-              Lowercase letters, numbers and hyphens. Start with a letter, end
-              with a letter or number. This name is public.
-            </div>
-          </div>
           <div class="field">
             <label for="acct-email">Email</label>
             <input
@@ -296,6 +275,21 @@
               autocomplete="new-password"
               placeholder="At least 8 characters"
             />
+          </div>
+          <div class="field">
+            <label for="node-name">Username</label>
+            <input
+              class="auth-input-sm"
+              id="node-name"
+              name="nodeName"
+              type="text"
+              inputmode="latin"
+              autocomplete="username"
+              spellcheck="false"
+              placeholder="e.g. ada-lovelace"
+              maxlength="63"
+            />
+            <div class="hint" id="name-hint"></div>
           </div>
           <label class="terms-check" for="terms-agree">
             <input type="checkbox" id="terms-agree" />

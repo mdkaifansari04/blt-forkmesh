@@ -33,6 +33,8 @@
     issuesView: { filter: "open", items: [] },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
+    repoMirrors: [],
+    repoServedBy: null,
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -159,6 +161,12 @@
       unit += 1;
     }
     return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function formatServeSpeed(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value) || value < 0) return "";
+    return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} s`;
   }
 
   function normalizedCount(value) {
@@ -1552,19 +1560,27 @@
       })).join(" ");
   }
 
-  function renderRepoServedBy(node) {
-    const badge = $("[data-repo-detail]")?.querySelector("[data-repo-served-by]");
-    if (!badge) return;
+  function renderRepoServedBy(node, tookMs) {
     const name = String(node || "").trim();
-    if (!name) {
-      badge.hidden = true;
-      badge.textContent = "";
-      return;
+    state.repoServedBy = name ? { name, tookMs: Number(tookMs) || 0 } : null;
+    const badge = $("[data-repo-detail]")?.querySelector("[data-repo-served-by]");
+    if (badge) {
+      if (!name) {
+        badge.hidden = true;
+        badge.textContent = "";
+      } else {
+        // Confirms the page loaded from a live mirror and which one (the
+        // router round-robins browse traffic across every online mirror of
+        // the repo).
+        const speed = formatServeSpeed(tookMs);
+        badge.textContent = speed ? `served by ${name} - ${speed}` : `served by ${name}`;
+        badge.hidden = false;
+      }
     }
-    // Confirms the page loaded from a live mirror and which one (the router
-    // round-robins browse traffic across every online mirror of the repo).
-    badge.textContent = `served by ${name}`;
-    badge.hidden = false;
+    // Re-render the repo's mirror lists so the node that just answered gets
+    // its green "serving this request" highlight without waiting on a fresh
+    // /mirrors fetch.
+    renderRepoMirrorLists(state.repoMirrors, state.repoServedBy);
   }
 
   function repoExplorerRowClass(active = false) {
@@ -2333,8 +2349,9 @@
     treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
     renderRepoExplorer(repo, path, []);
     try {
+      const requestedAt = performance.now();
       const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
-      renderRepoServedBy(data.servedBy);
+      renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
       if (!path && data.counts) { updateRepoLiveCounts(repo, data.counts); applyServedCounts(data.counts); }
       entries.sort((a, b) => {
@@ -2416,8 +2433,9 @@
       if (pathPreview && pathPreview.kind !== "csv") {
         if (renderRepoPreview(viewer, repo, path, {})) return;
       }
+      const requestedAt = performance.now();
       const data = await fetchJson(repoLiveUrl(repo, "blob", { path }));
-      renderRepoServedBy(data.servedBy);
+      renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       if (renderRepoPreview(viewer, repo, path, data)) return;
       const content = data.content || data.text || "";
       const lines = String(content).split(/\r\n|\r|\n/);
@@ -2576,8 +2594,9 @@
       if (value) query.set(key, value);
     });
     query.set("ref", repoSelectedBranch(repo));
+    const requestedAt = performance.now();
     const data = await fetchRepoJson(`${repoApiBase(repo)}/blobs?${query.toString()}`);
-    renderRepoServedBy(data.servedBy);
+    renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
     return data.blobs || {};
   }
 
@@ -3415,28 +3434,74 @@
     }
   }
 
+  // A mirror row is ringed green when it's the node that answered the most
+  // recent live-mirror fetch (data.servedBy from the tunnel round-robin), with
+  // its response time alongside so it's obvious which mirror served the page
+  // and how fast.
+  function mirrorRowIsServing(mirror, servedBy) {
+    const name = String(mirror.owner || mirror.node || mirror.name || "").trim().toLowerCase();
+    const servedName = String(servedBy?.name || "").trim().toLowerCase();
+    return Boolean(name && servedName && name === servedName);
+  }
+
+  function renderMirrorRow(mirror, servedBy) {
+    const online = mirror.status === "online";
+    const isServing = online && mirrorRowIsServing(mirror, servedBy);
+    const rowClass = isServing
+      ? "grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+    const speed = isServing ? formatServeSpeed(servedBy.tookMs) : "";
+    return `
+        <div class="${rowClass}">
+          <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
+          <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+          <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+            ${escapeHtml(mirror.status || "unknown")}
+          </span>
+        </div>`;
+  }
+
+  // The "Live mirror" summary in the About aside gets its own compact list of
+  // every mirror currently online for this repo (the full tab-level list
+  // lives under the Mirrors tab and includes offline ones too).
+  function renderRepoLiveMirrorList(mirrors, servedBy) {
+    const container = $("[data-repo-live-mirror-list]");
+    if (!container) return;
+    const online = mirrors.filter((mirror) => mirror.status === "online");
+    container.innerHTML = online.length
+      ? online.map((mirror) => renderMirrorRow(mirror, servedBy)).join("")
+      : '<div class="border-t border-border px-3 py-2 text-xs text-muted-foreground">No mirrors online right now.</div>';
+  }
+
+  function renderRepoMirrorLists(mirrors, servedBy) {
+    const tabContainer = $("[data-repo-mirrors]");
+    if (tabContainer && mirrors.length) {
+      tabContainer.innerHTML = mirrors.map((mirror) => renderMirrorRow(mirror, servedBy)).join("");
+    }
+    renderRepoLiveMirrorList(mirrors, servedBy);
+    window.lucide?.createIcons();
+  }
+
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
-    if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
+    if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
+      state.repoMirrors = mirrors;
       if (!mirrors.length) {
-        container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
+        if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
+        renderRepoLiveMirrorList([], state.repoServedBy);
         return;
       }
-      container.innerHTML = mirrors.map((mirror) => `
-        <div class="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors">
-          <i data-lucide="${mirror.status === "online" ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${mirror.status === "online" ? "text-primary" : "text-muted-foreground"}"></i>
-          <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
-          <span class="text-xs font-mono ${mirror.status === "online" ? "text-primary" : "text-muted-foreground"}">${escapeHtml(mirror.status || "unknown")}</span>
-        </div>`).join("");
+      renderRepoMirrorLists(mirrors, state.repoServedBy);
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
+      if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Mirror health is unavailable right now.</div>';
+      renderRepoLiveMirrorList([], state.repoServedBy);
     } finally {
       window.lucide?.createIcons();
     }
@@ -3840,6 +3905,8 @@
     if (!detail || !repo) return;
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
+    state.repoMirrors = [];
+    state.repoServedBy = null;
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
@@ -4012,6 +4079,7 @@
 		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Data</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatSize(repo.sizeBytes))}</dd></div>
 		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${live ? "text-foreground" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "available" : "offline"}</dd></div>
 		              </dl>
+		              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
 		            </div>
           </aside>
         </div>
@@ -4322,11 +4390,18 @@
       return;
     }
     const requested = requestedRepoKey();
-    if (!session || (!session.nodeName && !session.email)) {
-      if (!requested) {
-        location.replace("/");
-        return;
+    // Guests can browse repositories without an account: instead of bouncing
+    // signed-out visitors back to the landing page, the header swaps the
+    // profile/notification controls for a Sign Up / Log In link.
+    const guest = !session || (!session.nodeName && !session.email);
+    if (guest) {
+      const authLink = $("[data-guest-auth-link]");
+      if (authLink) {
+        authLink.classList.remove("hidden");
+        authLink.classList.add("inline-flex");
       }
+      $("[data-profile-settings-button]")?.classList.add("hidden");
+      $("#notificationToggle")?.classList.add("hidden");
     }
 
     renderProfile(session || { nodeName: "guest" });
