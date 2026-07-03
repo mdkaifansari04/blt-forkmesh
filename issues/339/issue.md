@@ -5,9 +5,9 @@ title: Make it so that new issues show up on the website, even if they haven’t
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 10
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783052732
 author: HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE
 authorName: jett
