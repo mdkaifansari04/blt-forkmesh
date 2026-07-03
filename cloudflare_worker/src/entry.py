@@ -1887,47 +1887,7 @@ async def status_history(env):
             "uptimePct": overall_uptime, "days": days,
         })
 
-    # Current-state snapshot (issue #356): the headline health metrics rendered
-    # at the top of the page — mainnode host reachable, the distinct online node
-    # count (same signal as the /network/ headline, NOT raw host_presence rows,
-    # which over-count), catalog size, and errors logged in the last 24h. Each
-    # read is best-effort so one failing query can't blank the summary, and it
-    # all rides on the single /api/status fetch a page view already makes.
-    current = {}
-    try:
-        repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
-        current["catalogRepos"] = int((repo_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["catalogRepos"] = None
-    try:
-        online = {
-            label for label in (await _live_online_nodes(env, now)).values() if label
-        }
-        current["onlineNodes"] = len(online)
-    except Exception:
-        current["onlineNodes"] = None
-    try:
-        err_row = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
-            now - 24 * 60 * 60 * 1000,
-        )
-        current["errors24h"] = int((err_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["errors24h"] = None
-    try:
-        mainnode_bi = await blind_index(env, "mainnode/forkmesh")
-        host_row = await d1_first(
-            env, "SELECT ts FROM host_presence WHERE repo_bi = ? AND ts >= ?",
-            mainnode_bi, now - HOST_PRESENCE_STALE_MS,
-        )
-        current["mainnodeOnline"] = bool(host_row)
-    except Exception:
-        current["mainnodeOnline"] = None
-
-    return json_response(
-        {"ok": True, "now": now, "systems": systems, "current": current},
-        cache_seconds=60,
-    )
+    return json_response({"ok": True, "now": now, "systems": systems}, cache_seconds=60)
 
 
 # --- Leaderboards (/network/) ----------------------------------------------
@@ -3918,14 +3878,15 @@ async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
-    return {
+    is_admin = await _is_admin(env, name)
+    payload = {
         "ok": True,
         "nodeName": name,
         "email": rec.get("email", ""),
         "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
         "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, name),
+        "isAdmin": is_admin,
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),
@@ -3934,6 +3895,11 @@ async def _account_public_payload(env, rec):
         "owner": rec.get("owner", ""),
         "nodes": _owned_nodes(rec),
     }
+    if is_admin:
+        admin_path = _admin_path(env)
+        if admin_path:
+            payload["adminUrl"] = "/" + admin_path
+    return payload
 
 
 def _donation_expiry_fields(rec, now):
