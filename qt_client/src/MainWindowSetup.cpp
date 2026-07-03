@@ -1521,6 +1521,13 @@ void MainWindow::ensureFlagshipRepo()
     if (!ownerLive)
         logSystem("No live ForkMesh host right now; mirroring " + owner +
                   "/forkmesh anyway so it appears once a host comes online.");
+    // On a fresh install, tell the user we're pulling down the project repo and
+    // jump them straight into it once the initial clone finishes (adhoc #113),
+    // instead of leaving them on an empty repo list wondering what happened.
+    if (m_freshInstall) {
+        m_pendingAutoOpenRepoKey = owner + "/forkmesh";
+        flashMessage(QStringLiteral("Syncing the ForkMesh project repo\xE2\x80\xA6"));
+    }
     mirrorCatalogRepo(owner, QStringLiteral("forkmesh"), cloneUrl);
 }
 
