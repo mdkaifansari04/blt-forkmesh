@@ -1,220 +1,206 @@
 # ForkMesh
 
-A distributed source-code preservation and collaboration network.
+**Code hosting that lives on the network — not in someone else's data center.**
 
-ForkMesh is an open-source desktop node and relay prototype for hosting,
-mirroring, discovering, and discussing software projects without depending on
-one central code-hosting company.
+ForkMesh is a peer-to-peer developer platform: host, mirror, browse, discuss,
+and *ship* software without handing your code, your identity, or your community
+to a single central company. Every developer runs a node. Every node can mirror
+any repository. And when the machine that owns a project goes offline, the mesh
+keeps serving it.
 
-## What Exists Now
+It is open source, free-plan-hostable at the edge, and already doing real work
+today — issues, pull requests, CI-style actions, AI coding agents, on-chain
+bounties, and a live public website — all running on the network right now.
 
-- Qt 6 desktop node in `qt_client/`
-- Python Cloudflare Worker relay in `cloudflare_worker/`
-- Local Ed25519 identity keys for signed profile and repository metadata
-- Local bare Git mirrors via `git clone --mirror` and `git fetch --prune`
-- Encrypted relay-room mode for project chat
-- Cloudflare Durable Object room relay with no npm/npx project dependencies
-- Cloudflare Durable Object repository catalog surfaced on the public website
-- Per-repository chat channels derived from mirrored repository names
-- Solana address fields on profiles and repositories
+> **This is early, and that's the point.** The foundation is built and working.
+> The people who show up now help shape the protocol, earn recognition for the
+> repositories they preserve, and get their nodes on the leaderboards before the
+> mesh fills up. Build a node, mirror a project you care about, and you're
+> already part of it.
 
-This is an MVP. It does not yet replace a full forge like GitHub or GitLab,
-but it lays down the working identity, mirroring, encrypted chat, and relay
-foundation described in the original project notes.
+---
 
-## Repository Layout
+## ✅ What's Working Today
 
-```text
-forkmesh/
-  qt_client/          Qt desktop node
-  cloudflare_worker/  Encrypted WebSocket relay for federated rooms
-  CHANGELOG.md        Human-readable change history
-```
+ForkMesh is well past "prototype." Here's what you can do right now:
 
-## Desktop Node
+**Identity & accounts**
+- Anonymous accounts secured by a local Ed25519 key + password — no email, no
+  central password database.
+- Signed profile and repository metadata, verifiable across nodes.
 
-Requirements:
+**Hosting & mirroring**
+- Local bare Git mirrors via `git clone --mirror` / `git fetch --prune`.
+- A public, Worker-served **website** and repository catalog — every repo a node
+  publishes is browsable on the web.
+- **Browse before you mirror:** explore any repository's files, commits, and
+  diffs on demand, streamed from a live host with nothing stored on the relay.
+- **Mirror failover:** when the source machine goes offline, another node that
+  holds the mirror serves clones and browsing in its place — the URL never
+  changes.
+- Content-addressed **release** artifacts and tags, with a sha256-verified
+  one-line installer.
 
-- Qt 6.4+ Widgets and Network
-- CMake 3.16+
-- OpenSSL development headers
-- Git
-- A C++17 compiler
-- `openssl` CLI at runtime for the LAN TLS certificate
+**Collaboration**
+- **Issues** with open/closed states, priorities, custom fields, and signed,
+  append-only history that syncs and stays editable across nodes.
+- **Pull requests** as signed patch submissions, browsable on the web and in the
+  desktop client, with mergeability checks and AI-assisted review.
+- **Actions:** run real workflows on push, with the latest live log always one
+  click away, rendered in a native in-app terminal with full color and emoji.
+- **Encrypted room chat**, per-repository, end-to-end encrypted (AES-256-GCM)
+  before it ever reaches the relay. The relay only ever sees ciphertext.
 
-Build and run:
+**AI agents, built in**
+- Assign any issue to **Claude Code** or **Codex** straight from the issue view.
+  The agent works on a connected fork and opens a real pull request when it's
+  done.
+- Run **multiple agents in parallel**, resume past sessions, and watch live
+  activity indicators as they work.
+- Kick off agents from your editor with the **IDE extension**.
+
+**Funding**
+- **Solana bounties:** fund any issue with one click. ForkMesh watches the
+  chain, confirms the deposit, and pays out to the contributor when their PR is
+  merged.
+- Profiles and repositories can publish Solana donation addresses.
+
+**Reach**
+- A **Flutter mobile app** — carry the mesh in your pocket and mirror on your
+  phone.
+- QR handoffs, node profile pages, and network presence throughout.
+
+The mesh currently runs on a Cloudflare Python Worker relay (Durable Objects,
+no npm/npx/TypeScript project dependencies) and a Qt 6 desktop node — see the
+[CHANGELOG](CHANGELOG.md) for the full release-by-release story.
+
+---
+
+## 🔜 What's Coming
+
+The roadmap is public and lives in the in-repo issue tracker under
+[`issues/`](issues/) — a folder per issue with signed, append-only history,
+surfaced in the desktop client's **Issues** tab and editable across nodes. See
+[`issues/README.md`](issues/README.md) for the format.
+
+Highlights on the horizon:
+
+- **Fully federated mainnodes** — run your own relay/index/funding node, Matrix-
+  and Mastodon-style, and settle on a canonical cross-node repository identity.
+- **Private mirrors with post-quantum encryption** — nodes advertise a public
+  handle and size only; contents stay encrypted, and others can choose to help
+  preserve them without ever reading them.
+- **Leaderboards** for contributors, hosts, and nodes — ranked by hosted uptime,
+  mirror count, synced bytes, SOL earned, and accepted contributions.
+- **Richer search and indexing** across the catalog.
+
+> **Open questions we're deciding in the open:** the exact cross-node repository
+> route shape (`domain:owner/repo`, `owner@domain/repo`, or another), and which
+> metrics should power the first leaderboards. Show up and weigh in.
+
+---
+
+## Get Started
+
+### Desktop Node
+
+Requirements: Qt 6.4+ (Widgets, Network), CMake 3.16+, OpenSSL dev headers, Git,
+a C++17 compiler, and the `openssl` CLI at runtime for the LAN TLS certificate.
 
 ```sh
 cd qt_client
-./run.sh
+./run.sh          # build and run
+./run.sh test     # headless backend smoke test
 ```
 
-Run the headless backend smoke test:
+The client creates an Ed25519 identity key, a LAN-encryption TLS certificate,
+and bare mirrors under its app data directory. Use **+ Add** on the **Repos**
+page to pick a local repo or paste a remote clone URL. Repositories you select
+are published to the mainnode catalog and appear on the ForkMesh website —
+without ever exposing local filesystem paths.
 
-```sh
-cd qt_client
-./run.sh test
-```
+The desktop client starts with no setup input and connects to the ForkMesh
+mainnode automatically.
 
-The client creates:
+### Cloudflare Relay
 
-- an Ed25519 identity key under the app data directory
-- a TLS certificate for LAN peer encryption
-- bare mirrors under the app data directory in `mirrors/`
-
-Use `+ Add` on the **Repos** page (left navigation) to choose a local Git
-repository or enter a remote clone URL. Repositories selected for the network
-are published to the mainnode catalog at `/api/repositories` and appear on the
-ForkMesh website without exposing private local filesystem paths.
-
-## Cloudflare Relay
-
-The relay hosts room WebSockets at:
+The relay hosts encrypted room WebSockets and the signed repository catalog:
 
 ```text
-/api/repo/{owner}/{repo}/rooms/{room}/ws
+/api/repo/{owner}/{repo}/rooms/{room}/ws     # per-repo encrypted chat
+/api/repositories                            # signed catalog records
 ```
 
-The desktop client encrypts payloads before sending them. The Durable Object
-only relays ciphertext to currently connected clients and does not persist
-message bodies. The older `/api/room/{room}/ws` route remains as a temporary
-compatibility endpoint.
+The Durable Object only relays ciphertext to connected clients and never
+persists message bodies. (`/api/room/{room}/ws` remains as a temporary
+compatibility route.)
 
-The Worker also stores signed repository catalog records at:
-
-```text
-/api/repositories
-```
-
-Run locally with Cloudflare's Python Worker tooling:
+Run and deploy with Cloudflare's Python Worker tooling:
 
 ```sh
 cd cloudflare_worker
-uvx --from workers-py pywrangler dev
+uvx --from workers-py pywrangler dev      # local
+uvx --from workers-py pywrangler deploy   # deploy
 ```
 
-The desktop client starts without setup input and connects to the ForkMesh mainnode:
-
-```text
-wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws
-```
-
-Use this client server URL for local relay testing:
+Local relay testing URL:
 
 ```text
 ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws
 ```
 
-Deploy:
+---
 
-```sh
-cd cloudflare_worker
-uvx --from workers-py pywrangler deploy
+## Repository Layout
+
+```text
+forkmesh/
+  qt_client/          Qt 6 desktop node
+  cloudflare_worker/  Python Worker relay + public website
+  flutter_app/        Mobile app
+  ide_extension/      Editor integration for ForkMesh agents
+  issues/             In-repo, signed issue tracker (the live roadmap)
+  releases/           Release metadata and artifacts
+  CHANGELOG.md        Human-readable, release-by-release history
 ```
+
+---
 
 ## Core Model
 
-ForkMesh is built around these concepts:
+- **Identity:** local Ed25519 keys instead of passwords.
+- **Repositories:** signed metadata plus Git remotes.
+- **Mirrors:** any node can host a bare mirror of any repository, and serve it
+  when the source is offline.
+- **Chat:** repository communities talk through encrypted mainnode relay rooms.
+- **Funding:** profiles, repositories, and issues carry Solana addresses and
+  bounties.
+- **Federation:** relay nodes run independently, in the spirit of Matrix or
+  Mastodon.
+- **Mainnodes:** hosted nodes provide encrypted relay rooms, repository
+  catalogs, mirror-health indexing, Solana metadata, and leaderboards — without
+  ever owning user identity or repository history.
 
-- Identity: users generate local Ed25519 keys instead of passwords.
-- Repositories: projects are represented by signed metadata and Git remotes.
-- Mirrors: any node can host a bare mirror of any repository.
-- Chat: repository communities talk through Matrix-like encrypted mainnode
-  relay rooms.
-- Funding: profiles and repositories can publish Solana donation
-  addresses.
-- Federation: relay nodes can be operated independently, similar in spirit to
-  Matrix or Mastodon.
-- Mainnodes: hosted nodes can provide encrypted relay rooms, repository
-  catalogs, mirror-health indexing, Solana metadata, and contributor, host, and
-  node leaderboards.
+## Design Principles
 
-## Direction
-
-This is the living plan for turning the README concept into the actual
-project. It keeps the important scratch notes in structured form so they stay
-visible while the code evolves.
-
-- ForkMesh is a Git app first. Chat exists to support repositories, mirrors,
-  issues, releases, and maintainer coordination.
-- Avoid npm, npx, and TypeScript project dependencies. Cloudflare edge code
-  should be Python Workers plus `pywrangler`.
-- Use `mainnode` rather than `masternode` for hosted relay, index, funding,
-  and coordination nodes.
-- Move away from LAN mesh as a primary product model. The preferred direction
-  is Matrix-like encrypted chat through durable mainnode relay rooms.
-- Make routes repo-centric. A repository may have rooms, but the API should
-  lead with repository identity rather than generic room names.
-
-## Todo
-
-The roadmap now lives in the in-repo issue tracker under [`issues/`](issues/) — a
-folder per issue with signed, append-only history, surfaced in the desktop
-client's **Issues** tab and editable across nodes. See
-[`issues/README.md`](issues/README.md) for the format.
-
-> **Design note (important):** File browsing and clone are served on demand from
-> a connected host and nothing is stored on the relay. The website caches what
-> you've browsed in localStorage, and the desktop client can keep temporary
-> preview mirrors in the Settings-configured preview cache so you can inspect
-> code, issues, commits, and pull requests before choosing to mirror or fork.
-> This keeps the relay lean and free-plan-hostable.
-
-## Done
-
-- Added a Qt desktop client skeleton for ForkMesh.
-- Added local Ed25519 identity support for signed profile and repository
-  metadata.
-- Added local bare Git mirroring through `git clone --mirror` and
-  `git fetch --prune`.
-- Added profile and repository Solana address fields.
-- Added per-repository chat channels in the Qt client.
-- Added a Python Cloudflare Worker relay with a Durable Object room class.
-- Removed npm, npx, TypeScript, package-lock, and node_modules from the worker
-  project.
-- Updated docs to use Python Worker tooling.
-- Replaced generic room-first relay URLs with repo-centric mainnode URLs:
-
-  ```text
-  /api/repo/{owner}/{repo}/rooms/{room}/ws
-  ```
-
-- Kept `/api/room/{room}/ws` as a temporary compatibility endpoint.
-- Renamed the Durable Object binding to `FORKMESH_MAINNODE_ROOM`.
-- Removed LAN mesh from the Qt client build and setup flow.
-- Replaced the mesh backend test with a focused identity and room-crypto smoke
-  test.
-- Defined the first mainnode capability model in docs.
-- Added a public Worker-served website and a Durable Object repository catalog
-  at `/api/repositories`.
-- Added local-repository publishing from the Qt client so selected mirrors can
-  appear on the public website without sending local filesystem paths.
-
-## Open Questions
-
-- What exact route should identify a repository across federated mainnodes:
-  `domain:owner/repo`, `owner@domain/repo`, or another shape?
-- Which metrics should power the first leaderboards: hosted time, mirror count,
-  uptime, synced bytes, SOL earnings, or accepted contributions?
-
-## Mainnode Model
-
-Mainnodes are hosted ForkMesh infrastructure nodes. They do not own user
-identity or repository history, but they can provide useful network services:
-
-- encrypted repo-room relay through Durable Objects
-- repository catalogs and search indexes
-- mirror-health report ingestion
-- Solana donation metadata and optional community faucet support
-- project, contributor, host, and mainnode leaderboards
-- compatibility routes while the protocol evolves
+- **Git first.** Chat, agents, and bounties exist to serve repositories,
+  mirrors, issues, releases, and maintainer coordination.
+- **Lean, free-hostable edge.** Nothing is stored on the relay that doesn't have
+  to be; browsing and clone are served on demand from a connected host, and the
+  relay stays inside a free Cloudflare plan.
+- **Repo-centric routes.** The API leads with repository identity, not generic
+  room names.
+- **No heavy edge toolchains.** Cloudflare code is Python Workers + `pywrangler`
+  — no npm, npx, or TypeScript project dependencies.
 
 ## Security Notes
 
-- Relay chat payloads are encrypted client-side with AES-256-GCM.
-- Profile and repository metadata can be signed by the local Ed25519 identity.
-- The relay only sees ciphertext envelopes; room contents require the client
-  passphrase.
+- Relay chat payloads are encrypted client-side with AES-256-GCM; the relay only
+  sees ciphertext envelopes and cannot read room contents.
+- Profile and repository metadata are signed by the local Ed25519 identity.
 
-## Roadmap
-- consider having the ability for nodes to mirror private repositories - they would have a public (handle) and just the size people can choose to mirror them they would be encrypted with quantum proof encryption
+---
+
+**Ready to join the mesh?** Build a node, mirror a project you love, open an
+issue, and hand it to an agent. The network is small enough that you'll matter,
+and far enough along that you'll ship something real today.
