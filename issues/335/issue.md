@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 335
 title: Show pr conversations on the web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
