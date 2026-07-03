@@ -11,17 +11,19 @@
 class QPainter;
 
 // The kind of annotation the user is drawing on a captured screenshot.
-enum class MarkupTool { Pencil, Rect, Ellipse };
+enum class MarkupTool { Pencil, Rect, Ellipse, Line, Arrow };
 
 // A single annotation: either a freehand stroke (a list of points) or a shape
-// outline (a rectangle or ellipse bounded by rect).
+// outline (a rectangle/ellipse bounded by rect, or a directional line/arrow
+// running from p1 to p2).
 struct MarkupOp {
     enum class Kind { Stroke, Shape };
     Kind kind = Kind::Stroke;
     QColor color;
     QVector<QPoint> points; // used when kind == Stroke
     MarkupTool shapeType = MarkupTool::Rect; // used when kind == Shape
-    QRect rect;
+    QRect rect; // used when shapeType is Rect or Ellipse
+    QPoint p1, p2; // used when shapeType is Line or Arrow (p2 is the arrow's head)
 };
 
 // The drawable viewport over the screenshot: renders the base image and lets the
