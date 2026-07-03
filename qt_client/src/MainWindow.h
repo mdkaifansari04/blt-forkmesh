@@ -1240,6 +1240,13 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
+    // Footer "Agents:" status strip (adhoc #111): one small status dot per
+    // known agent session, rebuilt from m_agentSessions whenever it changes.
+    void refreshAgentStatusRow();
+    // Clicking the "Agents:" label itself (as opposed to one of the dots):
+    // jumps to the most relevant session's Agents tab, falling back to the
+    // open repo's Agents tab if no session exists yet.
+    void openAgentsOverview();
     void processAgentQueue();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
@@ -2664,6 +2671,13 @@ private:
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
+    // "Agents:" status strip above the footer prompt (adhoc #111): a clickable
+    // label plus one small colored dot per known agent session. The label opens
+    // the Agents tab; each dot opens that session directly.
+    QWidget *m_agentStatusRow = nullptr;
+    QPushButton *m_agentStatusLabel = nullptr;
+    QWidget *m_agentStatusIconsHost = nullptr;
+    QHBoxLayout *m_agentStatusIconsLayout = nullptr;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
