@@ -4332,6 +4332,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // Right-click on selected text anywhere in the app: offer "Send to
+    // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
+    if (event->type() == QEvent::ContextMenu) {
+        if (maybeShowSendToPromptMenu(obj, static_cast<QContextMenuEvent *>(event)))
+            return true;
+    }
     // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
     if (obj == m_navSolanaBalance && event->type() == QEvent::MouseButtonRelease) {
         cycleNavSolanaCurrency();
@@ -4466,6 +4472,93 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         }
     }
     return QMainWindow::eventFilter(obj, event);
+}
+
+// Right-click on selected text anywhere in the app (a transcript reply, a
+// diff line, a README, a log) offers "Send to Prompt" so the user can grab it
+// straight into the agent prompt box instead of a manual copy/paste
+// round-trip (adhoc #126). Handles the two families of selectable text used
+// across the UI:
+//   - QLabel with Qt::TextSelectableByMouse (transcript bubbles, message rows)
+//   - QTextEdit / QTextBrowser / QPlainTextEdit (diffs, README, logs, editors)
+// QAbstractScrollArea-based widgets deliver ContextMenu events to their
+// viewport, not the widget itself, so we walk up to find the real owner.
+// Returns true only when it took over and showed a menu; false lets the
+// widget's default handling run (e.g. nothing selected).
+bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
+{
+    QWidget *w = qobject_cast<QWidget *>(obj);
+    if (!w || !ce)
+        return false;
+
+    QString selected;
+    QMenu *menu = nullptr;
+
+    if (auto *label = qobject_cast<QLabel *>(w)) {
+        if (!(label->textInteractionFlags() & Qt::TextSelectableByMouse))
+            return false;
+        selected = label->selectedText();
+        if (selected.isEmpty())
+            return false;
+        menu = new QMenu(this);
+        QAction *copy = menu->addAction(tr("Copy"));
+        connect(copy, &QAction::triggered, label,
+                [label] { QApplication::clipboard()->setText(label->selectedText()); });
+    } else {
+        QWidget *host = w;
+        while (host && !qobject_cast<QTextEdit *>(host) && !qobject_cast<QPlainTextEdit *>(host))
+            host = host->parentWidget();
+        // Don't offer to send the prompt boxes' own text back into themselves.
+        if (!host || host == m_issueQuickAdd || host == m_agentPromptEdit)
+            return false;
+        if (auto *te = qobject_cast<QTextEdit *>(host)) {
+            selected = te->textCursor().selectedText();
+            if (selected.isEmpty())
+                return false;
+            menu = te->createStandardContextMenu(ce->pos());
+        } else if (auto *pte = qobject_cast<QPlainTextEdit *>(host)) {
+            selected = pte->textCursor().selectedText();
+            if (selected.isEmpty())
+                return false;
+            menu = pte->createStandardContextMenu(ce->pos());
+        } else {
+            return false;
+        }
+    }
+    if (!menu)
+        return false;
+
+    // QTextCursor::selectedText() encodes paragraph breaks as U+2029; put
+    // real newlines back so a multi-line selection reads naturally once
+    // pasted into the prompt box.
+    const QString promptText = QString(selected).replace(QChar(0x2029), QLatin1Char('\n'));
+    menu->addSeparator();
+    QAction *sendToPrompt = menu->addAction(tr("Send to Prompt"));
+    QAction *chosen = menu->exec(ce->globalPos());
+    if (chosen == sendToPrompt)
+        appendTextToActivePrompt(promptText);
+    delete menu;
+    return true;
+}
+
+// Appends text to whichever prompt box is the live target: the per-agent
+// composer when an agent session's detail panel is open and on screen, else
+// the footer's always-present global quick-add box.
+void MainWindow::appendTextToActivePrompt(const QString &text)
+{
+    QPlainTextEdit *target = (m_agentPromptEdit && m_agentPromptEdit->isVisible())
+        ? m_agentPromptEdit
+        : m_issueQuickAdd;
+    if (!target)
+        return;
+    QTextCursor cursor = target->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    const QString existing = target->toPlainText();
+    if (!existing.isEmpty() && !existing.endsWith(QLatin1Char('\n')))
+        cursor.insertText(QStringLiteral("\n"));
+    cursor.insertText(text);
+    target->setTextCursor(cursor);
+    target->setFocus();
 }
 
 void MainWindow::toggleIssueStatus()
