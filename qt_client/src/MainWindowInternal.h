@@ -2953,6 +2953,39 @@ inline bool isValidNodeName(const QString &value)
     return re.match(value).hasMatch();
 }
 
+// A fresh install has no node name yet. Rather than block the welcome screen
+// until the user thinks one up, hand them a friendly generated one (Docker
+// container name style: "adjective-noun-1234") so the node has a valid name
+// and can register/start mirroring immediately; they can still rename
+// themselves later from Settings. The vocabulary leans on fork/mesh/git/
+// networking words so a generated name reads as a ForkMesh node rather than
+// a generic container name. Always satisfies isValidNodeName.
+inline QString randomFunNodeName()
+{
+    static const char *const adjectives[] = {
+        "swift",   "silent",   "nimble",  "resilient", "distributed", "encrypted",
+        "parallel", "wired",   "forked",  "meshed",    "decentralized", "redundant",
+        "synced",  "cascading", "rebased", "cloned",   "merged",      "threaded",
+        "routed",  "tunneled", "relayed", "mirrored",  "hashed",      "committed",
+        "branched", "patched", "stitched", "woven",    "linked",      "looped",
+    };
+    static const char *const nouns[] = {
+        "fork",    "mirror",   "node",    "mesh",      "relay",       "branch",
+        "commit",  "patch",    "packet",  "socket",    "daemon",      "kernel",
+        "cache",   "gateway",  "tunnel",  "beacon",    "router",      "hub",
+        "thread",  "loom",     "weaver",  "forge",     "anchor",      "compass",
+        "lantern", "ember",    "spark",   "comet",     "satellite",   "byte",
+    };
+    const int a = QRandomGenerator::global()->bounded(
+        int(sizeof(adjectives) / sizeof(adjectives[0])));
+    const int n = QRandomGenerator::global()->bounded(
+        int(sizeof(nouns) / sizeof(nouns[0])));
+    const int suffix = QRandomGenerator::global()->bounded(1000, 10000);
+    return QStringLiteral("%1-%2-%3")
+        .arg(QLatin1String(adjectives[a]), QLatin1String(nouns[n]))
+        .arg(suffix);
+}
+
 inline QString accountNameFromInput(QString value, const QString &fallback = QStringLiteral("node"))
 {
     value = value.trimmed().toLower();
