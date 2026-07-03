@@ -192,6 +192,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.18.0"
+  ming_cute_icons:
+    dependency: "direct main"
+    description:
+      name: ming_cute_icons
+      sha256: "64228564392667ddd43549995cd49fdce343866ec372661be9ca728b27be29bc"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.8"
   nested:
     dependency: transitive
     description:
