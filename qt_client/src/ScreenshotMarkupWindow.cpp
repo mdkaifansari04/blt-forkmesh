@@ -204,7 +204,9 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     : QDialog(parent)
 {
     setWindowTitle(QStringLiteral("Annotate Screenshot"));
-    setModal(true);
+    // ApplicationModal blocks every window in the app while open, so the user
+    // can't accidentally interact with the main window before annotating.
+    setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_DeleteOnClose);
 
     // ---- Canvas ----
