@@ -324,7 +324,7 @@ push_secrets() {
         # Feed the value on stdin terminated by a newline — the documented
         # non-interactive form; wrangler strips the single trailing newline. The
         # previous no-newline pipe could leave the value unread (blank secret).
-        printf '%s\n' "$value" | pywrangler secret put "$key"
+        printf '%s\n' "$value" | pywrangler secret put --env "" "$key"
         pushed+=("$key")
         count=$((count + 1))
     done < "$ENV_FILE"
