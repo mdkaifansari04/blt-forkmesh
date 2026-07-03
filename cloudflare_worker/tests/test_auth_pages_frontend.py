@@ -100,8 +100,8 @@ def test_signup_is_single_step_email_password_name_form():
     assert 'id="acct-email"' in signup
     assert 'id="acct-pass"' in signup
     assert 'id="signup-create"' in signup
-    assert "Create your ForkMesh account" in signup
-    assert "Add a Solana payout address later from your dashboard profile" in signup
+    assert "Join ForkMesh" in signup
+    assert "Add a Solana payout address later from your dashboard profile" not in signup
     assert 'id="step-account"' not in signup
     assert 'id="name-continue"' not in signup
     assert "Name reserved" not in signup
