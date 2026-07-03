@@ -276,6 +276,13 @@
   // its own; the logged-in node name rides along as authorName for display.
   const ISSUE_TEXT_ENCODER = new TextEncoder();
   const WEB_ISSUE_KEY_STORAGE = "forkmesh.issueKey";
+  // Attached images are embedded as base64 data: URLs inside the issue body
+  // text itself (no separate upload channel), so they share the body's 64 KB
+  // server-side cap (MAX_ISSUE_BYTES in the worker). Kept well under that so a
+  // couple of small screenshots plus title/description text still fit.
+  const ISSUE_IMAGE_MAX_COUNT = 4;
+  const ISSUE_IMAGE_MAX_BYTES = 40 * 1024;
+  const ISSUE_IMAGE_MAX_TOTAL_BYTES = 45 * 1024;
 
   function bytesToB64url(bytes) {
     const arr = new Uint8Array(bytes);
@@ -2681,12 +2688,105 @@
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
           <textarea data-repo-issue-body rows="6" placeholder="Describe the issue. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
+        <div class="grid gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" data-repo-issue-attach-image class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach images</button>
+            <span data-repo-issue-attach-hint class="text-[11px] text-muted-foreground"></span>
+          </div>
+          <input type="file" data-repo-issue-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+          <div data-repo-issue-attachments class="flex flex-wrap gap-2"></div>
+        </div>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
     window.lucide?.createIcons();
+
+    const form = container.querySelector("[data-repo-issue-form]");
+    const attachButton = container.querySelector("[data-repo-issue-attach-image]");
+    const fileInput = container.querySelector("[data-repo-issue-file-input]");
+    const bodyInput = container.querySelector("[data-repo-issue-body]");
+    const attachHint = container.querySelector("[data-repo-issue-attach-hint]");
+    const attachmentsList = container.querySelector("[data-repo-issue-attachments]");
+    // Queued images: a short placeholder (not the data URL) is inserted into
+    // the body textarea so it stays readable/editable; the real data: URL is
+    // swapped in right before signing (handleIssueComposeSubmit).
+    const images = [];
+    if (form) form._pendingIssueImages = images;
+
+    const setAttachHint = (text, tone) => {
+      if (!attachHint) return;
+      attachHint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : "text-muted-foreground"}`;
+      attachHint.textContent = text;
+    };
+    const renderAttachmentChips = () => {
+      if (!attachmentsList) return;
+      attachmentsList.innerHTML = images.map((img) => `
+        <span class="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2 py-1 text-[11px] text-foreground">
+          <i data-lucide="image" class="h-3 w-3 text-muted-foreground"></i>${escapeHtml(img.name)}
+          <button type="button" data-repo-issue-attachment-remove="${img.id}" class="text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
+        </span>`).join("");
+      window.lucide?.createIcons();
+    };
+    attachmentsList?.addEventListener("click", (event) => {
+      const removeButton = event.target.closest("[data-repo-issue-attachment-remove]");
+      if (!removeButton) return;
+      const id = removeButton.dataset.repoIssueAttachmentRemove;
+      const index = images.findIndex((img) => img.id === id);
+      if (index < 0) return;
+      const [removed] = images.splice(index, 1);
+      if (bodyInput) bodyInput.value = bodyInput.value.split(`\n![${removed.name}](${removed.id})\n`).join("\n");
+      renderAttachmentChips();
+    });
+
+    const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("read_failed"));
+      reader.readAsDataURL(file);
+    });
+
+    if (attachButton && fileInput) {
+      attachButton.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", async () => {
+        const files = Array.from(fileInput.files || []);
+        fileInput.value = "";
+        for (const file of files) {
+          if (!file.type.startsWith("image/")) {
+            setAttachHint(`${file.name}: not an image.`, "bad");
+            continue;
+          }
+          if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
+            setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
+            break;
+          }
+          const total = images.reduce((sum, img) => sum + img.size, 0);
+          if (file.size > ISSUE_IMAGE_MAX_BYTES || total + file.size > ISSUE_IMAGE_MAX_TOTAL_BYTES) {
+            setAttachHint(`${file.name} is too large — attached images share the issue's 64 KB size limit, so keep screenshots small.`, "bad");
+            continue;
+          }
+          try {
+            const dataUrl = await readAsDataUrl(file);
+            const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
+            const name = file.name.replace(/[[\]]/g, "_");
+            images.push({ id, name, dataUrl, size: file.size });
+            const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
+            const end = bodyInput?.selectionEnd ?? start;
+            if (bodyInput) {
+              const insertion = `\n![${name}](${id})\n`;
+              bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
+              const cursor = start + insertion.length;
+              bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
+            }
+            setAttachHint("");
+          } catch (_) {
+            setAttachHint(`Could not read ${file.name}.`, "bad");
+          }
+        }
+        renderAttachmentChips();
+      });
+    }
     container.querySelector("[data-repo-issue-title]")?.focus();
   }
 
@@ -2706,14 +2806,22 @@
       titleInput?.focus();
       return;
     }
+    // Swap each attached image's short placeholder back out for its real
+    // data: URL now, right before signing — the signed content hash has to
+    // cover exactly what gets sent.
+    let body = String(bodyInput?.value || "");
+    const images = form._pendingIssueImages || [];
+    for (const img of images) body = body.split(img.id).join(img.dataUrl);
     if (submit) submit.disabled = true;
     setHint("Signing and sending…");
     try {
-      await submitWebIssue(repo, title, String(bodyInput?.value || ""));
+      await submitWebIssue(repo, title, body);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't appear in the list until they drain it — say so and reset the form.
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
+      images.length = 0;
+      form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
       setHint("Issue sent to the maintainer's inbox for review. Submit another or go back.", "good");
     } catch (error) {
@@ -2722,7 +2830,7 @@
       setHint(
         code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
-          : code === "issue_too_large" ? "The description is too large - please shorten it."
+          : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : "Could not send the issue. Please try again.",
         "bad");
     }

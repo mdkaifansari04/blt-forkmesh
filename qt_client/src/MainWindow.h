@@ -1800,12 +1800,12 @@ private:
     // busy state instantly, before the rescan itself has produced anything new).
     void applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
                                    const QString &localBase);
-    // Handles the dependency card's per-row "Run scan" button: re-runs
-    // RepoSecurity::scan() off the GUI thread (it shells out to git and reads
-    // every tracked file, which can take a moment on a large repo) so the
-    // button/progress-bar busy state actually animates instead of freezing the
-    // window mid-scan.
-    void runRepoDependencyScan();
+    // Handles the dependency card's per-row "Run scan" button: rescans either a
+    // single manifest (when manifestPath is non-empty) or all manifests off the
+    // GUI thread (it shells out to git and reads files, which can take a moment
+    // on a large repo) so the button/progress-bar busy state actually animates
+    // instead of freezing the window mid-scan.
+    void runRepoDependencyScan(const QString &manifestPath = QString());
     void refreshRepoQuality();
     // Open a repo file in the editor and highlight/centre the given 1-based
     // line (used by the Security and Quality findings tables).
@@ -2878,6 +2878,9 @@ private:
     // True while runRepoDependencyScan()'s off-thread rescan is in flight; drives
     // the dependency card's "Scanning…" button/progress-bar state.
     bool m_repoSecurityScanRunning = false;
+    // Path of the manifest being scanned (empty if scanning all manifests); used
+    // to highlight which "Run scan" button is active during a per-manifest scan.
+    QString m_repoSecurityScanningPath;
     // Most recently rendered Security-tab snapshot, cached so a "Run scan" click
     // can redraw the dependency card in its busy state immediately, without
     // re-running the (possibly slow) scan just to get a frame to render.
