@@ -2165,6 +2165,15 @@ void repairMirrorHead(const QString &mirrorPath, const QString &sourcePath)
 
 void MainWindow::autoSyncMirrors()
 {
+    // Retry the flagship-repo bootstrap here too, not just the one-shot timer
+    // shortly after launch: if the catalog wasn't reachable yet at that single
+    // attempt (network still coming up right after a fresh install, relay
+    // momentarily down), a long-running node — especially a headless daemon
+    // that rarely restarts — would otherwise never end up mirroring the
+    // project repo or joining the mirror network until its next relaunch.
+    // ensureFlagshipRepo() is idempotent (no-op once the repo is present).
+    ensureFlagshipRepo();
+
     // Quietly refresh every repo's mirror so it tracks the owner's repo.
     for (int i = 0; i < m_repositories.size(); ++i) {
         if (!m_syncingRepos.contains(i) &&
