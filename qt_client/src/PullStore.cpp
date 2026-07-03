@@ -1770,6 +1770,55 @@ bool PullStore::finishPullFileEdit(int number, const QString &relPath,
         error);
 }
 
+bool PullStore::startPullAgentEdit(int number, QString *error)
+{
+    QStringList conflicted;
+    bool clean = false;
+    if (!beginPullBranch(number, &conflicted, &clean, error))
+        return false;
+    if (!clean) {
+        // Agent edits sit on top of the applied PR; conflicts must go through
+        // the resolve flow first.
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("This pull request has conflicts - use "
+                                    "\"Resolve conflicts\" first.");
+        return false;
+    }
+    return true; // branch left checked out; finishPullAgentEdit commits the edits
+}
+
+bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
+                                    QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("Editing needs a local working tree.");
+        return false;
+    }
+    QString err;
+    if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
+        if (error)
+            *error = "git add failed: " + err;
+        return false;
+    }
+    QByteArray staged;
+    runGit(m_workTree, {"diff", "--cached", "--name-only"}, &staged);
+    if (staged.trimmed().isEmpty()) {
+        // The agent changed nothing — tear the work branch down.
+        abortConflictMerge();
+        if (error)
+            *error = QStringLiteral("No changes to commit.");
+        return false;
+    }
+    if (!runGit(m_workTree, {"commit", "-m", commitMsg}, nullptr, &err)) {
+        if (error)
+            *error = "git commit failed: " + err;
+        return false;
+    }
+    return finalizeOnPullBranch(number, commitMsg, error);
+}
+
 bool PullStore::deletePullFile(int number, const QString &relPath, QString *error)
 {
     if (!canWrite()) {
