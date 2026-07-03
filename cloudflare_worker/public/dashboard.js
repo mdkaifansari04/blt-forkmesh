@@ -29,6 +29,8 @@
     },
     notifications: [],
     notificationUnread: 0,
+    pollProfileToken: null,
+    pollNotifToken: null,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [] },
     claimNode: { pendingNodeId: "" },
@@ -116,6 +118,8 @@
       window.clearInterval(state.profileSyncTimer);
       state.profileSyncTimer = null;
     }
+    state.pollProfileToken = null;
+    state.pollNotifToken = null;
     try {
       localStorage.removeItem("forkmesh.session");
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
@@ -647,11 +651,42 @@
     }
   }
 
+  // One lightweight /api/poll instead of re-fetching the full profile (avatar
+  // and all) and the full notification list every tick. The server returns
+  // cheap change tokens; we only fire the heavier fetches when a token moved.
+  // The unread count rides along, so the bell badge updates from the poll alone.
+  async function pollStatus(force = false) {
+    const node = String(state.session?.nodeName || "").trim().toLowerCase();
+    if (!validNodeName(node)) return;
+    let data;
+    try {
+      data = await fetchJson(`/api/poll?node=${encodeURIComponent(node)}`);
+    } catch (_) {
+      return;
+    }
+    const profileToken = data.profile?.token ?? null;
+    if (force || (profileToken !== null && profileToken !== state.pollProfileToken)) {
+      await refreshPublicProfile(state.session);
+    }
+    if (profileToken !== null) state.pollProfileToken = profileToken;
+
+    const notif = data.notif;
+    if (notif && typeof notif.unread === "number") {
+      state.notificationUnread = notif.unread;
+      renderNotificationPreview();
+    }
+    const notifToken = notif?.token ?? null;
+    if (force || (notifToken !== null && notifToken !== state.pollNotifToken)) {
+      await loadNotifications();
+    }
+    if (notifToken !== null) state.pollNotifToken = notifToken;
+  }
+
   function startProfileSync() {
     if (state.profileSyncTimer || !state.session?.nodeName) return;
     state.profileSyncTimer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      refreshPublicProfile(state.session);
+      pollStatus();
     }, PROFILE_SYNC_INTERVAL_MS);
   }
 
@@ -4407,9 +4442,11 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      await refreshPublicProfile(session);
+      // Seed the poll tokens and do the initial full profile + notification
+      // load in one pass; subsequent ticks poll /api/poll and only re-fetch
+      // what actually changed.
+      await pollStatus(true);
       startProfileSync();
-      loadNotifications();
     }
     try {
       const data = await fetchJson("/api/repositories");
