@@ -120,26 +120,6 @@ int main(int argc, char *argv[])
         app.setFont(base);
     }
 
-    // Bundle a colour-emoji font so 🎉/🙊/✅ paint in full colour in chat
-    // messages (and everywhere else) even on systems that ship no colour-emoji
-    // font of their own (common on Linux). Registering it and appending it to
-    // the application font's fallback family list makes Qt render colour glyphs
-    // for any emoji codepoint the primary UI family is missing, rather than the
-    // flat black-and-white boxes seen without it.
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
-    {
-        QFont base = app.font();
-        QStringList families{base.family()};
-        for (const QString &emoji : {QStringLiteral("Noto Color Emoji"),
-                                     QStringLiteral("Apple Color Emoji"),
-                                     QStringLiteral("Segoe UI Emoji")}) {
-            if (!families.contains(emoji))
-                families << emoji;
-        }
-        base.setFamilies(families);
-        app.setFont(base);
-    }
-
     // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
     // default on the desktop but on for headless installs done from the Hosts
     // tab, so an operator can monitor the servers they provisioned. Seed the
