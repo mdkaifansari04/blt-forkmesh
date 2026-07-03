@@ -170,8 +170,14 @@ void MainWindow::loadChatHistory()
             if (obj.contains("fileData"))
                 m.fileData = QByteArray::fromBase64(
                     obj.value("fileData").toString().toLatin1());
-            if (m.timestampMs <= expiryCutoff)
+            if (m.timestampMs <= expiryCutoff) {
+                // Remember the id even though the message is dropped: a peer
+                // that hasn't pruned yet may replay it on reconnect, and an
+                // unknown id would resurrect it as a fresh unread message.
+                if (!m.id.isEmpty())
+                    m_historyIds.insert(m.id);
                 continue;
+            }
             if (!m.id.isEmpty()) {
                 if (m_historyIds.contains(m.id))
                     continue;
@@ -204,8 +210,11 @@ void MainWindow::loadChatHistory()
             m_unreadCounts[conv] = count;
         }
     }
-    if (!m_unread.isEmpty())
+    if (!m_unread.isEmpty()) {
+        refreshChannelList();
+        refreshDmList();
         updateChatButton();
+    }
 
     // Reopen the last conversation so history is visible immediately.
     const QString current = root.value("current").toString();
@@ -243,9 +252,13 @@ void MainWindow::pruneExpiredChatHistory()
         QList<ChatMessage> &messages = it.value();
         // Messages are appended in arrival order, so expired ones are always a
         // prefix; evict from the front instead of scanning the whole list.
+        // The evicted ids stay in m_historyIds on purpose: a peer that hasn't
+        // pruned yet can replay an expired message on reconnect, and forgetting
+        // the id would resurrect it as a fresh unread message with a
+        // notification the user already saw. The set is rebuilt from the
+        // (bounded) history file on restart, so it can't grow without limit.
         bool changed = false;
         while (!messages.isEmpty() && messages.first().timestampMs <= cutoff) {
-            m_historyIds.remove(messages.first().id);
             messages.removeFirst();
             changed = true;
         }
@@ -1639,25 +1652,6 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     // auto-sync/startSession retries once it's reachable.
     if (lookupStatus == 0)
         return false;
-
-    // Already an active, key-bound account under this node's own key — e.g. a
-    // prior run already reserved + finalized it (an installer link code, adhoc
-    // #53, may have attached an owner to it along the way). It's already
-    // registered, linked or not; re-running reserve/finalize would only hit the
-    // relay's "node_name_taken" guard for active accounts, so just adopt the
-    // existing session instead of re-registering.
-    if (lookup.value("exists").toBool() &&
-        lookup.value("status").toString() == QStringLiteral("active") &&
-        lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
-        m_accountAuthenticated = true;
-        m_accountName = accountName;
-        m_accountTier = QStringLiteral("active");
-        m_accountSolanaVerified = true;
-        QSettings().setValue(kAuthedAccountSetting, accountName);
-        applyAccountEmailVerified(accountName,
-                                  lookup.value("emailVerified").toBool());
-        return true;
-    }
 
     // Step 1: reserve the name, binding it to this node's key.
     const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
