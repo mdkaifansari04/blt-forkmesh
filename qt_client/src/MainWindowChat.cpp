@@ -380,7 +380,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAssignAgent->setObjectName("quickAddAgentCheck");
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
-    m_quickAddAgentProvider = new QComboBox;
+    m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
     m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                      QStringLiteral("openai"));
@@ -397,7 +397,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Claude model chooser (adhoc #261): live list of models from the provider.
     // Populated by refreshClaudeModelCombo; choice persisted and fed to
     // startClaudeCodeTranscript.
-    m_quickAddClaudeModel = new QComboBox;
+    m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
     m_quickAddClaudeModel->setMinimumWidth(170);
     m_quickAddClaudeModel->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -415,6 +415,34 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      m_quickAddClaudeModel->currentData().toString());
             });
     refreshClaudeModelCombo();
+    // Mode selector (issue #348): a dropdown in the same style as the
+    // provider/model pickers, mirroring the Claude Code CLI's own permission-mode
+    // picker (Ask before edits / Edit automatically / Plan mode / Auto mode).
+    // Backed by the same kClaudeAutoModeSetting the agent composer's "Auto mode /
+    // Manual approve" toggle already uses: only "Auto mode" skips permission
+    // prompts today, so the other three all mean "don't skip" until this app can
+    // drive per-tool approval headlessly.
+    m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddModeSelector->setObjectName("quickAddModeSelector");
+    m_quickAddModeSelector->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
+    m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
+    m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
+    m_quickAddModeSelector->addItem(QStringLiteral("Auto mode"), true);
+    m_quickAddModeSelector->setMaxVisibleItems(30);
+    m_quickAddModeSelector->setToolTip(
+        "How much freedom the agent has to make changes without asking first.");
+    {
+        const int idx = m_quickAddModeSelector->findData(
+            QSettings().value(kClaudeAutoModeSetting, true).toBool());
+        m_quickAddModeSelector->setCurrentIndex(
+            idx >= 0 ? idx : m_quickAddModeSelector->count() - 1);
+    }
+    connect(m_quickAddModeSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                QSettings().setValue(kClaudeAutoModeSetting,
+                                     m_quickAddModeSelector->currentData().toBool());
+            });
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
@@ -513,6 +541,10 @@ QWidget *MainWindow::buildNetworkLogDock()
                                 QLatin1String("claude-code");
         m_quickAddClaudeModel->setVisible(claudeCode);
         m_quickAddClaudeModel->setEnabled(agentRuns);
+        // The permission-mode chooser only means anything for the Claude Code
+        // CLI too (issue #348) — the API providers have no such concept.
+        m_quickAddModeSelector->setVisible(claudeCode);
+        m_quickAddModeSelector->setEnabled(agentRuns);
     };
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
@@ -569,23 +601,28 @@ QWidget *MainWindow::buildNetworkLogDock()
     sendColumn->addWidget(quickAddSendButton);
 
     // Thin bordered box housing the agent hand-off controls (adhoc #99): the
-    // "Agent" toggle plus the provider/model dropdowns it governs, visually
-    // grouped as one unit in the middle of the bottom bar.
+    // "Agent" toggle plus the provider/model/mode dropdowns it governs, visually
+    // grouped as one unit in the middle of the bottom bar. Kept about half as
+    // tall as its original padding (issue #348) so it reads as a slim pill
+    // instead of a second bar.
     auto *agentBox = new QFrame;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
-    agentBoxRow->setContentsMargins(8, 2, 6, 2);
-    agentBoxRow->setSpacing(4);
+    agentBoxRow->setContentsMargins(6, 1, 4, 1);
+    agentBoxRow->setSpacing(2);
     agentBoxRow->addWidget(m_quickAddAssignAgent);
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
+    agentBoxRow->addWidget(m_quickAddModeSelector);
 
     // Bottom bar nested inside the prompt frame, below the text area (adhoc
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
     // either side, then the character count immediately left of the send icons.
+    // The extra top margin (issue #348) drops the whole row down away from the
+    // text area above it instead of hugging it.
     auto *bottomBar = new QHBoxLayout;
-    bottomBar->setContentsMargins(8, 2, 6, 6);
+    bottomBar->setContentsMargins(8, 6, 6, 4);
     bottomBar->setSpacing(6);
     bottomBar->addWidget(m_quickAddImageButton);
     bottomBar->addWidget(m_quickAddMicButton);
