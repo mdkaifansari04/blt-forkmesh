@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 321
 title: If the radar is red, please make sure to run the check every second.
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
