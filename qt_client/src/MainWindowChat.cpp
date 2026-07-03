@@ -503,44 +503,49 @@ QWidget *MainWindow::buildNetworkLogDock()
             this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
     syncQuickAddAgentControls();
 
-    auto *quickAddSendButton = new QPushButton("Send");
-    quickAddSendButton->setObjectName("primaryButton");
-    quickAddSendButton->setProperty("buttonSize", "sm");
+    // Icon-only send button inside the prompt frame (arrow up = send/submit).
+    auto *quickAddSendButton = new QPushButton;
+    quickAddSendButton->setObjectName("quickAddSendIcon");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(quickAddSendButton, "chevron-up", 16);
+    quickAddSendButton->setFixedSize(32, 32);
+    quickAddSendButton->setToolTip("Send (Enter)");
 
-    // The donate button and the Reddit/X social icons now live in the top bar
-    // (see buildBreadcrumb), stacked beside the account cluster, so they no longer
-    // take up the footer's far-right edge.
-
-    // Twice as wide and two lines tall (adhoc #10/#12): give the prompt field
-    // room to actually show two wrapped lines of the prompt while typing. The
-    // two-line height itself is set in the stylesheet (#issueQuickAdd
-    // min-/max-height), which is authoritative over a C++ minimumHeight here;
-    // longer prompts scroll within the box.
-    m_issueQuickAdd->setMinimumWidth(720);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // The live CPU/MEM/DISK diagnostics sparklines and their glyph now live in the
-    // top bar (see buildBreadcrumb), so the footer is just the prompt + agent
-    // controls.
+    // Prompt wrapper: the border lives on this frame; the text edit inside is
+    // borderless so the send icon sits flush inside the same visual box.
+    auto *promptWrapper = new QFrame;
+    promptWrapper->setObjectName("promptWrapper");
+    auto *promptRow = new QHBoxLayout(promptWrapper);
+    promptRow->setContentsMargins(0, 0, 4, 4);
+    promptRow->setSpacing(0);
+    promptRow->addWidget(m_issueQuickAdd, 1);
+    promptRow->addWidget(quickAddSendButton, 0, Qt::AlignBottom);
 
-    auto *quickAddRow = new QHBoxLayout(card);
-    quickAddRow->setContentsMargins(12, 8, 12, 8);
-    quickAddRow->setSpacing(8);
-    quickAddRow->addWidget(m_issueQuickAdd, 1);
-    quickAddRow->addWidget(m_quickAddCharCount);
-    quickAddRow->addWidget(m_quickAddMicButton);
-    quickAddRow->addWidget(m_voiceLevelMeter);
-    quickAddRow->addWidget(m_quickAddVoiceAutoSubmit);
-    quickAddRow->addWidget(m_quickAddImageButton);
-    quickAddRow->addWidget(m_quickAddAttachStrip);
-    quickAddRow->addWidget(quickAddSendButton);
-    quickAddRow->addWidget(m_quickAddNoIssue);
-    quickAddRow->addWidget(m_quickAddAssignAgent);
-    quickAddRow->addWidget(m_quickAddAgentProvider);
-    quickAddRow->addWidget(m_quickAddClaudeModel);
-    quickAddRow->addWidget(m_quickAddCreatePr);
-    quickAddRow->addStretch(1);
+    // Controls strip above the prompt (agent toggles, model picker, etc.).
+    auto *controlsRow = new QHBoxLayout;
+    controlsRow->setContentsMargins(0, 0, 0, 0);
+    controlsRow->setSpacing(6);
+    controlsRow->addWidget(m_quickAddCharCount);
+    controlsRow->addWidget(m_quickAddMicButton);
+    controlsRow->addWidget(m_voiceLevelMeter);
+    controlsRow->addWidget(m_quickAddVoiceAutoSubmit);
+    controlsRow->addWidget(m_quickAddImageButton);
+    controlsRow->addWidget(m_quickAddAttachStrip);
+    controlsRow->addWidget(m_quickAddNoIssue);
+    controlsRow->addWidget(m_quickAddAssignAgent);
+    controlsRow->addWidget(m_quickAddAgentProvider);
+    controlsRow->addWidget(m_quickAddClaudeModel);
+    controlsRow->addWidget(m_quickAddCreatePr);
+    controlsRow->addStretch(1);
+
+    // Card (right half): controls on top, prompt+send on bottom.
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(12, 8, 12, 8);
+    cardLayout->setSpacing(6);
+    cardLayout->addLayout(controlsRow);
+    cardLayout->addWidget(promptWrapper);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.
     // It streams the newest network/update line so the latest activity is visible
@@ -549,7 +554,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setFlat(true);
     m_footerUpdateLog->setCursor(Qt::PointingHandCursor);
-    m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_footerUpdateLog->setToolTip("Live log. Click to open the full log.");
     styleFooterUpdateLog();
     // Seed the always-on strip with the most recent live-log line (or a ready
@@ -568,11 +573,12 @@ QWidget *MainWindow::buildNetworkLogDock()
         m_updateLogDialog->activateWindow();
     });
 
-    auto *dockCol = new QVBoxLayout(dock);
-    dockCol->setContentsMargins(0, 0, 0, 0);
-    dockCol->setSpacing(0);
-    dockCol->addWidget(card);
-    dockCol->addWidget(m_footerUpdateLog);
+    // Horizontal split: live-log strip on the left half, prompt card on the right.
+    auto *dockRow = new QHBoxLayout(dock);
+    dockRow->setContentsMargins(0, 0, 0, 0);
+    dockRow->setSpacing(0);
+    dockRow->addWidget(m_footerUpdateLog, 1);
+    dockRow->addWidget(card, 1);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
