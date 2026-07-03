@@ -718,6 +718,7 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
+    const adminButton = $("[data-admin-button]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
@@ -726,6 +727,9 @@
         : "Verify email in profile";
     }
     applyAvatar(avatar, session);
+    if (adminButton) {
+      adminButton.classList.toggle("hidden", !session?.isAdmin);
+    }
     renderProfileModal(session);
     renderProfilePage(session);
   }
