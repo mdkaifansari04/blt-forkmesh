@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:forkmesh/fm_icons.dart';
 import 'package:provider/provider.dart';
 
-import '../fm_icons.dart';
 import '../services/auth_service.dart';
 import '../services/identity.dart';
 import '../services/relay_service.dart';
