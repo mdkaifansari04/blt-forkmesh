@@ -102,7 +102,10 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
     assert "renderRepositories" in dashboard_js
     assert "renderNetwork" in dashboard_js
     assert "requestedRepoKey()" in dashboard_js
-    assert "if (!requested)" in dashboard_js
+    # Signed-out visitors browse repositories as guests instead of being
+    # bounced back to the landing page (adhoc #123).
+    assert 'location.replace("/");\n        return;' not in dashboard_js
+    assert "data-guest-auth-link" in dashboard_js
     assert 'renderProfile(session || { nodeName: "guest" })' in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
     assert "forkmesh_session=; Path=/; Max-Age=0" in dashboard_js
