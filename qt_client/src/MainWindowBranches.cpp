@@ -3279,10 +3279,9 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         }
         logSystem(QStringLiteral("Git: fast-forwarded %1 to %2.").arg(branch, base));
         setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
-        const QString browsed = m_repoBranch;
-        loadBranchesAndTags();
-        if (!browsed.isEmpty() && branches.contains(browsed))
-            setRepoBranch(browsed);
+        m_branchesCache.clear(); // branch was updated — bust cache
+        if (m_repoBranch == branch)
+            updateBranchDetailActions(branch);
         return;
     }
 
@@ -3354,10 +3353,9 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
                       .arg(base, branch));
         setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
-        const QString browsed = m_repoBranch;
-        loadBranchesAndTags();
-        if (!browsed.isEmpty() && repoBranches().contains(browsed))
-            setRepoBranch(browsed);
+        m_branchesCache.clear(); // branch was updated — bust cache
+        if (m_repoBranch == branch)
+            updateBranchDetailActions(branch);
         return;
     }
 
@@ -3366,10 +3364,9 @@ void MainWindow::updateBranchFromBase(const QString &branch)
 
     logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
     setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
-    const QString browsed = m_repoBranch;
-    loadBranchesAndTags();
-    if (!browsed.isEmpty() && repoBranches().contains(browsed))
-        setRepoBranch(browsed);
+    m_branchesCache.clear(); // branch was updated — bust cache
+    if (m_repoBranch == branch)
+        updateBranchDetailActions(branch);
 }
 
 // Bring `branch` up to date with base via the interactive merge editor — the
