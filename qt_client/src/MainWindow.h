@@ -82,6 +82,7 @@ class QGraphicsOpacityEffect;
 class QFrame;
 class QLabel;
 class QMouseEvent;
+class QAbstractButton;
 class QAction;
 class QLineEdit;
 class QListWidget;
@@ -2379,14 +2380,18 @@ private:
     // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
     // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
-    // Reward-availability cluster in the top-right (next to the balance): a toggle
-    // that takes this node offline (stops serving + the reward heartbeat), a clear
-    // "available for rewards" / "offline · not collecting rewards" status line, and
-    // a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a node
-    // the user deliberately took offline stays offline across restarts.
-    QPushButton *m_nodeOnlineToggle = nullptr;
+    // Reward-availability cluster, now living in the node profile panel right
+    // under "Get paid to mirror": a clear on/off switch (ToggleSwitch, private to
+    // MainWindowChat.cpp) that takes this node offline (stops serving + the
+    // reward heartbeat), a status label spelling out on/off, a clear
+    // "available for rewards" / "offline · not collecting rewards" status line,
+    // and a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a
+    // node the user deliberately took offline stays offline across restarts.
+    QAbstractButton *m_nodeOnlineToggle = nullptr;
+    QLabel *m_nodeOnlineStatusLabel = nullptr;
     QLabel *m_nodeRewardStatus = nullptr;
     QLabel *m_nodeUptimeLabel = nullptr;
+    QWidget *m_profileOnlineSection = nullptr; // wraps the switch + status lines
     bool m_nodeOffline = false;
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each

@@ -22,7 +22,9 @@ class Identity {
   String get nodeId => publicKeyB64url;
   String get shortKey {
     final k = publicKeyB64url;
-    return k.length <= 16 ? k : '${k.substring(0, 8)}...${k.substring(k.length - 8)}';
+    return k.length <= 16
+        ? k
+        : '${k.substring(0, 8)}...${k.substring(k.length - 8)}';
   }
 
   static Future<Identity> loadOrCreate() async {
