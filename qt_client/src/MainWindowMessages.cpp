@@ -102,6 +102,16 @@ void MainWindow::onMessage(const ChatMessage &message)
     if (conversation.isEmpty())
         return;
 
+    // Drop messages already past the 7-day retention window. Peers replay their
+    // whole in-session history on every reconnect; the id-dedupe below only
+    // covers messages still in the bounded history file, so an expired message
+    // that fell out of it (or a lost file) would otherwise resurrect as "new",
+    // re-lighting the unread badge on every restart for something the user read
+    // days ago. The hourly sweep would evict it again anyway.
+    if (message.timestampMs <=
+        QDateTime::currentMSecsSinceEpoch() - kChatMessageRetentionMs)
+        return;
+
     // Skip messages we already have (e.g. loaded from disk then replayed by a
     // peer on reconnect) so history isn't duplicated.
     if (!message.id.isEmpty()) {
@@ -707,6 +717,9 @@ void MainWindow::switchConversation(const QString &conversation)
     m_currentConversation = conversation;
     m_unread.remove(conversation);
     m_unreadCounts.remove(conversation);
+    // Unread state persists across restarts now, so reading a conversation has
+    // to reach disk too — otherwise a restart resurrects the cleared badge.
+    scheduleChatSave();
 
     QString title = conversation;
     if (isDirectConversation(conversation))
