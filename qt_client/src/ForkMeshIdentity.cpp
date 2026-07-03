@@ -44,6 +44,7 @@ bool ForkMeshIdentity::load()
     const QString keyPath = dir + "/ed25519.pem";
     if (!QFile::exists(keyPath) && !generate(keyPath))
         return false;
+    m_keyDir = dir;
     return readKey(keyPath) && refreshPublicKey();
 }
 
@@ -132,6 +133,20 @@ bool ForkMeshIdentity::refreshPublicKey()
     raw.resize(int(len));
     m_publicKey = base64Url(raw);
     return true;
+}
+
+bool ForkMeshIdentity::hasAnnouncedWelcome() const
+{
+    return !m_keyDir.isEmpty() &&
+           QFile::exists(m_keyDir + "/welcome_announced");
+}
+
+void ForkMeshIdentity::markWelcomeAnnounced() const
+{
+    if (m_keyDir.isEmpty())
+        return;
+    QFile f(m_keyDir + "/welcome_announced");
+    f.open(QIODevice::WriteOnly);
 }
 
 QString ForkMeshIdentity::shortPublicKey() const
