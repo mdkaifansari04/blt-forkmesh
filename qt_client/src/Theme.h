@@ -856,6 +856,12 @@ QPushButton#agentStatusDot {
 QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
 #agentStatusScroll { background: transparent; border: none; }
 #agentStatusScroll > QWidget > QWidget { background: transparent; }
+/* Small "fix conflicts with agent" button (adhoc #139) at the end of the
+   footer's "Agents:" strip; only shown while the selected session conflicts. */
+QPushButton#agentStatusFixButton {
+    background: transparent; border: 1px solid #3fb950; border-radius: 5px; padding: 0;
+}
+QPushButton#agentStatusFixButton:hover { background: rgba(63,185,80,0.15); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1967,6 +1973,10 @@ QPushButton#agentStatusDot {
 QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
 #agentStatusScroll { background: transparent; border: none; }
 #agentStatusScroll > QWidget > QWidget { background: transparent; }
+QPushButton#agentStatusFixButton {
+    background: transparent; border: 1px solid #1a7f37; border-radius: 5px; padding: 0;
+}
+QPushButton#agentStatusFixButton:hover { background: rgba(26,127,55,0.15); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
