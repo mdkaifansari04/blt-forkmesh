@@ -2873,7 +2873,11 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentModelCombo) {
         QSignalBlocker block(m_agentModelCombo);
         int idx = m_agentModelCombo->findData(session->model);
-        m_agentModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        // Sessions without an explicit model show the first concrete model,
+        // not the synthetic "Auto" row (adhoc #91) — auto routing is opt-in.
+        if (idx < 0)
+            idx = m_agentModelCombo->count() > 1 ? 1 : 0;
+        m_agentModelCombo->setCurrentIndex(idx);
         m_agentModelCombo->setEnabled(!isExternalSession(sessionId) &&
                                       session->provider ==
                                           QLatin1String("claude-code"));
@@ -4302,6 +4306,219 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 // the output is parsed cards instead of a raw TUI. Each session keeps its own
 // stream + event buffer so output never leaks across sessions; the raw stream
 // stays reachable via the "Raw output" toggle, and a PR is opened on finish.
+// ---- Auto model mode (adhoc #91) -------------------------------------------
+
+// One routing decision as a transcript event. Rendered as a muted notice row by
+// ClaudeTranscriptView and persisted with the other stream events, so the
+// "why this model" trail survives restarts; when `model` is non-empty the event
+// also records the routed pick for resumes to reuse.
+static QJsonObject autoModelNotice(const QString &text,
+                                   const QString &model = QString())
+{
+    QJsonObject ev{{QStringLiteral("type"), QStringLiteral("_local_notice")},
+                   {QStringLiteral("text"), text}};
+    if (!model.isEmpty())
+        ev.insert(QStringLiteral("model"), model);
+    return ev;
+}
+
+void MainWindow::resolveAutoClaudeModel(int sessionId, const QString &task,
+                                        const QString &workdir,
+                                        ClaudeStreamSession *live,
+                                        std::function<void(const QString &)> launch)
+{
+    // A continued session sticks with the model that already holds the
+    // conversation context; the routed pick was recorded on its notice event.
+    const QList<QJsonObject> events = m_streamEvents.value(sessionId);
+    for (int i = events.size() - 1; i >= 0; --i) {
+        const QJsonObject &ev = events.at(i);
+        if (ev.value(QStringLiteral("type")).toString()
+            != QLatin1String("_local_notice"))
+            continue;
+        const QString prior = ev.value(QStringLiteral("model")).toString();
+        if (prior.isEmpty())
+            continue;
+        applyTranscriptEvent(
+            sessionId,
+            autoModelNotice(QStringLiteral("Auto model: continuing on %1 — chosen "
+                                           "earlier in this session.")
+                                .arg(agentModelLabel(prior)),
+                            prior));
+        launch(prior);
+        return;
+    }
+    // Pre-model pass: the local heuristic router decides the obvious cases for
+    // free, with no LLM call at all.
+    const ClaudeAutoRoute quick = claudeAutoHeuristicRoute(task);
+    if (!quick.model.isEmpty()) {
+        applyTranscriptEvent(
+            sessionId,
+            autoModelNotice(QStringLiteral("Auto model: heuristic router chose %1 "
+                                           "because %2.")
+                                .arg(agentModelLabel(quick.model), quick.reason),
+                            quick.model));
+        launch(quick.model);
+        return;
+    }
+    applyTranscriptEvent(
+        sessionId,
+        autoModelNotice(QStringLiteral(
+            "Auto model: no heuristic match — asking Haiku 4.5 whether it can "
+            "handle this task.")));
+    runClaudeAutoTriageRung(sessionId, 0, /*errorsOnly=*/true, task, workdir,
+                            live, std::move(launch));
+}
+
+void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnly,
+                                         const QString &task,
+                                         const QString &workdir,
+                                         ClaudeStreamSession *live,
+                                         std::function<void(const QString &)> launch)
+{
+    const QList<ClaudeAutoRung> &ladder = claudeAutoLadder();
+    if (rung >= ladder.size() - 1) {
+        // Top of the ladder. Reached through honest escalations => run the most
+        // powerful model. Reached purely through triage failures => the router
+        // itself is broken (CLI/auth trouble the main run may still survive),
+        // so don't bill the most expensive model for an infra problem — fall
+        // back to Opus, the everyday default.
+        const ClaudeAutoRung &top = ladder.last();
+        const ClaudeAutoRung &opus = ladder.at(ladder.size() - 2);
+        const QString pick = errorsOnly ? opus.id : top.id;
+        applyTranscriptEvent(
+            sessionId,
+            autoModelNotice(
+                errorsOnly
+                    ? QStringLiteral("Auto model: triage unavailable — defaulting "
+                                     "to %1.")
+                          .arg(opus.label)
+                    : QStringLiteral("Auto model: every lighter model passed — "
+                                     "running %1, the most powerful model.")
+                          .arg(top.label),
+                pick));
+        launch(pick);
+        return;
+    }
+    const ClaudeAutoRung r = ladder.at(rung);
+    // One-shot triage: ask the rung's model whether it is confident it can do
+    // the task itself — or to name the right model outright if it already
+    // knows. --max-turns 1 keeps it a single, tool-free reply.
+    const QString triage =
+        QStringLiteral(
+            "You are the Claude model \"%1\". ForkMesh is choosing which model "
+            "should run a coding agent for the task below. Assess honestly "
+            "whether YOU could complete it end to end with high confidence.\n"
+            "Reply with ONLY one line of JSON, no other text and no tool use:\n"
+            "{\"decision\":\"handle|escalate|pick\","
+            "\"model\":\"haiku|sonnet|opus|fable\",\"confidence\":0.0,"
+            "\"reason\":\"one short sentence\"}\n"
+            "- handle: you are confident you can do it yourself (model = your "
+            "own alias).\n"
+            "- pick: you are confident a specific model is the right fit "
+            "(model = its alias).\n"
+            "- escalate: you are not confident; the next stronger model will "
+            "re-assess.\n\nTask:\n%2")
+            .arg(r.label, task.left(6000));
+    // Parented to the stream session so stopping the agent kills the triage too.
+    auto *proc = new QProcess(live);
+    proc->setWorkingDirectory(workdir);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.remove(QStringLiteral("ANTHROPIC_API_KEY")); // same auth as the agent run
+    proc->setProcessEnvironment(env);
+    // Don't let a hung triage stall the agent launch forever.
+    QTimer::singleShot(45000, proc, [proc] { proc->kill(); });
+    connect(
+        proc, &QProcess::finished, this,
+        [this, sessionId, rung, errorsOnly, task, workdir, live, launch, proc,
+         r](int exitCode, QProcess::ExitStatus) mutable {
+            const QByteArray out = proc->readAllStandardOutput();
+            proc->deleteLater();
+            if (m_streamSessions.value(sessionId) != live)
+                return; // session stopped or replaced while the triage ran
+            const QList<ClaudeAutoRung> &ladder = claudeAutoLadder();
+            const ClaudeAutoRung &next = ladder.at(rung + 1);
+            const int open = out.indexOf('{');
+            const int close = out.lastIndexOf('}');
+            QJsonObject verdict;
+            if (exitCode == 0 && open >= 0 && close > open)
+                verdict = QJsonDocument::fromJson(out.mid(open, close - open + 1))
+                              .object();
+            const QString decision =
+                verdict.value(QStringLiteral("decision")).toString();
+            const QString alias = verdict.value(QStringLiteral("model"))
+                                      .toString()
+                                      .trimmed()
+                                      .toLower();
+            const double confidence =
+                verdict.value(QStringLiteral("confidence")).toDouble();
+            QString reason =
+                verdict.value(QStringLiteral("reason")).toString().trimmed();
+            if (reason.isEmpty())
+                reason = QStringLiteral("no reason given");
+            QString aliasId, aliasLabel;
+            for (const ClaudeAutoRung &c : ladder)
+                if (c.alias == alias) {
+                    aliasId = c.id;
+                    aliasLabel = c.label;
+                    break;
+                }
+            if (decision == QLatin1String("handle") && confidence >= 0.6) {
+                applyTranscriptEvent(
+                    sessionId,
+                    autoModelNotice(QStringLiteral("Auto model: %1 is confident it "
+                                                   "can handle this task (%2) — "
+                                                   "running %1.")
+                                        .arg(r.label, reason),
+                                    r.id));
+                launch(r.id);
+                return;
+            }
+            if (decision == QLatin1String("pick") && !aliasId.isEmpty()) {
+                applyTranscriptEvent(
+                    sessionId,
+                    autoModelNotice(QStringLiteral("Auto model: %1 picked %2 for "
+                                                   "this task (%3).")
+                                        .arg(r.label, aliasLabel, reason),
+                                    aliasId));
+                launch(aliasId);
+                return;
+            }
+            if (decision.isEmpty()) {
+                // CLI failure or unparseable reply — an infra problem, not a
+                // difficulty verdict; keep errorsOnly as-is so an all-failure
+                // climb ends on the safe default instead of the priciest model.
+                applyTranscriptEvent(
+                    sessionId,
+                    autoModelNotice(QStringLiteral("Auto model: triage on %1 "
+                                                   "failed (exit %2) — trying %3.")
+                                        .arg(r.label)
+                                        .arg(exitCode)
+                                        .arg(next.label)));
+                runClaudeAutoTriageRung(sessionId, rung + 1, errorsOnly, task,
+                                        workdir, live, std::move(launch));
+                return;
+            }
+            applyTranscriptEvent(
+                sessionId,
+                autoModelNotice(QStringLiteral("Auto model: %1 wasn't confident "
+                                               "(%2) — escalating to %3.")
+                                    .arg(r.label, reason, next.label)));
+            runClaudeAutoTriageRung(sessionId, rung + 1, /*errorsOnly=*/false,
+                                    task, workdir, live, std::move(launch));
+        });
+    // Through a login shell so the user's PATH resolves `claude` exactly like
+    // the real agent session (ClaudeStreamSession) — the GUI process itself
+    // often lacks ~/.local/bin. The triage prompt goes in on stdin, so nothing
+    // user-controlled needs shell quoting; the ladder id is a fixed [a-z0-9-]
+    // string, single-quoted defensively all the same.
+    proc->start(QStringLiteral("bash"),
+                {QStringLiteral("-lc"),
+                 QStringLiteral("exec claude -p --model '%1' --max-turns 1")
+                     .arg(r.id)});
+    proc->write(triage.toUtf8());
+    proc->closeWriteChannel();
+}
+
 void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
                                            const QString &repoPath,
                                            const QString &customPrompt)
@@ -4543,8 +4760,11 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     const QString claudeModel =
         !model.isEmpty() ? model
                          : QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+    // Auto mode (adhoc #91) routes on the task itself, not the full workflow
+    // prompt — `lead` carries the user's ask (or the issue + its comments).
+    const QString routeTask = lead;
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   claudeModel](const QString &workdir) {
+                   claudeModel, routeTask](const QString &workdir) {
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -4559,12 +4779,26 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 *as, QStringLiteral("\n==> Running Claude Code (stream-json transcript) "
                                     "on branch %1 in %2\n")
                          .arg(branchName, workdir));
-        live->start(workdir, env, prompt, /*skipPermissions=*/autoMode, resumeId,
-                    claudeModel);
-        // Issue #84: launching with an initial prompt is a send too — refresh the
-        // top-bar usage chart + hover stats. Bump (now + a short follow-up) so the
-        // first turn's usage shows without waiting for the next minute tick.
-        bumpClaudeCodeUsage();
+        // Start the CLI once the model is concrete. The "auto" sentinel first
+        // runs the router (adhoc #91), which is asynchronous — so `begin`
+        // re-checks that this stream is still the session's live one (the user
+        // may have stopped or restarted it while the triage ran).
+        auto begin = [this, sid, live, workdir, env, prompt, autoMode,
+                      resumeId](const QString &chosenModel) {
+            if (m_streamSessions.value(sid) != live)
+                return;
+            live->start(workdir, env, prompt, /*skipPermissions=*/autoMode,
+                        resumeId, chosenModel);
+            // Issue #84: launching with an initial prompt is a send too — refresh
+            // the top-bar usage chart + hover stats. Bump (now + a short
+            // follow-up) so the first turn's usage shows without waiting for the
+            // next minute tick.
+            bumpClaudeCodeUsage();
+        };
+        if (claudeModel == kClaudeAutoModelId)
+            resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
+        else
+            begin(claudeModel);
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a

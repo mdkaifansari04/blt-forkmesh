@@ -2210,7 +2210,8 @@ const QString kLegacyClaudeCommand =
 // PR. Distinct from "Claude API" (the bundled python script) above.
 const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeCommand");
 // Which Claude model the `claude` CLI runs as (passed through as `--model`):
-// empty = the CLI's own default, otherwise an alias like "opus"/"sonnet"/"haiku".
+// empty = the CLI's own default, otherwise an alias like "opus"/"sonnet"/"haiku"
+// or the "auto" sentinel (adhoc #91) that routes each task to a model.
 // Surfaced as a chooser in the footer quick-add bar (adhoc #261).
 const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
@@ -2283,14 +2284,104 @@ inline void selectDefaultAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
-// Clear a Claude model combo so it's ready to receive live models from the
-// provider API. The list is filled by mergeLiveClaudeModels once the fetch
-// returns. Used by the per-session composer model selector and the quick-add bar.
+// "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
+// launcher routes each task: a free local heuristic pass first, then a triage
+// ladder that asks Haiku whether it can handle the task and escalates through
+// progressively stronger models until one is confident (Haiku can also name
+// the right model directly). Every decision — and why — is written into the
+// transcript as a "_local_notice" event.
+const QString kClaudeAutoModelId = QStringLiteral("auto");
+
+// The escalation ladder auto mode climbs, weakest first. `alias` is the short
+// name the triage JSON uses ("haiku"/"sonnet"/"opus"/"fable"); `id` is what the
+// CLI receives as --model; `label` is what transcript notices show.
+struct ClaudeAutoRung {
+    QString alias;
+    QString id;
+    QString label;
+};
+
+inline const QList<ClaudeAutoRung> &claudeAutoLadder()
+{
+    static const QList<ClaudeAutoRung> kLadder = {
+        {QStringLiteral("haiku"), QStringLiteral("claude-haiku-4-5"),
+         QStringLiteral("Haiku 4.5")},
+        {QStringLiteral("sonnet"), QStringLiteral("claude-sonnet-4-6"),
+         QStringLiteral("Sonnet 4.6")},
+        {QStringLiteral("opus"), QStringLiteral("claude-opus-4-8"),
+         QStringLiteral("Opus 4.8")},
+        {QStringLiteral("fable"), QStringLiteral("claude-fable-5"),
+         QStringLiteral("Fable 5")},
+    };
+    return kLadder;
+}
+
+// Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
+// the task text. Only the obvious cases are decided here — an explicit "use
+// opus"-style request, clearly trivial edits, or clearly heavyweight work.
+// Everything in between returns an empty model so the LLM triage ladder makes
+// the call.
+struct ClaudeAutoRoute {
+    QString model;  // empty = not confident, fall through to LLM triage
+    QString reason; // human-readable, shown in the transcript
+};
+
+inline ClaudeAutoRoute claudeAutoHeuristicRoute(const QString &task)
+{
+    const QString t = task.toLower();
+    // An explicit model request in the task wins outright.
+    for (const ClaudeAutoRung &r : claudeAutoLadder())
+        if (t.contains(QStringLiteral("use %1").arg(r.alias)) ||
+            t.contains(QStringLiteral("with %1").arg(r.alias)))
+            return {r.id,
+                    QStringLiteral("the task explicitly asks for %1").arg(r.label)};
+    static const QStringList kTrivial = {
+        QStringLiteral("typo"),        QStringLiteral("spelling"),
+        QStringLiteral("rename"),      QStringLiteral("tooltip"),
+        QStringLiteral("whitespace"),  QStringLiteral("padding"),
+        QStringLiteral("margin"),      QStringLiteral("wording"),
+        QStringLiteral("bump version"),
+    };
+    static const QStringList kHeavy = {
+        QStringLiteral("refactor"),   QStringLiteral("architect"),
+        QStringLiteral("redesign"),   QStringLiteral("rewrite"),
+        QStringLiteral("migrat"),     QStringLiteral("concurren"),
+        QStringLiteral("race condition"), QStringLiteral("deadlock"),
+        QStringLiteral("security"),   QStringLiteral("protocol"),
+        QStringLiteral("performance"), QStringLiteral("optimiz"),
+        QStringLiteral("across the codebase"),
+    };
+    for (const QString &k : kHeavy)
+        if (t.contains(k))
+            return {claudeAutoLadder().at(2).id, // Opus
+                    QStringLiteral("the task mentions \"%1\"").arg(k)};
+    if (task.size() > 2500)
+        return {claudeAutoLadder().at(2).id, // Opus
+                QStringLiteral("the task description is long and detailed")};
+    if (task.size() <= 220)
+        for (const QString &k : kTrivial)
+            if (t.contains(k))
+                return {claudeAutoLadder().at(0).id, // Haiku
+                        QStringLiteral("a short task mentioning \"%1\" looks routine")
+                            .arg(k)};
+    return {};
+}
+
+// Prepare a Claude model combo: the "Auto" router entry (adhoc #91) followed by
+// the live provider models once mergeLiveClaudeModels fills them in. The
+// property marks combos whose launch path understands the "auto" sentinel
+// (composer + quick-add, which start transcript sessions) so the live-merge
+// re-inserts the entry after replacing the list. The branch/action fix combos
+// stay on concrete models for now — their claude-code runs would route fine
+// (they start transcript sessions too), but the same widgets also serve the
+// claude-api/openai providers where "auto" means nothing.
 inline void populateClaudeModelCombo(QComboBox *combo)
 {
     if (!combo)
         return;
     combo->clear();
+    combo->setProperty("allowAutoModel", true);
+    combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
 }
 
 // Friendly label for a session's `model` field, so the agent header can show
@@ -2301,12 +2392,15 @@ inline QString agentModelLabel(const QString &model)
     if (model.trimmed().isEmpty())
         return QString();
     static const QHash<QString, QString> kLabels = {
+        {QStringLiteral("auto"), QStringLiteral("Auto")},
         {QStringLiteral("opus"), QStringLiteral("Opus")},
         {QStringLiteral("sonnet"), QStringLiteral("Sonnet")},
         {QStringLiteral("haiku"), QStringLiteral("Haiku")},
+        {QStringLiteral("fable"), QStringLiteral("Fable")},
         {QStringLiteral("claude-haiku-4-5"), QStringLiteral("Haiku 4.5")},
         {QStringLiteral("claude-sonnet-4-6"), QStringLiteral("Sonnet 4.6")},
         {QStringLiteral("claude-opus-4-8"), QStringLiteral("Opus 4.8")},
+        {QStringLiteral("claude-fable-5"), QStringLiteral("Fable 5")},
         {QStringLiteral("gpt-4.1-nano"), QStringLiteral("GPT-4.1 nano")},
         {QStringLiteral("gpt-4.1-mini"), QStringLiteral("GPT-4.1 mini")},
         {QStringLiteral("gpt-4.1"), QStringLiteral("GPT-4.1")},
@@ -2349,6 +2443,10 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
     QSignalBlocker block(combo);
     const QVariant picked = combo->currentData();
     combo->clear();
+    // Keep the "Auto" router entry on combos that support it (adhoc #91) —
+    // clearing for the live list would otherwise drop it.
+    if (combo->property("allowAutoModel").toBool())
+        combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
     for (const QJsonValue &v : models) {
         const QJsonObject m = v.toObject();
         const QString id = m.value(QStringLiteral("id")).toString();
@@ -2357,7 +2455,12 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
         combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
     }
     const int idx = combo->findData(picked);
-    combo->setCurrentIndex(idx >= 0 ? idx : 0);
+    // No restorable pick: land on the first live model, not the synthetic
+    // "Auto" entry — an untouched chooser keeps showing the concrete default
+    // that actually runs, and auto routing stays strictly opt-in.
+    const int fallback =
+        combo->property("allowAutoModel").toBool() && combo->count() > 1 ? 1 : 0;
+    combo->setCurrentIndex(idx >= 0 ? idx : fallback);
 }
 
 // User's preferred tab a repository opens on (Settings → General). Stored as
