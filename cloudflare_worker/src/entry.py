@@ -1690,13 +1690,16 @@ async def record_status_sample(env):
     await ensure_schema(env)
     now = int(Date.now())
     day_ts = (now // 86400000) * 86400000
+    hour_ts = (now // 3600000) * 3600000
     ok = {}
+    reason = {}
 
     try:
         await d1_first(env, "SELECT 1 AS ok")
         ok["database"] = True
-    except Exception:
+    except Exception as exc:
         ok["database"] = False
+        reason["database"] = "Database query failed: " + str(exc)[:160]
 
     try:
         cutoff = now - HOST_PRESENCE_STALE_MS
@@ -1704,26 +1707,45 @@ async def record_status_sample(env):
             env, "SELECT COUNT(*) AS n FROM host_presence WHERE ts >= ?", cutoff,
         )
         ok["git_hosting"] = int((row or {}).get("n", 0) or 0) > 0
-    except Exception:
+        if not ok["git_hosting"]:
+            reason["git_hosting"] = "No desktop hosts have checked in within the last 10 minutes"
+    except Exception as exc:
         ok["git_hosting"] = False
+        reason["git_hosting"] = "Host presence query failed: " + str(exc)[:160]
 
     try:
         rows = await d1_all(
-            env, "SELECT path FROM error_log WHERE ts >= ?", now - STATUS_SAMPLE_WINDOW_MS,
+            env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
+            now - STATUS_SAMPLE_WINDOW_MS,
         )
         failed = {"website": False, "api": False, "realtime": False}
+        first_hit = {"website": None, "api": None, "realtime": None}
+        hit_count = {"website": 0, "api": 0, "realtime": 0}
         for row in rows:
             path = str(row.get("path") or "")
             if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
-                failed["realtime"] = True
+                bucket = "realtime"
             elif path.startswith("/api/"):
-                failed["api"] = True
+                bucket = "api"
             else:
-                failed["website"] = True
+                bucket = "website"
+            failed[bucket] = True
+            hit_count[bucket] += 1
+            if first_hit[bucket] is None:
+                first_hit[bucket] = (row.get("status"), path, str(row.get("message") or "").strip())
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["realtime"] = not failed["realtime"]
+        for bucket in ("website", "api", "realtime"):
+            if failed[bucket] and first_hit[bucket]:
+                status_code, path, message = first_hit[bucket]
+                text = (str(status_code) + " on " + path) if status_code else path
+                if message:
+                    text += ": " + message[:120]
+                if hit_count[bucket] > 1:
+                    text += " (+%d more)" % (hit_count[bucket] - 1)
+                reason[bucket] = text
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
@@ -1739,8 +1761,24 @@ async def record_status_sample(env):
             "checks = checks + 1, failures = failures + ?",
             day_ts, system_id, failure, failure,
         )
+        # reason is only set when this sample failed; on success it's left NULL
+        # so the COALESCE below keeps whatever failure reason was last recorded
+        # this hour, rather than blanking it out.
+        await d1_run(
+            env,
+            "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
+            "VALUES (?, ?, 1, ?, ?) "
+            "ON CONFLICT(hour_ts, system) DO UPDATE SET "
+            "checks = checks + 1, failures = failures + ?, "
+            "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
+            hour_ts, system_id, failure, reason.get(system_id), failure,
+        )
     await d1_run(
         env, "DELETE FROM system_status_daily WHERE day_ts < ?",
+        day_ts - STATUS_HISTORY_RETAIN_MS,
+    )
+    await d1_run(
+        env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
         day_ts - STATUS_HISTORY_RETAIN_MS,
     )
 
@@ -1763,6 +1801,20 @@ async def status_history(env):
             int(row.get("checks") or 0), int(row.get("failures") or 0),
         )
 
+    hour_rows = await d1_all(
+        env,
+        "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
+        "WHERE hour_ts >= ?",
+        start,
+    )
+    by_system_hour = {}
+    for row in hour_rows:
+        system_id = str(row.get("system") or "")
+        by_system_hour.setdefault(system_id, {})[int(row["hour_ts"])] = (
+            int(row.get("checks") or 0), int(row.get("failures") or 0),
+            row.get("reason") or None,
+        )
+
     systems = []
     for system_id, label in STATUS_SYSTEMS:
         days = []
@@ -1773,9 +1825,29 @@ async def status_history(env):
             total_checks += checks
             total_failures += failures
             uptime = round(((checks - failures) / checks) * 100, 2) if checks else None
+            hours = []
+            for h in range(24):
+                hour_ts = this_day + h * 3600000
+                if hour_ts > now:
+                    break
+                h_checks, h_failures, h_reason = by_system_hour.get(
+                    system_id, {}).get(hour_ts, (0, 0, None))
+                if not h_checks:
+                    h_status = "unknown"
+                elif h_failures == 0:
+                    h_status = "operational"
+                elif h_failures >= h_checks:
+                    h_status = "down"
+                else:
+                    h_status = "degraded"
+                hours.append({
+                    "hourTs": hour_ts, "status": h_status,
+                    "checks": h_checks, "failures": h_failures,
+                    "reason": h_reason if h_status != "operational" else None,
+                })
             days.append({
                 "dayTs": this_day, "checks": checks, "failures": failures,
-                "uptimePct": uptime,
+                "uptimePct": uptime, "hours": hours,
             })
         # Current status comes from the most recent day with any data, not the
         # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
@@ -2633,6 +2705,16 @@ SCHEMA_STATEMENTS = [
         checks INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (day_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_daily_day ON system_status_daily(day_ts)",
+    # Hourly breakdown backing the per-day sliver bars on /status. `reason` is a
+    # short human-readable note on the most recent failing check that hour (e.g.
+    # which path/host check failed), so hovering a degraded/down hour explains
+    # why instead of just showing a color.
+    """CREATE TABLE IF NOT EXISTS system_status_hourly (
+        hour_ts INTEGER NOT NULL, system TEXT NOT NULL,
+        checks INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        PRIMARY KEY (hour_ts, system))""",
+    "CREATE INDEX IF NOT EXISTS idx_system_status_hourly_hour ON system_status_hourly(hour_ts)",
 ]
 
 
