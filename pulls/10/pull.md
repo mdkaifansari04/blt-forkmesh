@@ -4,7 +4,7 @@ number: 10
 title: test: add mobile QA capture artifacts (part 3/3)
 base: pr/worker-d1-binding
 head: pr/mobile-polish-tests-qa-3-remaining-screens
-status: open
+status: merged
 ts: 1783027928166
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
