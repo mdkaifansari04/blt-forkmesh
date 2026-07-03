@@ -3314,6 +3314,119 @@
     }
   }
 
+  function renderRepoRelease(repo, release, downloads) {
+    const tag = String(release.tag || "untagged");
+    const channel = String(release.channel || "");
+    const created = release.created_at ? formatDate(release.created_at) : "";
+    const commit = String(release.tag_commit || "").slice(0, 7);
+    const notes = String(release.body || release.name || "");
+    const assets = Array.isArray(release.assets) ? release.assets : [];
+    const isLatest = channel === "latest";
+    const assetRows = assets.length
+      ? assets.map((asset) => {
+          const name = String(asset.name || "asset");
+          const sha = String(asset.blob_sha256 || "").toLowerCase();
+          const count = Number(downloads[sha]);
+          const platform = [asset.os, asset.arch].filter(Boolean).join("/");
+          const href = sha ? `${repoApiBase(repo)}/releases/blob/sha256/${encodeURIComponent(sha)}` : "";
+          return `
+            <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-sm">
+              <div class="flex min-w-0 items-center gap-2">
+                <i data-lucide="package" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                ${href
+                  ? `<a href="${escapeHtml(href)}" download="${escapeHtml(name)}" class="dashboard-accent-link min-w-0 truncate font-mono text-foreground hover:underline">${escapeHtml(name)}</a>`
+                  : `<span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(name)}</span>`}
+                ${platform ? `<span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(platform)}</span>` : ""}
+              </div>
+              <div class="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+                ${Number.isFinite(count) ? `<span class="inline-flex items-center gap-1"><i data-lucide="download" class="h-3 w-3"></i>${formatCount(count)}</span>` : ""}
+                <span class="font-mono">${escapeHtml(formatSize(asset.size))}</span>
+              </div>
+            </div>`;
+        }).join("")
+      : '<div class="border-t border-border px-4 py-3 text-xs text-muted-foreground">No downloadable assets are attached to this release.</div>';
+    return `
+      <article class="mt-4 overflow-hidden rounded-lg border border-border bg-background first:mt-0">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>
+            <span class="font-mono text-sm font-semibold text-foreground">${escapeHtml(tag)}</span>
+            ${isLatest
+              ? '<span class="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">Latest</span>'
+              : channel ? `<span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(channel)}</span>` : ""}
+          </div>
+          <div class="flex shrink-0 flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+            ${commit ? `<span class="inline-flex items-center gap-1 font-mono"><i data-lucide="git-commit-horizontal" class="h-3 w-3"></i>${escapeHtml(commit)}</span>` : ""}
+            ${created ? `<span class="inline-flex items-center gap-1"><i data-lucide="calendar" class="h-3 w-3"></i>${escapeHtml(created)}</span>` : ""}
+          </div>
+        </div>
+        ${notes ? `<p class="whitespace-pre-wrap border-b border-border px-4 py-3 text-sm leading-6 text-muted-foreground">${escapeHtml(notes)}</p>` : ""}
+        <div>${assetRows}</div>
+      </article>`;
+  }
+
+  async function loadRepoReleases(repo) {
+    const container = $("[data-repo-releases]");
+    if (!container) return;
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
+    const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
+    try {
+      // Release manifests live in the git tree at releases/<channel>/release.json
+      // (issue #304). List the channels, then batch-read every manifest in one
+      // tunnel round-trip so opening the tab doesn't fan out N blob requests.
+      let tree;
+      try {
+        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+      } catch (error) {
+        if (isMissingMirrorFolder(error)) {
+          container.innerHTML = empty;
+          return;
+        }
+        throw error;
+      }
+      const channels = (Array.isArray(tree.entries) ? tree.entries : [])
+        .filter((entry) => entry.type === "tree" && entry.name)
+        .map((entry) => String(entry.name));
+      if (!channels.length) {
+        container.innerHTML = empty;
+        return;
+      }
+      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const blobs = await fetchRepoBlobs(repo, paths);
+      const releases = [];
+      channels.forEach((channel, index) => {
+        const blob = blobs[paths[index]];
+        if (!blob) return;
+        let manifest;
+        try {
+          manifest = JSON.parse(blobText(blob));
+        } catch (_) {
+          return;
+        }
+        if (manifest && typeof manifest === "object") {
+          manifest.channel = manifest.channel || channel;
+          releases.push(manifest);
+        }
+      });
+      if (!releases.length) {
+        container.innerHTML = empty;
+        return;
+      }
+      // Per-asset download counts (keyed by sha256) are a best-effort adornment.
+      let downloads = {};
+      try {
+        const data = await fetchJson(`${repoApiBase(repo)}/releases/downloads`);
+        downloads = (data && data.counts) || {};
+      } catch (_) {}
+      releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
+      container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
+    } catch (_) {
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the releases/ folder.</div>';
+    } finally {
+      window.lucide?.createIcons();
+    }
+  }
+
   function loadRepoFeaturePanels(repo) {
     loadRepoCommits(repo);
     loadRepoMirrors(repo);
@@ -3329,6 +3442,9 @@
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
       loadRepoCollection(repo, active, `[data-repo-${active}]`);
+    } else if (active === "releases") {
+      state.loadedRepoTabs.releases = true;
+      loadRepoReleases(repo);
     }
   }
 
@@ -3625,6 +3741,7 @@
     const tabMeta = {
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
+      releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
@@ -3650,7 +3767,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "issues", "pulls", "discussions", "mirrors"].map((tab) => {
+            ${["code", "commits", "releases", "issues", "pulls", "discussions", "mirrors"].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -3734,6 +3851,7 @@
 	              </div>
 		            </section>
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
+            <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
             ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
@@ -4292,10 +4410,11 @@
         // Issues, pull requests and discussions are fetched on first view so a
         // repo with many records doesn't fire record reads on load for tabs
         // nobody opened.
-        if (state.selectedRepo && ["issues", "pulls", "discussions"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+        if (state.selectedRepo && ["issues", "pulls", "discussions", "releases"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
           if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
           state.loadedRepoTabs[tab] = true;
           if (tab === "issues") loadRepoIssues(state.selectedRepo);
+          else if (tab === "releases") loadRepoReleases(state.selectedRepo);
           else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
         } else if (tab === "issues" && state.selectedRepo) {
           // Re-selecting the tab should return to the issues list even if the
