@@ -508,7 +508,7 @@
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.
-  async function submitWebIssue(repo, title, body) {
+  async function submitWebIssue(repo, title, body, assignAgent = false, ownerPassword = "") {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
@@ -535,8 +535,12 @@
       number: 0,
       titleIfNew: title,
       event,
-      meta: { labels: [], milestone: "", priority: 0, assignees: [] },
+      meta: { labels: [], milestone: "", priority: 0, assignees: [], wantsAgent: Boolean(assignAgent) },
     };
+    // The worker only honors wantsAgent when this re-proves account ownership
+    // (password check) — a raw client-side checkbox isn't enough, since it
+    // makes the owner's node start a coding agent unattended (adhoc #105).
+    if (assignAgent) payload.ownerPassword = ownerPassword;
     const response = await fetch(`${repoApiBase(repo)}/issues`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -2664,6 +2668,92 @@
     }
   }
 
+  // A pull's conversation is an append-only, signed event log stored as
+  // pulls/<N>/NNNN-<type>.md files alongside pull.md (see PullStore.h on the
+  // desktop client). Types: comment, review, line-comment, thread-comment,
+  // thread-reply, thread-state, suggestion-state.
+  function pullEventTypeMeta(ev) {
+    const neutral = "border-border bg-secondary/60 text-muted-foreground";
+    if (ev.type === "review") {
+      if (ev.state === "approved") return { label: "approved", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" };
+      if (ev.state === "changes_requested") return { label: "requested changes", tone: "border-red-500/30 bg-red-500/10 text-red-300" };
+      return { label: "reviewed", tone: neutral };
+    }
+    if (ev.type === "line-comment") return { label: "line comment", tone: neutral };
+    if (ev.type === "thread-comment") return { label: "review thread", tone: neutral };
+    if (ev.type === "thread-reply") return { label: "reply", tone: neutral };
+    if (ev.type === "thread-state") return { label: `thread ${ev.state || "updated"}`.replace(/_/g, " "), tone: neutral };
+    if (ev.type === "suggestion-state") return { label: `suggestion ${ev.state || "updated"}`.replace(/_/g, " "), tone: neutral };
+    return { label: "comment", tone: neutral };
+  }
+
+  function pullEventAnchorLabel(ev) {
+    if (!ev.path) return "";
+    if (ev.lineStart) {
+      const range = ev.lineEnd && ev.lineEnd !== ev.lineStart ? `${ev.lineStart}-${ev.lineEnd}` : `${ev.lineStart}`;
+      return `${ev.path}:${range}`;
+    }
+    if (ev.line) return `${ev.path}:${ev.line}`;
+    return ev.path;
+  }
+
+  function renderPullConversationEvent(ev) {
+    const meta = pullEventTypeMeta(ev);
+    const anchor = pullEventAnchorLabel(ev);
+    const author = ev.authorName || ev.author || "unknown";
+    const date = formatRecordDate(ev.ts);
+    const body = String(ev.body || "").trim();
+    return `
+      <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+        <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span class="font-medium text-foreground">${escapeHtml(author)}</span>
+          <span class="rounded-md border px-1.5 py-0.5 text-[10px] uppercase ${meta.tone}">${escapeHtml(meta.label)}</span>
+          ${anchor ? `<span class="font-mono">${escapeHtml(anchor)}</span>` : ""}
+          <span>&middot;</span>
+          <span>${escapeHtml(date)}</span>
+        </div>
+        ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+      </div>`;
+  }
+
+  function renderRepoPullConversation(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No conversation yet on this pull request.</div>';
+    return rows.map(renderPullConversationEvent).join("");
+  }
+
+  async function loadRepoPullConversation(repo, number) {
+    let tree;
+    try {
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}` }));
+    } catch (_) {
+      return [];
+    }
+    const files = (Array.isArray(tree.entries) ? tree.entries : [])
+      .filter((entry) => entry.type !== "tree" && /^\d+-/.test(String(entry.name || "")))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!files.length) return [];
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`));
+    return files.map((entry) => {
+      const blob = blobs[`pulls/${number}/${entry.name}`];
+      if (!blob) return null;
+      const parsed = parseFrontMatter(blobText(blob));
+      const values = parsed.values || {};
+      return {
+        type: values.type || "comment",
+        author: values.author || "",
+        authorName: values.authorName || "",
+        ts: values.ts || "",
+        state: values.state || "",
+        path: values.path || "",
+        line: Number(values.line || 0),
+        lineStart: Number(values.lineStart || 0),
+        lineEnd: Number(values.lineEnd || 0),
+        body: parsed.body || "",
+      };
+    }).filter(Boolean);
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -2697,6 +2787,15 @@
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
+    const pullConversation = parsed.pullConversation || [];
+    const pullConversationSection = kind === "pulls" ? `
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Conversation</span>
+            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(pullConversation.length)} ${pullConversation.length === 1 ? "event" : "events"}</span>
+          </div>
+          <div data-repo-pull-conversation>${renderRepoPullConversation(pullConversation)}</div>
+        </section>` : "";
     const pullFilesSection = kind === "pulls" ? `
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
@@ -2730,6 +2829,7 @@
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="file-text" class="h-3.5 w-3.5 text-primary"></i>Body</div>
           <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
         </section>
+        ${pullConversationSection}
         ${pullFilesSection}
       </article>`;
   }
@@ -2745,6 +2845,7 @@
       const parsed = parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
+      if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
@@ -2863,10 +2964,19 @@
     }
   }
 
+  // True when the logged-in account is the node that owns (hosts) this repo —
+  // the only account whose node can actually pick an "assign to agent" issue up
+  // and run a coding agent on it.
+  function sessionOwnsRepo(repo) {
+    const owner = String(state.session?.nodeName || "").toLowerCase();
+    return Boolean(owner) && owner === String(repo?.owner || "").toLowerCase();
+  }
+
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
     const who = escapeHtml(state.session?.nodeName || "you");
+    const canAssignAgent = sessionOwnsRepo(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -2887,6 +2997,16 @@
           <input type="file" data-repo-issue-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
           <div data-repo-issue-attachments class="flex flex-wrap gap-2"></div>
         </div>
+        ${canAssignAgent ? `
+        <div class="grid gap-2">
+          <label class="flex items-center gap-2 text-xs text-muted-foreground">
+            <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
+            <span>Assign to agent — once filed, your node starts a coding agent on it automatically</span>
+          </label>
+          <label data-repo-issue-agent-password-row class="hidden grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you
+            <input data-repo-issue-agent-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
@@ -2900,6 +3020,11 @@
     const bodyInput = container.querySelector("[data-repo-issue-body]");
     const attachHint = container.querySelector("[data-repo-issue-attach-hint]");
     const attachmentsList = container.querySelector("[data-repo-issue-attachments]");
+    const assignAgentInput = container.querySelector("[data-repo-issue-assign-agent]");
+    const agentPasswordRow = container.querySelector("[data-repo-issue-agent-password-row]");
+    assignAgentInput?.addEventListener("change", () => {
+      agentPasswordRow?.classList.toggle("hidden", !assignAgentInput.checked);
+    });
     // Queued images: a short placeholder (not the data URL) is inserted into
     // the body textarea so it stays readable/editable; the real data: URL is
     // swapped in right before signing (handleIssueComposeSubmit).
@@ -2999,6 +3124,8 @@
     const titleInput = form.querySelector("[data-repo-issue-title]");
     const bodyInput = form.querySelector("[data-repo-issue-body]");
     const submit = form.querySelector("[data-repo-issue-submit]");
+    const assignAgentInput = form.querySelector("[data-repo-issue-assign-agent]");
+    const agentPasswordInput = form.querySelector("[data-repo-issue-agent-password]");
     const hint = form.querySelector("[data-repo-issue-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -3010,6 +3137,13 @@
       titleInput?.focus();
       return;
     }
+    const assignAgent = Boolean(assignAgentInput?.checked);
+    const ownerPassword = String(agentPasswordInput?.value || "");
+    if (assignAgent && !ownerPassword) {
+      setHint("Enter your account password to confirm assigning this to an agent.", "bad");
+      agentPasswordInput?.focus();
+      return;
+    }
     // Swap each attached image's short placeholder back out for its real
     // data: URL now, right before signing — the signed content hash has to
     // cover exactly what gets sent.
@@ -3019,11 +3153,12 @@
     if (submit) submit.disabled = true;
     setHint("Signing and sending…");
     try {
-      await submitWebIssue(repo, title, body);
+      await submitWebIssue(repo, title, body, assignAgent, ownerPassword);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't appear in the list until they drain it — say so and reset the form.
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
+      if (agentPasswordInput) agentPasswordInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
@@ -3035,6 +3170,8 @@
         code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
+          : code === "bad_owner_password" ? "That account password isn't correct."
+          : code === "too_many_attempts" ? "Too many password attempts. Try again later."
           : "Could not send the issue. Please try again.",
         "bad");
     }
