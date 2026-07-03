@@ -143,6 +143,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowRepoDetail.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
+    src/MainWindowShortcuts.cpp
     src/MainWindowSettings.cpp
     src/MainWindowData.cpp
     src/MainWindowMessages.cpp
