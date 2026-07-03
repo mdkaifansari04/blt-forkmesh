@@ -213,7 +213,7 @@ void main() {
       expect(find.text('Code'), findsWidgets);
       expect(find.text('Chat'), findsWidgets);
       expect(find.text('Activity'), findsWidgets);
-      expect(find.text('Profile'), findsWidgets);
+      expect(find.text('Settings'), findsWidgets);
       expect(find.text('Tools'), findsWidgets);
     },
   );
@@ -362,7 +362,7 @@ void main() {
     expect(find.text('Code'), findsWidgets);
     expect(find.text('Chat'), findsWidgets);
     expect(find.text('Activity'), findsWidgets);
-    expect(find.text('Profile'), findsWidgets);
+    expect(find.text('Settings'), findsWidgets);
     expect(find.text('Tools'), findsWidgets);
   });
 
@@ -403,7 +403,7 @@ void main() {
     expect(find.text('Monitor'), findsOneWidget);
   });
 
-  testWidgets('tools sheet is half height with calmer row typography', (
+  testWidgets('tools sheet hugs its content within half screen height', (
     tester,
   ) async {
     usePhoneView(tester);
@@ -436,11 +436,19 @@ void main() {
 
     final sheet = find.byKey(const ValueKey('tools-sheet-panel'));
     expect(sheet, findsOneWidget);
+    final screenHeight = tester.view.physicalSize.height;
+    // Sized to its content, capped at half the screen plus the bottom
+    // safe-area inset (34 in this fake view) that the list pads for.
     expect(
-      tester.getTopLeft(sheet).dy,
-      closeTo(tester.view.physicalSize.height * 0.5, 1),
+      tester.getSize(sheet).height,
+      lessThanOrEqualTo(screenHeight * 0.5 + 34),
     );
-    expect(tester.getBottomLeft(sheet).dy, tester.view.physicalSize.height);
+    expect(tester.getBottomLeft(sheet).dy, screenHeight);
+    // The last tool row is fully visible - nothing is clipped.
+    expect(
+      tester.getBottomLeft(find.text('Monitor')).dy,
+      lessThanOrEqualTo(screenHeight),
+    );
 
     final explorer = tester.widget<Text>(find.text('Explorer'));
     expect(explorer.style?.fontSize, 16);
@@ -666,7 +674,7 @@ void main() {
     await tester.pumpAndSettle();
     await tapFilledButton(tester, 'Continue');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Profile'));
+    await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
