@@ -1583,6 +1583,20 @@ private:
     void loadArtifactsPanel();
     void deleteArtifact(const QString &hash, const QString &label);
     QWidget *buildMirrorNodesTab();
+    // Per-repo Shortcuts tab (adhoc #118): quick-launch entries stored as plain
+    // files in the checkout's .forkmesh/shortcuts/ folder (shell scripts today;
+    // prompts/skills ride along as editable text), so they version and sync with
+    // the repo. Each file is a clickable card — a script runs through bash with
+    // its output streamed live into the page's log pane; other kinds open in
+    // the editor. New / edit / delete round out the CRUD.
+    QWidget *buildShortcutsTab();
+    void loadShortcutsPanel();
+    QString shortcutsDirPath() const; // <working tree>/.forkmesh/shortcuts, "" without one
+    void runShortcut(const QString &filePath);
+    void stopShortcut();
+    // Create (empty filePath) or edit a shortcut via a name + content dialog.
+    void openShortcutEditor(const QString &filePath);
+    void deleteShortcut(const QString &filePath);
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
     void refreshRepoSettings(); // sync the Settings controls to the open repo
@@ -2766,6 +2780,7 @@ private:
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_artifactsTabIndex = -1; // index of the Artifacts page
+    int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -2826,6 +2841,12 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_artifactsTable = nullptr;
     QLabel *m_artifactsSummary = nullptr;
+    QWidget *m_shortcutCardsHost = nullptr; // card rows, rebuilt by loadShortcutsPanel
+    QLabel *m_shortcutsSummary = nullptr;
+    QPlainTextEdit *m_shortcutOutput = nullptr; // live output of the running shortcut
+    QLabel *m_shortcutRunStatus = nullptr;
+    QPushButton *m_shortcutStopButton = nullptr;
+    QProcess *m_shortcutProcess = nullptr; // running shortcut, if any
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     // Live activity strip floating just above the Mirror nodes tab: a dot per
