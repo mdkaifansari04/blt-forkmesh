@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 355
 title: Chaos test for mirror failover in the worker test suite
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 6

@@ -176,6 +176,10 @@ PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 # present the code.
 CLAIM_CODE_TTL_MS = 10 * 60 * 1000
 CLAIM_CODE_MAX_ATTEMPTS = 5
+# An admin-initiated ownership takeover (adhoc #141) rides back to the target
+# node on its own heartbeat, same as a claim code, but the node may be offline
+# for a while before it's seen and approved/denied, so it gets a long window.
+OWNERSHIP_TRANSFER_TTL_MS = 24 * 60 * 60 * 1000
 LINK_CODE_TTL_MS = 30 * 60 * 1000
 LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
@@ -4850,6 +4854,19 @@ def _claim_pending(rec, now):
     return pending
 
 
+def _transfer_pending(rec, now):
+    pending = rec.get("ownership_transfer_pending")
+    if not isinstance(pending, dict):
+        return None
+    try:
+        expires = int(pending.get("expires") or 0)
+    except (TypeError, ValueError):
+        return None
+    if now >= expires or not pending.get("admin"):
+        return None
+    return pending
+
+
 async def _resolve_user_by_password(env, data):
     # Web-auth gate for the claim endpoints, matching _account_profile: a
     # state-changing dashboard action re-proves the password on each request
@@ -4890,6 +4907,7 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     prev_owner = node_rec.get("owner") or ""
     node_rec["owner"] = user_name
     node_rec.pop("claim_pending", None)
+    node_rec.pop("ownership_transfer_pending", None)
     await _save_account(env, node_bi, node_rec)
     if prev_owner and prev_owner != user_name:
         prev_bi, prev_rec = await _account_row(env, prev_owner)
@@ -5485,6 +5503,15 @@ async def _account_heartbeat(env, request):
                              "code": claim.get("code", "")}
     elif rec.get("claim_pending"):
         rec.pop("claim_pending", None)
+        await _save_account(env, name_bi, rec)
+    # An admin-initiated ownership takeover (adhoc #141) rides back the same
+    # way: only the node's own signed heartbeat carries it, so only whoever is
+    # actually logged into that machine ever sees the prompt.
+    transfer = _transfer_pending(rec, int(Date.now()))
+    if transfer:
+        response["ownershipTransfer"] = {"admin": transfer.get("admin", "")}
+    elif rec.get("ownership_transfer_pending"):
+        rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
     return json_response(response)
 
@@ -6956,6 +6983,92 @@ async def _admin_relay_approve(env, request):
     return json_response({"ok": True, "status": status})
 
 
+# --- Admin: node ownership takeover (adhoc #141) -----------------------------
+# An admin can request to take ownership of any node. The request only parks a
+# pending marker on the target node's own record; it does NOT transfer
+# ownership by itself. The marker rides back to that node on its own signed
+# heartbeat (same channel as a website claim code), the desktop app pops a
+# confirm/deny prompt, and only a signature from the node's own key — i.e. the
+# node the current owner is actually logged into — can approve or deny it.
+
+async def _admin_request_ownership(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    canonical = ("forkmesh-admin-request-ownership-v1\n" + node + "\n" +
+                 target + "\n" + ts).encode()
+    admin_rec = await _admin_authorized(env, node, ts, sig, canonical)
+    if not admin_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    admin_name = admin_rec.get("name", node)
+    if target == admin_name:
+        return json_response({"error": "cannot_request_self"}, status=400)
+    target_bi, target_rec = await _account_row(env, target)
+    if not target_rec or target_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if _account_kind(target_rec) != "node":
+        # An account that can log in is a user in its own right, not takeable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if target_rec.get("owner") == admin_name:
+        return json_response({"ok": True, "alreadyOwned": True, "nodeId": target})
+    now = int(Date.now())
+    target_rec["ownership_transfer_pending"] = {
+        "admin": admin_name,
+        "requestedAt": now,
+        "expires": now + OWNERSHIP_TRANSFER_TTL_MS,
+    }
+    await _save_account(env, target_bi, target_rec)
+    return json_response({"ok": True, "pending": True, "nodeId": target,
+                          "expiresAt": now + OWNERSHIP_TRANSFER_TTL_MS}, status=201)
+
+
+async def _account_ownership_transfer_confirm(env, request):
+    # Called from the target node's own desktop app in response to the
+    # heartbeat-delivered prompt, signed with the node's own key — the same
+    # proof-of-control the node uses for its heartbeat, not the admin's.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    action = clean_string(data.get("action", ""), 20)
+    if action not in ("approve", "deny"):
+        return json_response({"error": "bad_action"}, status=400)
+    if not valid_node_name(node_name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-ownership-transfer-confirm-v1\n" + node_name +
+                 "\n" + action + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    pending = _transfer_pending(node_rec, int(Date.now()))
+    if not pending:
+        return json_response({"error": "no_pending_transfer"}, status=404)
+    if action == "deny":
+        node_rec.pop("ownership_transfer_pending", None)
+        await _save_account(env, node_bi, node_rec)
+        return json_response({"ok": True, "denied": True, "nodeId": node_name})
+    admin_name = pending.get("admin", "")
+    node_rec.pop("ownership_transfer_pending", None)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, admin_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "owner": admin_name})
+
+
 async def _account_treasury_address(env, request):
     """Public: the ForkMesh treasury Solana address for in-app donations.
 
@@ -7024,6 +7137,10 @@ async def accounts_handler(env, request):
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
         return await _admin_relay_approve(env, request)
+    if url.path == "/api/accounts/admin-request-ownership" and method == "POST":
+        return await _admin_request_ownership(env, request)
+    if url.path == "/api/accounts/ownership-transfer-confirm" and method == "POST":
+        return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
