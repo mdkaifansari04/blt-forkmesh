@@ -71,48 +71,35 @@
   font-display: swap;
 }
 
-/* ===== Design tokens ===== */
-:root {
-  color-scheme: light;
-  --background: #f6f8fa;
-  --foreground: #1f2328;
-  --card: #ffffff;
-  --card-soft: #f6f8fa;
-  --muted: #57606a;
-  --muted-2: #6e7781;
-  --border: #d0d7de;
-  --border-subtle: #eaeef2;
-  --primary: #0969da;
-  --primary-hover: #0550ae;
-  --accent: #1a7f37;
-  --accent-bright: #2da44e;
-  --accent-hover: #116329;
-  --danger: #cf222e;
-  --warning: #9a6700;
-  --purple: #6e40c9;
-  --radius: 6px;
-  --sans: "ForkMesh Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --mono: "ForkMesh Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-}
-
+/* ===== Design tokens =====
+   Single dark palette matching the landing page / dashboard design
+   (index.html :root). The site no longer ships a light theme. */
+:root,
 html.dark {
   color-scheme: dark;
-  --background: #0d1117;
-  --foreground: #e6edf3;
-  --card: #161b22;
-  --card-soft: #21262d;
-  --muted: #7d8590;
-  --muted-2: #6e7781;
-  --border: #30363d;
-  --border-subtle: #21262d;
-  --primary: #58a6ff;
-  --primary-hover: #79c0ff;
-  --accent: #3fb950;
+  --background: #090909;
+  --foreground: #f5f5f5;
+  --card: #141416;
+  --card-soft: #1f1f22;
+  --muted: #a3a3a3;
+  --muted-2: #8a8a93;
+  --border: #313134;
+  --border-subtle: #232326;
+  --primary: #4ade80;
+  --primary-hover: #86efac;
+  --primary-foreground: #052e16;
+  --accent: #1a7f37;
   --accent-bright: #3fb950;
   --accent-hover: #2ea043;
   --danger: #f85149;
   --warning: #d29922;
   --purple: #a371f7;
+  --button: #e8e8e8;
+  --button-hover: #ffffff;
+  --button-foreground: #111113;
+  --radius: 8px;
+  --sans: "ForkMesh Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "ForkMesh Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 /* ===== Reset ===== */
@@ -211,8 +198,18 @@ code {
   display: block;
 }
 
-html.dark .brand-mark {
-  filter: invert(1);
+.global-nav a.nav-cta {
+  color: var(--button-foreground);
+  background: var(--button);
+  border-radius: var(--radius);
+  font-weight: 600;
+  padding: 6px 12px;
+  margin-left: 6px;
+}
+
+.global-nav a.nav-cta:hover {
+  color: var(--button-foreground);
+  background: var(--button-hover);
 }
 
 .global-nav {
@@ -351,10 +348,9 @@ html.dark .brand-mark {
   height: 16px;
 }
 
-html.dark .moon {
-  display: none;
-}
-
+/* The site is dark-only now; the old light/dark toggle is retired. */
+#theme-toggle,
+html.dark .moon,
 html:not(.dark) .sun {
   display: none;
 }
@@ -496,10 +492,10 @@ main {
   gap: 6px;
   height: 34px;
   padding: 0 14px;
-  border: 1px solid var(--accent-hover);
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--accent-bright);
-  color: #fff;
+  background: var(--button);
+  color: var(--button-foreground);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -507,8 +503,8 @@ main {
 }
 
 .primary-button:hover {
-  background: var(--accent-hover);
-  color: #fff;
+  background: var(--button-hover);
+  color: var(--button-foreground);
   text-decoration: none;
 }
 
