@@ -11,6 +11,18 @@
   const DEMO_EMAIL = "demo@forkmesh.local";
   const DEMO_PASSWORD = "forkmesh-demo";
 
+  // Where to land after a successful login. Only same-site paths are honored
+  // (an absolute URL here would be an open redirect). Used by flows that bounce
+  // through login, e.g. the desktop app's "Link this node to your account"
+  // grant URL (adhoc #120), so they resume exactly where they left off.
+  function nextPath() {
+    let value = "";
+    try {
+      value = new URLSearchParams(location.search).get("next") || "";
+    } catch (_) {}
+    return value.startsWith("/") && !value.startsWith("//") ? value : "";
+  }
+
   function demoLoginAllowed() {
     return location.hostname === "localhost" || location.hostname === "127.0.0.1";
   }
@@ -59,7 +71,7 @@
         isAdmin: false,
       });
       setHint("Logged in with local demo credentials.", "good");
-      setTimeout(() => (location.href = "/dashboard"), 500);
+      setTimeout(() => (location.href = nextPath() || "/dashboard"), 500);
       return;
     }
     btn.disabled = true;
@@ -84,7 +96,7 @@
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       storeSession(body);
-      setTimeout(() => (location.href = "/"), 700);
+      setTimeout(() => (location.href = nextPath() || "/"), 700);
       return;
     }
     if (body.error === "bad_totp") {
