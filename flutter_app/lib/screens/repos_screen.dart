@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../theme.dart';
+import '../widgets/fm_ui.dart';
 import 'repo_detail_screen.dart';
 
 /// The public catalog of repositories across the network (Code section).
@@ -33,20 +34,59 @@ class _ReposScreenState extends State<ReposScreen> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(FmSpace.x4),
           child: Row(
             children: [
               Expanded(
-                child: TextField(
-                  decoration: const InputDecoration(
-                    hintText: 'Find a repository…',
-                    prefixIcon: Icon(Icons.search, size: 18),
+                child: SizedBox(
+                  height: 48,
+                  child: TextField(
+                    decoration: InputDecoration(
+                      hintText: 'Find a repository...',
+                      prefixIcon: Icon(
+                        Icons.search,
+                        size: 18,
+                        color: FmTheme.textTertiary(context),
+                      ),
+                      filled: true,
+                      fillColor: FmTheme.bgRaised(context),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: FmSpace.x4,
+                        vertical: FmSpace.x3,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(FmRadius.lg),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(FmRadius.lg),
+                        borderSide: BorderSide(
+                          color: FmTheme.accent(context),
+                          width: 1.2,
+                        ),
+                      ),
+                    ),
+                    onChanged: (v) => setState(() => _query = v.toLowerCase()),
                   ),
-                  onChanged: (v) => setState(() => _query = v.toLowerCase()),
                 ),
               ),
-              const SizedBox(width: 8),
-              IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
+              const SizedBox(width: FmSpace.x2),
+              SizedBox(
+                width: 48,
+                height: 48,
+                child: IconButton(
+                  onPressed: _reload,
+                  tooltip: 'Refresh repositories',
+                  style: IconButton.styleFrom(
+                    backgroundColor: FmTheme.bgRaised(context),
+                    foregroundColor: FmTheme.textSecondary(context),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(FmRadius.lg),
+                    ),
+                  ),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ),
             ],
           ),
         ),
@@ -68,19 +108,29 @@ class _ReposScreenState extends State<ReposScreen> {
                   )
                   .toList();
               if (repos.isEmpty) {
-                return const Center(
-                  child: Text(
-                    'No repositories.',
-                    style: TextStyle(color: FmColors.textMuted),
-                  ),
+                return const FmEmptyState(
+                  icon: Icons.book_outlined,
+                  title: 'No repositories',
+                  message:
+                      'Repository mirrors will appear here when available.',
                 );
               }
               return RefreshIndicator(
                 onRefresh: () async => _reload(),
-                child: ListView.separated(
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(
+                    FmSpace.x4,
+                    FmSpace.x0,
+                    FmSpace.x4,
+                    FmSpace.x4,
+                  ),
                   itemCount: repos.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (_, i) => _RepoTile(repo: repos[i]),
+                  itemBuilder: (_, i) => Padding(
+                    padding: EdgeInsets.only(
+                      bottom: i == repos.length - 1 ? FmSpace.x0 : FmSpace.x3,
+                    ),
+                    child: _RepoTile(repo: repos[i]),
+                  ),
                 ),
               );
             },
@@ -97,39 +147,78 @@ class _RepoTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      leading: const Icon(Icons.book_outlined, color: FmColors.accent),
-      title: Row(
-        children: [
-          Flexible(
-            child: Text(
-              repo.fullName,
-              style: const TextStyle(
-                color: FmColors.accent,
-                fontWeight: FontWeight.w600,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (repo.isPrivate) ...[
-            const SizedBox(width: 8),
-            _Pill(text: 'Private'),
-          ],
-        ],
-      ),
-      subtitle: Column(
+    return FmCard(
+      onTap: () => Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => RepoDetailScreen(repo: repo))),
+      radius: FmRadius.lg,
+      padding: const EdgeInsets.all(FmSpace.x4),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: FmTheme.accentSubtle(context),
+                  borderRadius: BorderRadius.circular(FmRadius.md),
+                ),
+                child: Icon(
+                  Icons.book_outlined,
+                  color: FmTheme.accent(context),
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: FmSpace.x3),
+              Expanded(
+                child: Text(
+                  repo.fullName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: FmTheme.accent(context),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    height: 1.2,
+                  ),
+                ),
+              ),
+              const SizedBox(width: FmSpace.x2),
+              FmStatusBadge(
+                label: repo.cloneOnline || repo.liveHost ? 'Online' : 'Offline',
+                color: repo.cloneOnline || repo.liveHost
+                    ? FmTheme.success(context)
+                    : FmColors.offline,
+              ),
+              FmStatusBadge(
+                label: repo.isPrivate ? 'Private' : 'Public',
+                color: repo.isPrivate
+                    ? FmTheme.warning(context)
+                    : FmTheme.success(context),
+              ),
+            ],
+          ),
           if (repo.description.isNotEmpty)
-            Text(
-              repo.description,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            Padding(
+              padding: const EdgeInsets.only(top: FmSpace.x3),
+              child: Text(
+                repo.description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 14,
+                  height: 1.35,
+                ),
+              ),
             ),
-          const SizedBox(height: 4),
+          const SizedBox(height: FmSpace.x3),
           Wrap(
-            spacing: 12,
-            runSpacing: 4,
+            spacing: FmSpace.x3,
+            runSpacing: FmSpace.x2,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               if (repo.language.isNotEmpty)
@@ -149,9 +238,6 @@ class _RepoTile extends StatelessWidget {
           ),
         ],
       ),
-      onTap: () => Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => RepoDetailScreen(repo: repo))),
     );
   }
 }
@@ -160,46 +246,27 @@ class _RepoMetaItem extends StatelessWidget {
   const _RepoMetaItem({
     required this.icon,
     required this.text,
-    this.iconColor = FmColors.textMuted,
+    this.iconColor,
     this.iconSize = 14,
   });
 
   final IconData icon;
   final String text;
-  final Color iconColor;
+  final Color? iconColor;
   final double iconSize;
 
   @override
   Widget build(BuildContext context) {
+    final metaColor = FmTheme.textTertiary(context);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: iconSize, color: iconColor),
+        Icon(icon, size: iconSize, color: iconColor ?? metaColor),
         const SizedBox(width: 4),
-        Text(
-          text,
-          style: const TextStyle(fontSize: 12, color: FmColors.textMuted),
-        ),
+        Text(text, style: TextStyle(fontSize: 12, color: metaColor)),
       ],
     );
   }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.text});
-  final String text;
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-    decoration: BoxDecoration(
-      border: Border.all(color: FmColors.border),
-      borderRadius: BorderRadius.circular(10),
-    ),
-    child: Text(
-      text,
-      style: const TextStyle(fontSize: 11, color: FmColors.textMuted),
-    ),
-  );
 }
 
 class _ErrorView extends StatelessWidget {
@@ -208,22 +275,23 @@ class _ErrorView extends StatelessWidget {
   final VoidCallback onRetry;
   @override
   Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(Icons.cloud_off, color: FmColors.textMuted, size: 32),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: FmColors.textMuted),
-          ),
+    child: Padding(
+      padding: const EdgeInsets.all(FmSpace.x4),
+      child: FmCard(
+        radius: FmRadius.lg,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FmEmptyState(
+              icon: Icons.cloud_off,
+              title: 'Could not load repositories',
+              message: message,
+            ),
+            const SizedBox(height: FmSpace.x3),
+            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
         ),
-        const SizedBox(height: 8),
-        OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
-      ],
+      ),
     ),
   );
 }
