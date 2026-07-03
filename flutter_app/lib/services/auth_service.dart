@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity.dart';
+import 'performance_monitor_service.dart';
 import 'settings_service.dart';
 
 class AuthSession {
@@ -123,13 +124,19 @@ class AuthException implements Exception {
 }
 
 class AuthService extends ChangeNotifier {
-  AuthService(this._settings, this._identity, this._prefs) {
+  AuthService(
+    this._settings,
+    this._identity,
+    this._prefs, {
+    PerformanceMonitorService? performanceMonitor,
+  }) : _performanceMonitor = performanceMonitor {
     _session = _loadSession();
   }
 
   final SettingsService _settings;
   final Identity _identity;
   final SharedPreferences _prefs;
+  final PerformanceMonitorService? _performanceMonitor;
 
   static const _sessionKey = 'auth/session';
   static final nodeNamePattern = RegExp(r'^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$');
@@ -140,9 +147,14 @@ class AuthService extends ChangeNotifier {
 
   static Future<AuthService> create(
     SettingsService settings,
-    Identity identity,
-  ) async =>
-      AuthService(settings, identity, await SharedPreferences.getInstance());
+    Identity identity, {
+    PerformanceMonitorService? performanceMonitor,
+  }) async => AuthService(
+    settings,
+    identity,
+    await SharedPreferences.getInstance(),
+    performanceMonitor: performanceMonitor,
+  );
 
   Uri _base(String path) {
     final ws = Uri.parse(_settings.serverUrl);
@@ -284,27 +296,39 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> _getJson(String path) async {
-    final resp = await http
-        .get(_base(path), headers: {'accept': 'application/json'})
-        .timeout(const Duration(seconds: 20));
-    return _decodeResponse(resp);
+    Future<Map<String, dynamic>> load() async {
+      final resp = await http
+          .get(_base(path), headers: {'accept': 'application/json'})
+          .timeout(const Duration(seconds: 20));
+      return _decodeResponse(resp);
+    }
+
+    final monitor = _performanceMonitor;
+    if (monitor == null) return load();
+    return monitor.track('auth.GET $path', load, details: {'path': path});
   }
 
   Future<Map<String, dynamic>> _postJson(
     String path,
     Map<String, dynamic> payload,
   ) async {
-    final resp = await http
-        .post(
-          _base(path),
-          headers: {
-            'content-type': 'application/json',
-            'accept': 'application/json',
-          },
-          body: jsonEncode(payload),
-        )
-        .timeout(const Duration(seconds: 20));
-    return _decodeResponse(resp);
+    Future<Map<String, dynamic>> load() async {
+      final resp = await http
+          .post(
+            _base(path),
+            headers: {
+              'content-type': 'application/json',
+              'accept': 'application/json',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 20));
+      return _decodeResponse(resp);
+    }
+
+    final monitor = _performanceMonitor;
+    if (monitor == null) return load();
+    return monitor.track('auth.POST $path', load, details: {'path': path});
   }
 
   Map<String, dynamic> _decodeResponse(http.Response resp) {
