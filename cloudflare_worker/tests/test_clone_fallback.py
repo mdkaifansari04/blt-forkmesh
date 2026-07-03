@@ -3,6 +3,7 @@
 source-of-truth host is offline."""
 
 import ast
+import asyncio
 from pathlib import Path
 
 
@@ -261,6 +262,24 @@ def _method_source(class_name, method_name):
         "%s.%s not found in entry.py" % (class_name, method_name))
 
 
+def _compile_method(class_name, method_name, extra_globals):
+    # Extract one method off a DO class and compile it standalone so it can run
+    # against a fake `self` — the class itself needs the Workers JS runtime.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == method_name):
+                    module = ast.fix_missing_locations(
+                        ast.Module(body=[item], type_ignores=[]))
+                    namespace = dict(extra_globals)
+                    exec(compile(module, str(ENTRY), "exec"), namespace)
+                    return namespace[method_name]
+    raise AssertionError(
+        "%s.%s not found in entry.py" % (class_name, method_name))
+
+
 def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     # A downed source's host_presence row can lag reality for up to
     # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
@@ -309,6 +328,59 @@ def test_host_disconnect_expires_presence_immediately():
     assert "_live_host_count" in src
     for handler in ("webSocketClose", "webSocketError"):
         assert "_host_disconnected" in _method_source("ForkMeshHost", handler)
+
+
+def test_browse_traffic_never_refreshes_presence_without_a_connected_host():
+    # The adhoc #68 outage: browse/clone traffic on a repo whose desktop host
+    # had gone away kept refreshing host_presence, so the source never aged out
+    # and the fallback refused to serve from a live mirror. _mark_present must
+    # bail before writing whenever no host WebSocket is connected to this DO.
+    touched = []
+
+    class FakeDate:
+        @staticmethod
+        def now():
+            return NOW
+
+    async def fake_touch(env, repo_bi):
+        touched.append(repo_bi)
+
+    mark_present = _compile_method(
+        "ForkMeshHost", "_mark_present",
+        {"Date": FakeDate,
+         "touch_host_presence": fake_touch,
+         "HOST_PRESENCE_REFRESH_MS": 30_000})
+
+    class Host:
+        def __init__(self, hosts):
+            self._hosts = hosts
+            self._last_presence = 0
+            self._repo_bi = "bi-repo"
+            self.env = object()
+
+        def _host_count(self):
+            return self._hosts
+
+    # No connected host: the request must not write presence (or advance the
+    # throttle clock) — letting the row lapse is what flips traffic to mirrors.
+    ghost = Host(0)
+    asyncio.run(mark_present(ghost))
+    assert touched == []
+    assert ghost._last_presence == 0
+
+    # A live host does refresh presence...
+    live = Host(1)
+    asyncio.run(mark_present(live))
+    assert touched == ["bi-repo"]
+    # ...throttled: a second hit inside the refresh window writes nothing new.
+    asyncio.run(mark_present(live))
+    assert touched == ["bi-repo"]
+
+    # A blocked phantom identity never marks itself live.
+    blocked = Host(1)
+    blocked._blocked_presence = True
+    asyncio.run(mark_present(blocked))
+    assert touched == ["bi-repo"]
 
 
 def _worker_method_source(name):
