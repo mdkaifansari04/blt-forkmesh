@@ -10,6 +10,7 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 
 import '../models/models.dart';
 import 'identity.dart';
+import 'performance_monitor_service.dart';
 import 'room_crypto.dart';
 import 'settings_service.dart';
 
@@ -20,10 +21,15 @@ enum RelayConnectionState { offline, connecting, connected }
 /// shares rooms with existing nodes. Exposes roster, channels, and per-channel
 /// message history as a ChangeNotifier for the UI.
 class RelayService extends ChangeNotifier with WidgetsBindingObserver {
-  RelayService(this._settings, this._identity);
+  RelayService(
+    this._settings,
+    this._identity, {
+    PerformanceMonitorService? performanceMonitor,
+  }) : _performanceMonitor = performanceMonitor;
 
   final SettingsService _settings;
   final Identity _identity;
+  final PerformanceMonitorService? _performanceMonitor;
 
   // Presence cadence + staleness window (matches the ServerNode fix: peers not
   // heard from within the window are dropped so stale nodes don't show online).
@@ -52,6 +58,7 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   // conversation -> messages
   final Map<String, List<ChatMessage>> _history = {};
   final Set<String> _seenIds = {};
+  final Set<String> _seenNotificationIds = {};
   final Set<String> unread = {};
 
   String get _nodeId => _identity.nodeId;
@@ -114,6 +121,25 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
       .where((m) => !m.self && unread.contains(m.conversation))
       .toList();
 
+  List<ChatMessage> get notificationMessages =>
+      recentMessages.where((m) => !m.self).toList();
+
+  int get unseenNotificationCount => notificationMessages
+      .where((m) => !_seenNotificationIds.contains(m.id))
+      .length;
+
+  void markNotificationsSeen() {
+    final before = _seenNotificationIds.length;
+    for (final message in notificationMessages) {
+      if (message.id.isNotEmpty) {
+        _seenNotificationIds.add(message.id);
+      }
+    }
+    if (_seenNotificationIds.length != before) {
+      notifyListeners();
+    }
+  }
+
   // ---- lifecycle ----------------------------------------------------------
 
   Future<void> connect() async {
@@ -149,6 +175,21 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _open() async {
+    final monitor = _performanceMonitor;
+    if (monitor != null) {
+      return monitor.track(
+        'relay.open',
+        _openUntracked,
+        details: {
+          'server': Uri.parse(_settings.serverUrl).host,
+          'room': _settings.room,
+        },
+      );
+    }
+    return _openUntracked();
+  }
+
+  Future<void> _openUntracked() async {
     await _teardownSocket();
     _setState(RelayConnectionState.connecting);
     _crypto = _settings.passphrase.isEmpty
@@ -240,6 +281,22 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<bool> _send(Map<String, dynamic> plain) async {
+    final monitor = _performanceMonitor;
+    if (monitor != null) {
+      return monitor.track(
+        'relay.send.${plain['type'] ?? 'unknown'}',
+        () => _sendUntracked(plain),
+        details: {
+          'type': '${plain['type'] ?? ''}',
+          if (plain['conversation'] != null)
+            'conversation': '${plain['conversation']}',
+        },
+      );
+    }
+    return _sendUntracked(plain);
+  }
+
+  Future<bool> _sendUntracked(Map<String, dynamic> plain) async {
     final crypto = _crypto;
     final channel = _channel;
     if (crypto == null ||
@@ -248,7 +305,14 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
     try {
-      final env = await crypto.encrypt(plain);
+      final persist = plain['persist'] == true;
+      final payload = persist
+          ? (Map<String, dynamic>.from(plain)..remove('persist'))
+          : plain;
+      final env = await crypto.encrypt(payload);
+      if (persist) {
+        env['persist'] = true;
+      }
       channel.sink.add(jsonEncode(env));
       return true;
     } catch (e) {
@@ -274,29 +338,33 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     final conversation = currentConversation;
     final msg = _envelopeBase(conversation.startsWith('@') ? 'dm' : 'chat')
       ..['text'] = trimmed
-      ..['conversation'] = conversation
-      ..['persist'] = true;
+      ..['conversation'] = conversation;
     if (conversation.startsWith('#')) {
       msg['channel'] = conversation;
+      msg['persist'] = true;
     } else {
       msg['to'] = conversation.substring(1);
     }
+    final ts = DateTime.fromMillisecondsSinceEpoch(msg['ts'] as int);
     // Optimistically show our own message.
-    _appendMessage(
+    final appended = _appendMessage(
       ChatMessage(
         id: msg['id'] as String,
         conversation: conversation,
         senderId: _nodeId,
         senderName: _name,
         text: trimmed,
-        timestamp: DateTime.now(),
+        timestamp: ts,
         self: true,
       ),
     );
     _seenIds.add(msg['id'] as String);
+    if (appended) {
+      notifyListeners();
+    }
     final sent = await _send(msg);
     if (!sent) {
-      _history[conversation]?.removeWhere((m) => m.id == msg['id']);
+      _removeMessage(conversation, msg['id'] as String);
       _seenIds.remove(msg['id']);
       notifyListeners();
     }
@@ -401,13 +469,34 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  void _appendMessage(ChatMessage msg) {
-    final list = _history.putIfAbsent(msg.conversation, () => []);
-    if (list.any((m) => m.id == msg.id)) return;
-    list.add(msg);
+  bool _appendMessage(ChatMessage msg) {
+    final list = _history[msg.conversation] ?? const <ChatMessage>[];
+    if (list.any((m) => m.id == msg.id)) return false;
+    final next = <ChatMessage>[...list, msg]..sort(_compareMessages);
+    _history[msg.conversation] = List.unmodifiable(next);
     if (!msg.self && msg.conversation != currentConversation) {
       unread.add(msg.conversation);
     }
+    return true;
+  }
+
+  void _removeMessage(String conversation, String id) {
+    final list = _history[conversation];
+    if (list == null) return;
+    final next = list.where((m) => m.id != id).toList(growable: false);
+    if (next.length == list.length) return;
+    if (next.isEmpty) {
+      _history.remove(conversation);
+    } else {
+      _history[conversation] = List.unmodifiable(next);
+    }
+    _seenNotificationIds.remove(id);
+  }
+
+  int _compareMessages(ChatMessage a, ChatMessage b) {
+    final byTimestamp = a.timestamp.compareTo(b.timestamp);
+    if (byTimestamp != 0) return byTimestamp;
+    return a.id.compareTo(b.id);
   }
 
   void _rememberPeer(String id, String name, Map<String, dynamic> m) {
