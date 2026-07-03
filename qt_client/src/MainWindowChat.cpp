@@ -376,7 +376,8 @@ QWidget *MainWindow::buildNetworkLogDock()
             });
     updateQuickAddCharCount();
 
-    m_quickAddAssignAgent = new QCheckBox("Assign agent");
+    m_quickAddAssignAgent = new QCheckBox("Agent");
+    m_quickAddAssignAgent->setObjectName("quickAddAgentCheck");
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
     m_quickAddAgentProvider = new QComboBox;
@@ -391,6 +392,8 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
+    // Show the whole list at once rather than a scrollable popup (adhoc #99).
+    m_quickAddAgentProvider->setMaxVisibleItems(30);
     // Claude model chooser (adhoc #261): live list of models from the provider.
     // Populated by refreshClaudeModelCombo; choice persisted and fed to
     // startClaudeCodeTranscript.
@@ -398,6 +401,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
     m_quickAddClaudeModel->setMinimumWidth(170);
     m_quickAddClaudeModel->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    // Show the whole model list at once rather than a scrollable popup, even
+    // once the live provider list-up fills in more than a handful (adhoc #99).
+    m_quickAddClaudeModel->setMaxVisibleItems(30);
     populateClaudeModelCombo(m_quickAddClaudeModel);
     m_quickAddClaudeModel->setToolTip(
         "Claude model the Claude Code agent runs as (passed to the CLI as --model).");
@@ -415,10 +421,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Not shown in the controls row (kept out of the prompt-box chrome); it stays
     // wired up and defaults to checked so quick-add agents still open a PR.
     m_quickAddCreatePr->setVisible(false);
-    m_quickAddNoIssue = new QCheckBox("No issue");
-    m_quickAddNoIssue->setToolTip(
-        "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
-        "typed text as its prompt.");
+    // "Create issue" toggle (adhoc #99): off by default and remembered across
+    // launches, since the common quick-add path fires a coding agent straight
+    // from the typed prompt rather than filing an issue first.
+    m_quickAddCreateIssue = new QCheckBox("Create issue");
+    m_quickAddCreateIssue->setObjectName("quickAddCreateIssueCheck");
+    m_quickAddCreateIssue->setToolTip(
+        "Create an issue for this prompt instead of starting an agent "
+        "straight from it.");
     // Attach an image to the quick-add (issue #79): pick a file or paste with
     // Ctrl+V. In "No issue" mode the image path rides along in the agent's prompt;
     // otherwise it's attached to the created issue.
@@ -467,7 +477,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Auto-send toggle beside the mic (adhoc #45): when checked, the prompt is sent
     // (same as Enter/Send) the moment a voice dictation finishes its final
     // transcription, so you can dictate-and-go hands-free. Persisted across launches.
-    m_quickAddVoiceAutoSubmit = new QCheckBox("Auto-send");
+    m_quickAddVoiceAutoSubmit = new QCheckBox("Auto");
+    m_quickAddVoiceAutoSubmit->setObjectName("quickAddAutoCheck");
     m_quickAddVoiceAutoSubmit->setToolTip(
         "Automatically send the prompt when voice dictation finishes transcribing.");
     m_quickAddVoiceAutoSubmit->setChecked(
@@ -475,18 +486,23 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
-    // "No issue" on by default (issue #79): the common quick-add path is firing a
-    // coding agent straight from the typed prompt, not filing an issue.
-    m_quickAddNoIssue->setChecked(true);
+    // Restore the remembered "Create issue" state (off the first time a profile
+    // runs it, per adhoc #99).
+    m_quickAddCreateIssue->setChecked(
+        QSettings().value(kQuickAddCreateIssueSetting, false).toBool());
+    connect(m_quickAddCreateIssue, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kQuickAddCreateIssueSetting, on);
+    });
     m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
     // The provider/PR controls are live whenever an agent will run: either the
-    // user asked to assign one, or "No issue" mode (which always starts one). In
-    // "No issue" mode the plain "Assign agent" toggle is irrelevant, so disable it.
+    // user asked to assign one, or "No issue" mode (which always starts one —
+    // i.e. "Create issue" is off). In "No issue" mode the plain "Agent" toggle
+    // is irrelevant, so disable it.
     auto syncQuickAddAgentControls = [this]() {
-        const bool noIssue = m_quickAddNoIssue->isChecked();
+        const bool noIssue = !m_quickAddCreateIssue->isChecked();
         m_quickAddAssignAgent->setEnabled(!noIssue);
         const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
         m_quickAddAgentProvider->setEnabled(agentRuns);
@@ -500,7 +516,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     };
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
-    connect(m_quickAddNoIssue, &QCheckBox::toggled, this,
+    connect(m_quickAddCreateIssue, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
@@ -511,43 +527,96 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setObjectName("quickAddSendIcon");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
     setOcticon(quickAddSendButton, "paper-airplane", 16);
-    quickAddSendButton->setFixedSize(32, 32);
+    quickAddSendButton->setFixedSize(28, 28);
     quickAddSendButton->setToolTip("Send (Enter)");
+    connect(quickAddSendButton, &QPushButton::clicked, this,
+            &MainWindow::quickAddIssue);
+
+    // Second paper airplane, rotated to point straight up, stacked above the
+    // regular send icon (adhoc #99): sends the typed prompt as a follow-up
+    // message to the agent session currently open above, instead of the
+    // quick-add issue/new-agent flow.
+    m_quickAddSendToAgentButton = new QPushButton;
+    m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
+    m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 16, -45.0);
+    m_quickAddSendToAgentButton->setFixedSize(28, 28);
+    m_quickAddSendToAgentButton->setToolTip(
+        "Send to the agent open above, as a follow-up message");
+    connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd)
+            return;
+        const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+        if (prompt.isEmpty())
+            return;
+        if (m_selectedAgentSessionId < 0) {
+            logSystem(QStringLiteral(
+                "No agent open above to send that to \xE2\x80\x94 open one first."));
+            return;
+        }
+        recordQuickAddHistory(prompt);
+        m_issueQuickAdd->clear();
+        sendPromptToSelectedAgent(prompt);
+    });
 
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Prompt wrapper: the border lives on this frame; the text edit inside is
-    // borderless so the send icon sits flush inside the same visual box.
+    // Two send icons stacked in a column at the prompt's bottom-right corner.
+    auto *sendColumn = new QVBoxLayout;
+    sendColumn->setContentsMargins(0, 0, 0, 0);
+    sendColumn->setSpacing(2);
+    sendColumn->addWidget(m_quickAddSendToAgentButton);
+    sendColumn->addWidget(quickAddSendButton);
+
+    // Thin bordered box housing the agent hand-off controls (adhoc #99): the
+    // "Agent" toggle plus the provider/model dropdowns it governs, visually
+    // grouped as one unit in the middle of the bottom bar.
+    auto *agentBox = new QFrame;
+    agentBox->setObjectName("quickAddAgentBox");
+    auto *agentBoxRow = new QHBoxLayout(agentBox);
+    agentBoxRow->setContentsMargins(8, 2, 6, 2);
+    agentBoxRow->setSpacing(4);
+    agentBoxRow->addWidget(m_quickAddAssignAgent);
+    agentBoxRow->addWidget(m_quickAddAgentProvider);
+    agentBoxRow->addWidget(m_quickAddClaudeModel);
+
+    // Bottom bar nested inside the prompt frame, below the text area (adhoc
+    // #99): paperclip and mic at the bottom-left (opposite the send icons),
+    // the Auto/Create-issue toggles, the Agent box centred by the stretches on
+    // either side, then the character count immediately left of the send icons.
+    auto *bottomBar = new QHBoxLayout;
+    bottomBar->setContentsMargins(8, 2, 6, 6);
+    bottomBar->setSpacing(6);
+    bottomBar->addWidget(m_quickAddImageButton);
+    bottomBar->addWidget(m_quickAddMicButton);
+    bottomBar->addWidget(m_voiceLevelMeter);
+    bottomBar->addWidget(m_quickAddAttachStrip);
+    bottomBar->addWidget(m_quickAddVoiceAutoSubmit);
+    bottomBar->addSpacing(14);
+    bottomBar->addWidget(m_quickAddCreateIssue);
+    bottomBar->addStretch(1);
+    bottomBar->addWidget(agentBox);
+    bottomBar->addStretch(1);
+    bottomBar->addWidget(m_quickAddCharCount);
+    bottomBar->addLayout(sendColumn);
+
+    // Prompt wrapper: the border lives on this frame; the text edit sits on
+    // top with the bottom bar nested below it inside the same box, so the
+    // controls read as an overlay along the foot of the prompt input rather
+    // than a separate strip above it.
     auto *promptWrapper = new QFrame;
     promptWrapper->setObjectName("promptWrapper");
-    auto *promptRow = new QHBoxLayout(promptWrapper);
-    promptRow->setContentsMargins(0, 0, 4, 4);
-    promptRow->setSpacing(0);
-    promptRow->addWidget(m_issueQuickAdd, 1);
-    promptRow->addWidget(quickAddSendButton, 0, Qt::AlignBottom);
+    auto *promptLayout = new QVBoxLayout(promptWrapper);
+    promptLayout->setContentsMargins(0, 0, 0, 0);
+    promptLayout->setSpacing(0);
+    promptLayout->addWidget(m_issueQuickAdd);
+    promptLayout->addLayout(bottomBar);
 
-    // Controls strip above the prompt (agent toggles, model picker, etc.).
-    auto *controlsRow = new QHBoxLayout;
-    controlsRow->setContentsMargins(0, 0, 0, 0);
-    controlsRow->setSpacing(6);
-    controlsRow->addWidget(m_quickAddCharCount);
-    controlsRow->addWidget(m_quickAddMicButton);
-    controlsRow->addWidget(m_voiceLevelMeter);
-    controlsRow->addWidget(m_quickAddVoiceAutoSubmit);
-    controlsRow->addWidget(m_quickAddImageButton);
-    controlsRow->addWidget(m_quickAddAttachStrip);
-    controlsRow->addWidget(m_quickAddNoIssue);
-    controlsRow->addWidget(m_quickAddAssignAgent);
-    controlsRow->addWidget(m_quickAddAgentProvider);
-    controlsRow->addWidget(m_quickAddClaudeModel);
-    controlsRow->addWidget(m_quickAddCreatePr);
-    controlsRow->addStretch(1);
-
-    // Card (right half): controls on top, prompt+send on bottom.
+    // Card (right half): just the prompt frame now that its controls live
+    // inside it as the bottom bar.
     auto *cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(12, 8, 12, 8);
-    cardLayout->setSpacing(6);
-    cardLayout->addLayout(controlsRow);
+    cardLayout->setSpacing(0);
     cardLayout->addWidget(promptWrapper);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.
@@ -585,8 +654,6 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
-    connect(quickAddSendButton, &QPushButton::clicked, this,
-            &MainWindow::quickAddIssue);
     updateVoiceInputButton();
     return dock;
 }

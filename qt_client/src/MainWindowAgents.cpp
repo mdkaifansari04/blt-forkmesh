@@ -1201,7 +1201,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentSendPromptButton, "comment", 16);
     connect(m_agentSendPromptButton, &QPushButton::clicked, this, [this] {
-        if (!m_agentPromptEdit || m_selectedAgentSessionId < 0)
+        if (!m_agentPromptEdit)
             return;
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
@@ -1211,51 +1211,7 @@ QWidget *MainWindow::buildAgentsTab()
         // clearing only afterwards sometimes left the just-sent prompt stuck in
         // the input box (adhoc #29). Empty it now so it's added and gone at once.
         m_agentPromptEdit->clear();
-        if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
-            s && s->running()) {
-            // Steer the live Claude Code transcript session: record the turn in
-            // this session's buffer so it survives view switches, then send it.
-            const int sid = m_selectedAgentSessionId;
-            QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                             {QStringLiteral("text"), prompt}};
-            applyTranscriptEvent(sid, turn);
-            s->sendUserText(prompt);
-            // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
-            // it now (and once more shortly after) to keep the top-bar chart +
-            // hover stats current rather than waiting for the next minute tick.
-            bumpClaudeCodeUsage();
-            // Replying puts the agent back to work — clear "Waiting", or the
-            // Failed left by an error result whose process stayed alive, so the
-            // list shows the session running again.
-            if (AgentSession *as = findAgentSession(sid);
-                as && as->status != AgentStatus::Running) {
-                as->status = AgentStatus::Running;
-                as->finishedAtMs = 0;
-                as->lastError.clear();
-                if (m_agentStore)
-                    m_agentStore->saveSession(*as);
-                updateAgentStatusCell(sid);
-            }
-        } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
-            runner->steer(prompt);
-        } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
-            // No live process: the session is stopped, waiting, failed or done.
-            // Restart it and fold this message into the resumed run as a steering
-            // instruction so the queued message actually takes effect (adhoc #177).
-            const int sid = session->id;
-            m_pendingSteerMessage.insert(sid, prompt);
-            if (session->provider == QLatin1String("claude-code"))
-                applyTranscriptEvent(
-                    sid, QJsonObject{
-                             {QStringLiteral("type"), QStringLiteral("_local_user")},
-                             {QStringLiteral("text"), prompt}});
-            else
-                m_agentStore->appendLog(
-                    *session,
-                    QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
-                        .arg(prompt));
-            continueSelectedAgentSession();
-        }
+        sendPromptToSelectedAgent(prompt);
     });
 
     // Composer accessory controls: add-files (+), a slash-command menu, and the
@@ -1432,6 +1388,60 @@ QWidget *MainWindow::buildAgentsTab()
         }
     });
     return page;
+}
+
+// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
+// follow-up message. Shared by the agent detail page's "Send" composer and the
+// footer quick-add's up-arrow ("send to the visible agent") button.
+void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+{
+    if (prompt.isEmpty() || m_selectedAgentSessionId < 0)
+        return;
+    if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
+        s && s->running()) {
+        // Steer the live Claude Code transcript session: record the turn in
+        // this session's buffer so it survives view switches, then send it.
+        const int sid = m_selectedAgentSessionId;
+        QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                         {QStringLiteral("text"), prompt}};
+        applyTranscriptEvent(sid, turn);
+        s->sendUserText(prompt);
+        // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
+        // it now (and once more shortly after) to keep the top-bar chart +
+        // hover stats current rather than waiting for the next minute tick.
+        bumpClaudeCodeUsage();
+        // Replying puts the agent back to work — clear "Waiting", or the
+        // Failed left by an error result whose process stayed alive, so the
+        // list shows the session running again.
+        if (AgentSession *as = findAgentSession(sid);
+            as && as->status != AgentStatus::Running) {
+            as->status = AgentStatus::Running;
+            as->finishedAtMs = 0;
+            as->lastError.clear();
+            if (m_agentStore)
+                m_agentStore->saveSession(*as);
+            updateAgentStatusCell(sid);
+        }
+    } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+        runner->steer(prompt);
+    } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+        // No live process: the session is stopped, waiting, failed or done.
+        // Restart it and fold this message into the resumed run as a steering
+        // instruction so the queued message actually takes effect (adhoc #177).
+        const int sid = session->id;
+        m_pendingSteerMessage.insert(sid, prompt);
+        if (session->provider == QLatin1String("claude-code"))
+            applyTranscriptEvent(
+                sid, QJsonObject{
+                         {QStringLiteral("type"), QStringLiteral("_local_user")},
+                         {QStringLiteral("text"), prompt}});
+        else
+            m_agentStore->appendLog(
+                *session,
+                QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                    .arg(prompt));
+        continueSelectedAgentSession();
+    }
 }
 
 void MainWindow::testOpenAiAgentKey()

@@ -1172,6 +1172,10 @@ private:
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
+    // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
+    // agent detail composer's Send button and the footer quick-add's up-arrow
+    // ("send to the visible agent") button.
+    void sendPromptToSelectedAgent(const QString &prompt);
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -2645,7 +2649,14 @@ private:
     // shown/hidden as the provider selection changes.
     QComboBox *m_quickAddClaudeModel = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
-    QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
+    // "Create issue" toggle (adhoc #99): off by default (remembered via
+    // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an
+    // agent directly and skips filing an issue at all.
+    QCheckBox *m_quickAddCreateIssue = nullptr;
+    // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
+    // sends the typed prompt as a follow-up message to the currently-selected
+    // agent session instead of the quick-add issue/new-agent flow.
+    QPushButton *m_quickAddSendToAgentButton = nullptr;
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
