@@ -76,6 +76,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             });
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
     m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
+    // Seed the live Claude model cache from disk *before* buildChatPage() builds
+    // the composer's model combo, so it lists the real models on the first frame
+    // instead of just "Auto" while this session's live /v1/models fetch is still
+    // in flight (refreshClaudeModelCombo overwrites this once that lands).
+    m_liveClaudeModels =
+        QJsonDocument::fromJson(
+            QSettings().value(kClaudeModelsCacheSetting).toByteArray())
+            .array();
 
     loadServers();
     loadCachedFavicons();
