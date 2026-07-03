@@ -6148,31 +6148,56 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(m_profileEligibility);
     solanaLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
 
+    // Two-column body: identity/stats on the left, hosting/keys/Solana (what
+    // used to be one long stack at the bottom) on the right, side by side. Both
+    // columns share a common top edge so they read as one panel rather than
+    // two independently-scrolled halves.
+    auto *leftColumn = new QVBoxLayout;
+    leftColumn->setContentsMargins(0, 0, 0, 0);
+    leftColumn->setSpacing(6);
+    leftColumn->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileName);
+    leftColumn->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileOnlineSection);
+    leftColumn->addWidget(m_profileStatus);
+    leftColumn->addWidget(m_profileNote);
+    leftColumn->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileStatGrid);
+    leftColumn->addWidget(detailsLabel);
+    leftColumn->addWidget(m_profileDetails);
+    leftColumn->addWidget(m_profileMirrorsLabel);
+    leftColumn->addWidget(m_profileMirrors);
+    leftColumn->addStretch();
+
+    auto *rightColumn = new QVBoxLayout;
+    rightColumn->setContentsMargins(0, 0, 0, 0);
+    rightColumn->setSpacing(6);
+    rightColumn->addWidget(m_profileHostingLabel);
+    rightColumn->addWidget(m_profileHosting);
+    rightColumn->addWidget(nodeKeyLabel);
+    rightColumn->addWidget(m_profileNodeKey);
+    rightColumn->addWidget(copyKey, 0, Qt::AlignLeft);
+    rightColumn->addWidget(m_profileSolanaSection);
+    rightColumn->addStretch();
+
+    auto *columnsRow = new QHBoxLayout;
+    columnsRow->setContentsMargins(0, 0, 0, 0);
+    columnsRow->setSpacing(20);
+    columnsRow->addLayout(leftColumn, 1);
+    columnsRow->addLayout(rightColumn, 1);
+
     auto *layout = new QVBoxLayout(content);
     layout->setContentsMargins(14, 12, 14, 12);
     layout->setSpacing(6);
     layout->addLayout(topRow);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
-    layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileName);
-    layout->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatus);
-    layout->addWidget(m_profileNote);
-    layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatGrid);
-    layout->addWidget(detailsLabel);
-    layout->addWidget(m_profileDetails);
-    layout->addWidget(m_profileMirrorsLabel);
-    layout->addWidget(m_profileMirrors);
-    layout->addWidget(m_profileHostingLabel);
-    layout->addWidget(m_profileHosting);
-    layout->addWidget(nodeKeyLabel);
-    layout->addWidget(m_profileNodeKey);
-    layout->addWidget(copyKey, 0, Qt::AlignLeft);
-    layout->addWidget(m_profileSolanaSection);
-    layout->addStretch();
+    layout->addLayout(columnsRow);
 
     scroll->setWidget(content);
+    // The online switch, status line and uptime label are created here rather
+    // than in the always-visible top bar now, so give them their initial state
+    // as soon as they exist instead of waiting for the next online/offline event.
+    updateNodeOnlineControls();
     return scroll;
 }
 
@@ -6370,6 +6395,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);
+    // The online/offline power switch only controls your own node.
+    if (m_profileOnlineSection)
+        m_profileOnlineSection->setVisible(info.self);
 
     // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
     // (active account + a payout address set) it flips to an "earning" label so
