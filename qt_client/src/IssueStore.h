@@ -75,6 +75,10 @@ struct RemoteIssueMeta {
     QString milestone;
     int priority = 0;
     QStringList assignees;
+    // Set by the repo owner's own submission form (only available to them) to
+    // request that this new issue be auto-assigned to a coding agent as soon as
+    // it's merged in from the inbox.
+    bool wantsAgent = false;
 };
 
 struct IssueLabel {

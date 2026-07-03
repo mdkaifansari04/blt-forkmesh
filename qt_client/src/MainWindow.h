@@ -1129,9 +1129,13 @@ private:
     // for any issue (not just the selected one). Returns the new session id, or 0
     // on failure. quiet suppresses the inline notice + Agents-tab switch the
     // manual assign path shows. model is the provider-specific model id/alias
-    // picked in the sidebar; empty leaves the provider's own default.
+    // picked in the sidebar; empty leaves the provider's own default. repoHint
+    // names the issue's repo explicitly for callers running outside the Issues
+    // tab (e.g. an inbox drain for a repo that isn't the one on screen); when
+    // null the selected repo (issuesRepoIndex()) is used, as before.
     int startAgentForIssue(const Issue &issue, const QString &provider, bool createPr,
-                           bool quiet = false, const QString &model = QString());
+                           bool quiet = false, const QString &model = QString(),
+                           const RepositoryRecord *repoHint = nullptr);
     // Issue looper (adhoc #92): start an agent on the next open issue, watch it to
     // completion, then automatically start the next — working through the open
     // backlog one issue at a time until toggled off or the backlog is exhausted.
