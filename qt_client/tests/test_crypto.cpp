@@ -1,5 +1,6 @@
 #include "../src/ActionFile.h"
 #include "../src/AgentStore.h"
+#include "../src/BackoffNetworkAccessManager.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -19,10 +20,17 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QHostAddress>
 #include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include <openssl/evp.h>
 #include <algorithm>
@@ -444,6 +452,71 @@ int main(int argc, char *argv[])
     pollBackoff.noteSuccess(pollKey);
     check(pollBackoff.ready(pollKey, 0),
           "a successful poll clears the exponential backoff");
+
+    // --- BackoffNetworkAccessManager: host-wide 429 gate (adhoc #78) -----
+    // A minimal loopback HTTP server stands in for the relay so createRequest's
+    // real routing/gating logic runs end-to-end instead of just NetworkBackoff
+    // in isolation: /api/* paths are gated per-host, a 429 starts a cooldown
+    // during which further /api/* requests never reach the network, and
+    // non-/api/ paths always bypass the gate.
+    {
+        QTcpServer fakeRelay;
+        check(fakeRelay.listen(QHostAddress::LocalHost),
+              "fake relay listens on loopback for the backoff-manager test");
+        QList<QByteArray> pendingResponses;
+        QStringList seenPaths;
+        QObject::connect(&fakeRelay, &QTcpServer::newConnection, [&] {
+            while (fakeRelay.hasPendingConnections()) {
+                QTcpSocket *sock = fakeRelay.nextPendingConnection();
+                QObject::connect(sock, &QTcpSocket::readyRead, [&, sock] {
+                    const QString requestLine =
+                        QString::fromLatin1(sock->readAll()).section(QStringLiteral("\r\n"), 0, 0);
+                    seenPaths.append(requestLine.section(QLatin1Char(' '), 1, 1));
+                    const QByteArray body = pendingResponses.isEmpty()
+                        ? QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        : pendingResponses.takeFirst();
+                    sock->write(body);
+                    sock->flush();
+                    sock->disconnectFromHost();
+                });
+                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            }
+        });
+
+        BackoffNetworkAccessManager manager;
+        const QString base =
+            QStringLiteral("http://127.0.0.1:%1").arg(fakeRelay.serverPort());
+        const auto runRequest = [&](const QString &path) {
+            QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(base + path)));
+            bool done = false;
+            QObject::connect(reply, &QNetworkReply::finished, [&done] { done = true; });
+            QElapsedTimer timer;
+            timer.start();
+            while (!done && timer.elapsed() < 3000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            const QString err = reply->errorString();
+            reply->deleteLater();
+            return err;
+        };
+
+        pendingResponses.append(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        runRequest(QStringLiteral("/api/version"));
+        check(seenPaths == QStringList{QStringLiteral("/api/version")},
+              "first /api/ request reaches the fake relay");
+
+        seenPaths.clear();
+        const QString suppressedErr = runRequest(QStringLiteral("/api/version"));
+        check(seenPaths.isEmpty(),
+              "a second /api/ request during cooldown never reaches the network");
+        check(suppressedErr.contains(QStringLiteral("rate-limited")),
+              "the suppressed reply reports a rate-limited error");
+
+        seenPaths.clear();
+        runRequest(QStringLiteral("/static/app.js"));
+        check(!seenPaths.isEmpty(),
+              "non-/api/ paths bypass the backoff gate even during cooldown");
+    }
 
     // --- Commit comment signing ------------------------------------------
     CommitComment commitVec;
@@ -1676,6 +1749,79 @@ int main(int argc, char *argv[])
             check(RepoSecurity::findSecretsInPush(dir, QStringLiteral("HEAD~1")).isEmpty(),
                   "diff-scan ignores secrets removed (not added) in commits");
         }
+    }
+
+    // --- Per-manifest dependency counts (adhoc #86) -----------------------
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "dependency-count temp repo created");
+        const QString dir = td.path();
+        const auto git = [&](const QStringList &args) {
+            QProcess p;
+            p.start(QStringLiteral("git"),
+                    QStringList{QStringLiteral("-C"), dir} + args);
+            p.waitForFinished(10000);
+        };
+        git({QStringLiteral("init")});
+        git({QStringLiteral("config"), QStringLiteral("user.email"),
+             QStringLiteral("t@t")});
+        git({QStringLiteral("config"), QStringLiteral("user.name"),
+             QStringLiteral("T")});
+        {
+            QFile f(dir + QStringLiteral("/package.json"));
+            f.open(QIODevice::WriteOnly);
+            // The scanner reads line-by-line (one "name": "version" entry per
+            // line), so the fixture must be pretty-printed, not minified.
+            f.write(R"JSON({
+  "dependencies": {
+    "left-pad": "1.0.0",
+    "chalk": "*"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
+)JSON");
+        }
+        {
+            QFile f(dir + QStringLiteral("/requirements.txt"));
+            f.open(QIODevice::WriteOnly);
+            f.write("requests==2.31.0\nflask>=2.0\n# a comment\n\nclick\n");
+        }
+        git({QStringLiteral("add"), QStringLiteral("package.json"),
+             QStringLiteral("requirements.txt")});
+
+        RepoSecurityInput input;
+        input.owner = QStringLiteral("alice");
+        input.name = QStringLiteral("project");
+        input.localPath = dir;
+
+        const RepoSecuritySnapshot snapshot = RepoSecurity::scan(input);
+        check(snapshot.dependencyCounts.value(QStringLiteral("package.json")) == 3,
+              "full scan counts every declared package.json dependency (prod + dev)");
+        check(snapshot.dependencyCounts.value(QStringLiteral("requirements.txt")) == 3,
+              "full scan counts requirements.txt entries, skipping blanks/comments");
+
+        const RepoSecurityManifestScan pkgRescan =
+            RepoSecurity::scanManifest(input, QStringLiteral("package.json"));
+        check(pkgRescan.dependencyCount == 3,
+              "single-manifest rescan matches the full scan's package.json count");
+        bool flaggedChalk = false;
+        for (const RepoSecurityFinding &f : pkgRescan.findings)
+            if (f.title == QStringLiteral("chalk") && f.detail.contains(QLatin1Char('*')))
+                flaggedChalk = true;
+        check(flaggedChalk,
+              "single-manifest rescan on package.json surfaces chalk's floating \"*\" version");
+
+        const RepoSecurityManifestScan reqRescan =
+            RepoSecurity::scanManifest(input, QStringLiteral("requirements.txt"));
+        check(reqRescan.dependencyCount == 3,
+              "single-manifest rescan matches the full scan's requirements.txt count");
+
+        const RepoSecurityManifestScan missingRescan =
+            RepoSecurity::scanManifest(input, QStringLiteral("does-not-exist.json"));
+        check(missingRescan.dependencyCount == 0 && missingRescan.findings.isEmpty(),
+              "single-manifest rescan on a missing/untracked path is a safe no-op");
     }
 
     if (failures) {

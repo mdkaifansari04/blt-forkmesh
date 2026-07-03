@@ -18,11 +18,14 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-QT_MAIN = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.cpp"
-QT_HDR = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.h"
+# MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
+QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
+QT_HDR = QT_SRC / "MainWindow.h"
 
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-QT_TEXT = QT_MAIN.read_text(encoding="utf-8") if QT_MAIN.exists() else ""
+QT_TEXT = "\n".join(
+    p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
+)
 QT_HDR_TEXT = QT_HDR.read_text(encoding="utf-8") if QT_HDR.exists() else ""
 
 
