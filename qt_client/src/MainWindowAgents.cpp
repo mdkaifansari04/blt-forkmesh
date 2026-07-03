@@ -3963,6 +3963,10 @@ void MainWindow::switchToAgentsTab(int sessionId)
     const AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
+    // The Agents tab lives inside repo detail, which is only visible on the
+    // Home section (index 0) — jump there first so this works no matter which
+    // section (Settings, Chat, Notifications, ...) the click came from.
+    showSection(0);
     const int repoIndex = repoIndexFor(session->owner, session->name);
     if (repoIndex >= 0 && repoIndex != m_repoDetailIndex)
         openRepoDetail(repoIndex);
@@ -4070,6 +4074,7 @@ void MainWindow::openAgentsOverview()
         return;
     }
     if (m_repoDetailIndex >= 0 && m_repoDetailTabs && m_repoDetailTabs->button(3)) {
+        showSection(0);
         m_repoDetailTabs->button(3)->setChecked(true);
         if (m_repoDetailStack)
             m_repoDetailStack->setCurrentIndex(3);
