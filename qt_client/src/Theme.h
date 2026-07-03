@@ -90,20 +90,20 @@ QComboBox QAbstractItemView {
     background-color: #161b22; border: 1px solid #30363d;
     selection-background-color: #1f6feb; color: #e6edf3;
 }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -773,8 +773,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 68px;
-    max-height: 68px;
+    min-height: 46px;
+    max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
 #promptWrapper {
@@ -783,7 +783,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
 #promptWrapper:focus-within { border-color: #39d353; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 68px; max-height: 68px;
+    min-height: 46px; max-height: 46px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {
@@ -807,7 +807,8 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     image: url(:/icons/octicons/check-white.svg);
 }
 #quickAddAgentBox {
-    border: 1px solid #30363d; border-radius: 6px; background: transparent;
+    border: 1px solid #30363d; border-radius: 4px; background: transparent;
+    font-size: 12px;
 }
 #issuePageTitle {
     font-size: 26px;
@@ -1182,20 +1183,20 @@ QComboBox QAbstractItemView {
     background-color: #ffffff; border: 1px solid #d0d7de;
     selection-background-color: #0969da; selection-color: #ffffff; color: #1f2328;
 }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -1839,8 +1840,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 68px;
-    max-height: 68px;
+    min-height: 46px;
+    max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
 #promptWrapper {
@@ -1849,7 +1850,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
 #promptWrapper:focus-within { border-color: #1a7f37; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 68px; max-height: 68px;
+    min-height: 46px; max-height: 46px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {
@@ -1872,7 +1873,8 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     image: url(:/icons/octicons/check-white.svg);
 }
 #quickAddAgentBox {
-    border: 1px solid #d0d7de; border-radius: 6px; background: transparent;
+    border: 1px solid #d0d7de; border-radius: 4px; background: transparent;
+    font-size: 12px;
 }
 #issuePageTitle {
     font-size: 26px;
