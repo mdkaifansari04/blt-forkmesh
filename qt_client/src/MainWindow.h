@@ -82,6 +82,7 @@ class QGraphicsOpacityEffect;
 class QFrame;
 class QLabel;
 class QMouseEvent;
+class QContextMenuEvent;
 class QAbstractButton;
 class QAction;
 class QLineEdit;
@@ -439,8 +440,18 @@ protected:
     // Defers heavy, git-backed startup until the window's first frame is on
     // screen, so launch shows the themed UI instead of an unpainted black frame.
     void showEvent(QShowEvent *event) override;
-    // Image drag-and-drop onto the inline issue comment composer.
+    // Image drag-and-drop onto the inline issue comment composer. Also
+    // intercepts right-click context menus app-wide to offer "Send to
+    // Prompt" on any selected text (adhoc #126).
     bool eventFilter(QObject *obj, QEvent *event) override;
+    // Right-click on selected text anywhere (transcript, diff, README, logs):
+    // shows the widget's normal context menu plus a "Send to Prompt" action.
+    // Returns true (event consumed) only when it took over the menu.
+    bool maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce);
+    // Appends text to whichever prompt box is the relevant target: the
+    // per-agent composer if an agent session is open and visible, else the
+    // footer's global quick-add box.
+    void appendTextToActivePrompt(const QString &text);
     // Keep the floating expanded-toast overlay anchored to the toast on resize.
     void resizeEvent(QResizeEvent *event) override;
 
@@ -479,9 +490,10 @@ private:
     // so the mirror finally registers in the database and shows on the repo page.
     // Returns true when the node ends up with an active, key-bound account.
     bool registerNodeAccountSilently(const QString &accountName);
-    // In-app join: pick a public node name and you're in. Joining is free — the
-    // name is reserved and activated against this device key (no donation, no
-    // email/password). Cross-device credentials can be added later.
+    // In-app join: pick a username and you're in. Joining is free — the
+    // username is reserved and activated against this device key (no donation,
+    // no email/password); the user can attach more nodes to it later.
+    // Cross-device credentials can be added later.
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     QJsonArray fetchCatalogRepos();

@@ -1907,15 +1907,13 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
                 ? repo.localPath
                 : repo.mirrorPath;
-        // Resolve the earliest root commit. Prefer HEAD, but fall back to --all:
-        // a bare mirror cloned from the relay can carry an unset/dangling HEAD
-        // (the relay serves git-upload-pack without advertising a symref HEAD), so
-        // "rev-list ... HEAD" fails and leaves rootCommit empty. An empty root drops
-        // that mirror into a different group key (worker repo_mirror_group_key), so
-        // the owner's mirror-nodes panel never lists it next to the source of truth
-        // — the node shows up on the mirror but not on the source (issue #243). --all
-        // walks every ref the mirror holds, yielding the same root the source-of-
-        // truth computes from its working tree regardless of HEAD's state.
+        // Resolve the earliest root commit. Prefer HEAD; but a bare mirror cloned
+        // from the relay can carry an unset/dangling HEAD (the relay serves
+        // git-upload-pack without advertising a symref HEAD), so "rev-list ... HEAD"
+        // fails and leaves rootCommit empty. A wrong/empty root drops that mirror
+        // into a different group key (worker repo_mirror_group_key), so the owner's
+        // mirror-nodes panel never lists it next to the source of truth — the node
+        // shows up on the mirror but not on the source (issue #243, adhoc #134).
         auto firstRoot = [&](const QStringList &args) -> QString {
             QByteArray out;
             if (gitDir.trimmed().isEmpty() ||
@@ -1926,6 +1924,22 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
             return roots.isEmpty() ? QString() : roots.last().trimmed();
         };
         rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
+        if (rootCommit.isEmpty()) {
+            // HEAD is unset. Compute the root of the branch this mirror actually
+            // serves (mirrorHeadBranch: the same default branch the source's HEAD
+            // points to), NOT a blind "--all" walk. This repo has several root
+            // commits — one per independent history the mirror also holds (agent
+            // branches, imported subtrees). "rev-list --max-parents=0 --all" returns
+            // ALL of them and "roots.last()" would pick whichever an unrelated
+            // history contributes, so the mirror published a different rootCommit
+            // than the source and landed in its own group (adhoc #134). Resolving
+            // the served branch yields the source's root regardless of HEAD's state.
+            const QString branch = mirrorHeadBranch(gitDir);
+            if (!branch.isEmpty())
+                rootCommit = firstRoot({"rev-list", "--max-parents=0", branch});
+        }
+        // Last resort (no HEAD and no resolvable served branch, e.g. a truly empty
+        // ref set): fall back to --all so a single-root mirror still groups.
         if (rootCommit.isEmpty())
             rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
     }
@@ -2706,7 +2720,16 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             m_pendingAutoOpenRepoKey.compare(
                                 repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
                             m_pendingAutoOpenRepoKey.clear();
-                            openRepoDetailDeferred(index);
+                            // On a fresh install, land on the #welcome chat, not the
+                            // Code view. Just select the repo internally (so the repo
+                            // switcher shows "forkmesh") and refresh the UI; don't open
+                            // the detail view which would load and show the Agents tab.
+                            m_repoDetailIndex = index;
+                            refreshRepositoryList();
+                            QTimer::singleShot(0, this, [this] {
+                                showChatView();
+                                switchConversation(kWelcomeChannel);
+                            });
                         }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&

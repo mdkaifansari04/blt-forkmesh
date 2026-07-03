@@ -6,6 +6,12 @@ using namespace forkmesh::ui;
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     logStartup(QStringLiteral("MainWindow ctor begin"));
+    // App-wide filter so right-click on ANY selected text (transcript, diff,
+    // README, logs — not just the prompt boxes themselves) can offer "Send to
+    // Prompt", without wiring a custom context menu into every text widget
+    // individually (adhoc #126). See eventFilter's QEvent::ContextMenu branch.
+    if (qApp)
+        qApp->installEventFilter(this);
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     if (qApp && qApp->styleSheet().isEmpty())

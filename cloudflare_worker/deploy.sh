@@ -175,6 +175,52 @@ build_rev() {
     fi
 }
 
+# Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
+# host application-firewall rule that singles out the curl binary (an OpenSnitch
+# "deny process.path /usr/bin/curl" answered on a popup) blackholes every curl
+# request — including its DNS — so verification dies with curl exit 28 while the
+# network, the deploy, and the site are all fine. python3's sockets don't match
+# a per-binary curl rule, so retry the same GET through it before treating a
+# connection-level curl failure as "the origin is down". Output mirrors
+# curl -w '\n%{http_code}': body, newline, status code. The explicit User-Agent
+# matters: the edge 403s python's default UA as a bot.
+_py_http_get() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={
+    "User-Agent": "forkmesh-deploy-verify/1.0", "Accept": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=25) as r:
+        sys.stdout.write(r.read().decode(errors="replace"))
+        sys.stdout.write("\n" + str(r.status))
+except Exception as e:
+    code = getattr(e, "code", None)
+    if code is None:
+        sys.exit(1)          # no HTTP response at all (DNS/TCP/TLS failure)
+    sys.stdout.write("\n" + str(code))
+PYEOF
+}
+
+# HEAD-style fallback for the asset checks, same rationale as _py_http_get.
+# Prints "<status> <content-type>".
+_py_http_head() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], method="HEAD", headers={
+    "User-Agent": "forkmesh-deploy-verify/1.0"})
+try:
+    with urllib.request.urlopen(req, timeout=15) as r:
+        print(r.status, (r.headers.get("content-type") or "").lower())
+except Exception as e:
+    code = getattr(e, "code", None)
+    if code is None:
+        sys.exit(1)
+    print(code, (getattr(e, "headers", None) or {}).get("content-type", "").lower())
+PYEOF
+}
+
 # After a deploy, confirm the live origin is actually serving the build we just
 # shipped. Polls /api/version (allowing for edge propagation) and matches its
 # reported rev against the BUILD_REV we stamped. A mismatch that never resolves
@@ -191,24 +237,59 @@ verify_deploy() {
         return 0
     fi
     echo "Verifying $url is serving BUILD_REV=$expected ..."
-    local attempt body got
-    for attempt in $(seq 1 20); do
-        body="$(curl -fsS --max-time 15 "$url" 2>/dev/null || true)"
+    # 30 attempts * (up to 25s request + 6s sleep) gives a long runway before
+    # calling this a real failure. This Worker is a ~10k-line Python
+    # (Pyodide) module, and Cloudflare Python Workers are known to have much
+    # slower cold starts than JS Workers while the isolate compiles/loads the
+    # runtime on the FIRST hit of a freshly-deployed version at each colo — a
+    # too-tight per-request timeout here previously made the loop time out
+    # (curl exit 28) before the Worker ever got a chance to answer, reporting
+    # a false "never went live" even though the deploy had, in fact, landed.
+    local attempts=30 max_time=25 sleep_s=6
+    local attempt body got http_code curl_rc via
+    for attempt in $(seq 1 "$attempts"); do
+        curl_rc=0
+        via=curl
+        body="$(curl -sS --max-time "$max_time" -w $'\n%{http_code}' "$url" 2>/dev/null)" || curl_rc=$?
+        if [ "$curl_rc" != 0 ] && body="$(_py_http_get "$url")"; then
+            curl_rc=0
+            via=python3
+        fi
+        http_code="${body##*$'\n'}"
+        body="${body%$'\n'*}"
         # Pull "rev":"<value>" out of the JSON without needing jq.
         got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-        if [ "$got" = "$expected" ]; then
-            echo "Verified: live origin is serving build $expected."
+        if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && [ "$got" = "$expected" ]; then
+            echo "Verified: live origin is serving build $expected (via $via)."
+            if [ "$via" = "python3" ]; then
+                echo "note: curl could not reach $url but python3 could — a host" >&2
+                echo "      firewall rule is likely blocking the curl binary itself" >&2
+                echo "      (e.g. an OpenSnitch 'deny /usr/bin/curl' rule)." >&2
+            fi
             return 0
         fi
-        echo "  attempt $attempt/20: live rev='${got:-<none>}' (want '$expected'); retrying in 6s..." >&2
-        sleep 6
+        if [ "$curl_rc" != 0 ]; then
+            echo "  attempt $attempt/$attempts: curl failed (exit $curl_rc, e.g. timeout/DNS/TLS); retrying in ${sleep_s}s..." >&2
+        else
+            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}' (want '$expected', via $via); retrying in ${sleep_s}s..." >&2
+        fi
+        sleep "$sleep_s"
     done
     echo "ERROR: $base never reported BUILD_REV=$expected after the deploy." >&2
-    echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
-    echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
-    echo "       custom domain still routes to an old Worker). Check that" >&2
-    echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
-    echo "       forkmesh.com, then redeploy." >&2
+    if [ "$curl_rc" != 0 ]; then
+        echo "       Last attempt failed to connect (curl exit $curl_rc) — check network egress" >&2
+        echo "       from the deploy runner and that forkmesh.com resolves and is reachable." >&2
+    elif [ "$http_code" != "200" ]; then
+        echo "       Last attempt got HTTP $http_code from $url (expected 200). That's a" >&2
+        echo "       server-side/routing error, not a stale-code mismatch — check the Worker's" >&2
+        echo "       error log (admin dashboard) for what's failing on that origin." >&2
+    else
+        echo "       Last live rev was '${got:-<none>}'. The upload did NOT take effect on" >&2
+        echo "       this origin (most likely it hit the wrong Cloudflare account, or the" >&2
+        echo "       custom domain still routes to an old Worker). Check that" >&2
+        echo "       CLOUDFLARE_ACCOUNT_ID in $ENV_FILE matches the account that owns" >&2
+        echo "       forkmesh.com, then redeploy." >&2
+    fi
     return 1
 }
 
@@ -250,6 +331,11 @@ verify_public_assets() {
             printf '%s\n' "$headers" |
                 awk -F': *' 'tolower($1) == "content-type" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
         )"
+        # curl got no response at all (vs an HTTP error): same per-binary
+        # firewall blind spot as in verify_deploy — retry through python3.
+        if [ -z "$status" ]; then
+            read -r status content_type <<<"$(_py_http_head "$url" || true)"
+        fi
 
         if [ "$status" != "200" ]; then
             echo "ERROR: $url returned HTTP ${status:-<none>} (expected 200)." >&2
@@ -346,7 +432,7 @@ push_secrets() {
     # Verify: confirm each pushed name actually exists on the Worker now, so a
     # silently-failed `secret put` becomes a loud error instead of a mystery.
     local listed
-    if listed="$(pywrangler secret list 2>/dev/null)"; then
+    if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
         local missing=()
         local k
         for k in ${pushed[@]+"${pushed[@]}"}; do
@@ -461,11 +547,18 @@ case "${1:-deploy}" in
         require_cloudflare_auth
         BUILD_REV="$(build_rev)"
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV)..."
+        # wrangler.toml defines [env.dev] alongside the top-level (production)
+        # config, so wrangler warns "no target environment specified" unless we
+        # pass --env explicitly. Every pywrangler call below that touches the
+        # live Worker passes --env "" (the documented way to target the
+        # top-level environment) so the warning goes away and every command
+        # (deploy, secret put/list, dev, dry-run) consistently hits the same
+        # script instead of drifting between an implicit and explicit target.
         # Stamp the build into the Worker as a plaintext var so /api/version can
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        pywrangler deploy --var "BUILD_REV:${BUILD_REV}"
+        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         push_secrets
@@ -494,14 +587,14 @@ case "${1:-deploy}" in
         push_secrets
         ;;
     dev)
-        pywrangler dev ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
+        pywrangler dev --env "" ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
         ;;
     dry-run)
         require_cloudflare_account
         # --dry-run still runs the [build] command (migrate.sh → remote D1), which
         # needs Cloudflare auth, so the same non-interactive guard applies.
         require_cloudflare_auth
-        pywrangler deploy --dry-run
+        pywrangler deploy --env "" --dry-run
         ;;
     *)
         echo "Usage: $0 [deploy|secrets|dev|dry-run]" >&2
