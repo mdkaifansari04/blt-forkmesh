@@ -800,6 +800,12 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
+    // "Load earlier events" (button click or scroll-near-top) — don't truncate
+    // the transcript (adhoc #115): the tail-capped initial render keeps opening
+    // a long session fast, but the full history is still reachable a batch at a
+    // time instead of being stuck behind "the Raw view has it".
+    connect(m_agentTranscript, &ClaudeTranscriptView::loadEarlierRequested, this,
+            &MainWindow::loadEarlierTranscriptEvents);
     // The user answered an AskUserQuestion multiple-choice card in the transcript
     // (issue #67). Satisfy the pending tool call so the CLI resumes, record the
     // answer in the session buffer (persists + replays the answered card), and
@@ -5966,12 +5972,15 @@ void MainWindow::renderTranscriptForSession(int sessionId)
         return;
     m_agentTranscript->clear();
     const QList<QJsonObject> &events = m_streamEvents[sessionId];
-    // Rebuild only the last stretch as widget rows. Long sessions replayed one
-    // widget per event froze the opening click for seconds (stall log: repolish
-    // storms under renderTranscriptForSession <- showAgentSession); events past
-    // the tail feed the token/cost totals only, with a notice row up top and the
-    // full stream still available in the Raw view. Bulk mode also skips the
-    // per-row fade-in animation (one QGraphicsOpacityEffect per row).
+    // Rebuild only the last stretch as widget rows on the initial paint. Long
+    // sessions replayed one widget per event froze the opening click for
+    // seconds (stall log: repolish storms under renderTranscriptForSession <-
+    // showAgentSession); events past the tail feed the token/cost totals only,
+    // with a "Load earlier events" notice up top. Nothing is lost — clicking
+    // the notice (or scrolling near the top) reveals more via
+    // loadEarlierTranscriptEvents(), a batch at a time, all the way back to the
+    // start (adhoc #115: don't truncate the transcript). Bulk mode also skips
+    // the per-row fade-in animation (one QGraphicsOpacityEffect per row).
     constexpr int kTranscriptRenderTail = 300;
     const int skipped = qMax(0, int(events.size()) - kTranscriptRenderTail);
     m_agentTranscript->setBulkPopulate(true);
@@ -5991,8 +6000,35 @@ void MainWindow::renderTranscriptForSession(int sessionId)
     // skip a redundant rebuild on the next reload (see its stream branch).
     m_renderedTranscriptSession = sessionId;
     m_renderedTranscriptCount = events.size();
+    m_transcriptSkipped = skipped;
     m_renderedExternalSession = -1; // the shared view no longer holds an external
     reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
+}
+
+// Reveal the next batch of the selected session's earlier events, driven by
+// m_agentTranscript's loadEarlierRequested() signal. The full event history is
+// already resident in memory (m_streamEvents; AgentStore::loadEvents() reads
+// the whole events.jsonl up front), so this is pure widget construction — no
+// disk I/O — sliced small enough per batch to stay smooth while scrolling.
+void MainWindow::loadEarlierTranscriptEvents()
+{
+    if (!m_agentTranscript || m_renderedTranscriptSession != m_selectedAgentSessionId)
+        return;
+    const int sessionId = m_renderedTranscriptSession;
+    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
+    if (m_transcriptSkipped <= 0 || m_transcriptSkipped > events.size()) {
+        m_transcriptSkipped = 0;
+        m_agentTranscript->prependEarlierEvents({}, 0); // clears a stale notice, if any
+        return;
+    }
+    constexpr int kBatch = 300; // same granularity as the initial tail
+    const int newSkipped = qMax(0, m_transcriptSkipped - kBatch);
+    QList<QJsonObject> batch;
+    batch.reserve(m_transcriptSkipped - newSkipped);
+    for (int i = newSkipped; i < m_transcriptSkipped; ++i)
+        batch.append(events.at(i));
+    m_transcriptSkipped = newSkipped;
+    m_agentTranscript->prependEarlierEvents(batch, newSkipped);
 }
 
 // Re-run the search box's query so highlights persist across a session switch
