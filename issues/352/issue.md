@@ -12,8 +12,8 @@ createdAt: 1783116818251
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-352
 ts: 1783116818251
