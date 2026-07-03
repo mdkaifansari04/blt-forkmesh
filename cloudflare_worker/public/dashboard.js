@@ -233,14 +233,25 @@
     return `/${owner}/${name}${suffix}`;
   }
 
+  // Feature-tab route segments (mirrors 404.html's `featureTabs` list) — tells
+  // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
+  const REPO_TAB_ROUTES = ["commits", "releases", "issues", "pulls", "discussions", "mirrors"];
+
+  // Splits the current path into segments, stripping a leading /dashboard
+  // route prefix (e.g. /dashboard/owner/repo/issues -> ["owner","repo","issues"])
+  // so repo-route parsing sees the same clean owner/repo/tab shape regardless
+  // of whether the browser landed here directly or via the 404.html bounce.
+  function repoRouteParts() {
+    let parts = location.pathname.split("/").filter(Boolean);
+    if (parts[0] === "dashboard") parts = parts.slice(1);
+    return parts;
+  }
+
   function requestedRepoKey() {
     const params = new URLSearchParams(location.search);
     const value = params.get("repo");
     if (value && value.includes("/")) return decodeURIComponent(value);
-    // A leading "dashboard" segment (e.g. /dashboard/owner/repo deep links) is
-    // this page's own route, not part of the owner/repo pair — skip past it.
-    let parts = location.pathname.split("/").filter(Boolean);
-    if (parts[0] === "dashboard") parts = parts.slice(1);
+    const parts = repoRouteParts();
     if (parts.length >= 2 && !["api", "assets", "dashboard", "docs", "blogs", "blog", "login", "signup", "network", "desktop", "about", "careers", "changelog", "privacy", "terms"].includes(parts[0])) {
       return `${decodeURIComponent(parts[0])}/${decodeURIComponent(parts[1])}`;
     }
@@ -3914,9 +3925,12 @@
       </div>`;
     setSection("explore");
     window.lucide?.createIcons();
-    const parts = location.pathname.split("/").filter(Boolean);
+    const parts = repoRouteParts();
     const kind = parts[2];
     const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
+    // Restore whichever tab the URL points at (e.g. a refresh on
+    // /owner/repo/issues) instead of always defaulting back to Code.
+    setRepoTab(REPO_TAB_ROUTES.includes(kind) ? kind : "code");
     loadRepositoryTree(repo, kind === "tree" ? path : "");
     if (kind === "blob" && path) loadRepositoryBlob(repo, path);
     loadRepoFeaturePanels(repo);
