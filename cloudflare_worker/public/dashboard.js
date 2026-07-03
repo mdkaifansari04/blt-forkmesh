@@ -4297,11 +4297,18 @@
       return;
     }
     const requested = requestedRepoKey();
-    if (!session || (!session.nodeName && !session.email)) {
-      if (!requested) {
-        location.replace("/");
-        return;
+    // Guests can browse repositories without an account: instead of bouncing
+    // signed-out visitors back to the landing page, the header swaps the
+    // profile/notification controls for a Sign Up / Log In link.
+    const guest = !session || (!session.nodeName && !session.email);
+    if (guest) {
+      const authLink = $("[data-guest-auth-link]");
+      if (authLink) {
+        authLink.classList.remove("hidden");
+        authLink.classList.add("inline-flex");
       }
+      $("[data-profile-settings-button]")?.classList.add("hidden");
+      $("#notificationToggle")?.classList.add("hidden");
     }
 
     renderProfile(session || { nodeName: "guest" });
