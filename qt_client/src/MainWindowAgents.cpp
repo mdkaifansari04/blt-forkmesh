@@ -3963,6 +3963,10 @@ void MainWindow::switchToAgentsTab(int sessionId)
     const AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
+    // The Agents tab lives inside repo detail, which is only visible on the
+    // Home section (index 0) — jump there first so this works no matter which
+    // section (Settings, Chat, Notifications, ...) the click came from.
+    showSection(0);
     const int repoIndex = repoIndexFor(session->owner, session->name);
     if (repoIndex >= 0 && repoIndex != m_repoDetailIndex)
         openRepoDetail(repoIndex);
@@ -4070,6 +4074,7 @@ void MainWindow::openAgentsOverview()
         return;
     }
     if (m_repoDetailIndex >= 0 && m_repoDetailTabs && m_repoDetailTabs->button(3)) {
+        showSection(0);
         m_repoDetailTabs->button(3)->setChecked(true);
         if (m_repoDetailStack)
             m_repoDetailStack->setCurrentIndex(3);
@@ -4848,8 +4853,21 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                       resumeId](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
-            live->start(workdir, env, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel);
+            // Footer slash-actions menu (adhoc #116): effort and model-fallback
+            // ride into the CLI as --effort/--fallback-model; turning Thinking
+            // off zeroes the thinking budget via MAX_THINKING_TOKENS.
+            const QString effort =
+                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
+                    .toString();
+            const QString fallback =
+                QSettings().value(kClaudeFallbackModelSetting, false).toBool()
+                    ? QStringLiteral("opus,sonnet")
+                    : QString();
+            QStringList launchEnv = env;
+            if (!QSettings().value(kClaudeThinkingSetting, true).toBool())
+                launchEnv << QStringLiteral("MAX_THINKING_TOKENS=0");
+            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
+                        resumeId, chosenModel, effort, fallback);
             // Issue #84: launching with an initial prompt is a send too — refresh
             // the top-bar usage chart + hover stats. Bump (now + a short
             // follow-up) so the first turn's usage shows without waiting for the
