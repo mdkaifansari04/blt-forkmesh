@@ -70,7 +70,7 @@
     nameOk = false;
     updateCreateState();
     if (!value) {
-      setNameHint("Lowercase letters, numbers and hyphens. Start with a letter, end with a letter or number. This name is public.", "");
+      setNameHint("Lowercase letters, numbers and hyphens. Start with a letter, end with a letter or number. Your username is public.", "");
       return;
     }
     if (!NAME_RE.test(value)) {
@@ -92,7 +92,7 @@
     try {
       const { body } = await api("/api/accounts/" + encodeURIComponent(value));
       if (body.exists && body.available === false) {
-        setNameHint("That name is already taken - try another.", "bad");
+        setNameHint("That username is already taken - try another.", "bad");
         nameOk = false;
       } else {
         setNameHint("“" + value + "” is available.", "good");
@@ -112,7 +112,7 @@
     const password = passwordInput.value;
     setSignupHint("", "");
     if (!NAME_RE.test(nodeName)) {
-      setNameHint("Choose a valid node name first.", "bad");
+      setNameHint("Choose a valid username first.", "bad");
       return;
     }
     if (!validEmail(email)) {
@@ -138,7 +138,7 @@
     if (!ok) {
       createButton.disabled = false;
       setSignupHint(
-        body.error === "node_name_taken" ? "That name was just taken - try another."
+        body.error === "node_name_taken" ? "That username was just taken - try another."
           : body.error === "email_taken" ? "That email is already registered."
           : body.error === "password_too_short" ? "Password must be at least 8 characters."
           : "Could not create the account. Please try again.",
