@@ -4844,10 +4844,19 @@ async def _resolve_user_by_password(env, data):
 async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     # The one place ownership is written: node.owner = user and the node joins
     # the user's nodes list. The user's record is loaded fresh so a stale
-    # caller copy can't clobber it.
+    # caller copy can't clobber it. When the node was already owned (the
+    # browser link-grant flow may re-home a node), it leaves the previous
+    # owner's nodes list so the fleet views stay truthful.
+    prev_owner = node_rec.get("owner") or ""
     node_rec["owner"] = user_name
     node_rec.pop("claim_pending", None)
     await _save_account(env, node_bi, node_rec)
+    if prev_owner and prev_owner != user_name:
+        prev_bi, prev_rec = await _account_row(env, prev_owner)
+        if prev_rec is not None:
+            prev_rec["nodes"] = [n for n in _owned_nodes(prev_rec)
+                                 if n != node_name]
+            await _save_account(env, prev_bi, prev_rec)
     user_bi, user_rec = await _account_row(env, user_name)
     if user_rec is not None:
         nodes = _owned_nodes(user_rec)
@@ -5075,6 +5084,12 @@ async def _account_link_grant(env, request):
     # claim-node no password re-entry or confirmation code is needed — the
     # browser session just names the user. Freshness (LOGIN_MAX_SKEW_MS) plus
     # single use keep a leaked URL from being replayable.
+    #
+    # Unlike claim-node/link-self this OVERRIDES the node's current
+    # association: an already-owned node is re-homed to the redeeming user
+    # (leaving the old owner's fleet), and even a node whose account is itself
+    # a user can be taken possession of — the node's key signed the grant, so
+    # the machine's operator has authorized the hand-over.
     try:
         data = await request.json()
     except Exception:
@@ -5095,7 +5110,12 @@ async def _account_link_grant(env, request):
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
     if node_name == user_name:
-        return json_response({"error": "cannot_link_self"}, status=400)
+        # The browser is logged in as this very node's account: nothing to
+        # attach, it already belongs to itself.
+        return json_response({"ok": True, "linked": True, "alreadyLinked": True,
+                              "selfAccount": True, "nodeId": node_name,
+                              "user": user_name,
+                              "nodes": _owned_nodes(node_rec)})
     _, user_rec = await _account_row(env, user_name)
     if not user_rec or user_rec.get("status") != "active":
         return json_response({"error": "no_such_user"}, status=404)
@@ -5103,14 +5123,10 @@ async def _account_link_grant(env, request):
         # Only an account that can log in can own nodes; a bare node session in
         # the browser can't take possession of another node.
         return json_response({"error": "not_a_user"}, status=403)
-    if _account_kind(node_rec) != "node":
-        return json_response({"error": "not_a_node"}, status=403)
     if node_rec.get("owner") == user_name:
         return json_response({"ok": True, "linked": True, "alreadyLinked": True,
                               "nodeId": node_name, "user": user_name,
                               "nodes": _owned_nodes(user_rec)})
-    if node_rec.get("owner"):
-        return json_response({"error": "node_already_owned"}, status=409)
     # Burn the grant before linking so it is strictly one-time even if the node
     # is unlinked again inside the signature's freshness window. Parked in
     # link_codes keyed on the full grant; rows age out like installer codes.

@@ -32,6 +32,7 @@
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [] },
     claimNode: { pendingNodeId: "" },
+    linkGrant: null,
     repoMirrors: [],
     repoServedBy: null,
   };
@@ -1208,15 +1209,34 @@
     return { nodeName, ts, sig };
   }
 
-  async function redeemLinkGrant(grant) {
+  function offerLinkGrant(grant) {
     // Strip the one-time grant from the address bar first so refresh/back
-    // can't replay it (and it doesn't linger in the visible URL).
+    // can't replay it (and it doesn't linger in the visible URL), then land on
+    // the profile's Nodes panel and ask for one explicit "Authenticate & link"
+    // click. The grant overrides any existing association, so the click is the
+    // moment of consent on the browser side.
     const params = new URLSearchParams(location.search);
     for (const key of ["link_node", "link_ts", "link_sig"]) params.delete(key);
     const rest = params.toString();
     window.history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : ""));
-    // Land on the profile page's Nodes panel, where the outcome is shown.
+    state.linkGrant = grant;
     setSection("profile");
+    const row = $("[data-link-grant-row]");
+    if (row) row.classList.remove("hidden");
+    const text = $("[data-link-grant-text]");
+    if (text) {
+      text.textContent =
+        `Link node "${grant.nodeName}" to this account (` +
+        `${state.session?.nodeName || "you"})? This node will belong to you — ` +
+        "any existing link is replaced.";
+    }
+  }
+
+  async function redeemLinkGrant() {
+    const grant = state.linkGrant;
+    if (!grant) return;
+    const button = $("[data-link-grant-confirm]");
+    if (button) { button.disabled = true; button.textContent = "Linking…"; }
     setProfilePageHint("[data-claim-node-status]", `Linking "${grant.nodeName}" to your account…`, "");
     try {
       const response = await fetch("/api/accounts/link-grant", {
@@ -1231,6 +1251,8 @@
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.ok === false) throw new Error(body.error || `HTTP ${response.status}`);
+      state.linkGrant = null;
+      $("[data-link-grant-row]")?.classList.add("hidden");
       const nextSession = {
         ...(state.session || {}),
         nodes: Array.isArray(body.nodes) ? body.nodes : state.session?.nodes,
@@ -1239,26 +1261,29 @@
       renderProfile(nextSession);
       setProfilePageHint(
         "[data-claim-node-status]",
-        body.alreadyLinked
-          ? `"${body.nodeId || grant.nodeName}" is already linked to your account.`
-          : `Linked "${body.nodeId || grant.nodeName}" to your account.`,
+        body.selfAccount
+          ? `"${body.nodeId || grant.nodeName}" is this account — already yours.`
+          : body.alreadyLinked
+            ? `"${body.nodeId || grant.nodeName}" is already linked to your account.`
+            : `Linked "${body.nodeId || grant.nodeName}" to your account.`,
         "good");
     } catch (error) {
+      state.linkGrant = null;
+      $("[data-link-grant-row]")?.classList.add("hidden");
       const messages = {
         unauthorized: "The link expired — click \"Link this node to your account\" in the node's app again.",
         bad_signature: "The link couldn't be verified — click the button in the node's app again.",
         grant_used: "That link was already used — click the button in the node's app again.",
         no_such_node: "That node isn't registered with the relay yet.",
-        not_a_node: "That ID belongs to a user account, not a linkable node.",
         not_a_user: "This login can't own nodes — sign up as a user (email + password) first.",
         no_such_user: "Log in with a user account first, then open the link again.",
-        cannot_link_self: "That node is this account — no linking needed.",
-        node_already_owned: "That node is already linked to another account.",
       };
       setProfilePageHint(
         "[data-claim-node-status]",
         messages[error.message] || "Could not link the node. Click the button in the node's app and try again.",
         "bad");
+    } finally {
+      if (button) { button.disabled = false; button.textContent = "Authenticate & link"; }
     }
   }
 
@@ -4381,7 +4406,7 @@
 
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
-      if (grant) await redeemLinkGrant(grant);
+      if (grant) offerLinkGrant(grant);
       await refreshPublicProfile(session);
       startProfileSync();
       loadNotifications();
@@ -4528,6 +4553,11 @@
 
     if (event.target.closest("[data-claim-code-confirm]")) {
       confirmClaimCode();
+      return;
+    }
+
+    if (event.target.closest("[data-link-grant-confirm]")) {
+      redeemLinkGrant();
       return;
     }
 
