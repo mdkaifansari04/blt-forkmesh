@@ -66,25 +66,6 @@
         </div>
       </div>
 
-      <div id="status-current" class="stats-grid" aria-label="Current state" hidden>
-        <div class="stat-card">
-          <span>Mainnode</span>
-          <strong id="stat-mainnode">—</strong>
-        </div>
-        <div class="stat-card">
-          <span>Nodes online</span>
-          <strong id="stat-nodes">—</strong>
-        </div>
-        <div class="stat-card">
-          <span>Repositories</span>
-          <strong id="stat-repos">—</strong>
-        </div>
-        <div class="stat-card">
-          <span>Errors (24h)</span>
-          <strong id="stat-errors">—</strong>
-        </div>
-      </div>
-
       <section class="panel doc-panel" aria-labelledby="status-systems-title">
         <div class="panel-header">
           <div>
@@ -245,30 +226,6 @@
           bannerSub.textContent = data.now
             ? "Last checked " + new Date(data.now).toLocaleTimeString()
             : "";
-
-          const current = data.current || {};
-          const currentEl = document.getElementById("status-current");
-          if (currentEl) {
-            const fmtNum = (n) =>
-              typeof n === "number" ? n.toLocaleString() : "—";
-            const mainnode =
-              current.mainnodeOnline === true
-                ? "Online"
-                : current.mainnodeOnline === false
-                ? "Offline"
-                : "—";
-            document.getElementById("stat-mainnode").textContent = mainnode;
-            document.getElementById("stat-nodes").textContent = fmtNum(
-              current.onlineNodes,
-            );
-            document.getElementById("stat-repos").textContent = fmtNum(
-              current.catalogRepos,
-            );
-            document.getElementById("stat-errors").textContent = fmtNum(
-              current.errors24h,
-            );
-            currentEl.hidden = false;
-          }
 
           if (!systems.length) {
             list.innerHTML = '<div class="status-empty">No systems reported.</div>';

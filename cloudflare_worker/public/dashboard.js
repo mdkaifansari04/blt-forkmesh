@@ -586,6 +586,7 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
+      adminUrl: body.adminUrl || base.adminUrl || "",
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -729,6 +730,9 @@
     applyAvatar(avatar, session);
     if (adminButton) {
       adminButton.classList.toggle("hidden", !session?.isAdmin);
+      if (session?.isAdmin && session?.adminUrl) {
+        adminButton.href = session.adminUrl;
+      }
     }
     renderProfileModal(session);
     renderProfilePage(session);
