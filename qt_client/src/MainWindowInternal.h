@@ -2172,6 +2172,11 @@ const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 // Persisted footer quick-add prompt history (adhoc #200) so Up still recalls
 // prompts sent in earlier sessions, not just the current one.
 const QString kQuickAddHistorySetting = QStringLiteral("issues/quickAddHistory");
+// Whether the footer quick-add's "Create issue" toggle is on, remembered across
+// launches (off by default: the common path starts an agent straight from the
+// typed prompt without filing an issue first).
+const QString kQuickAddCreateIssueSetting =
+    QStringLiteral("issues/quickAddCreateIssue");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
 // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
 // a regular API key cannot read organization spend.
@@ -4882,18 +4887,36 @@ inline void applyStoredOcticon(QPushButton *button)
     if (name.isEmpty())
         return;
     const int size = button->property("forkmeshOcticonSize").toInt();
+    const qreal rotation = button->property("forkmeshOcticonRotation").toReal();
     const QColor color(
         Theme::iconColorForButton(button->objectName(), currentThemeIsDark()));
-    button->setIcon(themedOcticon(name, color, size > 0 ? size : 16));
-    button->setIconSize(QSize(size > 0 ? size : 16, size > 0 ? size : 16));
+    const int px = size > 0 ? size : 16;
+    if (rotation != 0.0) {
+        // A statically-rotated glyph (e.g. the footer's up-pointing send icon,
+        // adhoc #99) — same tinting as themedOcticon, just rotated once rather
+        // than every animation frame like rotatedTintedOcticonPixmap's callers.
+        QIcon icon;
+        icon.addPixmap(rotatedTintedOcticonPixmap(name, color, px, rotation));
+        icon.addPixmap(rotatedTintedOcticonPixmap(name, color.darker(120), px, rotation),
+                       QIcon::Active, QIcon::Off);
+        icon.addPixmap(
+            rotatedTintedOcticonPixmap(name, QColor("#6e7681"), px, rotation),
+            QIcon::Disabled, QIcon::Off);
+        button->setIcon(icon);
+    } else {
+        button->setIcon(themedOcticon(name, color, px));
+    }
+    button->setIconSize(QSize(px, px));
 }
 
-inline void setOcticon(QPushButton *button, const QString &name, int size = 16)
+inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
+                       qreal rotationDeg = 0.0)
 {
     if (!button)
         return;
     button->setProperty("forkmeshOcticon", name);
     button->setProperty("forkmeshOcticonSize", size);
+    button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
 

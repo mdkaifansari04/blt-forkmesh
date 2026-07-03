@@ -773,8 +773,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 68px;
+    max-height: 68px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
 #promptWrapper {
@@ -783,7 +783,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
 #promptWrapper:focus-within { border-color: #39d353; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 46px; max-height: 46px;
+    min-height: 68px; max-height: 68px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {
@@ -791,6 +791,24 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
+   a green filled checkmark instead of the generic blue-filled indicator, and the
+   Agent controls sit in a thin bordered box centred in the bar. */
+QCheckBox#quickAddAutoCheck::indicator,
+QCheckBox#quickAddCreateIssueCheck::indicator,
+QCheckBox#quickAddAgentCheck::indicator {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 2px solid #30363d; background: #0d1117;
+}
+QCheckBox#quickAddAutoCheck::indicator:checked,
+QCheckBox#quickAddCreateIssueCheck::indicator:checked,
+QCheckBox#quickAddAgentCheck::indicator:checked {
+    border-color: #2ea043; background: #2ea043;
+    image: url(:/icons/octicons/check-white.svg);
+}
+#quickAddAgentBox {
+    border: 1px solid #30363d; border-radius: 6px; background: transparent;
+}
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1821,8 +1839,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 68px;
+    max-height: 68px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
 #promptWrapper {
@@ -1831,7 +1849,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
 #promptWrapper:focus-within { border-color: #1a7f37; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 46px; max-height: 46px;
+    min-height: 68px; max-height: 68px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {
@@ -1839,6 +1857,23 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
+   rationale — green filled checkmark indicators plus a thin bordered Agent box. */
+QCheckBox#quickAddAutoCheck::indicator,
+QCheckBox#quickAddCreateIssueCheck::indicator,
+QCheckBox#quickAddAgentCheck::indicator {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 2px solid #d0d7de; background: #ffffff;
+}
+QCheckBox#quickAddAutoCheck::indicator:checked,
+QCheckBox#quickAddCreateIssueCheck::indicator:checked,
+QCheckBox#quickAddAgentCheck::indicator:checked {
+    border-color: #1a7f37; background: #1a7f37;
+    image: url(:/icons/octicons/check-white.svg);
+}
+#quickAddAgentBox {
+    border: 1px solid #d0d7de; border-radius: 6px; background: transparent;
+}
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

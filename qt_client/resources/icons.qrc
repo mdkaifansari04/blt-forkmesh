@@ -5,6 +5,7 @@
         <file alias="bell.svg">icons/octicons/bell.svg</file>
         <file alias="broadcast.svg">icons/octicons/broadcast.svg</file>
         <file alias="check-circle.svg">icons/octicons/check-circle.svg</file>
+        <file alias="check-white.svg">icons/octicons/check-white.svg</file>
         <file alias="chevron-down.svg">icons/octicons/chevron-down.svg</file>
         <file alias="chevron-left.svg">icons/octicons/chevron-left.svg</file>
         <file alias="chevron-right.svg">icons/octicons/chevron-right.svg</file>
