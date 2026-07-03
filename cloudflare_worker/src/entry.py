@@ -1887,47 +1887,7 @@ async def status_history(env):
             "uptimePct": overall_uptime, "days": days,
         })
 
-    # Current-state snapshot (issue #356): the headline health metrics rendered
-    # at the top of the page — mainnode host reachable, the distinct online node
-    # count (same signal as the /network/ headline, NOT raw host_presence rows,
-    # which over-count), catalog size, and errors logged in the last 24h. Each
-    # read is best-effort so one failing query can't blank the summary, and it
-    # all rides on the single /api/status fetch a page view already makes.
-    current = {}
-    try:
-        repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
-        current["catalogRepos"] = int((repo_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["catalogRepos"] = None
-    try:
-        online = {
-            label for label in (await _live_online_nodes(env, now)).values() if label
-        }
-        current["onlineNodes"] = len(online)
-    except Exception:
-        current["onlineNodes"] = None
-    try:
-        err_row = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
-            now - 24 * 60 * 60 * 1000,
-        )
-        current["errors24h"] = int((err_row or {}).get("n", 0) or 0)
-    except Exception:
-        current["errors24h"] = None
-    try:
-        mainnode_bi = await blind_index(env, "mainnode/forkmesh")
-        host_row = await d1_first(
-            env, "SELECT ts FROM host_presence WHERE repo_bi = ? AND ts >= ?",
-            mainnode_bi, now - HOST_PRESENCE_STALE_MS,
-        )
-        current["mainnodeOnline"] = bool(host_row)
-    except Exception:
-        current["mainnodeOnline"] = None
-
-    return json_response(
-        {"ok": True, "now": now, "systems": systems, "current": current},
-        cache_seconds=60,
-    )
+    return json_response({"ok": True, "now": now, "systems": systems}, cache_seconds=60)
 
 
 # --- Leaderboards (/network/) ----------------------------------------------
@@ -7481,6 +7441,59 @@ async def notifications_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+def _build_rev(env):
+    # The git rev deploy.sh stamps as a Worker var on every production deploy.
+    try:
+        val = env.BUILD_REV
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return "dev"
+
+
+async def poll_handler(env, request):
+    # One lightweight digest the client polls on its regular tick INSTEAD of
+    # separately re-fetching the full profile (/api/accounts/<name> — avatar and
+    # all) and the full notification list every time. It returns only cheap
+    # change tokens (a couple of indexed reads, no avatar blob, no per-row
+    # notification decrypt); the client fires those heavier fetches only when a
+    # token here actually moves. Rolling three per-minute polls into one keeps
+    # the hot dashboard path off the Worker CPU limit.
+    await ensure_schema(env)
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    out = {"ok": True, "rev": _build_rev(env)}
+    if not valid_node_name(node):
+        return json_response(out)
+    name_bi, rec = await _account_row(env, node)
+    if rec:
+        # Token folds the profile fields the dashboard actually re-renders, so a
+        # change to any of them (verification, avatar, admin grant, ownership)
+        # invalidates it and triggers the full /api/accounts/<name> fetch.
+        out["profile"] = {"token": ":".join(str(x) for x in (
+            rec.get("status", ""),
+            1 if rec.get("email_verified") else 0,
+            rec.get("avatar_updated_at", 0) or 0,
+            1 if await _is_admin(env, node) else 0,
+            rec.get("owner", "") or "",
+        ))}
+        # Unread count is returned outright so the bell badge updates from the
+        # poll alone; token (latest ts + row total) moves on any add/remove so
+        # the full list is re-pulled only when it changed.
+        notif = await d1_first(
+            env,
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN read_at=0 THEN 1 ELSE 0 END) AS unread, "
+            "MAX(ts) AS latest FROM notifications WHERE recipient_bi=?",
+            name_bi)
+        total = int((notif or {}).get("total") or 0)
+        unread = int((notif or {}).get("unread") or 0)
+        latest = int((notif or {}).get("latest") or 0)
+        out["notif"] = {"unread": unread, "token": str(latest) + ":" + str(total)}
+    return json_response(out)
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -8940,17 +8953,10 @@ class Default(WorkerEntrypoint):
         # serving while the deploy reported success), and the script aborts loudly
         # instead of reporting a phantom success.
         if url.path in ("/api/version", "/api/version/"):
-            build_rev = "dev"
-            try:
-                val = self.env.BUILD_REV
-                if val:
-                    build_rev = str(val)
-            except (AttributeError, TypeError):
-                pass
             return json_response(
                 {
                     "ok": True,
-                    "rev": build_rev,
+                    "rev": _build_rev(self.env),
                     "now": Date.now(),
                 }
             )
@@ -8993,6 +8999,12 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
+
+        # Consolidated lightweight status digest (version + profile/notification
+        # change tokens) so the client polls once instead of re-fetching the
+        # full profile and notification list every tick.
+        if url.path in ("/api/poll", "/api/poll/"):
+            return await poll_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
