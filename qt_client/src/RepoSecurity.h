@@ -4,6 +4,7 @@
 #include "ActionStore.h"
 #include "IssueStore.h"
 
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -63,12 +64,29 @@ struct RepoSecuritySnapshot {
     qint64 generatedAtMs = 0;
     QList<RepoSecuritySignal> signalList;
     QList<RepoSecurityFinding> findings;
+    // Number of dependencies declared in each dependency manifest (keyed by
+    // repo-relative path), shown as a "Dependencies" column on the
+    // dependency-scan card. Best-effort per manifest format, not a full parse.
+    QHash<QString, int> dependencyCounts;
+};
+
+// Result of rescanning a single dependency manifest (the dependency card's
+// per-row "Run scan" button), as opposed to RepoSecurity::scan()'s full
+// repo-wide pass. Kept separate so a single-manifest rescan stays cheap: it
+// reads only that one file instead of every tracked file in the repo.
+struct RepoSecurityManifestScan {
+    int dependencyCount = 0;
+    QList<RepoSecurityFinding> findings;
 };
 
 class RepoSecurity
 {
 public:
     static RepoSecuritySnapshot scan(const RepoSecurityInput &input);
+    // Rescans a single dependency manifest (used by the dependency card's
+    // per-row "Run scan" button) instead of every tracked file.
+    static RepoSecurityManifestScan scanManifest(const RepoSecurityInput &input,
+                                                 const QString &manifestPath);
     static QString severityText(RepoSecuritySeverity severity);
     static RepoSecuritySeverity highestSeverity(const RepoSecuritySnapshot &snapshot);
     // Scan commits about to be pushed for secrets.  upstreamRef is the remote

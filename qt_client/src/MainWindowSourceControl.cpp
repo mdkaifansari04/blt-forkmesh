@@ -8,6 +8,8 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
 
 // ---- Source Control panel (working-tree changes) ---------------------------
@@ -1723,16 +1725,18 @@ static void fillRepoFindingsTable(QTableWidget *table,
 }
 
 // Renders the dependency-scan signal as a rich table widget: one row per
-// manifest with outdated-count, vulnerable-count, and a per-row "Run scan"
-// button.  Placed full-width (spanning all 3 grid columns) below the other
-// signal cards.
+// manifest with dependency-count, outdated-count, vulnerable-count, and a
+// per-row "Run scan" button.  Placed full-width (spanning all 4 grid columns)
+// below the other signal cards.
 static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
                                   const QList<RepoSecurityFinding> &findings,
+                                  const QHash<QString, int> &dependencyCounts,
                                   qint64 generatedAtMs,
                                   const QString &localBase,
                                   QObject *context,
                                   bool scanning,
-                                  std::function<void()> runScan)
+                                  const QString &scanningPath,
+                                  std::function<void(const QString &)> runScan)
 {
     auto *card = new QFrame;
     card->setObjectName("insightsCard");
@@ -1828,9 +1832,10 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         return lbl;
     };
     grid->addWidget(makeHdr(QStringLiteral("Manifest")), 0, 0);
-    grid->addWidget(makeHdr(QStringLiteral("Outdated")), 0, 1, Qt::AlignRight);
-    grid->addWidget(makeHdr(QStringLiteral("Vulnerable")), 0, 2, Qt::AlignRight);
-    // column 3 reserved for buttons (no header needed)
+    grid->addWidget(makeHdr(QStringLiteral("Dependencies")), 0, 1, Qt::AlignRight);
+    grid->addWidget(makeHdr(QStringLiteral("Outdated")), 0, 2, Qt::AlignRight);
+    grid->addWidget(makeHdr(QStringLiteral("Vulnerable")), 0, 3, Qt::AlignRight);
+    // column 4 reserved for buttons (no header needed)
 
     int row = 1;
     for (const QString &manifest : signal.items) {
@@ -1851,6 +1856,14 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
                              });
         }
 
+        const int depCount = dependencyCounts.value(manifest, 0);
+        const QString depHtml =
+            QStringLiteral("<span style='color:#c9d1d9;font-size:12px'>%1</span>")
+                .arg(depCount);
+        auto *depLbl = new QLabel(depHtml);
+        depLbl->setTextFormat(Qt::RichText);
+        depLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
         const int outdated = outdatedByPath.value(manifest, 0);
         const QString outdatedHtml =
             outdated > 0
@@ -1867,19 +1880,21 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         vulnLbl->setTextFormat(Qt::RichText);
         vulnLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        auto *scanBtn = new QPushButton(scanning ? QStringLiteral("Scanning\xE2\x80\xA6")
-                                                  : QStringLiteral("Run scan"));
+        const bool isScanning = scanning && (scanningPath == manifest);
+        auto *scanBtn = new QPushButton(isScanning ? QStringLiteral("Scanning\xE2\x80\xA6")
+                                                   : QStringLiteral("Run scan"));
         scanBtn->setObjectName("ghostButton");
         scanBtn->setProperty("buttonSize", "sm");
         scanBtn->setEnabled(!scanning);
         scanBtn->setCursor(scanning ? Qt::BusyCursor : Qt::PointingHandCursor);
         QObject::connect(scanBtn, &QPushButton::clicked, context,
-                         [runScan]() { runScan(); });
+                         [runScan, manifest]() { runScan(manifest); });
 
         grid->addWidget(pathLbl, row, 0);
-        grid->addWidget(outdatedLbl, row, 1, Qt::AlignRight);
-        grid->addWidget(vulnLbl, row, 2, Qt::AlignRight);
-        grid->addWidget(scanBtn, row, 3, Qt::AlignRight);
+        grid->addWidget(depLbl, row, 1, Qt::AlignRight);
+        grid->addWidget(outdatedLbl, row, 2, Qt::AlignRight);
+        grid->addWidget(vulnLbl, row, 3, Qt::AlignRight);
+        grid->addWidget(scanBtn, row, 4, Qt::AlignRight);
         ++row;
     }
 
@@ -1980,10 +1995,10 @@ void MainWindow::applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
     if (depSignal) {
         const int depRow = (index + 2) / 3;
         auto *depCard = buildDepScanCard(
-            *depSignal, snapshot.findings, snapshot.generatedAtMs,
-            localBase, this, m_repoSecurityScanRunning,
-            [this]() { runRepoDependencyScan(); });
-        m_securitySignalsGrid->addWidget(depCard, depRow, 0, 1, 3);
+            *depSignal, snapshot.findings, snapshot.dependencyCounts, snapshot.generatedAtMs,
+            localBase, this, m_repoSecurityScanRunning, m_repoSecurityScanningPath,
+            [this](const QString &manifestPath) { runRepoDependencyScan(manifestPath); });
+        m_securitySignalsGrid->addWidget(depCard, depRow, 0, 1, 4);
     }
 
     fillRepoFindingsTable(m_securityFindingsTable, snapshot.findings,
@@ -2016,12 +2031,13 @@ void MainWindow::refreshRepoSecurity()
     const RepositoryRecord &selected = m_repositories.at(m_repoDetailIndex);
     const RepositoryRecord &writable = writableRecordFor(selected);
     m_repoSecurityScanRunning = false;
+    m_repoSecurityScanningPath.clear();
     applyRepoSecuritySnapshot(
         RepoSecurity::scan(buildRepoSecurityInput(selected, writable)),
         writable.localPath);
 }
 
-void MainWindow::runRepoDependencyScan()
+void MainWindow::runRepoDependencyScan(const QString &manifestPath)
 {
     if (m_repoSecurityScanRunning)
         return;
@@ -2037,22 +2053,54 @@ void MainWindow::runRepoDependencyScan()
     const QString startName = selected.name;
 
     m_repoSecurityScanRunning = true;
+    m_repoSecurityScanningPath = manifestPath;
     // Re-render immediately using the last-known snapshot so the button/progress
     // bar flip to their busy state right away, before the rescan itself (which
     // runs off-thread below) has produced anything new.
     applyRepoSecuritySnapshot(m_lastRepoSecuritySnapshot, writable.localPath);
 
-    runOffThread<RepoSecuritySnapshot>(
-        [input]() { return RepoSecurity::scan(input); },
-        [this, startOwner, startName](RepoSecuritySnapshot snapshot) {
-            m_repoSecurityScanRunning = false;
-            if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-                return;
-            const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
-            if (current.owner != startOwner || current.name != startName)
-                return; // user navigated to a different repo while the scan ran
-            applyRepoSecuritySnapshot(snapshot, writableRecordFor(current).localPath);
-        });
+    if (manifestPath.isEmpty()) {
+        // Full repo scan
+        runOffThread<RepoSecuritySnapshot>(
+            [input]() { return RepoSecurity::scan(input); },
+            [this, startOwner, startName](RepoSecuritySnapshot snapshot) {
+                m_repoSecurityScanRunning = false;
+                m_repoSecurityScanningPath.clear();
+                if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+                    return;
+                const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
+                if (current.owner != startOwner || current.name != startName)
+                    return; // user navigated to a different repo while the scan ran
+                applyRepoSecuritySnapshot(snapshot, writableRecordFor(current).localPath);
+            });
+    } else {
+        // Single-manifest scan: update just that manifest's findings and dependency count
+        runOffThread<RepoSecurityManifestScan>(
+            [input, manifestPath]() { return RepoSecurity::scanManifest(input, manifestPath); },
+            [this, startOwner, startName, manifestPath](RepoSecurityManifestScan result) {
+                m_repoSecurityScanRunning = false;
+                m_repoSecurityScanningPath.clear();
+                if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+                    return;
+                const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
+                if (current.owner != startOwner || current.name != startName)
+                    return;
+
+                // Update the snapshot with new findings for this manifest
+                RepoSecuritySnapshot &snapshot = m_lastRepoSecuritySnapshot;
+                snapshot.dependencyCounts[manifestPath] = result.dependencyCount;
+                // Replace old findings for this manifest with new ones
+                snapshot.findings.erase(
+                    std::remove_if(snapshot.findings.begin(), snapshot.findings.end(),
+                                   [&manifestPath](const RepoSecurityFinding &f) {
+                                       return f.path == manifestPath && f.category == QLatin1String("Dependency");
+                                   }),
+                    snapshot.findings.end());
+                snapshot.findings.append(result.findings);
+
+                applyRepoSecuritySnapshot(snapshot, writableRecordFor(current).localPath);
+            });
+    }
 }
 
 void MainWindow::openRepoFileAtLine(const QString &path, int line)
