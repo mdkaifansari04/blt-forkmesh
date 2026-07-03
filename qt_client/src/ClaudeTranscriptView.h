@@ -27,7 +27,11 @@ class ClaudeTranscriptView : public QScrollArea
 public:
     explicit ClaudeTranscriptView(QWidget *parent = nullptr);
 
-    void handleEvent(const QJsonObject &ev); // one parsed stream-json event
+    // One parsed stream-json event. countStats is false when replaying an event
+    // whose token/cost totals were already folded in via accumulateStatsOnly()
+    // (the "load earlier" path below promotes a stats-only event to a rendered
+    // row and must not add it to the running totals twice).
+    void handleEvent(const QJsonObject &ev, bool countStats = true);
     void addUserTurn(const QString &text);
     void clear();
 
@@ -47,6 +51,11 @@ signals:
     // the pending tool_use to satisfy; answer is the assembled reply text. The
     // host sends it back to the CLI as a tool_result (see sendToolResult).
     void questionAnswered(const QString &toolUseId, const QString &answer);
+    // The "Load N earlier events" notice was clicked, or the view was scrolled
+    // near its top — the host should slice the next batch of earlier events off
+    // its buffer and hand them to prependEarlierEvents(). Only emitted once per
+    // batch (re-armed once prependEarlierEvents() lands the new content).
+    void loadEarlierRequested();
 
 protected:
     // Keep the bottom spacer tall enough that the newest card can scroll to the
@@ -76,9 +85,21 @@ public:
     // tail-capped replay still reports the run's true numbers. No signal is
     // emitted; call addSkippedNotice() (or render further events) to publish.
     void accumulateStatsOnly(const QJsonObject &ev);
-    // A muted "… N earlier events not shown …" row, emitted at the top of a
-    // tail-capped replay; also publishes the totals gathered above.
+    // A clickable "Load N earlier events" row at the top of a tail-capped
+    // replay; also publishes the totals gathered above. Replacing an existing
+    // notice (count updated after a load) removes the old row first. Clicking
+    // it, or scrolling near the top of the view, emits loadEarlierRequested()
+    // so the host can reveal the next batch — see prependEarlierEvents().
     void addSkippedNotice(int count);
+    // Reveal a batch of previously-skipped events at the very top of the
+    // transcript, preserving the user's current scroll anchor so the content
+    // they're reading doesn't jump. `events` is the newly-revealed slice,
+    // oldest first; their stats were already folded in via
+    // accumulateStatsOnly() when they were first skipped, so they render with
+    // countStats=false. stillSkipped is however many older events remain
+    // hidden — a fresh notice is added above the batch when > 0, otherwise the
+    // notice is dropped and the full transcript is now visible.
+    void prependEarlierEvents(const QList<QJsonObject> &events, int stillSkipped);
 
     // ---- transcript search (adhoc #201) ------------------------------------
     // Find query (case-insensitive) across the rendered transcript, highlighting
@@ -160,6 +181,25 @@ private:
     QWidget *m_activity = nullptr;        // live "what it's doing" ticker row
     QLabel *m_activityLabel = nullptr;
     QTimer *m_activityTimer = nullptr;
+
+    // ---- incremental "load earlier" state (don't-truncate-the-transcript) --
+    // While >= 0, addRow() inserts rows at this column index instead of the
+    // usual append-before-the-spacer position, and advances it — so a batch of
+    // earlier events lands, in order, above whatever was previously first.
+    int m_prependAt = -1;
+    // The row currently at column index 0, so a newly-prepended row landing
+    // there can flatten the old one's rail line (RailItem::setFirst).
+    QPointer<QWidget> m_priorFirstRow;
+    QPointer<QWidget> m_skippedNotice; // the "Load N earlier events" row, if any
+    int m_skippedCount = 0;
+    bool m_loadEarlierPending = false; // a request is in flight; don't re-emit
+    // Set just before a prepend batch starts; the ctor's rangeChanged handler
+    // uses the resulting range growth to shift the scrollbar by the same
+    // amount, so newly-inserted content above the viewport doesn't yank the
+    // rows the user is currently reading.
+    bool m_prependCompensationPending = false;
+    int m_prependOldMax = 0;
+    int m_prependOldValue = 0;
 
     struct ToolCard {
         QFrame *box = nullptr;       // the bordered IN/OUT box
