@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 311
 title: Update the history item to show the real author username instead of the node id.
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
