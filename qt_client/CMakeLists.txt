@@ -81,6 +81,8 @@ set(FORKMESH_APP_SOURCES
     src/PullStore.cpp
     src/PullReviewModel.h
     src/PullReviewModel.cpp
+    src/PullAiReview.h
+    src/PullAiReview.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
     src/ReferenceLinks.h
@@ -205,6 +207,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullStore.cpp
         src/PullReviewModel.h
         src/PullReviewModel.cpp
+        src/PullAiReview.h
+        src/PullAiReview.cpp
         src/CommitCommentStore.h
         src/CommitCommentStore.cpp
         src/AgentStore.h
