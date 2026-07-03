@@ -2002,12 +2002,28 @@ button.issue-row {
   border-radius: 3px;
   background: var(--border);
   cursor: default;
+  display: flex;
+  gap: 1px;
+  overflow: hidden;
 }
 
 .status-day.is-operational { background: var(--accent-bright); }
 .status-day.is-degraded { background: var(--warning); }
 .status-day.is-down { background: var(--danger); }
 .status-day.is-unknown { background: var(--border); }
+
+.status-day-hour {
+  flex: 1;
+  height: 100%;
+  min-width: 1px;
+  cursor: default;
+  background: var(--border);
+}
+
+.status-day-hour.is-operational { background: var(--accent-bright); }
+.status-day-hour.is-degraded { background: var(--warning); }
+.status-day-hour.is-down { background: var(--danger); }
+.status-day-hour.is-unknown { background: var(--border); }
 
 .status-legend {
   display: flex;
