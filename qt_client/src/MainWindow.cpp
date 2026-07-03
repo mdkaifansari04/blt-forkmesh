@@ -129,8 +129,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // below decides whether to enter the app shell — so a first launch can
     // register and start mirroring on its own. The name is still editable from
     // Settings afterwards.
-    if (savedProfileName().isEmpty())
+    if (savedProfileName().isEmpty()) {
+        m_freshInstall = true;
         QSettings().setValue(kAccountNameSetting, randomFunNodeName());
+    }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
 

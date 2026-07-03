@@ -458,6 +458,14 @@ private:
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
     bool m_headless = false;               // no-GUI node (offscreen); see setHeadlessMode
+    // True first run only (no saved node name yet). Gates the "we're syncing" toast
+    // + auto-open in ensureFlagshipRepo() so a fresh install lands on real content
+    // without manual setup, without re-interrupting an existing user (adhoc #113).
+    bool m_freshInstall = false;
+    // "owner/name" of a repo whose initial mirror sync should auto-open its repo
+    // detail view once syncRepository's fetch/clone finishes; cleared after firing
+    // once. Set by ensureFlagshipRepo() on a fresh install.
+    QString m_pendingAutoOpenRepoKey;
     // Account = node identity. Registration (name + Solana + password + TOTP) gates
     // joining the network; the account name is the canonical repo owner.
     bool ensureNodeAccount(const QString &accountName, const QString &solana);
@@ -2135,10 +2143,14 @@ private:
     // every mirror (adhoc #38).
     void submitIssueAssigneesToInbox(int number, const QStringList &assignees);
     // Mirror node path: send a signed new-issue ("open") event to the source of
-    // truth's inbox. Returns false only when there is no repo to target.
+    // truth's inbox. Returns false only when there is no repo to target (checked
+    // synchronously); the actual POST result is only known once it completes, so
+    // callers get it via onDone rather than assuming success immediately (a
+    // failed submission must not be reported as "sent").
     bool submitNewIssueToInbox(const QString &title, const QString &body,
                                const QStringList &labels, const QString &milestone,
-                               int priority, const QStringList &assignees);
+                               int priority, const QStringList &assignees,
+                               std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
     // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
     // notices/dialogs (manual "Sync inbox"); when false it's a silent background
