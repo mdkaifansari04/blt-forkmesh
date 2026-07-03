@@ -5066,6 +5066,74 @@ async def _account_link_self(env, request):
                           "nodes": _owned_nodes(fresh_user or user_rec)})
 
 
+async def _account_link_grant(env, request):
+    # The node profile's "Link this node to your account" button (adhoc #120):
+    # the desktop app signs a short-lived grant with the node's own key and
+    # opens it as a /dashboard URL in the browser, where the already-logged-in
+    # user redeems it here. The signature proves node-key control and names an
+    # explicit consent ("attach me to whoever redeems this"), so unlike
+    # claim-node no password re-entry or confirmation code is needed — the
+    # browser session just names the user. Freshness (LOGIN_MAX_SKEW_MS) plus
+    # single use keep a leaked URL from being replayable.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    user_name = clean_string(data.get("user", ""), MAX_NODE_NAME).strip().lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(node_name) or not valid_node_name(user_name):
+        return json_response({"error": "invalid_request"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-link-grant-v1\n" + node_name + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    if node_name == user_name:
+        return json_response({"error": "cannot_link_self"}, status=400)
+    _, user_rec = await _account_row(env, user_name)
+    if not user_rec or user_rec.get("status") != "active":
+        return json_response({"error": "no_such_user"}, status=404)
+    if _account_kind(user_rec) != "user":
+        # Only an account that can log in can own nodes; a bare node session in
+        # the browser can't take possession of another node.
+        return json_response({"error": "not_a_user"}, status=403)
+    if _account_kind(node_rec) != "node":
+        return json_response({"error": "not_a_node"}, status=403)
+    if node_rec.get("owner") == user_name:
+        return json_response({"ok": True, "linked": True, "alreadyLinked": True,
+                              "nodeId": node_name, "user": user_name,
+                              "nodes": _owned_nodes(user_rec)})
+    if node_rec.get("owner"):
+        return json_response({"error": "node_already_owned"}, status=409)
+    # Burn the grant before linking so it is strictly one-time even if the node
+    # is unlinked again inside the signature's freshness window. Parked in
+    # link_codes keyed on the full grant; rows age out like installer codes.
+    grant_bi = await blind_index(env, "grant:" + node_name + ":" + ts + ":" +
+                                 signature)
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT data, ts FROM link_codes WHERE code_bi=?", grant_bi)
+    if row:
+        return json_response({"error": "grant_used"}, status=409)
+    encrypted = await encrypt_row(env, {"grant": node_name})
+    await d1_run(
+        env,
+        "INSERT INTO link_codes (code_bi, data, ts) VALUES (?,?,?) "
+        "ON CONFLICT(code_bi) DO UPDATE SET data=excluded.data, ts=excluded.ts",
+        grant_bi, encrypted, now)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, user_name)
+    _, fresh_user = await _account_row(env, user_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "user": user_name,
+                          "nodes": _owned_nodes(fresh_user or user_rec)})
+
+
 async def _login_locked_until(env, id_bi):
     # Returns the lock-expiry ms if the identifier is currently locked, else 0.
     row = await d1_first(
@@ -6914,6 +6982,8 @@ async def accounts_handler(env, request):
         return await _account_link_node(env, request)
     if url.path == "/api/accounts/link-self" and method == "POST":
         return await _account_link_self(env, request)
+    if url.path == "/api/accounts/link-grant" and method == "POST":
+        return await _account_link_grant(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
