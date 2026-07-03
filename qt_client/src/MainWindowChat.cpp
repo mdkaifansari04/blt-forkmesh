@@ -5905,8 +5905,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // Width: wide enough for the two-column layout (identity/stats on the left,
     // hosting/keys/Solana on the right) side by side, narrow enough to look
     // centered on wide windows when flanked by the stretchers in
-    // buildNodeProfileSection.
-    scroll->setMinimumWidth(340);
+    // buildNodeProfileSection. The content's size hint comes out narrow (the
+    // word-wrap labels report tiny minimums), so without a healthy minimum the
+    // panel rendered ~450px wide and clipped the "THIS NODE" action row
+    // (Logout), the Node ID key, the balance button and the verify-wallet
+    // button on the right. Give both columns real room so everything shows.
+    scroll->setMinimumWidth(760);
     scroll->setMaximumWidth(1180);
     m_nodeProfilePanel = scroll;
 
@@ -6203,12 +6207,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
 
     auto *columnsRow = new QHBoxLayout;
     columnsRow->setContentsMargins(0, 0, 0, 0);
-    columnsRow->setSpacing(20);
+    columnsRow->setSpacing(28);
     columnsRow->addLayout(leftColumn, 1);
     columnsRow->addLayout(rightColumn, 1);
 
     auto *layout = new QVBoxLayout(content);
-    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(6);
     layout->addLayout(topRow);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
