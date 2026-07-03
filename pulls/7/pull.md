@@ -4,7 +4,7 @@ number: 7
 title: feat: polish mobile app experience and add QA coverage (code/tests)
 base: pr/worker-d1-binding
 head: pr/mobile-polish-tests-code
-status: open
+status: merged
 ts: 1783027928104
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
