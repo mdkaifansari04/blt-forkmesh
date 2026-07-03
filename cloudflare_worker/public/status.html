@@ -158,16 +158,28 @@
 
         async function render() {
           let data;
+          let rateLimited = false;
           try {
             const res = await fetch("/api/status", {
               headers: { accept: "application/json" },
             });
+            if (res.status === 429) rateLimited = true;
             if (!res.ok) throw new Error("HTTP " + res.status);
             data = await res.json();
           } catch (_) {
-            bannerText.textContent = "Status unavailable right now.";
-            list.innerHTML =
-              '<div class="status-empty">Could not load status data.</div>';
+            banner.classList.remove("is-operational", "is-degraded");
+            if (rateLimited) {
+              banner.classList.add("is-down");
+              bannerText.textContent = "Rate limited by Cloudflare";
+              bannerSub.textContent =
+                "ForkMesh is getting more traffic than its current plan allows. This is a Cloudflare-side limit, not an outage — it resets automatically.";
+              list.innerHTML =
+                '<div class="status-empty">Status data is temporarily unavailable because Cloudflare is rate limiting requests to forkmesh.com.</div>';
+            } else {
+              bannerText.textContent = "Status unavailable right now.";
+              list.innerHTML =
+                '<div class="status-empty">Could not load status data.</div>';
+            }
             return;
           }
 
