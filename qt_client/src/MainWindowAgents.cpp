@@ -380,36 +380,10 @@ QWidget *MainWindow::buildAgentsTab()
     listPane->setMinimumWidth(380);
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
-    // "Hide detail" toggle (issue #54): collapse the detail panel so the session
-    // list spans the full tab width. Re-checking restores it for the open row.
-    m_agentHideDetailButton = new QPushButton("Hide detail");
-    m_agentHideDetailButton->setObjectName("ghostButton");
-    m_agentHideDetailButton->setCursor(Qt::PointingHandCursor);
-    m_agentHideDetailButton->setCheckable(true);
-    m_agentHideDetailButton->setToolTip(
-        "Hide the detail panel and show the session list full width");
-    setOcticon(m_agentHideDetailButton, "chevron-right", 16);
-    connect(m_agentHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
-        m_agentDetailHidden = hidden;
-        m_agentHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
-        setOcticon(m_agentHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
-        if (hidden) {
-            if (m_agentDetail)
-                m_agentDetail->hide();
-        } else if (m_agentDetail && findAgentSession(m_selectedAgentSessionId)) {
-            m_agentDetail->show(); // reopen for the still-selected row
-        }
-    });
     auto *headingRow = new QHBoxLayout;
     headingRow->setContentsMargins(0, 0, 0, 0);
     headingRow->setSpacing(8);
     headingRow->addWidget(heading, 1);
-    headingRow->addWidget(m_agentHideDetailButton, 0, Qt::AlignTop);
-    auto *hint = new QLabel(
-        "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
-        "from prompt and transcript size.");
-    hint->setObjectName("statusLine");
-    hint->setWordWrap(true);
 
     m_agentTable = new QTableWidget(0, 13);
     m_agentTable->setObjectName("issueTable");
@@ -469,92 +443,6 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_scannerTimer, &QTimer::timeout, this, &MainWindow::onScannerTick);
     makeColumnsResizable(m_agentTable);
 
-    auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 18, 12, 18);
-    listLayout->setSpacing(8);
-    listLayout->addLayout(headingRow);
-    listLayout->addWidget(hint);
-    m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
-    m_agentOpenAiSpend->setObjectName("channelTitle");
-    m_agentOpenAiSpend->setWordWrap(true);
-    m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentOpenAiCredit = new QLabel("OpenAI remaining credits: not yet refreshed");
-    m_agentOpenAiCredit->setObjectName("statusLine");
-    m_agentOpenAiCredit->setWordWrap(true);
-    m_agentOpenAiCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each OpenAI API session.");
-    m_agentApiKeyStatus->setObjectName("statusLine");
-    m_agentApiKeyStatus->setWordWrap(true);
-    m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentClaudeSpend = new QLabel("Claude spend this month: not yet refreshed");
-    m_agentClaudeSpend->setObjectName("channelTitle");
-    m_agentClaudeSpend->setWordWrap(true);
-    m_agentClaudeSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentClaudeCredit = new QLabel("Claude remaining credits: not yet refreshed");
-    m_agentClaudeCredit->setObjectName("statusLine");
-    m_agentClaudeCredit->setWordWrap(true);
-    m_agentClaudeCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude API session.");
-    m_agentClaudeStatus->setObjectName("statusLine");
-    m_agentClaudeStatus->setWordWrap(true);
-    m_agentClaudeStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto makeStatsRefreshButton = [](const QString &toolTip) {
-        auto *button = new QPushButton("Refresh");
-        button->setObjectName("ghostButton");
-        button->setCursor(Qt::PointingHandCursor);
-        button->setToolTip(toolTip);
-        setOcticon(button, "sync", 16);
-        return button;
-    };
-    m_agentTestApiKeyButton =
-        makeStatsRefreshButton("Refresh OpenAI usage and spend");
-    connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
-            &MainWindow::testOpenAiAgentKey);
-    addRefreshSpin(m_agentTestApiKeyButton);
-    auto *claudeRefreshButton =
-        makeStatsRefreshButton("Refresh Claude usage and spend");
-    connect(claudeRefreshButton, &QPushButton::clicked, this,
-            &MainWindow::refreshClaudeSpend);
-    addRefreshSpin(claudeRefreshButton);
-    auto *openAiStatsRow = new QHBoxLayout;
-    openAiStatsRow->setContentsMargins(0, 0, 0, 0);
-    openAiStatsRow->setSpacing(8);
-    openAiStatsRow->addWidget(m_agentOpenAiSpend, 1);
-    openAiStatsRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
-    auto *claudeStatsRow = new QHBoxLayout;
-    claudeStatsRow->setContentsMargins(0, 0, 0, 0);
-    claudeStatsRow->setSpacing(8);
-    claudeStatsRow->addWidget(m_agentClaudeSpend, 1);
-    claudeStatsRow->addWidget(claudeRefreshButton, 0, Qt::AlignTop);
-    m_agentTotalSpend = new QLabel("Total Agent API spend this month: not yet refreshed");
-    m_agentTotalSpend->setObjectName("channelTitle");
-    m_agentTotalSpend->setWordWrap(true);
-    m_agentTotalSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto *usageText = new QVBoxLayout;
-    usageText->setContentsMargins(0, 0, 0, 0);
-    usageText->setSpacing(4);
-    usageText->addLayout(openAiStatsRow);
-    usageText->addWidget(m_agentOpenAiCredit);
-    usageText->addWidget(m_agentApiKeyStatus);
-    usageText->addLayout(claudeStatsRow);
-    usageText->addWidget(m_agentClaudeCredit);
-    usageText->addWidget(m_agentClaudeStatus);
-    usageText->addWidget(m_agentTotalSpend);
-    m_agentLimitsLabel = new QLabel;
-    m_agentLimitsLabel->setObjectName("statusLine");
-    m_agentLimitsLabel->setWordWrap(true);
-    m_agentLimitsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    usageText->addWidget(m_agentLimitsLabel);
-    // Issue #115: restore the last-known spend figures immediately so they are
-    // visible on restart before any network refresh completes.
-    applyCachedSpendLabels();
-    refreshAgentLimitLabel();
-    // Tick once a minute so the countdowns stay current while the tab is open.
-    m_agentLimitsTimer = new QTimer(this);
-    m_agentLimitsTimer->setInterval(60 * 1000);
-    connect(m_agentLimitsTimer, &QTimer::timeout, this,
-            &MainWindow::refreshAgentLimitLabel);
-    m_agentLimitsTimer->start();
     // Detect Claude Code sessions running outside ForkMesh and stream the open
     // one. Light enough (a directory scan + small tail reads) to poll often.
     m_externalClaudeTimer = new QTimer(this);
@@ -562,7 +450,11 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_externalClaudeTimer, &QTimer::timeout, this,
             &MainWindow::onExternalClaudeTick);
     m_externalClaudeTimer->start();
-    listLayout->addLayout(usageText);
+
+    auto *listLayout = new QVBoxLayout(listPane);
+    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setSpacing(8);
+    listLayout->addLayout(headingRow);
 
     // Free-text filter over the session list (issue #82): type to narrow the
     // table to sessions whose issue number/title, agent, status or PR match.
@@ -585,11 +477,39 @@ QWidget *MainWindow::buildAgentsTab()
     setOcticon(m_agentDeleteMergedButton, "trash", 16);
     connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
             &MainWindow::deleteAllMergedAgentSessions);
+
+    // "Hide detail" toggle (issue #54): collapse the detail panel so the session
+    // list spans the full tab width. Re-checking restores it for the open row.
+    // A small icon button next to "Delete all merged" (adhoc #118) rather than a
+    // labeled button up in the heading, to keep the toolbar compact.
+    m_agentHideDetailButton = new QPushButton;
+    m_agentHideDetailButton->setObjectName("issueIconButton");
+    m_agentHideDetailButton->setFixedSize(30, 30);
+    m_agentHideDetailButton->setCursor(Qt::PointingHandCursor);
+    m_agentHideDetailButton->setCheckable(true);
+    m_agentHideDetailButton->setToolTip(
+        "Hide the detail panel and show the session list full width");
+    setOcticon(m_agentHideDetailButton, "chevron-right", 16);
+    connect(m_agentHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
+        m_agentDetailHidden = hidden;
+        m_agentHideDetailButton->setToolTip(
+            hidden ? "Show the detail panel"
+                   : "Hide the detail panel and show the session list full width");
+        setOcticon(m_agentHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
+        if (hidden) {
+            if (m_agentDetail)
+                m_agentDetail->hide();
+        } else if (m_agentDetail && findAgentSession(m_selectedAgentSessionId)) {
+            m_agentDetail->show(); // reopen for the still-selected row
+        }
+    });
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(m_agentSearch, 1);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
+    agentListToolbar->addWidget(m_agentHideDetailButton, 0);
     listLayout->addLayout(agentListToolbar);
 
     listLayout->addWidget(m_agentTable, 1);

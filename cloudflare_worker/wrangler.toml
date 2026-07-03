@@ -29,7 +29,6 @@ run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/bl
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_SOLANA_ADDRESS = ""
-BUILD_REV = "dev"
 # Relay federation. Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
 # that is what makes a deployment "the main relay": it custodies federated signup
 # deposits and disburses to every node on every approved relay.
