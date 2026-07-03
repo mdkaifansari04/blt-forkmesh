@@ -1799,24 +1799,24 @@ void MainWindow::refreshIssueList()
         m_issueTable->setItem(row, 4, votes);
         m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.labels.join(", ")));
         m_issueTable->setItem(row, 6, new QTableWidgetItem(issue.milestone));
-        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
-        // tooltip carries the friendly "x ago" form.
+        // Created date/time: ISO yyyy-MM-dd HH:mm sorts chronologically as plain
+        // text; the tooltip carries the friendly "x ago" form.
         auto *created = new QTableWidgetItem(
             issue.createdAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 7, created);
 
-        // Updated date: the most recent activity on the issue (latest signed
-        // event, falling back to the created time). ISO yyyy-MM-dd sorts
+        // Updated date/time: the most recent activity on the issue (latest signed
+        // event, falling back to the created time). ISO yyyy-MM-dd HH:mm sorts
         // chronologically as plain text; the tooltip carries the "x ago" form.
         qint64 updatedAt = issue.createdAt;
         for (const IssueEvent &ev : issue.events)
             updatedAt = qMax(updatedAt, ev.ts);
         auto *updated = new QTableWidgetItem(
             updatedAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         updated->setToolTip(formatIssueRelativeTime(updatedAt));
         m_issueTable->setItem(row, 8, updated);

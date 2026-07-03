@@ -285,7 +285,9 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Copy clone",
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
-        '"code", "commits", "issues", "pulls", "discussions", "mirrors"',
+        '"code", "commits", "releases", "issues", "pulls", "discussions", "mirrors"',
+        # Releases load lazily on first tab view from releases/<channel>/release.json.
+        "loadRepoReleases(state.selectedRepo)",
     ):
         assert marker in dashboard_js
 
