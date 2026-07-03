@@ -118,9 +118,14 @@ void MainWindow::saveChatHistory()
     for (auto it = m_dmNames.constBegin(); it != m_dmNames.constEnd(); ++it)
         dmNames.insert(it.key(), it.value());
 
+    QJsonObject unreadObj;
+    for (auto it = m_unreadCounts.constBegin(); it != m_unreadCounts.constEnd(); ++it)
+        unreadObj.insert(it.key(), it.value());
+
     const QJsonObject root{{"current", m_currentConversation},
                            {"openDms", openDms},
                            {"dmNames", dmNames},
+                           {"unread", unreadObj},
                            {"conversations", conversations}};
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
@@ -165,8 +170,14 @@ void MainWindow::loadChatHistory()
             if (obj.contains("fileData"))
                 m.fileData = QByteArray::fromBase64(
                     obj.value("fileData").toString().toLatin1());
-            if (m.timestampMs <= expiryCutoff)
+            if (m.timestampMs <= expiryCutoff) {
+                // Remember the id even though the message is dropped: a peer
+                // that hasn't pruned yet may replay it on reconnect, and an
+                // unknown id would resurrect it as a fresh unread message.
+                if (!m.id.isEmpty())
+                    m_historyIds.insert(m.id);
                 continue;
+            }
             if (!m.id.isEmpty()) {
                 if (m_historyIds.contains(m.id))
                     continue;
@@ -186,6 +197,24 @@ void MainWindow::loadChatHistory()
             m_openDms.append(peer);
     }
     refreshDmList();
+
+    // Restore the unread state for conversations the user was not actively reading
+    // when they closed the app. This prevents notifications from re-appearing for
+    // already-read messages when history is replayed from the relay (issue #89).
+    const QJsonObject unreadObj = root.value("unread").toObject();
+    for (auto it = unreadObj.constBegin(); it != unreadObj.constEnd(); ++it) {
+        const QString conv = it.key();
+        const int count = it.value().toInt();
+        if (!conv.isEmpty() && count > 0) {
+            m_unread.insert(conv);
+            m_unreadCounts[conv] = count;
+        }
+    }
+    if (!m_unread.isEmpty()) {
+        refreshChannelList();
+        refreshDmList();
+        updateChatButton();
+    }
 
     // Reopen the last conversation so history is visible immediately.
     const QString current = root.value("current").toString();
@@ -223,9 +252,13 @@ void MainWindow::pruneExpiredChatHistory()
         QList<ChatMessage> &messages = it.value();
         // Messages are appended in arrival order, so expired ones are always a
         // prefix; evict from the front instead of scanning the whole list.
+        // The evicted ids stay in m_historyIds on purpose: a peer that hasn't
+        // pruned yet can replay an expired message on reconnect, and forgetting
+        // the id would resurrect it as a fresh unread message with a
+        // notification the user already saw. The set is rebuilt from the
+        // (bounded) history file on restart, so it can't grow without limit.
         bool changed = false;
         while (!messages.isEmpty() && messages.first().timestampMs <= cutoff) {
-            m_historyIds.remove(messages.first().id);
             messages.removeFirst();
             changed = true;
         }
