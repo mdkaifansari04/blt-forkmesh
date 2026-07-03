@@ -10,8 +10,11 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-QT_MAIN = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.cpp"
-QT_TEXT = QT_MAIN.read_text(encoding="utf-8") if QT_MAIN.exists() else ""
+# MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
+QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
+QT_TEXT = "\n".join(
+    p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
+)
 
 
 def test_worker_exposes_simple_signup_endpoint():
@@ -76,14 +79,21 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
 
 
-def test_qt_client_publishes_effective_avatar_with_signed_heartbeat():
+def test_qt_client_publishes_effective_avatar_to_peers():
+    # The desktop's avatar reaches peers through the chat backend broadcast
+    # (the signed heartbeat carries no avatar; the worker-side avatarPng comes
+    # from the dashboard profile flow, pinned above). effectiveAvatar() falls
+    # back to a generated face so every node stays identifiable.
+    assert "m_backend->setAvatar(effectiveAvatar());" in QT_TEXT
+
     heartbeat_body = QT_TEXT[
         QT_TEXT.index("void MainWindow::sendNodeHeartbeat()"):
-        QT_TEXT.index("void MainWindow::pollPendingUsers")
+        QT_TEXT.index("void MainWindow::showNodeClaimCode")
     ]
-
-    assert "effectiveAvatar().toBase64()" in heartbeat_body
-    assert '{"avatarPng", avatarPng}' in heartbeat_body
+    # The per-minute heartbeat stays lean: name + solana + ts + sig only, no
+    # avatar re-upload every beat.
+    assert '{"nodeName", name}, {"solana", solana}, {"ts", ts}' in heartbeat_body
+    assert "avatarPng" not in heartbeat_body
 
 
 def test_profile_endpoint_supports_verified_node_rename_and_hard_delete():

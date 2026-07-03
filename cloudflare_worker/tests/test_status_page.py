@@ -324,6 +324,26 @@ def test_status_page_asset_and_redirect_exist():
     assert "/status /status.html 200" in redirects
 
 
+def test_status_page_names_cloudflare_rate_limiting_on_429():
+    # When the free-plan daily quota runs out Cloudflare answers every route —
+    # even /api/status — with an HTML 429. The status page must say exactly
+    # that (a plan limit that resets on its own, not an outage) instead of the
+    # generic "unavailable" message (adhoc #80).
+    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
+    render = status_html[
+        status_html.index("async function render()"):
+        status_html.index("render();")
+    ]
+    assert "if (res.status === 429) rateLimited = true;" in render
+    assert "Rate limited by Cloudflare" in render
+    assert "not an outage" in render
+    assert "resets automatically" in render
+    # The 429 banner uses the outage styling, and other fetch failures keep
+    # the generic message.
+    assert 'banner.classList.add("is-down");' in render
+    assert "Status unavailable right now." in render
+
+
 def test_migration_file_matches_worker_schema():
     migration = (ROOT / "migrations" / "0022_system_status.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS system_status_daily" in migration

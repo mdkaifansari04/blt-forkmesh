@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 350
 title: when a new node is downloaded and run for the first time automatically have them mirror the main forkmesh repo and join the mirror network
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
