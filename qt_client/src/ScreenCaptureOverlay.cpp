@@ -143,19 +143,32 @@ protected:
         painter.drawRect(sel.adjusted(0, 0, -1, -1));
     }
 
+    // Global cursor position derived from this panel's screen anchor rather
+    // than event->globalPosition(). On Wayland there are no true global
+    // coordinates: Qt synthesises them from where it *believes* the window
+    // sits, and the compositor — not our setGeometry() — decides the real
+    // placement, so the synthesised values can be shifted by an arbitrary
+    // offset and the capture lands on a different part of the screen. The
+    // panel is pinned to exactly one screen, so local position + that
+    // screen's origin is always the true global point.
+    QPoint globalFromLocal(const QPointF &local) const
+    {
+        return m_screenGeom.topLeft() + local.toPoint();
+    }
+
     void mousePressEvent(QMouseEvent *event) override
     {
-        m_owner->onPress(event->button(), event->globalPosition().toPoint());
+        m_owner->onPress(event->button(), globalFromLocal(event->position()));
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
     {
-        m_owner->onMove(event->globalPosition().toPoint());
+        m_owner->onMove(globalFromLocal(event->position()));
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override
     {
-        m_owner->onRelease(event->button(), event->globalPosition().toPoint());
+        m_owner->onRelease(event->button(), globalFromLocal(event->position()));
     }
 
     void keyPressEvent(QKeyEvent *event) override
@@ -203,7 +216,17 @@ ScreenCaptureOverlay::ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr,
     for (QScreen *s : screens) {
         auto *panel = new PerScreenPanel(this, s->geometry(), snip);
         m_panels.append(panel);
-        panel->show();
+        // Pin the panel to its screen explicitly. On Wayland, clients cannot
+        // position top-level windows — setGeometry() is silently ignored and
+        // the compositor drops the panel wherever it likes, which used to
+        // shift every coordinate derived from it. Fullscreen-on-a-screen is
+        // the one placement Wayland does guarantee, so use it there; on X11
+        // keep the bypass-WM geometry, which already covers the screen.
+        panel->setScreen(s);
+        if (runningOnWayland())
+            panel->showFullScreen();
+        else
+            panel->show();
         panel->raise();
     }
     // Activate the first panel so keyboard events (e.g. Escape) work immediately
@@ -333,6 +356,27 @@ QImage ScreenCaptureOverlay::compositeScreens()
         QPainter painter(&shot);
         for (QScreen *s : QGuiApplication::screens()) {
             QPixmap grab = s->grabWindow(0);
+            const QRect g = s->geometry();
+            // On X11, grabWindow(0) returns the ENTIRE root window — the whole
+            // virtual desktop — no matter which screen it was called on. With
+            // more than one monitor, placing that full-desktop image at this
+            // screen's offset shifted the composite and the final crop showed
+            // a different area of the screen. When the grab is clearly bigger
+            // than this screen, cut this screen's own slice out of it.
+            const QSize native(qRound(g.width() * s->devicePixelRatio()),
+                               qRound(g.height() * s->devicePixelRatio()));
+            if (grab.width() > native.width() + 2 ||
+                grab.height() > native.height() + 2) {
+                const qreal rx = qreal(grab.width()) / m_virtualGeom.width();
+                const qreal ry = qreal(grab.height()) / m_virtualGeom.height();
+                const QRect slice(qRound((g.x() - m_virtualGeom.x()) * rx),
+                                  qRound((g.y() - m_virtualGeom.y()) * ry),
+                                  qRound(g.width() * rx),
+                                  qRound(g.height() * ry));
+                const QRect bounded = slice.intersected(grab.rect());
+                if (!bounded.isEmpty())
+                    grab = grab.copy(bounded);
+            }
             // grabWindow() isn't guaranteed to tag the pixmap with the screen's
             // own ratio (some platform plugins hand back the raw buffer at
             // ratio 1 even on a HiDPI screen). drawPixmap below places it by
@@ -341,7 +385,6 @@ QImage ScreenCaptureOverlay::compositeScreens()
             // screenshot on that screen would come out wildly mis-cropped.
             // Force the tag explicitly so placement is always correct.
             grab.setDevicePixelRatio(s->devicePixelRatio());
-            const QRect g = s->geometry();
             painter.drawPixmap(QPointF(g.x() - m_virtualGeom.x(),
                                        g.y() - m_virtualGeom.y()),
                                grab);
