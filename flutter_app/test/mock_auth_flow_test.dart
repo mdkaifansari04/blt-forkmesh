@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:forkmesh/main.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/auth_mock_flow.dart';
@@ -26,6 +27,48 @@ class FakeApiService extends ApiService {
       NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
 }
 
+// The login form now performs a real Worker /api/accounts/login round trip
+// (pull #4), so widget tests authenticate through this offline stand-in: a
+// successful login flips isAuthenticated and notifies, which is what
+// ForkMeshApp's Consumer<AuthService> watches to enter the home shell.
+class FakeAuthService extends AuthService {
+  FakeAuthService(super.settings, super.identity, super.prefs);
+
+  static Future<FakeAuthService> create(
+    SettingsService settings,
+    Identity identity,
+  ) async => FakeAuthService(
+    settings,
+    identity,
+    await SharedPreferences.getInstance(),
+  );
+
+  AuthSession? _fakeSession;
+
+  @override
+  AuthSession? get session => _fakeSession;
+
+  @override
+  bool get isAuthenticated => _fakeSession != null;
+
+  @override
+  Future<AuthSession> login({
+    required String identifier,
+    required String password,
+    String totp = '',
+  }) async {
+    _fakeSession = AuthSession.fromJson({
+      'nodeName': 'demo-node',
+      'email': 'demo@example.com',
+      'status': 'active',
+      'emailVerified': true,
+      'capabilities': ['submit_issue', 'submit_pr'],
+    });
+    notifyListeners();
+    return _fakeSession!;
+  }
+}
+
 void main() {
   void usePhoneView(WidgetTester tester, {Size size = const Size(430, 932)}) {
     tester.view.physicalSize = size;
@@ -41,10 +84,12 @@ void main() {
     addTearDown(tester.view.resetViewPadding);
   }
 
-  Widget buildFlow({VoidCallback? onAuthenticated}) {
-    return MaterialApp(
+  Widget buildFlow({VoidCallback? onAuthenticated, AuthService? auth}) {
+    final flow = MaterialApp(
       home: AuthMockFlow(onAuthenticated: onAuthenticated ?? () {}),
     );
+    if (auth == null) return flow;
+    return ChangeNotifierProvider<AuthService>.value(value: auth, child: flow);
   }
 
   Future<void> tapFilledButton(WidgetTester tester, String label) async {
@@ -52,6 +97,23 @@ void main() {
     await tester.ensureVisible(finder);
     await tester.pumpAndSettle();
     await tester.tap(finder);
+  }
+
+  // Walks the real login form: credentials are required now, and Continue
+  // resolves through the (fake) AuthService before onAuthenticated fires.
+  Future<void> submitLogin(WidgetTester tester) async {
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'you@example.com'),
+      'demo@example.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Your password'),
+      'correct-horse',
+    );
+    await tapFilledButton(tester, 'Continue');
+    await tester.pumpAndSettle();
   }
 
   testWidgets('debug settings default to the local Worker relay URL', (
@@ -127,14 +189,38 @@ void main() {
   });
 
   testWidgets('mock login CTA calls onAuthenticated', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final auth = await FakeAuthService.create(settings, identity);
+
     var authenticated = false;
     await tester.pumpWidget(
-      buildFlow(onAuthenticated: () => authenticated = true),
+      buildFlow(onAuthenticated: () => authenticated = true, auth: auth),
     );
 
+    // Continue with empty fields never authenticates — the form asks for
+    // credentials instead of falling through as the old mock flow did.
     await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
     await tester.pumpAndSettle();
     await tapFilledButton(tester, 'Continue');
+    await tester.pumpAndSettle();
+    expect(authenticated, isFalse);
+    expect(
+      find.text('Enter your email or node name and password.'),
+      findsOneWidget,
+    );
+
+    await tester.enterText(
+      find.widgetWithText(TextField, 'you@example.com'),
+      'demo@example.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Your password'),
+      'correct-horse',
+    );
+    await tapFilledButton(tester, 'Continue');
+    await tester.pumpAndSettle();
 
     expect(authenticated, isTrue);
   });
@@ -160,7 +246,7 @@ void main() {
       final identity = await Identity.loadOrCreate();
       final relay = RelayService(settings, identity);
       final api = FakeApiService(settings);
-      final auth = await AuthService.create(settings, identity);
+      final auth = await FakeAuthService.create(settings, identity);
       final inbox = InboxService(settings, identity);
 
       await tester.pumpWidget(
@@ -176,10 +262,7 @@ void main() {
 
       expect(find.text('Build open, sync easy'), findsOneWidget);
 
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-      await tester.pumpAndSettle();
-      await tapFilledButton(tester, 'Continue');
-      await tester.pumpAndSettle();
+      await submitLogin(tester);
 
       expect(find.text('Code'), findsWidgets);
       expect(find.text('Chat'), findsWidgets);
@@ -196,7 +279,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
-    final auth = await AuthService.create(settings, identity);
+    final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -210,10 +293,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-    await tester.pumpAndSettle();
-    await tapFilledButton(tester, 'Continue');
-    await tester.pumpAndSettle();
+    await submitLogin(tester);
 
     final theme = Theme.of(tester.element(find.text('ForkMesh')));
     expect(theme.brightness, Brightness.light);
@@ -242,7 +322,7 @@ void main() {
         ),
       ],
     );
-    final auth = await AuthService.create(settings, identity);
+    final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -256,10 +336,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-    await tester.pumpAndSettle();
-    await tapFilledButton(tester, 'Continue');
-    await tester.pumpAndSettle();
+    await submitLogin(tester);
 
     expect(find.text('forkmesh/flutter_app'), findsOneWidget);
     expect(find.byType(NavigationRail), findsNothing);
@@ -274,7 +351,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
-    final auth = await AuthService.create(settings, identity);
+    final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -288,10 +365,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-    await tester.pumpAndSettle();
-    await tapFilledButton(tester, 'Continue');
-    await tester.pumpAndSettle();
+    await submitLogin(tester);
 
     final nav = tester.widget<Container>(
       find.byKey(const ValueKey('compact-bottom-menu')),
@@ -338,7 +412,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
-    final auth = await AuthService.create(settings, identity);
+    final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -352,10 +426,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-    await tester.pumpAndSettle();
-    await tapFilledButton(tester, 'Continue');
-    await tester.pumpAndSettle();
+    await submitLogin(tester);
 
     final topBarOffset = tester.getTopLeft(
       find.byKey(const ValueKey('home-top-bar')),
@@ -374,7 +445,7 @@ void main() {
     final identity = await Identity.loadOrCreate();
     final relay = RelayService(settings, identity);
     final api = FakeApiService(settings);
-    final auth = await AuthService.create(settings, identity);
+    final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
     await tester.pumpWidget(
@@ -388,10 +459,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
-    await tester.pumpAndSettle();
-    await tapFilledButton(tester, 'Continue');
-    await tester.pumpAndSettle();
+    await submitLogin(tester);
     await tester.tap(find.text('Profile'));
     await tester.pumpAndSettle();
 
