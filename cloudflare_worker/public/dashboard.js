@@ -2668,6 +2668,92 @@
     }
   }
 
+  // A pull's conversation is an append-only, signed event log stored as
+  // pulls/<N>/NNNN-<type>.md files alongside pull.md (see PullStore.h on the
+  // desktop client). Types: comment, review, line-comment, thread-comment,
+  // thread-reply, thread-state, suggestion-state.
+  function pullEventTypeMeta(ev) {
+    const neutral = "border-border bg-secondary/60 text-muted-foreground";
+    if (ev.type === "review") {
+      if (ev.state === "approved") return { label: "approved", tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" };
+      if (ev.state === "changes_requested") return { label: "requested changes", tone: "border-red-500/30 bg-red-500/10 text-red-300" };
+      return { label: "reviewed", tone: neutral };
+    }
+    if (ev.type === "line-comment") return { label: "line comment", tone: neutral };
+    if (ev.type === "thread-comment") return { label: "review thread", tone: neutral };
+    if (ev.type === "thread-reply") return { label: "reply", tone: neutral };
+    if (ev.type === "thread-state") return { label: `thread ${ev.state || "updated"}`.replace(/_/g, " "), tone: neutral };
+    if (ev.type === "suggestion-state") return { label: `suggestion ${ev.state || "updated"}`.replace(/_/g, " "), tone: neutral };
+    return { label: "comment", tone: neutral };
+  }
+
+  function pullEventAnchorLabel(ev) {
+    if (!ev.path) return "";
+    if (ev.lineStart) {
+      const range = ev.lineEnd && ev.lineEnd !== ev.lineStart ? `${ev.lineStart}-${ev.lineEnd}` : `${ev.lineStart}`;
+      return `${ev.path}:${range}`;
+    }
+    if (ev.line) return `${ev.path}:${ev.line}`;
+    return ev.path;
+  }
+
+  function renderPullConversationEvent(ev) {
+    const meta = pullEventTypeMeta(ev);
+    const anchor = pullEventAnchorLabel(ev);
+    const author = ev.authorName || ev.author || "unknown";
+    const date = formatRecordDate(ev.ts);
+    const body = String(ev.body || "").trim();
+    return `
+      <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+        <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span class="font-medium text-foreground">${escapeHtml(author)}</span>
+          <span class="rounded-md border px-1.5 py-0.5 text-[10px] uppercase ${meta.tone}">${escapeHtml(meta.label)}</span>
+          ${anchor ? `<span class="font-mono">${escapeHtml(anchor)}</span>` : ""}
+          <span>&middot;</span>
+          <span>${escapeHtml(date)}</span>
+        </div>
+        ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+      </div>`;
+  }
+
+  function renderRepoPullConversation(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No conversation yet on this pull request.</div>';
+    return rows.map(renderPullConversationEvent).join("");
+  }
+
+  async function loadRepoPullConversation(repo, number) {
+    let tree;
+    try {
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}` }));
+    } catch (_) {
+      return [];
+    }
+    const files = (Array.isArray(tree.entries) ? tree.entries : [])
+      .filter((entry) => entry.type !== "tree" && /^\d+-/.test(String(entry.name || "")))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!files.length) return [];
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`));
+    return files.map((entry) => {
+      const blob = blobs[`pulls/${number}/${entry.name}`];
+      if (!blob) return null;
+      const parsed = parseFrontMatter(blobText(blob));
+      const values = parsed.values || {};
+      return {
+        type: values.type || "comment",
+        author: values.author || "",
+        authorName: values.authorName || "",
+        ts: values.ts || "",
+        state: values.state || "",
+        path: values.path || "",
+        line: Number(values.line || 0),
+        lineStart: Number(values.lineStart || 0),
+        lineEnd: Number(values.lineEnd || 0),
+        body: parsed.body || "",
+      };
+    }).filter(Boolean);
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -2701,6 +2787,15 @@
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
+    const pullConversation = parsed.pullConversation || [];
+    const pullConversationSection = kind === "pulls" ? `
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Conversation</span>
+            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(pullConversation.length)} ${pullConversation.length === 1 ? "event" : "events"}</span>
+          </div>
+          <div data-repo-pull-conversation>${renderRepoPullConversation(pullConversation)}</div>
+        </section>` : "";
     const pullFilesSection = kind === "pulls" ? `
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
@@ -2734,6 +2829,7 @@
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="file-text" class="h-3.5 w-3.5 text-primary"></i>Body</div>
           <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
         </section>
+        ${pullConversationSection}
         ${pullFilesSection}
       </article>`;
   }
@@ -2749,6 +2845,7 @@
       const parsed = parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
+      if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
