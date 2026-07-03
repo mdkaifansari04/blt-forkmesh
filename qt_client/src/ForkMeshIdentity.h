@@ -24,6 +24,14 @@ public:
     QString publicKey() const { return m_publicKey; }
     QString shortPublicKey() const;
 
+    // Whether this identity has already posted its one-time #welcome greeting.
+    // Backed by a sentinel file next to the key itself (not QSettings, which
+    // can live in a separate, less-persistent config location on some
+    // deployments) so the flag can never outlive — or be outlived by — the
+    // identity it describes.
+    bool hasAnnouncedWelcome() const;
+    void markWelcomeAnnounced() const;
+
     QJsonObject profileObject(const QString &name, const QString &handle,
                               const QString &solanaAddress,
                               const QString &bio = QString(),
@@ -52,4 +60,5 @@ private:
     EVP_PKEY *m_key = nullptr;
     QString m_publicKey;
     QString m_error;
+    QString m_keyDir; // directory holding ed25519.pem, set by load()
 };
