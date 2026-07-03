@@ -559,7 +559,6 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0d1117; color: #8b949e; font-size: 12px;
     padding: 0 18px;
 }
-#messageRow:hover { background-color: #161b22; }
 #messageText { color: #e6edf3; }
 #fileChip {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
@@ -580,10 +579,11 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #21262d; }
 #messageAction {
-    background: transparent; border: 1px solid #30363d; border-radius: 6px;
+    background: transparent; border: none; border-radius: 6px;
     color: #8b949e; font-size: 11px; padding: 2px 7px;
 }
-#messageAction:hover { color: #e6edf3; border-color: #58a6ff; }
+#messageAction:hover { color: #e6edf3; }
+#messageAction::menu-indicator { image: none; width: 0; }
 #iconButton {
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
@@ -1553,7 +1553,6 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; color: #656d76; font-size: 12px;
     padding: 0 18px;
 }
-#messageRow:hover { background-color: #f6f8fa; }
 #messageText { color: #1f2328; }
 #fileChip {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
@@ -1574,10 +1573,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #eaeef2; }
 #messageAction {
-    background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
+    background: transparent; border: none; border-radius: 6px;
     color: #656d76; font-size: 11px; padding: 2px 7px;
 }
-#messageAction:hover { color: #1f2328; border-color: #0969da; }
+#messageAction:hover { color: #1f2328; }
+#messageAction::menu-indicator { image: none; width: 0; }
 #iconButton {
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
