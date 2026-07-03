@@ -116,6 +116,18 @@ def test_profile_endpoint_supports_verified_node_rename_and_hard_delete():
     assert '"account_disabled"' in login_body
 
 
+def test_public_account_lookup_reports_email_verified_status():
+    # issue #320: the dashboard's periodic self-profile poll (refreshPublicProfile)
+    # reuses this same public GET lookup, so it must reflect a verification that
+    # happened in another tab or "verify your email" never clears.
+    lookup_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)"):
+        ENTRY_TEXT.index("# --- Repository submission inboxes")
+    ]
+    assert '"emailVerified": bool(rec.get("email_verified"))' in lookup_body
+    assert '"email":' not in lookup_body
+
+
 def test_hard_delete_removes_account_identity_and_owned_namespace_state():
     assert "async def _delete_account_namespace" in ENTRY_TEXT
     assert "async def _delete_repo_namespace" in ENTRY_TEXT
