@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.6 (2026-07-02)"
+INSTALLER_VERSION="0.12.7 (2026-07-02)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -303,9 +303,13 @@ for arg in "$@"; do
   esac
 done
 
-printf '\033[32m╭───────────────────────────────────────────────╮\033[0m\n'
-printf '\033[32m│\033[0m  ForkMesh installer  \033[2mv%-24s\033[0m\033[32m│\033[0m\n' "$INSTALLER_VERSION"
-printf '\033[32m╰───────────────────────────────────────────────╯\033[0m\n'
+# Plain ASCII box (not Unicode box-drawing): the box-drawing characters are
+# "ambiguous width" in Unicode, so non-UTF-8 terminals/consoles (and some
+# CJK-locale fonts) render them double-width or as mojibake, breaking the
+# alignment against the fixed-width version field below.
+printf '\033[32m+-----------------------------------------------+\033[0m\n'
+printf '\033[32m|\033[0m  ForkMesh installer  \033[2mv%-24s\033[0m\033[32m|\033[0m\n' "$INSTALLER_VERSION"
+printf '\033[32m+-----------------------------------------------+\033[0m\n'
 say "Host:   $FORKMESH_HOST"
 say "Source: ${SRC}"
 say "Target: ${BIN}"
