@@ -6470,17 +6470,13 @@ void MainWindow::landAgentPullForSession(AgentSession &session, const QString &p
         session.issueNumber > 0
             ? QStringLiteral("Agent: issue #%1 %2").arg(session.issueNumber).arg(session.issueTitle)
             : QStringLiteral("Agent: %1").arg(session.issueTitle);
-    const QString providerLabel =
-        session.model.isEmpty()
-            ? agentProviderName(session.provider)
-            : QStringLiteral("%1 (%2)").arg(agentProviderName(session.provider), session.model);
     const QString prBody =
         session.issueNumber > 0
             ? QStringLiteral("Created from a %1 session for issue #%2.")
-                  .arg(providerLabel)
+                  .arg(agentProviderName(session.provider))
                   .arg(session.issueNumber)
             : QStringLiteral("Created from a %1 agent session.")
-                  .arg(providerLabel);
+                  .arg(agentProviderName(session.provider));
     const QString base = session.baseBranch.isEmpty() ? session.baseRef : session.baseBranch;
     PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
     if (store.canWrite()) {
