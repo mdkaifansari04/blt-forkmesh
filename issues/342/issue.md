@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 342
 title: ✕ Sync failed for mesh2/forkmesh: not appear to be a git repository fatal: Could not read from remote repository. Please make sure you have the correct access rights and the repository exists.
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 1
 progress: 0
 assignees: []
 createdAt: 1783092781

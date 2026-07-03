@@ -199,6 +199,167 @@ forkmesh/
   sees ciphertext envelopes and cannot read room contents.
 - Profile and repository metadata are signed by the local Ed25519 identity.
 
+## Roadmap
+
+This is the honest, holistic plan for getting ForkMesh from a working
+prototype to a fully operational product people choose on purpose. Day-to-day
+tracking stays in [`issues/`](issues/); this section is the strategic map.
+
+### Where we actually are
+
+The full loop works today: publish a repo from the desktop node, browse and
+clone it through the website, open signed issues, hand one to a coding agent,
+review the pull request it opens, fund it with a Solana bounty. That is real
+and rare. But honesty requires naming the gaps:
+
+- **One mainnode.** The public network runs through a single Cloudflare
+  Worker on constrained Durable Objects (small isolates, strict rate limits).
+  Past outages came directly from those constraints. "Federation" is still a
+  design word, not a deployed reality.
+- **No `git push`.** The relay serves `git-upload-pack` only. Publishing
+  means syncing a mirror from a local copy. Fine for the preservation model,
+  a hard blocker for anyone expecting a forge.
+- **The desktop client carries debt.** The UI was one 54k-line file (now
+  split), synchronous git work has stalled the GUI thread, and heavy tabs
+  needed lazy-loading retrofits. Perf regressions are found by feel, not by
+  benchmark.
+- **Money paths are young.** Deposit custody and sweeps run on mainnet, but
+  the bounty payout on PR merge has not been exercised live, and holding user
+  funds has legal weight we have not formally addressed.
+- **Operations are manual.** Release publishing has stalled in ways that
+  needed hand-holding; deploys depend on one person's credentials.
+- **Tests are thin.** Good smoke and window tests exist, but there is no
+  continuous end-to-end exercise of the publish → browse → clone → issue →
+  PR → payout loop.
+
+### Phase 1 — Zero-surprise reliability
+
+Nothing else matters if the network drops repos or the app freezes. Goal:
+bugs don't reach users, and when the network hiccups it heals itself.
+
+- Crash and stall telemetry from the desktop node (opt-in), feeding a
+  triage queue — the `stalls.log` diagnostics are the seed.
+- Eliminate every synchronous git call on the GUI thread; the watchdog
+  should log zero blocking events in normal use.
+- Chaos-test mirror failover continuously: kill the source host, verify
+  browse/clone keep working from mirrors with integrity pins intact.
+- Fully automated release pipeline: version bump → build → sign → publish
+  with no step that can silently sit waiting for approval.
+- A nightly integration run that drives the whole product loop headlessly
+  and fails loudly.
+- A public status page and an error budget we hold ourselves to.
+
+### Phase 2 — Performance that feels native
+
+- Cold start to interactive under one second; every list tab paints
+  instantly from cheap data and backfills detail asynchronously.
+- Relay: stream everything (no full-pack buffering in the isolate), batch
+  small-object fetches, cache aggressively at the edge.
+- Performance budgets enforced in CI — startup time, tab-open time, relay
+  p95 latency — so regressions are caught by machines, not users.
+
+### Phase 3 — A complete forge
+
+Table stakes to be a daily driver, not just a mirror network:
+
+- **`git push`** over the relay (receive-pack gated by signed identity) —
+  the single biggest missing primitive.
+- **Code review that holds up**: inline comments, review states, and
+  re-review flows on pull requests.
+- **Search** across code, issues, and PRs on the mesh.
+- **Notifications**: subscriptions, mentions, and an email/webhook bridge.
+- **Private repositories** as encrypted mirrors: hosts see only an opaque
+  handle and size, content is end-to-end encrypted with a hybrid
+  post-quantum scheme (e.g. ML-KEM + X25519) so today's ciphertext is not
+  tomorrow's plaintext.
+- **CI runs** that are declarative, cached, and safe on untrusted pull
+  requests.
+- **A browser that can participate**: issue and PR interaction from the
+  website without installing the desktop node.
+
+### Phase 4 — A real network, not one mainnode
+
+- A written protocol spec, so a mainnode is something anyone can implement
+  and run — including a one-command self-hosted deployment.
+- Multiple independent mainnodes with catalog convergence and node-to-node
+  repo announcement.
+- Replication guarantees: every published repo has N healthy mirrors, with
+  automatic repair when one disappears.
+- Interop with the wider federation trend: Forgejo is shipping
+  ActivityPub-based forge federation and ForgeFed is maturing — bridge
+  issues and PRs rather than building an island.
+
+### Phase 5 — The agent-native forge
+
+This is the bet. Development in 2026 is visibly shifting from writing code
+to orchestrating agents that write code, and no incumbent forge is
+simultaneously agent-native, self-sovereign, and able to pay for merged
+work. ForkMesh already treats agents as first-class contributors; lean in:
+
+- **Agent identity and provenance**: agents sign their commits and PRs with
+  attributable keys, and review UIs show exactly what was machine-authored.
+- **Multi-agent workflows** on issues (plan → implement → review) with
+  explicit human gates before merge.
+- **A bounty-driven agent economy**: a funded issue can be picked up by any
+  node's agent; a merged, human-approved PR pays out automatically. That is
+  a marketplace for verified fixes, not just a chat bot.
+- **An MCP surface** exposing repos, issues, and PRs so any agent tooling —
+  not just the built-in integrations — can work the mesh.
+- **Review tooling built for agent-scale volume**: queues, risk scoring,
+  and machine-attached test evidence, because agents will open more PRs
+  than humans can eyeball unaided.
+
+### Phase 6 — Money, trust, and sustainability
+
+- Exercise the full bounty payout live on mainnet, then publish the custody
+  design and commission a third-party security audit of keys, custody, and
+  the relay.
+- Key recovery and rotation: losing a laptop must not mean losing an
+  identity or funds.
+- Legal review of custody; prefer moving escrow on-chain so ForkMesh is not
+  a money transmitter holding user funds.
+- Sustainable revenue that aligns with users: the bounty split, hosted
+  mainnode capacity, and paid private-mirror storage — never selling data.
+- Supply-chain hardening end to end: content-addressed signed releases
+  (already shipped), reproducible builds, SBOMs.
+
+### Phase 7 — Something people choose
+
+- Signed installers and auto-update for Windows, macOS, and Linux; the app
+  must be a download, not a build.
+- Onboarding that delivers value in five minutes without the user needing
+  to understand keys, nodes, or relays.
+- Real documentation: protocol spec, self-hosting guide, contributor guide.
+- Dogfood completely — ForkMesh development already runs on ForkMesh; keep
+  every new feature on that path first.
+
+### What "done" looks like
+
+Concrete bars for "fully functioning, no bugs, high performance":
+
+- 99.9% availability of browse and clone for any published repo, even with
+  its source node offline.
+- Crash-free desktop sessions above 99.5%, and no GUI stall over 200 ms in
+  telemetry.
+- The entire loop — publish, issue, agent PR, human review, merge, bounty
+  payout — exercised automatically every night against production-like
+  infrastructure.
+- A stranger installs ForkMesh, publishes a repo, and merges an agent's PR
+  in under ten minutes without reading the docs.
+
+### Why this shape
+
+The trends this roadmap is built against: self-hosted and federated forges
+are growing fast ([Forgejo federation](https://forgejo.org/),
+[ForgeFed](https://forgefed.org/)); pure peer-to-peer forges like
+[Radicle](https://radicle.dev/) validate the sovereignty demand while
+showing that tooling maturity decides adoption; and agent-orchestrated
+development is the dominant 2026 shift ([Anthropic's agentic coding trends
+report](https://resources.anthropic.com/2026-agentic-coding-trends-report)).
+The intersection — a sovereign, federated forge where agents are paid,
+attributable contributors — is empty, and it is exactly where ForkMesh
+already stands. The roadmap above is the work required to deserve it.
+
 ---
 
 **Ready to join the mesh?** Build a node, mirror a project you love, open an
