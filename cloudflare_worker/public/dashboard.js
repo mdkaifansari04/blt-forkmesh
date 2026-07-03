@@ -2681,12 +2681,39 @@
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
           <textarea data-repo-issue-body rows="6" placeholder="Describe the issue. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
+        <button type="button" data-repo-issue-attach-image class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach images</button>
+        <input type="file" data-repo-issue-file-input multiple accept="image/*" style="display: none;" />
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
     window.lucide?.createIcons();
+    const attachButton = container.querySelector("[data-repo-issue-attach-image]");
+    const fileInput = container.querySelector("[data-repo-issue-file-input]");
+    const bodyInput = container.querySelector("[data-repo-issue-body]");
+    if (attachButton && fileInput) {
+      attachButton.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", async () => {
+        const files = Array.from(fileInput.files || []);
+        for (const file of files) {
+          if (!file.type.startsWith("image/")) continue;
+          try {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = reader.result;
+              const fileName = escapeHtml(file.name);
+              const markdown = `![${fileName}](${dataUrl})`;
+              if (bodyInput) {
+                bodyInput.value = (bodyInput.value + "\n" + markdown).trim();
+              }
+            };
+            reader.readAsDataURL(file);
+          } catch (_) {}
+        }
+        fileInput.value = "";
+      });
+    }
     container.querySelector("[data-repo-issue-title]")?.focus();
   }
 
