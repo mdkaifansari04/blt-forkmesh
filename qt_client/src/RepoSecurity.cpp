@@ -170,9 +170,11 @@ struct DependencyAlert {
 };
 
 // npm/yarn/pnpm: flag * / latest / open-ended >= without <
-static QList<DependencyAlert> scanPackageJson(const RepoFile &file)
+// Returns both alerts and total count of dependencies found
+static QPair<QList<DependencyAlert>, int> scanPackageJson(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
+    int totalDeps = 0;
     const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
 
     static const QRegularExpression kDepsSection(
@@ -211,6 +213,7 @@ static QList<DependencyAlert> scanPackageJson(const RepoFile &file)
         const QString ver = m.captured(2).trimmed();
         if (ver.contains(QLatin1Char(':')))
             continue; // file:, git+, etc.
+        ++totalDeps;
         QString reason;
         if (ver.isEmpty() || ver == QLatin1String("*") || ver == QLatin1String("x"))
             reason = QStringLiteral("unpinned (\"*\")");
@@ -222,13 +225,14 @@ static QList<DependencyAlert> scanPackageJson(const RepoFile &file)
             alerts.append({name, ver.isEmpty() ? QStringLiteral("*") : ver,
                            file.path, i + 1, reason});
     }
-    return alerts;
+    return {alerts, totalDeps};
 }
 
 // pip: flag packages without == specifier
-static QList<DependencyAlert> scanRequirementsTxt(const RepoFile &file)
+static QPair<QList<DependencyAlert>, int> scanRequirementsTxt(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
+    int totalDeps = 0;
     const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
 
     static const QRegularExpression kEntry(
@@ -252,6 +256,7 @@ static QList<DependencyAlert> scanRequirementsTxt(const RepoFile &file)
             continue;
         const QString name = m.captured(1);
         const QString spec = m.captured(2).trimmed();
+        ++totalDeps;
         QString reason;
         if (spec.isEmpty())
             reason = QStringLiteral("no version constraint");
@@ -264,13 +269,14 @@ static QList<DependencyAlert> scanRequirementsTxt(const RepoFile &file)
             alerts.append({name, spec.isEmpty() ? QStringLiteral("(any)") : spec,
                            file.path, i + 1, reason});
     }
-    return alerts;
+    return {alerts, totalDeps};
 }
 
 // Cargo.toml: flag version = "*"
-static QList<DependencyAlert> scanCargoToml(const RepoFile &file)
+static QPair<QList<DependencyAlert>, int> scanCargoToml(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
+    int totalDeps = 0;
     const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
 
     static const QRegularExpression kSimple(
@@ -282,22 +288,26 @@ static QList<DependencyAlert> scanCargoToml(const RepoFile &file)
         const QString &ln = lines[i];
         auto m1 = kSimple.match(ln);
         if (m1.hasMatch()) {
+            ++totalDeps;
             alerts.append({m1.captured(1), QStringLiteral("*"),
                            file.path, i + 1, QStringLiteral("unpinned (\"*\")")});
             continue;
         }
         auto m2 = kTable.match(ln);
-        if (m2.hasMatch())
+        if (m2.hasMatch()) {
+            ++totalDeps;
             alerts.append({m2.captured(1), QStringLiteral("*"),
                            file.path, i + 1, QStringLiteral("unpinned (\"*\")")});
+        }
     }
-    return alerts;
+    return {alerts, totalDeps};
 }
 
 // pom.xml: flag LATEST, RELEASE, and -SNAPSHOT versions
-static QList<DependencyAlert> scanPomXml(const RepoFile &file)
+static QPair<QList<DependencyAlert>, int> scanPomXml(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
+    int totalDeps = 0;
     const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
 
     static const QRegularExpression kVersion(
@@ -308,6 +318,7 @@ static QList<DependencyAlert> scanPomXml(const RepoFile &file)
         auto m = kVersion.match(lines[i]);
         if (!m.hasMatch())
             continue;
+        ++totalDeps;
         const QString ver = m.captured(1);
         QString reason;
         if (ver.compare(QLatin1String("LATEST"), Qt::CaseInsensitive) == 0)
@@ -318,13 +329,14 @@ static QList<DependencyAlert> scanPomXml(const RepoFile &file)
             reason = QStringLiteral("mutable SNAPSHOT version");
         alerts.append({QStringLiteral("(dependency)"), ver, file.path, i + 1, reason});
     }
-    return alerts;
+    return {alerts, totalDeps};
 }
 
 // Gemfile: flag gems declared without any version constraint
-static QList<DependencyAlert> scanGemfile(const RepoFile &file)
+static QPair<QList<DependencyAlert>, int> scanGemfile(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
+    int totalDeps = 0;
     const QStringList lines = QString::fromUtf8(file.content).split(QLatin1Char('\n'));
 
     static const QRegularExpression kGem(
@@ -338,6 +350,7 @@ static QList<DependencyAlert> scanGemfile(const RepoFile &file)
         auto m = kGem.match(ln.trimmed());
         if (!m.hasMatch())
             continue;
+        ++totalDeps;
         const QString name = m.captured(1);
         const QString rest = m.captured(2).trimmed();
         // Skip if rest looks like a version specifier (starts with quote containing
@@ -355,26 +368,33 @@ static QList<DependencyAlert> scanGemfile(const RepoFile &file)
             alerts.append({name, QStringLiteral("(any)"), file.path, i + 1,
                            QStringLiteral("no version constraint")});
     }
-    return alerts;
+    return {alerts, totalDeps};
 }
 
-static QList<DependencyAlert> collectDependencyAlerts(const QList<RepoFile> &files)
+static QPair<QList<DependencyAlert>, QHash<QString, int>> collectDependencyAlerts(const QList<RepoFile> &files)
 {
     QList<DependencyAlert> all;
+    QHash<QString, int> dependencyCountByPath;
     for (const RepoFile &file : files) {
         const QString base = QFileInfo(file.path).fileName().toLower();
+        QPair<QList<DependencyAlert>, int> result;
         if (base == QLatin1String("package.json"))
-            all += scanPackageJson(file);
+            result = scanPackageJson(file);
         else if (base == QLatin1String("requirements.txt"))
-            all += scanRequirementsTxt(file);
+            result = scanRequirementsTxt(file);
         else if (base == QLatin1String("cargo.toml"))
-            all += scanCargoToml(file);
+            result = scanCargoToml(file);
         else if (base == QLatin1String("pom.xml"))
-            all += scanPomXml(file);
+            result = scanPomXml(file);
         else if (base == QLatin1String("gemfile"))
-            all += scanGemfile(file);
+            result = scanGemfile(file);
+        else
+            continue;
+        all += result.first;
+        if (result.second > 0)
+            dependencyCountByPath[file.path] = result.second;
     }
-    return all;
+    return {all, dependencyCountByPath};
 }
 
 int lineNumberForOffset(const QByteArray &content, qsizetype offset)
@@ -721,7 +741,8 @@ RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
                      QStringLiteral("Matched values are redacted. Rotate any exposed keys.")));
 
     const QStringList manifests = dependencyManifests(files);
-    const QList<DependencyAlert> depAlerts = collectDependencyAlerts(files);
+    const auto [depAlerts, depCounts] = collectDependencyAlerts(files);
+    snapshot.dependencyCounts = depCounts;
 
     for (const DependencyAlert &alert : depAlerts) {
         RepoSecurityFinding finding;
@@ -845,6 +866,60 @@ RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
                                    QStringLiteral("Derived from local repository metadata.")));
 
     return snapshot;
+}
+
+RepoSecurityManifestScan RepoSecurity::scanManifest(const RepoSecurityInput &input,
+                                                    const QString &manifestPath)
+{
+    RepoSecurityManifestScan result;
+
+    const bool useLocal = !input.localPath.trimmed().isEmpty() &&
+                          QDir(input.localPath).exists();
+    const bool useMirror = !useLocal && !input.mirrorPath.trimmed().isEmpty() &&
+                           QDir(input.mirrorPath).exists();
+
+    QByteArray content = useLocal ? readLocalFile(input.localPath, manifestPath)
+                                  : useMirror ? readMirrorFile(input.mirrorPath, manifestPath)
+                                              : QByteArray();
+    if (content.isEmpty() || !isLikelyText(content))
+        return result;
+
+    RepoFile file{manifestPath, content};
+    const QString base = QFileInfo(file.path).fileName().toLower();
+    QPair<QList<DependencyAlert>, int> scanResult;
+
+    if (base == QLatin1String("package.json"))
+        scanResult = scanPackageJson(file);
+    else if (base == QLatin1String("requirements.txt"))
+        scanResult = scanRequirementsTxt(file);
+    else if (base == QLatin1String("cargo.toml"))
+        scanResult = scanCargoToml(file);
+    else if (base == QLatin1String("pom.xml"))
+        scanResult = scanPomXml(file);
+    else if (base == QLatin1String("gemfile"))
+        scanResult = scanGemfile(file);
+    else
+        return result;
+
+    result.dependencyCount = scanResult.second;
+    for (const DependencyAlert &alert : scanResult.first) {
+        RepoSecurityFinding finding;
+        finding.id =
+            QStringLiteral("dep:%1:%2").arg(alert.path).arg(alert.line);
+        finding.category = QStringLiteral("Dependency");
+        finding.severity = RepoSecuritySeverity::Warning;
+        finding.title = alert.name;
+        finding.detail =
+            QStringLiteral("Loose version specifier: %1 (%2)")
+                .arg(alert.version, alert.reason);
+        finding.path = alert.path;
+        finding.line = alert.line;
+        finding.recommendedAction =
+            QStringLiteral("Pin to an exact version to reduce supply-chain risk.");
+        result.findings.append(finding);
+    }
+
+    return result;
 }
 
 QString RepoSecurity::severityText(RepoSecuritySeverity severity)
