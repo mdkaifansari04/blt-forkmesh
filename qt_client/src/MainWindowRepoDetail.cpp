@@ -6647,6 +6647,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
+                                {"Shortcuts", "rocket"},
                                 {"Settings", "gear"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
@@ -6809,8 +6810,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildMirrorNodesTab());                 // 13 Mirror nodes
     m_artifactsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildArtifactsTab());                   // 14 Artifacts
+    m_shortcutsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildShortcutsTab());                   // 15 Shortcuts
     m_settingsTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 15 Settings
+    m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -6883,6 +6886,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadMirrorNodesPanel();
         else if (id == m_artifactsTabIndex)
             loadArtifactsPanel();
+        else if (id == m_shortcutsTabIndex)
+            loadShortcutsPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
         // Hand keyboard focus to the new tab's list so the user can arrow through
