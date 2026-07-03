@@ -2361,27 +2361,19 @@ void MainWindow::updateNodeOnlineControls()
     const bool online = !m_nodeOffline;
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
-    m_nodeOnlineToggle->setText(online ? QString::fromUtf8("\xE2\x97\x8F  Online")
-                                       : QString::fromUtf8("\xE2\x97\x8B  Offline"));
     m_nodeOnlineToggle->setToolTip(
         online ? QStringLiteral("This node is online and collecting rewards. "
                                 "Click to take it offline.")
                : QStringLiteral("This node is offline and not collecting "
                                 "rewards. Click to bring it back online."));
-    // Green pill when online (the state we want the user to keep), muted/amber when
-    // offline. Styled inline so the state colours don't depend on a QSS re-polish.
-    m_nodeOnlineToggle->setStyleSheet(
-        online
-            ? QStringLiteral(
-                  "#nodeOnlineToggle { background:#1a7f37; color:#ffffff; "
-                  "border:1px solid #2ea043; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#216e39; }")
-            : QStringLiteral(
-                  "#nodeOnlineToggle { background:transparent; color:#d29922; "
-                  "border:1px solid #9e6a03; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#161b22; }"));
+
+    if (m_nodeOnlineStatusLabel) {
+        m_nodeOnlineStatusLabel->setText(online ? QStringLiteral("Online")
+                                                : QStringLiteral("Offline"));
+        m_nodeOnlineStatusLabel->setStyleSheet(
+            online ? QStringLiteral("color:#3fb950; font-size:13px; font-weight:800;")
+                   : QStringLiteral("color:#d29922; font-size:13px; font-weight:800;"));
+    }
 
     if (m_nodeRewardStatus) {
         m_nodeRewardStatus->setText(online
@@ -5825,18 +5817,19 @@ QWidget *MainWindow::buildHomeSection()
     return page;
 }
 
-// Small helper: an icon-only quick-action button for the "THIS NODE" toolbar at
-// the top of the profile panel. Bigger tap target, tooltip-labelled.
-static QPushButton *makeProfileActionButton(const QString &icon,
+// Small helper: a labelled quick-action button for the "THIS NODE" toolbar at
+// the top of the profile panel. Icon + text (not icon-only) so the action is
+// clear at a glance; the tooltip carries the longer explanation.
+static QPushButton *makeProfileActionButton(const QString &icon, const QString &label,
                                             const QString &tooltip)
 {
-    auto *button = new QPushButton;
+    auto *button = new QPushButton(label);
     button->setObjectName("profileActionButton");
     button->setCursor(Qt::PointingHandCursor);
     button->setToolTip(tooltip);
     button->setFixedHeight(36);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setOcticon(button, icon, 18);
+    setOcticon(button, icon, 16);
     return button;
 }
 
@@ -5888,10 +5881,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Width: wide enough for all content, narrow enough to look centered on wide
-    // windows when flanked by the stretchers in buildNodeProfileSection.
+    // Width: wide enough for the two-column layout (identity/stats on the left,
+    // hosting/keys/Solana on the right) side by side, narrow enough to look
+    // centered on wide windows when flanked by the stretchers in
+    // buildNodeProfileSection.
     scroll->setMinimumWidth(340);
-    scroll->setMaximumWidth(840);
+    scroll->setMaximumWidth(1180);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -5954,23 +5949,64 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(m_profileGetPaidButton, &QPushButton::clicked, this,
             &MainWindow::enablePaidMirroring);
 
-    // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
-    // (rebuild, update, settings, logout) that used to be a stacked text menu.
+    // --- Node power switch: a plain on/off toggle sitting right under "Get paid
+    // to mirror", since that's exactly what it controls — whether this whole
+    // node is online and serving/collecting rewards, or parked offline. Used to
+    // be a small pill in the top-right nav cluster; moved here so it reads as
+    // the node's power switch rather than a stray status badge.
+    m_profileOnlineSection = new QWidget;
+    auto *onlineSectionLabel = makeProfileSection("THIS NODE'S POWER SWITCH");
+    auto *nodeOnlineSwitch = new ToggleSwitch;
+    m_nodeOnlineToggle = nodeOnlineSwitch;
+    connect(nodeOnlineSwitch, &QAbstractButton::clicked, this,
+            [this](bool checked) { setNodeOffline(!checked); });
+    m_nodeOnlineStatusLabel = new QLabel;
+    m_nodeRewardStatus = new QLabel;
+    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
+    m_nodeRewardStatus->setWordWrap(true);
+    m_nodeUptimeLabel = new QLabel;
+    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
+    m_nodeUptimeLabel->setStyleSheet(
+        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
+    m_nodeUptimeLabel->setToolTip(
+        QStringLiteral("How long this node has been online this session"));
+    auto *onlineStatusColumn = new QVBoxLayout;
+    onlineStatusColumn->setContentsMargins(0, 0, 0, 0);
+    onlineStatusColumn->setSpacing(0);
+    onlineStatusColumn->addWidget(m_nodeOnlineStatusLabel);
+    onlineStatusColumn->addWidget(m_nodeRewardStatus);
+    onlineStatusColumn->addWidget(m_nodeUptimeLabel);
+    auto *onlineSwitchRow = new QHBoxLayout;
+    onlineSwitchRow->setContentsMargins(0, 0, 0, 0);
+    onlineSwitchRow->setSpacing(10);
+    onlineSwitchRow->addWidget(nodeOnlineSwitch);
+    onlineSwitchRow->addLayout(onlineStatusColumn, 1);
+    auto *onlineSectionLayout = new QVBoxLayout(m_profileOnlineSection);
+    onlineSectionLayout->setContentsMargins(0, 0, 0, 0);
+    onlineSectionLayout->setSpacing(6);
+    onlineSectionLayout->addWidget(onlineSectionLabel);
+    onlineSectionLayout->addLayout(onlineSwitchRow);
+
+    // --- Self-only quick actions: a horizontal toolbar of labelled icon buttons
+    // (rebuild, update, settings, logout) that used to be a stacked text menu,
+    // then icon-only; labels came back so each action is clear at a glance.
     m_profileSelfActions = new QWidget;
     auto *selfLabel = makeProfileSection("THIS NODE");
     m_profileRebuildButton = makeProfileActionButton(
-        "sync",
+        "sync", "Rebuild",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
     connect(m_profileRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileRebuildButton); quickRebuildRestart(); });
     m_profileUpdateButton = makeProfileActionButton(
-        "download", "Pull the latest source, then rebuild and relaunch");
+        "download", "Update", "Pull the latest source, then rebuild and relaunch");
     connect(m_profileUpdateButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileUpdateButton); updateRebuildRestart(); });
-    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings");
+    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings",
+                                                        "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout");
+    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
+                                                      "Log out of this node");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
