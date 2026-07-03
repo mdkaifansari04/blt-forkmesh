@@ -88,6 +88,24 @@ QComboBox QAbstractItemView {
     background-color: #161b22; border: 1px solid #30363d;
     selection-background-color: #1f6feb; color: #e6edf3;
 }
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+    border: none;
+    background-color: transparent;
+    padding: 0px 4px 0px 8px;
+}
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+    border: none;
+    background-color: rgba(88, 166, 255, 0.08);
+}
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+    image: url(:/icons/octicons/chevron-down.svg);
+    width: 16px;
+    height: 16px;
+}
 
 QPushButton {
     background-color: #21262d;
@@ -1116,6 +1134,24 @@ QSpinBox::up-button, QSpinBox::down-button { width: 0; }
 QComboBox QAbstractItemView {
     background-color: #ffffff; border: 1px solid #d0d7de;
     selection-background-color: #0969da; selection-color: #ffffff; color: #1f2328;
+}
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+    border: none;
+    background-color: transparent;
+    padding: 0px 4px 0px 8px;
+}
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+    border: none;
+    background-color: rgba(9, 105, 218, 0.08);
+}
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+    image: url(:/icons/octicons/chevron-down.svg);
+    width: 16px;
+    height: 16px;
 }
 
 QPushButton {
