@@ -118,9 +118,14 @@ void MainWindow::saveChatHistory()
     for (auto it = m_dmNames.constBegin(); it != m_dmNames.constEnd(); ++it)
         dmNames.insert(it.key(), it.value());
 
+    QJsonObject unreadObj;
+    for (auto it = m_unreadCounts.constBegin(); it != m_unreadCounts.constEnd(); ++it)
+        unreadObj.insert(it.key(), it.value());
+
     const QJsonObject root{{"current", m_currentConversation},
                            {"openDms", openDms},
                            {"dmNames", dmNames},
+                           {"unread", unreadObj},
                            {"conversations", conversations}};
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
@@ -186,6 +191,21 @@ void MainWindow::loadChatHistory()
             m_openDms.append(peer);
     }
     refreshDmList();
+
+    // Restore the unread state for conversations the user was not actively reading
+    // when they closed the app. This prevents notifications from re-appearing for
+    // already-read messages when history is replayed from the relay (issue #89).
+    const QJsonObject unreadObj = root.value("unread").toObject();
+    for (auto it = unreadObj.constBegin(); it != unreadObj.constEnd(); ++it) {
+        const QString conv = it.key();
+        const int count = it.value().toInt();
+        if (!conv.isEmpty() && count > 0) {
+            m_unread.insert(conv);
+            m_unreadCounts[conv] = count;
+        }
+    }
+    if (!m_unread.isEmpty())
+        updateChatButton();
 
     // Reopen the last conversation so history is visible immediately.
     const QString current = root.value("current").toString();
