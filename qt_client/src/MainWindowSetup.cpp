@@ -1653,6 +1653,25 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     if (lookupStatus == 0)
         return false;
 
+    // Already an active, key-bound account under this node's own key — e.g. a
+    // prior run already reserved + finalized it (an installer link code, adhoc
+    // #53, may have attached an owner to it along the way). It's already
+    // registered, linked or not; re-running reserve/finalize would only hit the
+    // relay's "node_name_taken" guard for active accounts, so just adopt the
+    // existing session instead of re-registering.
+    if (lookup.value("exists").toBool() &&
+        lookup.value("status").toString() == QStringLiteral("active") &&
+        lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
+        QSettings().setValue(kAuthedAccountSetting, accountName);
+        applyAccountEmailVerified(accountName,
+                                  lookup.value("emailVerified").toBool());
+        return true;
+    }
+
     // Step 1: reserve the name, binding it to this node's key.
     const QString rts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray rcanon =
