@@ -3548,6 +3548,12 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // How many of the selected session's oldest events are currently NOT
+    // rendered as transcript rows (only folded into the token/cost totals via
+    // accumulateStatsOnly) — i.e. still hidden behind the "Load earlier events"
+    // notice. loadEarlierTranscriptEvents() shrinks this as batches are
+    // revealed; renderTranscriptForSession() resets it on every full rebuild.
+    int m_transcriptSkipped = 0;
     // Which *external* session's transcript is built into the shared view, so
     // showAgentSession can skip the full 400 KB tail re-read/rebuild when the
     // session is unchanged (reloadAgents re-shows the open session constantly).
@@ -3629,6 +3635,12 @@ private:
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
+    // Slice the next batch of earlier events off the selected session's
+    // already-in-memory buffer (m_streamEvents; loadEvents() reads the whole
+    // events.jsonl up front, so this never touches disk) and hand it to
+    // m_agentTranscript->prependEarlierEvents() — driven by the view's
+    // loadEarlierRequested() signal (button click or scroll-near-top).
+    void loadEarlierTranscriptEvents();
     // Re-run the transcript search box's query against the freshly-rebuilt view
     // (adhoc #201), so highlights survive a session switch / re-render.
     void reapplyTranscriptSearch();
