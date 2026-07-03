@@ -807,9 +807,22 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     image: url(:/icons/octicons/check-white.svg);
 }
 #quickAddAgentBox {
-    border: 1px solid #30363d; border-radius: 4px; background: transparent;
+    border: none; background: transparent;
     font-size: 12px;
 }
+/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
+   ghost-button label plus small borderless dot buttons, one per session. */
+QPushButton#agentStatusLabel {
+    background: transparent; border: none; color: #8b949e;
+    font-weight: 600; font-size: 12px; padding: 2px 0;
+}
+QPushButton#agentStatusLabel:hover { color: #e6edf3; }
+QPushButton#agentStatusDot {
+    background: transparent; border: none; padding: 0; border-radius: 3px;
+}
+QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
+#agentStatusScroll { background: transparent; border: none; }
+#agentStatusScroll > QWidget > QWidget { background: transparent; }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1873,9 +1886,22 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     image: url(:/icons/octicons/check-white.svg);
 }
 #quickAddAgentBox {
-    border: 1px solid #d0d7de; border-radius: 4px; background: transparent;
+    border: none; background: transparent;
     font-size: 12px;
 }
+/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
+   ghost-button label plus small borderless dot buttons, one per session. */
+QPushButton#agentStatusLabel {
+    background: transparent; border: none; color: #6e7781;
+    font-weight: 600; font-size: 12px; padding: 2px 0;
+}
+QPushButton#agentStatusLabel:hover { color: #1f2328; }
+QPushButton#agentStatusDot {
+    background: transparent; border: none; padding: 0; border-radius: 3px;
+}
+QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
+#agentStatusScroll { background: transparent; border: none; }
+#agentStatusScroll > QWidget > QWidget { background: transparent; }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

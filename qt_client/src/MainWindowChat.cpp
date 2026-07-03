@@ -600,12 +600,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     sendColumn->addWidget(m_quickAddSendToAgentButton);
     sendColumn->addWidget(quickAddSendButton);
 
-    // Thin bordered box housing the agent hand-off controls (adhoc #99): the
-    // "Agent" toggle plus the provider/model/mode dropdowns it governs, visually
-    // grouped as one unit in the middle of the bottom bar. Kept about half as
-    // tall as its original padding (issue #348) so it reads as a slim pill
-    // instead of a second bar.
-    auto *agentBox = new QFrame;
+    // Agent hand-off controls (adhoc #99): the "Agent" toggle plus the
+    // provider/model/mode dropdowns it governs, grouped as one unit in the
+    // middle of the bottom bar. No border/frame around them any more (adhoc
+    // #111 removed the pill outline) — they just sit inline in the bar.
+    auto *agentBox = new QWidget;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
     agentBoxRow->setContentsMargins(6, 1, 4, 1);
@@ -619,10 +618,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
     // either side, then the character count immediately left of the send icons.
-    // The extra top margin (issue #348) drops the whole row down away from the
-    // text area above it instead of hugging it.
+    // No bottom margin (adhoc #111) so the row sits flush against the bottom
+    // edge of the prompt frame instead of leaving a gap under it.
     auto *bottomBar = new QHBoxLayout;
-    bottomBar->setContentsMargins(8, 6, 6, 4);
+    bottomBar->setContentsMargins(8, 6, 6, 0);
     bottomBar->setSpacing(6);
     bottomBar->addWidget(m_quickAddImageButton);
     bottomBar->addWidget(m_quickAddMicButton);
@@ -649,11 +648,50 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->addWidget(m_issueQuickAdd);
     promptLayout->addLayout(bottomBar);
 
-    // Card (right half): just the prompt frame now that its controls live
-    // inside it as the bottom bar.
+    // "Agents:" status strip above the prompt input (adhoc #111): a clickable
+    // label plus one small colored dot per known agent session — a status
+    // dashboard at a glance. The label jumps to the most relevant session's
+    // Agents tab; each dot jumps straight to that one. Populated by
+    // refreshAgentStatusRow() (called from reloadAgents()), hidden until there
+    // is at least one session to show.
+    m_agentStatusLabel = new QPushButton("Agents:");
+    m_agentStatusLabel->setObjectName("agentStatusLabel");
+    m_agentStatusLabel->setFlat(true);
+    m_agentStatusLabel->setCursor(Qt::PointingHandCursor);
+    m_agentStatusLabel->setToolTip("Open the Agents tab");
+    connect(m_agentStatusLabel, &QPushButton::clicked, this,
+            &MainWindow::openAgentsOverview);
+
+    m_agentStatusIconsHost = new QWidget;
+    m_agentStatusIconsLayout = new QHBoxLayout(m_agentStatusIconsHost);
+    m_agentStatusIconsLayout->setContentsMargins(0, 0, 0, 0);
+    m_agentStatusIconsLayout->setSpacing(4);
+    m_agentStatusIconsLayout->addStretch(1);
+
+    auto *agentStatusScroll = new QScrollArea;
+    agentStatusScroll->setObjectName("agentStatusScroll");
+    agentStatusScroll->setWidget(m_agentStatusIconsHost);
+    agentStatusScroll->setWidgetResizable(true);
+    agentStatusScroll->setFrameShape(QFrame::NoFrame);
+    agentStatusScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    agentStatusScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    agentStatusScroll->setFixedHeight(24);
+
+    m_agentStatusRow = new QWidget;
+    m_agentStatusRow->setObjectName("agentStatusRow");
+    auto *agentStatusRowLayout = new QHBoxLayout(m_agentStatusRow);
+    agentStatusRowLayout->setContentsMargins(2, 0, 2, 6);
+    agentStatusRowLayout->setSpacing(6);
+    agentStatusRowLayout->addWidget(m_agentStatusLabel);
+    agentStatusRowLayout->addWidget(agentStatusScroll, 1);
+    m_agentStatusRow->setVisible(false); // shown once refreshAgentStatusRow() finds sessions
+
+    // Card (right half): the "Agents:" strip on top of the prompt frame, whose
+    // controls live inside it as the bottom bar.
     auto *cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(12, 8, 12, 8);
-    cardLayout->setSpacing(0);
+    cardLayout->setSpacing(4);
+    cardLayout->addWidget(m_agentStatusRow);
     cardLayout->addWidget(promptWrapper);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.

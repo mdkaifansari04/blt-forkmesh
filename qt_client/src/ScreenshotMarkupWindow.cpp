@@ -1,14 +1,16 @@
 #include "ScreenshotMarkupWindow.h"
 
+#include "MarkupCanvas.h"
+
 #include <QButtonGroup>
 #include <QColor>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QImage>
-#include <QMouseEvent>
 #include <QPainter>
-#include <QPaintEvent>
+#include <QPen>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -16,159 +18,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
-
-// ---------------------------------------------------------------------------
-// Markup data
-// ---------------------------------------------------------------------------
-
-enum class MarkupTool { Pencil, Rect, Ellipse };
-
-struct MarkupOp {
-    enum class Kind { Stroke, Shape };
-    Kind kind = Kind::Stroke;
-    QColor color;
-    QVector<QPoint> points; // used when kind == Stroke
-    MarkupTool shapeType = MarkupTool::Rect; // used when kind == Shape
-    QRect rect;
-};
-
-// ---------------------------------------------------------------------------
-// MarkupCanvas — the drawable viewport over the screenshot
-// ---------------------------------------------------------------------------
-
-class MarkupCanvas : public QWidget
-{
-    Q_OBJECT
-public:
-    explicit MarkupCanvas(const QImage &base, QWidget *parent = nullptr)
-        : QWidget(parent), m_base(base), m_color(QColor(255, 50, 50))
-    {
-        setMouseTracking(true);
-        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setCursor(Qt::CrossCursor);
-    }
-
-    void setTool(MarkupTool tool) { m_tool = tool; }
-    void setColor(const QColor &color) { m_color = color; }
-
-    void undo()
-    {
-        if (!m_ops.isEmpty()) {
-            m_ops.removeLast();
-            update();
-        }
-    }
-
-    // Composite all markup onto the base image and return the flattened result.
-    QImage flattenedImage() const
-    {
-        QImage result = m_base.convertToFormat(QImage::Format_ARGB32);
-        QPainter p(&result);
-        renderOps(p, m_ops);
-        return result;
-    }
-
-    QSize sizeHint() const override { return m_base.size(); }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter painter(this);
-        painter.drawImage(0, 0, m_base);
-        renderOps(painter, m_ops);
-        if (m_drawing)
-            renderOp(painter, m_current);
-    }
-
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        if (event->button() != Qt::LeftButton)
-            return;
-        m_drawing = true;
-        m_current = MarkupOp{};
-        m_current.color = m_color;
-        if (m_tool == MarkupTool::Pencil) {
-            m_current.kind = MarkupOp::Kind::Stroke;
-            m_current.points.append(event->position().toPoint());
-        } else {
-            m_current.kind = MarkupOp::Kind::Shape;
-            m_current.shapeType = m_tool;
-            m_dragOrigin = event->position().toPoint();
-            m_current.rect = QRect(m_dragOrigin, m_dragOrigin);
-        }
-        update();
-    }
-
-    void mouseMoveEvent(QMouseEvent *event) override
-    {
-        if (!m_drawing)
-            return;
-        const QPoint pos = event->position().toPoint();
-        if (m_current.kind == MarkupOp::Kind::Stroke)
-            m_current.points.append(pos);
-        else
-            m_current.rect = QRect(m_dragOrigin, pos).normalized();
-        update();
-    }
-
-    void mouseReleaseEvent(QMouseEvent *event) override
-    {
-        if (!m_drawing || event->button() != Qt::LeftButton)
-            return;
-        m_drawing = false;
-        const QPoint pos = event->position().toPoint();
-        if (m_current.kind == MarkupOp::Kind::Stroke) {
-            m_current.points.append(pos);
-            if (!m_current.points.isEmpty())
-                m_ops.append(m_current);
-        } else {
-            m_current.rect = QRect(m_dragOrigin, pos).normalized();
-            if (m_current.rect.width() >= 3 && m_current.rect.height() >= 3)
-                m_ops.append(m_current);
-        }
-        m_current = MarkupOp{};
-        update();
-    }
-
-private:
-    static void renderOp(QPainter &painter, const MarkupOp &op)
-    {
-        painter.save();
-        QPen pen(op.color);
-        pen.setWidth(3);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        painter.setPen(pen);
-        painter.setBrush(Qt::NoBrush);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-
-        if (op.kind == MarkupOp::Kind::Stroke) {
-            if (op.points.size() == 1)
-                painter.drawPoint(op.points.first());
-            else if (op.points.size() > 1)
-                painter.drawPolyline(op.points.constData(), op.points.size());
-        } else if (op.shapeType == MarkupTool::Rect) {
-            painter.drawRect(op.rect);
-        } else {
-            painter.drawEllipse(op.rect);
-        }
-        painter.restore();
-    }
-
-    static void renderOps(QPainter &painter, const QVector<MarkupOp> &ops)
-    {
-        for (const MarkupOp &op : ops)
-            renderOp(painter, op);
-    }
-
-    QImage m_base;
-    QVector<MarkupOp> m_ops;
-    MarkupOp m_current;
-    bool m_drawing = false;
-    QPoint m_dragOrigin;
-    MarkupTool m_tool = MarkupTool::Pencil;
-    QColor m_color;
-};
 
 // ---------------------------------------------------------------------------
 // ScreenshotMarkupWindow
@@ -338,5 +187,3 @@ void ScreenshotMarkupWindow::onAccept()
     emit imageAccepted(m_canvas->flattenedImage());
     accept();
 }
-
-#include "ScreenshotMarkupWindow.moc"
