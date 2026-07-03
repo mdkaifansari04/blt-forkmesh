@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forkmesh/fm_icons.dart';
 import 'package:forkmesh/main.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/auth_mock_flow.dart';
@@ -12,7 +13,6 @@ import 'package:forkmesh/services/relay_service.dart';
 import 'package:forkmesh/services/settings_service.dart';
 import 'package:forkmesh/theme.dart';
 import 'package:forkmesh/widgets/connection_dot.dart';
-import 'package:ming_cute_icons/ming_cute_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeApiService extends ApiService {
@@ -523,7 +523,7 @@ void main() {
     );
 
     expect(notificationButton, findsOneWidget);
-    expect(find.byIcon(MingCuteIcons.mgc_notification_line), findsOneWidget);
+    expect(find.byIcon(FmIcons.notificationLine), findsOneWidget);
     expect(
       tester.getCenter(notificationButton).dx,
       lessThan(tester.getCenter(find.byType(AvatarWithDot)).dx),
