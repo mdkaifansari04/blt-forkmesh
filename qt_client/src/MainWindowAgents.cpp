@@ -5459,27 +5459,6 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init"))
         markAgentSessionRunning(sessionId);
 
-    // A live `system`/`init` event is the CLI announcing a (re)started process —
-    // the transcript's "● session started" divider. A session can start again
-    // without passing through startClaudeCodeTranscript's status write (e.g.
-    // steering a live stream whose last turn errored out and left it Failed), so
-    // pin the row to Running here: a CLI that just emitted its init event is
-    // running, whatever the list said. Persisted history is never replayed
-    // through this function (ensureStreamEventsLoaded only fills the buffers),
-    // so this only fires for a genuinely live process.
-    if (type == QLatin1String("system")
-        && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
-        if (AgentSession *as = findAgentSession(sessionId);
-            as && as->status != AgentStatus::Running) {
-            as->status = AgentStatus::Running;
-            as->finishedAtMs = 0;
-            as->lastError.clear();
-            if (m_agentStore && !isExternalSession(sessionId))
-                m_agentStore->saveSession(*as);
-            updateAgentStatusCell(sessionId);
-        }
-    }
-
     // The CLI's final `result` event carries the run summary the transcript shows
     // as "done · N turns · Ms · $X". Persist those figures on the session and
     // refresh the list cells in place so the summary survives a restart and shows
