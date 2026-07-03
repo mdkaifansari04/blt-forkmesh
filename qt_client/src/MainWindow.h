@@ -13,6 +13,7 @@
 #include "AgentStore.h"
 #include "AgentRunner.h"
 #include "ClaudeSessionScan.h"
+#include "RepoSecurity.h"
 
 struct CommitComment; // CommitCommentStore.h
 
@@ -1789,6 +1790,22 @@ private:
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
+    // Shared by refreshRepoSecurity() and runRepoDependencyScan(): gathers the
+    // repo state RepoSecurity::scan() needs so it can be handed to a worker
+    // thread without touching MainWindow/GUI state from there.
+    RepoSecurityInput buildRepoSecurityInput(const RepositoryRecord &selected,
+                                              const RepositoryRecord &writable) const;
+    // Renders a computed snapshot into the Security tab's widgets (also caches
+    // it in m_lastRepoSecuritySnapshot so a "Run scan" click can re-render the
+    // busy state instantly, before the rescan itself has produced anything new).
+    void applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
+                                   const QString &localBase);
+    // Handles the dependency card's per-row "Run scan" button: re-runs
+    // RepoSecurity::scan() off the GUI thread (it shells out to git and reads
+    // every tracked file, which can take a moment on a large repo) so the
+    // button/progress-bar busy state actually animates instead of freezing the
+    // window mid-scan.
+    void runRepoDependencyScan();
     void refreshRepoQuality();
     // Open a repo file in the editor and highlight/centre the given 1-based
     // line (used by the Security and Quality findings tables).
@@ -2858,6 +2875,13 @@ private:
     QGridLayout *m_securitySignalsGrid = nullptr;
     QTableWidget *m_securityFindingsTable = nullptr;
     QPushButton *m_securityRefreshButton = nullptr;
+    // True while runRepoDependencyScan()'s off-thread rescan is in flight; drives
+    // the dependency card's "Scanning…" button/progress-bar state.
+    bool m_repoSecurityScanRunning = false;
+    // Most recently rendered Security-tab snapshot, cached so a "Run scan" click
+    // can redraw the dependency card in its busy state immediately, without
+    // re-running the (possibly slow) scan just to get a frame to render.
+    RepoSecuritySnapshot m_lastRepoSecuritySnapshot;
     QLabel *m_qualitySummary = nullptr;
     QWidget *m_qualitySignalsPanel = nullptr;
     QGridLayout *m_qualitySignalsGrid = nullptr;
