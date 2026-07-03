@@ -3469,6 +3469,13 @@ void MainWindow::quickAddIssue()
             m_quickAddAgentProvider
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("claude-code");
+        // The quick-add model picker only shows/applies for Claude Code (adhoc
+        // #99 hides it for the other providers), so only feed it through then —
+        // otherwise the session's model stays empty like before.
+        const QString model = (provider == QLatin1String("claude-code") &&
+                               m_quickAddClaudeModel)
+                                  ? m_quickAddClaudeModel->currentData().toString()
+                                  : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
         // Hand any attached images to the agent the same way the new-agent
         // composer does: an "Attached image: <path>" line per file (issue #79).
@@ -3478,7 +3485,8 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
-        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr) > 0) {
+        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr,
+                                   model) > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
             setIssueInlineNotice(
@@ -3545,16 +3553,20 @@ void MainWindow::quickAddIssue()
             m_quickAddAgentProvider
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("codex");
+        const QString model = (provider == QLatin1String("claude-code") &&
+                               m_quickAddClaudeModel)
+                                  ? m_quickAddClaudeModel->currentData().toString()
+                                  : QString();
         const bool oldCreatePr =
             m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
         if (m_issueAgentCreatePrCheck) {
             const QSignalBlocker block(m_issueAgentCreatePrCheck);
             m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
                                                   m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(provider);
+            assignIssueToAgent(provider, model);
             m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
         } else {
-            assignIssueToAgent(provider);
+            assignIssueToAgent(provider, model);
         }
     } else {
         // Issue #203: with no agent to hand off to, land the user on the issue
