@@ -2479,6 +2479,15 @@ CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
 
+# Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
+# constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
+# two async WebCrypto round trips each) on every blind_index / encrypt_row /
+# decrypt_row call was the dominant per-request CPU cost on hot polled endpoints
+# (/api/notifications, /api/accounts/<name>). Cache the imported CryptoKeys,
+# keyed by the current secret so a secret rotation still takes effect.
+_data_key_cache = {"secret": None, "key": None}
+_hmac_key_cache = {"secret": None, "key": None}
+
 SCHEMA_STATEMENTS = [
     # email_bi (blind index of the email) lets users log in by email, not just
     # node name (migration 0003). is_admin is an operator-settable flag and name
@@ -2838,11 +2847,16 @@ def _require_data_secret(env):
 
 async def _data_key(env):
     secret = _require_data_secret(env)
+    if _data_key_cache["secret"] == secret and _data_key_cache["key"] is not None:
+        return _data_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "AES-GCM"}), False,
         _to_js(["encrypt", "decrypt"])
     )
+    _data_key_cache["secret"] = secret
+    _data_key_cache["key"] = key
+    return key
 
 
 async def encrypt_row(env, obj):
@@ -2874,11 +2888,16 @@ async def decrypt_row(env, stored, key=None):
 async def _hmac_key(env):
     # A distinct key context so the blind-index HMAC key isn't the AES key.
     secret = _require_data_secret(env) + ":blind-index"
+    if _hmac_key_cache["secret"] == secret and _hmac_key_cache["key"] is not None:
+        return _hmac_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
         _to_js(["sign"])
     )
+    _hmac_key_cache["secret"] = secret
+    _hmac_key_cache["key"] = key
+    return key
 
 
 async def blind_index(env, value):
