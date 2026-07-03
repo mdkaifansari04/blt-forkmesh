@@ -457,6 +457,15 @@ def test_wire_contracts_across_worker_qt_and_installer():
     assert '"forkmesh-link-self-v1\\n" + node + "\\n" + id + "\\n" + ts' in qt_chat
     assert 'accountsApiUrl("link-self")' in qt_chat
 
+    # The public account lookup lists the nodes linked to the account (the same
+    # data _account_public_payload already exposes), so a node's profile can
+    # render its user's whole fleet — the "show the linked nodes" ask.
+    assert '"nodes": _owned_nodes(rec)}' in entry
+    assert 'profileNodesFromJson(resp.value(QStringLiteral("nodes")))' in qt_chat
+    # The profile knows when its own account is a user (so it stops nagging to
+    # "log in as a user" and instead lists the nodes it owns).
+    assert 'm_profileIsUserAccount' in qt_chat
+
 
 def test_dashboard_exposes_a_claim_node_panel():
     dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
