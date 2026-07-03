@@ -376,12 +376,23 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoEditor(); });
 
+    // Git identity (name <email>) configured for the repo we're viewing, pinned
+    // to the far right of this same row. Filled in by updateFooterGitIdentity()
+    // each time a repo opens.
+    m_footerGitIdentity = new QLabel;
+    m_footerGitIdentity->setObjectName("footerGitIdentity");
+    m_footerGitIdentity->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerGitIdentity->setToolTip(
+        "Git author identity configured for the repository you're viewing");
+
     auto *modeRow = new QHBoxLayout;
     modeRow->setContentsMargins(16, 6, 16, 0);
     modeRow->setSpacing(2);
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addStretch();
+    modeRow->addWidget(m_footerGitIdentity);
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
