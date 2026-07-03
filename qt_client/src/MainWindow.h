@@ -3591,6 +3591,22 @@ private:
     void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
                                    const QString &repoPath,
                                    const QString &customPrompt = QString());
+    // Auto model mode (adhoc #91): resolve the "auto" sentinel to a concrete
+    // model before launching the CLI. A routed choice recorded earlier in this
+    // session's transcript is reused; otherwise a local heuristic pass runs,
+    // then a triage ladder that asks Haiku whether it can handle the task and
+    // escalates Haiku → Sonnet → Opus → Fable until a model is confident (a
+    // rung may also name the right model directly). Each decision is explained
+    // in the transcript via "_local_notice" events. `launch` receives the
+    // chosen model id; `live` guards against the session being stopped while
+    // the asynchronous triage runs.
+    void resolveAutoClaudeModel(int sessionId, const QString &task,
+                                const QString &workdir, ClaudeStreamSession *live,
+                                std::function<void(const QString &)> launch);
+    void runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnly,
+                                 const QString &task, const QString &workdir,
+                                 ClaudeStreamSession *live,
+                                 std::function<void(const QString &)> launch);
     void applyTranscriptEvent(int sessionId, const QJsonObject &ev);
     // The Claude CLI stamps every stream-json event with the conversation's
     // session_id. The most recent one identifies the conversation to `--resume`
