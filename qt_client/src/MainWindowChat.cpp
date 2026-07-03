@@ -2261,6 +2261,8 @@ void MainWindow::captureScreenRegion()
                                 m_issueQuickAdd->setFocus();
                         });
                 markup->show();
+                markup->raise();
+                markup->activateWindow();
             });
 }
 
@@ -2297,6 +2299,8 @@ void MainWindow::startScreenDraw()
                                 m_issueQuickAdd->setFocus();
                         });
                 markup->show();
+                markup->raise();
+                markup->activateWindow();
             });
 }
 
