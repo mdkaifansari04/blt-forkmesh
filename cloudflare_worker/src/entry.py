@@ -154,6 +154,12 @@ CLONE_STICKY_MS = 5 * 60 * 1000
 NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b")
 MAX_NODE_NAME = 63
+
+# A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) — the value
+# the desktop app's profile card itself labels "Node ID". The claim-node flow
+# (issue #351) accepts this as an alternative to the account's chosen name,
+# since that's what users copy when the app tells them their "node ID".
+NODE_PUBKEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 # Login brute-force throttle: after LOGIN_MAX_FAILS failures (counted within a
@@ -181,6 +187,10 @@ def valid_node_name(value):
     value = (value or "").strip()
     return (bool(value) and len(value) <= MAX_NODE_NAME and
             bool(NODE_NAME_RE.match(value)))
+
+
+def valid_node_pubkey(value):
+    return bool(NODE_PUBKEY_RE.match((value or "").strip()))
 
 
 def notification_mentions(*parts):
@@ -3353,6 +3363,37 @@ async def _owner_pubkey(env, owner):
     return rec.get("pubkey", "") if rec else ""
 
 
+async def _account_row_by_pubkey(env, pubkey):
+    # Node accounts aren't indexed by key (only by name_bi), so this is a full
+    # scan — the same tradeoff _wallet_name_map already makes at this
+    # project's scale. Only reached as a claim-node fallback when the input
+    # isn't shaped like a node name (see valid_node_pubkey).
+    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data"))
+        if rec and rec.get("pubkey") == pubkey:
+            return row["name_bi"], rec
+    return None, None
+
+
+async def _resolve_claimable_node(env, raw_id):
+    # A claim-node "node ID" may be the account's chosen name (the common
+    # case) or its Ed25519 public key, which the desktop app's own profile
+    # card labels "Node ID" (issue #351). Returns (node_bi, node_rec,
+    # node_name) or (None, None, "") when neither resolves.
+    candidate = (raw_id or "").strip()
+    name = candidate.lower()
+    if valid_node_name(name):
+        node_bi, node_rec = await _account_row(env, name)
+        if node_rec:
+            return node_bi, node_rec, name
+    if valid_node_pubkey(candidate):
+        node_bi, node_rec = await _account_row_by_pubkey(env, candidate)
+        if node_rec:
+            return node_bi, node_rec, node_rec.get("name", "")
+    return None, None, ""
+
+
 def _ts_ok(ts):
     try:
         return abs(int(Date.now()) - int(ts)) <= LOGIN_MAX_SKEW_MS
@@ -4825,13 +4866,13 @@ async def _account_claim_node(env, request):
     if not user_rec:
         return json_response({"error": "invalid_credentials"}, status=401)
     user_name = user_rec.get("name", "")
-    node_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
-                           MAX_NODE_NAME).lower()
-    if not valid_node_name(node_id):
+    raw_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
+                          MAX_NODE_NAME)
+    if not (valid_node_name(raw_id.strip().lower()) or valid_node_pubkey(raw_id)):
         return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec, node_id = await _resolve_claimable_node(env, raw_id)
     if node_id == user_name:
         return json_response({"error": "cannot_claim_self"}, status=400)
-    node_bi, node_rec = await _account_row(env, node_id)
     if not node_rec or node_rec.get("status") != "active":
         return json_response({"error": "no_such_node"}, status=404)
     if _account_kind(node_rec) != "node":
@@ -4865,12 +4906,12 @@ async def _account_claim_confirm(env, request):
     if not user_rec:
         return json_response({"error": "invalid_credentials"}, status=401)
     user_name = user_rec.get("name", "")
-    node_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
-                           MAX_NODE_NAME).lower()
+    raw_id = clean_string(data.get("nodeId", "") or data.get("nodeName", ""),
+                          MAX_NODE_NAME)
     code = clean_string(data.get("code", ""), 16).strip()
-    if not valid_node_name(node_id):
+    if not (valid_node_name(raw_id.strip().lower()) or valid_node_pubkey(raw_id)):
         return json_response({"error": "invalid_node_id"}, status=400)
-    node_bi, node_rec = await _account_row(env, node_id)
+    node_bi, node_rec, node_id = await _resolve_claimable_node(env, raw_id)
     if not node_rec or node_rec.get("status") != "active":
         return json_response({"error": "no_such_node"}, status=404)
     if node_rec.get("owner") == user_name:
