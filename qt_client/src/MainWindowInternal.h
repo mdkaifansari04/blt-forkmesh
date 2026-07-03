@@ -2371,8 +2371,10 @@ inline ClaudeAutoRoute claudeAutoHeuristicRoute(const QString &task)
 // the live provider models once mergeLiveClaudeModels fills them in. The
 // property marks combos whose launch path understands the "auto" sentinel
 // (composer + quick-add, which start transcript sessions) so the live-merge
-// re-inserts the entry after replacing the list; the branch/action fix combos
-// pass --model straight to a command line and stay ladder-free.
+// re-inserts the entry after replacing the list. The branch/action fix combos
+// stay on concrete models for now — their claude-code runs would route fine
+// (they start transcript sessions too), but the same widgets also serve the
+// claude-api/openai providers where "auto" means nothing.
 inline void populateClaudeModelCombo(QComboBox *combo)
 {
     if (!combo)
@@ -2453,7 +2455,12 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
         combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
     }
     const int idx = combo->findData(picked);
-    combo->setCurrentIndex(idx >= 0 ? idx : 0);
+    // No restorable pick: land on the first live model, not the synthetic
+    // "Auto" entry — an untouched chooser keeps showing the concrete default
+    // that actually runs, and auto routing stays strictly opt-in.
+    const int fallback =
+        combo->property("allowAutoModel").toBool() && combo->count() > 1 ? 1 : 0;
+    combo->setCurrentIndex(idx >= 0 ? idx : fallback);
 }
 
 // User's preferred tab a repository opens on (Settings → General). Stored as
