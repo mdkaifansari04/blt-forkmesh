@@ -1095,6 +1095,25 @@ def test_repo_shortcut_urls_redirect_to_dashboard_from_404_page():
         assert '"%s"' % reserved in html
 
 
+def test_dashboard_restores_feature_tab_on_hard_refresh():
+    # Regression test: a page load (not just a client-side tab click or a
+    # Back/Forward step) at a feature-tab URL like /owner/repo/issues must
+    # restore that tab instead of silently falling back to Code. This was
+    # broken because REPO_TAB_ROUTES/repoRouteParts() were referenced by the
+    # popstate handler but never defined, and the initial-render path
+    # (renderRepoDetail, run from init() on a hard load) never consulted the
+    # URL's tab segment at all.
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "function repoRouteParts()" in dashboard_js
+    assert 'const REPO_TAB_ROUTES = ["commits", "releases", "issues", "pulls", "discussions", "mirrors"];' in dashboard_js
+
+    render_start = dashboard_js.index("function renderRepoDetail(repo)")
+    render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
+    assert "const parts = repoRouteParts();" in render_body
+    assert 'setRepoTab(REPO_TAB_ROUTES.includes(kind) ? kind : "code");' in render_body
+
+
 def test_desktop_client_stub_exists():
     html = _read(PUBLIC / "desktop.html")
 
