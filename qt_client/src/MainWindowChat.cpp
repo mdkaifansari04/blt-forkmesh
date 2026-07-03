@@ -10,6 +10,7 @@
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
+#include "ScreenshotMarkupWindow.h"
 
 #include <QNetworkInformation>
 
@@ -2247,14 +2248,19 @@ void MainWindow::captureScreenRegion()
     }
     connect(overlay, &ScreenCaptureOverlay::captured, this,
             [this](const QImage &image) {
-                const QString path = saveNewAgentPromptImage(image);
-                if (path.isEmpty()) {
-                    logSystem("Couldn't save the screenshot.");
-                    return;
-                }
-                queueQuickAddImage(path);
-                if (m_issueQuickAdd)
-                    m_issueQuickAdd->setFocus();
+                auto *markup = new ScreenshotMarkupWindow(image, this);
+                connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
+                        [this](const QImage &annotated) {
+                            const QString path = saveNewAgentPromptImage(annotated);
+                            if (path.isEmpty()) {
+                                logSystem("Couldn't save the screenshot.");
+                                return;
+                            }
+                            queueQuickAddImage(path);
+                            if (m_issueQuickAdd)
+                                m_issueQuickAdd->setFocus();
+                        });
+                markup->show();
             });
 }
 
@@ -2278,14 +2284,19 @@ void MainWindow::startScreenDraw()
     }
     connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
-                const QString path = saveNewAgentPromptImage(image);
-                if (path.isEmpty()) {
-                    logSystem("Couldn't save the screenshot.");
-                    return;
-                }
-                queueQuickAddImage(path);
-                if (m_issueQuickAdd)
-                    m_issueQuickAdd->setFocus();
+                auto *markup = new ScreenshotMarkupWindow(image, this);
+                connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
+                        [this](const QImage &annotated) {
+                            const QString path = saveNewAgentPromptImage(annotated);
+                            if (path.isEmpty()) {
+                                logSystem("Couldn't save the screenshot.");
+                                return;
+                            }
+                            queueQuickAddImage(path);
+                            if (m_issueQuickAdd)
+                                m_issueQuickAdd->setFocus();
+                        });
+                markup->show();
             });
 }
 
