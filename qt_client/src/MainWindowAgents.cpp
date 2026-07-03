@@ -1124,8 +1124,25 @@ QWidget *MainWindow::buildAgentsTab()
         if (!m_agentPromptEdit)
             return;
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
-        if (prompt.isEmpty())
+        if (prompt.isEmpty()) {
+            // Nothing typed: Send doubles as Continue (adhoc #142). Sync the
+            // session's stored model from the composer dropdown first — the
+            // combo can be showing a fallback display model (showAgentSession)
+            // that was never written back to the session, so without this the
+            // continued run could silently use a different model than shown.
+            if (m_agentModelCombo && m_agentModelCombo->isEnabled() &&
+                m_selectedAgentSessionId > 0 && m_agentStore) {
+                if (AgentSession *s = findAgentSession(m_selectedAgentSessionId)) {
+                    const QString picked = m_agentModelCombo->currentData().toString();
+                    if (s->model != picked) {
+                        s->model = picked;
+                        m_agentStore->saveSession(*s);
+                    }
+                }
+            }
+            continueSelectedAgentSession();
             return;
+        }
         // Clear the composer up front, before dispatching: the send paths below
         // can pump the event loop (transcript repaint, session restart), and
         // clearing only afterwards sometimes left the just-sent prompt stuck in
