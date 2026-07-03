@@ -2660,17 +2660,17 @@
       ? items.slice(start, end)
       : items;
     return pageItems.map((item) => `
-      <button type="button" data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left hover:bg-secondary/40 transition-colors">
+      <button type="button" ${item.pending ? "disabled" : ""} data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors ${item.pending ? "cursor-default opacity-80" : "hover:bg-secondary/40"}">
         <i data-lucide="${config.icon}" class="mt-0.5 h-4 w-4 ${config.tone}"></i>
         <span class="min-w-0">
           <span class="flex min-w-0 flex-wrap items-center gap-2">
-            <span class="font-mono text-xs text-muted-foreground">#${formatCount(item.number)}</span>
+            <span class="font-mono text-xs text-muted-foreground">${item.pending ? "pending" : `#${formatCount(item.number)}`}</span>
             <span class="min-w-0 truncate text-sm font-medium text-foreground">${escapeHtml(item.title)}</span>
           </span>
           <span class="mt-1 line-clamp-2 text-xs text-muted-foreground">${escapeHtml(item.body || `${item.author} opened this signed ${config.itemLabel}`)}</span>
           <span class="mt-1 block truncate text-[10px] font-mono text-muted-foreground">${escapeHtml(item.author)} · ${escapeHtml(item.date)}${item.meta ? ` · ${escapeHtml(item.meta)}` : ""}</span>
         </span>
-        <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 shrink-0 text-[10px] font-mono text-foreground">${escapeHtml(item.state || "open")}</span>
+        <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 shrink-0 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
@@ -3311,7 +3311,19 @@
     try {
       await submitWebIssue(repo, title, body, assignAgent, ownerPassword);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't appear in the list until they drain it — say so and reset the form.
+      // won't be visible there until they drain it — but show it locally, on
+      // top of this session's issue list, so the submitter sees it right away.
+      state.issuesView.items = [{
+        number: null,
+        title,
+        status: "open",
+        author: state.session?.nodeName || "you",
+        date: "just now",
+        meta: "",
+        body,
+        pending: true,
+      }, ...state.issuesView.items];
+      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       if (agentPasswordInput) agentPasswordInput.value = "";
