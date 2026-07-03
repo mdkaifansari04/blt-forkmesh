@@ -175,6 +175,52 @@ build_rev() {
     fi
 }
 
+# Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
+# host application-firewall rule that singles out the curl binary (an OpenSnitch
+# "deny process.path /usr/bin/curl" answered on a popup) blackholes every curl
+# request — including its DNS — so verification dies with curl exit 28 while the
+# network, the deploy, and the site are all fine. python3's sockets don't match
+# a per-binary curl rule, so retry the same GET through it before treating a
+# connection-level curl failure as "the origin is down". Output mirrors
+# curl -w '\n%{http_code}': body, newline, status code. The explicit User-Agent
+# matters: the edge 403s python's default UA as a bot.
+_py_http_get() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={
+    "User-Agent": "forkmesh-deploy-verify/1.0", "Accept": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=25) as r:
+        sys.stdout.write(r.read().decode(errors="replace"))
+        sys.stdout.write("\n" + str(r.status))
+except Exception as e:
+    code = getattr(e, "code", None)
+    if code is None:
+        sys.exit(1)          # no HTTP response at all (DNS/TCP/TLS failure)
+    sys.stdout.write("\n" + str(code))
+PYEOF
+}
+
+# HEAD-style fallback for the asset checks, same rationale as _py_http_get.
+# Prints "<status> <content-type>".
+_py_http_head() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], method="HEAD", headers={
+    "User-Agent": "forkmesh-deploy-verify/1.0"})
+try:
+    with urllib.request.urlopen(req, timeout=15) as r:
+        print(r.status, (r.headers.get("content-type") or "").lower())
+except Exception as e:
+    code = getattr(e, "code", None)
+    if code is None:
+        sys.exit(1)
+    print(code, (getattr(e, "headers", None) or {}).get("content-type", "").lower())
+PYEOF
+}
+
 # After a deploy, confirm the live origin is actually serving the build we just
 # shipped. Polls /api/version (allowing for edge propagation) and matches its
 # reported rev against the BUILD_REV we stamped. A mismatch that never resolves
@@ -200,22 +246,32 @@ verify_deploy() {
     # (curl exit 28) before the Worker ever got a chance to answer, reporting
     # a false "never went live" even though the deploy had, in fact, landed.
     local attempts=30 max_time=25 sleep_s=6
-    local attempt body got http_code curl_rc
+    local attempt body got http_code curl_rc via
     for attempt in $(seq 1 "$attempts"); do
         curl_rc=0
+        via=curl
         body="$(curl -sS --max-time "$max_time" -w $'\n%{http_code}' "$url" 2>/dev/null)" || curl_rc=$?
+        if [ "$curl_rc" != 0 ] && body="$(_py_http_get "$url")"; then
+            curl_rc=0
+            via=python3
+        fi
         http_code="${body##*$'\n'}"
         body="${body%$'\n'*}"
         # Pull "rev":"<value>" out of the JSON without needing jq.
         got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
         if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && [ "$got" = "$expected" ]; then
-            echo "Verified: live origin is serving build $expected."
+            echo "Verified: live origin is serving build $expected (via $via)."
+            if [ "$via" = "python3" ]; then
+                echo "note: curl could not reach $url but python3 could — a host" >&2
+                echo "      firewall rule is likely blocking the curl binary itself" >&2
+                echo "      (e.g. an OpenSnitch 'deny /usr/bin/curl' rule)." >&2
+            fi
             return 0
         fi
         if [ "$curl_rc" != 0 ]; then
             echo "  attempt $attempt/$attempts: curl failed (exit $curl_rc, e.g. timeout/DNS/TLS); retrying in ${sleep_s}s..." >&2
         else
-            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}' (want '$expected'); retrying in ${sleep_s}s..." >&2
+            echo "  attempt $attempt/$attempts: HTTP $http_code, live rev='${got:-<none>}' (want '$expected', via $via); retrying in ${sleep_s}s..." >&2
         fi
         sleep "$sleep_s"
     done
@@ -275,6 +331,11 @@ verify_public_assets() {
             printf '%s\n' "$headers" |
                 awk -F': *' 'tolower($1) == "content-type" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
         )"
+        # curl got no response at all (vs an HTTP error): same per-binary
+        # firewall blind spot as in verify_deploy — retry through python3.
+        if [ -z "$status" ]; then
+            read -r status content_type <<<"$(_py_http_head "$url" || true)"
+        fi
 
         if [ "$status" != "200" ]; then
             echo "ERROR: $url returned HTTP ${status:-<none>} (expected 200)." >&2
