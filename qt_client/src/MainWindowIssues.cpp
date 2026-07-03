@@ -1799,24 +1799,24 @@ void MainWindow::refreshIssueList()
         m_issueTable->setItem(row, 4, votes);
         m_issueTable->setItem(row, 5, new QTableWidgetItem(issue.labels.join(", ")));
         m_issueTable->setItem(row, 6, new QTableWidgetItem(issue.milestone));
-        // Created date: ISO yyyy-MM-dd sorts chronologically as plain text; the
-        // tooltip carries the friendly "x ago" form.
+        // Created date/time: ISO yyyy-MM-dd HH:mm sorts chronologically as plain
+        // text; the tooltip carries the friendly "x ago" form.
         auto *created = new QTableWidgetItem(
             issue.createdAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(issue.createdAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         created->setToolTip(formatIssueRelativeTime(issue.createdAt));
         m_issueTable->setItem(row, 7, created);
 
-        // Updated date: the most recent activity on the issue (latest signed
-        // event, falling back to the created time). ISO yyyy-MM-dd sorts
+        // Updated date/time: the most recent activity on the issue (latest signed
+        // event, falling back to the created time). ISO yyyy-MM-dd HH:mm sorts
         // chronologically as plain text; the tooltip carries the "x ago" form.
         qint64 updatedAt = issue.createdAt;
         for (const IssueEvent &ev : issue.events)
             updatedAt = qMax(updatedAt, ev.ts);
         auto *updated = new QTableWidgetItem(
             updatedAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd")
+                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd HH:mm")
                 : QString());
         updated->setToolTip(formatIssueRelativeTime(updatedAt));
         m_issueTable->setItem(row, 8, updated);
@@ -3717,13 +3717,16 @@ void MainWindow::rebuildQuickAddAttachChips()
             "QWidget#quickAddAttachChip{background:#21262d;border:1px solid #30363d;"
             "border-radius:4px;}");
         auto *chipRow = new QHBoxLayout(chip);
-        chipRow->setContentsMargins(3, 2, 2, 2);
-        chipRow->setSpacing(3);
+        chipRow->setContentsMargins(2, 1, 1, 1);
+        chipRow->setSpacing(2);
 
+        // Preview thumbnail (issue #348): kept shorter than the surrounding
+        // bottom bar so an attached image doesn't make the chip taller than
+        // the icons beside it.
         auto *thumb = new QLabel(chip);
         QPixmap pm(path);
         if (!pm.isNull())
-            thumb->setPixmap(pm.scaled(22, 22, Qt::KeepAspectRatio,
+            thumb->setPixmap(pm.scaled(18, 18, Qt::KeepAspectRatio,
                                        Qt::SmoothTransformation));
         else
             thumb->setText(QFileInfo(path).fileName());
@@ -3733,7 +3736,7 @@ void MainWindow::rebuildQuickAddAttachChips()
         auto *remove = new QPushButton(QString::fromUtf8("\xC3\x97"), chip);
         remove->setObjectName("quickAddAttachRemove");
         remove->setCursor(Qt::PointingHandCursor);
-        remove->setFixedSize(16, 16);
+        remove->setFixedSize(14, 14);
         remove->setToolTip(QStringLiteral("Remove this attachment"));
         remove->setStyleSheet(
             "QPushButton#quickAddAttachRemove{color:#8b949e;border:none;"

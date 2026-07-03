@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.39 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.40 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -244,6 +244,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-tests
         tests/test_crypto.cpp
         resources/icons.qrc
+        src/BackoffNetworkAccessManager.h
+        src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h
         src/ActionFile.cpp
         src/ForkMeshIdentity.h

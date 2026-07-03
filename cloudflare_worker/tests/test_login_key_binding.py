@@ -268,7 +268,10 @@ def test_qt_silent_auth_does_not_treat_cached_password_as_signed_hosting_auth():
         : qt.index("// POST /api/accounts/login")
     ]
 
-    assert "if (cachedHere && status == 0)" in silent_auth
+    # Cached markers are only trusted when the relay gave no authoritative
+    # 200 answer (unreachable, rate-limited, erroring). An answered lookup
+    # must prove the desktop pubkey above to authenticate.
+    assert "if (cachedHere && status != 200)" in silent_auth
     assert "cachedHere && (status == 0 || activeAccount)" not in silent_auth
 
 
@@ -281,7 +284,11 @@ def test_qt_login_explains_desktop_key_mismatch():
 
 def test_signed_publish_and_hosting_stay_account_key_bound():
     entry = ENTRY.read_text(encoding="utf-8")
-    qt = QT_MAIN.read_text(encoding="utf-8")
+    # Catalog publish + host-token signing moved into split MainWindow TUs.
+    qt = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(QT_MAIN.parent.glob("MainWindow*.cpp"))
+    )
 
     assert "owner_pub = await _owner_pubkey(env, owner)" in entry
     assert 'return json_response({"error": "account_required"}, status=403)' in entry

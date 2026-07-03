@@ -48,8 +48,9 @@ class InboxService {
 
   // ---- issues -------------------------------------------------------------
 
-  // issue_event_content() — NUL-joined fields per event type.
-  String _issueContent(String type, Map<String, dynamic> ev) {
+  // issue_event_content() — NUL-joined fields per event type. Public so the
+  // contract tests can pin it to the Qt/worker cross-language vectors.
+  String issueContent(String type, Map<String, dynamic> ev) {
     final attachments = (ev['attachments'] as List?)?.join(',') ?? '';
     switch (type) {
       case 'open':
@@ -87,7 +88,7 @@ class InboxService {
   ) async {
     final ts = _now;
     final ev = <String, dynamic>{'type': type, ...fields};
-    final contentHash = _sha256Hex(_issueContent(type, ev));
+    final contentHash = _sha256Hex(issueContent(type, ev));
     final canonical =
         'forkmesh-issue-event-v1\n$type\n$number\n$_author\n$ts\n$contentHash';
     final sig = await _sign(canonical);
@@ -190,8 +191,9 @@ class InboxService {
     });
   }
 
-  // pull_comment_content() — NUL-joined per type.
-  String _pullCommentContent(String type, Map<String, dynamic> ev) {
+  // pull_comment_content() — NUL-joined per type. Public so the contract
+  // tests can pin it to the Qt/worker cross-language vectors.
+  String pullCommentContent(String type, Map<String, dynamic> ev) {
     switch (type) {
       case 'comment':
         return (ev['body'] ?? '').toString();
@@ -248,7 +250,7 @@ class InboxService {
   ) async {
     final ts = _now;
     final ev = <String, dynamic>{'type': type, ...fields};
-    final contentHash = _sha256Hex(_pullCommentContent(type, ev));
+    final contentHash = _sha256Hex(pullCommentContent(type, ev));
     final canonical =
         'forkmesh-pull-comment-v1\n$type\n$number\n$_author\n$ts\n$contentHash';
     final sig = await _sign(canonical);

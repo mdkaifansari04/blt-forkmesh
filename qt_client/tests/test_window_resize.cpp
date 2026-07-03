@@ -23,11 +23,14 @@
 #include <algorithm>
 #include <atomic>
 
-// Free helper from MainWindowShared.cpp (forkmesh::ui), linked into the window
-// test via ${FORKMESH_APP_SOURCES}. Linkifies references in a commit message.
+// Free helpers from MainWindowInternal.h (forkmesh::ui), linked into the
+// window test via ${FORKMESH_APP_SOURCES}. Both are `inline`, so a forward
+// declaration is enough to link against the definition already odr-used (and
+// thus emitted) from MainWindowAgents.cpp/MainWindowShared.cpp.
 namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
+QString agentModelLabel(const QString &model);
 }
 } // namespace forkmesh
 
@@ -1053,6 +1056,28 @@ int main(int argc, char *argv[])
         check(forkmesh::ui::linkifyIssueRefs(QStringLiteral("build 1234567 ok")) ==
                   QStringLiteral("build 1234567 ok"),
               QStringLiteral("commit message leaves a plain number (no a-f) untouched"));
+    }
+
+    // adhoc #88: the agent list's Model column shows a human-readable label
+    // for the session's selected LLM, falling back to the raw id for anything
+    // not in the known-alias table, and blank (provider default) when unset.
+    {
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("")).isEmpty(),
+              QStringLiteral("agentModelLabel is blank for no selected model"));
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("   ")).isEmpty(),
+              QStringLiteral("agentModelLabel treats whitespace-only as unset"));
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("opus")) ==
+                  QStringLiteral("Opus"),
+              QStringLiteral("agentModelLabel maps the short \"opus\" alias"));
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("sonnet")) ==
+                  QStringLiteral("Sonnet"),
+              QStringLiteral("agentModelLabel maps the short \"sonnet\" alias"));
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("claude-opus-4-8")) ==
+                  QStringLiteral("Opus 4.8"),
+              QStringLiteral("agentModelLabel maps a full model id to its friendly name"));
+        check(forkmesh::ui::agentModelLabel(QStringLiteral("some-future-model-id")) ==
+                  QStringLiteral("some-future-model-id"),
+              QStringLiteral("agentModelLabel passes an unknown model id through as-is"));
     }
 
     // adhoc #191: the issue looper (and per-issue agent assignment) must work on
