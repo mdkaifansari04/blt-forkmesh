@@ -793,6 +793,17 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
         // AskUserQuestion card so the answered state is rebuilt on replay.
         markAskAnswered(ev.value(QStringLiteral("tool_use_id")).toString(),
                         ev.value(QStringLiteral("text")).toString());
+    } else if (type == QLatin1String("_local_notice")) {
+        // Synthetic, host-injected status row — e.g. the auto model router
+        // explaining which model it picked and why (adhoc #91). Muted, like
+        // the "session started" divider; persists and replays with the stream.
+        auto *l = new QLabel(QStringLiteral("● ")
+                             + ev.value(QStringLiteral("text")).toString());
+        l->setTextFormat(Qt::PlainText);
+        l->setWordWrap(true);
+        l->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
+        addRow(l);
     }
 }
 
