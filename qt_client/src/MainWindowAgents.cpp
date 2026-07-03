@@ -4853,8 +4853,21 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                       resumeId](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
-            live->start(workdir, env, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel);
+            // Footer slash-actions menu (adhoc #116): effort and model-fallback
+            // ride into the CLI as --effort/--fallback-model; turning Thinking
+            // off zeroes the thinking budget via MAX_THINKING_TOKENS.
+            const QString effort =
+                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
+                    .toString();
+            const QString fallback =
+                QSettings().value(kClaudeFallbackModelSetting, false).toBool()
+                    ? QStringLiteral("opus,sonnet")
+                    : QString();
+            QStringList launchEnv = env;
+            if (!QSettings().value(kClaudeThinkingSetting, true).toBool())
+                launchEnv << QStringLiteral("MAX_THINKING_TOKENS=0");
+            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
+                        resumeId, chosenModel, effort, fallback);
             // Issue #84: launching with an initial prompt is a send too — refresh
             // the top-bar usage chart + hover stats. Bump (now + a short
             // follow-up) so the first turn's usage shows without waiting for the
