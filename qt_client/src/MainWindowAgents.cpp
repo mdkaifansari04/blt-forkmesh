@@ -118,6 +118,17 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
                          : QStringLiteral("Wall-clock time this agent ran"));
 }
 
+// Fill the Model cell — the LLM model selected for this session. Displays a
+// human-readable label (e.g. "Opus", "Sonnet") or empty if no specific model
+// was chosen, letting the provider's default apply.
+void applyAgentModelCell(QTableWidgetItem *cell, const AgentSession &s)
+{
+    cell->setText(agentModelLabel(s.model));
+    cell->setToolTip(s.model.isEmpty() ? QStringLiteral("Using provider's default model")
+                                       : QStringLiteral("Selected model: %1")
+                                            .arg(s.model.toHtmlEscaped()));
+}
+
 // Fill the Speed cell — the throughput at which this agent exchanged tokens with
 // the service over the task, in tokens/second (total tokens ÷ run time). A rough
 // gauge of how fast the model and network served the task. Only shown while the
@@ -194,7 +205,7 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
 // drops back to a dim resting state and the driving timer stops.
 static constexpr qint64 kScannerIdleMs = 1500;
 // Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 11;
+static constexpr int kAgentActivityColumn = 12;
 
 // Paints a session's Larson-scanner light from MainWindow's per-session state,
 // looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
@@ -397,7 +408,7 @@ QWidget *MainWindow::buildAgentsTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    m_agentTable = new QTableWidget(0, 12);
+    m_agentTable = new QTableWidget(0, 13);
     m_agentTable->setObjectName("issueTable");
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
@@ -415,7 +426,7 @@ QWidget *MainWindow::buildAgentsTab()
     // they used to be crammed into the Status text and now get their own columns.
     // "Diff" (issue #170) is a compact files-changed + branch ahead/behind badge.
     m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Status", "Turns", "Time", "Cost", "Tokens",
+        {"#", "Issue", "Agent", "Model", "Status", "Turns", "Time", "Cost", "Tokens",
          "Speed", "Updated", "Diff", "Activity"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -2437,33 +2448,35 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                 .arg(session.issueTitle)
                           : session.issueTitle);
     plain(2)->setText(agentProviderName(session.provider));
+    // Model column: the LLM model selected for this session.
+    applyAgentModelCell(plain(3), session);
     // Status column: text + coloured glyph (issue #108).
-    applyAgentStatusCell(plain(3), session);
+    applyAgentStatusCell(plain(4), session);
     // Turns / Time columns: the run summary the CLI reports on finish, each sorting
     // on its raw value (SortTableWidgetItem reads kTableSortRole).
-    applyAgentTurnsCell(sortable(4), session);
-    applyAgentTimeCell(sortable(5), session);
-    QTableWidgetItem *cost = plain(6);
+    applyAgentTurnsCell(sortable(5), session);
+    applyAgentTimeCell(sortable(6), session);
+    QTableWidgetItem *cost = plain(7);
     cost->setData(Qt::DisplayRole, agentCostText(session.costUsd));
     cost->setData(Qt::UserRole, session.costUsd);
     cost->setToolTip(QStringLiteral("Estimated cost of this agent task"));
     // Live token usage, refreshed in place as the session streams (see
     // updateAgentTokenCell). Sort by the raw number, not the formatted text.
     const qint64 toks = sessionTokenTotal(session);
-    QTableWidgetItem *tokens = plain(7);
+    QTableWidgetItem *tokens = plain(8);
     tokens->setData(Qt::DisplayRole,
                     toks > 0 ? formatCount(toks) : QStringLiteral("-"));
     tokens->setData(Qt::UserRole, static_cast<qlonglong>(toks));
     tokens->setToolTip(QStringLiteral("Tokens used by this agent session"));
     // Speed column: token throughput derived from the token total and run duration.
-    applyAgentSpeedCell(sortable(8), session, toks);
+    applyAgentSpeedCell(sortable(9), session, toks);
     // "Updated" column: the most recent of created/started/finished/merged, shown
     // as a friendly "x ago" string. The tooltip carries the full timestamp and the
     // raw millisecond value drives chronological sorting.
     const qint64 updatedMs =
         qMax(qMax(session.createdAtMs, session.startedAtMs),
              qMax(session.finishedAtMs, session.mergedAtMs));
-    QTableWidgetItem *updated = sortable(9);
+    QTableWidgetItem *updated = sortable(10);
     updated->setData(Qt::DisplayRole,
                      updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
                                    : QStringLiteral("-"));
@@ -2473,7 +2486,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
-    applyAgentDiffCell(sortable(10),
+    applyAgentDiffCell(sortable(11),
                        agentDiffStat(session, agentGitDir, agentBase), agentBase);
     // Night-rider light: a custom-painted scanner that sweeps while this session
     // streams raw output. AgentScannerDelegate looks the animation state up by the
@@ -3728,7 +3741,6 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         // Claude Code renders as a native stream-json transcript; the typed
         // prompt is its task verbatim.
         startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
-        switchToAgentsTab(session.id);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -5460,10 +5472,10 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        QTableWidgetItem *cell = m_agentTable->item(r, 7);
+        QTableWidgetItem *cell = m_agentTable->item(r, 8);
         if (!cell) {
             cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 7, cell);
+            m_agentTable->setItem(r, 8, cell);
         }
         cell->setData(Qt::DisplayRole, toks > 0 ? formatCount(toks) : QStringLiteral("-"));
         cell->setData(Qt::UserRole, static_cast<qlonglong>(toks));
@@ -5471,7 +5483,7 @@ void MainWindow::updateAgentTokenCell(int sessionId)
         // real time while the agent streams — agentEffectiveDurationMs measures
         // a running session against the wall clock, so this recomputes the live
         // rate from the freshly-bumped token total.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 8))
+        if (QTableWidgetItem *speed = m_agentTable->item(r, 9))
             if (const AgentSession *s = findAgentSession(sessionId))
                 applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
         break;
