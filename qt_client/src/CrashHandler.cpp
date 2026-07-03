@@ -1,17 +1,15 @@
 #include "CrashHandler.h"
 
-#include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
+#include <QByteArray>
 
+#include <cstdlib>
 #include <atomic>
 #include <cstring>
 #include <exception>
+#include <initializer_list>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -26,7 +24,6 @@ namespace {
 // Everything a signal handler touches is prepared here, in normal context, so
 // the handler itself only calls async-signal-safe functions. Fixed C buffers,
 // no QString/std::string, so there's no allocation on the crash path.
-char g_crashLogPath[4096] = {0};
 char g_buildInfo[512] = {0};
 
 // A dedicated stack so the SIGSEGV handler still runs when the crash *is* a
@@ -83,8 +80,8 @@ const char *signalName(int sig)
     }
 }
 
-// The signal handler. Strictly async-signal-safe: only open/write/time/
-// backtrace(_symbols_fd)/close, no allocation, no Qt.
+// The signal handler. Strictly async-signal-safe: only write/time/
+// backtrace(_symbols_fd), no allocation, no Qt.
 void crashHandler(int sig)
 {
     // First faulter wins; anyone re-entering just restores the default and dies.
@@ -94,24 +91,19 @@ void crashHandler(int sig)
         return;
     }
 
-    if (g_crashLogPath[0]) {
-        int fd = ::open(g_crashLogPath, O_WRONLY | O_APPEND | O_CREAT, 0644);
-        if (fd >= 0) {
-            safeWrite(fd, "\n===== ForkMesh crash =====\n");
-            safeWrite(fd, "when (epoch): ");
-            safeWriteNum(fd, (unsigned long)::time(nullptr));
-            safeWrite(fd, "\nsignal: ");
-            safeWrite(fd, signalName(sig));
-            safeWrite(fd, "\nbuild: ");
-            safeWrite(fd, g_buildInfo);
-            safeWrite(fd, "\nbacktrace:\n");
-            void *frames[64];
-            int n = backtrace(frames, 64);
-            backtrace_symbols_fd(frames, n, fd);
-            safeWrite(fd, "==========================\n");
-            ::close(fd);
-        }
-    }
+    const int fd = 2;  // stderr
+    safeWrite(fd, "\n===== ForkMesh crash =====\n");
+    safeWrite(fd, "when (epoch): ");
+    safeWriteNum(fd, (unsigned long)::time(nullptr));
+    safeWrite(fd, "\nsignal: ");
+    safeWrite(fd, signalName(sig));
+    safeWrite(fd, "\nbuild: ");
+    safeWrite(fd, g_buildInfo);
+    safeWrite(fd, "\nbacktrace:\n");
+    void *frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, fd);
+    safeWrite(fd, "==========================\n");
 
     // Chain to the default handler so the OS still terminates the process (and
     // writes a core dump if enabled) exactly as it would have without us.
@@ -134,16 +126,11 @@ void terminateHandler()
             what = "(non-std exception)";
         }
     }
-    if (g_crashLogPath[0]) {
-        int fd = ::open(g_crashLogPath, O_WRONLY | O_APPEND | O_CREAT, 0644);
-        if (fd >= 0) {
-            safeWrite(fd, "\n===== ForkMesh unhandled exception =====\n");
-            safeWrite(fd, "what: ");
-            safeWrite(fd, what ? what : "(unknown / no active exception)");
-            safeWrite(fd, "\n");
-            ::close(fd);
-        }
-    }
+    const int fd = 2;  // stderr
+    safeWrite(fd, "\n===== ForkMesh unhandled exception =====\n");
+    safeWrite(fd, "what: ");
+    safeWrite(fd, what ? what : "(unknown / no active exception)");
+    safeWrite(fd, "\n");
     std::abort(); // -> SIGABRT -> crashHandler() logs the backtrace
 }
 
@@ -172,20 +159,6 @@ void installSignalHandlers()
 void installCrashHandler()
 {
 #ifdef FORKMESH_CRASH_HANDLER
-    const QString dir = QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics");
-    QDir().mkpath(dir);
-    const QString logPath = dir + QStringLiteral("/crashes.log");
-
-    // Keep the log bounded (one previous generation), same policy as stalls.log.
-    if (QFileInfo(logPath).size() > 1024 * 1024) {
-        const QString prev = logPath + QStringLiteral(".1");
-        QFile::remove(prev);
-        QFile::rename(logPath, prev);
-    }
-
-    const QByteArray pathUtf8 = QFile::encodeName(logPath);
-    qstrncpy(g_crashLogPath, pathUtf8.constData(), sizeof(g_crashLogPath));
-
     const QByteArray build =
         QByteArrayLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
     qstrncpy(g_buildInfo, build.constData(), sizeof(g_buildInfo));
