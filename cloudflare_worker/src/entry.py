@@ -6876,9 +6876,11 @@ async def accounts_handler(env, request):
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
         # isAdmin + pubkey let any client authenticate a signed admin-moderation
         # action (e.g. a chat admin-delete) made by this account's identity key.
-        # kind/owner let the dashboard's claim form tell "that's a user account,
-        # not a claimable node" (and "already owned") before starting a claim;
-        # node ownership is public catalog-adjacent data like the name itself.
+        # kind/owner/nodes let the dashboard's claim form tell "that's a user
+        # account, not a claimable node" (and "already owned") before starting a
+        # claim, and let a node's own profile list the nodes linked to its user
+        # account; node ownership is public catalog-adjacent data like the name
+        # itself (same fields _account_public_payload already exposes).
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
@@ -6888,7 +6890,8 @@ async def accounts_handler(env, request):
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0),
              "kind": _account_kind(rec),
-             "owner": rec.get("owner", "")}
+             "owner": rec.get("owner", ""),
+             "nodes": _owned_nodes(rec)}
         )
     return json_response({"error": "not_found"}, status=404)
 
