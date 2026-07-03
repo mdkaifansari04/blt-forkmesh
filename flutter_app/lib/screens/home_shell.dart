@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:ming_cute_icons/ming_cute_icons.dart';
+import 'package:forkmesh/fm_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../fm_icons.dart';
 import '../services/auth_service.dart';
 import '../services/identity.dart';
 import '../services/relay_service.dart';
@@ -343,7 +344,7 @@ class _TopNotificationButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final icon = Icon(
-      MingCuteIcons.mgc_notification_line,
+      FmIcons.notificationLine,
       color: FmTheme.textPrimary(context),
       size: 22,
     );
