@@ -68,11 +68,13 @@ def test_blog_page_uses_screenshot_editorial_shell():
         assert marker in html
 
 
-def test_blog_page_nav_only_links_login():
+def test_blog_page_nav_only_links_auth():
     parser = BlogNavParser()
     parser.feed(_read(BLOG_PAGE))
 
-    assert [link.get("href") for link in parser.links] == ["/login"]
+    # The nav's single auth entry matches the site-wide "Sign Up / Log In"
+    # label introduced by adhoc #123.
+    assert [link.get("href") for link in parser.links] == ["/signup"]
     assert [link.get("class") for link in parser.links] == ["blog1-login"]
 
 
