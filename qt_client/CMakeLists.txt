@@ -212,6 +212,15 @@ foreach(_moc ${FORKMESH_MOC_SOURCES})
     list(APPEND FORKMESH_MOC_DIRS "${_moc_dir}")
 endforeach()
 list(REMOVE_DUPLICATES FORKMESH_MOC_DIRS)
+# qt_wrap_cpp() above marks each header it moc's with the source property
+# SKIP_AUTOMOC ON (see Qt6CoreMacros.cmake). Source file properties are
+# directory-scoped, not target-scoped, so that also suppresses AUTOMOC for
+# src/BackoffNetworkAccessManager.h when the test targets below list it as a
+# plain source: its Q_OBJECT vtable never got moc'd there, leaving the
+# forkmesh-tests link with an undefined vtable reference. The forkmesh target
+# doesn't need SKIP_AUTOMOC (its whole-target AUTOMOC is already OFF), so it's
+# safe to reset it here for the still-AUTOMOC-enabled test targets.
+set_source_files_properties(src/BackoffNetworkAccessManager.h PROPERTIES SKIP_AUTOMOC OFF)
 target_include_directories(forkmesh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
