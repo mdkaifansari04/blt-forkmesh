@@ -23,6 +23,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     if (QSystemTrayIcon::isSystemTrayAvailable())
         m_trayIcon->show();
 
+    // The self-update relaunch exits via QCoreApplication::quit(), which never
+    // reaches closeEvent(); flush chat history (messages + unread state) on
+    // every quit path so a restart can't resurrect stale unread badges.
+    connect(qApp, &QCoreApplication::aboutToQuit, this,
+            &MainWindow::saveChatHistory);
+
     // BackoffNetworkAccessManager gates every /api/* request through an
     // exponential per-host backoff, so a rate-limited relay (Cloudflare 429s)
     // doesn't get hammered by every independent call site's own retry.
