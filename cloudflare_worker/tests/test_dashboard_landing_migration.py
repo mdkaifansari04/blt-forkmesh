@@ -1033,6 +1033,15 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
         assert mock not in chat_js
 
 
+def test_dashboard_deep_link_assets_binding_is_wired_up():
+    # entry.py's /dashboard/* fallback (run_worker_first) calls
+    # self.env.ASSETS.fetch(...) to serve the SPA shell for deep links like
+    # /dashboard/owner/repo. Without an explicit binding name, env.ASSETS is
+    # undefined and that call throws, 500ing every such request.
+    assert WRANGLER["assets"].get("binding") == "ASSETS"
+    assert 'self.env.ASSETS.fetch(' in ENTRY_TEXT
+
+
 def test_clean_marketing_routes_target_static_pages():
     for redirect in (
         "/dashboard /dashboard/index.html 200",
@@ -1074,9 +1083,13 @@ def test_repo_shortcut_urls_redirect_to_dashboard_from_404_page():
     html = _read(PUBLIC / "404.html")
 
     # The 404 page bounces /owner/repo (and tree/blob deep links) to the dashboard.
-    assert '"/dashboard?repo=" +' in html
+    # Feature tabs (/issues, /pulls, etc.) are preserved in the bounce.
+    assert '"/dashboard/"' in html
+    assert 'var dashboardPath = "/dashboard/' in html
     assert "window.location.pathname.split" in html
-    assert '(parts[2] === "tree" || parts[2] === "blob")' in html
+    assert 'parts[2] === "tree" || parts[2] === "blob"' in html
+    assert 'featureTabs' in html
+    assert '["commits", "releases", "issues", "pulls", "discussions", "mirrors"]' in html
     # Real site sections must not be treated as repo owners.
     for reserved in ("assets", "favicon", "dashboard", "docs", "blogs"):
         assert '"%s"' % reserved in html
