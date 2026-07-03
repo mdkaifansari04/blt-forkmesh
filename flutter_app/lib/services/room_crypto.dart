@@ -28,8 +28,10 @@ class RoomCrypto {
       _derive(_appRoomKey, roomName);
 
   /// Passphrase-protected room.
-  static Future<RoomCrypto> withPassphrase(String roomName, String passphrase) =>
-      _derive(passphrase, roomName);
+  static Future<RoomCrypto> withPassphrase(
+    String roomName,
+    String passphrase,
+  ) => _derive(passphrase, roomName);
 
   static Future<RoomCrypto> _derive(String secret, String roomName) async {
     final salt = _saltForRoom(roomName.trim());
@@ -46,7 +48,9 @@ class RoomCrypto {
   }
 
   static List<int> _saltForRoom(String roomName) {
-    final digest = crypto.sha256.convert(utf8.encode('ForkMesh room:$roomName'));
+    final digest = crypto.sha256.convert(
+      utf8.encode('ForkMesh room:$roomName'),
+    );
     return digest.bytes.sublist(0, 16);
   }
 

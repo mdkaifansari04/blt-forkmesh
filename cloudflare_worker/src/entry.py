@@ -1444,11 +1444,12 @@ async def _network_payout_nodes(env):
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
         first_wallet = has_wallet and wallet not in seen_wallets
+        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
+        verified_wallet = bool(balance is not None and balance >= MIN_ACTIVE_LAMPORTS)
         # A node only shares the split if it mirrors a repo for another node, so
         # its eligibility on /network/ must reflect that too (issue #94).
         mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
-        eligible = bool(online and first_wallet and mirrors_repo)
-        balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
+        eligible = bool(online and first_wallet and verified_wallet and mirrors_repo)
         if has_wallet:
             seen_wallets.add(wallet)
         reason = "eligible"
@@ -1458,6 +1459,8 @@ async def _network_payout_nodes(env):
             reason = "missing_wallet"
         elif not first_wallet:
             reason = "duplicate_wallet"
+        elif not verified_wallet:
+            reason = "wallet_unverified"
         elif not mirrors_repo:
             reason = "no_mirrors"
         nodes.append({
@@ -4968,6 +4971,60 @@ async def _account_link_node(env, request):
                           "user": user}, status=202)
 
 
+async def _account_link_self(env, request):
+    # A node links ITSELF to a user account, driven from that node's own desktop
+    # app ("Log in as a user" in the node profile). The request proves BOTH
+    # secrets at once: control of the node's key (Ed25519 signature) and the
+    # user's credentials (identifier + password), so the link completes
+    # immediately with no confirmation code — holding both IS the authorization.
+    # This is the in-app counterpart to the website's claim-node/claim-confirm
+    # code flow, which only proves the password and needs the on-node code to
+    # prove the claimer can see the machine.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(node_name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    identifier = clean_string(
+        data.get("identifier", "") or data.get("email", "") or
+        data.get("user", ""), 254).strip().lower()
+    canonical = ("forkmesh-link-self-v1\n" + node_name + "\n" + identifier +
+                 "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    # Only now spend a password verification (the node signature gates it).
+    _, user_rec = await _resolve_user_by_password(env, data)
+    if not user_rec:
+        return json_response({"error": "invalid_credentials"}, status=401)
+    user_name = user_rec.get("name", "")
+    if node_name == user_name:
+        return json_response({"error": "cannot_link_self"}, status=400)
+    if _account_kind(node_rec) != "node":
+        # An account that can log in is a user in its own right, not linkable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if node_rec.get("owner") == user_name:
+        return json_response({"ok": True, "linked": True, "alreadyLinked": True,
+                              "nodeId": node_name, "user": user_name,
+                              "nodes": _owned_nodes(user_rec)})
+    if node_rec.get("owner"):
+        return json_response({"error": "node_already_owned"}, status=409)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, user_name)
+    _, fresh_user = await _account_row(env, user_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "user": user_name,
+                          "nodes": _owned_nodes(fresh_user or user_rec)})
+
+
 async def _login_locked_until(env, id_bi):
     # Returns the lock-expiry ms if the identifier is currently locked, else 0.
     row = await d1_first(
@@ -5320,6 +5377,9 @@ async def _online_payout_addresses(env):
         solana = (rec.get("solana") or "").strip()
         if not solana or not SOLANA_RE.match(solana) or solana in seen:
             continue
+        balance = await _solana_balance_lamports(env, solana)
+        if balance is None or balance < MIN_ACTIVE_LAMPORTS:
+            continue
         seen.add(solana)
         addresses.append(solana)
     # Main relay: also disburse to every online node on every approved federated
@@ -5335,6 +5395,9 @@ async def _online_payout_addresses(env):
             for r in (fed or []):
                 wallet = (r.get("wallet") or "").strip()
                 if wallet and SOLANA_RE.match(wallet) and wallet not in seen:
+                    balance = await _solana_balance_lamports(env, wallet)
+                    if balance is None or balance < MIN_ACTIVE_LAMPORTS:
+                        continue
                     seen.add(wallet)
                     addresses.append(wallet)
         except Exception:
@@ -6808,6 +6871,8 @@ async def accounts_handler(env, request):
         return await _account_claim_confirm(env, request)
     if url.path == "/api/accounts/link-node" and method == "POST":
         return await _account_link_node(env, request)
+    if url.path == "/api/accounts/link-self" and method == "POST":
+        return await _account_link_self(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
@@ -6820,9 +6885,11 @@ async def accounts_handler(env, request):
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
         # isAdmin + pubkey let any client authenticate a signed admin-moderation
         # action (e.g. a chat admin-delete) made by this account's identity key.
-        # kind/owner let the dashboard's claim form tell "that's a user account,
-        # not a claimable node" (and "already owned") before starting a claim;
-        # node ownership is public catalog-adjacent data like the name itself.
+        # kind/owner/nodes let the dashboard's claim form tell "that's a user
+        # account, not a claimable node" (and "already owned") before starting a
+        # claim, and let a node's own profile list the nodes linked to its user
+        # account; node ownership is public catalog-adjacent data like the name
+        # itself (same fields _account_public_payload already exposes).
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
@@ -6832,7 +6899,8 @@ async def accounts_handler(env, request):
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0),
              "kind": _account_kind(rec),
-             "owner": rec.get("owner", "")}
+             "owner": rec.get("owner", ""),
+             "nodes": _owned_nodes(rec)}
         )
     return json_response({"error": "not_found"}, status=404)
 
@@ -7145,6 +7213,29 @@ async def issues_handler(env, request, owner, repo):
                 priority = int(meta_in.get("priority", 0))
             except (TypeError, ValueError):
                 priority = 0
+            # "wantsAgent" makes the owner's node start a coding agent on this
+            # issue automatically once merged — unlike the other meta fields
+            # above, that's an immediate, unreviewed side effect, so it's only
+            # honored when the request proves it's the repo owner's own account
+            # (password re-check, same as other sensitive account actions), not
+            # just a client-side checkbox anyone could set on a raw submission.
+            wants_agent = False
+            if meta_in.get("wantsAgent"):
+                owner_bi, owner_rec = await _account_row(env, owner)
+                if await _login_locked_until(env, owner_bi):
+                    return json_response({"error": "too_many_attempts"}, status=429)
+                owner_password = str(data.get("ownerPassword", "") or "")[:256]
+                verified = bool(
+                    owner_rec and owner_rec.get("status") == "active" and
+                    owner_rec.get("pass_hash") and owner_password and
+                    await verify_password(owner_password,
+                                          owner_rec.get("pass_salt", ""),
+                                          owner_rec.get("pass_hash", "")))
+                if not verified:
+                    await _login_record_fail(env, owner_bi)
+                    return json_response({"error": "bad_owner_password"}, status=401)
+                await _login_clear(env, owner_bi)
+                wants_agent = True
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
@@ -7152,6 +7243,7 @@ async def issues_handler(env, request, owner, repo):
                 "priority": priority if 0 <= priority <= 99 else 0,
                 "assignees": [clean_string(x, 60) for x in (assignees or [])][:20]
                 if isinstance(assignees, list) else [],
+                "wantsAgent": wants_agent,
             }
         item = {
             "number": number,

@@ -30,10 +30,12 @@
 #include "RepoHost.h"
 #include "RepoSecurity.h"
 #include "ServerNode.h"
+#include "SingleInstance.h"
 #include "SystemStats.h"
 #include "AgentStore.h"
 #include "Theme.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -1058,6 +1060,44 @@ private:
     QTimer *m_sweep = nullptr;  // drives the spin
 };
 
+// A plain track-and-knob on/off switch, used for controls where the state is a
+// real power switch (e.g. "is this node online") rather than a momentary
+// action, so it reads unambiguously as on/off instead of just another button.
+class ToggleSwitch : public QAbstractButton
+{
+public:
+    explicit ToggleSwitch(QWidget *parent = nullptr) : QAbstractButton(parent)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFixedSize(46, 24);
+    }
+
+    QSize sizeHint() const override { return QSize(46, 24); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor track = isChecked() ? QColor("#2ea043") : QColor("#30363d");
+        const QRectF trackRect(0.5, 0.5, width() - 1.0, height() - 1.0);
+        const qreal r = trackRect.height() / 2.0;
+        p.setPen(QPen(track.darker(130), 1));
+        p.setBrush(track);
+        p.drawRoundedRect(trackRect, r, r);
+
+        const qreal knobD = trackRect.height() - 4.0;
+        const qreal x = isChecked() ? trackRect.right() - knobD - 2.0
+                                    : trackRect.left() + 2.0;
+        const QRectF knobRect(x, trackRect.top() + 2.0, knobD, knobD);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        p.drawEllipse(knobRect);
+    }
+};
+
 // A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
 // active node mirroring this repo. A dot flashes green when its node serves a
 // clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
@@ -2049,10 +2089,13 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
-// The shared welcome room and the per-identity flag that records whether this
-// node has already posted its one-time "just joined" greeting there (issue #192).
+// The shared welcome room every node's one-time "just joined" greeting posts
+// to (issue #192). Whether a given identity has already greeted it is tracked
+// by ForkMeshIdentity itself (see hasAnnouncedWelcome/markWelcomeAnnounced),
+// not here; the QSettings prefix below is the flag's pre-move location, read
+// only to migrate nodes that greeted before it moved (adhoc #109).
 const QString kWelcomeChannel = QStringLiteral("#welcome");
-const QString kWelcomeAnnouncedSettingPrefix =
+const QString kLegacyWelcomeAnnouncedSettingPrefix =
     QStringLiteral("chat/welcomeAnnounced/");
 
 // True when a notification category is enabled. Default false: notifications are
@@ -2129,6 +2172,11 @@ const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 // Persisted footer quick-add prompt history (adhoc #200) so Up still recalls
 // prompts sent in earlier sessions, not just the current one.
 const QString kQuickAddHistorySetting = QStringLiteral("issues/quickAddHistory");
+// Whether the footer quick-add's "Create issue" toggle is on, remembered across
+// launches (off by default: the common path starts an agent straight from the
+// typed prompt without filing an issue first).
+const QString kQuickAddCreateIssueSetting =
+    QStringLiteral("issues/quickAddCreateIssue");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
 // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
 // a regular API key cannot read organization spend.
@@ -2903,6 +2951,39 @@ inline bool isValidNodeName(const QString &value)
     static const QRegularExpression re(
         QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
     return re.match(value).hasMatch();
+}
+
+// A fresh install has no node name yet. Rather than block the welcome screen
+// until the user thinks one up, hand them a friendly generated one (Docker
+// container name style: "adjective-noun-1234") so the node has a valid name
+// and can register/start mirroring immediately; they can still rename
+// themselves later from Settings. The vocabulary leans on fork/mesh/git/
+// networking words so a generated name reads as a ForkMesh node rather than
+// a generic container name. Always satisfies isValidNodeName.
+inline QString randomFunNodeName()
+{
+    static const char *const adjectives[] = {
+        "swift",   "silent",   "nimble",  "resilient", "distributed", "encrypted",
+        "parallel", "wired",   "forked",  "meshed",    "decentralized", "redundant",
+        "synced",  "cascading", "rebased", "cloned",   "merged",      "threaded",
+        "routed",  "tunneled", "relayed", "mirrored",  "hashed",      "committed",
+        "branched", "patched", "stitched", "woven",    "linked",      "looped",
+    };
+    static const char *const nouns[] = {
+        "fork",    "mirror",   "node",    "mesh",      "relay",       "branch",
+        "commit",  "patch",    "packet",  "socket",    "daemon",      "kernel",
+        "cache",   "gateway",  "tunnel",  "beacon",    "router",      "hub",
+        "thread",  "loom",     "weaver",  "forge",     "anchor",      "compass",
+        "lantern", "ember",    "spark",   "comet",     "satellite",   "byte",
+    };
+    const int a = QRandomGenerator::global()->bounded(
+        int(sizeof(adjectives) / sizeof(adjectives[0])));
+    const int n = QRandomGenerator::global()->bounded(
+        int(sizeof(nouns) / sizeof(nouns[0])));
+    const int suffix = QRandomGenerator::global()->bounded(1000, 10000);
+    return QStringLiteral("%1-%2-%3")
+        .arg(QLatin1String(adjectives[a]), QLatin1String(nouns[n]))
+        .arg(suffix);
 }
 
 inline QString accountNameFromInput(QString value, const QString &fallback = QStringLiteral("node"))
@@ -4839,18 +4920,36 @@ inline void applyStoredOcticon(QPushButton *button)
     if (name.isEmpty())
         return;
     const int size = button->property("forkmeshOcticonSize").toInt();
+    const qreal rotation = button->property("forkmeshOcticonRotation").toReal();
     const QColor color(
         Theme::iconColorForButton(button->objectName(), currentThemeIsDark()));
-    button->setIcon(themedOcticon(name, color, size > 0 ? size : 16));
-    button->setIconSize(QSize(size > 0 ? size : 16, size > 0 ? size : 16));
+    const int px = size > 0 ? size : 16;
+    if (rotation != 0.0) {
+        // A statically-rotated glyph (e.g. the footer's up-pointing send icon,
+        // adhoc #99) — same tinting as themedOcticon, just rotated once rather
+        // than every animation frame like rotatedTintedOcticonPixmap's callers.
+        QIcon icon;
+        icon.addPixmap(rotatedTintedOcticonPixmap(name, color, px, rotation));
+        icon.addPixmap(rotatedTintedOcticonPixmap(name, color.darker(120), px, rotation),
+                       QIcon::Active, QIcon::Off);
+        icon.addPixmap(
+            rotatedTintedOcticonPixmap(name, QColor("#6e7681"), px, rotation),
+            QIcon::Disabled, QIcon::Off);
+        button->setIcon(icon);
+    } else {
+        button->setIcon(themedOcticon(name, color, px));
+    }
+    button->setIconSize(QSize(px, px));
 }
 
-inline void setOcticon(QPushButton *button, const QString &name, int size = 16)
+inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
+                       qreal rotationDeg = 0.0)
 {
     if (!button)
         return;
     button->setProperty("forkmeshOcticon", name);
     button->setProperty("forkmeshOcticonSize", size);
+    button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
 

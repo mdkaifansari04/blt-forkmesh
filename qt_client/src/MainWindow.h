@@ -82,6 +82,7 @@ class QGraphicsOpacityEffect;
 class QFrame;
 class QLabel;
 class QMouseEvent;
+class QAbstractButton;
 class QAction;
 class QLineEdit;
 class QListWidget;
@@ -506,6 +507,14 @@ private:
     // this account's key, so the new node is attached to this user.
     void promptHostLinkCode(const QString &code);
     void submitHostLinkCode(const QString &code);
+    // "Log in as a user" from the node profile: this node holds its own key, so
+    // proving the user's password lets the relay attach this node to that user
+    // (users can own many nodes). promptLinkNodeToUser asks for the credentials;
+    // submitLinkNodeToUser signs with this node's key and POSTs link-self.
+    void promptLinkNodeToUser();
+    void submitLinkNodeToUser(const QString &identifier, const QString &password);
+    // Human-readable text for a link-self error code (for the account section).
+    QString linkErrorMessage(const QString &code) const;
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -715,6 +724,12 @@ private:
     QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
+    void refreshProfileAccountStatus(); // "USER ACCOUNT" section: link state + CTA
+    void renderProfileAccountStatus();  // paint the section from cached state only
+    QString linkedNodesHtml() const;    // "<b>a</b>, <b>b</b>" of m_profileLinkedNodes
+    // Second-hop lookup: fetch the owning user's nodes list for a child node so
+    // its profile can show the whole fleet, not just "linked to user X".
+    void fetchLinkedNodesFromOwner(const QString &node, const QString &owner);
     void rescaleProfileAvatar();       // re-render the full-width avatar banner
     void hideNodeProfile();
     void checkNodeBalance();
@@ -1121,9 +1136,13 @@ private:
     // for any issue (not just the selected one). Returns the new session id, or 0
     // on failure. quiet suppresses the inline notice + Agents-tab switch the
     // manual assign path shows. model is the provider-specific model id/alias
-    // picked in the sidebar; empty leaves the provider's own default.
+    // picked in the sidebar; empty leaves the provider's own default. repoHint
+    // names the issue's repo explicitly for callers running outside the Issues
+    // tab (e.g. an inbox drain for a repo that isn't the one on screen); when
+    // null the selected repo (issuesRepoIndex()) is used, as before.
     int startAgentForIssue(const Issue &issue, const QString &provider, bool createPr,
-                           bool quiet = false, const QString &model = QString());
+                           bool quiet = false, const QString &model = QString(),
+                           const RepositoryRecord *repoHint = nullptr);
     // Issue looper (adhoc #92): start an agent on the next open issue, watch it to
     // completion, then automatically start the next — working through the open
     // backlog one issue at a time until toggled off or the backlog is exhausted.
@@ -1153,6 +1172,10 @@ private:
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
+    // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
+    // agent detail composer's Send button and the footer quick-add's up-arrow
+    // ("send to the visible agent") button.
+    void sendPromptToSelectedAgent(const QString &prompt);
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -1582,6 +1605,20 @@ private:
     void loadArtifactsPanel();
     void deleteArtifact(const QString &hash, const QString &label);
     QWidget *buildMirrorNodesTab();
+    // Per-repo Shortcuts tab (adhoc #118): quick-launch entries stored as plain
+    // files in the checkout's .forkmesh/shortcuts/ folder (shell scripts today;
+    // prompts/skills ride along as editable text), so they version and sync with
+    // the repo. Each file is a clickable card — a script runs through bash with
+    // its output streamed live into the page's log pane; other kinds open in
+    // the editor. New / edit / delete round out the CRUD.
+    QWidget *buildShortcutsTab();
+    void loadShortcutsPanel();
+    QString shortcutsDirPath() const; // <working tree>/.forkmesh/shortcuts, "" without one
+    void runShortcut(const QString &filePath);
+    void stopShortcut();
+    // Create (empty filePath) or edit a shortcut via a name + content dialog.
+    void openShortcutEditor(const QString &filePath);
+    void deleteShortcut(const QString &filePath);
     // Per-repo Settings tab: visibility (public/private) and repository deletion.
     QWidget *buildRepoSettingsTab();
     void refreshRepoSettings(); // sync the Settings controls to the open repo
@@ -2194,8 +2231,9 @@ private:
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
     // Post this node's one-time "just joined" greeting to the shared #welcome
-    // room. Only a brand-new identity announces (gated by a per-identity setting),
-    // so the network sees a single join line with no per-peer duplicates (#192).
+    // room. Only a brand-new identity announces (gated by a sentinel file next
+    // to the identity key), so the network sees a single join line with no
+    // per-peer duplicates, and no re-announce on a settings-only reset (#192).
     void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
@@ -2378,14 +2416,18 @@ private:
     // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
     // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
-    // Reward-availability cluster in the top-right (next to the balance): a toggle
-    // that takes this node offline (stops serving + the reward heartbeat), a clear
-    // "available for rewards" / "offline · not collecting rewards" status line, and
-    // a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a node
-    // the user deliberately took offline stays offline across restarts.
-    QPushButton *m_nodeOnlineToggle = nullptr;
+    // Reward-availability cluster, now living in the node profile panel right
+    // under "Get paid to mirror": a clear on/off switch (ToggleSwitch, private to
+    // MainWindowChat.cpp) that takes this node offline (stops serving + the
+    // reward heartbeat), a status label spelling out on/off, a clear
+    // "available for rewards" / "offline · not collecting rewards" status line,
+    // and a live "online Xh Ym" uptime readout. m_nodeOffline is persisted so a
+    // node the user deliberately took offline stays offline across restarts.
+    QAbstractButton *m_nodeOnlineToggle = nullptr;
+    QLabel *m_nodeOnlineStatusLabel = nullptr;
     QLabel *m_nodeRewardStatus = nullptr;
     QLabel *m_nodeUptimeLabel = nullptr;
+    QWidget *m_profileOnlineSection = nullptr; // wraps the switch + status lines
     bool m_nodeOffline = false;
     // Cached balance + fiat rates so cycling the currency view reuses what we
     // already fetched instead of re-querying getBalance / the price API each
@@ -2607,7 +2649,14 @@ private:
     // shown/hidden as the provider selection changes.
     QComboBox *m_quickAddClaudeModel = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
-    QCheckBox *m_quickAddNoIssue = nullptr;     // start agent only, skip the issue
+    // "Create issue" toggle (adhoc #99): off by default (remembered via
+    // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an
+    // agent directly and skips filing an issue at all.
+    QCheckBox *m_quickAddCreateIssue = nullptr;
+    // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
+    // sends the typed prompt as a follow-up message to the currently-selected
+    // agent session instead of the quick-add issue/new-agent flow.
+    QPushButton *m_quickAddSendToAgentButton = nullptr;
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -2761,6 +2810,7 @@ private:
     int m_releasesTabIndex = -1; // index of the Releases page
     int m_mirrorNodesTabIndex = -1; // index of the Mirror nodes page
     int m_artifactsTabIndex = -1; // index of the Artifacts page
+    int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -2821,6 +2871,12 @@ private:
     QLabel *m_releasesSummary = nullptr;
     QTableWidget *m_artifactsTable = nullptr;
     QLabel *m_artifactsSummary = nullptr;
+    QWidget *m_shortcutCardsHost = nullptr; // card rows, rebuilt by loadShortcutsPanel
+    QLabel *m_shortcutsSummary = nullptr;
+    QPlainTextEdit *m_shortcutOutput = nullptr; // live output of the running shortcut
+    QLabel *m_shortcutRunStatus = nullptr;
+    QPushButton *m_shortcutStopButton = nullptr;
+    QProcess *m_shortcutProcess = nullptr; // running shortcut, if any
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
     // Live activity strip floating just above the Mirror nodes tab: a dot per
@@ -3532,6 +3588,12 @@ private:
     // to -1 whenever the shared view is repurposed (external render / re-run).
     int m_renderedTranscriptSession = -1;
     int m_renderedTranscriptCount = -1;
+    // How many of the selected session's oldest events are currently NOT
+    // rendered as transcript rows (only folded into the token/cost totals via
+    // accumulateStatsOnly) — i.e. still hidden behind the "Load earlier events"
+    // notice. loadEarlierTranscriptEvents() shrinks this as batches are
+    // revealed; renderTranscriptForSession() resets it on every full rebuild.
+    int m_transcriptSkipped = 0;
     // Which *external* session's transcript is built into the shared view, so
     // showAgentSession can skip the full 400 KB tail re-read/rebuild when the
     // session is unchanged (reloadAgents re-shows the open session constantly).
@@ -3613,6 +3675,12 @@ private:
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
+    // Slice the next batch of earlier events off the selected session's
+    // already-in-memory buffer (m_streamEvents; loadEvents() reads the whole
+    // events.jsonl up front, so this never touches disk) and hand it to
+    // m_agentTranscript->prependEarlierEvents() — driven by the view's
+    // loadEarlierRequested() signal (button click or scroll-near-top).
+    void loadEarlierTranscriptEvents();
     // Re-run the transcript search box's query against the freshly-rebuilt view
     // (adhoc #201), so highlights survive a session switch / re-render.
     void reapplyTranscriptSearch();
@@ -3994,6 +4062,19 @@ private:
     QLabel *m_profileDetails = nullptr;
     QLabel *m_profileMirrorsLabel = nullptr;
     QLabel *m_profileMirrors = nullptr;
+    // "USER ACCOUNT" section (self only): shows whether this node is linked to a
+    // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
+    // owning user's name (empty = unlinked), learned from account lookups.
+    QWidget *m_profileAccountSection = nullptr;
+    QLabel *m_profileAccountStatus = nullptr;
+    QPushButton *m_profileLinkUserButton = nullptr;
+    QString m_nodeOwnerUser;
+    // Nodes linked to this account's user (learned from account lookups): shown
+    // in the "USER ACCOUNT" section so a user can see their whole fleet. When
+    // this node is itself the user account it's the account's own nodes list;
+    // when this node is a child, it's the owning user's nodes (siblings + self).
+    QStringList m_profileLinkedNodes;
+    bool m_profileIsUserAccount = false; // this account has login creds (a user)
     QLabel *m_profileNote = nullptr;
     // Headline stat tiles (self only): repos / mirrored / online / chats.
     QWidget *m_profileStatGrid = nullptr;

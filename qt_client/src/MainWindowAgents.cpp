@@ -800,6 +800,12 @@ QWidget *MainWindow::buildAgentsTab()
                 Q_UNUSED(text);
                 applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
+    // "Load earlier events" (button click or scroll-near-top) — don't truncate
+    // the transcript (adhoc #115): the tail-capped initial render keeps opening
+    // a long session fast, but the full history is still reachable a batch at a
+    // time instead of being stuck behind "the Raw view has it".
+    connect(m_agentTranscript, &ClaudeTranscriptView::loadEarlierRequested, this,
+            &MainWindow::loadEarlierTranscriptEvents);
     // The user answered an AskUserQuestion multiple-choice card in the transcript
     // (issue #67). Satisfy the pending tool call so the CLI resumes, record the
     // answer in the session buffer (persists + replays the answered card), and
@@ -1195,7 +1201,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentSendPromptButton, "comment", 16);
     connect(m_agentSendPromptButton, &QPushButton::clicked, this, [this] {
-        if (!m_agentPromptEdit || m_selectedAgentSessionId < 0)
+        if (!m_agentPromptEdit)
             return;
         const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
         if (prompt.isEmpty())
@@ -1205,51 +1211,7 @@ QWidget *MainWindow::buildAgentsTab()
         // clearing only afterwards sometimes left the just-sent prompt stuck in
         // the input box (adhoc #29). Empty it now so it's added and gone at once.
         m_agentPromptEdit->clear();
-        if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
-            s && s->running()) {
-            // Steer the live Claude Code transcript session: record the turn in
-            // this session's buffer so it survives view switches, then send it.
-            const int sid = m_selectedAgentSessionId;
-            QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                             {QStringLiteral("text"), prompt}};
-            applyTranscriptEvent(sid, turn);
-            s->sendUserText(prompt);
-            // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
-            // it now (and once more shortly after) to keep the top-bar chart +
-            // hover stats current rather than waiting for the next minute tick.
-            bumpClaudeCodeUsage();
-            // Replying puts the agent back to work — clear "Waiting", or the
-            // Failed left by an error result whose process stayed alive, so the
-            // list shows the session running again.
-            if (AgentSession *as = findAgentSession(sid);
-                as && as->status != AgentStatus::Running) {
-                as->status = AgentStatus::Running;
-                as->finishedAtMs = 0;
-                as->lastError.clear();
-                if (m_agentStore)
-                    m_agentStore->saveSession(*as);
-                updateAgentStatusCell(sid);
-            }
-        } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
-            runner->steer(prompt);
-        } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
-            // No live process: the session is stopped, waiting, failed or done.
-            // Restart it and fold this message into the resumed run as a steering
-            // instruction so the queued message actually takes effect (adhoc #177).
-            const int sid = session->id;
-            m_pendingSteerMessage.insert(sid, prompt);
-            if (session->provider == QLatin1String("claude-code"))
-                applyTranscriptEvent(
-                    sid, QJsonObject{
-                             {QStringLiteral("type"), QStringLiteral("_local_user")},
-                             {QStringLiteral("text"), prompt}});
-            else
-                m_agentStore->appendLog(
-                    *session,
-                    QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
-                        .arg(prompt));
-            continueSelectedAgentSession();
-        }
+        sendPromptToSelectedAgent(prompt);
     });
 
     // Composer accessory controls: add-files (+), a slash-command menu, and the
@@ -1426,6 +1388,60 @@ QWidget *MainWindow::buildAgentsTab()
         }
     });
     return page;
+}
+
+// Steer the currently-selected agent session (m_selectedAgentSessionId) with a
+// follow-up message. Shared by the agent detail page's "Send" composer and the
+// footer quick-add's up-arrow ("send to the visible agent") button.
+void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
+{
+    if (prompt.isEmpty() || m_selectedAgentSessionId < 0)
+        return;
+    if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
+        s && s->running()) {
+        // Steer the live Claude Code transcript session: record the turn in
+        // this session's buffer so it survives view switches, then send it.
+        const int sid = m_selectedAgentSessionId;
+        QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                         {QStringLiteral("text"), prompt}};
+        applyTranscriptEvent(sid, turn);
+        s->sendUserText(prompt);
+        // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
+        // it now (and once more shortly after) to keep the top-bar chart +
+        // hover stats current rather than waiting for the next minute tick.
+        bumpClaudeCodeUsage();
+        // Replying puts the agent back to work — clear "Waiting", or the
+        // Failed left by an error result whose process stayed alive, so the
+        // list shows the session running again.
+        if (AgentSession *as = findAgentSession(sid);
+            as && as->status != AgentStatus::Running) {
+            as->status = AgentStatus::Running;
+            as->finishedAtMs = 0;
+            as->lastError.clear();
+            if (m_agentStore)
+                m_agentStore->saveSession(*as);
+            updateAgentStatusCell(sid);
+        }
+    } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+        runner->steer(prompt);
+    } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+        // No live process: the session is stopped, waiting, failed or done.
+        // Restart it and fold this message into the resumed run as a steering
+        // instruction so the queued message actually takes effect (adhoc #177).
+        const int sid = session->id;
+        m_pendingSteerMessage.insert(sid, prompt);
+        if (session->provider == QLatin1String("claude-code"))
+            applyTranscriptEvent(
+                sid, QJsonObject{
+                         {QStringLiteral("type"), QStringLiteral("_local_user")},
+                         {QStringLiteral("text"), prompt}});
+        else
+            m_agentStore->appendLog(
+                *session,
+                QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
+                    .arg(prompt));
+        continueSelectedAgentSession();
+    }
 }
 
 void MainWindow::testOpenAiAgentKey()
@@ -3339,15 +3355,25 @@ void MainWindow::assignIssueToAgent(const QString &provider, const QString &mode
 }
 
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
-                                   bool createPr, bool quiet, const QString &model)
+                                   bool createPr, bool quiet, const QString &model,
+                                   const RepositoryRecord *repoHint)
 {
     if (!m_agentStore || issue.number <= 0)
         return 0;
-    const int idx = issuesRepoIndex();
-    if (idx < 0 || idx >= m_repositories.size())
-        return 0;
-    const RepositoryRecord &repo = m_repositories.at(idx);
-    IssueStore issueStore = issueStoreForCurrentRepo();
+    RepositoryRecord repo;
+    IssueStore issueStore(QString(), QString(), &m_profileIdentity, m_userName);
+    if (repoHint) {
+        repo = *repoHint;
+        const RepositoryRecord &writable = writableRecordFor(repo);
+        issueStore = IssueStore(writable.localPath, writable.mirrorPath,
+                               &m_profileIdentity, m_userName);
+    } else {
+        const int idx = issuesRepoIndex();
+        if (idx < 0 || idx >= m_repositories.size())
+            return 0;
+        repo = m_repositories.at(idx);
+        issueStore = issueStoreForCurrentRepo();
+    }
     // A node that only mirrors this repo (no working tree) can still run an
     // agent: it builds the change in a throwaway worktree off the mirror and
     // opens a pull request to the owner. So require a local copy to work from —
@@ -5956,12 +5982,15 @@ void MainWindow::renderTranscriptForSession(int sessionId)
         return;
     m_agentTranscript->clear();
     const QList<QJsonObject> &events = m_streamEvents[sessionId];
-    // Rebuild only the last stretch as widget rows. Long sessions replayed one
-    // widget per event froze the opening click for seconds (stall log: repolish
-    // storms under renderTranscriptForSession <- showAgentSession); events past
-    // the tail feed the token/cost totals only, with a notice row up top and the
-    // full stream still available in the Raw view. Bulk mode also skips the
-    // per-row fade-in animation (one QGraphicsOpacityEffect per row).
+    // Rebuild only the last stretch as widget rows on the initial paint. Long
+    // sessions replayed one widget per event froze the opening click for
+    // seconds (stall log: repolish storms under renderTranscriptForSession <-
+    // showAgentSession); events past the tail feed the token/cost totals only,
+    // with a "Load earlier events" notice up top. Nothing is lost — clicking
+    // the notice (or scrolling near the top) reveals more via
+    // loadEarlierTranscriptEvents(), a batch at a time, all the way back to the
+    // start (adhoc #115: don't truncate the transcript). Bulk mode also skips
+    // the per-row fade-in animation (one QGraphicsOpacityEffect per row).
     constexpr int kTranscriptRenderTail = 300;
     const int skipped = qMax(0, int(events.size()) - kTranscriptRenderTail);
     m_agentTranscript->setBulkPopulate(true);
@@ -5981,8 +6010,35 @@ void MainWindow::renderTranscriptForSession(int sessionId)
     // skip a redundant rebuild on the next reload (see its stream branch).
     m_renderedTranscriptSession = sessionId;
     m_renderedTranscriptCount = events.size();
+    m_transcriptSkipped = skipped;
     m_renderedExternalSession = -1; // the shared view no longer holds an external
     reapplyTranscriptSearch(); // re-highlight against the rebuilt transcript
+}
+
+// Reveal the next batch of the selected session's earlier events, driven by
+// m_agentTranscript's loadEarlierRequested() signal. The full event history is
+// already resident in memory (m_streamEvents; AgentStore::loadEvents() reads
+// the whole events.jsonl up front), so this is pure widget construction — no
+// disk I/O — sliced small enough per batch to stay smooth while scrolling.
+void MainWindow::loadEarlierTranscriptEvents()
+{
+    if (!m_agentTranscript || m_renderedTranscriptSession != m_selectedAgentSessionId)
+        return;
+    const int sessionId = m_renderedTranscriptSession;
+    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
+    if (m_transcriptSkipped <= 0 || m_transcriptSkipped > events.size()) {
+        m_transcriptSkipped = 0;
+        m_agentTranscript->prependEarlierEvents({}, 0); // clears a stale notice, if any
+        return;
+    }
+    constexpr int kBatch = 300; // same granularity as the initial tail
+    const int newSkipped = qMax(0, m_transcriptSkipped - kBatch);
+    QList<QJsonObject> batch;
+    batch.reserve(m_transcriptSkipped - newSkipped);
+    for (int i = newSkipped; i < m_transcriptSkipped; ++i)
+        batch.append(events.at(i));
+    m_transcriptSkipped = newSkipped;
+    m_agentTranscript->prependEarlierEvents(batch, newSkipped);
 }
 
 // Re-run the search box's query so highlights persist across a session switch
