@@ -7231,6 +7231,14 @@ void MainWindow::renderProfileAccountStatus()
 {
     if (!m_profileAccountStatus || !m_profileLinkUserButton)
         return;
+    // The browser-link button is ALWAYS offered on your own profile — even when
+    // this node is already linked or is itself a user account — because the
+    // grant flow overrides the current association: whoever authenticates in
+    // the browser takes possession of this node (adhoc #120 follow-up).
+    if (m_profileLinkBrowserButton) {
+        m_profileLinkBrowserButton->setVisible(true);
+        m_profileLinkBrowserButton->setEnabled(true);
+    }
     const QString fleet = linkedNodesHtml();
     const QString fleetLine =
         fleet.isEmpty()
@@ -7246,8 +7254,6 @@ void MainWindow::renderProfileAccountStatus()
                 .arg(m_nodeOwnerUser.toHtmlEscaped(), fleetLine));
         m_profileLinkUserButton->setText("Linked to a user");
         m_profileLinkUserButton->setVisible(false);
-        if (m_profileLinkBrowserButton)
-            m_profileLinkBrowserButton->setVisible(false);
     } else if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
         // This account is itself a user (it has login credentials); it can't
         // be "linked to a user" — instead it OWNS nodes. Show them and hide
@@ -7269,8 +7275,6 @@ void MainWindow::renderProfileAccountStatus()
                 "<span style='color:#3fb950'>\xE2\x9C\x94 This is your user "
                 "account</span><br>%1").arg(body));
         m_profileLinkUserButton->setVisible(false);
-        if (m_profileLinkBrowserButton)
-            m_profileLinkBrowserButton->setVisible(false);
     } else {
         // While a browser link grant is being watched (adhoc #120), say so
         // instead of "isn't linked yet" — the repaint on every poll would
@@ -7287,10 +7291,6 @@ void MainWindow::renderProfileAccountStatus()
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(true);
         m_profileLinkUserButton->setVisible(true);
-        if (m_profileLinkBrowserButton) {
-            m_profileLinkBrowserButton->setVisible(true);
-            m_profileLinkBrowserButton->setEnabled(true);
-        }
     }
 }
 
@@ -7523,8 +7523,11 @@ void MainWindow::openLinkNodeInBrowser()
     QDesktopServices::openUrl(url);
     logSystem("Account: opened the browser to link node \"" + node +
               "\" to the user logged in there.");
-    // Watch the account for a couple of minutes so the profile flips to
-    // "linked" by itself once the browser side completes.
+    // Watch the account for a couple of minutes so the profile flips to the
+    // new owner by itself once the browser side completes. The grant can
+    // re-link an already-owned node, so completion = the owner changed from
+    // what it was when the browser was opened.
+    m_linkGrantBaselineOwner = m_nodeOwnerUser.trimmed();
     m_linkGrantPollsLeft = 24;
     pollLinkNodeGrant();
 }
@@ -7533,9 +7536,10 @@ void MainWindow::pollLinkNodeGrant()
 {
     if (m_linkGrantPollsLeft <= 0)
         return;
-    if (!m_nodeOwnerUser.trimmed().isEmpty() || !m_profileIsSelf) {
-        // Linked (done) or the profile moved off this node: stop watching, and
-        // zero the countdown so a later repaint doesn't resurrect the
+    if (m_nodeOwnerUser.trimmed() != m_linkGrantBaselineOwner ||
+        !m_profileIsSelf) {
+        // Re-linked (done) or the profile moved off this node: stop watching,
+        // and zero the countdown so a later repaint doesn't resurrect the
         // "finishing in your browser" message.
         m_linkGrantPollsLeft = 0;
         return;
