@@ -18,7 +18,8 @@
   const signupHint = $("#signup-hint");
 
   function setNameHint(text, cls) {
-    nameHint.textContent = text;
+    // Only surface this hint for an actual error; success/neutral states stay quiet.
+    nameHint.textContent = cls === "bad" ? text : "";
     nameHint.className = "hint" + (cls ? " " + cls : "");
   }
 
