@@ -346,7 +346,7 @@ push_secrets() {
     # Verify: confirm each pushed name actually exists on the Worker now, so a
     # silently-failed `secret put` becomes a loud error instead of a mystery.
     local listed
-    if listed="$(pywrangler secret list 2>/dev/null)"; then
+    if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
         local missing=()
         local k
         for k in ${pushed[@]+"${pushed[@]}"}; do
@@ -461,11 +461,18 @@ case "${1:-deploy}" in
         require_cloudflare_auth
         BUILD_REV="$(build_rev)"
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV)..."
+        # wrangler.toml defines [env.dev] alongside the top-level (production)
+        # config, so wrangler warns "no target environment specified" unless we
+        # pass --env explicitly. Every pywrangler call below that touches the
+        # live Worker passes --env "" (the documented way to target the
+        # top-level environment) so the warning goes away and every command
+        # (deploy, secret put/list, dev, dry-run) consistently hits the same
+        # script instead of drifting between an implicit and explicit target.
         # Stamp the build into the Worker as a plaintext var so /api/version can
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        pywrangler deploy --var "BUILD_REV:${BUILD_REV}"
+        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         push_secrets
@@ -494,14 +501,14 @@ case "${1:-deploy}" in
         push_secrets
         ;;
     dev)
-        pywrangler dev ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
+        pywrangler dev --env "" ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
         ;;
     dry-run)
         require_cloudflare_account
         # --dry-run still runs the [build] command (migrate.sh → remote D1), which
         # needs Cloudflare auth, so the same non-interactive guard applies.
         require_cloudflare_auth
-        pywrangler deploy --dry-run
+        pywrangler deploy --env "" --dry-run
         ;;
     *)
         echo "Usage: $0 [deploy|secrets|dev|dry-run]" >&2
