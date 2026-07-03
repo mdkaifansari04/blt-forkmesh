@@ -2948,6 +2948,37 @@ inline bool isValidNodeName(const QString &value)
     return re.match(value).hasMatch();
 }
 
+// A fresh install has no node name yet. Rather than block the welcome screen
+// until the user thinks one up, hand them a friendly generated one (Docker
+// container name style: "adjective-noun-1234") so the node has a valid name
+// and can register/start mirroring immediately; they can still rename
+// themselves later from Settings. Always satisfies isValidNodeName.
+inline QString randomFunNodeName()
+{
+    static const char *const adjectives[] = {
+        "clever",  "swift",    "brave",   "quiet",   "bold",     "sunny",
+        "lucky",   "mighty",   "gentle",  "curious", "jolly",    "nimble",
+        "spry",    "witty",    "cosmic",  "electric", "silent",  "golden",
+        "amber",   "crimson",  "azure",   "emerald", "frosty",   "rusty",
+        "shiny",   "sleepy",   "zesty",   "dapper",  "plucky",   "wandering",
+    };
+    static const char *const nouns[] = {
+        "otter",   "falcon",   "badger",  "panda",   "koala",    "yak",
+        "lynx",    "heron",    "gecko",   "narwhal", "raccoon",  "walrus",
+        "sparrow", "beetle",   "comet",   "meadow",  "canyon",   "glacier",
+        "ember",   "pixel",    "byte",    "cactus",  "penguin",  "dolphin",
+        "wombat",  "ferret",   "puffin",  "tumbleweed", "yeti",  "marmot",
+    };
+    const int a = QRandomGenerator::global()->bounded(
+        int(sizeof(adjectives) / sizeof(adjectives[0])));
+    const int n = QRandomGenerator::global()->bounded(
+        int(sizeof(nouns) / sizeof(nouns[0])));
+    const int suffix = QRandomGenerator::global()->bounded(1000, 10000);
+    return QStringLiteral("%1-%2-%3")
+        .arg(QLatin1String(adjectives[a]), QLatin1String(nouns[n]))
+        .arg(suffix);
+}
+
 inline QString accountNameFromInput(QString value, const QString &fallback = QStringLiteral("node"))
 {
     value = value.trimmed().toLower();
