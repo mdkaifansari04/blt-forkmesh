@@ -1737,34 +1737,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
-    // Reward-availability toggle, right next to the balance. A node only collects
-    // rewards while it is online and serving, so make that link unmistakable: the
-    // switch flips the node online/offline, a status line spells out whether it's
-    // "available for rewards" (green, the state we nudge the user toward) or
-    // "offline · not collecting rewards" (amber), and an uptime line shows how
-    // long the node has been online.
-    m_nodeOnlineToggle = new QPushButton;
-    m_nodeOnlineToggle->setObjectName("nodeOnlineToggle");
-    m_nodeOnlineToggle->setCheckable(true);
-    m_nodeOnlineToggle->setCursor(Qt::PointingHandCursor);
-    m_nodeOnlineToggle->setFixedWidth(148);
-    connect(m_nodeOnlineToggle, &QPushButton::clicked, this,
-            [this](bool checked) { setNodeOffline(!checked); });
-
-    m_nodeRewardStatus = new QLabel;
-    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
-    m_nodeRewardStatus->setAlignment(Qt::AlignCenter);
-    m_nodeRewardStatus->setFixedWidth(148);
-    m_nodeRewardStatus->setWordWrap(true);
-
-    m_nodeUptimeLabel = new QLabel;
-    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
-    m_nodeUptimeLabel->setAlignment(Qt::AlignCenter);
-    m_nodeUptimeLabel->setFixedWidth(148);
-    m_nodeUptimeLabel->setStyleSheet(
-        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
-    m_nodeUptimeLabel->setToolTip(
-        QStringLiteral("How long this node has been online this session"));
+    // The reward-availability toggle (online/offline switch, status line, uptime)
+    // used to live here beside the balance; it's now built in
+    // buildNodeProfilePanel(), right under "Get paid to mirror", as a clear
+    // on/off switch for the whole node rather than a small top-bar pill.
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
@@ -2147,19 +2123,9 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
-    // Online/reward cluster sits to the LEFT of the wallet balance: the
-    // online toggle, the "available for rewards" status line and the uptime
-    // stack beside the money rather than below it, so this row doesn't grow
-    // taller than the node name + balance it sits next to.
-    auto *rewardColumn = new QVBoxLayout;
-    rewardColumn->setContentsMargins(0, 0, 0, 0);
-    rewardColumn->setSpacing(0);
-    rewardColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
-    rewardColumn->addWidget(m_nodeRewardStatus);
-    rewardColumn->addWidget(m_nodeUptimeLabel);
-    mainRow->addLayout(rewardColumn);
-    mainRow->addSpacing(8);
-    // Stack the node name above the wallet balance — "this is your money".
+    // Stack the node name above the wallet balance — "this is your money". The
+    // online/reward toggle that used to sit here now lives in the node profile
+    // panel, under "Get paid to mirror".
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
