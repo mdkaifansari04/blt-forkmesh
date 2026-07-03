@@ -506,24 +506,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setProperty("buttonSize", "sm");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
 
-    // Far-right cluster: a standout donate button (opens the central-fund QR),
-    // then the ForkMesh Reddit and Twitter/X links at the very edge.
-    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
-    donateButton->setObjectName("donateButton");
-    donateButton->setCursor(Qt::PointingHandCursor);
-    donateButton->setToolTip(
-        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
-        "hourly)");
-
-    auto *redditButton = new QPushButton("Reddit");
-    redditButton->setObjectName("socialButton");
-    redditButton->setCursor(Qt::PointingHandCursor);
-    redditButton->setToolTip("ForkMesh on Reddit");
-
-    auto *twitterButton = new QPushButton("X");
-    twitterButton->setObjectName("socialButton");
-    twitterButton->setCursor(Qt::PointingHandCursor);
-    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    // The donate button and the Reddit/X social icons now live in the top bar
+    // (see buildBreadcrumb), stacked beside the account cluster, so they no longer
+    // take up the footer's far-right edge.
 
     // Twice as wide and two lines tall (adhoc #10/#12): give the prompt field
     // room to actually show two wrapped lines of the prompt while typing. The
@@ -533,37 +518,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setMinimumWidth(720);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Live diagnostics right of the quick-add controls: CPU / memory of this process,
-    // plus a count of detected UI stalls. Click to see the stall details.
-    m_footerDiagnostics = new QPushButton;
-    m_footerDiagnostics->setObjectName("footerDiagnostics");
-    m_footerDiagnostics->setFlat(true);
-    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
-    m_footerDiagnostics->setToolTip(
-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
-    m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;}"
-        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
-    connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::showDiagnosticsDialog);
-
-    // Three little button-sized squares beside the diagnostics glyph, each
-    // plotting one resource — this app's CPU, the host's memory and its disk —
-    // as a moving sparkline fed one sample a second by updateFooterDiagnostics.
-    // The widget class, the member pointers and that feed loop all shipped with
-    // adhoc #17, but the charts were never actually built or added to the row,
-    // so the footer showed nothing; this constructs them (adhoc #25). Clicking
-    // one opens the same diagnostics dialog as the glyph.
-    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
-    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
-    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
-        chart->onClicked = [this] { showDiagnosticsDialog(); };
-    m_cpuChart = cpuChart;
-    m_memChart = memChart;
-    m_diskChart = diskChart;
+    // The live CPU/MEM/DISK diagnostics sparklines and their glyph now live in the
+    // top bar (see buildBreadcrumb), so the footer is just the prompt + agent
+    // controls.
 
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
@@ -582,14 +539,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddClaudeModel);
     quickAddRow->addWidget(m_quickAddCreatePr);
     quickAddRow->addStretch(1);
-    quickAddRow->addWidget(cpuChart);
-    quickAddRow->addWidget(memChart);
-    quickAddRow->addWidget(diskChart);
-    quickAddRow->addWidget(m_footerDiagnostics);
-    quickAddRow->addStretch(1);
-    quickAddRow->addWidget(donateButton);
-    quickAddRow->addWidget(redditButton);
-    quickAddRow->addWidget(twitterButton);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.
     // It streams the newest network/update line so the latest activity is visible
@@ -627,14 +576,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    connect(donateButton, &QPushButton::clicked, this,
-            &MainWindow::showTreasuryDonateDialog);
-    connect(redditButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
-    });
-    connect(twitterButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
-    });
     updateVoiceInputButton();
     return dock;
 }
@@ -2108,6 +2049,75 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navDrawButton, &QPushButton::clicked, this,
             &MainWindow::startScreenDraw);
 
+    // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
+    // donate button (opens the central-fund QR) sits beside a compact column of two
+    // icon-only social buttons — the ForkMesh Reddit and Twitter/X links — stacked
+    // vertically so they take up little width next to the donate button.
+    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
+    donateButton->setObjectName("donateButton");
+    donateButton->setCursor(Qt::PointingHandCursor);
+    donateButton->setToolTip(
+        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
+        "hourly)");
+    connect(donateButton, &QPushButton::clicked, this,
+            &MainWindow::showTreasuryDonateDialog);
+
+    auto *redditButton = new QPushButton;
+    redditButton->setObjectName("socialIconButton");
+    redditButton->setCursor(Qt::PointingHandCursor);
+    redditButton->setToolTip("ForkMesh on Reddit");
+    redditButton->setFixedSize(28, 22);
+    setOcticon(redditButton, "reddit", 15);
+    connect(redditButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
+    });
+
+    auto *twitterButton = new QPushButton;
+    twitterButton->setObjectName("socialIconButton");
+    twitterButton->setCursor(Qt::PointingHandCursor);
+    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    twitterButton->setFixedSize(28, 22);
+    setOcticon(twitterButton, "twitter-bird", 14);
+    connect(twitterButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
+    });
+
+    auto *socialColumn = new QVBoxLayout;
+    socialColumn->setContentsMargins(0, 0, 0, 0);
+    socialColumn->setSpacing(3);
+    socialColumn->addWidget(redditButton);
+    socialColumn->addWidget(twitterButton);
+
+    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
+    // of this process plus a count of detected UI stalls. Click to see the stall
+    // details.
+    m_footerDiagnostics = new QPushButton;
+    m_footerDiagnostics->setObjectName("footerDiagnostics");
+    m_footerDiagnostics->setFlat(true);
+    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
+    m_footerDiagnostics->setToolTip(
+        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
+        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+    m_footerDiagnostics->setStyleSheet(
+        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    connect(m_footerDiagnostics, &QPushButton::clicked, this,
+            &MainWindow::showDiagnosticsDialog);
+
+    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // one resource — this app's CPU, the host's memory and its disk — as a moving
+    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
+    // opens the same diagnostics dialog as the glyph.
+    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
+    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
+    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+        chart->onClicked = [this] { showDiagnosticsDialog(); };
+    m_cpuChart = cpuChart;
+    m_memChart = memChart;
+    m_diskChart = diskChart;
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -2144,6 +2154,12 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
+    // Donate button + the vertically-stacked Reddit/X icons, sat just left of the
+    // account cluster (adhoc #117).
+    mainRow->addWidget(donateButton);
+    mainRow->addSpacing(4);
+    mainRow->addLayout(socialColumn);
+    mainRow->addSpacing(10);
     // Stack the node name above the wallet balance — "this is your money". The
     // online/reward toggle that used to sit here now lives in the node profile
     // panel, under "Get paid to mirror".
@@ -2182,6 +2198,13 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
+    navRow->addSpacing(16);
+    // Live CPU/MEM/DISK sparklines + the diagnostics glyph, moved up from the
+    // footer (adhoc #117).
+    navRow->addWidget(cpuChart);
+    navRow->addWidget(memChart);
+    navRow->addWidget(diskChart);
+    navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
     // Right-aligned so they sit under the top-right avatar; the pencil and
     // screenshot buttons sit just left of the rebuild/restart button.
