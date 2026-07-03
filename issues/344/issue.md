@@ -5,7 +5,7 @@ title: we should let a node join the network even though it has not verified its
 status: open
 labels: []
 milestone: 
-priority: 25
+priority: 1
 progress: 0
 assignees: []
 createdAt: 1783093191964
