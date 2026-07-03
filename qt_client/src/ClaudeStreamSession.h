@@ -28,10 +28,15 @@ public:
     // When model is non-empty it's passed to the CLI as `--model` (an alias like
     // "opus"/"sonnet"/"haiku" or a full model id), letting the user pick which
     // Claude model runs the agent (adhoc #261); empty keeps the CLI default.
+    // effort ("low"/"medium"/"high"/"xhigh"/"max") and fallbackModels (a
+    // comma-separated model list) pass through as `--effort`/`--fallback-model`
+    // when non-empty — the footer slash-actions menu sets them (adhoc #116).
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt, bool skipPermissions = true,
                const QString &resumeSessionId = QString(),
-               const QString &model = QString());
+               const QString &model = QString(),
+               const QString &effort = QString(),
+               const QString &fallbackModels = QString());
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
     // Answer a pending tool call (e.g. the AskUserQuestion clarifying-question

@@ -4336,6 +4336,17 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // Click a row (or effort dot) in the footer slash-actions popup (adhoc
+    // #116): every activatable widget in that popup carries a "slashKind"
+    // dynamic property, dispatched generically in activateSlashActionRow.
+    if (event->type() == QEvent::MouseButtonRelease) {
+        if (auto *w = qobject_cast<QWidget *>(obj)) {
+            if (w->property("slashKind").isValid()) {
+                activateSlashActionRow(w);
+                return true;
+            }
+        }
+    }
     // Pasting an image into the chat composer shares it as an attachment. Only
     // consume the event when we actually sent an image; otherwise let the line
     // edit handle a normal text paste.
@@ -4364,6 +4375,32 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         if (ke->key() == Qt::Key_Down && navigateQuickAddHistory(1))
             return true;
+    }
+    // Slash-actions popup filter box (adhoc #116): Up/Down walk the visible
+    // rows, Enter activates the selected one, Escape closes the popup —
+    // mirrors the global-search dropdown's keyboard handling below.
+    if (obj == m_slashActionsFilter && event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        switch (ke->key()) {
+        case Qt::Key_Down:
+            moveSlashActionsSelection(1);
+            return true;
+        case Qt::Key_Up:
+            moveSlashActionsSelection(-1);
+            return true;
+        case Qt::Key_Escape:
+            if (m_slashActionsPopup)
+                m_slashActionsPopup->hide();
+            return true;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            if (m_slashActionSelected >= 0 &&
+                m_slashActionSelected < m_slashActionRows.size())
+                activateSlashActionRow(m_slashActionRows.at(m_slashActionSelected));
+            return true;
+        default:
+            break;
+        }
     }
     // Agents composer: Enter sends the queued message; Shift+Enter inserts a
     // newline (issue #41). Mirrors the Claude Code conversation input.

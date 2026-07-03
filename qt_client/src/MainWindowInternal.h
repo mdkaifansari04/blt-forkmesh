@@ -2270,6 +2270,18 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
+// actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
+// "xhigh"/"max"), passed to the CLI as `--effort`.
+const QString kClaudeEffortSetting = QStringLiteral("agents/claudeEffort");
+// "Thinking" toggle: false => launch the CLI with MAX_THINKING_TOKENS=0 so the
+// model skips extended thinking. Default on (the CLI's own behavior).
+const QString kClaudeThinkingSetting = QStringLiteral("agents/claudeThinking");
+// "Switch models when a message is flagged" toggle: true => pass
+// `--fallback-model` so the CLI retries on another Claude model when the chosen
+// one is unavailable or a message is refused. Default off.
+const QString kClaudeFallbackModelSetting =
+    QStringLiteral("agents/claudeFallbackModel");
 // When an agent is created from a non-Agents tab, automatically switch to the
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
