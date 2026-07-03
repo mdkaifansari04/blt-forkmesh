@@ -380,6 +380,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAssignAgent->setToolTip(
         "When you add the issue, immediately assign a coding agent to it.");
     m_quickAddAgentProvider = new QComboBox;
+    m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
     m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
@@ -394,6 +395,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Populated by refreshClaudeModelCombo; choice persisted and fed to
     // startClaudeCodeTranscript.
     m_quickAddClaudeModel = new QComboBox;
+    m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
     m_quickAddClaudeModel->setMinimumWidth(170);
     m_quickAddClaudeModel->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     populateClaudeModelCombo(m_quickAddClaudeModel);
