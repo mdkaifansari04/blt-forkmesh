@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 348
 title: please make the green border around agent / claude code / claude sonnet aobut half the size - move everything down as seen by the red lines  please also adjust the image preview to be not as tall - and make the whole prompt box one line less tall also fix the model dropdown to open up all the way and not have the scroll arrows also add more more dropdown in the same style for mode selection see the attached image for how that should look please
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
