@@ -1924,7 +1924,7 @@ void MainWindow::refreshClaudeModelCombo()
                 m_quickAddClaudeModel->setCurrentIndex(idx);
             }
         }
-        // Branch and action fix combos: only update when set to claude-code.
+        // Branch, action, and issue fix combos: only update when set to claude-code.
         const QString claudeCode = QStringLiteral("claude-code");
         if (m_branchFixModelCombo && m_branchFixAgentCombo &&
             m_branchFixAgentCombo->currentData().toString() == claudeCode)
@@ -1932,6 +1932,9 @@ void MainWindow::refreshClaudeModelCombo()
         if (m_actionFixModelCombo && m_actionFixAgentCombo &&
             m_actionFixAgentCombo->currentData().toString() == claudeCode)
             mergeLiveClaudeModels(m_actionFixModelCombo, models);
+        if (m_issueAgentModel && m_issueAgentProvider &&
+            m_issueAgentProvider->currentData().toString() == claudeCode)
+            mergeLiveClaudeModels(m_issueAgentModel, models);
     };
 
     // Apply whatever we have cached so combos built after the last fetch still
