@@ -5869,16 +5869,22 @@ inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArra
     return true;
 }
 
-// True when `workTree` has no uncommitted *tracked* changes — a clean base for
-// the auto-issue-sync to land issue commits on (issue #193). Untracked files
-// (build output, scratch notes) are ignored: an issues-only commit never
-// touches them. A failed status check is treated as "not clean" so we err on
-// the side of leaving incoming issues in the inbox rather than committing.
+// True when `workTree`'s issues/ subtree has no uncommitted *tracked* changes —
+// a clean base for the auto-issue-sync to land issue commits on (issue #193).
+// Scoped to issues/ (not the whole tree) because IssueStore::commit() only ever
+// stages/commits that path: unrelated in-progress work elsewhere in the repo
+// (which, on an actively developed source-of-truth checkout, is close to
+// always) must not permanently block the auto-drain of mirror-filed issues.
+// Untracked files (build output, scratch notes) are ignored: an issues-only
+// commit never touches them. A failed status check is treated as "not clean"
+// so we err on the side of leaving incoming issues in the inbox rather than
+// committing.
 inline bool worktreeTrackedClean(const QString &workTree)
 {
     QByteArray status;
     if (!runGitCapture(workTree,
-                       {"status", "--porcelain", "--untracked-files=no"},
+                       {"status", "--porcelain", "--untracked-files=no", "--",
+                        "issues"},
                        &status, nullptr))
         return false;
     return QString::fromUtf8(status).trimmed().isEmpty();
