@@ -175,6 +175,16 @@ public:
     // returns to the original branch and regenerates the PR's patch — the PR stays
     // open and mergeable. On failure the caller should abortConflictMerge().
     bool deletePullFile(int number, const QString &relPath, QString *error = nullptr);
+    // Multi-file agent edit on the PR's branch (adhoc #82): startPullAgentEdit
+    // checks out the PR's branch with the PR applied (clean tree and a
+    // conflict-free PR required) and leaves it checked out so an agent can edit
+    // any number of files in the working tree. finishPullAgentEdit stages
+    // everything, commits it on the branch, returns to the original branch and
+    // regenerates the PR's patch — the PR stays open and mergeable. Cancel with
+    // abortConflictMerge to discard the edits and drop the branch.
+    bool startPullAgentEdit(int number, QString *error = nullptr);
+    bool finishPullAgentEdit(int number, const QString &commitMsg,
+                             QString *error = nullptr);
     // Build a minimal mbox (single commit) from a flat patch so `git am` can
     // apply it and credit the PR author. Public for testing.
     static QString syntheticMbox(const PullRequest &pr);
