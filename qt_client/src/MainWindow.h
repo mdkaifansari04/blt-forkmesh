@@ -3152,6 +3152,12 @@ private:
     // PR's branch: continues that same session rather than spinning up a fresh,
     // isolated conflict-only run.
     QPushButton *m_pullFixConflictsButton = nullptr;
+    // AI code review (adhoc #82): "Review with AI" reads the PR's diff and posts
+    // line-anchored review threads — findings with a safe mechanical fix carry a
+    // committable suggestion patch. "Fix all with AI" hands every unresolved
+    // review thread to a Claude Code agent that edits the PR's branch directly.
+    QPushButton *m_pullReviewAiButton = nullptr;
+    QPushButton *m_pullFixAllAiButton = nullptr;
     QPushButton *m_pullEditFileButton = nullptr; // edit selected file on PR branch
     QPushButton *m_pullDeleteFileButton = nullptr; // delete selected file on PR branch
     QPushButton *m_pullCloseButton = nullptr;
@@ -3393,6 +3399,15 @@ private:
         QString branch;        // target branch being brought up to date
         QString baseBranch;    // base branch merged into it
         QString restoreBranch; // branch to check back out when done
+        // Review-fix mode (adhoc #82): the Claude Code run edits the PR's branch
+        // to address review findings instead of resolving conflict markers.
+        // startPullAgentEdit opened the branch; finish commits every edit via
+        // finishPullAgentEdit. The prompt (built from the unresolved threads by
+        // fixCurrentPullFindingsWithAgent) replaces the conflict prompt.
+        bool agentEdit = false;
+        QString agentEditPrompt;
+        int agentEditFindings = 0;
+        QString promptFile;    // prompt handed to the CLI; removed when the run ends
     };
     AiConflictFix *m_aiFix = nullptr;
     void aiFixResolveNextFile();           // send the next conflicted file to the model
@@ -3402,6 +3417,37 @@ private:
     void aiFixFail(const QString &message); // abort the merge, mark session failed
     void aiFixLog(const QString &text);    // stream a line into the agent session log
     void aiFixSetSessionStatus(const QString &status, const QString &error = QString());
+    // In-flight AI code review (adhoc #82, see reviewCurrentPullWithAi): one model
+    // call over the PR's diff whose findings land as signed review threads. Null
+    // when no review is running. Read-only towards the repo, so unlike m_aiFix it
+    // holds no PullStore/git state — just the session bookkeeping.
+    struct AiPullReview {
+        int number = 0;       // PR under review
+        int repoIndex = -1;
+        int sessionId = 0;    // backing agent session (Agents-tab visibility)
+        QString provider;     // "claude" | "openai" | "claude-code"
+        QString model;
+        double costUsd = 0.0;
+        qint64 inTokens = 0;
+        qint64 outTokens = 0;
+        QProcess *process = nullptr; // running CLI (claude-code mode), else null
+        QString output;              // accumulated CLI stdout (claude-code mode)
+        QString promptFile;          // prompt handed to the CLI; removed on finish
+    };
+    AiPullReview *m_aiReview = nullptr;
+    void reviewCurrentPullWithAi();        // "Review with AI" on the PR header
+    void aiReviewRunClaudeCode(const QString &prompt); // CLI fallback (no API key)
+    void aiReviewHandleReply(const QString &text); // parse findings + post threads
+    void aiReviewFail(const QString &message);
+    void aiReviewLog(const QString &text);
+    void aiReviewSetSessionStatus(const QString &status,
+                                  const QString &error = QString());
+    // One-click "Apply fix & commit" on a review thread's suggestion patch.
+    void applyPullSuggestionFix(const QString &threadId);
+    // "Fix all with AI": hand every unresolved review thread to a Claude Code
+    // agent that edits the PR's branch (reuses the m_aiFix machinery in
+    // agentEdit mode).
+    void fixCurrentPullFindingsWithAgent();
     QTableWidget *m_agentTable = nullptr;
     // Free-text filter over the session list: matches issue number/title,
     // provider, status and PR. Empty shows everything (issue #82).
