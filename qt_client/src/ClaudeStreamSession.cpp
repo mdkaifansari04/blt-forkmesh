@@ -12,7 +12,8 @@ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
-                                const QString &resumeSessionId, const QString &model)
+                                const QString &resumeSessionId, const QString &model,
+                                const QString &effort, const QString &fallbackModels)
 {
     stop();
     m_buf.clear();
@@ -51,6 +52,13 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
     // it defensively like the resume id below.
     if (!model.trimmed().isEmpty())
         cmd += QStringLiteral(" --model '%1'").arg(model.trimmed());
+    // Effort level and fallback models from the footer slash-actions menu
+    // (adhoc #116). Values are fixed CLI keywords / model aliases, but
+    // single-quote them defensively like the model above.
+    if (!effort.trimmed().isEmpty())
+        cmd += QStringLiteral(" --effort '%1'").arg(effort.trimmed());
+    if (!fallbackModels.trimmed().isEmpty())
+        cmd += QStringLiteral(" --fallback-model '%1'").arg(fallbackModels.trimmed());
     // Resume a prior conversation so the agent picks up its full context (the
     // files it touched, what it had figured out, what's left). The id is a UUID
     // from the CLI's own stream, but single-quote it defensively all the same.
