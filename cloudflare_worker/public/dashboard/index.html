@@ -1075,6 +1075,12 @@
                       <h2 class="text-sm font-semibold text-foreground">Nodes</h2>
                     </div>
                     <div class="grid gap-4 p-4">
+                      <div data-link-grant-row class="hidden grid gap-3 rounded-md border border-primary/40 bg-secondary/40 p-3">
+                        <p data-link-grant-text class="text-sm leading-6 text-foreground"></p>
+                        <button data-link-grant-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                          Authenticate &amp; link
+                        </button>
+                      </div>
                       <p class="text-sm leading-6 text-muted-foreground">
                         Claim ownership of a node (e.g. a headless mirror you installed) by entering its node ID below — either its node name or the public key shown on that node's profile. A confirmation code will appear on that node — enter it here to finish linking it to your account. Tip: clicking “Link this node to your account” in a node's own app links it here with no code at all.
                       </p>

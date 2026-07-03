@@ -4143,6 +4143,9 @@ private:
     // linking via a node-signed grant URL (adhoc #120).
     QPushButton *m_profileLinkBrowserButton = nullptr;
     int m_linkGrantPollsLeft = 0; // post-browser-link polling countdown
+    // Owner at the moment the browser was opened: the grant overrides any
+    // existing link, so "done" = the owner CHANGED, not just became non-empty.
+    QString m_linkGrantBaselineOwner;
     QString m_nodeOwnerUser;
     // Nodes linked to this account's user (learned from account lookups): shown
     // in the "USER ACCOUNT" section so a user can see their whole fleet. When
