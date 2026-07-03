@@ -48,6 +48,8 @@ endif()
 
 set(FORKMESH_APP_SOURCES
     resources/icons.qrc
+    src/CrashHandler.h
+    src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
     src/Theme.h
