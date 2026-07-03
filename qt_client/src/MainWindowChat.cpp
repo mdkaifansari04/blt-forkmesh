@@ -6594,6 +6594,21 @@ QWidget *MainWindow::buildNodeProfilePanel()
             openDirectChat(m_profileNodeId, m_profileNodeName);
     });
 
+    // Admin-only (adhoc #141): request ownership of someone else's node. This
+    // only parks a pending marker on the target — the transfer only completes
+    // once that node's own owner approves the prompt it gets on its own
+    // heartbeat, so a hostile/compromised admin account still can't silently
+    // seize a node.
+    m_profileTakeOwnershipButton = new QPushButton("Take ownership");
+    m_profileTakeOwnershipButton->setObjectName("ghostButton");
+    m_profileTakeOwnershipButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileTakeOwnershipButton, "shield-check", 16);
+    m_profileTakeOwnershipButton->setToolTip(
+        "Request ownership of this node. It only transfers once the node's "
+        "current owner approves the confirmation prompt it receives.");
+    connect(m_profileTakeOwnershipButton, &QPushButton::clicked, this,
+            &MainWindow::requestNodeOwnership);
+
     // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
     // directly under the username on your own profile. The core flow never shows
     // it; clicking sets a Solana payout address (if unset) and activates this node
@@ -6860,6 +6875,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     leftColumn->addWidget(m_profileStatus);
     leftColumn->addWidget(m_profileNote);
     leftColumn->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileTakeOwnershipButton, 0, Qt::AlignHCenter);
     leftColumn->addWidget(m_profileStatGrid);
     leftColumn->addWidget(detailsLabel);
     leftColumn->addWidget(m_profileDetails);
@@ -7110,6 +7126,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileNote->setVisible(!info.note.trimmed().isEmpty());
 
     m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
+    // Admin-only takeover request; hidden entirely for non-admins and for your
+    // own profile (nothing to take ownership of there).
+    if (m_profileTakeOwnershipButton)
+        m_profileTakeOwnershipButton->setVisible(
+            !info.self && m_isAdmin && !info.name.isEmpty());
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);
