@@ -30,6 +30,7 @@
 #include "RepoHost.h"
 #include "RepoSecurity.h"
 #include "ServerNode.h"
+#include "SingleInstance.h"
 #include "SystemStats.h"
 #include "AgentStore.h"
 #include "Theme.h"

@@ -52,6 +52,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/SingleInstance.h
+    src/SingleInstance.cpp
     src/Theme.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
