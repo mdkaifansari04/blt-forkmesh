@@ -70,7 +70,7 @@
         <div class="panel-header">
           <div>
             <h2 id="status-systems-title">Systems</h2>
-            <p>Each square is one day. Hover a day for its uptime.</p>
+            <p>Each bar is one day, split into hourly slivers. Hover an hour for its status and, if degraded or down, why.</p>
           </div>
         </div>
         <div style="padding: 4px 16px 16px">
@@ -147,6 +147,31 @@
             month: "short",
             day: "numeric",
           });
+        }
+
+        function fmtHourRange(hourTs) {
+          const opts = { hour: "numeric" };
+          const start = new Date(hourTs).toLocaleTimeString(undefined, opts);
+          const end = new Date(hourTs + 3600000).toLocaleTimeString(undefined, opts);
+          return start + " – " + end;
+        }
+
+        const HOUR_STATUS_LABEL = {
+          operational: "Operational",
+          degraded: "Degraded",
+          down: "Down",
+          unknown: "No data",
+        };
+
+        function hourTooltip(dayTs, hour) {
+          const when = fmtDay(dayTs) + ", " + fmtHourRange(hour.hourTs);
+          const label = HOUR_STATUS_LABEL[hour.status] || "No data";
+          let text = when + ": " + label;
+          if (hour.status !== "unknown" && hour.checks) {
+            text += " (" + (hour.checks - hour.failures) + "/" + hour.checks + " checks passed)";
+          }
+          if (hour.reason) text += " — " + hour.reason;
+          return text;
         }
 
         function summarize(systems) {
@@ -246,8 +271,17 @@
               const label = day.checks
                 ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime"
                 : fmtDay(day.dayTs) + ": no data";
-              cell.title = label;
               cell.setAttribute("aria-label", label);
+
+              const hours = day.hours && day.hours.length ? day.hours : [];
+              hours.forEach((hour) => {
+                const slice = document.createElement("div");
+                slice.className = "status-day-hour is-" + (hour.status || "unknown");
+                slice.title = hourTooltip(day.dayTs, hour);
+                cell.appendChild(slice);
+              });
+              if (!hours.length) cell.title = label;
+
               days.appendChild(cell);
             });
             row.appendChild(days);

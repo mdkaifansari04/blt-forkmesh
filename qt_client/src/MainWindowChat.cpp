@@ -4400,6 +4400,9 @@ void MainWindow::showSection(int index)
             m_unreadCounts.remove(m_currentConversation);
             refreshChannelList();
             refreshDmList();
+            // Unread state persists across restarts now; flush the cleared
+            // marker so it doesn't come back after a restart.
+            scheduleChatSave();
         }
         updateChatButton();
     } else if (index == 3) {
