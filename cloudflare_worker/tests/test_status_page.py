@@ -56,9 +56,10 @@ class _Clock:
         return cls.value
 
 
-def _sample_env(now, error_paths, host_online=True, db_ok=True):
+def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None):
     """Stub env for record_status_sample: error_log rows + host_presence count."""
     inserted = []
+    hourly = []
 
     async def d1_first(_env, sql, *_args):
         if "SELECT 1 AS ok" in sql:
@@ -71,12 +72,16 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True):
 
     async def d1_all(_env, sql, *_args):
         if "error_log" in sql:
+            if error_rows is not None:
+                return error_rows
             return [{"path": p} for p in error_paths]
         return []
 
     async def d1_run(_env, sql, *args):
         if sql.startswith("INSERT INTO system_status_daily"):
             inserted.append({"system": args[1], "failure": args[2]})
+        elif sql.startswith("INSERT INTO system_status_hourly"):
+            hourly.append({"system": args[1], "failure": args[2], "reason": args[3]})
 
     async def noop(*_a, **_k):
         return None
@@ -88,68 +93,91 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True):
         "d1_all": d1_all,
         "d1_run": d1_run,
     }
-    return extra, inserted
+    return extra, inserted, hourly
 
 
-def _run_sample(error_paths=(), host_online=True, db_ok=True):
-    extra, inserted = _sample_env(_Clock.value, error_paths, host_online, db_ok)
+def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
+    extra, inserted, hourly = _sample_env(
+        _Clock.value, error_paths, host_online, db_ok, error_rows=error_rows,
+    )
     g = _load("record_status_sample", extra_globals=extra)
     asyncio.run(g["record_status_sample"](object()))
-    return {row["system"]: row["failure"] for row in inserted}
+    return {row["system"]: row["failure"] for row in inserted}, {
+        row["system"]: row["reason"] for row in hourly
+    }
 
 
 # --- record_status_sample ---------------------------------------------------
 
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_host():
-    results = _run_sample(error_paths=[], host_online=True, db_ok=True)
+    results, reasons = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {"website", "api", "database", "git_hosting", "realtime"}
     assert all(failure == 0 for failure in results.values())
+    assert all(reason is None for reason in reasons.values())
 
 
 def test_database_failure_is_isolated_to_the_database_system():
-    results = _run_sample(error_paths=[], host_online=True, db_ok=False)
+    results, reasons = _run_sample(error_paths=[], host_online=True, db_ok=False)
     assert results["database"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
+    assert "db down" in reasons["database"]
+    assert reasons["website"] is None
 
 
 def test_no_live_host_fails_only_git_hosting():
-    results = _run_sample(error_paths=[], host_online=False, db_ok=True)
+    results, reasons = _run_sample(error_paths=[], host_online=False, db_ok=True)
     assert results["git_hosting"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
+    assert "no desktop hosts" in reasons["git_hosting"].lower()
 
 
 def test_api_error_does_not_fail_website():
-    results = _run_sample(error_paths=["/api/repositories"])
+    results, reasons = _run_sample(error_paths=["/api/repositories"])
     assert results["api"] == 1
     assert results["website"] == 0
     assert results["realtime"] == 0
+    assert "/api/repositories" in reasons["api"]
+    assert reasons["website"] is None
 
 
 def test_static_page_error_does_not_fail_api():
-    results = _run_sample(error_paths=["/dashboard/index.html"])
+    results, reasons = _run_sample(error_paths=["/dashboard/index.html"])
     assert results["website"] == 1
     assert results["api"] == 0
+    assert "/dashboard/index.html" in reasons["website"]
 
 
 def test_git_clone_and_room_errors_are_bucketed_as_realtime():
-    results = _run_sample(error_paths=[
+    results, reasons = _run_sample(error_paths=[
         "/someowner/somerepo/info/refs",
         "/api/repo/owner/repo/rooms/main/ws",
     ])
     assert results["realtime"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
+    assert "info/refs" in reasons["realtime"]
+
+
+def test_reason_includes_status_and_message_and_extra_count():
+    results, reasons = _run_sample(error_rows=[
+        {"path": "/api/repositories", "status": 500, "message": "boom"},
+        {"path": "/api/other", "status": 502, "message": "boom2"},
+    ])
+    assert results["api"] == 1
+    assert reasons["api"] == "500 on /api/repositories: boom (+1 more)"
 
 
 # --- status_history ----------------------------------------------------------
 
-def _history_env(rows):
+def _history_env(rows, hour_rows=()):
     async def noop(*_a, **_k):
         return None
 
-    async def d1_all(_env, _sql, *_args):
+    async def d1_all(_env, sql, *_args):
+        if "system_status_hourly" in sql:
+            return list(hour_rows)
         return rows
 
     captured = {}
@@ -167,8 +195,8 @@ def _history_env(rows):
     return extra, captured
 
 
-def _run_history(rows):
-    extra, captured = _history_env(rows)
+def _run_history(rows, hour_rows=()):
+    extra, captured = _history_env(rows, hour_rows)
     g = _load("status_history", extra_globals=extra)
     asyncio.run(g["status_history"](object()))
     return captured
@@ -224,6 +252,51 @@ def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
     assert by_id["website"]["uptimePct"] < 100.0
 
 
+HOUR_MS = 3600000
+
+
+def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    rows = [{"day_ts": cur_day, "system": "api", "checks": 2, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "api", "checks": 2, "failures": 1,
+         "reason": "500 on /api/x: boom"},
+    ]
+    out = _run_history(rows, hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    today = next(d for d in by_id["api"]["days"] if d["dayTs"] == cur_day)
+    expected_hour_count = (cur_hour - cur_day) // HOUR_MS + 1
+    assert len(today["hours"]) == expected_hour_count
+    this_hour = today["hours"][-1]
+    assert this_hour["status"] == "degraded"
+    assert this_hour["reason"] == "500 on /api/x: boom"
+
+
+def test_hour_with_no_checks_is_unknown_and_has_no_reason():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    out = _run_history([], hour_rows=())
+    by_id = {s["id"]: s for s in out["systems"]}
+    today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
+    assert all(h["status"] == "unknown" for h in today["hours"])
+    assert all(h["reason"] is None for h in today["hours"])
+
+
+def test_operational_hour_does_not_carry_a_stale_reason():
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "website", "checks": 1, "failures": 0,
+         "reason": "stale reason from an earlier failure this hour"},
+    ]
+    out = _run_history([], hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
+    this_hour = today["hours"][-1]
+    assert this_hour["status"] == "operational"
+    assert this_hour["reason"] is None
+
+
 # --- static wiring -----------------------------------------------------------
 
 def test_worker_exposes_status_route_and_schema():
@@ -232,6 +305,8 @@ def test_worker_exposes_status_route_and_schema():
     assert "async def record_status_sample" in ENTRY_TEXT
     assert "CREATE TABLE IF NOT EXISTS system_status_daily" in ENTRY_TEXT
     assert "idx_system_status_daily_day" in ENTRY_TEXT
+    assert "CREATE TABLE IF NOT EXISTS system_status_hourly" in ENTRY_TEXT
+    assert "idx_system_status_hourly_hour" in ENTRY_TEXT
 
 
 def test_cron_samples_status_every_tick():
@@ -242,6 +317,8 @@ def test_status_page_asset_and_redirect_exist():
     status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
     assert 'fetch("/api/status"' in status_html
     assert "status-day" in status_html
+    assert "status-day-hour" in status_html
+    assert "hourTooltip" in status_html
 
     redirects = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
     assert "/status /status.html 200" in redirects
@@ -250,6 +327,10 @@ def test_status_page_asset_and_redirect_exist():
 def test_migration_file_matches_worker_schema():
     migration = (ROOT / "migrations" / "0022_system_status.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS system_status_daily" in migration
+    hourly_migration = (
+        ROOT / "migrations" / "0023_system_status_hourly.sql"
+    ).read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS system_status_hourly" in hourly_migration
 
 
 if __name__ == "__main__":
