@@ -5,7 +5,7 @@ title: Fix open closed count on web
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 7
 progress: 0
 assignees: []
 createdAt: 1783048785
