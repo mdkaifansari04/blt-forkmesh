@@ -506,24 +506,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setProperty("buttonSize", "sm");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
 
-    // Far-right cluster: a standout donate button (opens the central-fund QR),
-    // then the ForkMesh Reddit and Twitter/X links at the very edge.
-    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
-    donateButton->setObjectName("donateButton");
-    donateButton->setCursor(Qt::PointingHandCursor);
-    donateButton->setToolTip(
-        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
-        "hourly)");
-
-    auto *redditButton = new QPushButton("Reddit");
-    redditButton->setObjectName("socialButton");
-    redditButton->setCursor(Qt::PointingHandCursor);
-    redditButton->setToolTip("ForkMesh on Reddit");
-
-    auto *twitterButton = new QPushButton("X");
-    twitterButton->setObjectName("socialButton");
-    twitterButton->setCursor(Qt::PointingHandCursor);
-    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    // The donate button and the Reddit/X social icons now live in the top bar
+    // (see buildBreadcrumb), stacked beside the account cluster, so they no longer
+    // take up the footer's far-right edge.
 
     // Twice as wide and two lines tall (adhoc #10/#12): give the prompt field
     // room to actually show two wrapped lines of the prompt while typing. The
@@ -533,37 +518,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setMinimumWidth(720);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Live diagnostics right of the quick-add controls: CPU / memory of this process,
-    // plus a count of detected UI stalls. Click to see the stall details.
-    m_footerDiagnostics = new QPushButton;
-    m_footerDiagnostics->setObjectName("footerDiagnostics");
-    m_footerDiagnostics->setFlat(true);
-    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
-    m_footerDiagnostics->setToolTip(
-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
-    m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;}"
-        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
-    connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::showDiagnosticsDialog);
-
-    // Three little button-sized squares beside the diagnostics glyph, each
-    // plotting one resource — this app's CPU, the host's memory and its disk —
-    // as a moving sparkline fed one sample a second by updateFooterDiagnostics.
-    // The widget class, the member pointers and that feed loop all shipped with
-    // adhoc #17, but the charts were never actually built or added to the row,
-    // so the footer showed nothing; this constructs them (adhoc #25). Clicking
-    // one opens the same diagnostics dialog as the glyph.
-    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
-    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
-    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
-        chart->onClicked = [this] { showDiagnosticsDialog(); };
-    m_cpuChart = cpuChart;
-    m_memChart = memChart;
-    m_diskChart = diskChart;
+    // The live CPU/MEM/DISK diagnostics sparklines and their glyph now live in the
+    // top bar (see buildBreadcrumb), so the footer is just the prompt + agent
+    // controls.
 
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
@@ -582,14 +539,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddClaudeModel);
     quickAddRow->addWidget(m_quickAddCreatePr);
     quickAddRow->addStretch(1);
-    quickAddRow->addWidget(cpuChart);
-    quickAddRow->addWidget(memChart);
-    quickAddRow->addWidget(diskChart);
-    quickAddRow->addWidget(m_footerDiagnostics);
-    quickAddRow->addStretch(1);
-    quickAddRow->addWidget(donateButton);
-    quickAddRow->addWidget(redditButton);
-    quickAddRow->addWidget(twitterButton);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.
     // It streams the newest network/update line so the latest activity is visible
@@ -627,14 +576,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    connect(donateButton, &QPushButton::clicked, this,
-            &MainWindow::showTreasuryDonateDialog);
-    connect(redditButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
-    });
-    connect(twitterButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
-    });
     updateVoiceInputButton();
     return dock;
 }
@@ -2108,6 +2049,75 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navDrawButton, &QPushButton::clicked, this,
             &MainWindow::startScreenDraw);
 
+    // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
+    // donate button (opens the central-fund QR) sits beside a compact column of two
+    // icon-only social buttons — the ForkMesh Reddit and Twitter/X links — stacked
+    // vertically so they take up little width next to the donate button.
+    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
+    donateButton->setObjectName("donateButton");
+    donateButton->setCursor(Qt::PointingHandCursor);
+    donateButton->setToolTip(
+        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
+        "hourly)");
+    connect(donateButton, &QPushButton::clicked, this,
+            &MainWindow::showTreasuryDonateDialog);
+
+    auto *redditButton = new QPushButton;
+    redditButton->setObjectName("socialIconButton");
+    redditButton->setCursor(Qt::PointingHandCursor);
+    redditButton->setToolTip("ForkMesh on Reddit");
+    redditButton->setFixedSize(28, 22);
+    setOcticon(redditButton, "reddit", 15);
+    connect(redditButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
+    });
+
+    auto *twitterButton = new QPushButton;
+    twitterButton->setObjectName("socialIconButton");
+    twitterButton->setCursor(Qt::PointingHandCursor);
+    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    twitterButton->setFixedSize(28, 22);
+    setOcticon(twitterButton, "twitter-bird", 14);
+    connect(twitterButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
+    });
+
+    auto *socialColumn = new QVBoxLayout;
+    socialColumn->setContentsMargins(0, 0, 0, 0);
+    socialColumn->setSpacing(3);
+    socialColumn->addWidget(redditButton);
+    socialColumn->addWidget(twitterButton);
+
+    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
+    // of this process plus a count of detected UI stalls. Click to see the stall
+    // details.
+    m_footerDiagnostics = new QPushButton;
+    m_footerDiagnostics->setObjectName("footerDiagnostics");
+    m_footerDiagnostics->setFlat(true);
+    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
+    m_footerDiagnostics->setToolTip(
+        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
+        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+    m_footerDiagnostics->setStyleSheet(
+        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    connect(m_footerDiagnostics, &QPushButton::clicked, this,
+            &MainWindow::showDiagnosticsDialog);
+
+    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // one resource — this app's CPU, the host's memory and its disk — as a moving
+    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
+    // opens the same diagnostics dialog as the glyph.
+    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
+    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
+    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+        chart->onClicked = [this] { showDiagnosticsDialog(); };
+    m_cpuChart = cpuChart;
+    m_memChart = memChart;
+    m_diskChart = diskChart;
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -2144,6 +2154,12 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
+    // Donate button + the vertically-stacked Reddit/X icons, sat just left of the
+    // account cluster (adhoc #117).
+    mainRow->addWidget(donateButton);
+    mainRow->addSpacing(4);
+    mainRow->addLayout(socialColumn);
+    mainRow->addSpacing(10);
     // Stack the node name above the wallet balance — "this is your money". The
     // online/reward toggle that used to sit here now lives in the node profile
     // panel, under "Get paid to mirror".
@@ -2182,6 +2198,13 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
+    navRow->addSpacing(16);
+    // Live CPU/MEM/DISK sparklines + the diagnostics glyph, moved up from the
+    // footer (adhoc #117).
+    navRow->addWidget(cpuChart);
+    navRow->addWidget(memChart);
+    navRow->addWidget(diskChart);
+    navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
     // Right-aligned so they sit under the top-right avatar; the pencil and
     // screenshot buttons sit just left of the rebuild/restart button.
@@ -6085,6 +6108,31 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
+    // --- User account: this node is key-bound on its own, but a person can own
+    // many nodes. "Log in as a user" here proves the user's password so the
+    // relay attaches this node to that user's account (self only).
+    m_profileAccountSection = new QWidget;
+    auto *accountLabel = makeProfileSection("USER ACCOUNT");
+    m_profileAccountStatus = new QLabel;
+    m_profileAccountStatus->setObjectName("statusLine");
+    m_profileAccountStatus->setWordWrap(true);
+    m_profileAccountStatus->setTextFormat(Qt::RichText);
+    m_profileLinkUserButton = new QPushButton("Log in as a user");
+    m_profileLinkUserButton->setObjectName("ghostButton");
+    m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileLinkUserButton, "person", 14);
+    m_profileLinkUserButton->setToolTip(
+        "Link this node to your user account by signing in. One user can own "
+        "many nodes.");
+    connect(m_profileLinkUserButton, &QPushButton::clicked, this,
+            &MainWindow::promptLinkNodeToUser);
+    auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
+    accountLayout->setContentsMargins(0, 0, 0, 0);
+    accountLayout->setSpacing(6);
+    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(m_profileAccountStatus);
+    accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
+
     // --- Per-repo hosting stats relocated from the repo detail view.
     m_profileHostingLabel = makeProfileSection("HOSTING");
     m_profileHosting = new QLabel;
@@ -6192,6 +6240,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     leftColumn->addWidget(m_profileDetails);
     leftColumn->addWidget(m_profileMirrorsLabel);
     leftColumn->addWidget(m_profileMirrors);
+    leftColumn->addWidget(m_profileAccountSection);
     leftColumn->addStretch();
 
     auto *rightColumn = new QVBoxLayout;
@@ -6409,6 +6458,15 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileMirrors->setVisible(true);
     }
 
+    // "USER ACCOUNT": self only. Show whether this node is already attached to a
+    // user, and offer "Log in as a user" to attach it when it isn't. Only a
+    // registered (key-bound) node can be linked, so gate the button on that.
+    if (m_profileAccountSection) {
+        m_profileAccountSection->setVisible(info.self);
+        if (info.self)
+            refreshProfileAccountStatus();
+    }
+
     // Per-repo hosting stats (served/clones/hosted-since/last-sync), self only.
     refreshProfileHostingStats();
 
@@ -6503,6 +6561,145 @@ void MainWindow::refreshProfileHostingStats()
                         : lines.join(QStringLiteral("<br>")));
     m_profileHosting->setVisible(true);
     m_profileHostingLabel->setVisible(true);
+}
+
+void MainWindow::refreshProfileAccountStatus()
+{
+    if (!m_profileAccountStatus || !m_profileLinkUserButton)
+        return;
+    // Render the label from whatever we currently believe (m_nodeOwnerUser),
+    // then refresh from the relay so a link made on another device shows here.
+    auto paint = [this] {
+        if (!m_nodeOwnerUser.trimmed().isEmpty()) {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
+                "<b>%1</b></span>").arg(m_nodeOwnerUser.toHtmlEscaped()));
+            m_profileLinkUserButton->setText("Linked to a user");
+            m_profileLinkUserButton->setEnabled(false);
+        } else {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "This node isn't linked to a user account yet. One user can own "
+                "many nodes \xE2\x80\x94 log in to attach this node."));
+            m_profileLinkUserButton->setText("Log in as a user");
+            m_profileLinkUserButton->setEnabled(true);
+        }
+    };
+
+    const QString node = accountOwner();
+    // A node must be a registered, key-bound account before the relay can attach
+    // it to a user (it links by node name + this node's key). Until then, nudge
+    // the user to register/join and disable the button.
+    if (node.isEmpty() || !hasActiveAccountSession()) {
+        m_nodeOwnerUser.clear();
+        m_profileAccountStatus->setText(QString::fromUtf8(
+            "Register this node first (see \"Get paid to mirror\") to link it to "
+            "a user account."));
+        m_profileLinkUserButton->setText("Log in as a user");
+        m_profileLinkUserButton->setEnabled(false);
+        return;
+    }
+    paint();
+
+    QNetworkReply *reply =
+        m_networkAccess->get(QNetworkRequest(accountsApiUrl(node)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, node, paint]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        // Ignore a stale reply if the profile has since moved off this node.
+        if (!m_profileIsSelf || accountOwner() != node)
+            return;
+        if (resp.value(QStringLiteral("exists")).toBool())
+            m_nodeOwnerUser = resp.value(QStringLiteral("owner")).toString();
+        paint();
+    });
+}
+
+void MainWindow::promptLinkNodeToUser()
+{
+    if (accountOwner().isEmpty() || !hasActiveAccountSession()) {
+        logSystem("Register this node before linking it to a user account.");
+        return;
+    }
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("Log in as a user"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *label = new QLabel(QString::fromUtf8(
+        "Log in with your ForkMesh user account to attach this node "
+        "(<b>%1</b>) to it. One user can own many nodes.")
+        .arg(accountOwner().toHtmlEscaped()));
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto *idEdit = new QLineEdit;
+    idEdit->setPlaceholderText(QStringLiteral("Email or username"));
+    layout->addWidget(idEdit);
+    auto *pwEdit = new QLineEdit;
+    pwEdit->setEchoMode(QLineEdit::Password);
+    pwEdit->setPlaceholderText(QStringLiteral("Password"));
+    layout->addWidget(pwEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto *linkButton =
+        buttons->addButton(QStringLiteral("Link node"), QDialogButtonBox::AcceptRole);
+    linkButton->setDefault(true);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog,
+            [this, dialog, idEdit, pwEdit] {
+                const QString identifier = idEdit->text().trimmed();
+                const QString password = pwEdit->text();
+                if (identifier.isEmpty() || password.isEmpty())
+                    return;
+                submitLinkNodeToUser(identifier, password);
+                dialog->accept();
+            });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::submitLinkNodeToUser(const QString &identifier,
+                                      const QString &password)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString id = identifier.trimmed().toLower();
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Sign with THIS node's key: the relay checks the signature against the
+    // node's recorded pubkey and the password against the user, so holding both
+    // secrets is the whole authorization (no confirmation code needed).
+    const QByteArray canonical =
+        ("forkmesh-link-self-v1\n" + node + "\n" + id + "\n" + ts).toUtf8();
+    const QJsonObject body{{"nodeName", node},
+                           {"identifier", id},
+                           {"password", password},
+                           {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("link-self"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    if (m_profileLinkUserButton) {
+        m_profileLinkUserButton->setEnabled(false);
+        m_profileLinkUserButton->setText(QString::fromUtf8("Linking\xE2\x80\xA6"));
+    }
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (resp.value(QStringLiteral("linked")).toBool()) {
+            m_nodeOwnerUser = resp.value(QStringLiteral("user")).toString();
+            logSystem("Account: this node is now linked to user \"" +
+                      m_nodeOwnerUser + "\".");
+        } else {
+            const QString err = resp.value(QStringLiteral("error"))
+                                    .toString(QStringLiteral("network error"));
+            logSystem("Account: could not link this node to a user (" + err + ").");
+        }
+        refreshProfileAccountStatus();
+    });
 }
 
 void MainWindow::checkNodeBalance()
