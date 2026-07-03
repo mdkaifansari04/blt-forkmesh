@@ -122,6 +122,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             envName.compare(savedProfileName(), Qt::CaseInsensitive) != 0)
             QSettings().setValue(kAccountNameSetting, envName);
     }
+    // True first run: no saved name, no installer-supplied env override. Rather
+    // than leave m_nameEdit blank and strand the node on the welcome screen
+    // until someone picks a name, hand it a fun generated one now — before
+    // buildSetupPage() seeds the field and before the deferred auto-connect
+    // below decides whether to enter the app shell — so a first launch can
+    // register and start mirroring on its own. The name is still editable from
+    // Settings afterwards.
+    if (savedProfileName().isEmpty())
+        QSettings().setValue(kAccountNameSetting, randomFunNodeName());
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
 
@@ -242,14 +251,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_pubkeyLabel->setText("Ed25519 public key: " +
                                m_profileIdentity.shortPublicKey());
         m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
-        // Don't pre-fill a generated "nodeXXXX" name on first run: picking a real
-        // node name is the first deliberate step (see startSession), so leave the
-        // field empty with its placeholder when this machine has no saved name.
-        // Auto-connect on launch only when we can authenticate silently (this
-        // node key already owns a registered active account). Otherwise stay on
-        // the setup screen so the user logs in / joins without a surprise dialog
-        // on startup (and so headless launches never block on a prompt).
-        // Auto-connect, but only after the first frame is painted (see
+        // A first run already got a generated fun name saved above, so
+        // m_nameEdit is never blank here — the deferred auto-connect below
+        // treats every launch the same way instead of stopping first runs on
+        // the welcome screen. Auto-connect, but only after the first frame is painted (see
         // runDeferredStartup) — authenticateSilently()/startSession() block the
         // GUI thread, so running them before the window is exposed shows a black
         // frame on launch.
@@ -328,11 +333,13 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral("agent sessions resumed (deferred)"));
     }
 
-    // Then auto-enter the app whenever this machine already picked a node name.
-    // No account is required: a returning node drops straight into the app shell.
+    // Then auto-enter the app whenever this machine has a node name — which now
+    // includes a first run, since one was generated for it above if needed.
+    // No account is required: the node drops straight into the app shell.
     // Silent auth is best-effort — it restores an existing active account's
-    // hosting/payout state when this key owns one, but its absence no longer keeps
-    // the node on the welcome screen. First run (no saved name) shows setup.
+    // hosting/payout state when this key owns one, but its absence no longer
+    // keeps the node on the welcome screen. The empty-name branch below is now
+    // just a safety net (e.g. name-generation somehow failed).
     if (m_pendingSilentAuth) {
         m_pendingSilentAuth = false;
         const QString name = m_nameEdit ? m_nameEdit->text().trimmed().toLower()
