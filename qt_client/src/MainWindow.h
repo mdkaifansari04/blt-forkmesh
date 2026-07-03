@@ -2648,6 +2648,10 @@ private:
     // quick-add runs. Only meaningful for the "Claude Code" provider, so it's
     // shown/hidden as the provider selection changes.
     QComboBox *m_quickAddClaudeModel = nullptr;
+    // Permission-mode chooser (issue #348): Ask before edits/Edit automatically/
+    // Plan mode/Auto mode, styled like the provider/model combos beside it and
+    // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
+    QComboBox *m_quickAddModeSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     // "Create issue" toggle (adhoc #99): off by default (remembered via
     // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an

@@ -3717,13 +3717,16 @@ void MainWindow::rebuildQuickAddAttachChips()
             "QWidget#quickAddAttachChip{background:#21262d;border:1px solid #30363d;"
             "border-radius:4px;}");
         auto *chipRow = new QHBoxLayout(chip);
-        chipRow->setContentsMargins(3, 2, 2, 2);
-        chipRow->setSpacing(3);
+        chipRow->setContentsMargins(2, 1, 1, 1);
+        chipRow->setSpacing(2);
 
+        // Preview thumbnail (issue #348): kept shorter than the surrounding
+        // bottom bar so an attached image doesn't make the chip taller than
+        // the icons beside it.
         auto *thumb = new QLabel(chip);
         QPixmap pm(path);
         if (!pm.isNull())
-            thumb->setPixmap(pm.scaled(22, 22, Qt::KeepAspectRatio,
+            thumb->setPixmap(pm.scaled(18, 18, Qt::KeepAspectRatio,
                                        Qt::SmoothTransformation));
         else
             thumb->setText(QFileInfo(path).fileName());
@@ -3733,7 +3736,7 @@ void MainWindow::rebuildQuickAddAttachChips()
         auto *remove = new QPushButton(QString::fromUtf8("\xC3\x97"), chip);
         remove->setObjectName("quickAddAttachRemove");
         remove->setCursor(Qt::PointingHandCursor);
-        remove->setFixedSize(16, 16);
+        remove->setFixedSize(14, 14);
         remove->setToolTip(QStringLiteral("Remove this attachment"));
         remove->setStyleSheet(
             "QPushButton#quickAddAttachRemove{color:#8b949e;border:none;"
