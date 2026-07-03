@@ -10,6 +10,7 @@
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/PullAiReview.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
 #include "../src/ReferenceLinks.h"
@@ -565,6 +566,101 @@ int main(int argc, char *argv[])
                          IssueStore::canonicalString(7, tampered)),
           "tampered issue-event signature is rejected");
 
+    // --- PullAiReview: prompt, findings JSON, quick-fix suggestions ------
+    {
+        const QString prompt = buildAiReviewPrompt(
+            "Add feature", "Does things.",
+            "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n+line\n");
+        check(prompt.contains("Add feature") && prompt.contains("Does things.") &&
+                  prompt.contains("+line"),
+              "AI review prompt carries the title, description and diff");
+        check(prompt.contains("JSON"), "AI review prompt demands JSON output");
+        QString longDiff;
+        for (int i = 0; i < 200; ++i)
+            longDiff += QStringLiteral("+line number %1 padding\n").arg(i);
+        const QString capped = buildAiReviewPrompt("T", QString(), longDiff, 500);
+        check(capped.contains("truncated") && !capped.contains("line number 199"),
+              "an oversized diff is capped with a truncation note");
+
+        bool ok = false;
+        QList<AiReviewFinding> findings = parseAiReviewFindings(
+            QStringLiteral(
+                "[{\"path\": \"src/a.cpp\", \"line_start\": 3, \"line_end\": 4,"
+                "  \"severity\": \"bug\", \"comment\": \"Off by one\","
+                "  \"original\": \"int i = 0;\\nint j = 1;\","
+                "  \"fix\": \"int i = 1;\\nint j = 2;\"},"
+                " {\"path\": \"src/b.cpp\", \"line\": 9, \"severity\": \"odd\","
+                "  \"comment\": \"No fix here\", \"original\": null,"
+                "  \"fix\": null},"
+                " {\"path\": \"\", \"line_start\": 1, \"comment\": \"dropped\"}]"),
+            &ok);
+        check(ok && findings.size() == 2,
+              "findings parse from a bare JSON array and invalid entries drop");
+        check(!findings.isEmpty() && findings.at(0).path == "src/a.cpp" &&
+                  findings.at(0).lineStart == 3 && findings.at(0).lineEnd == 4 &&
+                  findings.at(0).severity == "bug",
+              "a finding carries its anchor and severity");
+        check(!findings.isEmpty() &&
+                  findings.at(0).suggestionPatch.contains("-int i = 0;") &&
+                  findings.at(0).suggestionPatch.contains("+int j = 2;"),
+              "an original+fix pair becomes a committable suggestion patch");
+        check(findings.size() == 2 && findings.at(1).severity == "warning" &&
+                  findings.at(1).suggestionPatch.isEmpty() &&
+                  findings.at(1).lineStart == 9 && findings.at(1).lineEnd == 9,
+              "a fix-less finding normalizes its severity and line range");
+
+        findings = parseAiReviewFindings(
+            QStringLiteral("Sure!\n```json\n[{\"path\": \"x\", \"line_start\": 1,"
+                           " \"comment\": \"c\"}]\n```"),
+            &ok);
+        check(ok && findings.size() == 1,
+              "findings parse out of surrounding chatter and fences");
+        findings = parseAiReviewFindings(
+            QStringLiteral("{\"findings\": [{\"path\": \"x\", \"line_start\": 2,"
+                           " \"comment\": \"c\"}]}"),
+            &ok);
+        check(ok && findings.size() == 1,
+              "findings parse from a {\"findings\": [...]} wrapper");
+        check(parseAiReviewFindings(QStringLiteral("[]"), &ok).isEmpty() && ok,
+              "an empty array parses as a clean review");
+        check(parseAiReviewFindings(QStringLiteral("no json here"), &ok).isEmpty() &&
+                  !ok,
+              "an unparseable reply is distinguished from a clean review");
+
+        const QString patch =
+            buildSuggestionPatch({"foo(1);", "bar(2);"}, {"foo(2);"}, 5);
+        check(patch.startsWith("@@ -5,2 +5,1 @@"),
+              "suggestion patch header carries the line range");
+        QStringList orig, repl;
+        check(parseSuggestionPatch(patch, &orig, &repl) && orig.size() == 2 &&
+                  repl.size() == 1 && orig.first() == "foo(1);" &&
+                  repl.first() == "foo(2);",
+              "suggestion patch round-trips original and replacement lines");
+
+        QString exact = "1\n2\n3\n4\nfoo(1);\nbar(2);\n7\n";
+        QString applyErr;
+        check(applySuggestionToContent(&exact, 5, patch, &applyErr) &&
+                  exact == "1\n2\n3\n4\nfoo(2);\n7\n",
+              "a suggestion applies at its recorded line");
+        QString drifted = "a\nfoo(1);\nbar(2);\nz\n";
+        check(applySuggestionToContent(&drifted, 5, patch, &applyErr) &&
+                  drifted == "a\nfoo(2);\nz\n",
+              "a drifted suggestion relocates to the unique matching block");
+        QString ambiguous = "foo(1);\nbar(2);\nfoo(1);\nbar(2);\n";
+        check(!applySuggestionToContent(&ambiguous, 9, patch, &applyErr),
+              "an ambiguous suggestion anchor is refused");
+        QString missing = "nothing here\n";
+        check(!applySuggestionToContent(&missing, 1, patch, &applyErr),
+              "a suggestion whose lines are gone is refused");
+        const QString delPatch = buildSuggestionPatch({"kill me"}, {}, 2);
+        QString delContent = "keep\nkill me\nkeep2\n";
+        check(applySuggestionToContent(&delContent, 2, delPatch, &applyErr) &&
+                  delContent == "keep\nkeep2\n",
+              "an empty replacement deletes the anchored lines");
+        check(buildSuggestionPatch({}, {"new"}, 1).isEmpty(),
+              "a pure insertion is not representable as a suggestion");
+    }
+
     // --- Full IssueStore round-trip in a throwaway git repo --------------
     QTemporaryDir tmp;
     if (tmp.isValid()) {
@@ -995,6 +1091,69 @@ int main(int argc, char *argv[])
                   "the branch-backed PR is marked merged");
             check(merged.patch.contains("bb1.txt"),
                   "a merged branch-backed PR's diff stays viewable via the snapshot");
+        }
+
+        // --- PullStore agent edit: multi-file changes on the PR's branch -----
+        // The "Fix all with AI" flow (adhoc #82): check out the PR's branch
+        // with the PR applied, let an agent edit any number of files, then
+        // commit the lot on the branch and regenerate the PR's patch.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            auto writeFile = [&](const QString &rel, const QString &text) {
+                QFile f(tmp.path() + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(text.toUtf8());
+                f.close();
+            };
+            git({"checkout", "-q", "-b", "feat-ai"});
+            writeFile("ai1.txt", "first draft\n");
+            git({"add", "ai1.txt"});
+            git({"commit", "-q", "-m", "ai: add draft"});
+            git({"checkout", "-q", baseBranch});
+
+            const int an = pulls.createPull("Agent editable", "body", baseBranch,
+                                            "feat-ai", QString(), QString(),
+                                            /*branchBacked=*/true, &err);
+            check(an > 0, "createPull stores the agent-editable PR");
+            check(pulls.startPullAgentEdit(an, &err),
+                  "startPullAgentEdit opens the PR's branch");
+            check(QString::fromUtf8(
+                      gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
+                      QLatin1String("feat-ai"),
+                  "the PR's branch is left checked out for the agent");
+            writeFile("ai1.txt", "fixed draft\n");
+            writeFile("ai2.txt", "brand new\n");
+            check(pulls.finishPullAgentEdit(
+                      an, QStringLiteral("pull #%1: apply AI review fixes").arg(an),
+                      &err),
+                  "finishPullAgentEdit commits the edits and finalizes");
+            check(QString::fromUtf8(
+                      gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
+                      baseBranch,
+                  "finishing an agent edit returns to the original branch");
+            check(!pulls.conflictMergeInProgress(),
+                  "no am session is left open after an agent edit");
+            PullRequest edited;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == an)
+                    edited = p;
+            check(edited.status == "open",
+                  "the PR stays open after an agent edit");
+            check(edited.patch.contains("fixed draft") &&
+                      edited.patch.contains("ai2.txt"),
+                  "the PR's patch regenerates with every agent-edited file");
+
+            // An agent run that changes nothing must refuse to commit and
+            // restore the original branch (the work branch tears down).
+            check(pulls.startPullAgentEdit(an, &err),
+                  "a second agent-edit session opens on the same PR");
+            check(!pulls.finishPullAgentEdit(an, QStringLiteral("no-op"), &err),
+                  "an agent session with no changes refuses to commit");
+            check(QString::fromUtf8(
+                      gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed()) ==
+                      baseBranch,
+                  "a no-op agent edit restores the original branch");
         }
 
         // --- A branch-backed PR survives a corrupt stored blob by rebuilding
