@@ -513,6 +513,8 @@ private:
     // submitLinkNodeToUser signs with this node's key and POSTs link-self.
     void promptLinkNodeToUser();
     void submitLinkNodeToUser(const QString &identifier, const QString &password);
+    // Human-readable text for a link-self error code (for the account section).
+    QString linkErrorMessage(const QString &code) const;
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -723,6 +725,11 @@ private:
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
     void refreshProfileAccountStatus(); // "USER ACCOUNT" section: link state + CTA
+    void renderProfileAccountStatus();  // paint the section from cached state only
+    QString linkedNodesHtml() const;    // "<b>a</b>, <b>b</b>" of m_profileLinkedNodes
+    // Second-hop lookup: fetch the owning user's nodes list for a child node so
+    // its profile can show the whole fleet, not just "linked to user X".
+    void fetchLinkedNodesFromOwner(const QString &node, const QString &owner);
     void rescaleProfileAvatar();       // re-render the full-width avatar banner
     void hideNodeProfile();
     void checkNodeBalance();
@@ -4051,6 +4058,12 @@ private:
     QLabel *m_profileAccountStatus = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;
     QString m_nodeOwnerUser;
+    // Nodes linked to this account's user (learned from account lookups): shown
+    // in the "USER ACCOUNT" section so a user can see their whole fleet. When
+    // this node is itself the user account it's the account's own nodes list;
+    // when this node is a child, it's the owning user's nodes (siblings + self).
+    QStringList m_profileLinkedNodes;
+    bool m_profileIsUserAccount = false; // this account has login creds (a user)
     QLabel *m_profileNote = nullptr;
     // Headline stat tiles (self only): repos / mirrored / online / chats.
     QWidget *m_profileStatGrid = nullptr;
