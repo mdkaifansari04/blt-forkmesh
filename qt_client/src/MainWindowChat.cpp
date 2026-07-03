@@ -412,6 +412,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
+    // Not shown in the controls row (kept out of the prompt-box chrome); it stays
+    // wired up and defaults to checked so quick-add agents still open a PR.
+    m_quickAddCreatePr->setVisible(false);
     m_quickAddNoIssue = new QCheckBox("No issue");
     m_quickAddNoIssue->setToolTip(
         "Skip creating an issue \xE2\x80\x94 start a coding agent straight from the "
@@ -503,11 +506,11 @@ QWidget *MainWindow::buildNetworkLogDock()
             this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
     syncQuickAddAgentControls();
 
-    // Icon-only send button inside the prompt frame (arrow up = send/submit).
+    // Icon-only send button inside the prompt frame (paper airplane = send/submit).
     auto *quickAddSendButton = new QPushButton;
     quickAddSendButton->setObjectName("quickAddSendIcon");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(quickAddSendButton, "chevron-up", 16);
+    setOcticon(quickAddSendButton, "paper-airplane", 16);
     quickAddSendButton->setFixedSize(32, 32);
     quickAddSendButton->setToolTip("Send (Enter)");
 
