@@ -2,18 +2,18 @@
 schema: forkmesh-issue-v1
 number: 355
 title: Chaos test for mirror failover in the worker test suite
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 6
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818254
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-355
 ts: 1783116818254

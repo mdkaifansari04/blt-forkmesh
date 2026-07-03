@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 328
 title: Make it so that when I submit an issue from the website, it goes to the list of issues
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 9
 progress: 0
 assignees: []
 createdAt: 1782960326
