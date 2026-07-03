@@ -554,6 +554,19 @@ QWidget *MainWindow::buildNetworkLogDock()
             this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
     syncQuickAddAgentControls();
 
+    // Slash-actions button (adhoc #116): a small bordered "/" box, like the
+    // Claude Code extension's, that opens the filterable actions popup —
+    // Context/Model quick actions plus the CLI's own slash commands, pulled
+    // live from `claude` the first time the popup opens.
+    m_quickAddSlashButton = new QPushButton(QStringLiteral("/"));
+    m_quickAddSlashButton->setObjectName("quickAddSlashButton");
+    m_quickAddSlashButton->setCursor(Qt::PointingHandCursor);
+    m_quickAddSlashButton->setFixedSize(22, 22);
+    m_quickAddSlashButton->setToolTip(
+        "Commands and quick actions (pulled live from Claude Code)");
+    connect(m_quickAddSlashButton, &QPushButton::clicked, this,
+            &MainWindow::openQuickAddSlashActions);
+
     // Icon-only send button inside the prompt frame (paper airplane = send/submit).
     auto *quickAddSendButton = new QPushButton;
     quickAddSendButton->setObjectName("quickAddSendIcon");
@@ -636,6 +649,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addSpacing(14);
     bottomBar->addWidget(m_quickAddCreateIssue, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
+    // The "/" actions box sits immediately left of the Agent checkbox (adhoc
+    // #116), matching where the Claude Code extension keeps its actions menu.
+    bottomBar->addWidget(m_quickAddSlashButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
@@ -736,6 +752,437 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     updateVoiceInputButton();
     return dock;
+}
+
+// Footer slash-actions popup (adhoc #116): opened by the "/" box left of the
+// Agent checkbox. Mirrors the Claude Code extension's own actions menu — a
+// filter box over fixed Context/Model rows plus the CLI's own slash commands
+// (fetched live the first time the popup opens, see refreshClaudeSlashCommands).
+void MainWindow::openQuickAddSlashActions()
+{
+    if (!m_quickAddSlashButton || !m_issueQuickAdd)
+        return;
+    if (!m_slashActionsPopup) {
+        m_slashActionsPopup = new QFrame(this);
+        m_slashActionsPopup->setObjectName("slashActionsPopup");
+        m_slashActionsPopup->setWindowFlags(Qt::Popup);
+        m_slashActionsPopup->setFixedWidth(340);
+
+        auto *popupLayout = new QVBoxLayout(m_slashActionsPopup);
+        popupLayout->setContentsMargins(0, 0, 0, 0);
+        popupLayout->setSpacing(0);
+
+        m_slashActionsFilter = new QLineEdit;
+        m_slashActionsFilter->setObjectName("slashActionsFilter");
+        m_slashActionsFilter->setPlaceholderText("Filter actions\xE2\x80\xA6");
+        m_slashActionsFilter->installEventFilter(this);
+        connect(m_slashActionsFilter, &QLineEdit::textChanged, this,
+                &MainWindow::populateSlashActionsList);
+        popupLayout->addWidget(m_slashActionsFilter);
+
+        m_slashActionsListHost = new QWidget;
+        m_slashActionsListLayout = new QVBoxLayout(m_slashActionsListHost);
+        m_slashActionsListLayout->setContentsMargins(0, 6, 0, 6);
+        m_slashActionsListLayout->setSpacing(0);
+
+        m_slashActionsScroll = new QScrollArea;
+        m_slashActionsScroll->setObjectName("slashActionsScroll");
+        m_slashActionsScroll->setWidget(m_slashActionsListHost);
+        m_slashActionsScroll->setWidgetResizable(true);
+        m_slashActionsScroll->setFrameShape(QFrame::NoFrame);
+        m_slashActionsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_slashActionsScroll->setFixedHeight(360);
+        popupLayout->addWidget(m_slashActionsScroll);
+    }
+
+    {
+        const QSignalBlocker block(m_slashActionsFilter);
+        m_slashActionsFilter->clear();
+    }
+    populateSlashActionsList();
+    // Fetches once per app run; a no-op if already loaded or a probe is in
+    // flight. Repopulates the list in place once the live commands land.
+    refreshClaudeSlashCommands();
+
+    m_slashActionsPopup->adjustSize();
+    const QPoint above = m_quickAddSlashButton->mapToGlobal(
+        QPoint(0, -m_slashActionsPopup->sizeHint().height() - 4));
+    m_slashActionsPopup->move(above);
+    m_slashActionsPopup->show();
+    m_slashActionsFilter->setFocus();
+}
+
+// Rebuilds the popup's row list from the current filter text. Called on open
+// and on every filter-box keystroke, and again whenever a toggle/effort row is
+// clicked so its new state is reflected immediately.
+void MainWindow::populateSlashActionsList()
+{
+    if (!m_slashActionsListLayout || !m_slashActionsListHost)
+        return;
+    QLayoutItem *item;
+    while ((item = m_slashActionsListLayout->takeAt(0)) != nullptr) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    m_slashActionRows.clear();
+    m_slashActionSelected = -1;
+
+    const QString filter =
+        m_slashActionsFilter ? m_slashActionsFilter->text().trimmed().toLower() : QString();
+    auto matches = [&filter](const QString &label, const QString &extra = QString()) {
+        return filter.isEmpty() || label.toLower().contains(filter) ||
+               extra.toLower().contains(filter);
+    };
+    auto addHeader = [this](const QString &text) {
+        auto *header = new QLabel(text);
+        header->setObjectName("slashActionsHeader");
+        m_slashActionsListLayout->addWidget(header);
+    };
+    // A plain row: a title label, an optional right-aligned value label, and a
+    // "slashKind"/"slashValue" dynamic-property pair the click/Enter dispatch
+    // (activateSlashActionRow) reads generically.
+    auto addRow = [this](const QString &label, const QString &rightText,
+                         const QString &kind, const QString &value) -> QWidget * {
+        auto *row = new QFrame;
+        row->setObjectName("slashActionRow");
+        row->setCursor(Qt::PointingHandCursor);
+        row->setProperty("slashKind", kind);
+        row->setProperty("slashValue", value);
+        row->installEventFilter(this);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(12, 7, 12, 7);
+        auto *title = new QLabel(label);
+        title->setObjectName("slashActionRowLabel");
+        // Qt delivers the click to whichever child is directly under the
+        // cursor, not the parent frame — without this, clicking the label
+        // text itself (rather than the row's bare padding) would miss the
+        // "slashKind" property set on `row` and do nothing.
+        title->setAttribute(Qt::WA_TransparentForMouseEvents);
+        rowLayout->addWidget(title, 1);
+        if (!rightText.isEmpty()) {
+            auto *right = new QLabel(rightText);
+            right->setObjectName("slashActionRowValue");
+            right->setAttribute(Qt::WA_TransparentForMouseEvents);
+            rowLayout->addWidget(right);
+        }
+        m_slashActionsListLayout->addWidget(row);
+        m_slashActionRows.append(row);
+        return row;
+    };
+    // A toggle row (Thinking / model-fallback): the whole row is one click
+    // target that flips the setting and repopulates so the switch redraws.
+    auto addToggleRow = [this](const QString &label, const QString &kind, bool checked) {
+        auto *row = new QFrame;
+        row->setObjectName("slashActionRow");
+        row->setCursor(Qt::PointingHandCursor);
+        row->setProperty("slashKind", kind);
+        row->installEventFilter(this);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(12, 7, 12, 7);
+        auto *title = new QLabel(label);
+        title->setObjectName("slashActionRowLabel");
+        title->setWordWrap(true);
+        title->setAttribute(Qt::WA_TransparentForMouseEvents); // see addRow above
+        rowLayout->addWidget(title, 1);
+        auto *toggle = new QCheckBox;
+        toggle->setObjectName("slashToggle");
+        toggle->setChecked(checked);
+        toggle->setAttribute(Qt::WA_TransparentForMouseEvents); // the row owns the click
+        toggle->setFocusPolicy(Qt::NoFocus);
+        rowLayout->addWidget(toggle);
+        m_slashActionsListLayout->addWidget(row);
+        m_slashActionRows.append(row);
+    };
+
+    // --- Context section ---
+    struct ContextAction { QString label; QString kind; };
+    const ContextAction contextActions[] = {
+        {QStringLiteral("Attach file\xE2\x80\xA6"), QStringLiteral("attachFile")},
+        {QStringLiteral("Mention file from this project\xE2\x80\xA6"), QStringLiteral("mentionFile")},
+        {QStringLiteral("Clear conversation"), QStringLiteral("clearConversation")},
+        {QStringLiteral("Rewind"), QStringLiteral("rewind")},
+    };
+    bool anyContext = false;
+    for (const ContextAction &a : contextActions)
+        if (matches(a.label)) { anyContext = true; break; }
+    if (anyContext) {
+        addHeader(QStringLiteral("Context"));
+        for (const ContextAction &a : contextActions)
+            if (matches(a.label))
+                addRow(a.label, QString(), a.kind, QString());
+    }
+
+    // --- Model section ---
+    const char *effortLevels[] = {"low", "medium", "high", "xhigh", "max"};
+    const char *effortLabels[] = {"Low", "Medium", "High", "Extra high", "Max"};
+    const QString currentEffort =
+        QSettings().value(kClaudeEffortSetting, QStringLiteral("high")).toString();
+    int effortIdx = 2;
+    for (int i = 0; i < 5; ++i)
+        if (currentEffort == QLatin1String(effortLevels[i]))
+            effortIdx = i;
+    const bool modelSectionMatches =
+        matches(QStringLiteral("Switch model")) || matches(QStringLiteral("Effort")) ||
+        matches(QStringLiteral("Thinking")) ||
+        matches(QStringLiteral("Switch models when a message is flagged")) ||
+        matches(QStringLiteral("Account & usage"));
+    if (modelSectionMatches) {
+        addHeader(QStringLiteral("Model"));
+        if (matches(QStringLiteral("Switch model")))
+            addRow(QStringLiteral("Switch model\xE2\x80\xA6"),
+                   m_quickAddClaudeModel ? m_quickAddClaudeModel->currentText() : QString(),
+                   QStringLiteral("switchModel"), QString());
+        if (matches(QStringLiteral("Effort"))) {
+            auto *row = new QFrame;
+            row->setObjectName("slashActionRow");
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(12, 7, 12, 7);
+            auto *title = new QLabel(
+                QStringLiteral("Effort (%1)").arg(QString::fromLatin1(effortLabels[effortIdx])));
+            title->setObjectName("slashActionRowLabel");
+            rowLayout->addWidget(title, 1);
+            auto *dotsLayout = new QHBoxLayout;
+            dotsLayout->setSpacing(4);
+            for (int i = 0; i < 5; ++i) {
+                auto *dot = new QToolButton;
+                dot->setObjectName("slashEffortDot");
+                dot->setCheckable(true);
+                dot->setChecked(i == effortIdx);
+                dot->setFixedSize(10, 10);
+                dot->setCursor(Qt::PointingHandCursor);
+                dot->setProperty("slashKind", QStringLiteral("effortLevel"));
+                dot->setProperty("slashValue", QString::fromLatin1(effortLevels[i]));
+                dot->installEventFilter(this);
+                dotsLayout->addWidget(dot);
+                m_slashActionRows.append(dot); // arrow-key reachable, like the rows
+            }
+            rowLayout->addLayout(dotsLayout);
+            m_slashActionsListLayout->addWidget(row);
+        }
+        if (matches(QStringLiteral("Thinking")))
+            addToggleRow(QStringLiteral("Thinking"), QStringLiteral("toggleThinking"),
+                        QSettings().value(kClaudeThinkingSetting, true).toBool());
+        if (matches(QStringLiteral("Switch models when a message is flagged")))
+            addToggleRow(QStringLiteral("Switch models when a message is flagged"),
+                        QStringLiteral("toggleFallback"),
+                        QSettings().value(kClaudeFallbackModelSetting, false).toBool());
+        if (matches(QStringLiteral("Account & usage")))
+            addRow(QStringLiteral("Account & usage\xE2\x80\xA6"), QString(),
+                   QStringLiteral("accountUsage"), QString());
+    }
+
+    // --- Commands section: the CLI's own slash commands, pulled live ---
+    if (!m_claudeSlashCommands.isEmpty()) {
+        bool anyCmd = false;
+        for (const ClaudeSlashCommand &c : m_claudeSlashCommands)
+            if (matches(c.name, c.description)) { anyCmd = true; break; }
+        if (anyCmd) {
+            addHeader(QStringLiteral("Commands"));
+            for (const ClaudeSlashCommand &c : m_claudeSlashCommands) {
+                if (!matches(c.name, c.description))
+                    continue;
+                addRow(QStringLiteral("/%1").arg(c.name), QString(),
+                       QStringLiteral("command"), c.name);
+            }
+        }
+    }
+
+    m_slashActionsListLayout->addStretch(1);
+    if (!m_slashActionRows.isEmpty()) {
+        m_slashActionSelected = 0;
+        m_slashActionRows.first()->setProperty("slashSelected", true);
+        m_slashActionRows.first()->style()->unpolish(m_slashActionRows.first());
+        m_slashActionRows.first()->style()->polish(m_slashActionRows.first());
+    }
+}
+
+// Up/Down inside the popup filter box (adhoc #116): walk m_slashActionRows,
+// which holds every row/dot in on-screen order, and keep it scrolled into view.
+void MainWindow::moveSlashActionsSelection(int delta)
+{
+    if (m_slashActionRows.isEmpty())
+        return;
+    if (m_slashActionSelected >= 0 && m_slashActionSelected < m_slashActionRows.size()) {
+        QWidget *prev = m_slashActionRows.at(m_slashActionSelected);
+        prev->setProperty("slashSelected", false);
+        prev->style()->unpolish(prev);
+        prev->style()->polish(prev);
+    }
+    int next = qBound(0, m_slashActionSelected + delta, m_slashActionRows.size() - 1);
+    m_slashActionSelected = next;
+    QWidget *row = m_slashActionRows.at(next);
+    row->setProperty("slashSelected", true);
+    row->style()->unpolish(row);
+    row->style()->polish(row);
+    if (m_slashActionsScroll)
+        m_slashActionsScroll->ensureWidgetVisible(row);
+}
+
+// Single dispatch point for every row/dot in the popup, driven by the
+// "slashKind"/"slashValue" properties set when the row was built — reached
+// from both a mouse click (MainWindow::eventFilter) and Enter in the filter box.
+void MainWindow::activateSlashActionRow(QWidget *row)
+{
+    if (!row)
+        return;
+    const QString kind = row->property("slashKind").toString();
+    const QString value = row->property("slashValue").toString();
+    auto closePopup = [this] { if (m_slashActionsPopup) m_slashActionsPopup->hide(); };
+
+    if (kind == QLatin1String("attachFile")) {
+        closePopup();
+        attachQuickAddImage();
+    } else if (kind == QLatin1String("mentionFile")) {
+        closePopup();
+        mentionProjectFileInQuickAdd();
+    } else if (kind == QLatin1String("clearConversation")) {
+        if (m_issueQuickAdd)
+            m_issueQuickAdd->clear();
+        clearQuickAddImages();
+        m_quickAddHistoryIndex = -1;
+        closePopup();
+    } else if (kind == QLatin1String("rewind")) {
+        // No checkpoint/snapshot system exists to revert code changes yet, so
+        // Rewind does the safe subset available today: recall the previous
+        // sent prompt into the composer (same as Up in the quick-add history).
+        navigateQuickAddHistory(-1);
+        closePopup();
+    } else if (kind == QLatin1String("switchModel")) {
+        closePopup();
+        if (m_quickAddAgentProvider) {
+            const int idx = m_quickAddAgentProvider->findData(QStringLiteral("claude-code"));
+            if (idx >= 0)
+                m_quickAddAgentProvider->setCurrentIndex(idx);
+        }
+        if (m_quickAddClaudeModel) {
+            m_quickAddClaudeModel->setFocus();
+            m_quickAddClaudeModel->showPopup();
+        }
+    } else if (kind == QLatin1String("effortLevel")) {
+        QSettings().setValue(kClaudeEffortSetting, value);
+        populateSlashActionsList();
+    } else if (kind == QLatin1String("toggleThinking")) {
+        QSettings().setValue(kClaudeThinkingSetting,
+                             !QSettings().value(kClaudeThinkingSetting, true).toBool());
+        populateSlashActionsList();
+    } else if (kind == QLatin1String("toggleFallback")) {
+        QSettings().setValue(
+            kClaudeFallbackModelSetting,
+            !QSettings().value(kClaudeFallbackModelSetting, false).toBool());
+        populateSlashActionsList();
+    } else if (kind == QLatin1String("accountUsage")) {
+        closePopup();
+        openAgentsOverview();
+    } else if (kind == QLatin1String("command")) {
+        if (m_issueQuickAdd) {
+            QTextCursor cursor = m_issueQuickAdd->textCursor();
+            cursor.movePosition(QTextCursor::End);
+            if (!m_issueQuickAdd->toPlainText().isEmpty() &&
+                !m_issueQuickAdd->toPlainText().endsWith(QLatin1Char('\n')))
+                cursor.insertText(QStringLiteral("\n"));
+            cursor.insertText(QStringLiteral("/%1 ").arg(value));
+            m_issueQuickAdd->setTextCursor(cursor);
+        }
+        closePopup();
+        if (m_issueQuickAdd)
+            m_issueQuickAdd->setFocus();
+    }
+}
+
+// Probes the live `claude` CLI for its slash-command list via the same
+// control-protocol `initialize` request the VS Code extension sends
+// (adhoc #116): pipe one control_request in, read the control_response, then
+// tear the process down — this never runs a real turn. Cached for the rest of
+// the app run; a no-op once loaded or while a probe is already in flight.
+void MainWindow::refreshClaudeSlashCommands()
+{
+    if (m_claudeSlashCommandsLoaded || m_claudeSlashProbe)
+        return;
+    auto *proc = new QProcess(this);
+    m_claudeSlashProbe = proc;
+    m_claudeSlashProbeBuf.clear();
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        m_claudeSlashProbeBuf += proc->readAllStandardOutput();
+        int nl;
+        while ((nl = m_claudeSlashProbeBuf.indexOf('\n')) >= 0) {
+            const QByteArray line = m_claudeSlashProbeBuf.left(nl);
+            m_claudeSlashProbeBuf.remove(0, nl + 1);
+            const QJsonObject obj = QJsonDocument::fromJson(line).object();
+            if (obj.value(QStringLiteral("type")).toString() !=
+                QLatin1String("control_response"))
+                continue;
+            const QJsonArray commands = obj.value(QStringLiteral("response"))
+                                             .toObject()
+                                             .value(QStringLiteral("response"))
+                                             .toObject()
+                                             .value(QStringLiteral("commands"))
+                                             .toArray();
+            m_claudeSlashCommands.clear();
+            for (const QJsonValue &v : commands) {
+                const QJsonObject c = v.toObject();
+                const QString name = c.value(QStringLiteral("name")).toString();
+                if (name.isEmpty())
+                    continue;
+                m_claudeSlashCommands.append(
+                    {name, c.value(QStringLiteral("description")).toString(),
+                     c.value(QStringLiteral("argumentHint")).toString()});
+            }
+            m_claudeSlashCommandsLoaded = true;
+            if (m_slashActionsPopup && m_slashActionsPopup->isVisible())
+                populateSlashActionsList();
+            if (proc->state() != QProcess::NotRunning)
+                proc->kill(); // the initialize handshake is all we needed
+        }
+    });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc](int, QProcess::ExitStatus) {
+                if (m_claudeSlashProbe == proc)
+                    m_claudeSlashProbe = nullptr;
+                proc->deleteLater();
+            });
+    connect(proc, &QProcess::started, this, [proc] {
+        const QJsonObject req{
+            {QStringLiteral("type"), QStringLiteral("control_request")},
+            {QStringLiteral("request_id"), QStringLiteral("forkmesh-slash-probe")},
+            {QStringLiteral("request"),
+             QJsonObject{{QStringLiteral("subtype"), QStringLiteral("initialize")}}}};
+        proc->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + "\n");
+    });
+    proc->start(QStringLiteral("bash"),
+                {QStringLiteral("-lc"),
+                 QStringLiteral("exec claude --print --input-format stream-json "
+                                "--output-format stream-json --verbose")});
+}
+
+// "Mention file from this project…" (adhoc #116): pick a file under the
+// current repo's working tree and insert an "@relative/path" reference into
+// the quick-add prompt, the same shorthand the Claude Code CLI itself expects.
+void MainWindow::mentionProjectFileInQuickAdd()
+{
+    if (!m_issueQuickAdd)
+        return;
+    QString baseDir;
+    const int idx = issuesRepoIndex();
+    if (idx >= 0 && idx < m_repositories.size())
+        baseDir = m_repositories.at(idx).localPath;
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Mention a file from this project"), baseDir);
+    if (path.isEmpty()) {
+        m_issueQuickAdd->setFocus();
+        return;
+    }
+    QString mention = path;
+    if (!baseDir.isEmpty()) {
+        const QDir dir(baseDir);
+        const QString rel = dir.relativeFilePath(path);
+        if (!rel.startsWith(QStringLiteral("..")))
+            mention = rel;
+    }
+    QTextCursor cursor = m_issueQuickAdd->textCursor();
+    cursor.insertText(QStringLiteral("@%1 ").arg(mention));
+    m_issueQuickAdd->setTextCursor(cursor);
+    m_issueQuickAdd->setFocus();
 }
 
 // Show the mic only once a voice engine is installed; reset its idle look. Called
