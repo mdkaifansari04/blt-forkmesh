@@ -219,7 +219,7 @@ class _LoginScreenState extends State<_LoginScreen> {
     }
     if (identifier.isEmpty || password.isEmpty) {
       setState(() {
-        _hint = 'Enter your email or node name and password.';
+        _hint = 'Enter your email or username and password.';
         _bad = true;
       });
       return;
@@ -268,7 +268,7 @@ class _LoginScreenState extends State<_LoginScreen> {
           ),
           const SizedBox(height: 48),
           _AuthField(
-            label: 'Email or node name',
+            label: 'Email or username',
             controller: _identifier,
             hintText: 'you@example.com',
             textInputAction: TextInputAction.next,
@@ -344,7 +344,7 @@ class _SignupScreenState extends State<_SignupScreen> {
   final _password = TextEditingController();
   bool _loading = false;
   String _nameHint =
-      'Lowercase letters, numbers and hyphens. This name is public.';
+      'Lowercase letters, numbers and hyphens. Your username is public.';
   String _hint = '';
   bool _nameOk = false;
   bool _bad = false;
@@ -375,7 +375,7 @@ class _SignupScreenState extends State<_SignupScreen> {
     final password = _password.text;
     if (!AuthService.nodeNamePattern.hasMatch(nodeName)) {
       setState(() {
-        _hint = 'Choose a valid public node name first.';
+        _hint = 'Choose a valid username first.';
         _bad = true;
       });
       return;
@@ -444,7 +444,7 @@ class _SignupScreenState extends State<_SignupScreen> {
           ),
           const SizedBox(height: 42),
           _AuthField(
-            label: 'Public node name',
+            label: 'Username',
             controller: _nodeName,
             hintText: 'ada-lovelace',
             textInputAction: TextInputAction.next,
