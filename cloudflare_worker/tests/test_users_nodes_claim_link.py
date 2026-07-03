@@ -24,7 +24,8 @@ FUNCS = {
     "_account_kind", "_owned_nodes", "_generate_confirm_code", "_claim_pending",
     "_resolve_user_by_password", "_link_node_to_user", "_account_claim_node",
     "_account_claim_confirm", "_redeem_or_park_link_code", "_account_link_node",
-    "_account_link_self", "_account_heartbeat",
+    "_account_link_self", "_account_heartbeat", "_resolve_claimable_node",
+    "_account_row_by_pubkey", "valid_node_pubkey",
 }
 
 
@@ -51,6 +52,7 @@ class _Request:
 
 
 NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+NODE_PUBKEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 def _harness(accounts):
@@ -86,6 +88,12 @@ def _harness(accounts):
 
     async def _save_account(_env, name_bi, rec, email_bi=None, ip_bi=None):
         accounts[name_bi[3:]] = dict(rec)
+
+    async def d1_all(_env, sql, *args):
+        if "FROM accounts" in sql:
+            return [{"name_bi": "bi:" + name, "data": dict(rec)}
+                    for name, rec in accounts.items()]
+        raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_first(_env, sql, *args):
         if "FROM accounts WHERE email_bi" in sql:
@@ -145,6 +153,7 @@ def _harness(accounts):
         "blind_index": blind_index,
         "_account_row": _account_row,
         "_save_account": _save_account,
+        "d1_all": d1_all,
         "d1_first": d1_first,
         "d1_run": d1_run,
         "decrypt_row": decrypt_row,
@@ -162,6 +171,7 @@ def _harness(accounts):
         "LINK_CODE_TTL_MS": 30 * 60 * 1000,
         "LINK_CODE_RE": re.compile(r"^[0-9]{6}$"),
         "SOLANA_RE": re.compile(r"^solana-[a-z0-9]{4,60}$"),
+        "NODE_PUBKEY_RE": NODE_PUBKEY_RE,
     })
     namespace["_now"] = now
     namespace["_link_rows"] = link_rows
@@ -220,6 +230,42 @@ def test_claim_flow_links_node_via_heartbeat_code():
     assert accounts["mirror1"]["owner"] == "alice"
     assert "claim_pending" not in accounts["mirror1"]
     assert accounts["alice"]["nodes"] == ["mirror1"]
+
+
+def test_claim_node_accepts_pubkey_as_node_id():
+    # issue #351: the desktop app's own profile card calls the node's Ed25519
+    # public key its "Node ID", so a user pasting that value into the
+    # website's claim form must resolve to the node's actual account name,
+    # not be rejected as malformed.
+    pubkey = "A" * 43
+    accounts = {"alice": _user_rec(), "mirror1": dict(_node_rec(), pubkey=pubkey)}
+    ns = _harness(accounts)
+    env = object()
+
+    started = asyncio.run(ns["_account_claim_node"](
+        env, _Request(_auth({"nodeId": pubkey}))))
+    assert started["status"] == 201
+    assert started["data"]["nodeId"] == "mirror1"
+    pending = accounts["mirror1"]["claim_pending"]
+
+    confirmed = asyncio.run(ns["_account_claim_confirm"](
+        env, _Request(_auth({"nodeId": pubkey, "code": pending["code"]}))))
+    assert confirmed["status"] == 200
+    assert confirmed["data"]["nodeId"] == "mirror1"
+    assert accounts["mirror1"]["owner"] == "alice"
+    assert accounts["alice"]["nodes"] == ["mirror1"]
+
+    # A key with no matching account is a 404, same as an unknown name.
+    missing = asyncio.run(ns["_account_claim_node"](
+        env, _Request(_auth({"nodeId": "B" * 43}))))
+    assert missing["status"] == 404
+    assert missing["data"]["error"] == "no_such_node"
+
+    # Something that's neither a name nor a key-shaped value is still 400.
+    malformed = asyncio.run(ns["_account_claim_node"](
+        env, _Request(_auth({"nodeId": "!!!not-valid!!!"}))))
+    assert malformed["status"] == 400
+    assert malformed["data"]["error"] == "invalid_node_id"
 
 
 def test_claim_rejections():
