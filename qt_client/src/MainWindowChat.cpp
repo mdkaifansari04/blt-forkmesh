@@ -533,17 +533,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setMinimumWidth(720);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Centered between the quick-add controls and the donate/social cluster: the
-    // git identity (name <email>) configured for the repo we're viewing. Filled in
-    // by updateFooterGitIdentity() each time a repo opens.
-    m_footerGitIdentity = new QLabel;
-    m_footerGitIdentity->setObjectName("footerGitIdentity");
-    m_footerGitIdentity->setAlignment(Qt::AlignCenter);
-    m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_footerGitIdentity->setToolTip(
-        "Git author identity configured for the repository you're viewing");
-
-    // Live diagnostics just right of the identity: CPU / memory of this process,
+    // Live diagnostics right of the quick-add controls: CPU / memory of this process,
     // plus a count of detected UI stalls. Click to see the stall details.
     m_footerDiagnostics = new QPushButton;
     m_footerDiagnostics->setObjectName("footerDiagnostics");
@@ -591,10 +581,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddAgentProvider);
     quickAddRow->addWidget(m_quickAddClaudeModel);
     quickAddRow->addWidget(m_quickAddCreatePr);
-    // Two equal stretches keep the git identity centered between the quick-add
-    // controls and the donate/social cluster pinned to the far right.
     quickAddRow->addStretch(1);
-    quickAddRow->addWidget(m_footerGitIdentity);
     quickAddRow->addWidget(cpuChart);
     quickAddRow->addWidget(memChart);
     quickAddRow->addWidget(diskChart);
