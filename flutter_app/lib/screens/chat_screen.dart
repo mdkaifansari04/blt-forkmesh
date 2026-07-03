@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/relay_service.dart';
 import '../theme.dart';
+import '../widgets/fm_ui.dart';
 
 /// Encrypted chat against the live relay room: channel list, member roster, and
 /// the message transcript with a composer. Interoperates with Qt-client nodes.
@@ -69,7 +70,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return Row(
         children: [
           SizedBox(width: 240, child: channelList),
-          const VerticalDivider(width: 1),
+          Container(width: FmSpace.x2, color: FmTheme.bgBase(context)),
           Expanded(child: transcript),
         ],
       );
@@ -86,45 +87,29 @@ class _ChannelList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: FmColors.rail,
+      color: FmTheme.bgRaised(context),
       child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.all(FmSpace.x3),
         children: [
-          const _SectionLabel('CHANNELS'),
+          const FmSectionHeader(title: 'Channels'),
+          const SizedBox(height: FmSpace.x2),
           for (final c in relay.channels)
-            ListTile(
-              dense: true,
+            _ChannelTile(
+              title: c,
+              icon: Icons.tag,
               selected: relay.currentConversation == c,
-              selectedTileColor: FmColors.surface,
-              title: Text(c, style: const TextStyle(fontSize: 14)),
-              trailing: relay.unread.contains(c)
-                  ? const Icon(Icons.circle, size: 8, color: FmColors.danger)
-                  : null,
+              unread: relay.unread.contains(c),
               onTap: () => relay.switchConversation(c),
             ),
-          const _SectionLabel('NODES'),
+          const SizedBox(height: FmSpace.x4),
+          const FmSectionHeader(title: 'Nodes'),
+          const SizedBox(height: FmSpace.x2),
           for (final m in roster)
-            ListTile(
-              dense: true,
-              leading: Icon(
-                Icons.circle,
-                size: 10,
-                color: m.online ? FmColors.success : FmColors.offline,
-              ),
-              title: Text(
-                m.self ? '${m.name} (you)' : m.name,
-                style: const TextStyle(fontSize: 14),
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: m.platform.isEmpty
-                  ? null
-                  : Text(
-                      m.platform,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: FmColors.textMuted,
-                      ),
-                    ),
+            _ChannelTile(
+              title: m.self ? '${m.name} (you)' : m.name,
+              subtitle: m.platform.isEmpty ? null : m.platform,
+              statusColor: m.online ? FmColors.success : FmColors.offline,
+              selected: relay.currentConversation == '@${m.id}',
               onTap: m.self ? null : () => relay.switchConversation('@${m.id}'),
             ),
         ],
@@ -133,19 +118,96 @@ class _ChannelList extends StatelessWidget {
   }
 }
 
-class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.text);
-  final String text;
+class _ChannelTile extends StatelessWidget {
+  const _ChannelTile({
+    required this.title,
+    required this.selected,
+    this.subtitle,
+    this.icon,
+    this.statusColor,
+    this.unread = false,
+    this.onTap,
+  });
+
+  final String title;
+  final bool selected;
+  final String? subtitle;
+  final IconData? icon;
+  final Color? statusColor;
+  final bool unread;
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-    child: Text(
-      text,
-      style: const TextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
-        color: FmColors.textMuted,
-        letterSpacing: 0.5,
+    padding: const EdgeInsets.only(bottom: FmSpace.x1),
+    child: Material(
+      color: selected ? FmTheme.accentSubtle(context) : Colors.transparent,
+      borderRadius: BorderRadius.circular(FmRadius.md),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(FmRadius.md),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: FmSpace.x3,
+              vertical: FmSpace.x2,
+            ),
+            child: Row(
+              children: [
+                if (statusColor != null)
+                  Icon(Icons.circle, size: 10, color: statusColor)
+                else
+                  Icon(
+                    icon ?? Icons.circle,
+                    size: 17,
+                    color: selected
+                        ? FmTheme.accent(context)
+                        : FmTheme.textTertiary(context),
+                  ),
+                const SizedBox(width: FmSpace.x3),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected
+                              ? FmTheme.textPrimary(context)
+                              : FmTheme.textSecondary(context),
+                          fontSize: 14,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w600,
+                        ),
+                      ),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: FmSpace.x1),
+                        Text(
+                          subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: FmTheme.textTertiary(context),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (unread) ...[
+                  const SizedBox(width: FmSpace.x2),
+                  Icon(Icons.circle, size: 8, color: FmTheme.danger(context)),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     ),
   );
@@ -180,45 +242,48 @@ class _Transcript extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final connected = relay.state == RelayConnectionState.connected;
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          alignment: Alignment.centerLeft,
-          child: Row(
-            children: [
-              const Icon(Icons.tag, size: 18, color: FmColors.textMuted),
-              const SizedBox(width: 6),
-              Text(_title, style: const TextStyle(fontWeight: FontWeight.w700)),
-              const Spacer(),
-              const Icon(Icons.lock_outline, size: 14, color: FmColors.success),
-              const SizedBox(width: 4),
-              const Text(
-                'encrypted',
-                style: TextStyle(fontSize: 12, color: FmColors.textMuted),
-              ),
-            ],
+        Material(
+          color: FmTheme.bgRaised(context),
+          child: FmPanelHeader(
+            title: _title,
+            leading: Icon(
+              _title.startsWith('@') ? Icons.alternate_email : Icons.tag,
+              size: 18,
+              color: FmTheme.textTertiary(context),
+            ),
+            trailing: FmStatusBadge(
+              label: connected ? 'encrypted' : 'reconnecting',
+              color: connected
+                  ? FmTheme.success(context)
+                  : FmTheme.warning(context),
+            ),
           ),
         ),
-        const Divider(height: 1),
         Expanded(
-          child: messages.isEmpty
-              ? const Center(
-                  child: Text(
-                    'No messages yet.',
-                    style: TextStyle(color: FmColors.textMuted),
+          child: ColoredBox(
+            color: FmTheme.bgBase(context),
+            child: messages.isEmpty
+                ? const FmEmptyState(
+                    icon: Icons.chat_bubble_outline,
+                    title: 'No messages yet',
+                    message: 'Encrypted relay messages will appear here.',
+                  )
+                : ListView.builder(
+                    controller: scroll,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: FmSpace.x2,
+                      vertical: FmSpace.x3,
+                    ),
+                    itemCount: messages.length,
+                    itemBuilder: (_, i) => _MessageRow(msg: messages[i]),
                   ),
-                )
-              : ListView.builder(
-                  controller: scroll,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: messages.length,
-                  itemBuilder: (_, i) => _MessageRow(msg: messages[i]),
-                ),
+          ),
         ),
-        const Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.all(10),
+        FmBottomActionBar(
+          padding: const EdgeInsets.all(FmSpace.x3),
           child: Row(
             children: [
               Expanded(
@@ -226,14 +291,46 @@ class _Transcript extends StatelessWidget {
                   controller: composer,
                   minLines: 1,
                   maxLines: 5,
-                  decoration: const InputDecoration(hintText: 'Message…'),
-                  onSubmitted: (_) => onSend(),
+                  decoration: InputDecoration(
+                    hintText: 'Message...',
+                    filled: true,
+                    fillColor: FmTheme.bgBase(context),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: FmSpace.x4,
+                      vertical: FmSpace.x3,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(FmRadius.lg),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(FmRadius.lg),
+                      borderSide: BorderSide(
+                        color: FmTheme.accent(context),
+                        width: 1.2,
+                      ),
+                    ),
+                  ),
+                  onSubmitted: connected ? (_) => onSend() : null,
                 ),
               ),
-              const SizedBox(width: 8),
-              IconButton.filled(
-                onPressed: onSend,
-                icon: const Icon(Icons.send, size: 18),
+              const SizedBox(width: FmSpace.x2),
+              SizedBox(
+                width: 48,
+                height: 48,
+                child: IconButton.filled(
+                  onPressed: connected ? onSend : () => relay.connect(),
+                  style: IconButton.styleFrom(
+                    backgroundColor: FmTheme.accent(context),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: FmTheme.bgElevated(context),
+                    disabledForegroundColor: FmTheme.textTertiary(context),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(FmRadius.md),
+                    ),
+                  ),
+                  icon: const Icon(Icons.send, size: 18),
+                ),
               ),
             ],
           ),
@@ -285,26 +382,29 @@ class _MessageRow extends StatelessWidget {
                     const SizedBox(width: 8),
                     Text(
                       time,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
-                        color: FmColors.textMuted,
+                        color: FmTheme.textTertiary(context),
                       ),
                     ),
                   ],
                 ),
                 if (msg.text.isNotEmpty)
-                  Text(msg.text, style: const TextStyle(color: FmColors.text)),
+                  Text(
+                    msg.text,
+                    style: TextStyle(color: FmTheme.textPrimary(context)),
+                  ),
                 if (msg.fileName.isNotEmpty)
                   Row(
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.attach_file,
                         size: 14,
-                        color: FmColors.textMuted,
+                        color: FmTheme.textTertiary(context),
                       ),
                       Text(
                         msg.fileName,
-                        style: const TextStyle(color: FmColors.accent),
+                        style: TextStyle(color: FmTheme.accent(context)),
                       ),
                     ],
                   ),
