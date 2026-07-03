@@ -124,6 +124,9 @@ void applyAgentTimeCell(QTableWidgetItem *cell, const AgentSession &s)
 void applyAgentModelCell(QTableWidgetItem *cell, const AgentSession &s)
 {
     cell->setText(agentModelLabel(s.model));
+    // Text only — no icon belongs in this column (a reused item must not keep
+    // one a stray write elsewhere left behind).
+    cell->setIcon(QIcon());
     cell->setToolTip(s.model.isEmpty() ? QStringLiteral("Using provider's default model")
                                        : QStringLiteral("Selected model: %1")
                                             .arg(s.model.toHtmlEscaped()));
@@ -1977,6 +1980,11 @@ void MainWindow::refreshClaudeModelCombo()
         if (models.isEmpty())
             return;
         m_liveClaudeModels = models;
+        // Persist to disk so the next launch's combos start with the real model
+        // list instead of just "Auto" (see the ctor's kClaudeModelsCacheSetting
+        // load above buildChatPage()).
+        QSettings().setValue(kClaudeModelsCacheSetting,
+                             QJsonDocument(models).toJson(QJsonDocument::Compact));
         applyToAllCombos(models);
     });
 }
@@ -5646,12 +5654,14 @@ void MainWindow::animateRunningAgentIcons()
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
-        if (QTableWidgetItem *cell = m_agentTable->item(r, 3))
+        // Column 4 is Status (column 3 is Model — the spinner belongs here, not
+        // there; see applyAgentRowCells for the column layout).
+        if (QTableWidgetItem *cell = m_agentTable->item(r, 4))
             cell->setIcon(icon);
         // Keep the Time column's live elapsed figure ticking for running rows
         // (issue #245) — this timer already visits exactly the running sessions,
         // so refresh the cell here rather than spinning up a second timer.
-        if (QTableWidgetItem *runTime = m_agentTable->item(r, 5))
+        if (QTableWidgetItem *runTime = m_agentTable->item(r, 6))
             applyAgentTimeCell(runTime, *s);
     }
 }
