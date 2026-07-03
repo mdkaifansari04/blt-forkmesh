@@ -2860,7 +2860,11 @@ void MainWindow::showAgentSession(int sessionId)
     if (m_agentModelCombo) {
         QSignalBlocker block(m_agentModelCombo);
         int idx = m_agentModelCombo->findData(session->model);
-        m_agentModelCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        // Sessions without an explicit model show the first concrete model,
+        // not the synthetic "Auto" row (adhoc #91) — auto routing is opt-in.
+        if (idx < 0)
+            idx = m_agentModelCombo->count() > 1 ? 1 : 0;
+        m_agentModelCombo->setCurrentIndex(idx);
         m_agentModelCombo->setEnabled(!isExternalSession(sessionId) &&
                                       session->provider ==
                                           QLatin1String("claude-code"));
@@ -4490,9 +4494,17 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
             runClaudeAutoTriageRung(sessionId, rung + 1, /*errorsOnly=*/false,
                                     task, workdir, live, std::move(launch));
         });
-    proc->start(QStringLiteral("claude"),
-                {QStringLiteral("-p"), triage, QStringLiteral("--model"), r.id,
-                 QStringLiteral("--max-turns"), QStringLiteral("1")});
+    // Through a login shell so the user's PATH resolves `claude` exactly like
+    // the real agent session (ClaudeStreamSession) — the GUI process itself
+    // often lacks ~/.local/bin. The triage prompt goes in on stdin, so nothing
+    // user-controlled needs shell quoting; the ladder id is a fixed [a-z0-9-]
+    // string, single-quoted defensively all the same.
+    proc->start(QStringLiteral("bash"),
+                {QStringLiteral("-lc"),
+                 QStringLiteral("exec claude -p --model '%1' --max-turns 1")
+                     .arg(r.id)});
+    proc->write(triage.toUtf8());
+    proc->closeWriteChannel();
 }
 
 void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
