@@ -753,6 +753,8 @@ QWidget *MainWindow::buildIssuesSection()
     // changes. Empty "Default model" leaves the provider's own default in place.
     m_issueAgentModel = new QComboBox(meta);
     m_issueAgentModel->setToolTip("Which model the agent uses");
+    m_issueAgentModel->setProperty("claudeModelCombo", true);
+    m_issueAgentModel->view()->installEventFilter(this);
     fillAgentFixModelCombo(m_issueAgentModel,
                            m_issueAgentProvider->currentData().toString());
     connect(m_issueAgentProvider,
@@ -762,6 +764,7 @@ QWidget *MainWindow::buildIssuesSection()
                         m_issueAgentModel,
                         m_issueAgentProvider->currentData().toString());
             });
+    refreshClaudeModelCombo();
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
     m_issueAgentCreatePrCheck->setToolTip(
