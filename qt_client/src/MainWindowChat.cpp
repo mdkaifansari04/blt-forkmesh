@@ -1164,23 +1164,44 @@ void MainWindow::updateFooterGitIdentity()
     }
     // `git config user.name/user.email` returns the effective value (repo-local
     // overriding global), i.e. the identity commits in this repo are authored as.
-    QByteArray nameOut, emailOut;
-    QString name, email;
-    if (runGitCapture(dir, {"config", "user.name"}, &nameOut, nullptr))
-        name = QString::fromUtf8(nameOut).trimmed();
-    if (runGitCapture(dir, {"config", "user.email"}, &emailOut, nullptr))
-        email = QString::fromUtf8(emailOut).trimmed();
-
-    QString text;
-    if (!name.isEmpty() && !email.isEmpty())
-        text = QStringLiteral("%1 <%2>").arg(name, email);
-    else if (!name.isEmpty())
-        text = name;
-    else if (!email.isEmpty())
-        text = email;
-    else
-        text = QStringLiteral("git identity not set");
-    m_footerGitIdentity->setText(text);
+    // Read asynchronously: this runs inside openRepoDetail, and a synchronous
+    // read here blocked the GUI thread ~600 ms during startup (adhoc #112). One
+    // --get-regexp call covers both keys; git lists matches system→global→local,
+    // so keeping the last occurrence of each key gives the effective value.
+    runGitDetached(
+        dir, {QStringLiteral("config"), QStringLiteral("--get-regexp"),
+              QStringLiteral("^user\\.(name|email)$")},
+        [this, dir](bool, const QByteArray &out) {
+            if (!m_footerGitIdentity)
+                return;
+            // Repo switched (or closed) while the read was in flight.
+            if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+                m_repositories.at(m_repoDetailIndex).localPath != dir)
+                return;
+            QString name, email;
+            for (const QString &line :
+                 QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+                const int sp = line.indexOf(QLatin1Char(' '));
+                if (sp <= 0)
+                    continue;
+                const QString key = line.left(sp);
+                const QString value = line.mid(sp + 1).trimmed();
+                if (key == QLatin1String("user.name"))
+                    name = value;
+                else if (key == QLatin1String("user.email"))
+                    email = value;
+            }
+            QString text;
+            if (!name.isEmpty() && !email.isEmpty())
+                text = QStringLiteral("%1 <%2>").arg(name, email);
+            else if (!name.isEmpty())
+                text = name;
+            else if (!email.isEmpty())
+                text = email;
+            else
+                text = QStringLiteral("git identity not set");
+            m_footerGitIdentity->setText(text);
+        });
 }
 
 // Start the UI-stall watchdog + the live CPU/memory readout. Called once the
