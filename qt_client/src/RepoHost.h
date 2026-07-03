@@ -85,6 +85,7 @@ private:
     QByteArray m_readBuffer;
     bool m_wsReady = false;
     bool m_stopping = false;
+    qint64 m_lastRx = 0; // ms epoch of the last bytes received; detects a half-open socket
     QTimer *m_reconnect = nullptr;
     QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
     std::function<QString()> m_tokenProvider; // fresh /host auth token per connect
