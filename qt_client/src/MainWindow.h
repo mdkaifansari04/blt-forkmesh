@@ -2039,6 +2039,16 @@ private:
     // (older), > 0 is Down (newer); returns true when the key was consumed.
     void recordQuickAddHistory(const QString &text);
     bool navigateQuickAddHistory(int direction);
+    // Footer slash-actions menu (adhoc #116): the "/" button left of the Agent
+    // checkbox opens a filterable popup mirroring the Claude Code extension's
+    // actions menu (Context/Model sections plus the CLI's own slash commands,
+    // pulled live from `claude` via a control-protocol initialize probe).
+    void openQuickAddSlashActions();
+    void populateSlashActionsList();
+    void moveSlashActionsSelection(int delta);
+    void activateSlashActionRow(QWidget *row);
+    void refreshClaudeSlashCommands();
+    void mentionProjectFileInQuickAdd();
     // Pop a QR + address dialog for donating directly to the ForkMesh treasury.
     void showTreasuryDonateDialog();
     void copyIssueToClipboard();
@@ -2684,6 +2694,27 @@ private:
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
+    // Slash-actions menu (adhoc #116): the "/" button left of the Agent checkbox
+    // and its popup — a filter box over Context/Model action rows plus the
+    // Claude Code CLI's slash commands. The command list is probed live from
+    // `claude` (control-protocol initialize) the first time the popup opens.
+    QPushButton *m_quickAddSlashButton = nullptr;
+    QFrame *m_slashActionsPopup = nullptr;
+    QLineEdit *m_slashActionsFilter = nullptr;
+    QScrollArea *m_slashActionsScroll = nullptr;
+    QWidget *m_slashActionsListHost = nullptr;
+    QVBoxLayout *m_slashActionsListLayout = nullptr;
+    QList<QWidget *> m_slashActionRows; // visible activatable rows, display order
+    int m_slashActionSelected = -1;     // index into m_slashActionRows
+    struct ClaudeSlashCommand {
+        QString name;
+        QString description;
+        QString argumentHint;
+    };
+    QList<ClaudeSlashCommand> m_claudeSlashCommands;
+    bool m_claudeSlashCommandsLoaded = false;
+    QProcess *m_claudeSlashProbe = nullptr;
+    QByteArray m_claudeSlashProbeBuf;
     // "Agents:" status strip above the footer prompt (adhoc #111): a clickable
     // label plus one small colored dot per known agent session. The label opens
     // the Agents tab; each dot opens that session directly.
