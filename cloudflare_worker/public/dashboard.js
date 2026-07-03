@@ -1398,6 +1398,30 @@
     });
   }
 
+  // Tab switch requested by the user (or a Back/Forward step): shows the tab,
+  // mirrors it into the address bar so refresh/back land on the same page,
+  // and fetches its records on first view. Issues, pull requests and
+  // discussions load lazily here rather than on repo open so a repo with many
+  // records doesn't fire record reads for tabs nobody opened.
+  function activateRepoTab(tab) {
+    setRepoTab(tab);
+    if (!state.selectedRepo) return;
+    navigateHistory(tab === "code"
+      ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
+      : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    if (["issues", "pulls", "discussions", "releases"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+      if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+      state.loadedRepoTabs[tab] = true;
+      if (tab === "issues") loadRepoIssues(state.selectedRepo);
+      else if (tab === "releases") loadRepoReleases(state.selectedRepo);
+      else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
+    } else if (tab === "issues") {
+      // Re-selecting the tab should return to the issues list even if the
+      // new-issue compose form was left open.
+      renderRepoIssues();
+    }
+  }
+
   function repoPathParts(path) {
     return String(path || "").split("/").filter(Boolean);
   }
@@ -4406,21 +4430,7 @@
       const repoTabButton = event.target.closest("[data-dashboard-repo-tab]");
       if (repoTabButton) {
         const tab = repoTabButton.dataset.dashboardRepoTab || "code";
-        setRepoTab(tab);
-        // Issues, pull requests and discussions are fetched on first view so a
-        // repo with many records doesn't fire record reads on load for tabs
-        // nobody opened.
-        if (state.selectedRepo && ["issues", "pulls", "discussions", "releases"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
-          if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
-          state.loadedRepoTabs[tab] = true;
-          if (tab === "issues") loadRepoIssues(state.selectedRepo);
-          else if (tab === "releases") loadRepoReleases(state.selectedRepo);
-          else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
-        } else if (tab === "issues" && state.selectedRepo) {
-          // Re-selecting the tab should return to the issues list even if the
-          // new-issue compose form was left open.
-          renderRepoIssues();
-        }
+        activateRepoTab(tab);
         return;
       }
 
@@ -4658,12 +4668,16 @@
       return;
     }
     if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-      // Same repo, only the tree/blob path changed — restore that path
-      // instead of tearing down and rebuilding the whole detail view.
-      const parts = location.pathname.split("/").filter(Boolean);
+      // Same repo; restore the path/tab from the URL instead of tearing down
+      // and rebuilding the whole detail view.
+      const parts = repoRouteParts();
       const kind = parts[2];
       const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
-      if (kind === "blob" && path) {
+      if (REPO_TAB_ROUTES.includes(kind)) {
+        // Feature tab (issues, pulls, etc.): restore without re-loading
+        // records since they cache in state.
+        setRepoTab(kind);
+      } else if (kind === "blob" && path) {
         loadRepositoryBlob(repo, path);
       } else {
         loadRepositoryTree(repo, kind === "tree" ? path : "");
