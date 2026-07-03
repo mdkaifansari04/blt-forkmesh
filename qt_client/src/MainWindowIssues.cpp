@@ -6347,6 +6347,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         QString lastIssueAuthor;
         QString lastIssueTitle;
         int lastIssueNumber = 0;
+        // New issues the submitter (the repo owner, filing from the website)
+        // asked to have auto-assigned to an agent once merged. Matched against
+        // the merged store below by open-event identity, since a freshly merged
+        // web submission's real issue number isn't known until after the merge
+        // (proposed number 0 gets reassigned inside applyRemoteEvent).
+        QList<IssueEvent> agentRequests;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
@@ -6362,6 +6368,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             meta.priority = metaObj.value("priority").toInt();
             for (const QJsonValue &a : metaObj.value("assignees").toArray())
                 meta.assignees << a.toString();
+            meta.wantsAgent = metaObj.value("wantsAgent").toBool();
             if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
                 ++merged;
                 const QString who =
@@ -6376,6 +6383,8 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                     lastIssueAuthor = who;
                     lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
                     lastIssueNumber = number;
+                    if (meta.wantsAgent)
+                        agentRequests << ev;
                 }
             }
         }
@@ -6387,6 +6396,40 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             m_repositories.at(curIdx).owner == repo.owner &&
             m_repositories.at(curIdx).name == repo.name)
             reloadIssues();
+        // Start an agent on each new issue the owner flagged for auto-assignment
+        // when they filed it. Look the issue back up by its open event's identity
+        // (see agentRequests above) to get the real, post-merge issue number.
+        // repoHint keeps this pointed at repo/store above regardless of what the
+        // Issues tab currently shows (adhoc #105).
+        if (!agentRequests.isEmpty()) {
+            const QList<Issue> mergedIssues = store.loadAll();
+            for (const IssueEvent &wanted : std::as_const(agentRequests)) {
+                for (const Issue &candidate : mergedIssues) {
+                    if (candidate.isDeleted())
+                        continue;
+                    bool matched = false;
+                    for (const IssueEvent &e : candidate.events) {
+                        if (e.type != QLatin1String("open"))
+                            continue;
+                        const bool sameSig =
+                            !wanted.sig.isEmpty() && e.sig == wanted.sig;
+                        const bool sameAuthorTs =
+                            wanted.sig.isEmpty() && e.author == wanted.author &&
+                            e.ts == wanted.ts && e.title == wanted.title;
+                        if (sameSig || sameAuthorTs) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (matched) {
+                        startAgentForIssue(candidate, defaultAgentProvider(),
+                                           /*createPr=*/true, /*quiet=*/true,
+                                           QString(), &repo);
+                        break;
+                    }
+                }
+            }
+        }
         // Incoming issues just landed in the working copy: push them to the
         // mirror and notify peers now so every node's count converges promptly.
         if (merged > 0) {
