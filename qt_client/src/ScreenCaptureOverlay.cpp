@@ -332,7 +332,15 @@ QImage ScreenCaptureOverlay::compositeScreens()
     {
         QPainter painter(&shot);
         for (QScreen *s : QGuiApplication::screens()) {
-            const QPixmap grab = s->grabWindow(0);
+            QPixmap grab = s->grabWindow(0);
+            // grabWindow() isn't guaranteed to tag the pixmap with the screen's
+            // own ratio (some platform plugins hand back the raw buffer at
+            // ratio 1 even on a HiDPI screen). drawPixmap below places it by
+            // its *logical* size, so an untagged HiDPI grab would be placed at
+            // its full physical size — several times too large — and every
+            // screenshot on that screen would come out wildly mis-cropped.
+            // Force the tag explicitly so placement is always correct.
+            grab.setDevicePixelRatio(s->devicePixelRatio());
             const QRect g = s->geometry();
             painter.drawPixmap(QPointF(g.x() - m_virtualGeom.x(),
                                        g.y() - m_virtualGeom.y()),
