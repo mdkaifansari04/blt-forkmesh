@@ -6316,6 +6316,19 @@ QWidget *MainWindow::buildNodeProfilePanel()
             logSystem("Copied node ID to clipboard.");
         }
     });
+    // Browser-based linking (adhoc #120): opens a node-signed grant URL in the
+    // default browser so the user logged in on forkmesh.com takes ownership of
+    // this node without typing anything.
+    m_profileLinkBrowserButton =
+        new QPushButton("Link this node to your account");
+    m_profileLinkBrowserButton->setObjectName("ghostButton");
+    m_profileLinkBrowserButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileLinkBrowserButton, "link", 14);
+    m_profileLinkBrowserButton->setToolTip(
+        "Open forkmesh.com in your browser and attach this node to the user "
+        "account you're logged in as there. One user can own many nodes.");
+    connect(m_profileLinkBrowserButton, &QPushButton::clicked, this,
+            &MainWindow::openLinkNodeInBrowser);
 
     // --- Solana section: address, QR, on-demand balance.
     m_profileSolanaSection = new QWidget;
@@ -6409,7 +6422,13 @@ QWidget *MainWindow::buildNodeProfilePanel()
     rightColumn->addWidget(m_profileHosting);
     rightColumn->addWidget(nodeKeyLabel);
     rightColumn->addWidget(m_profileNodeKey);
-    rightColumn->addWidget(copyKey, 0, Qt::AlignLeft);
+    auto *nodeKeyActions = new QHBoxLayout;
+    nodeKeyActions->setContentsMargins(0, 0, 0, 0);
+    nodeKeyActions->setSpacing(6);
+    nodeKeyActions->addWidget(copyKey);
+    nodeKeyActions->addWidget(m_profileLinkBrowserButton);
+    nodeKeyActions->addStretch();
+    rightColumn->addLayout(nodeKeyActions);
     rightColumn->addWidget(m_profileSolanaSection);
     rightColumn->addStretch();
 
@@ -6620,6 +6639,10 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // "USER ACCOUNT": self only. Show whether this node is already attached to a
     // user, and offer "Log in as a user" to attach it when it isn't. Only a
     // registered (key-bound) node can be linked, so gate the button on that.
+    // The browser-link button rides the node-ID card but is a self-only action
+    // too; refreshProfileAccountStatus refines it (hidden again once linked).
+    if (m_profileLinkBrowserButton)
+        m_profileLinkBrowserButton->setVisible(info.self);
     if (m_profileAccountSection) {
         m_profileAccountSection->setVisible(info.self);
         if (info.self)
@@ -6776,6 +6799,8 @@ void MainWindow::renderProfileAccountStatus()
                 .arg(m_nodeOwnerUser.toHtmlEscaped(), fleetLine));
         m_profileLinkUserButton->setText("Linked to a user");
         m_profileLinkUserButton->setVisible(false);
+        if (m_profileLinkBrowserButton)
+            m_profileLinkBrowserButton->setVisible(false);
     } else if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
         // This account is itself a user (it has login credentials); it can't
         // be "linked to a user" — instead it OWNS nodes. Show them and hide
@@ -6784,8 +6809,9 @@ void MainWindow::renderProfileAccountStatus()
             m_profileLinkedNodes.isEmpty()
                 ? QString::fromUtf8(
                       "No other nodes are linked yet \xE2\x80\x94 open "
-                      "another node's app and use \"Log in as a user\" there "
-                      "to attach it to this account.")
+                      "another node's app and use \"Log in as a user\" or "
+                      "\"Link this node to your account\" there to attach it "
+                      "to this account.")
                 : QString::fromUtf8(
                       "<span style='color:#8b949e'>Nodes linked to this "
                       "account (%1):</span> %2")
@@ -6796,13 +6822,28 @@ void MainWindow::renderProfileAccountStatus()
                 "<span style='color:#3fb950'>\xE2\x9C\x94 This is your user "
                 "account</span><br>%1").arg(body));
         m_profileLinkUserButton->setVisible(false);
+        if (m_profileLinkBrowserButton)
+            m_profileLinkBrowserButton->setVisible(false);
     } else {
-        m_profileAccountStatus->setText(QString::fromUtf8(
-            "This node isn't linked to a user account yet. One user can own "
-            "many nodes \xE2\x80\x94 log in to attach this node."));
+        // While a browser link grant is being watched (adhoc #120), say so
+        // instead of "isn't linked yet" — the repaint on every poll would
+        // otherwise clobber the context of what the user just started.
+        m_profileAccountStatus->setText(
+            m_linkGrantPollsLeft > 0
+                ? QString::fromUtf8(
+                      "Finishing in your browser \xE2\x80\xA6 this node will "
+                      "be attached to the user logged in on the website.")
+                : QString::fromUtf8(
+                      "This node isn't linked to a user account yet. One user "
+                      "can own many nodes \xE2\x80\x94 log in to attach this "
+                      "node."));
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(true);
         m_profileLinkUserButton->setVisible(true);
+        if (m_profileLinkBrowserButton) {
+            m_profileLinkBrowserButton->setVisible(true);
+            m_profileLinkBrowserButton->setEnabled(true);
+        }
     }
 }
 
@@ -6826,6 +6867,10 @@ void MainWindow::refreshProfileAccountStatus()
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(false);
         m_profileLinkUserButton->setVisible(true);
+        if (m_profileLinkBrowserButton) {
+            m_profileLinkBrowserButton->setVisible(true);
+            m_profileLinkBrowserButton->setEnabled(false);
+        }
         return;
     }
     renderProfileAccountStatus();
@@ -7001,6 +7046,56 @@ QString MainWindow::linkErrorMessage(const QString &code) const
         code == QStringLiteral("unauthorized"))
         return QStringLiteral("this node's key couldn't be verified.");
     return code + QStringLiteral(".");
+}
+
+// "Link this node to your account" (adhoc #120): sign a short-lived grant with
+// this node's key and open it as a dashboard URL in the default browser. The
+// signature proves node-key control and consents to the link, so whichever
+// user is logged in on forkmesh.com there takes ownership without typing
+// anything (the in-browser counterpart of "Log in as a user").
+void MainWindow::openLinkNodeInBrowser()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasActiveAccountSession() ||
+        (!m_profileIdentity.isValid() && !m_profileIdentity.load())) {
+        logSystem("Register this node first (see \"Get paid to mirror\") to "
+                  "link it to a user account.");
+        return;
+    }
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-link-grant-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+    url.setPath(QStringLiteral("/dashboard"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("link_node"), node);
+    query.addQueryItem(QStringLiteral("link_ts"), ts);
+    query.addQueryItem(QStringLiteral("link_sig"),
+                       m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QDesktopServices::openUrl(url);
+    logSystem("Account: opened the browser to link node \"" + node +
+              "\" to the user logged in there.");
+    // Watch the account for a couple of minutes so the profile flips to
+    // "linked" by itself once the browser side completes.
+    m_linkGrantPollsLeft = 24;
+    pollLinkNodeGrant();
+}
+
+void MainWindow::pollLinkNodeGrant()
+{
+    if (m_linkGrantPollsLeft <= 0)
+        return;
+    if (!m_nodeOwnerUser.trimmed().isEmpty() || !m_profileIsSelf) {
+        // Linked (done) or the profile moved off this node: stop watching, and
+        // zero the countdown so a later repaint doesn't resurrect the
+        // "finishing in your browser" message.
+        m_linkGrantPollsLeft = 0;
+        return;
+    }
+    --m_linkGrantPollsLeft;
+    refreshProfileAccountStatus();
+    QTimer::singleShot(5000, this, &MainWindow::pollLinkNodeGrant);
 }
 
 void MainWindow::checkNodeBalance()

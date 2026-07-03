@@ -521,6 +521,13 @@ private:
     // submitLinkNodeToUser signs with this node's key and POSTs link-self.
     void promptLinkNodeToUser();
     void submitLinkNodeToUser(const QString &identifier, const QString &password);
+    // "Link this node to your account" (adhoc #120): signs a short-lived grant
+    // with this node's key and opens it as a dashboard URL in the default
+    // browser, where the logged-in web user completes the link with no further
+    // prompts. pollLinkNodeGrant re-checks the account for a while afterwards so
+    // the profile flips to "linked" on its own once the browser side finishes.
+    void openLinkNodeInBrowser();
+    void pollLinkNodeGrant();
     // Human-readable text for a link-self error code (for the account section).
     QString linkErrorMessage(const QString &code) const;
     // Admin: poll for newly-joined users and verify their email by hand (until a
@@ -4101,6 +4108,10 @@ private:
     QWidget *m_profileAccountSection = nullptr;
     QLabel *m_profileAccountStatus = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;
+    // "Link this node to your account" next to the node ID: browser-based
+    // linking via a node-signed grant URL (adhoc #120).
+    QPushButton *m_profileLinkBrowserButton = nullptr;
+    int m_linkGrantPollsLeft = 0; // post-browser-link polling countdown
     QString m_nodeOwnerUser;
     // Nodes linked to this account's user (learned from account lookups): shown
     // in the "USER ACCOUNT" section so a user can see their whole fleet. When

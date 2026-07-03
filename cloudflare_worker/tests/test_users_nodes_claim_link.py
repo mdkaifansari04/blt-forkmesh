@@ -24,8 +24,8 @@ FUNCS = {
     "_account_kind", "_owned_nodes", "_generate_confirm_code", "_claim_pending",
     "_resolve_user_by_password", "_link_node_to_user", "_account_claim_node",
     "_account_claim_confirm", "_redeem_or_park_link_code", "_account_link_node",
-    "_account_link_self", "_account_heartbeat", "_resolve_claimable_node",
-    "_account_row_by_pubkey", "valid_node_pubkey",
+    "_account_link_self", "_account_link_grant", "_account_heartbeat",
+    "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
 }
 
 
@@ -394,6 +394,101 @@ def test_link_self_rejections():
     assert owned["data"]["error"] == "node_already_owned"
 
 
+def _grant(node="mirror1", user="alice"):
+    # The browser half of "Link this node to your account" (adhoc #120): the
+    # node-signed grant from the URL plus the dashboard session's user name.
+    return {"nodeName": node, "user": user, "ts": "1", "sig": "s"}
+
+
+def test_link_grant_links_node_to_browser_user():
+    # The node profile's browser button: a node-signed grant redeemed by the
+    # dashboard's logged-in user — no password re-entry, no confirmation code.
+    accounts = {"alice": _user_rec(), "mirror1": _node_rec()}
+    ns = _harness(accounts)
+    env = object()
+
+    linked = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
+    assert linked["status"] == 200
+    assert linked["data"]["linked"] is True
+    assert linked["data"]["nodes"] == ["mirror1"]
+    assert accounts["mirror1"]["owner"] == "alice"
+    assert accounts["alice"]["nodes"] == ["mirror1"]
+    assert ns["_link_rows"], "redeemed grant must be parked as used"
+
+    # Redeeming the same grant again is idempotent while still linked…
+    again = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
+    assert again["status"] == 200
+    assert again["data"]["alreadyLinked"] is True
+
+    # …but once the node is unlinked, the burned grant cannot re-link it.
+    del accounts["mirror1"]["owner"]
+    replay = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
+    assert replay["status"] == 409
+    assert replay["data"]["error"] == "grant_used"
+    assert "owner" not in accounts["mirror1"]
+
+
+def test_link_grant_rejections():
+    accounts = {
+        "alice": _user_rec(),
+        "bob": _user_rec("bob", "bob@example.com"),
+        "owned": dict(_node_rec("owned"), owner="bob"),
+        "mirror1": _node_rec(),
+        "stray": _node_rec("stray"),
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    missing = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="ghost"))))
+    assert missing["status"] == 404
+    assert missing["data"]["error"] == "no_such_node"
+
+    ghost_user = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(user="ghost"))))
+    assert ghost_user["status"] == 404
+    assert ghost_user["data"]["error"] == "no_such_user"
+
+    # A bare node session in the browser can't take possession of other nodes.
+    not_user = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(user="stray"))))
+    assert not_user["status"] == 403
+    assert not_user["data"]["error"] == "not_a_user"
+
+    not_node = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="bob"))))
+    assert not_node["status"] == 403
+    assert not_node["data"]["error"] == "not_a_node"
+
+    self_link = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="alice", user="alice"))))
+    assert self_link["status"] == 400
+    assert self_link["data"]["error"] == "cannot_link_self"
+
+    owned = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="owned"))))
+    assert owned["status"] == 409
+    assert owned["data"]["error"] == "node_already_owned"
+
+    # A stale timestamp or a bad signature invalidates the grant outright
+    # (the exec'd functions resolve globals through the harness namespace, so
+    # rebinding these stubs takes effect immediately).
+    ns["_ts_ok"] = lambda _ts: False
+    stale = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
+    assert stale["status"] == 401
+    assert stale["data"]["error"] == "unauthorized"
+    ns["_ts_ok"] = lambda _ts: True
+
+    async def _reject(_pubkey, _sig, _canonical):
+        return False
+    ns["ed25519_verify"] = _reject
+    forged = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
+    assert forged["status"] == 401
+    assert forged["data"]["error"] == "bad_signature"
+
+    assert "owner" not in accounts["mirror1"]
+
+
 def test_link_code_rendezvous_node_registers_first():
     accounts = {"alice": _user_rec(), "mirror2": _node_rec("mirror2")}
     ns = _harness(accounts)
@@ -511,6 +606,34 @@ def test_wire_contracts_across_worker_qt_and_installer():
     # The profile knows when its own account is a user (so it stops nagging to
     # "log in as a user" and instead lists the nodes it owns).
     assert 'm_profileIsUserAccount' in qt_chat
+
+
+def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
+    entry = ENTRY.read_text(encoding="utf-8")
+    qt_chat = QT_CHAT.read_text(encoding="utf-8")
+    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
+        encoding="utf-8")
+    login_js = (ROOT / "cloudflare_worker" / "public" / "login.js").read_text(
+        encoding="utf-8")
+
+    # The grant canonical string matches on both ends, and the endpoint exists.
+    assert '"forkmesh-link-grant-v1\\n" + node_name + "\\n" + ts' in entry
+    assert '"/api/accounts/link-grant"' in entry
+    assert '"forkmesh-link-grant-v1\\n" + node + "\\n" + ts' in qt_chat
+
+    # The desktop app opens /dashboard?link_node=…&link_ts=…&link_sig=… and the
+    # dashboard redeems exactly those params against the endpoint.
+    for marker in ("link_node", "link_ts", "link_sig"):
+        assert marker in qt_chat
+        assert marker in dashboard_js
+    assert '"/api/accounts/link-grant"' in dashboard_js
+    assert "redeemLinkGrant" in dashboard_js
+
+    # A logged-out browser bounces through login and resumes via ?next= (local
+    # paths only, so the bounce can't become an open redirect).
+    assert "/login?next=" in dashboard_js
+    assert "nextPath()" in login_js
+    assert 'value.startsWith("/") && !value.startsWith("//")' in login_js
 
 
 def test_dashboard_exposes_a_claim_node_panel():
