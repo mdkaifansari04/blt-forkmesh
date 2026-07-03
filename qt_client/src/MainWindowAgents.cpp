@@ -2169,6 +2169,7 @@ void MainWindow::initAgents()
     }
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
+    refreshAgentStatusRow(); // footer "Agents:" strip reflects sessions from the start
     // The re-queued sessions are NOT started here: initAgents() runs inside the
     // MainWindow constructor, and draining the queue starts Claude transcripts
     // whose assign-time UI jump (switchToAgentsTab → openRepoDetail) fired a
@@ -2198,6 +2199,7 @@ void MainWindow::reloadAgents()
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
+    refreshAgentStatusRow();
 }
 
 void MainWindow::refreshAgentTable()
@@ -4050,6 +4052,67 @@ void MainWindow::switchToAgentsTab(int sessionId)
         m_repoDetailStack->setCurrentIndex(3);
     reloadAgents();
     showAgentSession(sessionId);
+}
+
+// Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
+// one small colored dot per known session, click-through to that session's
+// Agents tab. Called after every reloadAgents() so the strip tracks the same
+// data as the Agents table.
+void MainWindow::refreshAgentStatusRow()
+{
+    if (!m_agentStatusIconsLayout || !m_agentStatusRow)
+        return;
+    QLayoutItem *item;
+    while ((item = m_agentStatusIconsLayout->takeAt(0)) != nullptr) {
+        delete item->widget();
+        delete item;
+    }
+    m_agentStatusRow->setVisible(!m_agentSessions.isEmpty());
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        auto *dot = new QPushButton;
+        dot->setObjectName("agentStatusDot");
+        dot->setFlat(true);
+        dot->setCursor(Qt::PointingHandCursor);
+        dot->setFixedSize(16, 16);
+        dot->setIcon(coloredDotIcon(agentStatusColor(session.status)));
+        dot->setIconSize(QSize(10, 10));
+        const QString label = session.issueNumber > 0
+            ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
+            : session.prompt.left(80);
+        dot->setToolTip(QStringLiteral("%1/%2 \xE2\x80\x94 %3\n%4")
+                             .arg(session.owner, session.name,
+                                  agentStatusText(session.status), label));
+        const int sessionId = session.id;
+        connect(dot, &QPushButton::clicked, this,
+                [this, sessionId] { switchToAgentsTab(sessionId); });
+        m_agentStatusIconsLayout->addWidget(dot);
+    }
+    m_agentStatusIconsLayout->addStretch(1);
+}
+
+// Clicking the "Agents:" label (as opposed to one of its dots): jump to the
+// most relevant session's Agents tab, or just the open repo's Agents tab if
+// no session exists yet.
+void MainWindow::openAgentsOverview()
+{
+    if (m_selectedAgentSessionId > 0 && findAgentSession(m_selectedAgentSessionId)) {
+        switchToAgentsTab(m_selectedAgentSessionId);
+        return;
+    }
+    if (!m_agentSessions.isEmpty()) {
+        const AgentSession *newest = &m_agentSessions.first();
+        for (const AgentSession &s : std::as_const(m_agentSessions)) {
+            if (s.createdAtMs > newest->createdAtMs)
+                newest = &s;
+        }
+        switchToAgentsTab(newest->id);
+        return;
+    }
+    if (m_repoDetailIndex >= 0 && m_repoDetailTabs && m_repoDetailTabs->button(3)) {
+        m_repoDetailTabs->button(3)->setChecked(true);
+        if (m_repoDetailStack)
+            m_repoDetailStack->setCurrentIndex(3);
+    }
 }
 
 AgentRunner *MainWindow::runnerForSession(int sessionId) const
