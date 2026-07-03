@@ -2706,7 +2706,16 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             m_pendingAutoOpenRepoKey.compare(
                                 repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
                             m_pendingAutoOpenRepoKey.clear();
-                            openRepoDetailDeferred(index);
+                            // On a fresh install, land on the #welcome chat, not the
+                            // Code view. Just select the repo internally (so the repo
+                            // switcher shows "forkmesh") and refresh the UI; don't open
+                            // the detail view which would load and show the Agents tab.
+                            m_repoDetailIndex = index;
+                            refreshRepositoryList();
+                            QTimer::singleShot(0, this, [this] {
+                                showChatView();
+                                switchConversation(kWelcomeChannel);
+                            });
                         }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
