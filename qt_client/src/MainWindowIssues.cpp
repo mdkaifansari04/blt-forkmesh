@@ -3436,7 +3436,9 @@ void MainWindow::quickAddIssue()
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
-    if (m_quickAddNoIssue && m_quickAddNoIssue->isChecked()) {
+    // This is the default (adhoc #99): "Create issue" is off unless the user
+    // turns it on, so most quick-add prompts skip issue filing entirely.
+    if (!m_quickAddCreateIssue || !m_quickAddCreateIssue->isChecked()) {
         const QString provider =
             m_quickAddAgentProvider
                 ? m_quickAddAgentProvider->currentData().toString()
@@ -3525,12 +3527,13 @@ int MainWindow::testQuickAddIssueNoAgent(const QString &title)
 {
     if (!m_issueQuickAdd)
         return -1;
-    // Type the title and make sure neither hand-off toggle is set, so the plain
-    // create-and-open path (issue #203) runs rather than the agent / no-issue one.
+    // Type the title and make sure the agent hand-off is off but issue creation
+    // is on, so the plain create-and-open path (issue #203) runs rather than the
+    // agent / no-issue one.
     if (m_quickAddAssignAgent)
         m_quickAddAssignAgent->setChecked(false);
-    if (m_quickAddNoIssue)
-        m_quickAddNoIssue->setChecked(false);
+    if (m_quickAddCreateIssue)
+        m_quickAddCreateIssue->setChecked(true);
     m_issueQuickAdd->setPlainText(title);
     quickAddIssue();
     return m_currentIssueNumber;
