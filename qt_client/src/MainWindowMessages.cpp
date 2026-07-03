@@ -549,6 +549,14 @@ void MainWindow::maybeAnnounceWelcome()
         m_welcomeAnnounced = true; // greeted in an earlier run; don't repeat
         return;
     }
+    // Migrate the legacy QSettings flag: a node that greeted before the flag
+    // moved must not greet again on its first run after upgrading.
+    if (QSettings().value(kLegacyWelcomeAnnouncedSettingPrefix + id, false)
+            .toBool()) {
+        m_profileIdentity.markWelcomeAnnounced();
+        m_welcomeAnnounced = true;
+        return;
+    }
     m_profileIdentity.markWelcomeAnnounced();
     m_welcomeAnnounced = true;
     m_backend->sendChat(
