@@ -1074,9 +1074,13 @@ def test_repo_shortcut_urls_redirect_to_dashboard_from_404_page():
     html = _read(PUBLIC / "404.html")
 
     # The 404 page bounces /owner/repo (and tree/blob deep links) to the dashboard.
-    assert '"/dashboard?repo=" +' in html
+    # Feature tabs (/issues, /pulls, etc.) are preserved in the bounce.
+    assert '"/dashboard/"' in html
+    assert 'var dashboardPath = "/dashboard/' in html
     assert "window.location.pathname.split" in html
-    assert '(parts[2] === "tree" || parts[2] === "blob")' in html
+    assert 'parts[2] === "tree" || parts[2] === "blob"' in html
+    assert 'featureTabs' in html
+    assert '["commits", "releases", "issues", "pulls", "discussions", "mirrors"]' in html
     # Real site sections must not be treated as repo owners.
     for reserved in ("assets", "favicon", "dashboard", "docs", "blogs"):
         assert '"%s"' % reserved in html
