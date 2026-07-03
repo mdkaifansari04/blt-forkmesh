@@ -98,7 +98,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
     return messages.where((message) {
       return switch (_selectedFilter) {
-        'Channels' => message.conversation.startsWith('#'),
+        // Peers may send channel names without the '#' prefix, so classify a
+        // channel as any conversation that is not a direct ('@...') chat.
+        'Channels' => !message.conversation.startsWith('@'),
         'Direct' => message.conversation.startsWith('@'),
         'Attachments' => message.fileName.isNotEmpty,
         _ => true,

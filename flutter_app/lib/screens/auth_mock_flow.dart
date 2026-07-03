@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -209,8 +210,10 @@ class _LoginScreenState extends State<_LoginScreen> {
     if (_loading) return;
     final identifier = _identifier.text.trim();
     final password = _password.text;
-    if (identifier.isEmpty && password.isEmpty) {
-      // Keep the design-preview path usable in widget tests and local mock demos.
+    if (identifier.isEmpty && password.isEmpty && kDebugMode) {
+      // Design-preview path for widget tests and local mock demos only;
+      // release builds fall through to the normal validation below so an
+      // empty form can never bypass real authentication.
       widget.onAuthenticated();
       return;
     }
