@@ -2359,18 +2359,32 @@ protected:
         QWidget *popup = v ? v->window() : nullptr;
         if (!v || !popup || popup == v || count() == 0)
             return;
-        // Every row, the view frame, and one extra row's worth of slack for the
-        // scroller buttons the styled container still reserves space for.
-        int height = 2 * v->frameWidth() + v->sizeHintForRow(0);
-        for (int i = 0; i < count(); ++i)
-            height += v->sizeHintForRow(i);
-        if (QScreen *scr = popup->screen())
-            height = qMin(height, scr->availableGeometry().height());
+        // Height for every row plus the view frame. sizeHintForRow under-reports
+        // the styled row height (the rows aren't laid out with their stylesheet
+        // metrics yet when the base showPopup returns) and the view's own
+        // sizeHint is just QListView's fixed default, so take the per-row hint
+        // and add a small cushion per row to cover the styling — generous is
+        // fine, it only adds a little bottom padding and is capped to the screen.
+        int rowH = v->sizeHintForRow(0);
+        if (rowH <= 0)
+            rowH = fontMetrics().height() + 8;
+        rowH += 8;
+        int height = 2 * v->frameWidth() + rowH * count();
         QRect geo = popup->geometry();
-        if (height > geo.height()) {
-            geo.setHeight(height);
-            popup->setGeometry(geo);
-        }
+        const QRect avail =
+            popup->screen() ? popup->screen()->availableGeometry() : geo;
+        height = qMin(height, avail.height());
+        if (height <= geo.height())
+            return; // already tall enough (or genuinely too many items to fit)
+        geo.setHeight(height);
+        // Keep the now-taller popup fully on screen: if growing it pushed the
+        // bottom (or top, when it opened upward) past the screen edge, slide it
+        // back in, otherwise Qt clamps the height again and the arrows return.
+        if (geo.bottom() > avail.bottom())
+            geo.moveBottom(avail.bottom());
+        if (geo.top() < avail.top())
+            geo.moveTop(avail.top());
+        popup->setGeometry(geo);
     }
 };
 
