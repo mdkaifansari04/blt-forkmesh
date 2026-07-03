@@ -702,7 +702,7 @@ QWidget *MainWindow::buildAgentsTab()
         const QString branch = s->branchName;
         const QString wt =
             worktreePathForBranch(m_repositories.at(repoIndex).localPath, branch);
-        deleteWorktreeBranchAndAgent(wt, branch);
+        deleteWorktreeBranchAndAgent(wt, branch, /*confirm=*/false);
     });
 
     // "View PR" — appears once the session produced a pull request.
