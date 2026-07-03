@@ -522,6 +522,13 @@ private:
     // reply carried a confirmation code, shown on this machine so the person
     // standing at both screens can type it back into the website.
     void showNodeClaimCode(const QString &user, const QString &code);
+    // Admin node-ownership takeover (adhoc #141): an admin viewing another
+    // node's profile can request ownership; the heartbeat reply on the TARGET
+    // node then carries the pending request, prompted here for that node's own
+    // owner to approve or deny. requestNodeOwnership is the admin-side trigger.
+    void requestNodeOwnership();
+    void showOwnershipTransferPrompt(const QString &admin);
+    void submitOwnershipTransferDecision(bool approve);
     // Installer link-code flow (adhoc #53): the hosts/SSH installer printed a
     // link code on the fresh machine; confirm + submit it here, signed with
     // this account's key, so the new node is attached to this user.
@@ -4192,6 +4199,8 @@ private:
     QPushButton *m_profileVerifyButton = nullptr;
     QLabel *m_profileEligibility = nullptr;
     QPushButton *m_profileMessageButton = nullptr;
+    // Admin-only "Take ownership" request on another node's profile (adhoc #141).
+    QPushButton *m_profileTakeOwnershipButton = nullptr;
     // "Get paid to mirror": opt-in CTA shown under the username on your own
     // profile. Flips to an "earning" label once the node is activated.
     QPushButton *m_profileGetPaidButton = nullptr;
@@ -4289,6 +4298,10 @@ private:
     // Last website-claim confirmation code already shown (adhoc #53), so the
     // per-minute heartbeat doesn't reopen the popup for the same claim.
     QString m_lastClaimCodeShown;
+    // Admin claiming this node last shown for an ownership-transfer prompt
+    // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
+    // while the request is still pending a decision.
+    QString m_lastOwnershipTransferAdminShown;
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;

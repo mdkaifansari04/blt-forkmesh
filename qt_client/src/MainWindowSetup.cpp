@@ -1103,6 +1103,19 @@ void MainWindow::sendNodeHeartbeat()
             showNodeClaimCode(claim.value(QStringLiteral("user")).toString(),
                               claimCode);
         }
+        // An admin requested ownership of THIS node (adhoc #141): the reply
+        // carries who's asking, and only this node's own signed decision (made
+        // by whoever is currently logged into it) can approve or deny it.
+        const QJsonObject transfer =
+            resp.value(QStringLiteral("ownershipTransfer")).toObject();
+        const QString transferAdmin = transfer.value(QStringLiteral("admin")).toString();
+        if (!transferAdmin.isEmpty() &&
+            transferAdmin != m_lastOwnershipTransferAdminShown) {
+            m_lastOwnershipTransferAdminShown = transferAdmin;
+            showOwnershipTransferPrompt(transferAdmin);
+        } else if (transferAdmin.isEmpty()) {
+            m_lastOwnershipTransferAdminShown.clear();
+        }
     });
 }
 
@@ -1134,6 +1147,113 @@ void MainWindow::showNodeClaimCode(const QString &user, const QString &code)
     box->show();
     box->raise();
     box->activateWindow();
+}
+
+void MainWindow::showOwnershipTransferPrompt(const QString &admin)
+{
+    const QString who = admin.isEmpty() ? QStringLiteral("An admin") : admin;
+    logSystem("Account: admin \"" + who + "\" has requested ownership of this "
+              "node. Approve or deny from the node's profile" +
+              (m_headless ? QStringLiteral(" (headless — leave pending or "
+                                           "resolve from another client).")
+                          : QStringLiteral(".")));
+    if (m_headless)
+        return;
+    auto *box = new QMessageBox(this);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowTitle(QStringLiteral("Ownership transfer request"));
+    box->setIcon(QMessageBox::Warning);
+    box->setText(
+        QStringLiteral("<b>%1</b> (admin) is requesting ownership of this "
+                       "node.<br><br>Approving hands this node over to that "
+                       "account and removes it from its current owner's "
+                       "fleet. If you didn't expect this, choose Deny.")
+            .arg(who.toHtmlEscaped()));
+    QPushButton *approve = box->addButton("Approve", QMessageBox::AcceptRole);
+    QPushButton *deny = box->addButton("Deny", QMessageBox::RejectRole);
+    box->setDefaultButton(deny);
+    box->setModal(false);
+    connect(box, &QMessageBox::buttonClicked, this,
+            [this, box, approve](QAbstractButton *clicked) {
+                submitOwnershipTransferDecision(clicked == approve);
+            });
+    box->show();
+    box->raise();
+    box->activateWindow();
+}
+
+void MainWindow::submitOwnershipTransferDecision(bool approve)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString action = approve ? QStringLiteral("approve")
+                                   : QStringLiteral("deny");
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-ownership-transfer-confirm-v1\n" + node + "\n" + action +
+         "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "ownership-transfer-confirm",
+        QJsonObject{{"nodeName", node}, {"action", action}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    m_lastOwnershipTransferAdminShown.clear();
+    if (status == 200 && resp.value("ok").toBool()) {
+        logSystem(approve ? "Account: ownership transfer approved."
+                          : "Account: ownership transfer denied.");
+        if (approve)
+            refreshProfileAccountStatus();
+    } else {
+        logSystem("Account: ownership transfer decision failed to submit.");
+    }
+}
+
+void MainWindow::requestNodeOwnership()
+{
+    if (!m_isAdmin)
+        return;
+    const QString target = m_profileNodeName;
+    const QString node = accountOwner();
+    if (target.isEmpty() || node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    if (QMessageBox::question(
+            this, "Take ownership",
+            QStringLiteral("Request ownership of <b>%1</b>?<br><br>This only "
+                           "sends a request — it takes effect once that "
+                           "node's current owner approves the confirmation "
+                           "prompt it receives.")
+                .arg(target.toHtmlEscaped()),
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-request-ownership-v1\n" + node + "\n" + target +
+         "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-request-ownership",
+        QJsonObject{{"node", node}, {"target", target}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)}},
+        &status);
+    if ((status == 200 || status == 201) && resp.value("ok").toBool()) {
+        logSystem("Admin: requested ownership of " + target +
+                  " — awaiting that node's approval.");
+        QMessageBox::information(
+            this, "Request sent",
+            QStringLiteral("Ownership request sent. It completes once %1's "
+                           "current owner approves it.")
+                .arg(target.toHtmlEscaped()));
+    } else {
+        QMessageBox::warning(
+            this, "Request failed",
+            QStringLiteral("Could not request ownership: %1")
+                .arg(resp.value("error").toString(
+                    QStringLiteral("unknown error"))));
+    }
 }
 
 void MainWindow::pollPendingUsers()
