@@ -54,6 +54,9 @@ private:
 
     QRect m_virtualGeom;      // union of all screen geometries, in logical coords
     qreal m_dpr = 1.0;        // device-pixel ratio to grab/crop the snapshot at
+    QImage m_frozen;          // desktop grabbed before the panels appeared; the
+                              // panels paint slices of it (no translucency
+                              // needed). Null → translucent live overlay.
     QPoint m_originGlobal;    // drag start in global screen coords
     QPoint m_currentGlobal;   // latest drag point in global screen coords
     QRect m_pendingSel;       // selection awaiting an async (portal) capture
