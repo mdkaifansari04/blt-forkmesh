@@ -463,6 +463,19 @@ QPushButton#memberDeleteButton:hover {
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#promptWrapper {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+}
+#promptWrapper:focus-within { border-color: #58a6ff; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #8b949e;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #58a6ff; background: rgba(88,166,255,0.12); }
 #issueSearch {
     background-color: #0d1117; border: 1px solid #30363d;
     border-radius: 6px; padding: 6px 10px;
@@ -762,6 +775,20 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#promptWrapper {
+    background-color: #0d1117; border: 1px dashed #30363d; border-radius: 8px;
+}
+#promptWrapper:focus-within { border-color: #58a6ff; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+    min-height: 46px; max-height: 46px;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #8b949e;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #58a6ff; background: rgba(88,166,255,0.12); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1503,6 +1530,19 @@ QPushButton#memberDeleteButton:hover {
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#promptWrapper {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+}
+#promptWrapper:focus-within { border-color: #0969da; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #656d76;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #0969da; background: rgba(9,105,218,0.10); }
 #issueSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 6px 10px;
@@ -1783,6 +1823,20 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     max-height: 46px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#promptWrapper {
+    background-color: #ffffff; border: 1px dashed #d0d7de; border-radius: 8px;
+}
+#promptWrapper:focus-within { border-color: #0969da; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+    min-height: 46px; max-height: 46px;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #656d76;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #0969da; background: rgba(9,105,218,0.10); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

@@ -2175,7 +2175,7 @@ void MainWindow::styleFooterUpdateLog()
     const QString hover = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
-                       "border-top:1px solid %2;background:%3;"
+                       "border-right:1px solid %2;background:%3;"
                        "font-family:monospace;font-size:11px;padding:3px 12px;"
                        "text-align:left;}"
                        "QPushButton#footerUpdateLog:hover{color:%4;}")
