@@ -428,11 +428,50 @@ def test_link_grant_links_node_to_browser_user():
     assert "owner" not in accounts["mirror1"]
 
 
-def test_link_grant_rejections():
+def test_link_grant_overrides_existing_association():
+    # The grant is signed by the node's own key, so it OVERRIDES the current
+    # association: an owned node re-homes to the redeeming user (leaving the
+    # old owner's fleet), and even a user-kind account's node can be taken
+    # possession of.
     accounts = {
         "alice": _user_rec(),
         "bob": _user_rec("bob", "bob@example.com"),
         "owned": dict(_node_rec("owned"), owner="bob"),
+    }
+    accounts["bob"]["nodes"] = ["owned"]
+    ns = _harness(accounts)
+    env = object()
+
+    rehomed = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="owned"))))
+    assert rehomed["status"] == 200
+    assert rehomed["data"]["linked"] is True
+    assert accounts["owned"]["owner"] == "alice"
+    assert accounts["alice"]["nodes"] == ["owned"]
+    assert accounts["bob"]["nodes"] == [], "old owner's fleet must shrink"
+
+    # A node whose account is itself a user can still be handed over — its own
+    # key signed the grant, so the operator authorized it.
+    taken = asyncio.run(ns["_account_link_grant"](
+        env, _Request({"nodeName": "bob", "user": "alice",
+                       "ts": "2", "sig": "s2"})))
+    assert taken["status"] == 200
+    assert taken["data"]["linked"] is True
+    assert accounts["bob"]["owner"] == "alice"
+    assert sorted(accounts["alice"]["nodes"]) == ["bob", "owned"]
+
+    # Logged in as the node's own account: a friendly no-op, not an error.
+    self_link = asyncio.run(ns["_account_link_grant"](
+        env, _Request(_grant(node="alice", user="alice"))))
+    assert self_link["status"] == 200
+    assert self_link["data"]["alreadyLinked"] is True
+    assert self_link["data"]["selfAccount"] is True
+    assert "owner" not in accounts["alice"]
+
+
+def test_link_grant_rejections():
+    accounts = {
+        "alice": _user_rec(),
         "mirror1": _node_rec(),
         "stray": _node_rec("stray"),
     }
@@ -454,21 +493,6 @@ def test_link_grant_rejections():
         env, _Request(_grant(user="stray"))))
     assert not_user["status"] == 403
     assert not_user["data"]["error"] == "not_a_user"
-
-    not_node = asyncio.run(ns["_account_link_grant"](
-        env, _Request(_grant(node="bob"))))
-    assert not_node["status"] == 403
-    assert not_node["data"]["error"] == "not_a_node"
-
-    self_link = asyncio.run(ns["_account_link_grant"](
-        env, _Request(_grant(node="alice", user="alice"))))
-    assert self_link["status"] == 400
-    assert self_link["data"]["error"] == "cannot_link_self"
-
-    owned = asyncio.run(ns["_account_link_grant"](
-        env, _Request(_grant(node="owned"))))
-    assert owned["status"] == 409
-    assert owned["data"]["error"] == "node_already_owned"
 
     # A stale timestamp or a bad signature invalidates the grant outright
     # (the exec'd functions resolve globals through the harness namespace, so
@@ -627,7 +651,20 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
         assert marker in qt_chat
         assert marker in dashboard_js
     assert '"/api/accounts/link-grant"' in dashboard_js
+    assert "offerLinkGrant" in dashboard_js
     assert "redeemLinkGrant" in dashboard_js
+
+    # The browser side asks for one explicit "Authenticate & link" click; the
+    # confirm row exists in both (byte-identical) dashboard HTML copies.
+    index_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
+                  "index.html").read_text(encoding="utf-8")
+    dashboard_html = (ROOT / "cloudflare_worker" / "public" /
+                      "dashboard.html").read_text(encoding="utf-8")
+    for html in (index_html, dashboard_html):
+        assert "data-link-grant-row" in html
+        assert "data-link-grant-confirm" in html
+    assert index_html == dashboard_html
+    assert "data-link-grant-confirm" in dashboard_js
 
     # A logged-out browser bounces through login and resumes via ?next= (local
     # paths only, so the bounce can't become an open redirect).
