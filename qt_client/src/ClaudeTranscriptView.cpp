@@ -891,6 +891,11 @@ void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
     m_thinkingText += text;
     if (m_thinkingBody)
         m_thinkingBody->setText(m_thinkingText);
+    // live estimate from accumulated text; server setThinkingTokens overrides when available
+    const int est = qMax(1, m_thinkingText.length() / 4);
+    if (m_liveThinking)
+        m_liveThinking->setHeaderText(
+            QStringLiteral("Thinking… ~%1 tokens").arg(QLocale().toString(est)));
 }
 
 void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
