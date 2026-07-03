@@ -298,15 +298,15 @@ QWidget *MainWindow::buildSetupPage()
     versionLabel->setAlignment(Qt::AlignHCenter);
 
     m_nameEdit = new QLineEdit;
-    m_nameEdit->setPlaceholderText("Pick a name (e.g. ada-lovelace)");
+    m_nameEdit->setPlaceholderText("Pick a username (e.g. ada-lovelace)");
     m_nameEdit->setMaxLength(63);
     m_nameEdit->setText(savedProfileName());
-    // Only allow characters a node name can contain, so spaces and symbols can't
+    // Only allow characters a username can contain, so spaces and symbols can't
     // be typed or pasted in the first place (validated again on submit).
     m_nameEdit->setValidator(new QRegularExpressionValidator(
         QRegularExpression(QStringLiteral("[A-Za-z0-9-]*")), m_nameEdit));
     auto *nameHint = new QLabel(
-        "Your name on the mesh \xE2\x80\x94 letters, numbers and hyphens, no spaces.");
+        "Your username on the mesh \xE2\x80\x94 letters, numbers and hyphens, no spaces.");
     nameHint->setObjectName("modeHint");
     nameHint->setWordWrap(true);
     // Payout Solana address is no longer collected on first run — it is set later
@@ -828,14 +828,14 @@ void MainWindow::startSession()
     // or an odd first/last character are surfaced instead of mangled.
     const QString raw = m_nameEdit->text().trimmed().toLower();
     if (raw.isEmpty()) {
-        m_setupError->setText("Pick a name to get started.");
+        m_setupError->setText("Pick a username to get started.");
         m_setupError->show();
         m_nameEdit->setFocus();
         return;
     }
     if (!isValidNodeName(raw)) {
         m_setupError->setText(
-            "That name won't work — use lowercase letters, numbers and hyphens "
+            "That username won't work — use lowercase letters, numbers and hyphens "
             "(no spaces), starting with a letter.");
         m_setupError->show();
         m_nameEdit->setFocus();
@@ -1551,7 +1551,7 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
         return true;
     if (!isValidNodeName(accountName)) {
         QMessageBox::warning(this, "Join the network",
-                             "Choose a valid node name first (lowercase letters, "
+                             "Choose a valid username first (lowercase letters, "
                              "numbers and hyphens; start with a letter).");
         return false;
     }
@@ -1871,10 +1871,12 @@ bool MainWindow::runLoginFlow(const QString &accountName)
     return false;
 }
 
-// In-app join — joining the network is free. The only thing required is a public
-// node name: it's reserved against this device's Ed25519 key and immediately
-// activated (no donation, no email/password). Cross-device email/password login
-// can be added later. Returns true once the account is active.
+// In-app join — joining the network is free. The only thing required is a
+// username: it's reserved against this device's Ed25519 key and immediately
+// activated (no donation, no email/password). The username identifies the user,
+// not this machine — a user can attach many nodes to it later. Cross-device
+// email/password login can be added later. Returns true once the account is
+// active.
 bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana)
 {
     Q_UNUSED(solana);
@@ -1893,7 +1895,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
     outer->setContentsMargins(28, 24, 28, 24);
     outer->setSpacing(8);
 
-    auto *titleLabel = new QLabel("Choose your public node name");
+    auto *titleLabel = new QLabel("Choose your username");
     titleLabel->setObjectName("wizardTitle");
     titleLabel->setWordWrap(true);
     outer->addWidget(titleLabel);
@@ -1923,7 +1925,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
                                : QStringLiteral("background:transparent;"));
     };
     styleHint(hint, "Lowercase letters, numbers and hyphens. Start with a letter. "
-                    "This name is public, and joining is free.", nullptr);
+                    "Your username is public, and joining is free.", nullptr);
 
     // Debounced availability check so the Join button only lights up for a free
     // name (the reserve below is still the authority, but this avoids a round-trip
@@ -1935,7 +1937,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         const QString v = nameEdit->text().trimmed().toLower();
         joinBtn->setEnabled(false);
         if (v.isEmpty()) {
-            styleHint(hint, "This name is public, and joining is free.", nullptr);
+            styleHint(hint, "Your username is public, and joining is free.", nullptr);
             return;
         }
         if (!isValidNodeName(v)) {
@@ -1959,7 +1961,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
             return;
         }
         if (look.value("exists").toBool() && !look.value("available").toBool()) {
-            styleHint(hint, "That name is already taken — try another.", "#f85149");
+            styleHint(hint, "That username is already taken — try another.", "#f85149");
             joinBtn->setEnabled(false);
         } else {
             styleHint(hint, QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D is available.")
@@ -1993,7 +1995,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         if (!rresp.value("ok").toBool()) {
             joinBtn->setText("Join ForkMesh");
             joinBtn->setEnabled(true);
-            styleHint(hint, "Could not reserve that name — it may be taken. "
+            styleHint(hint, "Could not reserve that username — it may be taken. "
                             "Try another.", "#f85149");
             return;
         }
@@ -2042,7 +2044,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         // toast on the next event-loop tick.
         QTimer::singleShot(0, this, [this] {
             flashMessage(QString::fromUtf8(
-                "You\xE2\x80\x99re in \xE2\x80\x94 your node is registered."));
+                "You\xE2\x80\x99re in \xE2\x80\x94 your username is registered."));
         });
         return true;
     }
@@ -2061,7 +2063,7 @@ void MainWindow::verifyWallet()
     const QString name = accountOwner();
     if (name.isEmpty()) {
         QMessageBox::information(this, "Join the network",
-                                 "Set your node name on the setup screen first.");
+                                 "Set your username on the setup screen first.");
         return;
     }
     if (ensureNodeAccount(name, m_solanaEdit ? m_solanaEdit->text().trimmed() : QString())) {

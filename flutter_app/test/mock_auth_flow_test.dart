@@ -182,7 +182,7 @@ void main() {
     expect(find.text('Continue with your ForkMesh account.'), findsOneWidget);
     expect(find.byKey(const ValueKey('forkmesh-auth-logo')), findsWidgets);
     expect(find.text('ForkMesh'), findsNothing);
-    expect(find.text('Email or node name'), findsOneWidget);
+    expect(find.text('Email or username'), findsOneWidget);
     expect(find.text('Password'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Continue'), findsOneWidget);
     expect(
@@ -208,7 +208,7 @@ void main() {
     expect(find.text('Create your account'), findsOneWidget);
     expect(find.text('Set your ForkMesh profile to continue.'), findsOneWidget);
     expect(find.text('ForkMesh'), findsNothing);
-    expect(find.text('Public node name'), findsOneWidget);
+    expect(find.text('Username'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Create account'), findsOneWidget);
 
     final primaryFrame = tester.widget<SizedBox>(
@@ -241,7 +241,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(authenticated, isFalse);
     expect(
-      find.text('Enter your email or node name and password.'),
+      find.text('Enter your email or username and password.'),
       findsOneWidget,
     );
 
