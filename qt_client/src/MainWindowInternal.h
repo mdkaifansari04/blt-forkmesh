@@ -3872,6 +3872,20 @@ inline QIcon statusDotIcon(bool online)
     return QIcon(pixmap);
 }
 
+// A small filled dot in an arbitrary color, used for the footer "Agents:"
+// status strip (adhoc #111) where each dot is colored via agentStatusColor().
+inline QIcon coloredDotIcon(const QColor &color, int diameter = 10)
+{
+    QPixmap pixmap(diameter, diameter);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(color);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(1, 1, diameter - 2, diameter - 2);
+    return QIcon(pixmap);
+}
+
 enum class PreviewSyntax {
     Plain,
     Markdown,
