@@ -3377,15 +3377,41 @@ void MainWindow::promptNewIssue()
         // signed "open" event to the source of truth's inbox; the owner merges it
         // into issues/ preserving us as the author, and it syncs back to mirrors.
         if (!store.canWrite()) {
-            if (!submitNewIssueToInbox(title, bodyEdit->markdown(), labels,
-                                       milestone, priority, assignees)) {
+            const QPointer<QWidget> pageGuard(page);
+            createButton->setEnabled(false);
+            setPageNotice("Sending your issue to the maintainer's inbox...");
+            const bool started = submitNewIssueToInbox(
+                title, bodyEdit->markdown(), labels, milestone, priority,
+                assignees,
+                [this, pageGuard, createButton, setPageNotice](bool ok,
+                                                                const QString &error) {
+                    // The compose page may have been cancelled/closed while the
+                    // POST was in flight — don't touch its (now-deleted) widgets.
+                    if (!pageGuard) {
+                        if (ok)
+                            setIssueInlineNotice(
+                                "Your signed issue was sent to the maintainer's "
+                                "inbox. It appears once they sync it.");
+                        return;
+                    }
+                    if (ok) {
+                        removeIssueComposePage();
+                        setIssueInlineNotice("Your signed issue was sent to the "
+                                             "maintainer's inbox. It appears once "
+                                             "they sync it.");
+                    } else {
+                        createButton->setEnabled(true);
+                        setPageNotice(error.isEmpty()
+                                          ? "Could not send the issue."
+                                          : "Could not send the issue: " + error,
+                                      true);
+                    }
+                });
+            if (!started) {
+                createButton->setEnabled(true);
                 setPageNotice("Open a repository you can reach to file an issue.",
                               true);
-                return;
             }
-            removeIssueComposePage();
-            setIssueInlineNotice("Your signed issue was sent to the maintainer's "
-                                 "inbox. It appears once they sync it.");
             return;
         }
 
@@ -3471,11 +3497,29 @@ void MainWindow::quickAddIssue()
             setIssueInlineNotice("Pick a repository to add issues.", true);
             return;
         }
-        if (submitNewIssueToInbox(title, QString(), {}, QString(), 0, {})) {
-            m_issueQuickAdd->clear();
-            setIssueInlineNotice("Your signed issue was sent to the maintainer's "
-                                 "inbox. It appears once they sync it.");
-        }
+        QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
+        quickAddGuard->setEnabled(false);
+        const bool started = submitNewIssueToInbox(
+            title, QString(), {}, QString(), 0, {},
+            [this, quickAddGuard, title](bool ok, const QString &) {
+                // submitNewIssueToInbox already flashes the failure toast; on
+                // success, clear the box now that the maintainer actually has
+                // it — clearing it up front (the old behavior) lost the draft
+                // if the submission silently failed.
+                if (!quickAddGuard)
+                    return;
+                quickAddGuard->setEnabled(true);
+                if (ok) {
+                    quickAddGuard->clear();
+                    setIssueInlineNotice("Your signed issue was sent to the "
+                                         "maintainer's inbox. It appears once "
+                                         "they sync it.");
+                } else {
+                    quickAddGuard->setPlainText(title);
+                }
+            });
+        if (!started)
+            quickAddGuard->setEnabled(true);
         return;
     }
     QString error;
@@ -6116,10 +6160,10 @@ void MainWindow::submitIssueAssigneesToInbox(int number,
     connect(reply, &QNetworkReply::finished, this, [reply] { reply->deleteLater(); });
 }
 
-bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body,
-                                       const QStringList &labels,
-                                       const QString &milestone, int priority,
-                                       const QStringList &assignees)
+bool MainWindow::submitNewIssueToInbox(
+    const QString &title, const QString &body, const QStringList &labels,
+    const QString &milestone, int priority, const QStringList &assignees,
+    std::function<void(bool ok, const QString &error)> onDone)
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
@@ -6163,11 +6207,20 @@ bool MainWindow::submitNewIssueToInbox(const QString &title, const QString &body
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, onDone] {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError)
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        // Don't claim success until the worker actually accepted the submission
+        // into its inbox — an optimistic "sent" message here left a rejected or
+        // dropped submission looking like it worked, with the real failure only
+        // ever shown as an easy-to-miss toast after the compose form had already
+        // closed (the issue never reaching the source of truth, silently).
+        if (!ok) {
             setIssueInlineNotice("Could not send the issue: " + reply->errorString(),
                                  true);
+        }
+        if (onDone)
+            onDone(ok, ok ? QString() : reply->errorString());
     });
     return true;
 }
