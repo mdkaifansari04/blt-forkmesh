@@ -7017,11 +7017,16 @@ async def accounts_handler(env, request):
         # claim, and let a node's own profile list the nodes linked to its user
         # account; node ownership is public catalog-adjacent data like the name
         # itself (same fields _account_public_payload already exposes).
+        # emailVerified is a boolean only (no address) so the dashboard's
+        # periodic self-profile poll (refreshPublicProfile, which reuses this
+        # same lookup) can pick up a verification that happened in another
+        # tab instead of showing "verify your email" forever (issue #320).
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
              "isAdmin": await _is_admin(env, rec.get("name", name)),
+             "emailVerified": bool(rec.get("email_verified")),
              "avatarPng": rec.get("avatar_png", ""),
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0),
