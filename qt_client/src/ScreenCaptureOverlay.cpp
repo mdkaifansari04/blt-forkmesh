@@ -110,8 +110,13 @@ public:
         setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                        Qt::WindowStaysOnTopHint | Qt::BypassWindowManagerHint);
         setAttribute(Qt::WA_DeleteOnClose);
-        // Transparent overlay: the live desktop shows through.
-        setAttribute(Qt::WA_TranslucentBackground);
+        // Freeze-frame mode paints an opaque pre-grabbed shot of this screen,
+        // so it needs no translucency. The translucent live overlay is only
+        // used when no such shot exists — and WA_TranslucentBackground only
+        // works under a compositing window manager: on a bare X11 session the
+        // "transparent" panel renders as solid black, blacking out the screen.
+        if (owner->m_frozen.isNull())
+            setAttribute(Qt::WA_TranslucentBackground);
         setMouseTracking(true);
         setGeometry(screenGeom);
         setCursor(cursor);
@@ -121,9 +126,25 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
-        // A near-invisible veil (alpha 1/255) over this screen guarantees the
-        // panel receives mouse events everywhere, without visibly dimming content.
-        painter.fillRect(rect(), QColor(0, 0, 0, 1));
+        if (!m_owner->m_frozen.isNull()) {
+            // Freeze-frame mode: paint this screen's slice of the desktop shot
+            // taken before the panels appeared. Visually indistinguishable from
+            // the live desktop, but independent of compositor translucency.
+            const QImage &frozen = m_owner->m_frozen;
+            const QRect &vg = m_owner->m_virtualGeom;
+            const double sx = double(frozen.width()) / vg.width();
+            const double sy = double(frozen.height()) / vg.height();
+            painter.drawImage(rect(), frozen,
+                              QRectF((m_screenGeom.x() - vg.x()) * sx,
+                                     (m_screenGeom.y() - vg.y()) * sy,
+                                     m_screenGeom.width() * sx,
+                                     m_screenGeom.height() * sy));
+        } else {
+            // A near-invisible veil (alpha 1/255) over this screen guarantees
+            // the panel receives mouse events everywhere, without visibly
+            // dimming content.
+            painter.fillRect(rect(), QColor(0, 0, 0, 1));
+        }
         if (!m_owner->m_dragging)
             return;
         // Map the global drag endpoints to this panel's local coordinate system.
@@ -207,6 +228,21 @@ ScreenCaptureOverlay::ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr,
                                             const QList<QScreen *> &screens)
     : QObject(nullptr), m_virtualGeom(virtualGeom), m_dpr(dpr)
 {
+    // Grab the desktop *before* any panel exists, and let the panels paint
+    // slices of that frozen shot instead of relying on translucency. Without a
+    // compositing window manager (common on bare X11 setups) translucent
+    // top-levels can't work — Qt renders them as solid black and every monitor
+    // goes dark the moment the tool opens. The frozen shot is opaque, so it
+    // looks like the desktop on any setup. Skip it on Wayland (direct grabs
+    // come back black there, and Wayland always composites, so the translucent
+    // live overlay is safe); likewise fall back to the live overlay if the
+    // grab was refused, which equally implies a compositor is present.
+    if (!runningOnWayland()) {
+        const QImage shot = compositeScreens();
+        if (!looksLikeFailedGrab(shot))
+            m_frozen = shot;
+    }
+
     const QCursor snip = makeSnipCursor();
     // Push an application-wide override so the snip cursor shows immediately
     // even between panel surfaces or before the first paint.
@@ -292,6 +328,14 @@ void ScreenCaptureOverlay::onEscape()
 
 void ScreenCaptureOverlay::beginCapture(const QRect &sel)
 {
+    // Freeze-frame mode: the capture comes from the shot taken before the
+    // panels ever appeared, so nothing of the overlay can bleed into it — crop
+    // and finish directly, no hide-and-regrab round trip.
+    if (!m_frozen.isNull()) {
+        finish(cropDesktop(m_frozen, sel));
+        return;
+    }
+
     // Selection is locked in — drop the snip cursor and hide all panels before
     // grabbing so neither the veil nor the marquee can bleed into the screenshot.
     popOverrideCursor();
