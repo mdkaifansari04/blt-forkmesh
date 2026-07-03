@@ -716,6 +716,97 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
     agentForm->addRow("Prioritize prompt", m_prioritizePromptEdit);
 
+    // Agent API spend/usage stats: moved out of the Agent sessions list (adhoc
+    // #118) so that tab only shows the session table and its toolbar.
+    auto *usageLabel = new QLabel("USAGE & SPEND");
+    usageLabel->setObjectName("sectionLabel");
+    auto *usageHint = new QLabel(
+        "Issue-assigned local OpenAI API and Claude API runs. Usage is estimated "
+        "from prompt and transcript size.");
+    usageHint->setObjectName("statusLine");
+    usageHint->setWordWrap(true);
+    m_agentOpenAiSpend = new QLabel("OpenAI spend this month: not yet refreshed");
+    m_agentOpenAiSpend->setObjectName("channelTitle");
+    m_agentOpenAiSpend->setWordWrap(true);
+    m_agentOpenAiSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentOpenAiCredit = new QLabel("OpenAI remaining credits: not yet refreshed");
+    m_agentOpenAiCredit->setObjectName("statusLine");
+    m_agentOpenAiCredit->setWordWrap(true);
+    m_agentOpenAiCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentApiKeyStatus = new QLabel("OpenAI usage refreshes automatically after each OpenAI API session.");
+    m_agentApiKeyStatus->setObjectName("statusLine");
+    m_agentApiKeyStatus->setWordWrap(true);
+    m_agentApiKeyStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentClaudeSpend = new QLabel("Claude spend this month: not yet refreshed");
+    m_agentClaudeSpend->setObjectName("channelTitle");
+    m_agentClaudeSpend->setWordWrap(true);
+    m_agentClaudeSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentClaudeCredit = new QLabel("Claude remaining credits: not yet refreshed");
+    m_agentClaudeCredit->setObjectName("statusLine");
+    m_agentClaudeCredit->setWordWrap(true);
+    m_agentClaudeCredit->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_agentClaudeStatus = new QLabel("Claude usage refreshes automatically after each Claude API session.");
+    m_agentClaudeStatus->setObjectName("statusLine");
+    m_agentClaudeStatus->setWordWrap(true);
+    m_agentClaudeStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto makeStatsRefreshButton = [](const QString &toolTip) {
+        auto *button = new QPushButton("Refresh");
+        button->setObjectName("ghostButton");
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(toolTip);
+        setOcticon(button, "sync", 16);
+        return button;
+    };
+    m_agentTestApiKeyButton =
+        makeStatsRefreshButton("Refresh OpenAI usage and spend");
+    connect(m_agentTestApiKeyButton, &QPushButton::clicked, this,
+            &MainWindow::testOpenAiAgentKey);
+    addRefreshSpin(m_agentTestApiKeyButton);
+    auto *claudeRefreshButton =
+        makeStatsRefreshButton("Refresh Claude usage and spend");
+    connect(claudeRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshClaudeSpend);
+    addRefreshSpin(claudeRefreshButton);
+    auto *openAiStatsRow = new QHBoxLayout;
+    openAiStatsRow->setContentsMargins(0, 0, 0, 0);
+    openAiStatsRow->setSpacing(8);
+    openAiStatsRow->addWidget(m_agentOpenAiSpend, 1);
+    openAiStatsRow->addWidget(m_agentTestApiKeyButton, 0, Qt::AlignTop);
+    auto *claudeStatsRow = new QHBoxLayout;
+    claudeStatsRow->setContentsMargins(0, 0, 0, 0);
+    claudeStatsRow->setSpacing(8);
+    claudeStatsRow->addWidget(m_agentClaudeSpend, 1);
+    claudeStatsRow->addWidget(claudeRefreshButton, 0, Qt::AlignTop);
+    m_agentTotalSpend = new QLabel("Total Agent API spend this month: not yet refreshed");
+    m_agentTotalSpend->setObjectName("channelTitle");
+    m_agentTotalSpend->setWordWrap(true);
+    m_agentTotalSpend->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *usageText = new QVBoxLayout;
+    usageText->setContentsMargins(0, 0, 0, 0);
+    usageText->setSpacing(4);
+    usageText->addLayout(openAiStatsRow);
+    usageText->addWidget(m_agentOpenAiCredit);
+    usageText->addWidget(m_agentApiKeyStatus);
+    usageText->addLayout(claudeStatsRow);
+    usageText->addWidget(m_agentClaudeCredit);
+    usageText->addWidget(m_agentClaudeStatus);
+    usageText->addWidget(m_agentTotalSpend);
+    m_agentLimitsLabel = new QLabel;
+    m_agentLimitsLabel->setObjectName("statusLine");
+    m_agentLimitsLabel->setWordWrap(true);
+    m_agentLimitsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    usageText->addWidget(m_agentLimitsLabel);
+    // Issue #115: restore the last-known spend figures immediately so they are
+    // visible on restart before any network refresh completes.
+    applyCachedSpendLabels();
+    refreshAgentLimitLabel();
+    // Tick once a minute so the countdowns stay current while the tab is open.
+    m_agentLimitsTimer = new QTimer(this);
+    m_agentLimitsTimer->setInterval(60 * 1000);
+    connect(m_agentLimitsTimer, &QTimer::timeout, this,
+            &MainWindow::refreshAgentLimitLabel);
+    m_agentLimitsTimer->start();
+
     // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
     // as the local "remote" a fork pushes to (see issue: fork from the client).
     auto *storageLabel = new QLabel("MIRROR STORAGE");
@@ -1096,6 +1187,10 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
+    agentsCol->addSpacing(6);
+    agentsCol->addWidget(usageLabel);
+    agentsCol->addWidget(usageHint);
+    agentsCol->addLayout(usageText);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);
