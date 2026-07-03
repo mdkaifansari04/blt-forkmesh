@@ -709,6 +709,15 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
+   its own labels). */
+QPushButton#shortcutCard {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    text-align: left;
+}
+QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b2129; }
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #0d1117;
@@ -1703,6 +1712,15 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
+   its own labels). */
+QPushButton#shortcutCard {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    text-align: left;
+}
+QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8fa; }
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #ffffff;
