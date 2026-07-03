@@ -2706,13 +2706,12 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             m_pendingAutoOpenRepoKey.compare(
                                 repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
                             m_pendingAutoOpenRepoKey.clear();
-                            // Select the flagship repo (the repo switcher then reads
-                            // it off m_repoDetailIndex), but land the new node on the
-                            // shared #welcome chat rather than an unfamiliar Code view
-                            // (adhoc #128) — openRepoDetailDeferred settles on its own
-                            // event-loop turn, so queue the chat switch one turn behind
-                            // it, same as restoreNavEntry's post-open follow-up.
-                            openRepoDetailDeferred(index);
+                            // On a fresh install, land on the #welcome chat, not the
+                            // Code view. Just select the repo internally (so the repo
+                            // switcher shows "forkmesh") and refresh the UI; don't open
+                            // the detail view which would load and show the Agents tab.
+                            m_repoDetailIndex = index;
+                            refreshRepositoryList();
                             QTimer::singleShot(0, this, [this] {
                                 showChatView();
                                 switchConversation(kWelcomeChannel);
