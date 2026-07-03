@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/fm_icons.dart';
-import 'package:forkmesh/fm_icons.dart';
 import 'package:forkmesh/main.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/auth_mock_flow.dart';
