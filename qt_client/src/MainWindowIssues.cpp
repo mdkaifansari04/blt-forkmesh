@@ -6422,9 +6422,21 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                         }
                     }
                     if (matched) {
-                        startAgentForIssue(candidate, defaultAgentProvider(),
-                                           /*createPr=*/true, /*quiet=*/true,
-                                           QString(), &repo);
+                        // A redelivered inbox item (e.g. the previous drain's ack
+                        // delete failed after a successful merge) would otherwise
+                        // start a second agent on the same issue — skip if one is
+                        // already recorded on it.
+                        bool alreadyAssigned = false;
+                        for (const IssueEvent &e : candidate.events) {
+                            if (e.type == QLatin1String("agent") && e.agentSessionId > 0) {
+                                alreadyAssigned = true;
+                                break;
+                            }
+                        }
+                        if (!alreadyAssigned)
+                            startAgentForIssue(candidate, defaultAgentProvider(),
+                                               /*createPr=*/true, /*quiet=*/true,
+                                               QString(), &repo);
                         break;
                     }
                 }
