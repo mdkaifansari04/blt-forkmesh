@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 349
 title: this forkmesh_autogen .cpp file looks weird lets make that look like the other source files so the build looks clean
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
