@@ -743,6 +743,13 @@
     return /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value || ""));
   }
 
+  // A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) — the
+  // value the desktop app's own profile card labels "Node ID" (issue #351),
+  // so the claim-node input below must accept it alongside the account name.
+  function validNodePubkey(value) {
+    return /^[A-Za-z0-9_-]{43}$/.test(String(value || ""));
+  }
+
   function setRenameStatus(text, cls) {
     setProfilePageHint("[data-profile-rename-status]", text, cls);
   }
@@ -1052,9 +1059,11 @@
 
   async function claimNode() {
     const input = $("[data-claim-node-input]");
-    const nodeId = (input?.value || "").trim().toLowerCase();
+    // Not lowercased up front: a node's public-key ID is case-sensitive, and
+    // only the plain-name form is meant to be case-insensitive.
+    const nodeId = (input?.value || "").trim();
     const password = profilePassword("[data-claim-node-password]");
-    if (!validNodeName(nodeId)) {
+    if (!validNodeName(nodeId.toLowerCase()) && !validNodePubkey(nodeId)) {
       setProfilePageHint("[data-claim-node-status]", "Enter a valid node ID.", "bad");
       return;
     }
