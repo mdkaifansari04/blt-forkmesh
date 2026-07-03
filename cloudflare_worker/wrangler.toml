@@ -14,6 +14,10 @@ crons = ["* * * * *"]
 
 [assets]
 directory = "./public"
+# Exposes the assets binding as env.ASSETS so the Worker can fetch
+# dashboard/index.html directly for /dashboard/* deep links (see the
+# run_worker_first entry below) instead of it being undefined at runtime.
+binding = "ASSETS"
 html_handling = "none"
 # Unknown public asset paths should return public/404.html instead of the
 # homepage SPA shell. Real assets and explicit _redirects rewrites still win.

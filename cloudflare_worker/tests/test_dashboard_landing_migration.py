@@ -1033,6 +1033,15 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
         assert mock not in chat_js
 
 
+def test_dashboard_deep_link_assets_binding_is_wired_up():
+    # entry.py's /dashboard/* fallback (run_worker_first) calls
+    # self.env.ASSETS.fetch(...) to serve the SPA shell for deep links like
+    # /dashboard/owner/repo. Without an explicit binding name, env.ASSETS is
+    # undefined and that call throws, 500ing every such request.
+    assert WRANGLER["assets"].get("binding") == "ASSETS"
+    assert 'self.env.ASSETS.fetch(' in ENTRY_TEXT
+
+
 def test_clean_marketing_routes_target_static_pages():
     for redirect in (
         "/dashboard /dashboard/index.html 200",
