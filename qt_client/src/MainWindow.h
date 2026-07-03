@@ -507,6 +507,12 @@ private:
     // this account's key, so the new node is attached to this user.
     void promptHostLinkCode(const QString &code);
     void submitHostLinkCode(const QString &code);
+    // "Log in as a user" from the node profile: this node holds its own key, so
+    // proving the user's password lets the relay attach this node to that user
+    // (users can own many nodes). promptLinkNodeToUser asks for the credentials;
+    // submitLinkNodeToUser signs with this node's key and POSTs link-self.
+    void promptLinkNodeToUser();
+    void submitLinkNodeToUser(const QString &identifier, const QString &password);
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
@@ -716,6 +722,7 @@ private:
     QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
     void refreshProfileHostingStats(); // rebuild the per-repo hosting lines
+    void refreshProfileAccountStatus(); // "USER ACCOUNT" section: link state + CTA
     void rescaleProfileAvatar();       // re-render the full-width avatar banner
     void hideNodeProfile();
     void checkNodeBalance();
@@ -4003,6 +4010,13 @@ private:
     QLabel *m_profileDetails = nullptr;
     QLabel *m_profileMirrorsLabel = nullptr;
     QLabel *m_profileMirrors = nullptr;
+    // "USER ACCOUNT" section (self only): shows whether this node is linked to a
+    // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
+    // owning user's name (empty = unlinked), learned from account lookups.
+    QWidget *m_profileAccountSection = nullptr;
+    QLabel *m_profileAccountStatus = nullptr;
+    QPushButton *m_profileLinkUserButton = nullptr;
+    QString m_nodeOwnerUser;
     QLabel *m_profileNote = nullptr;
     // Headline stat tiles (self only): repos / mirrored / online / chats.
     QWidget *m_profileStatGrid = nullptr;

@@ -4968,6 +4968,60 @@ async def _account_link_node(env, request):
                           "user": user}, status=202)
 
 
+async def _account_link_self(env, request):
+    # A node links ITSELF to a user account, driven from that node's own desktop
+    # app ("Log in as a user" in the node profile). The request proves BOTH
+    # secrets at once: control of the node's key (Ed25519 signature) and the
+    # user's credentials (identifier + password), so the link completes
+    # immediately with no confirmation code — holding both IS the authorization.
+    # This is the in-app counterpart to the website's claim-node/claim-confirm
+    # code flow, which only proves the password and needs the on-node code to
+    # prove the claimer can see the machine.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(node_name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    identifier = clean_string(
+        data.get("identifier", "") or data.get("email", "") or
+        data.get("user", ""), 254).strip().lower()
+    canonical = ("forkmesh-link-self-v1\n" + node_name + "\n" + identifier +
+                 "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    # Only now spend a password verification (the node signature gates it).
+    _, user_rec = await _resolve_user_by_password(env, data)
+    if not user_rec:
+        return json_response({"error": "invalid_credentials"}, status=401)
+    user_name = user_rec.get("name", "")
+    if node_name == user_name:
+        return json_response({"error": "cannot_link_self"}, status=400)
+    if _account_kind(node_rec) != "node":
+        # An account that can log in is a user in its own right, not linkable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if node_rec.get("owner") == user_name:
+        return json_response({"ok": True, "linked": True, "alreadyLinked": True,
+                              "nodeId": node_name, "user": user_name,
+                              "nodes": _owned_nodes(user_rec)})
+    if node_rec.get("owner"):
+        return json_response({"error": "node_already_owned"}, status=409)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, user_name)
+    _, fresh_user = await _account_row(env, user_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "user": user_name,
+                          "nodes": _owned_nodes(fresh_user or user_rec)})
+
+
 async def _login_locked_until(env, id_bi):
     # Returns the lock-expiry ms if the identifier is currently locked, else 0.
     row = await d1_first(
@@ -6808,6 +6862,8 @@ async def accounts_handler(env, request):
         return await _account_claim_confirm(env, request)
     if url.path == "/api/accounts/link-node" and method == "POST":
         return await _account_link_node(env, request)
+    if url.path == "/api/accounts/link-self" and method == "POST":
+        return await _account_link_self(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
