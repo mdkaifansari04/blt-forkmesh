@@ -78,9 +78,12 @@ def test_missing_required_fields_still_rejected():
 # produced by the Qt client and verified by the worker, so the canonical string
 # must match byte-for-byte on both sides; these tests pin that contract (and the
 # owner-scoped SQL) so a one-sided edit can't silently break it.
-QT_MAIN = Path(__file__).resolve().parents[2] / "qt_client" / "src" / "MainWindow.cpp"
+# MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
+QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-QT_TEXT = QT_MAIN.read_text(encoding="utf-8") if QT_MAIN.exists() else ""
+QT_TEXT = "\n".join(
+    p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
+)
 
 
 def test_listing_token_canonical_matches_across_worker_and_client():
