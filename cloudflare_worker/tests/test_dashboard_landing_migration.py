@@ -971,7 +971,8 @@ def test_worker_and_desktop_host_route_live_repository_branches():
         'else if (op == "branches")',
         'streamRawBlob(reqId, path, branch);',
         'reply = buildTreeReply(path, branch);',
-        'reply = buildBlobReply(path, branch);',
+        # Blob replies build off-thread so large files don't stall the GUI.
+        'return blobReplyFor(mirrorPath, path, branch);',
         'reply = buildCommitsReply(branch);',
         'reply = buildBranchesReply();',
         '"for-each-ref"',

@@ -190,6 +190,8 @@ if(FORKMESH_BUILD_TESTS)
     qt_add_executable(forkmesh-tests
         tests/test_crypto.cpp
         resources/icons.qrc
+        src/BackoffNetworkAccessManager.h
+        src/BackoffNetworkAccessManager.cpp
         src/ActionFile.h
         src/ActionFile.cpp
         src/ForkMeshIdentity.h
