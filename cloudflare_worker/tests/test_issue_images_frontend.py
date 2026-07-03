@@ -52,9 +52,12 @@ def test_attachment_budget_fits_inside_the_worker_issue_cap():
     # (45 KB raw -> 60 KB encoded of the 64 KB cap); don't let it shrink.
     assert max_issue_bytes - max_total * 4 / 3 >= 4 * 1024
 
-    # Both guards are actually enforced per selection: per-file and cumulative.
-    assert ("file.size > ISSUE_IMAGE_MAX_BYTES || "
-            "total + file.size > ISSUE_IMAGE_MAX_TOTAL_BYTES") in DASHBOARD_JS
+    # The guards are actually enforced per selection: a hard raw-size cap, the
+    # count cap, and a remaining-budget computation that feeds the crop/resize
+    # flow for anything that would blow the shared total.
+    assert "file.size > ISSUE_IMAGE_RAW_MAX_BYTES" in DASHBOARD_JS
+    assert ("const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, "
+            "ISSUE_IMAGE_MAX_TOTAL_BYTES - total);") in DASHBOARD_JS
     assert "images.length >= ISSUE_IMAGE_MAX_COUNT" in DASHBOARD_JS
 
 
@@ -71,7 +74,9 @@ def test_body_carries_placeholders_until_signing():
         DASHBOARD_JS.index("function renderRepoDetail")
     ]
     assert "body = body.split(img.id).join(img.dataUrl);" in submit
-    assert "await submitWebIssue(repo, title, body);" in submit
+    # The swapped body (not the raw textarea value) is what gets submitted;
+    # the trailing args carry the agent-assign flow (adhoc #105).
+    assert "await submitWebIssue(repo, title, body" in submit
     # And the queue resets after a successful send.
     assert "images.length = 0;" in submit
 
@@ -82,8 +87,14 @@ def test_removing_a_chip_also_strips_its_placeholder_from_the_body():
             ".join(\"\\n\")") in DASHBOARD_JS
 
 
-def test_oversize_rejection_names_the_shared_limit():
-    # The hint explains WHY the file was rejected (shared 64 KB issue budget),
-    # and the server-side issue_too_large error mentions the images too.
-    assert "attached images share the issue's 64 KB size limit" in DASHBOARD_JS
+def test_oversize_images_get_the_resize_flow_not_a_flat_rejection():
+    # An image over the remaining budget opens the crop/compress modal instead
+    # of bouncing; only an exhausted budget or the hard raw cap rejects, and
+    # both hints say why. The server-side issue_too_large error still mentions
+    # the images too.
+    assert "openImageResizeModal(file, budget)" in DASHBOARD_JS
+    assert "crop or compress it to fit under" in DASHBOARD_JS
+    assert ("Attached images already use up the issue's size limit"
+            in DASHBOARD_JS)
+    assert "is too large to attach (max" in DASHBOARD_JS
     assert "please shorten it or attach smaller images" in DASHBOARD_JS

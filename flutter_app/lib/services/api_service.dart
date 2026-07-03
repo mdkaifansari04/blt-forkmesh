@@ -3,17 +3,25 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
+import 'performance_monitor_service.dart';
 import 'settings_service.dart';
 
 /// Read access to the relay/worker REST API (the same endpoints the Qt client
 /// and the website use): the public catalog, per-repo issues/pulls/commits, and
 /// network stats. Derives the https host from the configured relay URL.
 class ApiService {
-  ApiService(this._settings);
+  ApiService(this._settings, {PerformanceMonitorService? performanceMonitor})
+    : _performanceMonitor = performanceMonitor;
 
   static const cacheTtl = Duration(minutes: 1);
+  static const offlineRepoTtl = Duration(minutes: 1);
+  static const catalogTtl = Duration(seconds: 30);
 
   final SettingsService _settings;
+  final PerformanceMonitorService? _performanceMonitor;
+  _CacheEntry<List<Repository>>? _repositoriesCache;
+  _CacheEntry<NetworkStats>? _networkStatsCache;
+  final Map<String, DateTime> _offlineRepoUntil = {};
   final Map<String, _CacheEntry<RepoTree>> _treeCache = {};
   final Map<String, _CacheEntry<RepoBlob>> _blobCache = {};
   final Map<String, _CacheEntry<List<Issue>>> _issuesCache = {};
@@ -29,6 +37,12 @@ class ApiService {
     _pullsCache.remove('$owner/$name');
     _discussionsCache.remove('$owner/$name');
     _commitsCache.remove('$owner/$name');
+    _offlineRepoUntil.remove('$owner/$name');
+  }
+
+  bool _isFresh<T>(_CacheEntry<T>? entry, Duration ttl) {
+    if (entry == null) return false;
+    return DateTime.now().difference(entry.createdAt) < ttl;
   }
 
   Uri _base(String path, [Map<String, String>? query]) {
@@ -45,6 +59,18 @@ class ApiService {
 
   Uri rawUri(String owner, String name, String path) =>
       _base('/api/repo/$owner/$name/raw', {'path': path});
+
+  Exception? _repoOfflineError(String repoKey) {
+    final until = _offlineRepoUntil[repoKey];
+    if (until == null) return null;
+    if (DateTime.now().isBefore(until)) {
+      return Exception(
+        'Repo host is offline. Skipping refetch for a minute; tap Retry after reconnecting the desktop host.',
+      );
+    }
+    _offlineRepoUntil.remove(repoKey);
+    return null;
+  }
 
   Future<T> _cached<T>(
     Map<String, _CacheEntry<T>> cache,
@@ -66,21 +92,35 @@ class ApiService {
   }
 
   Future<List<Repository>> repositories() async {
-    final data = await _getJson(_base('/api/repositories'));
-    final list = _asList(data);
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map(Repository.fromJson)
-        .where((r) => r.owner.isNotEmpty && r.name.isNotEmpty)
-        .toList();
+    if (_isFresh(_repositoriesCache, catalogTtl)) {
+      return _repositoriesCache!.future;
+    }
+    final future = () async {
+      final data = await _getJson(_base('/api/repositories'));
+      final list = _asList(data);
+      return list
+          .whereType<Map<String, dynamic>>()
+          .map(Repository.fromJson)
+          .where((r) => r.owner.isNotEmpty && r.name.isNotEmpty)
+          .toList();
+    }();
+    _repositoriesCache = _CacheEntry(future, DateTime.now());
+    return future;
   }
 
   Future<NetworkStats> networkStats() async {
-    try {
-      final data = await _getJson(_base('/api/network/stats'));
-      if (data is Map<String, dynamic>) return NetworkStats.fromJson(data);
-    } catch (_) {}
-    return NetworkStats();
+    if (_isFresh(_networkStatsCache, catalogTtl)) {
+      return _networkStatsCache!.future;
+    }
+    final future = () async {
+      try {
+        final data = await _getJson(_base('/api/network/stats'));
+        if (data is Map<String, dynamic>) return NetworkStats.fromJson(data);
+      } catch (_) {}
+      return NetworkStats();
+    }();
+    _networkStatsCache = _CacheEntry(future, DateTime.now());
+    return future;
   }
 
   Future<List<Issue>> issues(String owner, String name) async {
@@ -106,7 +146,10 @@ class ApiService {
   }
 
   Future<RepoTree> tree(String owner, String name, {String path = ''}) {
-    final key = '$owner/$name:$path';
+    final repoKey = '$owner/$name';
+    final offline = _repoOfflineError(repoKey);
+    if (offline != null) return Future<RepoTree>.error(offline);
+    final key = '$repoKey:$path';
     return _cached(_treeCache, key, () async {
       final data = await _getJson(
         _base('/api/repo/$owner/$name/tree', {'path': path}),
@@ -116,7 +159,10 @@ class ApiService {
   }
 
   Future<RepoBlob> blob(String owner, String name, String path) {
-    final key = '$owner/$name:$path';
+    final repoKey = '$owner/$name';
+    final offline = _repoOfflineError(repoKey);
+    if (offline != null) return Future<RepoBlob>.error(offline);
+    final key = '$repoKey:$path';
     return _cached(_blobCache, key, () async {
       final data = await _getJson(
         _base('/api/repo/$owner/$name/blob', {'path': path}),
@@ -437,36 +483,66 @@ class ApiService {
     return const [];
   }
 
+  String? _repoKeyFromPath(String path) {
+    final parts = path.split('/').where((p) => p.isNotEmpty).toList();
+    if (parts.length >= 4 && parts[0] == 'api' && parts[1] == 'repo') {
+      return '${parts[2]}/${parts[3]}';
+    }
+    return null;
+  }
+
   Future<dynamic> _getJson(Uri uri) async {
-    http.Response? resp;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      resp = await http
-          .get(uri, headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 20));
-      if (resp.statusCode < 500 || attempt == 1) break;
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+    final monitor = _performanceMonitor;
+    Future<dynamic> load() async {
+      http.Response? resp;
+      for (var attempt = 0; attempt < 2; attempt++) {
+        resp = await http
+            .get(uri, headers: {'Accept': 'application/json'})
+            .timeout(
+              Duration(seconds: uri.path.contains('/api/repo/') ? 8 : 12),
+            );
+        if (resp.statusCode < 500 || resp.statusCode == 503 || attempt == 1) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      resp!;
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        if (resp.body.isEmpty) return const [];
+        return jsonDecode(resp.body);
+      }
+      if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
+        final repoKey = _repoKeyFromPath(uri.path);
+        if (repoKey != null) {
+          _offlineRepoUntil[repoKey] = DateTime.now().add(offlineRepoTtl);
+        }
+        throw Exception(
+          'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
+        );
+      }
+      if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
+        throw Exception(
+          'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
+        );
+      }
+      if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
+        throw Exception(
+          'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
+        );
+      }
+      throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
     }
-    resp!;
-    if (resp.statusCode >= 200 && resp.statusCode < 300) {
-      if (resp.body.isEmpty) return const [];
-      return jsonDecode(resp.body);
-    }
-    if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
-      throw Exception(
-        'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
-      );
-    }
-    if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
-      throw Exception(
-        'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
-      );
-    }
-    if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
-      throw Exception(
-        'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
-      );
-    }
-    throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
+
+    if (monitor == null) return load();
+    return monitor.track(
+      'api.GET ${uri.path}',
+      load,
+      details: {
+        'host': uri.host,
+        'path': uri.path,
+        if (uri.query.isNotEmpty) 'query': uri.query,
+      },
+    );
   }
 }
 

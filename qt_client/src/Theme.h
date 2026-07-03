@@ -25,8 +25,11 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         return "#ffffff";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
-    if (objectName == QStringLiteral("repoTab"))
+    if (objectName == QStringLiteral("repoTab") ||
+        objectName == QStringLiteral("socialIconButton"))
         return dark ? "#8b949e" : "#656d76";
+    if (objectName == QStringLiteral("quickAddSendIcon"))
+        return dark ? "#3fb950" : "#1a7f37";
     return dark ? "#e6edf3" : "#1f2328";
 }
 
@@ -86,6 +89,24 @@ QSpinBox::up-button, QSpinBox::down-button { width: 0; }
 QComboBox QAbstractItemView {
     background-color: #161b22; border: 1px solid #30363d;
     selection-background-color: #1f6feb; color: #e6edf3;
+}
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+    border: none;
+    background-color: transparent;
+    padding: 0px 4px 0px 8px;
+}
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+    border: none;
+    background-color: rgba(88, 166, 255, 0.08);
+}
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+    image: url(:/icons/octicons/chevron-down.svg);
+    width: 16px;
+    height: 16px;
 }
 
 QPushButton {
@@ -149,6 +170,12 @@ QPushButton#socialButton {
     font-weight: 600; padding: 8px 12px;
 }
 QPushButton#socialButton:hover { color: #e6edf3; border-color: #6e7681; }
+/* Compact icon-only social buttons, stacked beside the donate button (adhoc #117). */
+QPushButton#socialIconButton {
+    background: transparent; border: 1px solid #30363d; color: #8b949e;
+    border-radius: 6px; padding: 0;
+}
+QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #footerGitIdentity { color: #8b949e; font-size: 12px; }
 
 /* --- Nav rail --- */
@@ -438,6 +465,19 @@ QPushButton#memberDeleteButton:hover {
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#promptWrapper {
+    background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
+}
+#promptWrapper:focus-within { border-color: #39d353; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #3fb950;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
 #issueSearch {
     background-color: #0d1117; border: 1px solid #30363d;
     border-radius: 6px; padding: 6px 10px;
@@ -559,13 +599,12 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #0d1117; color: #8b949e; font-size: 12px;
     padding: 0 18px;
 }
-#messageRow:hover { background-color: #161b22; }
 #messageText { color: #e6edf3; }
 #fileChip {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
 }
 #reactionChip {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    background-color: #161b22; border: 1px solid #21262d; border-radius: 18px;
     padding: 2px 9px; font-size: 12px; color: #e6edf3;
 }
 #reactionChip:hover { border-color: #58a6ff; background-color: #1c2433; }
@@ -580,10 +619,11 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #21262d; }
 #messageAction {
-    background: transparent; border: 1px solid #30363d; border-radius: 6px;
+    background: transparent; border: none; border-radius: 6px;
     color: #8b949e; font-size: 11px; padding: 2px 7px;
 }
-#messageAction:hover { color: #e6edf3; border-color: #58a6ff; }
+#messageAction:hover { color: #e6edf3; }
+#messageAction::menu-indicator { image: none; width: 0; }
 #iconButton {
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
@@ -702,6 +742,15 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
+   its own labels). */
+QPushButton#shortcutCard {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    text-align: left;
+}
+QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b2129; }
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #0d1117;
@@ -724,10 +773,42 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 68px;
+    max-height: 68px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
+#promptWrapper {
+    background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
+}
+#promptWrapper:focus-within { border-color: #39d353; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+    min-height: 68px; max-height: 68px;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #3fb950;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
+   a green filled checkmark instead of the generic blue-filled indicator, and the
+   Agent controls sit in a thin bordered box centred in the bar. */
+QCheckBox#quickAddAutoCheck::indicator,
+QCheckBox#quickAddCreateIssueCheck::indicator,
+QCheckBox#quickAddAgentCheck::indicator {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 2px solid #30363d; background: #0d1117;
+}
+QCheckBox#quickAddAutoCheck::indicator:checked,
+QCheckBox#quickAddCreateIssueCheck::indicator:checked,
+QCheckBox#quickAddAgentCheck::indicator:checked {
+    border-color: #2ea043; background: #2ea043;
+    image: url(:/icons/octicons/check-white.svg);
+}
+#quickAddAgentBox {
+    border: 1px solid #30363d; border-radius: 6px; background: transparent;
+}
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1101,6 +1182,24 @@ QComboBox QAbstractItemView {
     background-color: #ffffff; border: 1px solid #d0d7de;
     selection-background-color: #0969da; selection-color: #ffffff; color: #1f2328;
 }
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector {
+    border: none;
+    background-color: transparent;
+    padding: 0px 4px 0px 8px;
+}
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus {
+    border: none;
+    background-color: rgba(9, 105, 218, 0.08);
+}
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow {
+    image: url(:/icons/octicons/chevron-down.svg);
+    width: 16px;
+    height: 16px;
+}
 
 QPushButton {
     background-color: #f6f8fa;
@@ -1451,6 +1550,19 @@ QPushButton#memberDeleteButton:hover {
     border-radius: 6px; padding: 8px 10px; font-size: 13px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#promptWrapper {
+    background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
+}
+#promptWrapper:focus-within { border-color: #1a7f37; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #1a7f37;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
 #issueSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 6px 10px;
@@ -1553,13 +1665,12 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; color: #656d76; font-size: 12px;
     padding: 0 18px;
 }
-#messageRow:hover { background-color: #f6f8fa; }
 #messageText { color: #1f2328; }
 #fileChip {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
 }
 #reactionChip {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px;
+    background-color: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 18px;
     padding: 2px 9px; font-size: 12px; color: #1f2328;
 }
 #reactionChip:hover { border-color: #0969da; background-color: #eef4fb; }
@@ -1574,10 +1685,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #eaeef2; }
 #messageAction {
-    background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
+    background: transparent; border: none; border-radius: 6px;
     color: #656d76; font-size: 11px; padding: 2px 7px;
 }
-#messageAction:hover { color: #1f2328; border-color: #0969da; }
+#messageAction:hover { color: #1f2328; }
+#messageAction::menu-indicator { image: none; width: 0; }
 #iconButton {
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
@@ -1696,6 +1808,15 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
+/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
+   its own labels). */
+QPushButton#shortcutCard {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    text-align: left;
+}
+QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8fa; }
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #ffffff;
@@ -1718,10 +1839,41 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 68px;
+    max-height: 68px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
+#promptWrapper {
+    background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
+}
+#promptWrapper:focus-within { border-color: #1a7f37; }
+#promptWrapper #issueQuickAdd {
+    background: transparent; border: none; border-radius: 0;
+    min-height: 68px; max-height: 68px;
+}
+#promptWrapper #issueQuickAdd:focus { border: none; }
+QPushButton#quickAddSendIcon {
+    background: transparent; border: none; color: #1a7f37;
+    padding: 4px; border-radius: 4px;
+}
+QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
+   rationale — green filled checkmark indicators plus a thin bordered Agent box. */
+QCheckBox#quickAddAutoCheck::indicator,
+QCheckBox#quickAddCreateIssueCheck::indicator,
+QCheckBox#quickAddAgentCheck::indicator {
+    width: 16px; height: 16px; border-radius: 4px;
+    border: 2px solid #d0d7de; background: #ffffff;
+}
+QCheckBox#quickAddAutoCheck::indicator:checked,
+QCheckBox#quickAddCreateIssueCheck::indicator:checked,
+QCheckBox#quickAddAgentCheck::indicator:checked {
+    border-color: #1a7f37; background: #1a7f37;
+    image: url(:/icons/octicons/check-white.svg);
+}
+#quickAddAgentBox {
+    border: 1px solid #d0d7de; border-radius: 6px; background: transparent;
+}
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

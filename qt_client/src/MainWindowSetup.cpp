@@ -1584,6 +1584,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -1666,6 +1667,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -1723,6 +1725,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     m_accountName = accountName;
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
+    m_nodeOwnerUser = fresp.value("owner").toString(); // set if a link code linked it
     QSettings().setValue(kAuthedAccountSetting, accountName);
     QSettings().setValue(kAccountNameSetting, accountName);
     applyAccountEmailVerified(accountName, fresp.value("emailVerified").toBool());
@@ -2172,7 +2175,7 @@ void MainWindow::styleFooterUpdateLog()
     const QString hover = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
-                       "border-top:1px solid %2;background:%3;"
+                       "border-right:1px solid %2;background:%3;"
                        "font-family:monospace;font-size:11px;padding:3px 12px;"
                        "text-align:left;}"
                        "QPushButton#footerUpdateLog:hover{color:%4;}")
@@ -2396,6 +2399,10 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                       QDir::tempPath(), [this, appPath] {
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
+            // Release the instance lock first so the replacement process (which
+            // runs as a different user here, but may still share this user's
+            // data on a single-user box) doesn't bounce off it before we quit.
+            forkmesh::releaseSingleInstance();
             QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
             logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
             QCoreApplication::quit();
@@ -2422,6 +2429,10 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
                               QFile::ExeOther);
     }
     setUpdateStatus("Relaunching...");
+    // Release the instance lock before spawning the replacement process, or it
+    // bounces off the still-held lock (this process hasn't unwound yet) and
+    // exits into nothing instead of taking over.
+    forkmesh::releaseSingleInstance();
     QProcess::startDetached(appPath, {});
     logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
     QCoreApplication::quit();

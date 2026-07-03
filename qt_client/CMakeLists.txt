@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.37 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.39 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -52,6 +52,8 @@ set(FORKMESH_APP_SOURCES
     src/CrashHandler.cpp
     src/PlatformLogFilter.h
     src/PlatformLogFilter.cpp
+    src/SingleInstance.h
+    src/SingleInstance.cpp
     src/Theme.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
@@ -143,6 +145,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowRepoDetail.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
+    src/MainWindowShortcuts.cpp
     src/MainWindowSettings.cpp
     src/MainWindowData.cpp
     src/MainWindowMessages.cpp

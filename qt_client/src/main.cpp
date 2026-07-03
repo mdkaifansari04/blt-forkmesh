@@ -3,11 +3,14 @@
 #include "MainWindow.h"
 #include "PlatformLogFilter.h"
 #include "ServerNode.h"
+#include "SingleInstance.h"
 #include "Theme.h"
 
 #include <QApplication>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QMessageBox>
@@ -98,6 +101,40 @@ int main(int argc, char *argv[])
     QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
     app.setStyle(QStyleFactory::create("Fusion"));
 
+    // Refuse to run a second instance for this user. This is the actual fix for
+    // "a new ForkMesh window opens seemingly at random": every trigger for that
+    // (a desktop session restore, a login-autostart entry racing a manually
+    // opened window, a double-click landing while a slow cold start is still
+    // loading) used to hand back a brand new, fully independent process — its
+    // own mesh backend and repo-hosting server reading/writing the same
+    // ~/.forkmesh data out from under the first one. Now a duplicate launch
+    // just raises the existing window and exits.
+    if (!forkmesh::acquireSingleInstance()) {
+        qInfo().noquote()
+            << "ForkMesh is already running; focusing the existing window.";
+        return 0;
+    }
+
+    // Bundle a colour-emoji font so 🎉/🙊/✅ paint in full colour in chat
+    // messages (and everywhere else) even on systems that ship no colour-emoji
+    // font of their own (common on Linux). Registering it and appending it to
+    // the application font's fallback family list makes Qt render colour glyphs
+    // for any emoji codepoint the primary UI family is missing, rather than the
+    // flat black-and-white boxes seen without it.
+    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
+    {
+        QFont base = app.font();
+        QStringList families{base.family()};
+        for (const QString &emoji : {QStringLiteral("Noto Color Emoji"),
+                                     QStringLiteral("Apple Color Emoji"),
+                                     QStringLiteral("Segoe UI Emoji")}) {
+            if (!families.contains(emoji))
+                families << emoji;
+        }
+        base.setFamilies(families);
+        app.setFont(base);
+    }
+
     // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
     // default on the desktop but on for headless installs done from the Hosts
     // tab, so an operator can monitor the servers they provisioned. Seed the
@@ -173,6 +210,15 @@ int main(int argc, char *argv[])
     window.setHeadlessMode(headless);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
+    // A later launch attempt bounces off acquireSingleInstance() above and
+    // pings us instead; raise and focus our window in response.
+    forkmesh::onSingleInstanceActivation([&window] {
+        window.setWindowState((window.windowState() & ~Qt::WindowMinimized) |
+                              Qt::WindowActive);
+        window.show();
+        window.raise();
+        window.activateWindow();
+    });
     // show() works under the offscreen platform too (rendering to an offscreen
     // surface) and drives the same deferred-startup path — including the
     // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
