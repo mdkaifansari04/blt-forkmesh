@@ -3741,7 +3741,6 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         // Claude Code renders as a native stream-json transcript; the typed
         // prompt is its task verbatim.
         startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
-        switchToAgentsTab(session.id);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
