@@ -64,6 +64,8 @@
         <file alias="upload.svg">icons/octicons/upload.svg</file>
         <file alias="workflow.svg">icons/octicons/workflow.svg</file>
         <file alias="x.svg">icons/octicons/x.svg</file>
+        <file alias="reddit.svg">icons/octicons/reddit.svg</file>
+        <file alias="twitter-bird.svg">icons/octicons/twitter-bird.svg</file>
     </qresource>
     <qresource prefix="/app">
         <file alias="forkmesh.png">icons/forkmesh.png</file>
