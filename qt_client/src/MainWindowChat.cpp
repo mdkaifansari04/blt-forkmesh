@@ -2154,6 +2154,11 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
+    // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
+    mainRow->addWidget(cpuChart);
+    mainRow->addWidget(memChart);
+    mainRow->addWidget(diskChart);
+    mainRow->addSpacing(8);
     // Donate button + the vertically-stacked Reddit/X icons, sat just left of the
     // account cluster (adhoc #117).
     mainRow->addWidget(donateButton);
@@ -2199,11 +2204,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addSpacing(16);
-    // Live CPU/MEM/DISK sparklines + the diagnostics glyph, moved up from the
-    // footer (adhoc #117).
-    navRow->addWidget(cpuChart);
-    navRow->addWidget(memChart);
-    navRow->addWidget(diskChart);
+    // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
     navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
     // Right-aligned so they sit under the top-right avatar; the pencil and
