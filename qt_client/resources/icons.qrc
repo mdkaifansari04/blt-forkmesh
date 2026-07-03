@@ -70,4 +70,7 @@
     <qresource prefix="/app">
         <file alias="forkmesh.png">icons/forkmesh.png</file>
     </qresource>
+    <qresource prefix="/fonts">
+        <file alias="NotoColorEmoji.ttf">fonts/NotoColorEmoji.ttf</file>
+    </qresource>
 </RCC>
