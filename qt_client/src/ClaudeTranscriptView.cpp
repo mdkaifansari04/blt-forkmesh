@@ -382,6 +382,16 @@ public:
         h->addWidget(holder, 1);
     }
 
+    // A prepended batch can displace this item from the top of the timeline —
+    // flatten its rail line so the spine reads as continuous (see addRow()).
+    void setFirst(bool first)
+    {
+        if (m_first == first)
+            return;
+        m_first = first;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -468,8 +478,24 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     connect(sb, &QScrollBar::valueChanged, this, [this](int v) {
         QScrollBar *b = verticalScrollBar();
         m_stickBottom = v >= b->maximum() - 4;
+        // Infinite-scroll-upward: nearing the top with more history available
+        // asks the host for the next batch (see loadEarlierRequested()). Guarded
+        // by m_loadEarlierPending so a held-at-top scroll position doesn't spam
+        // requests before the previous batch has landed.
+        if (m_skippedNotice && !m_loadEarlierPending && v <= b->minimum() + 200) {
+            m_loadEarlierPending = true;
+            emit loadEarlierRequested();
+        }
     });
     connect(sb, &QScrollBar::rangeChanged, this, [this](int, int max) {
+        if (m_prependCompensationPending) {
+            // The range just grew by whatever content prependEarlierEvents()
+            // inserted above the viewport; shift by the same amount so the rows
+            // the user was looking at stay put instead of sliding down.
+            verticalScrollBar()->setValue(m_prependOldValue + (max - m_prependOldMax));
+            m_prependCompensationPending = false;
+            return;
+        }
         if (m_stickBottom)
             verticalScrollBar()->setValue(max); // keep pinned as content grows
     });
@@ -596,6 +622,12 @@ void ClaudeTranscriptView::clear()
     emit searchResultsChanged(0, 0);
     m_toolCards.clear();
     m_askCards.clear();
+    m_skippedNotice = nullptr;
+    m_skippedCount = 0;
+    m_loadEarlierPending = false;
+    m_prependCompensationPending = false;
+    m_prependAt = -1;
+    m_priorFirstRow = nullptr;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
@@ -634,18 +666,34 @@ QString ClaudeTranscriptView::accentFor(const QString &name) const
 
 QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
 {
-    const bool first = m_col->count() <= 1; // only the trailing spacer present
+    int pos;
+    if (m_prependAt >= 0) {
+        // Loading earlier history: rows land at a fixed, advancing column index
+        // instead of the usual tail position, so a batch renders in order above
+        // whatever used to be first.
+        pos = m_prependAt++;
+    } else {
+        pos = m_col->count() - 1; // before the trailing spacer
+        // Keep the live activity ticker pinned as the last content row: new
+        // rows slot in just above it.
+        if (m_activity) {
+            const int ai = m_col->indexOf(m_activity);
+            if (ai >= 0)
+                pos = ai;
+        }
+    }
+    const bool first = pos == 0; // truly the top row of the timeline
     auto *item = new RailItem(card, nodeColor.isEmpty() ? m_p.muted : nodeColor,
                               m_p.border, first);
-    // Keep the live activity ticker pinned as the last content row: new rows slot
-    // in just above it.
-    int pos = m_col->count() - 1; // before the trailing spacer
-    if (m_activity) {
-        const int ai = m_col->indexOf(m_activity);
-        if (ai >= 0)
-            pos = ai;
-    }
     m_col->insertWidget(pos, item);
+    if (first) {
+        // A row that used to be first (its rail line starts at the node, not
+        // the top) may have just been displaced by a prepended batch — flatten
+        // its line to the top so the spine reads as continuous.
+        if (auto *old = dynamic_cast<RailItem *>(m_priorFirstRow.data()))
+            old->setFirst(false);
+        m_priorFirstRow = item;
+    }
     fadeIn(item);
     // Follow mode does the scrolling: the scrollbar's rangeChanged handler pins
     // the view to the bottom as the new row expands the content; ScrollJumpButtons
@@ -671,14 +719,122 @@ void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
 
 void ClaudeTranscriptView::addSkippedNotice(int count)
 {
-    auto *l = new QLabel(
-        QStringLiteral("… %1 earlier event%2 not shown — the Raw view has the "
-                       "full stream …")
+    if (m_skippedNotice) {
+        // Replacing an existing notice (a previous batch load updated the
+        // count) — drop it first so we don't end up with two.
+        m_col->removeWidget(m_skippedNotice);
+        m_skippedNotice->deleteLater();
+        m_skippedNotice = nullptr;
+    }
+    m_skippedCount = count;
+    auto *btn = new QPushButton(
+        QStringLiteral("▸  Load %1 earlier event%2")
             .arg(count)
             .arg(count == 1 ? QString() : QStringLiteral("s")));
-    l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
-    addRow(l);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(QStringLiteral(
+        "QPushButton{border:none;background:transparent;text-align:left;"
+        "color:%1;padding:0;}QPushButton:hover{color:%2;}")
+        .arg(m_p.muted, m_p.accent));
+    connect(btn, &QPushButton::clicked, this, [this] {
+        if (m_loadEarlierPending)
+            return;
+        m_loadEarlierPending = true;
+        emit loadEarlierRequested();
+    });
+    m_skippedNotice = addRow(btn);
     emit statsChanged(m_totalTokens, m_totalCost);
+}
+
+void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events,
+                                                int stillSkipped)
+{
+    m_loadEarlierPending = false;
+    if (events.isEmpty()) {
+        if (stillSkipped <= 0 && m_skippedNotice) {
+            m_col->removeWidget(m_skippedNotice);
+            m_skippedNotice->deleteLater();
+            m_skippedNotice = nullptr;
+            m_skippedCount = 0;
+        }
+        return;
+    }
+
+    QScrollBar *sb = verticalScrollBar();
+    m_prependOldMax = sb->maximum();
+    m_prependOldValue = sb->value();
+    m_prependCompensationPending = true;
+
+    // If this session is still streaming, m_activity/m_liveThinking currently
+    // hold the *real* live ticker/thinking card established by the tail's own
+    // replay. The batch we're about to replay is strictly older history, but it
+    // runs through the same handleEvent() state machine (ensureActivity() /
+    // clearActivity() / finalizeThinking()) — without shadowing, a historical
+    // turn boundary partway through the batch would delete the live ticker row
+    // out from under the user (and stop the shared m_activityTimer for good,
+    // since a non-null m_activity short-circuits the next real ensureActivity()
+    // call). Swap the live state out, let history replay against a fresh
+    // "nothing live" slate, then restore it untouched.
+    QWidget *liveActivity = m_activity;
+    QLabel *liveActivityLabel = m_activityLabel;
+    QTimer *liveActivityTimer = m_activityTimer;
+    Collapsible *liveThinking = m_liveThinking;
+    QLabel *liveThinkingBody = m_thinkingBody;
+    QString liveThinkingText = m_thinkingText;
+    int liveThinkingTokens = m_thinkingTokens;
+    qint64 liveThinkingStart = m_thinkingStartMs;
+    m_activity = nullptr;
+    m_activityLabel = nullptr;
+    m_activityTimer = nullptr; // ensureActivity() allocates its own scratch timer
+    m_liveThinking = nullptr;
+    m_thinkingBody = nullptr;
+    m_thinkingText.clear();
+    m_thinkingTokens = 0;
+    m_thinkingStartMs = 0;
+
+    setBulkPopulate(true); // no per-row fade-in for a whole batch landing at once
+    m_prependAt = 0;
+    if (stillSkipped > 0) {
+        addSkippedNotice(stillSkipped); // replaces the old notice, at the prepend head
+    } else if (m_skippedNotice) {
+        m_col->removeWidget(m_skippedNotice);
+        m_skippedNotice->deleteLater();
+        m_skippedNotice = nullptr;
+        m_skippedCount = 0;
+    }
+    for (const QJsonObject &ev : events) {
+        if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
+            addUserTurn(ev.value(QStringLiteral("text")).toString());
+        else
+            handleEvent(ev, /*countStats=*/false); // already folded into totals
+    }
+    m_prependAt = -1;
+    setBulkPopulate(false);
+
+    // Settle anything the batch left dangling (it was cut off mid-turn): this
+    // ticker/thinking card belongs to now-static history, not live state, so
+    // fold it away rather than leaving it visibly stuck.
+    if (m_activity) {
+        m_col->removeWidget(m_activity);
+        m_activity->deleteLater();
+    }
+    if (m_activityTimer) {
+        m_activityTimer->stop();
+        m_activityTimer->deleteLater();
+    }
+    if (m_liveThinking) {
+        m_liveThinking->setPulsing(false);
+        m_liveThinking->setExpanded(false);
+    }
+
+    m_activity = liveActivity;
+    m_activityLabel = liveActivityLabel;
+    m_activityTimer = liveActivityTimer;
+    m_liveThinking = liveThinking;
+    m_thinkingBody = liveThinkingBody;
+    m_thinkingText = liveThinkingText;
+    m_thinkingTokens = liveThinkingTokens;
+    m_thinkingStartMs = liveThinkingStart;
 }
 
 void ClaudeTranscriptView::fadeIn(QWidget *card)
@@ -717,7 +873,7 @@ void ClaudeTranscriptView::smoothScrollTo(int value)
 
 // ---- event dispatch --------------------------------------------------------
 
-void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
+void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
 {
     const QString type = ev.value(QStringLiteral("type")).toString();
     if (type == QLatin1String("system")) {
@@ -747,7 +903,7 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
         const QJsonObject message = ev.value(QStringLiteral("message")).toObject();
         const qint64 out = (qint64)message.value(QStringLiteral("usage")).toObject()
                                .value(QStringLiteral("output_tokens")).toDouble();
-        if (out > 0) {
+        if (out > 0 && countStats) {
             m_totalTokens += out;
             emit statsChanged(m_totalTokens, m_totalCost);
         }
@@ -783,7 +939,7 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev)
         finalizeThinking(QString());
         clearActivity(); // the turn is done
         const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
-        if (cost > 0) {
+        if (cost > 0 && countStats) {
             m_totalCost = cost; // result carries the run's cumulative cost
             emit statsChanged(m_totalTokens, m_totalCost);
         }
@@ -1582,19 +1738,28 @@ void ClaudeTranscriptView::rebuildSearchMatches()
 {
     m_searchLabels.clear();
     m_searchTotal = 0;
-    if (m_searchQuery.isEmpty() || !m_container)
+    if (m_searchQuery.isEmpty() || !m_container || !m_col)
         return;
-    // findChildren walks the tree in child order, which is the order rows were
-    // added — i.e. top to bottom — so matches read in transcript order.
-    const QList<QLabel *> labels = m_container->findChildren<QLabel *>();
-    for (QLabel *l : labels) {
-        if (!l)
+    // Walk rows in actual layout order (top to bottom), not QObject child-
+    // insertion order: "load earlier" prepends a batch of older rows above
+    // ones already in the tree, so the two orders can now disagree — a row's
+    // *own* subtree is still built all at once, so findChildren within it
+    // stays correct, only the across-row order needed fixing.
+    for (int i = 0; i < m_col->count(); ++i) {
+        QLayoutItem *item = m_col->itemAt(i);
+        QWidget *row = item ? item->widget() : nullptr;
+        if (!row)
             continue;
-        const Qt::TextFormat fmt = l->textFormat();
-        const int c = countMatchesIn(l->text(), fmt, m_searchQuery);
-        if (c > 0) {
-            m_searchLabels.push_back({l, fmt, l->text(), c});
-            m_searchTotal += c;
+        const QList<QLabel *> labels = row->findChildren<QLabel *>();
+        for (QLabel *l : labels) {
+            if (!l)
+                continue;
+            const Qt::TextFormat fmt = l->textFormat();
+            const int c = countMatchesIn(l->text(), fmt, m_searchQuery);
+            if (c > 0) {
+                m_searchLabels.push_back({l, fmt, l->text(), c});
+                m_searchTotal += c;
+            }
         }
     }
 }
