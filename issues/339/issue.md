@@ -5,7 +5,7 @@ title: Make it so that new issues show up on the website, even if they haven’t
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 10
 progress: 0
 assignees: []
 createdAt: 1783052732
