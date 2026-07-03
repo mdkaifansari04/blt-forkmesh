@@ -8673,10 +8673,17 @@ class Default(WorkerEntrypoint):
         # serving while the deploy reported success), and the script aborts loudly
         # instead of reporting a phantom success.
         if url.path in ("/api/version", "/api/version/"):
+            build_rev = "dev"
+            try:
+                val = self.env.BUILD_REV
+                if val:
+                    build_rev = str(val)
+            except (AttributeError, TypeError):
+                pass
             return json_response(
                 {
                     "ok": True,
-                    "rev": str(getattr(self.env, "BUILD_REV", "") or "dev"),
+                    "rev": build_rev,
                     "now": Date.now(),
                 }
             )
