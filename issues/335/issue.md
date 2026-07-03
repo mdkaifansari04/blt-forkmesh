@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 335
 title: Show pr conversations on the web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783048706
 author: HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE
 authorName: jett

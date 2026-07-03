@@ -34,6 +34,7 @@
 #include "AgentStore.h"
 #include "Theme.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -1058,6 +1059,44 @@ private:
     QTimer *m_sweep = nullptr;  // drives the spin
 };
 
+// A plain track-and-knob on/off switch, used for controls where the state is a
+// real power switch (e.g. "is this node online") rather than a momentary
+// action, so it reads unambiguously as on/off instead of just another button.
+class ToggleSwitch : public QAbstractButton
+{
+public:
+    explicit ToggleSwitch(QWidget *parent = nullptr) : QAbstractButton(parent)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFixedSize(46, 24);
+    }
+
+    QSize sizeHint() const override { return QSize(46, 24); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor track = isChecked() ? QColor("#2ea043") : QColor("#30363d");
+        const QRectF trackRect(0.5, 0.5, width() - 1.0, height() - 1.0);
+        const qreal r = trackRect.height() / 2.0;
+        p.setPen(QPen(track.darker(130), 1));
+        p.setBrush(track);
+        p.drawRoundedRect(trackRect, r, r);
+
+        const qreal knobD = trackRect.height() - 4.0;
+        const qreal x = isChecked() ? trackRect.right() - knobD - 2.0
+                                    : trackRect.left() + 2.0;
+        const QRectF knobRect(x, trackRect.top() + 2.0, knobD, knobD);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        p.drawEllipse(knobRect);
+    }
+};
+
 // A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
 // active node mirroring this repo. A dot flashes green when its node serves a
 // clone (git-upload-pack) and orange when it serves codebase browsing/fetches;
@@ -2049,10 +2088,13 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
-// The shared welcome room and the per-identity flag that records whether this
-// node has already posted its one-time "just joined" greeting there (issue #192).
+// The shared welcome room every node's one-time "just joined" greeting posts
+// to (issue #192). Whether a given identity has already greeted it is tracked
+// by ForkMeshIdentity itself (see hasAnnouncedWelcome/markWelcomeAnnounced),
+// not here; the QSettings prefix below is the flag's pre-move location, read
+// only to migrate nodes that greeted before it moved (adhoc #109).
 const QString kWelcomeChannel = QStringLiteral("#welcome");
-const QString kWelcomeAnnouncedSettingPrefix =
+const QString kLegacyWelcomeAnnouncedSettingPrefix =
     QStringLiteral("chat/welcomeAnnounced/");
 
 // True when a notification category is enabled. Default false: notifications are

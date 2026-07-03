@@ -506,24 +506,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddSendButton->setProperty("buttonSize", "sm");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
 
-    // Far-right cluster: a standout donate button (opens the central-fund QR),
-    // then the ForkMesh Reddit and Twitter/X links at the very edge.
-    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
-    donateButton->setObjectName("donateButton");
-    donateButton->setCursor(Qt::PointingHandCursor);
-    donateButton->setToolTip(
-        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
-        "hourly)");
-
-    auto *redditButton = new QPushButton("Reddit");
-    redditButton->setObjectName("socialButton");
-    redditButton->setCursor(Qt::PointingHandCursor);
-    redditButton->setToolTip("ForkMesh on Reddit");
-
-    auto *twitterButton = new QPushButton("X");
-    twitterButton->setObjectName("socialButton");
-    twitterButton->setCursor(Qt::PointingHandCursor);
-    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    // The donate button and the Reddit/X social icons now live in the top bar
+    // (see buildBreadcrumb), stacked beside the account cluster, so they no longer
+    // take up the footer's far-right edge.
 
     // Twice as wide and two lines tall (adhoc #10/#12): give the prompt field
     // room to actually show two wrapped lines of the prompt while typing. The
@@ -533,37 +518,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setMinimumWidth(720);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Live diagnostics right of the quick-add controls: CPU / memory of this process,
-    // plus a count of detected UI stalls. Click to see the stall details.
-    m_footerDiagnostics = new QPushButton;
-    m_footerDiagnostics->setObjectName("footerDiagnostics");
-    m_footerDiagnostics->setFlat(true);
-    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
-    m_footerDiagnostics->setToolTip(
-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
-    m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;}"
-        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
-    connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::showDiagnosticsDialog);
-
-    // Three little button-sized squares beside the diagnostics glyph, each
-    // plotting one resource — this app's CPU, the host's memory and its disk —
-    // as a moving sparkline fed one sample a second by updateFooterDiagnostics.
-    // The widget class, the member pointers and that feed loop all shipped with
-    // adhoc #17, but the charts were never actually built or added to the row,
-    // so the footer showed nothing; this constructs them (adhoc #25). Clicking
-    // one opens the same diagnostics dialog as the glyph.
-    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
-    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
-    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
-        chart->onClicked = [this] { showDiagnosticsDialog(); };
-    m_cpuChart = cpuChart;
-    m_memChart = memChart;
-    m_diskChart = diskChart;
+    // The live CPU/MEM/DISK diagnostics sparklines and their glyph now live in the
+    // top bar (see buildBreadcrumb), so the footer is just the prompt + agent
+    // controls.
 
     auto *quickAddRow = new QHBoxLayout(card);
     quickAddRow->setContentsMargins(12, 8, 12, 8);
@@ -582,14 +539,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     quickAddRow->addWidget(m_quickAddClaudeModel);
     quickAddRow->addWidget(m_quickAddCreatePr);
     quickAddRow->addStretch(1);
-    quickAddRow->addWidget(cpuChart);
-    quickAddRow->addWidget(memChart);
-    quickAddRow->addWidget(diskChart);
-    quickAddRow->addWidget(m_footerDiagnostics);
-    quickAddRow->addStretch(1);
-    quickAddRow->addWidget(donateButton);
-    quickAddRow->addWidget(redditButton);
-    quickAddRow->addWidget(twitterButton);
 
     // A thin single-line strip below the quick-add bar: the always-on live log.
     // It streams the newest network/update line so the latest activity is visible
@@ -627,14 +576,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // since QPlainTextEdit has no returnPressed signal.
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    connect(donateButton, &QPushButton::clicked, this,
-            &MainWindow::showTreasuryDonateDialog);
-    connect(redditButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
-    });
-    connect(twitterButton, &QPushButton::clicked, this, [] {
-        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
-    });
     updateVoiceInputButton();
     return dock;
 }
@@ -1164,23 +1105,44 @@ void MainWindow::updateFooterGitIdentity()
     }
     // `git config user.name/user.email` returns the effective value (repo-local
     // overriding global), i.e. the identity commits in this repo are authored as.
-    QByteArray nameOut, emailOut;
-    QString name, email;
-    if (runGitCapture(dir, {"config", "user.name"}, &nameOut, nullptr))
-        name = QString::fromUtf8(nameOut).trimmed();
-    if (runGitCapture(dir, {"config", "user.email"}, &emailOut, nullptr))
-        email = QString::fromUtf8(emailOut).trimmed();
-
-    QString text;
-    if (!name.isEmpty() && !email.isEmpty())
-        text = QStringLiteral("%1 <%2>").arg(name, email);
-    else if (!name.isEmpty())
-        text = name;
-    else if (!email.isEmpty())
-        text = email;
-    else
-        text = QStringLiteral("git identity not set");
-    m_footerGitIdentity->setText(text);
+    // Read asynchronously: this runs inside openRepoDetail, and a synchronous
+    // read here blocked the GUI thread ~600 ms during startup (adhoc #112). One
+    // --get-regexp call covers both keys; git lists matches system→global→local,
+    // so keeping the last occurrence of each key gives the effective value.
+    runGitDetached(
+        dir, {QStringLiteral("config"), QStringLiteral("--get-regexp"),
+              QStringLiteral("^user\\.(name|email)$")},
+        [this, dir](bool, const QByteArray &out) {
+            if (!m_footerGitIdentity)
+                return;
+            // Repo switched (or closed) while the read was in flight.
+            if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+                m_repositories.at(m_repoDetailIndex).localPath != dir)
+                return;
+            QString name, email;
+            for (const QString &line :
+                 QString::fromUtf8(out).split(QLatin1Char('\n'))) {
+                const int sp = line.indexOf(QLatin1Char(' '));
+                if (sp <= 0)
+                    continue;
+                const QString key = line.left(sp);
+                const QString value = line.mid(sp + 1).trimmed();
+                if (key == QLatin1String("user.name"))
+                    name = value;
+                else if (key == QLatin1String("user.email"))
+                    email = value;
+            }
+            QString text;
+            if (!name.isEmpty() && !email.isEmpty())
+                text = QStringLiteral("%1 <%2>").arg(name, email);
+            else if (!name.isEmpty())
+                text = name;
+            else if (!email.isEmpty())
+                text = email;
+            else
+                text = QStringLiteral("git identity not set");
+            m_footerGitIdentity->setText(text);
+        });
 }
 
 // Start the UI-stall watchdog + the live CPU/memory readout. Called once the
@@ -1737,34 +1699,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // sits right on the value instead of needing a separate swap icon.
     m_navSolanaBalance->installEventFilter(this);
 
-    // Reward-availability toggle, right next to the balance. A node only collects
-    // rewards while it is online and serving, so make that link unmistakable: the
-    // switch flips the node online/offline, a status line spells out whether it's
-    // "available for rewards" (green, the state we nudge the user toward) or
-    // "offline · not collecting rewards" (amber), and an uptime line shows how
-    // long the node has been online.
-    m_nodeOnlineToggle = new QPushButton;
-    m_nodeOnlineToggle->setObjectName("nodeOnlineToggle");
-    m_nodeOnlineToggle->setCheckable(true);
-    m_nodeOnlineToggle->setCursor(Qt::PointingHandCursor);
-    m_nodeOnlineToggle->setFixedWidth(148);
-    connect(m_nodeOnlineToggle, &QPushButton::clicked, this,
-            [this](bool checked) { setNodeOffline(!checked); });
-
-    m_nodeRewardStatus = new QLabel;
-    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
-    m_nodeRewardStatus->setAlignment(Qt::AlignCenter);
-    m_nodeRewardStatus->setFixedWidth(148);
-    m_nodeRewardStatus->setWordWrap(true);
-
-    m_nodeUptimeLabel = new QLabel;
-    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
-    m_nodeUptimeLabel->setAlignment(Qt::AlignCenter);
-    m_nodeUptimeLabel->setFixedWidth(148);
-    m_nodeUptimeLabel->setStyleSheet(
-        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
-    m_nodeUptimeLabel->setToolTip(
-        QStringLiteral("How long this node has been online this session"));
+    // The reward-availability toggle (online/offline switch, status line, uptime)
+    // used to live here beside the balance; it's now built in
+    // buildNodeProfilePanel(), right under "Get paid to mirror", as a clear
+    // on/off switch for the whole node rather than a small top-bar pill.
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
@@ -2111,6 +2049,75 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navDrawButton, &QPushButton::clicked, this,
             &MainWindow::startScreenDraw);
 
+    // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
+    // donate button (opens the central-fund QR) sits beside a compact column of two
+    // icon-only social buttons — the ForkMesh Reddit and Twitter/X links — stacked
+    // vertically so they take up little width next to the donate button.
+    auto *donateButton = new QPushButton(QString::fromUtf8("\xE2\x99\xA5 Donate"));
+    donateButton->setObjectName("donateButton");
+    donateButton->setCursor(Qt::PointingHandCursor);
+    donateButton->setToolTip(
+        "Donate SOL to the ForkMesh central fund (distributed to online nodes "
+        "hourly)");
+    connect(donateButton, &QPushButton::clicked, this,
+            &MainWindow::showTreasuryDonateDialog);
+
+    auto *redditButton = new QPushButton;
+    redditButton->setObjectName("socialIconButton");
+    redditButton->setCursor(Qt::PointingHandCursor);
+    redditButton->setToolTip("ForkMesh on Reddit");
+    redditButton->setFixedSize(28, 22);
+    setOcticon(redditButton, "reddit", 15);
+    connect(redditButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
+    });
+
+    auto *twitterButton = new QPushButton;
+    twitterButton->setObjectName("socialIconButton");
+    twitterButton->setCursor(Qt::PointingHandCursor);
+    twitterButton->setToolTip("ForkMesh on X (Twitter)");
+    twitterButton->setFixedSize(28, 22);
+    setOcticon(twitterButton, "twitter-bird", 14);
+    connect(twitterButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
+    });
+
+    auto *socialColumn = new QVBoxLayout;
+    socialColumn->setContentsMargins(0, 0, 0, 0);
+    socialColumn->setSpacing(3);
+    socialColumn->addWidget(redditButton);
+    socialColumn->addWidget(twitterButton);
+
+    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
+    // of this process plus a count of detected UI stalls. Click to see the stall
+    // details.
+    m_footerDiagnostics = new QPushButton;
+    m_footerDiagnostics->setObjectName("footerDiagnostics");
+    m_footerDiagnostics->setFlat(true);
+    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
+    m_footerDiagnostics->setToolTip(
+        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
+        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+    m_footerDiagnostics->setStyleSheet(
+        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    connect(m_footerDiagnostics, &QPushButton::clicked, this,
+            &MainWindow::showDiagnosticsDialog);
+
+    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // one resource — this app's CPU, the host's memory and its disk — as a moving
+    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
+    // opens the same diagnostics dialog as the glyph.
+    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
+    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
+    for (ResourceSparkline *chart : {cpuChart, memChart, diskChart})
+        chart->onClicked = [this] { showDiagnosticsDialog(); };
+    m_cpuChart = cpuChart;
+    m_memChart = memChart;
+    m_diskChart = diskChart;
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
@@ -2147,19 +2154,20 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_topMessageCopy);
     mainRow->addWidget(m_topMessageClose);
     mainRow->addStretch();
-    // Online/reward cluster sits to the LEFT of the wallet balance: the
-    // online toggle, the "available for rewards" status line and the uptime
-    // stack beside the money rather than below it, so this row doesn't grow
-    // taller than the node name + balance it sits next to.
-    auto *rewardColumn = new QVBoxLayout;
-    rewardColumn->setContentsMargins(0, 0, 0, 0);
-    rewardColumn->setSpacing(0);
-    rewardColumn->addWidget(m_nodeOnlineToggle, 0, Qt::AlignHCenter);
-    rewardColumn->addWidget(m_nodeRewardStatus);
-    rewardColumn->addWidget(m_nodeUptimeLabel);
-    mainRow->addLayout(rewardColumn);
+    // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
+    mainRow->addWidget(cpuChart);
+    mainRow->addWidget(memChart);
+    mainRow->addWidget(diskChart);
     mainRow->addSpacing(8);
-    // Stack the node name above the wallet balance — "this is your money".
+    // Donate button + the vertically-stacked Reddit/X icons, sat just left of the
+    // account cluster (adhoc #117).
+    mainRow->addWidget(donateButton);
+    mainRow->addSpacing(4);
+    mainRow->addLayout(socialColumn);
+    mainRow->addSpacing(10);
+    // Stack the node name above the wallet balance — "this is your money". The
+    // online/reward toggle that used to sit here now lives in the node profile
+    // panel, under "Get paid to mirror".
     auto *balanceColumn = new QVBoxLayout;
     balanceColumn->setContentsMargins(0, 0, 0, 0);
     balanceColumn->setSpacing(0);
@@ -2195,6 +2203,9 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
+    navRow->addSpacing(16);
+    // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
+    navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
     // Right-aligned so they sit under the top-right avatar; the pencil and
     // screenshot buttons sit just left of the rebuild/restart button.
@@ -2395,27 +2406,19 @@ void MainWindow::updateNodeOnlineControls()
     const bool online = !m_nodeOffline;
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
-    m_nodeOnlineToggle->setText(online ? QString::fromUtf8("\xE2\x97\x8F  Online")
-                                       : QString::fromUtf8("\xE2\x97\x8B  Offline"));
     m_nodeOnlineToggle->setToolTip(
         online ? QStringLiteral("This node is online and collecting rewards. "
                                 "Click to take it offline.")
                : QStringLiteral("This node is offline and not collecting "
                                 "rewards. Click to bring it back online."));
-    // Green pill when online (the state we want the user to keep), muted/amber when
-    // offline. Styled inline so the state colours don't depend on a QSS re-polish.
-    m_nodeOnlineToggle->setStyleSheet(
-        online
-            ? QStringLiteral(
-                  "#nodeOnlineToggle { background:#1a7f37; color:#ffffff; "
-                  "border:1px solid #2ea043; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#216e39; }")
-            : QStringLiteral(
-                  "#nodeOnlineToggle { background:transparent; color:#d29922; "
-                  "border:1px solid #9e6a03; border-radius:9px; padding:2px 10px; "
-                  "font-size:11px; font-weight:800; }"
-                  "#nodeOnlineToggle:hover { background:#161b22; }"));
+
+    if (m_nodeOnlineStatusLabel) {
+        m_nodeOnlineStatusLabel->setText(online ? QStringLiteral("Online")
+                                                : QStringLiteral("Offline"));
+        m_nodeOnlineStatusLabel->setStyleSheet(
+            online ? QStringLiteral("color:#3fb950; font-size:13px; font-weight:800;")
+                   : QStringLiteral("color:#d29922; font-size:13px; font-weight:800;"));
+    }
 
     if (m_nodeRewardStatus) {
         m_nodeRewardStatus->setText(online
@@ -5859,18 +5862,19 @@ QWidget *MainWindow::buildHomeSection()
     return page;
 }
 
-// Small helper: an icon-only quick-action button for the "THIS NODE" toolbar at
-// the top of the profile panel. Bigger tap target, tooltip-labelled.
-static QPushButton *makeProfileActionButton(const QString &icon,
+// Small helper: a labelled quick-action button for the "THIS NODE" toolbar at
+// the top of the profile panel. Icon + text (not icon-only) so the action is
+// clear at a glance; the tooltip carries the longer explanation.
+static QPushButton *makeProfileActionButton(const QString &icon, const QString &label,
                                             const QString &tooltip)
 {
-    auto *button = new QPushButton;
+    auto *button = new QPushButton(label);
     button->setObjectName("profileActionButton");
     button->setCursor(Qt::PointingHandCursor);
     button->setToolTip(tooltip);
     button->setFixedHeight(36);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setOcticon(button, icon, 18);
+    setOcticon(button, icon, 16);
     return button;
 }
 
@@ -5922,10 +5926,16 @@ QWidget *MainWindow::buildNodeProfilePanel()
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Width: wide enough for all content, narrow enough to look centered on wide
-    // windows when flanked by the stretchers in buildNodeProfileSection.
-    scroll->setMinimumWidth(340);
-    scroll->setMaximumWidth(840);
+    // Width: wide enough for the two-column layout (identity/stats on the left,
+    // hosting/keys/Solana on the right) side by side, narrow enough to look
+    // centered on wide windows when flanked by the stretchers in
+    // buildNodeProfileSection. The content's size hint comes out narrow (the
+    // word-wrap labels report tiny minimums), so without a healthy minimum the
+    // panel rendered ~450px wide and clipped the "THIS NODE" action row
+    // (Logout), the Node ID key, the balance button and the verify-wallet
+    // button on the right. Give both columns real room so everything shows.
+    scroll->setMinimumWidth(760);
+    scroll->setMaximumWidth(1180);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -5988,23 +5998,64 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(m_profileGetPaidButton, &QPushButton::clicked, this,
             &MainWindow::enablePaidMirroring);
 
-    // --- Self-only quick actions: a horizontal toolbar of bigger icon buttons
-    // (rebuild, update, settings, logout) that used to be a stacked text menu.
+    // --- Node power switch: a plain on/off toggle sitting right under "Get paid
+    // to mirror", since that's exactly what it controls — whether this whole
+    // node is online and serving/collecting rewards, or parked offline. Used to
+    // be a small pill in the top-right nav cluster; moved here so it reads as
+    // the node's power switch rather than a stray status badge.
+    m_profileOnlineSection = new QWidget;
+    auto *onlineSectionLabel = makeProfileSection("THIS NODE'S POWER SWITCH");
+    auto *nodeOnlineSwitch = new ToggleSwitch;
+    m_nodeOnlineToggle = nodeOnlineSwitch;
+    connect(nodeOnlineSwitch, &QAbstractButton::clicked, this,
+            [this](bool checked) { setNodeOffline(!checked); });
+    m_nodeOnlineStatusLabel = new QLabel;
+    m_nodeRewardStatus = new QLabel;
+    m_nodeRewardStatus->setObjectName("nodeRewardStatus");
+    m_nodeRewardStatus->setWordWrap(true);
+    m_nodeUptimeLabel = new QLabel;
+    m_nodeUptimeLabel->setObjectName("nodeUptimeLabel");
+    m_nodeUptimeLabel->setStyleSheet(
+        QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
+    m_nodeUptimeLabel->setToolTip(
+        QStringLiteral("How long this node has been online this session"));
+    auto *onlineStatusColumn = new QVBoxLayout;
+    onlineStatusColumn->setContentsMargins(0, 0, 0, 0);
+    onlineStatusColumn->setSpacing(0);
+    onlineStatusColumn->addWidget(m_nodeOnlineStatusLabel);
+    onlineStatusColumn->addWidget(m_nodeRewardStatus);
+    onlineStatusColumn->addWidget(m_nodeUptimeLabel);
+    auto *onlineSwitchRow = new QHBoxLayout;
+    onlineSwitchRow->setContentsMargins(0, 0, 0, 0);
+    onlineSwitchRow->setSpacing(10);
+    onlineSwitchRow->addWidget(nodeOnlineSwitch);
+    onlineSwitchRow->addLayout(onlineStatusColumn, 1);
+    auto *onlineSectionLayout = new QVBoxLayout(m_profileOnlineSection);
+    onlineSectionLayout->setContentsMargins(0, 0, 0, 0);
+    onlineSectionLayout->setSpacing(6);
+    onlineSectionLayout->addWidget(onlineSectionLabel);
+    onlineSectionLayout->addLayout(onlineSwitchRow);
+
+    // --- Self-only quick actions: a horizontal toolbar of labelled icon buttons
+    // (rebuild, update, settings, logout) that used to be a stacked text menu,
+    // then icon-only; labels came back so each action is clear at a glance.
     m_profileSelfActions = new QWidget;
     auto *selfLabel = makeProfileSection("THIS NODE");
     m_profileRebuildButton = makeProfileActionButton(
-        "sync",
+        "sync", "Rebuild",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
     connect(m_profileRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileRebuildButton); quickRebuildRestart(); });
     m_profileUpdateButton = makeProfileActionButton(
-        "download", "Pull the latest source, then rebuild and relaunch");
+        "download", "Update", "Pull the latest source, then rebuild and relaunch");
     connect(m_profileUpdateButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileUpdateButton); updateRebuildRestart(); });
-    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings");
+    auto *selfSettingsButton = makeProfileActionButton("gear", "Settings",
+                                                        "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout");
+    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
+                                                      "Log out of this node");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
@@ -6057,6 +6108,31 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setTextFormat(Qt::RichText);
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    // --- User account: this node is key-bound on its own, but a person can own
+    // many nodes. "Log in as a user" here proves the user's password so the
+    // relay attaches this node to that user's account (self only).
+    m_profileAccountSection = new QWidget;
+    auto *accountLabel = makeProfileSection("USER ACCOUNT");
+    m_profileAccountStatus = new QLabel;
+    m_profileAccountStatus->setObjectName("statusLine");
+    m_profileAccountStatus->setWordWrap(true);
+    m_profileAccountStatus->setTextFormat(Qt::RichText);
+    m_profileLinkUserButton = new QPushButton("Log in as a user");
+    m_profileLinkUserButton->setObjectName("ghostButton");
+    m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileLinkUserButton, "person", 14);
+    m_profileLinkUserButton->setToolTip(
+        "Link this node to your user account by signing in. One user can own "
+        "many nodes.");
+    connect(m_profileLinkUserButton, &QPushButton::clicked, this,
+            &MainWindow::promptLinkNodeToUser);
+    auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
+    accountLayout->setContentsMargins(0, 0, 0, 0);
+    accountLayout->setSpacing(6);
+    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(m_profileAccountStatus);
+    accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
 
     // --- Per-repo hosting stats relocated from the repo detail view.
     m_profileHostingLabel = makeProfileSection("HOSTING");
@@ -6146,31 +6222,57 @@ QWidget *MainWindow::buildNodeProfilePanel()
     solanaLayout->addWidget(m_profileEligibility);
     solanaLayout->addWidget(m_profileVerifyButton, 0, Qt::AlignLeft);
 
+    // Two-column body: identity/stats on the left, hosting/keys/Solana (what
+    // used to be one long stack at the bottom) on the right, side by side. Both
+    // columns share a common top edge so they read as one panel rather than
+    // two independently-scrolled halves.
+    auto *leftColumn = new QVBoxLayout;
+    leftColumn->setContentsMargins(0, 0, 0, 0);
+    leftColumn->setSpacing(6);
+    leftColumn->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileName);
+    leftColumn->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileOnlineSection);
+    leftColumn->addWidget(m_profileStatus);
+    leftColumn->addWidget(m_profileNote);
+    leftColumn->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileStatGrid);
+    leftColumn->addWidget(detailsLabel);
+    leftColumn->addWidget(m_profileDetails);
+    leftColumn->addWidget(m_profileMirrorsLabel);
+    leftColumn->addWidget(m_profileMirrors);
+    leftColumn->addWidget(m_profileAccountSection);
+    leftColumn->addStretch();
+
+    auto *rightColumn = new QVBoxLayout;
+    rightColumn->setContentsMargins(0, 0, 0, 0);
+    rightColumn->setSpacing(6);
+    rightColumn->addWidget(m_profileHostingLabel);
+    rightColumn->addWidget(m_profileHosting);
+    rightColumn->addWidget(nodeKeyLabel);
+    rightColumn->addWidget(m_profileNodeKey);
+    rightColumn->addWidget(copyKey, 0, Qt::AlignLeft);
+    rightColumn->addWidget(m_profileSolanaSection);
+    rightColumn->addStretch();
+
+    auto *columnsRow = new QHBoxLayout;
+    columnsRow->setContentsMargins(0, 0, 0, 0);
+    columnsRow->setSpacing(28);
+    columnsRow->addLayout(leftColumn, 1);
+    columnsRow->addLayout(rightColumn, 1);
+
     auto *layout = new QVBoxLayout(content);
-    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(6);
     layout->addLayout(topRow);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
-    layout->addWidget(m_profileAvatar, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileName);
-    layout->addWidget(m_profileGetPaidButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatus);
-    layout->addWidget(m_profileNote);
-    layout->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
-    layout->addWidget(m_profileStatGrid);
-    layout->addWidget(detailsLabel);
-    layout->addWidget(m_profileDetails);
-    layout->addWidget(m_profileMirrorsLabel);
-    layout->addWidget(m_profileMirrors);
-    layout->addWidget(m_profileHostingLabel);
-    layout->addWidget(m_profileHosting);
-    layout->addWidget(nodeKeyLabel);
-    layout->addWidget(m_profileNodeKey);
-    layout->addWidget(copyKey, 0, Qt::AlignLeft);
-    layout->addWidget(m_profileSolanaSection);
-    layout->addStretch();
+    layout->addLayout(columnsRow);
 
     scroll->setWidget(content);
+    // The online switch, status line and uptime label are created here rather
+    // than in the always-visible top bar now, so give them their initial state
+    // as soon as they exist instead of waiting for the next online/offline event.
+    updateNodeOnlineControls();
     return scroll;
 }
 
@@ -6357,6 +6459,15 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileMirrors->setVisible(true);
     }
 
+    // "USER ACCOUNT": self only. Show whether this node is already attached to a
+    // user, and offer "Log in as a user" to attach it when it isn't. Only a
+    // registered (key-bound) node can be linked, so gate the button on that.
+    if (m_profileAccountSection) {
+        m_profileAccountSection->setVisible(info.self);
+        if (info.self)
+            refreshProfileAccountStatus();
+    }
+
     // Per-repo hosting stats (served/clones/hosted-since/last-sync), self only.
     refreshProfileHostingStats();
 
@@ -6368,6 +6479,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);
+    // The online/offline power switch only controls your own node.
+    if (m_profileOnlineSection)
+        m_profileOnlineSection->setVisible(info.self);
 
     // "Get paid to mirror" is a self-only opt-in CTA. Once this node is activated
     // (active account + a payout address set) it flips to an "earning" label so
@@ -6448,6 +6562,145 @@ void MainWindow::refreshProfileHostingStats()
                         : lines.join(QStringLiteral("<br>")));
     m_profileHosting->setVisible(true);
     m_profileHostingLabel->setVisible(true);
+}
+
+void MainWindow::refreshProfileAccountStatus()
+{
+    if (!m_profileAccountStatus || !m_profileLinkUserButton)
+        return;
+    // Render the label from whatever we currently believe (m_nodeOwnerUser),
+    // then refresh from the relay so a link made on another device shows here.
+    auto paint = [this] {
+        if (!m_nodeOwnerUser.trimmed().isEmpty()) {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
+                "<b>%1</b></span>").arg(m_nodeOwnerUser.toHtmlEscaped()));
+            m_profileLinkUserButton->setText("Linked to a user");
+            m_profileLinkUserButton->setEnabled(false);
+        } else {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "This node isn't linked to a user account yet. One user can own "
+                "many nodes \xE2\x80\x94 log in to attach this node."));
+            m_profileLinkUserButton->setText("Log in as a user");
+            m_profileLinkUserButton->setEnabled(true);
+        }
+    };
+
+    const QString node = accountOwner();
+    // A node must be a registered, key-bound account before the relay can attach
+    // it to a user (it links by node name + this node's key). Until then, nudge
+    // the user to register/join and disable the button.
+    if (node.isEmpty() || !hasActiveAccountSession()) {
+        m_nodeOwnerUser.clear();
+        m_profileAccountStatus->setText(QString::fromUtf8(
+            "Register this node first (see \"Get paid to mirror\") to link it to "
+            "a user account."));
+        m_profileLinkUserButton->setText("Log in as a user");
+        m_profileLinkUserButton->setEnabled(false);
+        return;
+    }
+    paint();
+
+    QNetworkReply *reply =
+        m_networkAccess->get(QNetworkRequest(accountsApiUrl(node)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, node, paint]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        // Ignore a stale reply if the profile has since moved off this node.
+        if (!m_profileIsSelf || accountOwner() != node)
+            return;
+        if (resp.value(QStringLiteral("exists")).toBool())
+            m_nodeOwnerUser = resp.value(QStringLiteral("owner")).toString();
+        paint();
+    });
+}
+
+void MainWindow::promptLinkNodeToUser()
+{
+    if (accountOwner().isEmpty() || !hasActiveAccountSession()) {
+        logSystem("Register this node before linking it to a user account.");
+        return;
+    }
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("Log in as a user"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *label = new QLabel(QString::fromUtf8(
+        "Log in with your ForkMesh user account to attach this node "
+        "(<b>%1</b>) to it. One user can own many nodes.")
+        .arg(accountOwner().toHtmlEscaped()));
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto *idEdit = new QLineEdit;
+    idEdit->setPlaceholderText(QStringLiteral("Email or username"));
+    layout->addWidget(idEdit);
+    auto *pwEdit = new QLineEdit;
+    pwEdit->setEchoMode(QLineEdit::Password);
+    pwEdit->setPlaceholderText(QStringLiteral("Password"));
+    layout->addWidget(pwEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto *linkButton =
+        buttons->addButton(QStringLiteral("Link node"), QDialogButtonBox::AcceptRole);
+    linkButton->setDefault(true);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog,
+            [this, dialog, idEdit, pwEdit] {
+                const QString identifier = idEdit->text().trimmed();
+                const QString password = pwEdit->text();
+                if (identifier.isEmpty() || password.isEmpty())
+                    return;
+                submitLinkNodeToUser(identifier, password);
+                dialog->accept();
+            });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::submitLinkNodeToUser(const QString &identifier,
+                                      const QString &password)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString id = identifier.trimmed().toLower();
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Sign with THIS node's key: the relay checks the signature against the
+    // node's recorded pubkey and the password against the user, so holding both
+    // secrets is the whole authorization (no confirmation code needed).
+    const QByteArray canonical =
+        ("forkmesh-link-self-v1\n" + node + "\n" + id + "\n" + ts).toUtf8();
+    const QJsonObject body{{"nodeName", node},
+                           {"identifier", id},
+                           {"password", password},
+                           {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("link-self"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    if (m_profileLinkUserButton) {
+        m_profileLinkUserButton->setEnabled(false);
+        m_profileLinkUserButton->setText(QString::fromUtf8("Linking\xE2\x80\xA6"));
+    }
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (resp.value(QStringLiteral("linked")).toBool()) {
+            m_nodeOwnerUser = resp.value(QStringLiteral("user")).toString();
+            logSystem("Account: this node is now linked to user \"" +
+                      m_nodeOwnerUser + "\".");
+        } else {
+            const QString err = resp.value(QStringLiteral("error"))
+                                    .toString(QStringLiteral("network error"));
+            logSystem("Account: could not link this node to a user (" + err + ").");
+        }
+        refreshProfileAccountStatus();
+    });
 }
 
 void MainWindow::checkNodeBalance()
