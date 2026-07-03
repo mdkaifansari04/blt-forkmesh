@@ -34,6 +34,7 @@
 #include "AgentStore.h"
 #include "Theme.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -1056,6 +1057,44 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+};
+
+// A plain track-and-knob on/off switch, used for controls where the state is a
+// real power switch (e.g. "is this node online") rather than a momentary
+// action, so it reads unambiguously as on/off instead of just another button.
+class ToggleSwitch : public QAbstractButton
+{
+public:
+    explicit ToggleSwitch(QWidget *parent = nullptr) : QAbstractButton(parent)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFixedSize(46, 24);
+    }
+
+    QSize sizeHint() const override { return QSize(46, 24); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor track = isChecked() ? QColor("#2ea043") : QColor("#30363d");
+        const QRectF trackRect(0.5, 0.5, width() - 1.0, height() - 1.0);
+        const qreal r = trackRect.height() / 2.0;
+        p.setPen(QPen(track.darker(130), 1));
+        p.setBrush(track);
+        p.drawRoundedRect(trackRect, r, r);
+
+        const qreal knobD = trackRect.height() - 4.0;
+        const qreal x = isChecked() ? trackRect.right() - knobD - 2.0
+                                    : trackRect.left() + 2.0;
+        const QRectF knobRect(x, trackRect.top() + 2.0, knobD, knobD);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        p.drawEllipse(knobRect);
+    }
 };
 
 // A compact strip of activity dots shown atop the Mirror nodes tab: one dot per
