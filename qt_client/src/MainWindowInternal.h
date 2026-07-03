@@ -2952,22 +2952,24 @@ inline bool isValidNodeName(const QString &value)
 // until the user thinks one up, hand them a friendly generated one (Docker
 // container name style: "adjective-noun-1234") so the node has a valid name
 // and can register/start mirroring immediately; they can still rename
-// themselves later from Settings. Always satisfies isValidNodeName.
+// themselves later from Settings. The vocabulary leans on fork/mesh/git/
+// networking words so a generated name reads as a ForkMesh node rather than
+// a generic container name. Always satisfies isValidNodeName.
 inline QString randomFunNodeName()
 {
     static const char *const adjectives[] = {
-        "clever",  "swift",    "brave",   "quiet",   "bold",     "sunny",
-        "lucky",   "mighty",   "gentle",  "curious", "jolly",    "nimble",
-        "spry",    "witty",    "cosmic",  "electric", "silent",  "golden",
-        "amber",   "crimson",  "azure",   "emerald", "frosty",   "rusty",
-        "shiny",   "sleepy",   "zesty",   "dapper",  "plucky",   "wandering",
+        "swift",   "silent",   "nimble",  "resilient", "distributed", "encrypted",
+        "parallel", "wired",   "forked",  "meshed",    "decentralized", "redundant",
+        "synced",  "cascading", "rebased", "cloned",   "merged",      "threaded",
+        "routed",  "tunneled", "relayed", "mirrored",  "hashed",      "committed",
+        "branched", "patched", "stitched", "woven",    "linked",      "looped",
     };
     static const char *const nouns[] = {
-        "otter",   "falcon",   "badger",  "panda",   "koala",    "yak",
-        "lynx",    "heron",    "gecko",   "narwhal", "raccoon",  "walrus",
-        "sparrow", "beetle",   "comet",   "meadow",  "canyon",   "glacier",
-        "ember",   "pixel",    "byte",    "cactus",  "penguin",  "dolphin",
-        "wombat",  "ferret",   "puffin",  "tumbleweed", "yeti",  "marmot",
+        "fork",    "mirror",   "node",    "mesh",      "relay",       "branch",
+        "commit",  "patch",    "packet",  "socket",    "daemon",      "kernel",
+        "cache",   "gateway",  "tunnel",  "beacon",    "router",      "hub",
+        "thread",  "loom",     "weaver",  "forge",     "anchor",      "compass",
+        "lantern", "ember",    "spark",   "comet",     "satellite",   "byte",
     };
     const int a = QRandomGenerator::global()->bounded(
         int(sizeof(adjectives) / sizeof(adjectives[0])));
