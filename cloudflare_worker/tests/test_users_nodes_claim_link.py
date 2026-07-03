@@ -24,7 +24,7 @@ FUNCS = {
     "_account_kind", "_owned_nodes", "_generate_confirm_code", "_claim_pending",
     "_resolve_user_by_password", "_link_node_to_user", "_account_claim_node",
     "_account_claim_confirm", "_redeem_or_park_link_code", "_account_link_node",
-    "_account_heartbeat",
+    "_account_link_self", "_account_heartbeat",
 }
 
 
@@ -290,6 +290,64 @@ def test_too_many_wrong_codes_invalidate_the_claim():
     assert "claim_pending" not in accounts["mirror1"]
 
 
+def test_link_self_attaches_node_with_node_key_and_user_password():
+    # The desktop "Log in as a user" path: the node signs with its own key and
+    # supplies the user's password, so the link completes in one call with no
+    # confirmation code.
+    accounts = {"alice": _user_rec(), "mirror1": _node_rec()}
+    ns = _harness(accounts)
+    env = object()
+
+    linked = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "mirror1", "ts": "1", "sig": "s"}))))
+    assert linked["status"] == 200
+    assert linked["data"]["linked"] is True
+    assert linked["data"]["nodes"] == ["mirror1"]
+    assert accounts["mirror1"]["owner"] == "alice"
+    assert accounts["alice"]["nodes"] == ["mirror1"]
+
+    # Re-running is idempotent (already linked to the same user).
+    again = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "mirror1", "ts": "1", "sig": "s"}))))
+    assert again["data"]["alreadyLinked"] is True
+
+
+def test_link_self_rejections():
+    accounts = {
+        "alice": _user_rec(),
+        "bob": _user_rec("bob", "bob@example.com"),
+        "owned": dict(_node_rec("owned"), owner="bob"),
+        "mirror1": _node_rec(),
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    bad_pass = asyncio.run(ns["_account_link_self"](env, _Request(
+        {"identifier": "alice@example.com", "password": "wrong",
+         "nodeName": "mirror1", "ts": "1", "sig": "s"})))
+    assert bad_pass["status"] == 401
+    assert bad_pass["data"]["error"] == "invalid_credentials"
+
+    missing = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "ghost", "ts": "1", "sig": "s"}))))
+    assert missing["status"] == 404
+
+    not_node = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "bob", "ts": "1", "sig": "s"}))))
+    assert not_node["status"] == 403
+    assert not_node["data"]["error"] == "not_a_node"
+
+    self_link = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "alice", "ts": "1", "sig": "s"}))))
+    assert self_link["status"] == 400
+    assert self_link["data"]["error"] == "cannot_link_self"
+
+    owned = asyncio.run(ns["_account_link_self"](env, _Request(
+        _auth({"nodeName": "owned", "ts": "1", "sig": "s"}))))
+    assert owned["status"] == 409
+    assert owned["data"]["error"] == "node_already_owned"
+
+
 def test_link_code_rendezvous_node_registers_first():
     accounts = {"alice": _user_rec(), "mirror2": _node_rec("mirror2")}
     ns = _harness(accounts)
@@ -391,6 +449,13 @@ def test_wire_contracts_across_worker_qt_and_installer():
     # The heartbeat is the only channel that carries the claim code out.
     assert 'response["claim"]' in entry
     assert 'resp.value(QStringLiteral("claim")).toObject()' in qt_setup
+
+    # "Log in as a user" (link-self): the node signs its own key over the same
+    # canonical string the worker verifies, and POSTs it to /link-self.
+    assert '"forkmesh-link-self-v1\\n" + node_name + "\\n" + identifier +' in entry
+    assert '"/api/accounts/link-self"' in entry
+    assert '"forkmesh-link-self-v1\\n" + node + "\\n" + id + "\\n" + ts' in qt_chat
+    assert 'accountsApiUrl("link-self")' in qt_chat
 
 
 def test_dashboard_exposes_a_claim_node_panel():

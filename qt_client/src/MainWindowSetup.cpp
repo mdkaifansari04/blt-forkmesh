@@ -1584,6 +1584,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -1666,6 +1667,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
                                   lookup.value("emailVerified").toBool());
@@ -1723,6 +1725,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     m_accountName = accountName;
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
+    m_nodeOwnerUser = fresp.value("owner").toString(); // set if a link code linked it
     QSettings().setValue(kAuthedAccountSetting, accountName);
     QSettings().setValue(kAccountNameSetting, accountName);
     applyAccountEmailVerified(accountName, fresp.value("emailVerified").toBool());
