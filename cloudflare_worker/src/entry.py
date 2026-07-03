@@ -7145,6 +7145,29 @@ async def issues_handler(env, request, owner, repo):
                 priority = int(meta_in.get("priority", 0))
             except (TypeError, ValueError):
                 priority = 0
+            # "wantsAgent" makes the owner's node start a coding agent on this
+            # issue automatically once merged — unlike the other meta fields
+            # above, that's an immediate, unreviewed side effect, so it's only
+            # honored when the request proves it's the repo owner's own account
+            # (password re-check, same as other sensitive account actions), not
+            # just a client-side checkbox anyone could set on a raw submission.
+            wants_agent = False
+            if meta_in.get("wantsAgent"):
+                owner_bi, owner_rec = await _account_row(env, owner)
+                if await _login_locked_until(env, owner_bi):
+                    return json_response({"error": "too_many_attempts"}, status=429)
+                owner_password = str(data.get("ownerPassword", "") or "")[:256]
+                verified = bool(
+                    owner_rec and owner_rec.get("status") == "active" and
+                    owner_rec.get("pass_hash") and owner_password and
+                    await verify_password(owner_password,
+                                          owner_rec.get("pass_salt", ""),
+                                          owner_rec.get("pass_hash", "")))
+                if not verified:
+                    await _login_record_fail(env, owner_bi)
+                    return json_response({"error": "bad_owner_password"}, status=401)
+                await _login_clear(env, owner_bi)
+                wants_agent = True
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
@@ -7152,6 +7175,7 @@ async def issues_handler(env, request, owner, repo):
                 "priority": priority if 0 <= priority <= 99 else 0,
                 "assignees": [clean_string(x, 60) for x in (assignees or [])][:20]
                 if isinstance(assignees, list) else [],
+                "wantsAgent": wants_agent,
             }
         item = {
             "number": number,
