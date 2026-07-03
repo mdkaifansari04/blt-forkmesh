@@ -2699,6 +2699,15 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // hook so local pushes are detected (actions + refresh).
                         if (!stillPreview)
                             ensurePushHook(repo);
+                        // A fresh install's first sync of the flagship repo (flagged
+                        // by ensureFlagshipRepo, adhoc #113): open it now that the
+                        // clone landed, instead of leaving the user on an empty list.
+                        if (!stillPreview && !m_pendingAutoOpenRepoKey.isEmpty() &&
+                            m_pendingAutoOpenRepoKey.compare(
+                                repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
+                            m_pendingAutoOpenRepoKey.clear();
+                            openRepoDetailDeferred(index);
+                        }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
                             !headCommit->isEmpty() &&
