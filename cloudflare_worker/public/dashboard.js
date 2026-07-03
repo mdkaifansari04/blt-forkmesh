@@ -283,6 +283,197 @@
   const ISSUE_IMAGE_MAX_COUNT = 4;
   const ISSUE_IMAGE_MAX_BYTES = 40 * 1024;
   const ISSUE_IMAGE_MAX_TOTAL_BYTES = 45 * 1024;
+  // Raw files can be much bigger than the final embedded size — anything under
+  // this is accepted into the crop/compress modal rather than rejected outright.
+  const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
+
+  function readAsDataUrl(fileOrBlob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("read_failed"));
+      reader.readAsDataURL(fileOrBlob);
+    });
+  }
+
+  function canvasToBlob(canvas, type, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  }
+
+  // Intermediary crop/compress step for images too large to embed directly.
+  // The user drags a crop box, then the modal auto-retries JPEG re-encoding at
+  // shrinking quality/scale ("multiple takes") until the result fits maxBytes,
+  // or lets the user redraw a smaller crop and retry. Resolves to
+  // { dataUrl, size } on confirm, or null if cancelled.
+  function openImageResizeModal(file, maxBytes) {
+    return new Promise((resolve) => {
+      const objectUrl = URL.createObjectURL(file);
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener("keydown", onKeydown);
+        URL.revokeObjectURL(objectUrl);
+        overlay.remove();
+        resolve(result);
+      };
+      const onKeydown = (event) => {
+        if (event.key === "Escape") { event.preventDefault(); finish(null); }
+      };
+
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-background/80 p-4 pt-10 backdrop-blur-sm";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.setAttribute("aria-label", "Resize image");
+      overlay.innerHTML = `
+        <div class="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+          <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <span class="min-w-0 truncate text-sm font-semibold text-foreground">Resize "${escapeHtml(file.name)}"</span>
+            <button type="button" data-resize-cancel class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Cancel</button>
+          </div>
+          <div class="grid gap-3 overflow-auto p-4">
+            <p class="text-xs text-muted-foreground">Drag on the image to crop it, then it's auto-compressed to fit. Attached images share the issue's size limit — redraw a smaller crop if it still doesn't fit.</p>
+            <div data-resize-stage class="relative mx-auto inline-block max-h-[24rem] max-w-full touch-none select-none overflow-hidden rounded-md border border-border bg-secondary/30">
+              <img data-resize-image src="${objectUrl}" class="block max-h-[24rem] max-w-full select-none" alt="" draggable="false" />
+              <div data-resize-crop class="absolute hidden border-2 border-primary bg-primary/10"></div>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span data-resize-status class="text-muted-foreground">Estimating size…</span>
+              <button type="button" data-resize-reset class="rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-secondary hover:text-foreground">Reset crop</button>
+            </div>
+          </div>
+          <div class="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+            <button type="button" data-resize-add disabled class="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"><i data-lucide="check" class="h-3.5 w-3.5"></i>Add image</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      window.lucide?.createIcons();
+      document.addEventListener("keydown", onKeydown);
+
+      const stage = overlay.querySelector("[data-resize-stage]");
+      const modalImg = overlay.querySelector("[data-resize-image]");
+      const cropDiv = overlay.querySelector("[data-resize-crop]");
+      const status = overlay.querySelector("[data-resize-status]");
+      const addButton = overlay.querySelector("[data-resize-add]");
+      const resetButton = overlay.querySelector("[data-resize-reset]");
+      const cancelButton = overlay.querySelector("[data-resize-cancel]");
+
+      let cropRectCss = null;
+      let dragStart = null;
+      let pendingBlob = null;
+      let compressToken = 0;
+
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+      const updateCropVisual = () => {
+        if (!cropRectCss) {
+          cropDiv.classList.add("hidden");
+          return;
+        }
+        cropDiv.classList.remove("hidden");
+        cropDiv.style.left = `${cropRectCss.left}px`;
+        cropDiv.style.top = `${cropRectCss.top}px`;
+        cropDiv.style.width = `${cropRectCss.width}px`;
+        cropDiv.style.height = `${cropRectCss.height}px`;
+      };
+
+      const attemptCompress = async () => {
+        if (!modalImg.naturalWidth) return;
+        const attemptId = (compressToken += 1);
+        pendingBlob = null;
+        addButton.disabled = true;
+        status.className = "text-muted-foreground";
+        status.textContent = "Compressing…";
+
+        const scaleX = modalImg.naturalWidth / modalImg.clientWidth;
+        const scaleY = modalImg.naturalHeight / modalImg.clientHeight;
+        let sx = 0;
+        let sy = 0;
+        let sw = modalImg.naturalWidth;
+        let sh = modalImg.naturalHeight;
+        if (cropRectCss) {
+          sx = Math.round(cropRectCss.left * scaleX);
+          sy = Math.round(cropRectCss.top * scaleY);
+          sw = Math.max(1, Math.round(cropRectCss.width * scaleX));
+          sh = Math.max(1, Math.round(cropRectCss.height * scaleY));
+        }
+
+        const qualities = [0.82, 0.65, 0.5, 0.35, 0.22, 0.12];
+        let scale = 1;
+        for (let round = 0; round < 6; round += 1) {
+          const outW = Math.max(24, Math.round(sw * scale));
+          const outH = Math.max(24, Math.round(sh * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = outW;
+          canvas.height = outH;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, outW, outH);
+          ctx.drawImage(modalImg, sx, sy, sw, sh, 0, 0, outW, outH);
+          for (const quality of qualities) {
+            const blob = await canvasToBlob(canvas, "image/jpeg", quality);
+            if (attemptId !== compressToken) return;
+            if (blob && blob.size <= maxBytes) {
+              pendingBlob = blob;
+              status.className = "text-primary";
+              status.textContent = `Ready — ${formatSize(blob.size)} (fits under ${formatSize(maxBytes)}).`;
+              addButton.disabled = false;
+              return;
+            }
+          }
+          scale *= 0.65;
+        }
+        status.className = "text-destructive";
+        status.textContent = "Still too large after compressing — drag to crop a smaller area and it'll retry.";
+      };
+
+      stage.addEventListener("pointerdown", (event) => {
+        const rect = stage.getBoundingClientRect();
+        dragStart = {
+          x: clamp(event.clientX - rect.left, 0, rect.width),
+          y: clamp(event.clientY - rect.top, 0, rect.height),
+        };
+        stage.setPointerCapture(event.pointerId);
+      });
+      stage.addEventListener("pointermove", (event) => {
+        if (!dragStart) return;
+        const rect = stage.getBoundingClientRect();
+        const x = clamp(event.clientX - rect.left, 0, rect.width);
+        const y = clamp(event.clientY - rect.top, 0, rect.height);
+        cropRectCss = {
+          left: Math.min(dragStart.x, x),
+          top: Math.min(dragStart.y, y),
+          width: Math.abs(x - dragStart.x),
+          height: Math.abs(y - dragStart.y),
+        };
+        updateCropVisual();
+      });
+      stage.addEventListener("pointerup", () => {
+        if (!dragStart) return;
+        dragStart = null;
+        if (!cropRectCss || cropRectCss.width < 8 || cropRectCss.height < 8) cropRectCss = null;
+        updateCropVisual();
+        attemptCompress();
+      });
+
+      resetButton.addEventListener("click", () => {
+        cropRectCss = null;
+        updateCropVisual();
+        attemptCompress();
+      });
+      cancelButton.addEventListener("click", () => finish(null));
+      addButton.addEventListener("click", async () => {
+        if (!pendingBlob) return;
+        const dataUrl = await readAsDataUrl(pendingBlob);
+        finish({ dataUrl, size: pendingBlob.size });
+      });
+
+      modalImg.addEventListener("load", () => attemptCompress());
+      modalImg.addEventListener("error", () => finish(null));
+      if (modalImg.complete && modalImg.naturalWidth) attemptCompress();
+    });
+  }
 
   function bytesToB64url(bytes) {
     const arr = new Uint8Array(bytes);
@@ -2740,13 +2931,6 @@
       renderAttachmentChips();
     });
 
-    const readAsDataUrl = (file) => new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error || new Error("read_failed"));
-      reader.readAsDataURL(file);
-    });
-
     if (attachButton && fileInput) {
       attachButton.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", async () => {
@@ -2761,28 +2945,48 @@
             setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
             break;
           }
-          const total = images.reduce((sum, img) => sum + img.size, 0);
-          if (file.size > ISSUE_IMAGE_MAX_BYTES || total + file.size > ISSUE_IMAGE_MAX_TOTAL_BYTES) {
-            setAttachHint(`${file.name} is too large — attached images share the issue's 64 KB size limit, so keep screenshots small.`, "bad");
+          if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
+            setAttachHint(`${file.name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
             continue;
           }
-          try {
-            const dataUrl = await readAsDataUrl(file);
-            const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
-            const name = file.name.replace(/[[\]]/g, "_");
-            images.push({ id, name, dataUrl, size: file.size });
-            const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
-            const end = bodyInput?.selectionEnd ?? start;
-            if (bodyInput) {
-              const insertion = `\n![${name}](${id})\n`;
-              bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
-              const cursor = start + insertion.length;
-              bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
-            }
-            setAttachHint("");
-          } catch (_) {
-            setAttachHint(`Could not read ${file.name}.`, "bad");
+          const total = images.reduce((sum, img) => sum + img.size, 0);
+          const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
+          if (budget <= 0) {
+            setAttachHint("Attached images already use up the issue's size limit — remove one to add another.", "bad");
+            continue;
           }
+          let dataUrl;
+          let size;
+          if (file.size <= budget) {
+            try {
+              dataUrl = await readAsDataUrl(file);
+              size = file.size;
+            } catch (_) {
+              setAttachHint(`Could not read ${file.name}.`, "bad");
+              continue;
+            }
+          } else {
+            setAttachHint(`${file.name} is ${formatSize(file.size)} — crop or compress it to fit under ${formatSize(budget)}.`);
+            const result = await openImageResizeModal(file, budget);
+            if (!result) {
+              setAttachHint("");
+              continue;
+            }
+            dataUrl = result.dataUrl;
+            size = result.size;
+          }
+          const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
+          const name = file.name.replace(/[[\]]/g, "_");
+          images.push({ id, name, dataUrl, size });
+          const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
+          const end = bodyInput?.selectionEnd ?? start;
+          if (bodyInput) {
+            const insertion = `\n![${name}](${id})\n`;
+            bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
+            const cursor = start + insertion.length;
+            bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
+          }
+          setAttachHint("");
         }
         renderAttachmentChips();
       });
