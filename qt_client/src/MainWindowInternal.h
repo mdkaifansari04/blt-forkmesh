@@ -2214,6 +2214,11 @@ const QString kClaudeCodeCommandSetting = QStringLiteral("agents/claudeCodeComma
 // or the "auto" sentinel (adhoc #91) that routes each task to a model.
 // Surfaced as a chooser in the footer quick-add bar (adhoc #261).
 const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel");
+// Disk cache of the last successful /v1/models fetch (see
+// MainWindow::refreshClaudeModelCombo), loaded back into m_liveClaudeModels at
+// startup so a model combo built before this session's first live fetch
+// completes still lists the real models instead of just "Auto".
+const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCache");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
