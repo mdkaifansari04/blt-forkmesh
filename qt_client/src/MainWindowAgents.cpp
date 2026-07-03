@@ -574,12 +574,19 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentContinueButton, &QPushButton::clicked, this,
             &MainWindow::continueSelectedAgentSession);
 
-    m_agentFixConflictsButton = new QPushButton("Fix conflicts with agent");
-    m_agentFixConflictsButton->setObjectName("primaryButton");
+    // Small icon-only button (adhoc #139): lives in the footer's "Agents:"
+    // status strip (see buildNetworkLogDock in MainWindowChat.cpp) rather than
+    // as a full-width label next to Continue, so it doesn't crowd the composer.
+    m_agentFixConflictsButton = new QPushButton;
+    m_agentFixConflictsButton->setObjectName("agentStatusFixButton");
+    m_agentFixConflictsButton->setFlat(true);
+    m_agentFixConflictsButton->setFixedSize(22, 22);
+    m_agentFixConflictsButton->setIconSize(QSize(14, 14));
     m_agentFixConflictsButton->setCursor(Qt::PointingHandCursor);
     m_agentFixConflictsButton->setToolTip(
-        "Ask the agent to merge the base branch into this branch and resolve conflicts");
-    setOcticon(m_agentFixConflictsButton, "git-merge", 16);
+        "Fix conflicts with agent \xE2\x80\x94 ask it to merge the base branch "
+        "into this branch and resolve conflicts");
+    setOcticon(m_agentFixConflictsButton, "git-merge", 14);
     m_agentFixConflictsButton->hide();
     connect(m_agentFixConflictsButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -1247,13 +1254,12 @@ QWidget *MainWindow::buildAgentsTab()
     // conversation can be resumed at any time without hunting for it in the
     // header button row (adhoc #105). It stays enabled whenever a session is
     // selected; continueSelectedAgentSession() itself no-ops if the session is
-    // already running or queued. Fix-conflicts sits alongside it and is only
-    // visible when the branch has a detected merge conflict with base (adhoc #28).
+    // already running or queued. Fix-conflicts moved to a small icon button in
+    // the footer's "Agents:" strip (adhoc #139) rather than living here.
     auto *continueRow = new QHBoxLayout;
     continueRow->setContentsMargins(0, 0, 0, 0);
     continueRow->setSpacing(6);
     continueRow->addWidget(m_agentContinueButton);
-    continueRow->addWidget(m_agentFixConflictsButton);
     continueRow->addStretch(1);
     composerCol->addLayout(continueRow);
     composerCol->addWidget(m_agentPromptEdit);
