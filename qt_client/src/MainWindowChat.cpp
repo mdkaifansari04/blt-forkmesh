@@ -6108,6 +6108,31 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
+    // --- User account: this node is key-bound on its own, but a person can own
+    // many nodes. "Log in as a user" here proves the user's password so the
+    // relay attaches this node to that user's account (self only).
+    m_profileAccountSection = new QWidget;
+    auto *accountLabel = makeProfileSection("USER ACCOUNT");
+    m_profileAccountStatus = new QLabel;
+    m_profileAccountStatus->setObjectName("statusLine");
+    m_profileAccountStatus->setWordWrap(true);
+    m_profileAccountStatus->setTextFormat(Qt::RichText);
+    m_profileLinkUserButton = new QPushButton("Log in as a user");
+    m_profileLinkUserButton->setObjectName("ghostButton");
+    m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileLinkUserButton, "person", 14);
+    m_profileLinkUserButton->setToolTip(
+        "Link this node to your user account by signing in. One user can own "
+        "many nodes.");
+    connect(m_profileLinkUserButton, &QPushButton::clicked, this,
+            &MainWindow::promptLinkNodeToUser);
+    auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
+    accountLayout->setContentsMargins(0, 0, 0, 0);
+    accountLayout->setSpacing(6);
+    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(m_profileAccountStatus);
+    accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
+
     // --- Per-repo hosting stats relocated from the repo detail view.
     m_profileHostingLabel = makeProfileSection("HOSTING");
     m_profileHosting = new QLabel;
@@ -6215,6 +6240,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     leftColumn->addWidget(m_profileDetails);
     leftColumn->addWidget(m_profileMirrorsLabel);
     leftColumn->addWidget(m_profileMirrors);
+    leftColumn->addWidget(m_profileAccountSection);
     leftColumn->addStretch();
 
     auto *rightColumn = new QVBoxLayout;
@@ -6432,6 +6458,15 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileMirrors->setVisible(true);
     }
 
+    // "USER ACCOUNT": self only. Show whether this node is already attached to a
+    // user, and offer "Log in as a user" to attach it when it isn't. Only a
+    // registered (key-bound) node can be linked, so gate the button on that.
+    if (m_profileAccountSection) {
+        m_profileAccountSection->setVisible(info.self);
+        if (info.self)
+            refreshProfileAccountStatus();
+    }
+
     // Per-repo hosting stats (served/clones/hosted-since/last-sync), self only.
     refreshProfileHostingStats();
 
@@ -6526,6 +6561,145 @@ void MainWindow::refreshProfileHostingStats()
                         : lines.join(QStringLiteral("<br>")));
     m_profileHosting->setVisible(true);
     m_profileHostingLabel->setVisible(true);
+}
+
+void MainWindow::refreshProfileAccountStatus()
+{
+    if (!m_profileAccountStatus || !m_profileLinkUserButton)
+        return;
+    // Render the label from whatever we currently believe (m_nodeOwnerUser),
+    // then refresh from the relay so a link made on another device shows here.
+    auto paint = [this] {
+        if (!m_nodeOwnerUser.trimmed().isEmpty()) {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
+                "<b>%1</b></span>").arg(m_nodeOwnerUser.toHtmlEscaped()));
+            m_profileLinkUserButton->setText("Linked to a user");
+            m_profileLinkUserButton->setEnabled(false);
+        } else {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "This node isn't linked to a user account yet. One user can own "
+                "many nodes \xE2\x80\x94 log in to attach this node."));
+            m_profileLinkUserButton->setText("Log in as a user");
+            m_profileLinkUserButton->setEnabled(true);
+        }
+    };
+
+    const QString node = accountOwner();
+    // A node must be a registered, key-bound account before the relay can attach
+    // it to a user (it links by node name + this node's key). Until then, nudge
+    // the user to register/join and disable the button.
+    if (node.isEmpty() || !hasActiveAccountSession()) {
+        m_nodeOwnerUser.clear();
+        m_profileAccountStatus->setText(QString::fromUtf8(
+            "Register this node first (see \"Get paid to mirror\") to link it to "
+            "a user account."));
+        m_profileLinkUserButton->setText("Log in as a user");
+        m_profileLinkUserButton->setEnabled(false);
+        return;
+    }
+    paint();
+
+    QNetworkReply *reply =
+        m_networkAccess->get(QNetworkRequest(accountsApiUrl(node)));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, node, paint]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        // Ignore a stale reply if the profile has since moved off this node.
+        if (!m_profileIsSelf || accountOwner() != node)
+            return;
+        if (resp.value(QStringLiteral("exists")).toBool())
+            m_nodeOwnerUser = resp.value(QStringLiteral("owner")).toString();
+        paint();
+    });
+}
+
+void MainWindow::promptLinkNodeToUser()
+{
+    if (accountOwner().isEmpty() || !hasActiveAccountSession()) {
+        logSystem("Register this node before linking it to a user account.");
+        return;
+    }
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(QStringLiteral("Log in as a user"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *label = new QLabel(QString::fromUtf8(
+        "Log in with your ForkMesh user account to attach this node "
+        "(<b>%1</b>) to it. One user can own many nodes.")
+        .arg(accountOwner().toHtmlEscaped()));
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto *idEdit = new QLineEdit;
+    idEdit->setPlaceholderText(QStringLiteral("Email or username"));
+    layout->addWidget(idEdit);
+    auto *pwEdit = new QLineEdit;
+    pwEdit->setEchoMode(QLineEdit::Password);
+    pwEdit->setPlaceholderText(QStringLiteral("Password"));
+    layout->addWidget(pwEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto *linkButton =
+        buttons->addButton(QStringLiteral("Link node"), QDialogButtonBox::AcceptRole);
+    linkButton->setDefault(true);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog,
+            [this, dialog, idEdit, pwEdit] {
+                const QString identifier = idEdit->text().trimmed();
+                const QString password = pwEdit->text();
+                if (identifier.isEmpty() || password.isEmpty())
+                    return;
+                submitLinkNodeToUser(identifier, password);
+                dialog->accept();
+            });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
+void MainWindow::submitLinkNodeToUser(const QString &identifier,
+                                      const QString &password)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString id = identifier.trimmed().toLower();
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Sign with THIS node's key: the relay checks the signature against the
+    // node's recorded pubkey and the password against the user, so holding both
+    // secrets is the whole authorization (no confirmation code needed).
+    const QByteArray canonical =
+        ("forkmesh-link-self-v1\n" + node + "\n" + id + "\n" + ts).toUtf8();
+    const QJsonObject body{{"nodeName", node},
+                           {"identifier", id},
+                           {"password", password},
+                           {"ts", ts},
+                           {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(accountsApiUrl("link-self"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    if (m_profileLinkUserButton) {
+        m_profileLinkUserButton->setEnabled(false);
+        m_profileLinkUserButton->setText(QString::fromUtf8("Linking\xE2\x80\xA6"));
+    }
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (resp.value(QStringLiteral("linked")).toBool()) {
+            m_nodeOwnerUser = resp.value(QStringLiteral("user")).toString();
+            logSystem("Account: this node is now linked to user \"" +
+                      m_nodeOwnerUser + "\".");
+        } else {
+            const QString err = resp.value(QStringLiteral("error"))
+                                    .toString(QStringLiteral("network error"));
+            logSystem("Account: could not link this node to a user (" + err + ").");
+        }
+        refreshProfileAccountStatus();
+    });
 }
 
 void MainWindow::checkNodeBalance()
