@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "PullAiReview.h"
 
 using namespace forkmesh::ui;
 
@@ -283,12 +284,44 @@ QWidget *MainWindow::buildPullsTab()
         "branch (the PR stays open, ready to merge)");
     connect(m_pullDeleteFileButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullFile);
+    // AI code review (adhoc #82): a prominent "Review with AI" button on every
+    // open PR. Findings come back as review threads attached to the lines of
+    // code they concern; safe fixes carry a one-click "Apply fix & commit"
+    // suggestion. "Fix all with AI" appears once unresolved review threads
+    // exist and hands the whole list — including findings without a quick fix —
+    // to a Claude Code agent that commits to the PR's branch.
+    m_pullReviewAiButton = new QPushButton("Review with AI");
+    m_pullFixAllAiButton = new QPushButton("Fix all with AI");
+    for (QPushButton *b : {m_pullReviewAiButton, m_pullFixAllAiButton}) {
+        b->setObjectName("primaryButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_pullReviewAiButton, "eye", 16);
+    m_pullReviewAiButton->setToolTip(
+        "Ask an AI to review this pull request's diff. Each finding is posted "
+        "as a review thread on the lines of code it concerns; findings with a "
+        "safe mechanical fix get a one-click \"Apply fix & commit\".");
+    connect(m_pullReviewAiButton, &QPushButton::clicked, this,
+            &MainWindow::reviewCurrentPullWithAi);
+    setOcticon(m_pullFixAllAiButton, "rocket", 16);
+    m_pullFixAllAiButton->setToolTip(
+        "Let a Claude Code agent work through every unresolved review finding "
+        "\xE2\x80\x94 including the ones without a quick fix \xE2\x80\x94 and "
+        "commit the fixes to this pull request's branch");
+    m_pullFixAllAiButton->hide(); // only shown when unresolved findings exist
+    connect(m_pullFixAllAiButton, &QPushButton::clicked, this,
+            &MainWindow::fixCurrentPullFindingsWithAgent);
     // The title gets its own line above the action buttons (issue #261): with this
     // many buttons a single shared row squeezed the title into a sliver. The button
     // row below packs left (trailing stretch) so it reads as a toolbar.
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
+    // The AI review pair leads the toolbar so it reads as the page's headline
+    // action (adhoc #82).
+    pullHeaderRow->addWidget(m_pullReviewAiButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(m_pullFixAllAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullPreviewButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullUpdateButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullResolveButton, 0, Qt::AlignTop);
@@ -1505,6 +1538,11 @@ void MainWindow::renderPullDiff()
             text.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
             return text;
         };
+        // Whether this node can take a thread's one-click fix right now: the
+        // apply commits to the PR's branch, so it needs an open PR and a
+        // working tree (adhoc #82).
+        const bool canApplyFixes = pr->status == QLatin1String("open") &&
+                                   pullStoreForCurrentRepo().canWrite();
         const PullReviewSnapshot snapshot = buildPullReviewSnapshot(*pr);
         for (const PullReviewThread &thread : snapshot.threads) {
             if (thread.lineStart <= 0)
@@ -1580,6 +1618,12 @@ void MainWindow::renderPullDiff()
                         " &nbsp; <a href='thread:resolve:%1'>Resolve</a>")
                                 .arg(thread.id.toHtmlEscaped());
                 }
+                // One-click commit of the thread's suggestion patch (adhoc #82).
+                if (canApplyFixes && !thread.resolved && thread.hasSuggestion &&
+                    thread.suggestionState != QLatin1String("applied"))
+                    note += QStringLiteral(" &nbsp; <a href='thread:applyfix:%1'>"
+                                           "Apply fix &amp; commit</a>")
+                                .arg(thread.id.toHtmlEscaped());
                 note += QStringLiteral("</div>");
             }
             note += QStringLiteral("</div>");
@@ -1783,6 +1827,8 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
             setPullThreadState(threadId, QStringLiteral("resolved"));
         else if (action == QLatin1String("unresolve"))
             setPullThreadState(threadId, QStringLiteral("unresolved"));
+        else if (action == QLatin1String("applyfix"))
+            applyPullSuggestionFix(threadId);
         return;
     }
     // "viewed:<path>" toggles a file's reviewed state and re-renders the diff,
@@ -2044,7 +2090,14 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
         // real external links fall through to the system browser.
         bodyLabel->setOpenExternalLinks(false);
         connect(bodyLabel, &QLabel::linkActivated, this,
-                [this](const QString &href) { openBodyReference(href); });
+                [this](const QString &href) {
+                    // "applyfix:<threadId>" is the review-suggestion quick fix
+                    // (adhoc #82); everything else is a normal body reference.
+                    if (href.startsWith(QLatin1String("applyfix:")))
+                        applyPullSuggestionFix(href.mid(9));
+                    else
+                        openBodyReference(href);
+                });
         bodyLabel->setContentsMargins(16, 12, 16, 14);
         cardLayout->addWidget(bodyLabel);
     }
@@ -2107,6 +2160,19 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
         pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
 
+    // Threads whose suggestion can still be applied and committed in one click
+    // (adhoc #82): unresolved, not yet applied, on an open PR this node can
+    // commit to. Their cards get an "Apply fix & commit" action.
+    QSet<QString> applicableFixes;
+    if (pr.status == QLatin1String("open") &&
+        pullStoreForCurrentRepo().canWrite()) {
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
+        for (const PullReviewThread &thread : snapshot.threads)
+            if (!thread.resolved && thread.hasSuggestion &&
+                thread.suggestionState != QLatin1String("applied"))
+                applicableFixes.insert(thread.id);
+    }
+
     for (const PullEvent &ev : pr.events) {
         const QString who = ev.authorName.isEmpty() ? ev.author.left(10) : ev.authorName;
         const QString when = formatIssueRelativeTime(ev.ts);
@@ -2123,8 +2189,15 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                        .arg(ev.lineStart);
             accent = ev.suggestionPatch.isEmpty() ? QStringLiteral("#d29922")
                                                   : QStringLiteral("#58a6ff");
-            if (!ev.suggestionPatch.isEmpty())
+            if (!ev.suggestionPatch.isEmpty()) {
                 body += QStringLiteral("\n\n```diff\n%1\n```").arg(ev.suggestionPatch);
+                // One-click commit of the suggested fix (adhoc #82); the card's
+                // link handler routes "applyfix:" to applyPullSuggestionFix.
+                if (applicableFixes.contains(ev.threadId))
+                    body += QString::fromUtf8(
+                                "\n\n[\xE2\x9A\xA1 Apply fix & commit](applyfix:%1)")
+                                .arg(ev.threadId);
+            }
         } else if (ev.type == QLatin1String("thread-reply")) {
             verb = QStringLiteral("replied in a review thread");
         } else if (ev.type == QLatin1String("thread-state")) {
@@ -2155,11 +2228,13 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 verb = QStringLiteral("reviewed");
             }
         }
+        // Pass the decorated body — the suggestion diff and its apply link were
+        // appended above (passing ev.body here silently dropped them).
         addConversationCard(
             m_pullThreadLayout, who,
             QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
                 .arg(who.toHtmlEscaped(), verb, when),
-            ev.body, accent,
+            body, accent,
             pullLink + QStringLiteral("#%1")
                            .arg(ev.id.isEmpty() ? QString::number(ev.ts) : ev.id),
             ev.author);
@@ -3088,6 +3163,29 @@ void MainWindow::updatePullActionState()
                                  : QStringLiteral("agent"),
                            base.isEmpty() ? QStringLiteral("main") : base));
     }
+    // AI review (adhoc #82): "Review with AI" shows on any open PR with a diff —
+    // it only reads the patch, so mirror nodes get it too (their findings travel
+    // to the owner's inbox as signed events). "Fix all with AI" appears once
+    // unresolved review threads exist; the agent commits to the PR's branch, so
+    // it needs a working tree.
+    if (m_pullReviewAiButton) {
+        const bool reviewable = have && open && !patch.trimmed().isEmpty();
+        m_pullReviewAiButton->setVisible(reviewable);
+        m_pullReviewAiButton->setEnabled(reviewable && !m_aiReview);
+    }
+    if (m_pullFixAllAiButton) {
+        int unresolved = 0;
+        if (have && open)
+            for (const PullRequest &pr : std::as_const(m_currentPulls))
+                if (pr.number == m_currentPullNumber)
+                    unresolved = buildPullReviewSnapshot(pr).unresolvedThreads;
+        const bool fixable = writable && have && open && unresolved > 0;
+        m_pullFixAllAiButton->setVisible(fixable);
+        m_pullFixAllAiButton->setEnabled(fixable && !m_aiFix && !m_aiReview);
+        if (fixable)
+            m_pullFixAllAiButton->setText(
+                QStringLiteral("Fix all with AI (%1)").arg(unresolved));
+    }
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
                                          m_pullFiles->currentItem());
@@ -3822,6 +3920,673 @@ void MainWindow::aiFixSetSessionStatus(const QString &status, const QString &err
         showAgentSession(m_aiFix->sessionId);
 }
 
+// ---- AI code review (adhoc #82) ---------------------------------------------
+// "Review with AI" sends the PR's diff to a model in one shot. Each finding the
+// model reports lands as a signed review thread anchored to the file+line it
+// concerns; findings where the model supplied both the original lines and a
+// replacement carry a suggestion patch the reviewer applies and commits in one
+// click. A summary review event records the run's outcome in the conversation.
+
+void MainWindow::reviewCurrentPullWithAi()
+{
+    if (m_aiReview) {
+        flashMessage("An AI review is already running; wait for it to finish.",
+                     true);
+        return;
+    }
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int number = m_currentPullNumber;
+    PullRequest current;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == number)
+            current = pr;
+    if (current.number == 0 || current.patch.trimmed().isEmpty()) {
+        flashMessage("This pull request has no diff to review.", true);
+        return;
+    }
+
+    // Provider: a configured API key wins (one request over the diff suffices
+    // and the reply is easiest to keep to strict JSON); without one, fall back
+    // to the Claude Code CLI, which authenticates through its local login.
+    const QString claudeKey =
+        QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    const QString openAiKey =
+        QSettings().value(kCodexApiKeySetting).toString().trimmed();
+    QString provider = QStringLiteral("claude-code");
+    QString model;
+    if (!claudeKey.isEmpty()) {
+        provider = QStringLiteral("claude");
+        model = QStringLiteral("claude-opus-4-8");
+    } else if (!openAiKey.isEmpty()) {
+        provider = QStringLiteral("openai");
+        model = QStringLiteral("gpt-4.1-mini");
+    }
+
+    // A visible agent session so the run shows up on the Agents tab.
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    AgentSession session;
+    session.owner = repo.owner;
+    session.name = repo.name;
+    session.issueNumber = 0;
+    session.issueTitle = QStringLiteral("AI review of PR #%1").arg(number);
+    session.provider = provider;
+    session.model = model;
+    session.prNumber = number;
+    session.status = AgentStatus::Running;
+    session = m_agentStore->createSession(session);
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+
+    m_aiReview = new AiPullReview;
+    m_aiReview->number = number;
+    m_aiReview->repoIndex = m_repoDetailIndex;
+    m_aiReview->sessionId = session.id;
+    m_aiReview->provider = provider;
+    m_aiReview->model = model;
+
+    aiReviewLog(QStringLiteral(
+                    "==> %1 reviewing pull request #%2 (%3 file(s), +%4 -%5).\n")
+                    .arg(agentProviderName(provider))
+                    .arg(number)
+                    .arg(current.filesChanged)
+                    .arg(current.additions)
+                    .arg(current.deletions));
+    if (m_pullMergeStatus) {
+        m_pullMergeStatus->setText(QString::fromUtf8(
+            "<span style='color:#58a6ff'>\xF0\x9F\xA4\x96 %1 is reviewing this "
+            "pull request\xE2\x80\xA6 findings will be attached to the lines "
+            "they concern.</span>").arg(agentProviderName(provider)));
+        m_pullMergeStatus->show();
+    }
+    updatePullActionState();
+
+    const QString prompt =
+        buildAiReviewPrompt(current.title, current.description, current.patch);
+
+    if (provider == QLatin1String("claude-code")) {
+        aiReviewRunClaudeCode(prompt);
+        return;
+    }
+
+    const bool claude = provider == QLatin1String("claude");
+    // Findings are a few KB of JSON even on a big PR; 8K output is plenty.
+    constexpr int kReviewOutTokens = 8000;
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", m_aiReview->model);
+        payload.insert("max_tokens", kReviewOutTokens);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", prompt);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(
+            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        req.setRawHeader("x-api-key", claudeKey.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", m_aiReview->model);
+        payload.insert("input", prompt);
+        payload.insert("max_output_tokens", kReviewOutTokens);
+        QNetworkRequest req = openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/responses")),
+            openAiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        if (!m_aiReview) // torn down (e.g. app closing) — nothing to do
+            return;
+        if (reply->error() != QNetworkReply::NoError) {
+            aiReviewFail(
+                QStringLiteral("API error: %1").arg(apiErrorSummary(reply, body)));
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        QString text;
+        if (claude) {
+            for (const QJsonValue &v : obj.value("content").toArray()) {
+                const QJsonObject o = v.toObject();
+                if (o.value("type").toString() == QLatin1String("text"))
+                    text += o.value("text").toString();
+            }
+            const QJsonObject usage = obj.value("usage").toObject();
+            const qint64 in = usage.value("input_tokens").toInt();
+            const qint64 out = usage.value("output_tokens").toInt();
+            m_aiReview->inTokens += in;
+            m_aiReview->outTokens += out;
+            m_aiReview->costUsd += in / 1e6 * 5.0 + out / 1e6 * 25.0; // Opus 4.8
+        } else {
+            text = openAiResponseText(obj);
+            qint64 in = 0, out = 0;
+            m_aiReview->costUsd += openAiAskCostUsd(obj, &in, &out);
+            m_aiReview->inTokens += in;
+            m_aiReview->outTokens += out;
+        }
+        aiReviewHandleReply(text);
+    });
+}
+
+// Claude Code path for the review: run the local `claude` CLI once with the
+// review prompt. It has repo context (cwd is the checkout when one exists) but
+// is told to change nothing and print only the findings JSON; the chatter its
+// wrapper adds is tolerated by parseAiReviewFindings' bracket extraction.
+void MainWindow::aiReviewRunClaudeCode(const QString &prompt)
+{
+    if (!m_aiReview)
+        return;
+    const QString workTree =
+        (m_aiReview->repoIndex >= 0 && m_aiReview->repoIndex < m_repositories.size())
+            ? writableRecordFor(m_repositories.at(m_aiReview->repoIndex)).localPath
+            : QString();
+    const QString promptPath = QDir::temp().filePath(
+        QStringLiteral("forkmesh-review-%1.md").arg(m_aiReview->number));
+    m_aiReview->promptFile = promptPath;
+    QFile pf(promptPath);
+    if (!pf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        aiReviewFail(QStringLiteral("Could not write the review prompt file."));
+        return;
+    }
+    pf.write(prompt.toUtf8());
+    pf.write(QByteArray("\n\nDo NOT modify any file and do NOT run any git "
+                        "command - this is a read-only review. Print ONLY the "
+                        "JSON array as your final output.\n"));
+    pf.close();
+
+    QString promptQuoted = promptPath;
+    promptQuoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    promptQuoted = QLatin1Char('\'') + promptQuoted + QLatin1Char('\'');
+    QString command = claudeCodeCommandSetting();
+    if (command.contains(QStringLiteral("{promptFile}")))
+        command.replace(QStringLiteral("{promptFile}"), promptQuoted);
+    else
+        command += QStringLiteral(" < ") + promptQuoted;
+
+    auto *process = new QProcess(this);
+    m_aiReview->process = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setWorkingDirectory(workTree.isEmpty() ? QDir::tempPath() : workTree);
+    process->setStandardInputFile(QProcess::nullDevice());
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    const QString home = QDir::homePath();
+    const QString extraPath = home + QStringLiteral("/.local/bin:") + home +
+                              QStringLiteral("/.cargo/bin:") + home +
+                              QStringLiteral("/.npm-global/bin");
+    env.insert(QStringLiteral("PATH"),
+               extraPath + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
+    process->setProcessEnvironment(env);
+
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
+        if (!m_aiReview || m_aiReview->process != process)
+            return;
+        const QString chunk = QString::fromUtf8(process->readAllStandardOutput());
+        m_aiReview->output += chunk;
+        aiReviewLog(chunk);
+    });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process](QProcess::ProcessError err) {
+                if (!m_aiReview || m_aiReview->process != process)
+                    return;
+                if (err == QProcess::FailedToStart) {
+                    m_aiReview->process = nullptr;
+                    process->deleteLater();
+                    QFile::remove(m_aiReview->promptFile);
+                    aiReviewFail(QStringLiteral(
+                        "Could not start the `claude` CLI \xE2\x80\x94 install "
+                        "Claude Code or set its command in Settings."));
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus) {
+                if (!m_aiReview || m_aiReview->process != process)
+                    return;
+                const QByteArray tail = process->readAllStandardOutput();
+                if (!tail.isEmpty()) {
+                    m_aiReview->output += QString::fromUtf8(tail);
+                    aiReviewLog(QString::fromUtf8(tail));
+                }
+                m_aiReview->process = nullptr;
+                process->deleteLater();
+                QFile::remove(m_aiReview->promptFile);
+                if (exitCode != 0) {
+                    aiReviewFail(QStringLiteral(
+                                     "Claude Code exited with code %1 before "
+                                     "finishing the review.")
+                                     .arg(exitCode));
+                    return;
+                }
+                aiReviewHandleReply(m_aiReview->output);
+            });
+
+    aiReviewLog(QStringLiteral(
+        "==> Running Claude Code over the pull request diff\xE2\x80\xA6\n"));
+#ifdef Q_OS_WIN
+    process->start(QStringLiteral("cmd"), {QStringLiteral("/c"), command});
+#else
+    const QString shell = QFile::exists(QStringLiteral("/bin/bash"))
+                              ? QStringLiteral("/bin/bash")
+                              : QStringLiteral("/bin/sh");
+    process->start(shell, {QStringLiteral("-lc"), command});
+#endif
+}
+
+// Turn the model's reply into review threads on the PR. Owner nodes commit the
+// signed events straight into pulls/<N>/; mirror nodes route them through the
+// relay inbox like any hand-written review comment.
+void MainWindow::aiReviewHandleReply(const QString &text)
+{
+    if (!m_aiReview)
+        return;
+    bool parsed = false;
+    QList<AiReviewFinding> findings = parseAiReviewFindings(text, &parsed);
+    if (!parsed) {
+        aiReviewFail(QStringLiteral(
+                         "The model's reply carried no findings JSON:\n%1")
+                         .arg(text.left(400)));
+        return;
+    }
+    // A runaway reply must not flood the PR with threads.
+    constexpr int kMaxFindings = 25;
+    if (findings.size() > kMaxFindings)
+        findings = findings.mid(0, kMaxFindings);
+
+    const int number = m_aiReview->number;
+    if (m_aiReview->repoIndex < 0 ||
+        m_aiReview->repoIndex >= m_repositories.size()) {
+        aiReviewFail(QStringLiteral("The repository is no longer open."));
+        return;
+    }
+    const RepositoryRecord &repo =
+        writableRecordFor(m_repositories.at(m_aiReview->repoIndex));
+    PullStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                    m_userName);
+
+    int quickFixes = 0;
+    for (const AiReviewFinding &f : std::as_const(findings)) {
+        const QString body = QString::fromUtf8("**\xF0\x9F\xA4\x96 AI review "
+                                               "\xC2\xB7 %1:** %2")
+                                 .arg(f.severity, f.comment);
+        if (!f.suggestionPatch.isEmpty())
+            ++quickFixes;
+        if (store.canWrite()) {
+            QString postError;
+            store.addThreadComment(number, f.path, QStringLiteral("new"),
+                                   f.lineStart, f.lineEnd, body,
+                                   f.suggestionPatch, &postError);
+        } else {
+            PullEvent ev;
+            ev.type = QStringLiteral("thread-comment");
+            ev.path = f.path;
+            ev.side = QStringLiteral("new");
+            ev.lineStart = f.lineStart;
+            ev.lineEnd = f.lineEnd;
+            ev.body = body;
+            ev.suggestionPatch = f.suggestionPatch;
+            ev = store.makeSignedEvent(number, ev);
+            submitPullEventToInbox(number, ev);
+        }
+        aiReviewLog(QStringLiteral("==> %1:%2 [%3] %4%5\n")
+                        .arg(f.path)
+                        .arg(f.lineStart)
+                        .arg(f.severity, f.comment.left(120),
+                             f.suggestionPatch.isEmpty()
+                                 ? QString()
+                                 : QStringLiteral(" (quick fix)")));
+    }
+
+    // A summary review event so the conversation records the outcome. Posted as
+    // "commented" — an AI approving/blocking under the node's own signature
+    // would distort the human review summary.
+    QString summary;
+    if (findings.isEmpty())
+        summary = QString::fromUtf8(
+            "\xF0\x9F\xA4\x96 AI review found no issues in this diff.");
+    else
+        summary =
+            QString::fromUtf8(
+                "\xF0\x9F\xA4\x96 AI review found %1 issue(s); %2 carry a "
+                "one-click \"Apply fix & commit\" suggestion. Use \"Fix all "
+                "with AI\" to hand the open findings to an agent.")
+                .arg(findings.size())
+                .arg(quickFixes);
+    if (store.canWrite()) {
+        QString postError;
+        store.addReview(number, QStringLiteral("commented"), summary, &postError);
+    } else {
+        PullEvent ev;
+        ev.type = QStringLiteral("review");
+        ev.state = QStringLiteral("commented");
+        ev.body = summary;
+        ev = store.makeSignedEvent(number, ev);
+        submitPullEventToInbox(number, ev);
+    }
+
+    aiReviewLog(QStringLiteral("==> Review finished: %1 finding(s), %2 with a "
+                               "quick fix (cost ~$%3).\n")
+                    .arg(findings.size())
+                    .arg(quickFixes)
+                    .arg(QString::number(m_aiReview->costUsd, 'f', 4)));
+    aiReviewSetSessionStatus(AgentStatus::Success);
+    const int repoIndex = m_aiReview->repoIndex;
+    delete m_aiReview;
+    m_aiReview = nullptr;
+
+    logSystem(QStringLiteral("AI review of pull request #%1 finished.").arg(number));
+    if (repoIndex == m_repoDetailIndex) {
+        reloadPulls();
+        showPull(number);
+    }
+    flashMessage(findings.isEmpty()
+                     ? QStringLiteral("AI review: no issues found on PR #%1.")
+                           .arg(number)
+                     : QStringLiteral("AI review: %1 finding(s) attached to "
+                                      "PR #%2's code.")
+                           .arg(findings.size())
+                           .arg(number));
+}
+
+void MainWindow::aiReviewFail(const QString &message)
+{
+    if (!m_aiReview)
+        return;
+    const int number = m_aiReview->number;
+    const int repoIndex = m_aiReview->repoIndex;
+    aiReviewLog(QStringLiteral("!! %1\n").arg(message));
+    aiReviewSetSessionStatus(AgentStatus::Failed, message);
+    delete m_aiReview;
+    m_aiReview = nullptr;
+    flashMessage(QStringLiteral("AI review failed: %1").arg(message), true);
+    if (repoIndex == m_repoDetailIndex) {
+        reloadPulls();
+        showPull(number);
+    }
+}
+
+void MainWindow::aiReviewLog(const QString &text)
+{
+    if (!m_aiReview || !m_agentStore)
+        return;
+    if (AgentSession *s = findAgentSession(m_aiReview->sessionId))
+        m_agentStore->appendLog(*s, text);
+    onAgentLog(m_aiReview->sessionId, text); // live-append if shown
+}
+
+void MainWindow::aiReviewSetSessionStatus(const QString &status,
+                                          const QString &error)
+{
+    if (!m_aiReview || !m_agentStore)
+        return;
+    AgentSession *s = findAgentSession(m_aiReview->sessionId);
+    if (!s)
+        return;
+    s->status = status;
+    s->costUsd = m_aiReview->costUsd;
+    s->promptTokens = int(m_aiReview->inTokens);
+    s->completionTokens = int(m_aiReview->outTokens);
+    s->totalTokens = int(m_aiReview->inTokens + m_aiReview->outTokens);
+    if (!error.isEmpty())
+        s->lastError = error;
+    if (status == AgentStatus::Success || status == AgentStatus::Failed ||
+        status == AgentStatus::Stopped)
+        s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(*s);
+    reloadAgents();
+    if (m_aiReview->sessionId == m_selectedAgentSessionId)
+        showAgentSession(m_aiReview->sessionId);
+}
+
+// One-click "Apply fix & commit" on a review thread's suggestion (adhoc #82):
+// re-checks out the PR's branch with the PR applied, applies the suggestion
+// patch (verifying the exact lines it replaces, relocating if the recorded
+// line drifted), commits the edit to the branch and records the suggestion as
+// applied + the thread as resolved. The PR stays open and mergeable.
+void MainWindow::applyPullSuggestionFix(const QString &threadId)
+{
+    if (m_currentPullNumber < 0 || threadId.isEmpty())
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (m_aiFix) {
+        flashMessage("An AI fix is already running; wait for it to finish.",
+                     true);
+        return;
+    }
+    PullRequest current;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber)
+            current = pr;
+    if (current.number == 0)
+        return;
+    PullReviewThread target;
+    const PullReviewSnapshot snapshot = buildPullReviewSnapshot(current);
+    for (const PullReviewThread &thread : snapshot.threads)
+        if (thread.id == threadId)
+            target = thread;
+    QString suggestion;
+    for (const PullEvent &ev : std::as_const(target.events))
+        if (ev.type == QLatin1String("thread-comment") &&
+            !ev.suggestionPatch.isEmpty())
+            suggestion = ev.suggestionPatch;
+    if (target.path.isEmpty() || suggestion.isEmpty()) {
+        flashMessage("This thread has no applicable suggestion.", true);
+        return;
+    }
+    if (target.suggestionState == QLatin1String("applied")) {
+        flashMessage("This suggestion is already applied.");
+        return;
+    }
+
+    PullStore store = pullStoreForCurrentRepo();
+    if (!store.canWrite()) {
+        flashMessage("This repository is read-only on this node.", true);
+        return;
+    }
+    QString error;
+    QString content;
+    if (!store.startPullFileEdit(m_currentPullNumber, target.path, &content,
+                                 &error)) {
+        QMessageBox::warning(this, "Apply fix", error);
+        return;
+    }
+    if (!applySuggestionToContent(&content, target.lineStart, suggestion,
+                                  &error)) {
+        store.abortConflictMerge();
+        QMessageBox::warning(this, "Apply fix", error);
+        return;
+    }
+    if (!store.finishPullFileEdit(m_currentPullNumber, target.path, content,
+                                  &error)) {
+        store.abortConflictMerge();
+        QMessageBox::warning(this, "Apply fix", error);
+        return;
+    }
+
+    // Record the applied state with the commit that carries it (the PR
+    // branch's refreshed tip), and resolve the thread like an accepted
+    // suggestion elsewhere would be.
+    QString appliedSha;
+    const QString workTree =
+        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    for (const PullRequest &p : store.loadAll())
+        if (p.number == m_currentPullNumber && !p.head.isEmpty()) {
+            QByteArray out;
+            if (runGitCapture(workTree, {"rev-parse", p.head}, &out, nullptr))
+                appliedSha = QString::fromUtf8(out).trimmed();
+        }
+    store.setSuggestionState(m_currentPullNumber, threadId,
+                             QStringLiteral("applied"), appliedSha,
+                             QStringLiteral("Applied the suggested fix."),
+                             &error);
+    store.setThreadState(m_currentPullNumber, threadId,
+                         QStringLiteral("resolved"), QString(), &error);
+    reloadPulls();
+    showPull(m_currentPullNumber);
+    propagateRepoUpdate(m_repoDetailIndex);
+    flashMessage(QStringLiteral("Fix applied and committed to PR #%1's branch.")
+                     .arg(m_currentPullNumber));
+}
+
+// "Fix all with AI" (adhoc #82): check the PR's branch out with the PR applied
+// and hand every unresolved review thread — the quick-fixable ones and the
+// ones that need real work alike — to a Claude Code run that edits the tree;
+// finishPullAgentEdit commits the lot back to the branch. Reuses the m_aiFix
+// machinery (process handling, session log, finish/fail) in agentEdit mode.
+void MainWindow::fixCurrentPullFindingsWithAgent()
+{
+    if (m_aiFix) {
+        flashMessage("An AI fix is already running; wait for it to finish.",
+                     true);
+        return;
+    }
+    if (m_aiReview) {
+        flashMessage("Wait for the AI review to finish first.", true);
+        return;
+    }
+    if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int number = m_currentPullNumber;
+    PullRequest current;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == number)
+            current = pr;
+    if (current.number == 0)
+        return;
+
+    // Every unresolved thread goes into the prompt: path:lines, the comments,
+    // and any suggested fix (the agent may apply or better it).
+    const PullReviewSnapshot snapshot = buildPullReviewSnapshot(current);
+    QStringList findingBlocks;
+    QStringList paths;
+    for (const PullReviewThread &thread : snapshot.threads) {
+        if (thread.resolved ||
+            thread.suggestionState == QLatin1String("applied"))
+            continue;
+        QStringList lines;
+        lines << QStringLiteral("- %1:%2%3")
+                     .arg(thread.path)
+                     .arg(thread.lineStart)
+                     .arg(thread.lineEnd > thread.lineStart
+                              ? QStringLiteral("-%1").arg(thread.lineEnd)
+                              : QString());
+        for (const PullEvent &ev : thread.events) {
+            if (ev.type != QLatin1String("thread-comment") &&
+                ev.type != QLatin1String("thread-reply") &&
+                ev.type != QLatin1String("line-comment"))
+                continue;
+            if (!ev.body.trimmed().isEmpty())
+                lines << QStringLiteral("  %1").arg(
+                    ev.body.trimmed().left(600).replace(
+                        QLatin1Char('\n'), QStringLiteral("\n  ")));
+            if (!ev.suggestionPatch.isEmpty())
+                lines << QStringLiteral("  Suggested fix:\n  %1").arg(
+                    QString(ev.suggestionPatch)
+                        .replace(QLatin1Char('\n'), QStringLiteral("\n  ")));
+        }
+        findingBlocks << lines.join(QLatin1Char('\n'));
+        if (!thread.path.isEmpty() && !paths.contains(thread.path))
+            paths << thread.path;
+    }
+    if (findingBlocks.isEmpty()) {
+        flashMessage("No unresolved review findings to fix.");
+        return;
+    }
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString workTree = writableRecordFor(repo).localPath;
+    if (workTree.isEmpty()) {
+        QMessageBox::warning(this, "Fix all with AI",
+                             "This repository is read-only on this node.");
+        return;
+    }
+
+    // Open the PR's branch with the PR applied; the store carries that state
+    // across the async run, so it lives on the heap until finish/fail.
+    auto *store = new PullStore(pullStoreForCurrentRepo());
+    QString error;
+    if (!store->startPullAgentEdit(number, &error)) {
+        delete store;
+        QMessageBox::warning(this, "Fix all with AI", error);
+        return;
+    }
+
+    AgentSession session;
+    session.owner = repo.owner;
+    session.name = repo.name;
+    session.issueNumber = 0;
+    session.issueTitle =
+        QStringLiteral("Fix review findings on PR #%1").arg(number);
+    session.provider = QStringLiteral("claude-code");
+    session.prNumber = number;
+    session.branchName = current.head.isEmpty()
+                             ? QStringLiteral("pull/%1").arg(number)
+                             : current.head;
+    session.status = AgentStatus::Running;
+    session = m_agentStore->createSession(session);
+    session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_agentStore->saveSession(session);
+    m_agentStore->appendLog(
+        session,
+        QStringLiteral("==> Claude Code fixing %1 review finding(s) on pull "
+                       "request #%2.\n")
+            .arg(findingBlocks.size())
+            .arg(number));
+
+    m_aiFix = new AiConflictFix;
+    m_aiFix->store = store;
+    m_aiFix->number = number;
+    m_aiFix->repoIndex = m_repoDetailIndex;
+    m_aiFix->sessionId = session.id;
+    m_aiFix->provider = QStringLiteral("claude-code");
+    m_aiFix->workTree = workTree;
+    m_aiFix->files = paths;
+    m_aiFix->claudeCode = true;
+    m_aiFix->agentEdit = true;
+    m_aiFix->agentEditFindings = findingBlocks.size();
+
+    QStringList prompt;
+    prompt << QStringLiteral(
+        "You are addressing code-review findings on a pull request. Its branch "
+        "is checked out in this repository with the pull request applied.");
+    prompt << QString();
+    prompt << QStringLiteral(
+        "The findings, each anchored to file:line(s) of the current checkout:");
+    prompt << findingBlocks.join(QStringLiteral("\n\n"));
+    prompt << QString();
+    prompt << QStringLiteral(
+        "Edit the files to properly fix every finding. Keep the changes "
+        "minimal and in the spirit of the pull request.");
+    prompt << QStringLiteral(
+        "Do NOT run any git command, do NOT commit, and do NOT touch unrelated "
+        "code \xE2\x80\x94 ForkMesh commits the result for you once you are "
+        "done.");
+    m_aiFix->agentEditPrompt = prompt.join(QLatin1Char('\n'));
+
+    if (m_pullMergeStatus) {
+        m_pullMergeStatus->setText(QString::fromUtf8(
+            "<span style='color:#58a6ff'>\xF0\x9F\xA4\x96 Claude Code is fixing "
+            "the review findings\xE2\x80\xA6 watch it on the Agents tab."
+            "</span>"));
+        m_pullMergeStatus->show();
+    }
+    updatePullActionState();
+    switchToAgentsTab(session.id);
+    aiFixRunClaudeCode();
+}
+
 void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
 {
     if (m_aiFix) {
@@ -4108,32 +4873,43 @@ void MainWindow::aiFixRunClaudeCode()
     if (!m_aiFix)
         return;
 
-    // A focused prompt: resolve the listed files' conflict markers and nothing
-    // else. The git-am session is open in this very tree, so the agent must not
-    // run git or commit — finishConflictMerge stages and commits afterwards.
+    // A focused prompt. Conflict mode: resolve the listed files' conflict
+    // markers and nothing else (the git-am session is open in this very tree).
+    // Review-fix mode (adhoc #82): the pre-built findings prompt from
+    // fixCurrentPullFindingsWithAgent. Either way the agent must not run git or
+    // commit — finishConflictMerge/finishPullAgentEdit stage and commit after.
     const QString promptPath =
-        m_aiFix->workTree + QStringLiteral("/.forkmesh-conflict-prompt.md");
-    QStringList prompt;
-    prompt << QStringLiteral(
-        "You are resolving Git merge conflicts in this repository checkout.");
-    prompt << QStringLiteral("These files contain conflict markers "
-                             "(<<<<<<<, =======, >>>>>>>):");
-    for (const QString &rel : std::as_const(m_aiFix->files))
-        prompt << QStringLiteral("  - %1").arg(rel);
-    prompt << QString();
-    prompt << QStringLiteral(
-        "Edit each of those files so every conflict is resolved by combining both "
-        "sides into one correct, coherent result. Remove every conflict marker and "
-        "keep all non-conflicting content exactly as it is.");
-    prompt << QStringLiteral(
-        "Do NOT run any git command, do NOT commit, and do NOT touch any other "
-        "file \xE2\x80\x94 ForkMesh commits the result for you once you are done.");
+        m_aiFix->workTree + (m_aiFix->agentEdit
+                                 ? QStringLiteral("/.forkmesh-review-fix-prompt.md")
+                                 : QStringLiteral("/.forkmesh-conflict-prompt.md"));
+    m_aiFix->promptFile = promptPath;
+    QString promptText;
+    if (m_aiFix->agentEdit) {
+        promptText = m_aiFix->agentEditPrompt;
+    } else {
+        QStringList prompt;
+        prompt << QStringLiteral(
+            "You are resolving Git merge conflicts in this repository checkout.");
+        prompt << QStringLiteral("These files contain conflict markers "
+                                 "(<<<<<<<, =======, >>>>>>>):");
+        for (const QString &rel : std::as_const(m_aiFix->files))
+            prompt << QStringLiteral("  - %1").arg(rel);
+        prompt << QString();
+        prompt << QStringLiteral(
+            "Edit each of those files so every conflict is resolved by combining both "
+            "sides into one correct, coherent result. Remove every conflict marker and "
+            "keep all non-conflicting content exactly as it is.");
+        prompt << QStringLiteral(
+            "Do NOT run any git command, do NOT commit, and do NOT touch any other "
+            "file \xE2\x80\x94 ForkMesh commits the result for you once you are done.");
+        promptText = prompt.join(QLatin1Char('\n'));
+    }
     QFile pf(promptPath);
     if (!pf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
         aiFixFail(QStringLiteral("Could not write the agent prompt file."));
         return;
     }
-    pf.write(prompt.join(QLatin1Char('\n')).toUtf8());
+    pf.write(promptText.toUtf8());
     pf.close();
 
     // Expand the configured Claude Code command, substituting the prompt file.
@@ -4187,8 +4963,7 @@ void MainWindow::aiFixRunClaudeCode()
                 if (err == QProcess::FailedToStart) {
                     m_aiFix->process = nullptr;
                     process->deleteLater();
-                    QFile::remove(m_aiFix->workTree +
-                                  QStringLiteral("/.forkmesh-conflict-prompt.md"));
+                    QFile::remove(m_aiFix->promptFile);
                     aiFixFail(QStringLiteral(
                         "Could not start the `claude` CLI \xE2\x80\x94 install Claude "
                         "Code or set its command in Settings."));
@@ -4203,41 +4978,55 @@ void MainWindow::aiFixRunClaudeCode()
                     aiFixLog(QString::fromUtf8(tail));
                 const QString workTree = m_aiFix->workTree;
                 const QStringList files = m_aiFix->files;
+                const bool agentEdit = m_aiFix->agentEdit;
                 m_aiFix->process = nullptr;
                 process->deleteLater();
-                QFile::remove(workTree +
-                              QStringLiteral("/.forkmesh-conflict-prompt.md"));
+                QFile::remove(m_aiFix->promptFile);
                 if (exitCode != 0) {
                     aiFixFail(QStringLiteral(
-                                  "Claude Code exited with code %1 before resolving "
-                                  "the conflicts.").arg(exitCode));
+                                  "Claude Code exited with code %1 before %2.")
+                                  .arg(exitCode)
+                                  .arg(agentEdit
+                                           ? QStringLiteral("fixing the findings")
+                                           : QStringLiteral(
+                                                 "resolving the conflicts")));
                     return;
                 }
-                // The CLI claims success — make sure no marker survived before
-                // finishConflictMerge commits (it rejects markers too, but a clear
-                // message here is friendlier).
-                for (const QString &rel : files) {
-                    QFile f(workTree + QLatin1Char('/') + rel);
-                    if (!f.open(QIODevice::ReadOnly))
-                        continue;
-                    const QString text = QString::fromUtf8(f.readAll());
-                    if (text.contains(QStringLiteral("\n<<<<<<< ")) ||
-                        text.startsWith(QStringLiteral("<<<<<<< ")) ||
-                        text.contains(QStringLiteral("\n>>>>>>> "))) {
-                        aiFixFail(QStringLiteral(
-                                      "Claude Code left conflict markers in %1 "
-                                      "\xE2\x80\x94 resolve it manually instead.")
-                                      .arg(rel));
-                        return;
+                // Conflict mode only: the CLI claims success — make sure no
+                // marker survived before finishConflictMerge commits (it rejects
+                // markers too, but a clear message here is friendlier). A
+                // review-fix run starts from a marker-free tree, so there is
+                // nothing to scan for.
+                if (!agentEdit) {
+                    for (const QString &rel : files) {
+                        QFile f(workTree + QLatin1Char('/') + rel);
+                        if (!f.open(QIODevice::ReadOnly))
+                            continue;
+                        const QString text = QString::fromUtf8(f.readAll());
+                        if (text.contains(QStringLiteral("\n<<<<<<< ")) ||
+                            text.startsWith(QStringLiteral("<<<<<<< ")) ||
+                            text.contains(QStringLiteral("\n>>>>>>> "))) {
+                            aiFixFail(QStringLiteral(
+                                          "Claude Code left conflict markers in %1 "
+                                          "\xE2\x80\x94 resolve it manually instead.")
+                                          .arg(rel));
+                            return;
+                        }
                     }
                 }
-                aiFixLog(QStringLiteral(
-                    "==> Claude Code finished; committing the resolution.\n"));
+                aiFixLog(agentEdit
+                             ? QStringLiteral("==> Claude Code finished; "
+                                              "committing the review fixes.\n")
+                             : QStringLiteral("==> Claude Code finished; "
+                                              "committing the resolution.\n"));
                 aiFixFinish();
             });
 
-    aiFixLog(
-        QStringLiteral("==> Running Claude Code over the conflict tree\xE2\x80\xA6\n"));
+    aiFixLog(m_aiFix->agentEdit
+                 ? QStringLiteral("==> Running Claude Code over the pull "
+                                  "request's branch\xE2\x80\xA6\n")
+                 : QStringLiteral(
+                       "==> Running Claude Code over the conflict tree\xE2\x80\xA6\n"));
 #ifdef Q_OS_WIN
     process->start(QStringLiteral("cmd"), {QStringLiteral("/c"), command});
 #else
@@ -4332,33 +5121,68 @@ void MainWindow::aiFixFinish()
     }
     const int number = m_aiFix->number;
     const int repoIndex = m_aiFix->repoIndex;
+    const bool agentEdit = m_aiFix->agentEdit;
     QString error;
-    if (!m_aiFix->store->finishConflictMerge(number, &error)) {
+    const bool committed =
+        agentEdit
+            ? m_aiFix->store->finishPullAgentEdit(
+                  number,
+                  QStringLiteral("pull #%1: apply AI review fixes").arg(number),
+                  &error)
+            : m_aiFix->store->finishConflictMerge(number, &error);
+    if (!committed) {
         aiFixFail(error.isEmpty() ? QStringLiteral("Could not commit the fix.")
                                   : error);
         return;
     }
     aiFixLog(QStringLiteral(
-                 "==> Committed the conflict fix to pull request #%1's branch "
-                 "(cost ~$%2).\n")
+                 "==> Committed the %1 to pull request #%2's branch "
+                 "(cost ~$%3).\n")
+                 .arg(agentEdit ? QStringLiteral("review fixes")
+                                : QStringLiteral("conflict fix"))
                  .arg(number)
                  .arg(QString::number(m_aiFix->costUsd, 'f', 4)));
     aiFixSetSessionStatus(AgentStatus::Success);
+
+    // Leave a trace in the PR conversation so reviewers know the branch moved
+    // and can re-check + resolve the threads the agent addressed (adhoc #82).
+    if (agentEdit) {
+        QString commentError;
+        m_aiFix->store->addComment(
+            number,
+            QString::fromUtf8(
+                "\xF0\x9F\xA4\x96 An agent worked through %1 unresolved review "
+                "finding(s) and committed fixes to this pull request's branch "
+                "\xE2\x80\x94 re-check the threads and resolve the ones that "
+                "are addressed.")
+                .arg(m_aiFix->agentEditFindings),
+            &commentError);
+    }
 
     delete m_aiFix->store;
     delete m_aiFix;
     m_aiFix = nullptr;
 
-    logSystem(QStringLiteral(
-                  "AI resolved conflicts on pull request #%1's branch; it is "
-                  "updated and ready to merge.").arg(number));
+    logSystem(agentEdit
+                  ? QStringLiteral("AI fixed review findings on pull request "
+                                   "#%1's branch; re-check the threads.")
+                        .arg(number)
+                  : QStringLiteral(
+                        "AI resolved conflicts on pull request #%1's branch; it "
+                        "is updated and ready to merge.")
+                        .arg(number));
     if (repoIndex == m_repoDetailIndex) {
         reloadPulls();
         showPull(number);
     }
     if (repoIndex >= 0)
         propagateRepoUpdate(repoIndex);
-    flashMessage(QStringLiteral("Conflicts on PR #%1 fixed and committed.").arg(number));
+    flashMessage(agentEdit
+                     ? QStringLiteral(
+                           "Review fixes on PR #%1 committed to its branch.")
+                           .arg(number)
+                     : QStringLiteral("Conflicts on PR #%1 fixed and committed.")
+                           .arg(number));
 }
 
 void MainWindow::aiFixFail(const QString &message)
@@ -4388,6 +5212,7 @@ void MainWindow::aiFixFail(const QString &message)
     }
     const int number = m_aiFix->number;
     const int repoIndex = m_aiFix->repoIndex;
+    const bool agentEdit = m_aiFix->agentEdit;
     aiFixLog(QStringLiteral("!! %1\n").arg(message));
     aiFixSetSessionStatus(AgentStatus::Failed, message);
     m_aiFix->store->abortConflictMerge(); // restore the working tree + drop the branch
@@ -4396,7 +5221,11 @@ void MainWindow::aiFixFail(const QString &message)
     delete m_aiFix;
     m_aiFix = nullptr;
 
-    flashMessage(QStringLiteral("AI conflict fix failed: %1").arg(message), true);
+    flashMessage(QStringLiteral("%1 failed: %2")
+                     .arg(agentEdit ? QStringLiteral("AI review fix")
+                                    : QStringLiteral("AI conflict fix"),
+                          message),
+                 true);
     if (repoIndex == m_repoDetailIndex) {
         reloadPulls();
         showPull(number);
