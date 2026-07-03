@@ -539,13 +539,17 @@ void MainWindow::maybeAnnounceWelcome()
     const QString id = m_profileIdentity.publicKey();
     if (id.isEmpty())
         return;
-    QSettings settings;
-    const QString key = kWelcomeAnnouncedSettingPrefix + id;
-    if (settings.value(key, false).toBool()) {
+    // The flag lives next to the identity key itself (not QSettings, which can
+    // live in a separate, less-persistent config location on some deployments —
+    // e.g. a headless node whose identity dir is on a persistent volume but
+    // whose settings dir isn't, which was re-triggering this greeting on every
+    // restart). Colocating the two means the greeting can only fire again if the
+    // identity itself was also lost, which is exactly when it should.
+    if (m_profileIdentity.hasAnnouncedWelcome()) {
         m_welcomeAnnounced = true; // greeted in an earlier run; don't repeat
         return;
     }
-    settings.setValue(key, true);
+    m_profileIdentity.markWelcomeAnnounced();
     m_welcomeAnnounced = true;
     m_backend->sendChat(
         kWelcomeChannel,

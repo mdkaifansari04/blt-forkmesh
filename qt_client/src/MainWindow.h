@@ -2194,8 +2194,9 @@ private:
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
     // Post this node's one-time "just joined" greeting to the shared #welcome
-    // room. Only a brand-new identity announces (gated by a per-identity setting),
-    // so the network sees a single join line with no per-peer duplicates (#192).
+    // room. Only a brand-new identity announces (gated by a sentinel file next
+    // to the identity key), so the network sees a single join line with no
+    // per-peer duplicates, and no re-announce on a settings-only reset (#192).
     void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
