@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 351
 title: this is a valid node id - please mkae this work
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
