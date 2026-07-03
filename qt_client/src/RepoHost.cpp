@@ -1,6 +1,7 @@
 #include "RepoHost.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -22,6 +23,15 @@ constexpr quint64 kMaxWsPayload = 8ull * 1024 * 1024;
 constexpr int kMaxBlobBytes = 512 * 1024;
 constexpr int kMaxImageDiffBytes = 2 * 1024 * 1024;
 constexpr int kGitTimeoutMs = 5000;
+// A NAT rebind, sleep/wake, or dropped-packet blackhole can leave the local
+// QTcpSocket in ConnectedState forever: writes into the OS buffer keep
+// "succeeding" with no peer to receive them, so neither `disconnected` nor
+// `errorOccurred` ever fires and RepoHost never reconnects, even though the
+// relay closed its side and purged host_presence within seconds (adhoc
+// #140 — node app shows connected/online while the website shows offline).
+// Anything received (handshake bytes, our own ping's pong, a request) proves
+// the path is alive, so treat a stretch with no inbound bytes at all as dead.
+constexpr qint64 kStaleRxMs = 70000; // ~2.8x the 25s ping interval
 
 QByteArray randomKey()
 {
@@ -254,6 +264,17 @@ RepoHost::RepoHost(const QString &owner, const QString &name,
     m_pingTimer = new QTimer(this);
     m_pingTimer->setInterval(25000);
     connect(m_pingTimer, &QTimer::timeout, this, [this] {
+        // If nothing at all has come back since before the last ping went out,
+        // the socket is a zombie (see kStaleRxMs) — the relay already dropped
+        // us, so reconnect instead of writing another ping into the void.
+        if (m_lastRx && QDateTime::currentMSecsSinceEpoch() - m_lastRx > kStaleRxMs) {
+            emit log("Host: connection to relay went stale for " + m_owner + "/" +
+                      m_name + ", reconnecting.");
+            if (m_socket)
+                m_socket->abort();
+            scheduleReconnect();
+            return;
+        }
         // A WebSocket ping keeps the transport alive, while the application
         // heartbeat lets the hibernating Worker refresh this repository's D1
         // presence row. Without the text heartbeat an idle-but-connected host
@@ -299,6 +320,7 @@ void RepoHost::connectSocket()
     }
     m_wsReady = false;
     m_readBuffer.clear();
+    m_lastRx = QDateTime::currentMSecsSinceEpoch();
 
     const bool secure = m_url.scheme() == "wss";
     m_socket = secure ? new QSslSocket(this) : new QTcpSocket(this);
@@ -349,6 +371,7 @@ void RepoHost::sendHandshake()
 
 void RepoHost::onReadyRead()
 {
+    m_lastRx = QDateTime::currentMSecsSinceEpoch();
     m_readBuffer += m_socket->readAll();
     if (!m_wsReady) {
         const int headerEnd = m_readBuffer.indexOf("\r\n\r\n");
