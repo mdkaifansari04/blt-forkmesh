@@ -810,6 +810,39 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     border: none; background: transparent;
     font-size: 12px;
 }
+/* Slash-actions "/" box (adhoc #116), left of the Agent checkbox — a small
+   bordered square like the Claude Code extension's own actions button. */
+QPushButton#quickAddSlashButton {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 5px;
+    color: #8b949e; font-weight: 600; font-size: 12px; padding: 0;
+}
+QPushButton#quickAddSlashButton:hover { border-color: #58a6ff; color: #e6edf3; }
+/* The popup itself: filter box on top, scrollable action list below. */
+#slashActionsPopup {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+}
+QLineEdit#slashActionsFilter {
+    background: transparent; border: none; border-bottom: 1px solid #30363d;
+    border-radius: 0; padding: 10px 12px; color: #e6edf3; font-size: 13px;
+}
+#slashActionsScroll { background: transparent; border: none; }
+#slashActionsScroll > QWidget > QWidget { background: transparent; }
+QLabel#slashActionsHeader {
+    color: #8b949e; font-size: 11px; font-weight: 600;
+    padding: 8px 12px 4px 12px;
+}
+QFrame#slashActionRow { background: transparent; border-radius: 6px; }
+QFrame#slashActionRow[slashSelected="true"] { background: #1f2937; }
+QLabel#slashActionRowLabel { color: #e6edf3; font-size: 13px; background: transparent; }
+QLabel#slashActionRowValue { color: #8b949e; font-size: 12px; background: transparent; }
+QToolButton#slashEffortDot {
+    background: transparent; border: 2px solid #6e7681; border-radius: 5px;
+}
+QToolButton#slashEffortDot:checked { background: #e6edf3; border-color: #e6edf3; }
+QCheckBox#slashToggle::indicator {
+    width: 28px; height: 16px; border-radius: 8px; border: none; background: #30363d;
+}
+QCheckBox#slashToggle::indicator:checked { background: #2ea043; }
 /* "Agents:" status strip above the footer prompt (adhoc #111): a plain
    ghost-button label plus small borderless dot buttons, one per session. */
 QPushButton#agentStatusLabel {
@@ -1889,6 +1922,38 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     border: none; background: transparent;
     font-size: 12px;
 }
+/* Slash-actions "/" box (adhoc #116): see the dark-theme block above for the
+   rationale — a small bordered square left of the Agent checkbox. */
+QPushButton#quickAddSlashButton {
+    background: #ffffff; border: 1px solid #d0d7de; border-radius: 5px;
+    color: #57606a; font-weight: 600; font-size: 12px; padding: 0;
+}
+QPushButton#quickAddSlashButton:hover { border-color: #0969da; color: #1f2328; }
+#slashActionsPopup {
+    background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
+}
+QLineEdit#slashActionsFilter {
+    background: transparent; border: none; border-bottom: 1px solid #d0d7de;
+    border-radius: 0; padding: 10px 12px; color: #1f2328; font-size: 13px;
+}
+#slashActionsScroll { background: transparent; border: none; }
+#slashActionsScroll > QWidget > QWidget { background: transparent; }
+QLabel#slashActionsHeader {
+    color: #6e7781; font-size: 11px; font-weight: 600;
+    padding: 8px 12px 4px 12px;
+}
+QFrame#slashActionRow { background: transparent; border-radius: 6px; }
+QFrame#slashActionRow[slashSelected="true"] { background: #eaeef2; }
+QLabel#slashActionRowLabel { color: #1f2328; font-size: 13px; background: transparent; }
+QLabel#slashActionRowValue { color: #6e7781; font-size: 12px; background: transparent; }
+QToolButton#slashEffortDot {
+    background: transparent; border: 2px solid #8c959f; border-radius: 5px;
+}
+QToolButton#slashEffortDot:checked { background: #1f2328; border-color: #1f2328; }
+QCheckBox#slashToggle::indicator {
+    width: 28px; height: 16px; border-radius: 8px; border: none; background: #d0d7de;
+}
+QCheckBox#slashToggle::indicator:checked { background: #1a7f37; }
 /* "Agents:" status strip above the footer prompt (adhoc #111): a plain
    ghost-button label plus small borderless dot buttons, one per session. */
 QPushButton#agentStatusLabel {
