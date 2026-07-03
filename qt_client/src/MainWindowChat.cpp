@@ -854,10 +854,16 @@ void MainWindow::populateSlashActionsList()
         rowLayout->setContentsMargins(12, 7, 12, 7);
         auto *title = new QLabel(label);
         title->setObjectName("slashActionRowLabel");
+        // Qt delivers the click to whichever child is directly under the
+        // cursor, not the parent frame — without this, clicking the label
+        // text itself (rather than the row's bare padding) would miss the
+        // "slashKind" property set on `row` and do nothing.
+        title->setAttribute(Qt::WA_TransparentForMouseEvents);
         rowLayout->addWidget(title, 1);
         if (!rightText.isEmpty()) {
             auto *right = new QLabel(rightText);
             right->setObjectName("slashActionRowValue");
+            right->setAttribute(Qt::WA_TransparentForMouseEvents);
             rowLayout->addWidget(right);
         }
         m_slashActionsListLayout->addWidget(row);
@@ -877,6 +883,7 @@ void MainWindow::populateSlashActionsList()
         auto *title = new QLabel(label);
         title->setObjectName("slashActionRowLabel");
         title->setWordWrap(true);
+        title->setAttribute(Qt::WA_TransparentForMouseEvents); // see addRow above
         rowLayout->addWidget(title, 1);
         auto *toggle = new QCheckBox;
         toggle->setObjectName("slashToggle");
