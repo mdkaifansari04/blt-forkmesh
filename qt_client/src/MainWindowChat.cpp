@@ -620,20 +620,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     // either side, then the character count immediately left of the send icons.
     // No bottom margin (adhoc #111) so the row sits flush against the bottom
     // edge of the prompt frame instead of leaving a gap under it.
+    // Every widget is bottom-aligned (adhoc #114): the send column is two
+    // stacked 28px icons and taller than the rest of the row, so without an
+    // explicit alignment Qt centres the shorter controls in that extra height
+    // and they read as floating above the send icons instead of level with
+    // them.
     auto *bottomBar = new QHBoxLayout;
     bottomBar->setContentsMargins(8, 6, 6, 0);
     bottomBar->setSpacing(6);
-    bottomBar->addWidget(m_quickAddImageButton);
-    bottomBar->addWidget(m_quickAddMicButton);
-    bottomBar->addWidget(m_voiceLevelMeter);
-    bottomBar->addWidget(m_quickAddAttachStrip);
-    bottomBar->addWidget(m_quickAddVoiceAutoSubmit);
+    bottomBar->addWidget(m_quickAddImageButton, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddMicButton, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
     bottomBar->addSpacing(14);
-    bottomBar->addWidget(m_quickAddCreateIssue);
+    bottomBar->addWidget(m_quickAddCreateIssue, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    bottomBar->addWidget(agentBox);
+    bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    bottomBar->addWidget(m_quickAddCharCount);
+    bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
     bottomBar->addLayout(sendColumn);
 
     // Prompt wrapper: the border lives on this frame; the text edit sits on

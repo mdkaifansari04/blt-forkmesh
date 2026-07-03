@@ -4055,9 +4055,12 @@ void MainWindow::switchToAgentsTab(int sessionId)
 }
 
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
-// one small colored dot per known session, click-through to that session's
-// Agents tab. Called after every reloadAgents() so the strip tracks the same
-// data as the Agents table.
+// one small status glyph per known session (adhoc #114 swapped the plain
+// colored dots for the same icon set the Agents table's Status column uses —
+// a green spinner while running, purple merge mark once landed, orange hand
+// while waiting, etc — via agentStatusOcticon), click-through to that
+// session's Agents tab. Called after every reloadAgents() so the strip tracks
+// the same data as the Agents table.
 void MainWindow::refreshAgentStatusRow()
 {
     if (!m_agentStatusIconsLayout || !m_agentStatusRow)
@@ -4068,26 +4071,64 @@ void MainWindow::refreshAgentStatusRow()
         delete item;
     }
     m_agentStatusRow->setVisible(!m_agentSessions.isEmpty());
+    bool anyRunning = false;
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
         auto *dot = new QPushButton;
         dot->setObjectName("agentStatusDot");
         dot->setFlat(true);
         dot->setCursor(Qt::PointingHandCursor);
-        dot->setFixedSize(16, 16);
-        dot->setIcon(coloredDotIcon(agentStatusColor(session.status)));
-        dot->setIconSize(QSize(10, 10));
+        dot->setFixedSize(18, 18);
+        dot->setIconSize(QSize(14, 14));
+        const bool running = !session.merged && session.status == AgentStatus::Running;
+        // Running sessions are seeded at frame 0 here; animateAgentStatusIcons()
+        // spins them the same way animateRunningAgentIcons() spins the table.
+        dot->setIcon(agentStatusOcticon(session, 14));
+        dot->setProperty("agentStatusSpin", running);
+        anyRunning = anyRunning || running;
         const QString label = session.issueNumber > 0
             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
             : session.prompt.left(80);
         dot->setToolTip(QStringLiteral("%1/%2 \xE2\x80\x94 %3\n%4")
                              .arg(session.owner, session.name,
-                                  agentStatusText(session.status), label));
+                                  session.merged ? QStringLiteral("merged")
+                                                 : agentStatusText(session.status),
+                                  label));
         const int sessionId = session.id;
         connect(dot, &QPushButton::clicked, this,
                 [this, sessionId] { switchToAgentsTab(sessionId); });
         m_agentStatusIconsLayout->addWidget(dot);
     }
     m_agentStatusIconsLayout->addStretch(1);
+
+    if (anyRunning) {
+        if (!m_agentStatusSpinTimer) {
+            m_agentStatusSpinTimer = new QTimer(this);
+            connect(m_agentStatusSpinTimer, &QTimer::timeout, this,
+                    &MainWindow::animateAgentStatusIcons);
+        }
+        if (!m_agentStatusSpinTimer->isActive())
+            m_agentStatusSpinTimer->start(120);
+    } else if (m_agentStatusSpinTimer) {
+        m_agentStatusSpinTimer->stop();
+    }
+}
+
+// Spin the green "sync" glyph on every running icon in the footer "Agents:"
+// strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
+// Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
+// least one session in the strip is running (see refreshAgentStatusRow).
+void MainWindow::animateAgentStatusIcons()
+{
+    if (!m_agentStatusIconsLayout)
+        return;
+    m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
+    const QIcon icon(rotatedTintedOcticonPixmap(
+        "sync", QColor("#3fb950"), 14, m_agentStatusSpinFrame * 36.0));
+    for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
+        QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
+        if (w && w->property("agentStatusSpin").toBool())
+            static_cast<QPushButton *>(w)->setIcon(icon);
+    }
 }
 
 // Clicking the "Agents:" label (as opposed to one of its dots): jump to the

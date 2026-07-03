@@ -1240,9 +1240,10 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
-    // Footer "Agents:" status strip (adhoc #111): one small status dot per
+    // Footer "Agents:" status strip (adhoc #111): one small status glyph per
     // known agent session, rebuilt from m_agentSessions whenever it changes.
     void refreshAgentStatusRow();
+    void animateAgentStatusIcons(); // spins the strip's running icons (adhoc #114)
     // Clicking the "Agents:" label itself (as opposed to one of the dots):
     // jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
@@ -3370,6 +3371,8 @@ private:
     QTimer *m_openRepoRefreshTimer = nullptr;
     QTimer *m_agentsSpinTimer = nullptr;         // animates the Agents tab while running
     int m_agentsSpinFrame = 0;
+    QTimer *m_agentStatusSpinTimer = nullptr;    // animates the footer "Agents:" strip
+    int m_agentStatusSpinFrame = 0;
     QTableWidget *m_actionsTable = nullptr;
     QLabel *m_actionRunTitle = nullptr;
     QLabel *m_actionRunMeta = nullptr;
