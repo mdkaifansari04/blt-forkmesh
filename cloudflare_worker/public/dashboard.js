@@ -2664,6 +2664,7 @@
         date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
         meta: config.meta(values),
         body: parsed.body || "",
+        wantsAgent: config.dir === "issues" ? Boolean(values.wantsAgent) : false,
       };
     });
     return records.filter(Boolean);
@@ -2705,7 +2706,10 @@
           <span class="mt-1 line-clamp-2 text-xs text-muted-foreground">${escapeHtml(item.body || `${item.author} opened this signed ${config.itemLabel}`)}</span>
           <span class="mt-1 block truncate text-[10px] font-mono text-muted-foreground">${escapeHtml(item.author)} · ${escapeHtml(item.date)}${item.meta ? ` · ${escapeHtml(item.meta)}` : ""}</span>
         </span>
-        <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 shrink-0 text-[10px] font-mono text-foreground">${escapeHtml(item.state || "open")}</span>
+        <span class="self-start shrink-0 flex items-center gap-2">
+          ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
+          <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.state || "open")}</span>
+        </span>
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
@@ -3127,6 +3131,7 @@
           date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
           meta: repoCollectionConfig.issues.meta(values),
           body: parsed.body || "",
+          wantsAgent: Boolean(values.wantsAgent),
         };
       }).filter(Boolean);
       state.issuesView.items = items;
