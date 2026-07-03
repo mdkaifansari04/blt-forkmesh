@@ -105,6 +105,8 @@ set(FORKMESH_APP_SOURCES
     src/MessageRow.h
     src/MessageRow.cpp
     src/MarkdownEditor.cpp
+    src/MarkupCanvas.h
+    src/MarkupCanvas.cpp
     src/KebabHeaderView.h
     src/KebabHeaderView.cpp
     src/TerminalWidget.h
@@ -159,7 +161,59 @@ set(FORKMESH_APP_SOURCES
 qt_add_executable(forkmesh
     src/main.cpp
     ${FORKMESH_APP_SOURCES}
+    src/forkmesh_autogen.cpp
 )
+
+# The app compiles its Qt meta-object code through the single, checked-in
+# src/forkmesh_autogen.cpp above rather than AUTOMOC's machine-generated
+# forkmesh_autogen/mocs_compilation.cpp (which lands under a hashed build
+# directory and stands out from the hand-written sources). Turn AUTOMOC off for
+# just this target and moc its Q_OBJECT headers explicitly; forkmesh_autogen.cpp
+# #includes the results. The test targets keep AUTOMOC so their
+# FORKMESH_WINDOW_TESTS-only Q_INVOKABLE hooks are still moc'd correctly.
+set_target_properties(forkmesh PROPERTIES AUTOMOC OFF)
+qt_wrap_cpp(FORKMESH_MOC_SOURCES
+    src/ActionRunner.h
+    src/AgentRunner.h
+    src/BackoffNetworkAccessManager.h
+    src/ChatBackend.h
+    src/ClaudeIdeBridge.h
+    src/ClaudeStreamSession.h
+    src/ClaudeTranscriptView.h
+    src/HeadlessConsole.h
+    src/KebabHeaderView.h
+    src/MainWindow.h
+    src/MarkdownEditor.h
+    src/MarkupCanvas.h
+    src/MessageRow.h
+    src/RepoHost.h
+    src/ScreenCaptureOverlay.h
+    src/ScreenDrawOverlay.h
+    src/ScreenshotMarkupWindow.h
+    src/ScrollJumpButtons.h
+    src/ServerNode.h
+    src/StallWatchdog.h
+    src/TerminalWidget.h
+    TARGET forkmesh
+)
+# The generated units are #included by forkmesh_autogen.cpp, so keep them out of
+# the object list (HEADER_FILE_ONLY) and make the unity file depend on them so
+# they are regenerated whenever a header changes.
+set_source_files_properties(${FORKMESH_MOC_SOURCES} PROPERTIES HEADER_FILE_ONLY ON)
+set_source_files_properties(src/forkmesh_autogen.cpp PROPERTIES
+    OBJECT_DEPENDS "${FORKMESH_MOC_SOURCES}")
+target_sources(forkmesh PRIVATE ${FORKMESH_MOC_SOURCES})
+# forkmesh_autogen.cpp #includes the moc output by bare name, and each moc unit
+# in turn #includes its header, so both the moc output dir(s) and the src tree
+# must be on the include path now that AUTOMOC no longer manages them.
+set(FORKMESH_MOC_DIRS "")
+foreach(_moc ${FORKMESH_MOC_SOURCES})
+    get_filename_component(_moc_dir "${_moc}" DIRECTORY)
+    list(APPEND FORKMESH_MOC_DIRS "${_moc_dir}")
+endforeach()
+list(REMOVE_DUPLICATES FORKMESH_MOC_DIRS)
+target_include_directories(forkmesh PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
 target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
 # TerminalWidget runs commands under a PTY via forkpty(); on Linux that lives in
