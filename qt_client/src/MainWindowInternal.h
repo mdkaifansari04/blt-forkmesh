@@ -3006,9 +3006,12 @@ inline QString repoNameFromUrl(QString url)
     return repoSegment(name, QStringLiteral("repository"));
 }
 
-// Public node name = username: a single DNS-like label — lowercase letters,
+// Username (and legacy node name): a single DNS-like label — lowercase letters,
 // digits and hyphens, starting with a letter and ending with a letter or digit,
-// max 63 chars. Mirrors valid_node_name in the worker and NAME_RE on the website.
+// max 63 chars. Users and nodes are being split apart — a user signs up with a
+// username and can attach many nodes — but both identifiers share this shape,
+// and the wire protocol still calls the account field "nodeName". Mirrors
+// valid_node_name in the worker and NAME_RE on the website.
 inline bool isValidNodeName(const QString &value)
 {
     static const QRegularExpression re(

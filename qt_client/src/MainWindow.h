@@ -490,9 +490,10 @@ private:
     // so the mirror finally registers in the database and shows on the repo page.
     // Returns true when the node ends up with an active, key-bound account.
     bool registerNodeAccountSilently(const QString &accountName);
-    // In-app join: pick a public node name and you're in. Joining is free — the
-    // name is reserved and activated against this device key (no donation, no
-    // email/password). Cross-device credentials can be added later.
+    // In-app join: pick a username and you're in. Joining is free — the
+    // username is reserved and activated against this device key (no donation,
+    // no email/password); the user can attach more nodes to it later.
+    // Cross-device credentials can be added later.
     bool runSignupFlow(const QString &accountName, const QString &solana);
     bool runLoginFlow(const QString &accountName);
     QJsonArray fetchCatalogRepos();
