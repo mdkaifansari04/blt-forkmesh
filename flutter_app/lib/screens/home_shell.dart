@@ -30,7 +30,7 @@ class _HomeShellState extends State<HomeShell> {
     (icon: Icons.code, label: 'Code'),
     (icon: Icons.chat_bubble_outline_rounded, label: 'Chat'),
     (icon: Icons.bolt_outlined, label: 'Activity'),
-    (icon: Icons.person_outline, label: 'Profile'),
+    (icon: Icons.settings_outlined, label: 'Settings'),
     (icon: Icons.grid_view_rounded, label: 'Tools'),
   ];
 
@@ -384,13 +384,15 @@ class _ToolsSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final availableHeight = MediaQuery.sizeOf(context).height;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final sheetHeight = availableHeight * 0.5;
+    // Hug the content (the Column is min-sized and the list shrink-wraps),
+    // capped at half the screen plus the bottom inset the list pads for.
+    final maxSheetHeight = availableHeight * 0.5 + bottomInset;
     return SafeArea(
       top: false,
       bottom: false,
       child: Container(
         key: const ValueKey('tools-sheet-panel'),
-        height: sheetHeight,
+        constraints: BoxConstraints(maxHeight: maxSheetHeight),
         decoration: BoxDecoration(
           color: FmTheme.bgRaised(context),
           borderRadius: const BorderRadius.vertical(

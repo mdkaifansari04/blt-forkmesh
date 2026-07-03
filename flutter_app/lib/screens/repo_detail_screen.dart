@@ -1738,11 +1738,7 @@ class _CommitsTab extends StatelessWidget {
         return ListView(
           padding: EdgeInsets.zero,
           children: [
-            _GitHistoryTabs(
-              changes: 0,
-              history: commits.length,
-              branches: repo.defaultBranch.isEmpty ? 0 : 1,
-            ),
+            _GitHistoryHeader(commits: commits.length),
             _CommitHistoryTimeline(repo: repo, commits: commits),
             const SizedBox(height: FmSpace.x4),
           ],
@@ -1752,108 +1748,57 @@ class _CommitsTab extends StatelessWidget {
   }
 }
 
-class _GitHistoryTabs extends StatelessWidget {
-  const _GitHistoryTabs({
-    required this.changes,
-    required this.history,
-    required this.branches,
-  });
+// Static section header for the commit timeline. Only History exists as a
+// view here, so it is presented as a plain header rather than a tab strip
+// that would imply switchable Changes/Branches views.
+class _GitHistoryHeader extends StatelessWidget {
+  const _GitHistoryHeader({required this.commits});
 
-  final int changes;
-  final int history;
-  final int branches;
+  final int commits;
 
   @override
   Widget build(BuildContext context) {
     return Material(
       color: FmTheme.bgRaised(context),
       child: Container(
+        height: 54,
+        padding: const EdgeInsets.symmetric(horizontal: FmSpace.x4),
+        alignment: Alignment.centerLeft,
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: FmTheme.border(context))),
         ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            _GitHistoryTabLabel(label: 'Changes', count: changes),
-            _GitHistoryTabLabel(label: 'History', count: history, active: true),
-            _GitHistoryTabLabel(label: 'Branches', count: branches),
+            Text(
+              'History',
+              style: TextStyle(
+                color: FmTheme.textPrimary(context),
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(width: FmSpace.x1),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: FmSpace.x2,
+                vertical: 2,
+              ),
+              decoration: BoxDecoration(
+                color: FmTheme.accent(context),
+                borderRadius: BorderRadius.circular(FmRadius.full),
+              ),
+              child: Text(
+                '$commits',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  height: 1,
+                ),
+              ),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _GitHistoryTabLabel extends StatelessWidget {
-  const _GitHistoryTabLabel({
-    required this.label,
-    required this.count,
-    this.active = false,
-  });
-
-  final String label;
-  final int count;
-  final bool active;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        height: 54,
-        alignment: Alignment.bottomCenter,
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: active
-                  ? FmTheme.activeUnderline(context)
-                  : Colors.transparent,
-              width: 2,
-            ),
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: FmSpace.x3),
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: active
-                        ? FmTheme.textPrimary(context)
-                        : FmTheme.textSecondary(context),
-                    fontSize: 15,
-                    fontWeight: active ? FontWeight.w800 : FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(width: FmSpace.x1),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: FmSpace.x2,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: active
-                        ? FmTheme.accent(context)
-                        : FmTheme.bgOverlay(context),
-                    borderRadius: BorderRadius.circular(FmRadius.full),
-                  ),
-                  child: Text(
-                    '$count',
-                    style: TextStyle(
-                      color: active
-                          ? Colors.white
-                          : FmTheme.textSecondary(context),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      height: 1,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );
