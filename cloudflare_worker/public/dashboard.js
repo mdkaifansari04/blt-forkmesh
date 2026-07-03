@@ -1186,6 +1186,74 @@
     }
   }
 
+  // "Link this node to your account" (adhoc #120): the desktop app opens
+  // /dashboard?link_node=<node>&link_ts=<ts>&link_sig=<sig> — a short-lived
+  // grant signed with the node's own key. The signature proves node-key
+  // control and consents to the link, so whoever is logged in HERE becomes the
+  // owner with no password re-entry or confirmation code.
+  function pendingLinkGrant() {
+    const params = new URLSearchParams(location.search);
+    const nodeName = (params.get("link_node") || "").trim();
+    const ts = (params.get("link_ts") || "").trim();
+    const sig = (params.get("link_sig") || "").trim();
+    if (!validNodeName(nodeName.toLowerCase()) || !ts || !sig) return null;
+    return { nodeName, ts, sig };
+  }
+
+  async function redeemLinkGrant(grant) {
+    // Strip the one-time grant from the address bar first so refresh/back
+    // can't replay it (and it doesn't linger in the visible URL).
+    const params = new URLSearchParams(location.search);
+    for (const key of ["link_node", "link_ts", "link_sig"]) params.delete(key);
+    const rest = params.toString();
+    window.history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : ""));
+    // Land on the profile page's Nodes panel, where the outcome is shown.
+    setSection("profile");
+    setProfilePageHint("[data-claim-node-status]", `Linking "${grant.nodeName}" to your account…`, "");
+    try {
+      const response = await fetch("/api/accounts/link-grant", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          nodeName: grant.nodeName,
+          ts: grant.ts,
+          sig: grant.sig,
+          user: state.session?.nodeName || "",
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(body.error || `HTTP ${response.status}`);
+      const nextSession = {
+        ...(state.session || {}),
+        nodes: Array.isArray(body.nodes) ? body.nodes : state.session?.nodes,
+      };
+      writeSession(nextSession);
+      renderProfile(nextSession);
+      setProfilePageHint(
+        "[data-claim-node-status]",
+        body.alreadyLinked
+          ? `"${body.nodeId || grant.nodeName}" is already linked to your account.`
+          : `Linked "${body.nodeId || grant.nodeName}" to your account.`,
+        "good");
+    } catch (error) {
+      const messages = {
+        unauthorized: "The link expired — click \"Link this node to your account\" in the node's app again.",
+        bad_signature: "The link couldn't be verified — click the button in the node's app again.",
+        grant_used: "That link was already used — click the button in the node's app again.",
+        no_such_node: "That node isn't registered with the relay yet.",
+        not_a_node: "That ID belongs to a user account, not a linkable node.",
+        not_a_user: "This login can't own nodes — sign up as a user (email + password) first.",
+        no_such_user: "Log in with a user account first, then open the link again.",
+        cannot_link_self: "That node is this account — no linking needed.",
+        node_already_owned: "That node is already linked to another account.",
+      };
+      setProfilePageHint(
+        "[data-claim-node-status]",
+        messages[error.message] || "Could not link the node. Click the button in the node's app and try again.",
+        "bad");
+    }
+  }
+
   async function deleteAccount() {
     const password = profilePassword("[data-profile-delete-password]");
     const confirm = ($("[data-profile-delete-confirm]")?.value || "").trim();
@@ -4221,6 +4289,13 @@
   async function init() {
     const session = readSession();
     state.session = session;
+    const grant = pendingLinkGrant();
+    if (grant && !session?.nodeName) {
+      // A link grant arrived but nobody is logged in: bounce through login and
+      // come straight back with the grant intact so the link completes then.
+      location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
+      return;
+    }
     const requested = requestedRepoKey();
     // Guests can browse repositories without an account: instead of bouncing
     // signed-out visitors back to the landing page, the header swaps the
@@ -4238,6 +4313,7 @@
 
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
+      if (grant) await redeemLinkGrant(grant);
       await refreshPublicProfile(session);
       startProfileSync();
       loadNotifications();
