@@ -2161,10 +2161,53 @@ void repairMirrorHead(const QString &mirrorPath, const QString &sourcePath)
     setHead.waitForFinished(5000);
 }
 
+// Whether a failed mirror clone/fetch is a momentary host/relay hiccup that the
+// next auto-sync will simply retry, rather than a real, persistent problem. Two
+// families qualify: connectivity failures (HTTP 5xx, resets, DNS) and — the case
+// that surfaced on fresh installs cloning a large repo — a truncated pack, where
+// the streaming host tunnel gets cut mid-transfer and git reports "unexpected
+// disconnect while reading sideband packet" / "early EOF" / "fetch-pack: invalid
+// index-pack output". A partial clone leaves no mirror behind, so autoSyncMirrors
+// re-attempts it; classifying it transient keeps that self-healing quiet instead
+// of raising a scary permanent red error over what a retry fixes.
+bool isTransientSyncError(const QString &errors)
+{
+    return errors.contains(QStringLiteral("HTTP 50")) ||
+           errors.contains(QStringLiteral("RPC failed")) ||
+           errors.contains(QStringLiteral("curl 22")) ||
+           errors.contains(QStringLiteral("502")) ||
+           errors.contains(QStringLiteral("503")) ||
+           errors.contains(QStringLiteral("504")) ||
+           errors.contains(QStringLiteral("Could not resolve"),
+                           Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("Couldn't connect"),
+                           Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("Connection reset"),
+                           Qt::CaseInsensitive) ||
+           // Truncated pack over the streaming clone tunnel.
+           errors.contains(QStringLiteral("early EOF"), Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("unexpected disconnect"),
+                           Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("sideband"), Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("index-pack"), Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("fetch-pack"), Qt::CaseInsensitive) ||
+           errors.contains(QStringLiteral("remote end hung up"),
+                           Qt::CaseInsensitive);
+}
+
 } // namespace
 
 void MainWindow::autoSyncMirrors()
 {
+    // Retry the flagship-repo bootstrap here too, not just the one-shot timer
+    // shortly after launch: if the catalog wasn't reachable yet at that single
+    // attempt (network still coming up right after a fresh install, relay
+    // momentarily down), a long-running node — especially a headless daemon
+    // that rarely restarts — would otherwise never end up mirroring the
+    // project repo or joining the mirror network until its next relaunch.
+    // ensureFlagshipRepo() is idempotent (no-op once the repo is present).
+    ensureFlagshipRepo();
+
     // Quietly refresh every repo's mirror so it tracks the owner's repo.
     for (int i = 0; i < m_repositories.size(); ++i) {
         if (!m_syncingRepos.contains(i) &&
@@ -2714,22 +2757,11 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                     m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     // Relay/host hiccups (HTTP 5xx, RPC failed, connection
-                    // resets) are transient: the host serving this repo is
+                    // resets) and truncated packs from the streaming clone
+                    // tunnel are transient: the host serving this repo is
                     // momentarily unavailable and the next sync will retry. Log
                     // them quietly rather than raising a persistent red error.
-                    const bool transient =
-                        errors.contains(QStringLiteral("HTTP 50")) ||
-                        errors.contains(QStringLiteral("RPC failed")) ||
-                        errors.contains(QStringLiteral("curl 22")) ||
-                        errors.contains(QStringLiteral("502")) ||
-                        errors.contains(QStringLiteral("503")) ||
-                        errors.contains(QStringLiteral("504")) ||
-                        errors.contains(QStringLiteral("Could not resolve"),
-                                        Qt::CaseInsensitive) ||
-                        errors.contains(QStringLiteral("Couldn't connect"),
-                                        Qt::CaseInsensitive) ||
-                        errors.contains(QStringLiteral("Connection reset"),
-                                        Qt::CaseInsensitive);
+                    const bool transient = isTransientSyncError(errors);
                     logSystem((repo.previewOnly ? QStringLiteral("Preview cache: sync failed for ")
                                                 : QStringLiteral("Mirror: sync failed for ")) +
                               repo.owner + "/" +
