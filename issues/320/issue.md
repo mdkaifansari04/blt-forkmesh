@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 320
 title: I clicked on verify my email however still in the profile settings it says verify your email before changing your node name so it doesn't seem like the email verification worked
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 2
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782920283476
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
