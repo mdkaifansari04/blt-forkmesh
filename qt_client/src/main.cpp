@@ -8,6 +8,7 @@
 
 #include <QApplication>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QFontDatabase>
@@ -55,8 +56,10 @@ int main(int argc, char *argv[])
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a backtrace in ~/.forkmesh/diagnostics/
     // crashes.log ("sometimes the app exits / crashes" with nothing to explain
-    // why). Cheap, allocates only a couple of small buffers.
-    forkmesh::installCrashHandler();
+    // why). The durable file is also what the opt-in telemetry upload sends on
+    // the next startup (issue #354). Cheap; opens one fd plus a couple buffers.
+    forkmesh::installCrashHandler(
+        QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log"));
 
     // Collect args before QApplication so headless/root flags are visible while we
     // still control the Qt platform plugin selection.
