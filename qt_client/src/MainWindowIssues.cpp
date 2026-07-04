@@ -6111,8 +6111,13 @@ void MainWindow::refreshRepoCollaborators()
 
 void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                                     const QString &uri, const QString &address,
-                                    double amountUsd, const QString &amountSol)
+                                    double amountUsd, const QString &amountSol,
+                                    const QString &kind)
 {
+    // "pr" bounties (issue #347) aren't tracked in the issue store, so the paid
+    // state is reported in the dialog only; issue bounties (kind "") also stamp
+    // the issue record.
+    const bool isPr = kind == QLatin1String("pr");
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
     auto *layout = new QVBoxLayout(&dialog);
@@ -6176,10 +6181,12 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     connect(poll, &QTimer::timeout, &dialog, [&, this]() {
         if (!m_networkAccess)
             return;
-        const QJsonObject payload{{"action", "status"},
-                                  {"owner", repo.owner},
-                                  {"repo", repo.name},
-                                  {"number", number}};
+        QJsonObject payload{{"action", "status"},
+                            {"owner", repo.owner},
+                            {"repo", repo.name},
+                            {"number", number}};
+        if (isPr)
+            payload.insert("kind", QStringLiteral("pr"));
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
@@ -6192,12 +6199,15 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         if (obj.value("status").toString() == QLatin1String("paid")) {
             paid = true;
             poll->stop();
-            IssueStore writeStore = issueStoreForCurrentRepo();
-            QString err;
-            writeStore.setBounty(number, amountUsd, obj.value("payee").toString(),
-                                 QStringLiteral("paid"), &err);
-            if (m_repoDetailIndex == issuesRepoIndex())
-                reloadIssues();
+            if (!isPr) {
+                IssueStore writeStore = issueStoreForCurrentRepo();
+                QString err;
+                writeStore.setBounty(number, amountUsd,
+                                     obj.value("payee").toString(),
+                                     QStringLiteral("paid"), &err);
+                if (m_repoDetailIndex == issuesRepoIndex())
+                    reloadIssues();
+            }
             status->setText(
                 QStringLiteral("Paid out to the author + treasury (tx %1).")
                     .arg(obj.value("payoutSig").toString().left(12)));
@@ -6218,7 +6228,125 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     // issue is still marked paid once the funds land (the worker cron is the
     // final backstop regardless).
     if (!paid)
-        pollBountyPayout(repo, number, amountUsd);
+        pollBountyPayout(repo, number, amountUsd, kind);
+}
+
+void MainWindow::showBountyWalletDialog()
+{
+    // Issue #347: fetch (mint on first use) the owner's inbuilt bounty wallet and
+    // show its deposit address + QR + live balance so it can be pre-funded. Used
+    // to pay per-PR bounties in "wallet" mode without a per-merge QR.
+    const QString owner = accountOwner();
+    if (owner.isEmpty() || !m_profileIdentity.isValid()) {
+        QMessageBox::information(
+            this, QStringLiteral("Bounty wallet"),
+            QStringLiteral("Register and sign in to a ForkMesh account first — the "
+                           "inbuilt wallet is tied to your account."));
+        return;
+    }
+    // The wallet is owner-scoped but the endpoint is repo-scoped; route through any
+    // repository this account owns.
+    RepositoryRecord ownedRepo;
+    bool haveOwned = false;
+    for (const RepositoryRecord &r : std::as_const(m_repositories))
+        if (r.owner == owner) {
+            ownedRepo = r;
+            haveOwned = true;
+            break;
+        }
+    if (!haveOwned || !m_networkAccess) {
+        QMessageBox::information(
+            this, QStringLiteral("Bounty wallet"),
+            QStringLiteral("Create or import a repository you own first — the "
+                           "inbuilt wallet is set up through one of your repos."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Inbuilt bounty wallet"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(QStringLiteral(
+        "Pre-fund this wallet with a little SOL. When \"Reward every merged pull "
+        "request\" is set to <b>use the inbuilt wallet</b>, each merged PR is paid "
+        "from here automatically — no per-merge QR."));
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(qrLabel);
+    auto *addr = new QLabel(QStringLiteral("Loading…"));
+    addr->setObjectName("statusLine");
+    addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    addr->setAlignment(Qt::AlignCenter);
+    addr->setWordWrap(true);
+    layout->addWidget(addr);
+    auto *balance = new QLabel(QStringLiteral("Balance: …"));
+    balance->setObjectName("modeHint");
+    balance->setAlignment(Qt::AlignCenter);
+    layout->addWidget(balance);
+
+    auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
+    copyBtn->setEnabled(false);
+    auto *refreshBtn = new QPushButton(QStringLiteral("Refresh"));
+    auto *closeBtn = new QPushButton(QStringLiteral("Close"));
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    auto *row = new QHBoxLayout;
+    row->addWidget(copyBtn);
+    row->addWidget(refreshBtn);
+    row->addStretch();
+    row->addWidget(closeBtn);
+    layout->addLayout(row);
+
+    auto walletAddress = std::make_shared<QString>();
+    const auto fetch = [this, owner, ownedRepo, qrLabel, addr, balance, copyBtn,
+                        walletAddress] {
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-bounty-wallet-v1\n" + owner + "\n" + ts).toUtf8();
+        const QJsonObject payload{{"action", "wallet"},
+                                  {"owner", ownedRepo.owner},
+                                  {"repo", ownedRepo.name},
+                                  {"ts", ts},
+                                  {"sig", m_profileIdentity.signData(canonical)}};
+        QNetworkRequest request(bountyApiUrl(ownedRepo));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        QNetworkReply *reply = m_networkAccess->post(
+            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        connect(reply, &QNetworkReply::finished, qrLabel,
+                [reply, qrLabel, addr, balance, copyBtn, walletAddress] {
+            const QByteArray body = reply->readAll();
+            const auto err = reply->error();
+            const QString errStr = reply->errorString();
+            reply->deleteLater();
+            const QJsonObject obj = QJsonDocument::fromJson(body).object();
+            const QString address = obj.value("address").toString();
+            if (err != QNetworkReply::NoError || address.isEmpty()) {
+                addr->setText(QStringLiteral("Could not load wallet: %1")
+                                  .arg(obj.value("error").toString(errStr)));
+                return;
+            }
+            *walletAddress = address;
+            addr->setText(address);
+            copyBtn->setEnabled(true);
+            balance->setText(QStringLiteral("Balance: %1 SOL")
+                                 .arg(obj.value("balanceSol").toString(
+                                     QStringLiteral("0"))));
+            const QString uri = obj.value("uri").toString(
+                QStringLiteral("solana:%1").arg(address));
+            const QImage qr = QrCode::encodeToImage(uri, 5, 3);
+            if (!qr.isNull())
+                qrLabel->setPixmap(QPixmap::fromImage(qr));
+        });
+    };
+    connect(copyBtn, &QPushButton::clicked, &dialog, [walletAddress] {
+        if (!walletAddress->isEmpty())
+            QGuiApplication::clipboard()->setText(*walletAddress);
+    });
+    connect(refreshBtn, &QPushButton::clicked, &dialog, fetch);
+    fetch();
+    dialog.exec();
 }
 
 void MainWindow::editIssueBounty()
