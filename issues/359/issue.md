@@ -2,18 +2,18 @@
 schema: forkmesh-issue-v1
 number: 359
 title: Inline PR review comments and review states (human review that holds up)
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 21
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818258
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-359
 ts: 1783116818258
