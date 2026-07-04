@@ -2992,11 +2992,24 @@ QWidget *MainWindow::buildBreadcrumb()
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
 
-    // First row: relay > node > repo navigation, breadcrumb, centered toast,
-    // and the right-aligned connection / balance / avatar cluster.
+    auto *appVersionLabel = new QLabel(QStringLiteral("ForkMesh v" FORKMESH_VERSION));
+    appVersionLabel->setObjectName("appVersionLabel");
+
+    // First row: app identity, browser-style navigation + search, relay > node >
+    // repo navigation, breadcrumb, centered toast, and the right-aligned
+    // connection / balance / avatar cluster.
     auto *mainRow = new QHBoxLayout;
     mainRow->setContentsMargins(0, 0, 0, 0);
     mainRow->setSpacing(8);
+    mainRow->addWidget(appVersionLabel);
+    mainRow->addSpacing(4);
+    // Browser-style Back / Forward buttons, sat beside the app title in the top
+    // app bar.
+    mainRow->addWidget(createNavHistoryButtons());
+    // One box that searches everything (sections, relays, nodes, repos, and the
+    // open repo's issues/PRs/branches/files/commits) and jumps to the result.
+    mainRow->addWidget(createGlobalSearchBox());
+    mainRow->addSpacing(12);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
     mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
@@ -3011,12 +3024,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // m_repoPushButton ("Publish N") now lives in its own row above the repo tab
     // bar (see buildRepoDetail), not in the top navigation row.
     mainRow->addSpacing(12);
-    // Browser-style Back / Forward buttons, sat just left of the search box.
-    mainRow->addWidget(createNavHistoryButtons());
-    // One box that searches everything (sections, relays, nodes, repos, and the
-    // open repo's issues/PRs/branches/files/commits) and jumps to the result.
-    mainRow->addWidget(createGlobalSearchBox());
-    mainRow->addSpacing(6);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
     mainRow->addWidget(m_topMessage);
