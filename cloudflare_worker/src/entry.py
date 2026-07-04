@@ -1869,6 +1869,11 @@ async def status_history(env):
     for system_id, label in STATUS_SYSTEMS:
         days = []
         total_checks = total_failures = 0
+        # Walked oldest-to-newest, so the last non-operational hour we see is
+        # also the most recent one — that becomes the headline "why" shown
+        # without requiring a hover, next to the system's current badge.
+        latest_reason = None
+        latest_reason_ts = None
         for i in range(STATUS_HISTORY_DAYS):
             this_day = start + i * 86400000
             checks, failures = by_system.get(system_id, {}).get(this_day, (0, 0))
@@ -1890,14 +1895,19 @@ async def status_history(env):
                     h_status = "down"
                 else:
                     h_status = "degraded"
+                hour_reason = h_reason if h_status != "operational" else None
                 hours.append({
                     "hourTs": hour_ts, "status": h_status,
                     "checks": h_checks, "failures": h_failures,
-                    "reason": h_reason if h_status != "operational" else None,
+                    "reason": hour_reason,
                 })
+                if hour_reason:
+                    latest_reason = hour_reason
+                    latest_reason_ts = hour_ts
             days.append({
                 "dayTs": this_day, "checks": checks, "failures": failures,
                 "uptimePct": uptime, "hours": hours,
+                "hoursElapsed": len(hours),
             })
         # Current status comes from the most recent day with any data, not the
         # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
@@ -1918,6 +1928,8 @@ async def status_history(env):
         systems.append({
             "id": system_id, "label": label, "status": status,
             "uptimePct": overall_uptime, "days": days,
+            "reason": latest_reason if status != "operational" else None,
+            "reasonTs": latest_reason_ts if status != "operational" else None,
         })
 
     # Current-state snapshot (issue #356): the headline health metrics rendered
@@ -1948,14 +1960,24 @@ async def status_history(env):
     except Exception:
         current["errors24h"] = None
     try:
+        # host_presence is keyed one-row-per-repo (upserted on each heartbeat),
+        # so reading it with no staleness filter gives the mainnode's true last
+        # heartbeat even while offline — lets the banner say "last seen 42m
+        # ago" instead of just a bare "Offline" with no technical detail.
         mainnode_bi = await blind_index(env, "mainnode/forkmesh")
         host_row = await d1_first(
-            env, "SELECT ts FROM host_presence WHERE repo_bi = ? AND ts >= ?",
-            mainnode_bi, now - HOST_PRESENCE_STALE_MS,
+            env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
-        current["mainnodeOnline"] = bool(host_row)
+        last_ts = int(host_row["ts"]) if host_row else None
+        current["mainnodeLastSeenTs"] = last_ts
+        current["mainnodeOnline"] = (
+            last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
+        )
+        current["mainnodeStaleMs"] = HOST_PRESENCE_STALE_MS
     except Exception:
         current["mainnodeOnline"] = None
+        current["mainnodeLastSeenTs"] = None
+        current["mainnodeStaleMs"] = HOST_PRESENCE_STALE_MS
 
     return json_response(
         {"ok": True, "now": now, "systems": systems, "current": current},
