@@ -129,7 +129,7 @@ def test_pricing_page_reuses_landing_header_and_footer_chrome():
         'href="/#solution"',
         'href="/pricing"',
         'href="/#faq"',
-        'href="/blogs"',
+        'href="/blog"',
         'class="button-outline hide-on-scroll',
         'class="button-primary hide-on-scroll',
         'href="/site-footer.css"',

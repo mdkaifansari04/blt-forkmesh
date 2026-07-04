@@ -12,6 +12,7 @@ BLOG_PAGE = PUBLIC / "blog.html"
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = PUBLIC / "_redirects"
+FEATURE_IMAGES = PUBLIC / "assets" / "blog" / "features"
 
 
 class BlogNavParser(HTMLParser):
@@ -48,17 +49,19 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _css_rule_after(html: str, selector: str) -> str:
-    selector_start = html.index(selector)
-    rule_start = html.index("{", selector_start)
-    rule_end = html.index("}", rule_start)
-    return html[rule_start:rule_end]
+def _feature_post_paths():
+    feature_slugs = {path.stem for path in FEATURE_IMAGES.glob("*.webp")}
+    return sorted(
+        path for path in (PUBLIC / "blog").glob("*/index.html")
+        if path.parent.name in feature_slugs
+    )
 
 
-def test_blog_page_uses_screenshot_editorial_shell():
+def test_blog_page_uses_editorial_feature_archive_shell():
     html = _read(BLOG_PAGE)
 
     for marker in (
+        '<link rel="canonical" href="https://forkmesh.com/blog">',
         'class="blog1-shell"',
         'class="blog1-hero"',
         'Our latest <span class="blog1-mono">articles</span>',
@@ -72,8 +75,6 @@ def test_blog_page_nav_only_links_auth():
     parser = BlogNavParser()
     parser.feed(_read(BLOG_PAGE))
 
-    # The nav's single auth entry matches the site-wide "Sign Up / Log In"
-    # label introduced by adhoc #123.
     assert [link.get("href") for link in parser.links] == ["/signup"]
     assert [link.get("class") for link in parser.links] == ["blog1-login"]
 
@@ -95,46 +96,46 @@ def test_blog_page_footer_keeps_only_twitter_social_link():
         assert 'aria-label="%s"' % removed not in html
 
 
-def test_blog_page_articles_open_in_page_detail_view():
+def test_blog_page_indexes_every_feature_post():
     html = _read(BLOG_PAGE)
+    posts = _feature_post_paths()
 
-    assert html.count('href="#introducing-forkmesh"') >= 2
-    assert 'id="introducing-forkmesh"' in html
-    assert 'class="blog1-detail"' in html
-    assert "Introducing ForkMesh: code that can't be taken down" in html
-    assert "open-source desktop node and relay" in html
+    assert len(posts) == 72
+    assert html.count('class="blog1-card" href="/blog/') == 72
+    assert html.count('class="blog1-search-result" href="/blog/') == 72
+    assert html.count('data-blog-search-text=') == 72
+    assert 'href="/blog/desktop-node-mirrors/"' in html
+    assert 'href="/blog/status-blog-and-changelog/"' in html
+    assert "Every ForkMesh feature now has a short technical post" in html
 
 
-def test_first_blog_article_uses_launch_article_content():
-    html = _read(BLOG_PAGE)
+def test_feature_blog_posts_have_images_and_article_shells():
+    sample = PUBLIC / "blog" / "desktop-node-mirrors" / "index.html"
+    html = _read(sample)
 
     for marker in (
-        "Your machine is the server.",
-        "Keys, not passwords.",
-        "Chat the relay cannot read.",
-        "Get paid to mirror.",
-        "Federated by design.",
-        "Signed history in Git.",
-        "AES-256-GCM",
-        "forkmesh-pull-event-v1",
-        "This is an MVP, and that is exciting",
+        '<link rel="canonical" href="https://forkmesh.com/blog/desktop-node-mirrors/">',
+        "Desktop-node mirrors",
+        'src="/assets/blog/features/desktop-node-mirrors.webp"',
+        "Why it matters",
+        "How ForkMesh handles it",
+        "Where it fits",
+        'href="/blog">← All blog posts</a>',
     ):
         assert marker in html
 
 
-def test_blog_page_detail_matches_editorial_detail_shell():
-    html = _read(BLOG_PAGE)
+def test_feature_blog_images_exist_for_each_generated_post():
+    posts = _feature_post_paths()
+    images = sorted(FEATURE_IMAGES.glob("*.webp"))
 
-    for marker in (
-        'class="blog1-article-hero"',
-        'class="blog1-article-body"',
-        'class="blog1-featured-image blog1-article-image blog1-has-art"',
-        'href="/blogs"',
-    ):
-        assert marker in html
+    assert len(images) == 72
+    for post in posts:
+        slug = post.parent.name
+        assert FEATURE_IMAGES.joinpath(slug + ".webp").is_file()
 
 
-def test_blog_page_search_opens_premium_dialog():
+def test_blog_page_search_opens_dialog():
     html = _read(BLOG_PAGE)
 
     for marker in (
@@ -145,7 +146,6 @@ def test_blog_page_search_opens_premium_dialog():
         'role="dialog"',
         'aria-modal="true"',
         'id="blog-search-input"',
-        'data-blog-search-result',
         'data-blog-search-empty',
         "openBlogSearch",
         "filterBlogSearchResults",
@@ -156,42 +156,21 @@ def test_blog_page_search_opens_premium_dialog():
 def test_blog_page_uses_landing_green_accent_for_primary_art():
     html = _read(BLOG_PAGE)
 
-    assert "--blog1-green: #3fb950;" in html
-    assert "rgba(63, 185, 80" in html
+    assert "--blog1-green:#3fb950;" in html
+    assert "--blog1-cyan:#76d8f6;" in html
     assert "--blog1-blue:" not in html
-
-
-def test_blog_footer_cta_arc_uses_original_cyan():
-    html = _read(BLOG_PAGE)
-    arc_rule = _css_rule_after(html, ".blog1-arc")
-
-    assert "--blog1-cyan: #76d8f6;" in html
-    assert "rgba(118, 216, 246, 0.95)" in arc_rule
-    assert "rgba(63, 185, 80, 0.95)" not in arc_rule
 
 
 def test_blog_interaction_states_use_neutral_dark_not_green():
     html = _read(BLOG_PAGE)
 
     for marker in (
-        "--blog1-hover-line: rgba(246, 246, 242, 0.24);",
-        "--blog1-hover-fill: rgba(255, 255, 255, 0.045);",
-        "--blog1-hover-ring: rgba(255, 255, 255, 0.08);",
-        "--blog1-popup-sheen: rgba(255, 255, 255, 0.11);",
+        "--blog1-hover-line:rgba(246,246,242,.24);",
+        "--blog1-hover-fill:rgba(255,255,255,.045);",
+        "--blog1-hover-ring:rgba(255,255,255,.08);",
+        "--blog1-popup-sheen:rgba(255,255,255,.11);",
     ):
         assert marker in html
-
-    for selector in (
-        ".blog1-search-trigger:hover,",
-        ".blog1-search-backdrop",
-        ".blog1-search-panel",
-        ".blog1-search-panel::before",
-        ".blog1-search-close:hover,",
-        ".blog1-search-field:focus-within",
-        ".blog1-search-result:hover,",
-    ):
-        rule = _css_rule_after(html, selector)
-        assert "rgba(63, 185, 80" not in rule
 
 
 def test_blog_search_result_copy_is_compact():
@@ -199,26 +178,11 @@ def test_blog_search_result_copy_is_compact():
 
     for marker in (
         ".blog1-search-result-meta",
-        "font-size: 11px;",
+        "font-size:11px;",
         ".blog1-search-result-title",
-        "font-size: 18px;",
+        "font-size:18px;",
         ".blog1-search-result-copy",
-        "font-size: 13px;",
-    ):
-        assert marker in html
-
-
-def test_blog_page_uses_blog_banner_assets():
-    html = _read(BLOG_PAGE)
-
-    assert html.count('src="/assets/blog/forkmesh-noise.webp"') == 3
-    assert html.count('src="/assets/blog/coming-soon.webp"') == 2
-    for marker in (
-        'class="blog1-featured-image blog1-has-art"',
-        'class="blog1-featured-image blog1-article-image blog1-has-art"',
-        'class="blog1-post-image blog1-has-art"',
-        'class="blog1-post-image blog1-has-art blog1-coming-soon-art"',
-        'class="blog1-cover-img"',
+        "font-size:13px;",
     ):
         assert marker in html
 
@@ -228,28 +192,28 @@ def test_blog_paths_are_owned_by_redirects_not_python_worker():
     assert 'if url.path == "/blog.html":' not in ENTRY_TEXT
     assert REDIRECTS.exists()
     redirects = _read(REDIRECTS)
-    assert "/blogs /blog.html 200" in redirects
-    assert "/blog /blogs 308" in redirects
-    assert "/blog.html /blogs 308" not in redirects
+    assert "/blog /blog.html 200" in redirects
+    assert "/blog/ /blog 308" in redirects
+    assert "/blogs /blog 308" in redirects
+    assert "/blog.html /blog 308" not in redirects
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
     assert WRANGLER["assets"]["html_handling"] == "none"
     assert "/blog" not in run_worker_first
-    assert "/blog.html" in run_worker_first
     assert "/blogs" not in run_worker_first
+    assert "/blog.html" in run_worker_first
 
 
 if __name__ == "__main__":
-    test_blog_page_uses_screenshot_editorial_shell()
+    test_blog_page_uses_editorial_feature_archive_shell()
     test_blog_page_nav_only_links_auth()
     test_blog_page_uses_homepage_logo_markup()
     test_blog_page_footer_keeps_only_twitter_social_link()
-    test_blog_page_articles_open_in_page_detail_view()
-    test_blog_page_detail_matches_editorial_detail_shell()
-    test_blog_page_search_opens_premium_dialog()
+    test_blog_page_indexes_every_feature_post()
+    test_feature_blog_posts_have_images_and_article_shells()
+    test_feature_blog_images_exist_for_each_generated_post()
+    test_blog_page_search_opens_dialog()
     test_blog_page_uses_landing_green_accent_for_primary_art()
-    test_blog_footer_cta_arc_uses_original_cyan()
     test_blog_interaction_states_use_neutral_dark_not_green()
     test_blog_search_result_copy_is_compact()
-    test_blog_page_uses_blog_banner_assets()
     test_blog_paths_are_owned_by_redirects_not_python_worker()

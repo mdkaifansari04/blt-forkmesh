@@ -87,6 +87,8 @@
         flex-wrap: wrap;
       }
       .feature-item p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+      .feature-post-link { display: inline-flex; margin-top: 12px; color: var(--accent-bright, var(--accent)); font-size: 13px; font-weight: 700; text-decoration: none; }
+      .feature-post-link:hover { text-decoration: underline; }
       .feature-item code {
         font-size: 0.9em;
         background: var(--card-soft);
@@ -168,6 +170,7 @@
               and kept fresh automatically. Your history is always physically
               yours.
             </p>
+            <a class="feature-post-link" href="/blog/desktop-node-mirrors/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Zero-custody relay</h3>
@@ -177,6 +180,7 @@
               message bodies. Objects stream between peers; the relay just
               connects them.
             </p>
+            <a class="feature-post-link" href="/blog/zero-custody-relay/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Live clone routing</h3>
@@ -185,6 +189,7 @@
               Smart-HTTP requests are routed over an outbound tunnel to the
               hosting desktop node, which serves the pack directly.
             </p>
+            <a class="feature-post-link" href="/blog/live-clone-routing/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Streaming transfers</h3>
@@ -193,6 +198,7 @@
               clones never buffer in the cloud — the mesh scales to big
               repositories without a big server.
             </p>
+            <a class="feature-post-link" href="/blog/streaming-transfers/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Mirror failover</h3>
@@ -201,6 +207,7 @@
               exact same URL — no redirects, no broken links. Sticky routing
               keeps a clone pinned to one mirror for consistency.
             </p>
+            <a class="feature-post-link" href="/blog/mirror-failover/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Source-attested integrity</h3>
@@ -209,6 +216,7 @@
               the source of truth, so a mirror can prove it's handing you the
               same history the author published.
             </p>
+            <a class="feature-post-link" href="/blog/source-attested-integrity/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Root-commit identity</h3>
@@ -217,6 +225,7 @@
               so the mesh always knows which nodes carry copies of the same
               project — whatever they named it.
             </p>
+            <a class="feature-post-link" href="/blog/root-commit-identity/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Headless mirror nodes</h3>
@@ -225,6 +234,7 @@
               installer registers its account, syncs its repositories, and
               starts serving — no GUI required.
             </p>
+            <a class="feature-post-link" href="/blog/headless-mirror-nodes/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Public network map</h3>
@@ -233,6 +243,7 @@
               in-sync it is, and its platform, version, and optional CPU, RAM,
               and disk telemetry.
             </p>
+            <a class="feature-post-link" href="/blog/public-network-map/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Presence done right</h3>
@@ -241,6 +252,7 @@
               mean the network's view of who is online is accurate — failover
               kicks in the moment a host actually drops.
             </p>
+            <a class="feature-post-link" href="/blog/presence-done-right/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -260,6 +272,7 @@
               catalog records, and every collaboration event carry a signature
               you can check yourself.
             </p>
+            <a class="feature-post-link" href="/blog/ed25519-identity/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Signed issue events</h3>
@@ -268,6 +281,7 @@
               Authorship is verifiable no matter which node — or which mirror —
               served you the data.
             </p>
+            <a class="feature-post-link" href="/blog/signed-issue-events/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Signed patch pull requests</h3>
@@ -276,6 +290,7 @@
               any repository in the mesh and the maintainer can verify exactly
               who sent what.
             </p>
+            <a class="feature-post-link" href="/blog/signed-patch-pull-requests/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Everything lives in Git</h3>
@@ -284,6 +299,7 @@
               committed to the repository. Clone the repo and you own the whole
               project history — code and conversation alike.
             </p>
+            <a class="feature-post-link" href="/blog/everything-lives-in-git/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Web contribution inbox</h3>
@@ -292,6 +308,7 @@
               while the owner is offline. Signed submissions wait in an inbox;
               the owner reviews, commits, and the mesh syncs back.
             </p>
+            <a class="feature-post-link" href="/blog/web-contribution-inbox/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Branch-backed &amp; patch-backed PRs</h3>
@@ -300,6 +317,7 @@
               the head ref) or carry a stored patch for cross-node and offline
               submissions — both merge the same way.
             </p>
+            <a class="feature-post-link" href="/blog/branch-backed-and-patch-backed-prs/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Binary-safe patches</h3>
@@ -308,6 +326,7 @@
               survive the trip and merge cleanly — with a proper placeholder and
               badge in the diff view.
             </p>
+            <a class="feature-post-link" href="/blog/binary-safe-patches/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -326,6 +345,7 @@
               all stored as signed events in the repository and browsable on the
               web.
             </p>
+            <a class="feature-post-link" href="/blog/full-issue-tracker/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Kanban board</h3>
@@ -333,6 +353,7 @@
               Drag issues across columns to plan work visually, right inside the
               desktop app.
             </p>
+            <a class="feature-post-link" href="/blog/kanban-board/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Milestones with progress</h3>
@@ -340,6 +361,7 @@
               Group issues into milestones and watch live progress bars fill as
               work lands.
             </p>
+            <a class="feature-post-link" href="/blog/milestones-with-progress/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Burnup charts</h3>
@@ -347,6 +369,7 @@
               Built-in burnup charts show scope and completion over time, so you
               can see a release converging (or not) at a glance.
             </p>
+            <a class="feature-post-link" href="/blog/burnup-charts/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Quick-add from anywhere</h3>
@@ -354,6 +377,7 @@
               A prompt-style quick-add box captures an issue in one line — and
               can hand it straight to an AI agent as it's filed.
             </p>
+            <a class="feature-post-link" href="/blog/quick-add-from-anywhere/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Issues ↔ PRs that talk</h3>
@@ -361,6 +385,7 @@
               Merge a pull request and its linked issue closes itself. One
               checkbox syncs the merge straight to main.
             </p>
+            <a class="feature-post-link" href="/blog/issues-prs-that-talk/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -378,6 +403,7 @@
               Syntax-aware diffs with side-by-side image comparison and clear
               badges for binary changes — in the app and on the web.
             </p>
+            <a class="feature-post-link" href="/blog/rich-diffs/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Real mergeability checks</h3>
@@ -385,6 +411,7 @@
               Every PR is checked with a true three-way merge against the live
               base branch, so "can merge" means it will actually merge.
             </p>
+            <a class="feature-post-link" href="/blog/real-mergeability-checks/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Review conversations</h3>
@@ -392,6 +419,7 @@
               Inline comment threads, emoji reactions, and Markdown everywhere —
               signed like every other event.
             </p>
+            <a class="feature-post-link" href="/blog/review-conversations/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>AI code review <span class="feature-tag">AI</span></h3>
@@ -400,6 +428,7 @@
               exact lines as a mini-diff suggestion. Apply a single quick-fix or
               fix everything at once.
             </p>
+            <a class="feature-post-link" href="/blog/ai-code-review/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>AI conflict resolution <span class="feature-tag">AI</span></h3>
@@ -408,6 +437,7 @@
               the files in place and reports back — no manual
               <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> spelunking.
             </p>
+            <a class="feature-post-link" href="/blog/ai-conflict-resolution/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Merge from anywhere</h3>
@@ -415,6 +445,7 @@
               Merge from the desktop client with the branch view, the PR view,
               or straight from an agent's completed session.
             </p>
+            <a class="feature-post-link" href="/blog/merge-from-anywhere/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -434,6 +465,7 @@
               new-issue form: one click sends the issue to Claude Code or Codex,
               which works the issue and opens a PR when it's done.
             </p>
+            <a class="feature-post-link" href="/blog/assign-any-issue-to-an-agent/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Dedicated agent worktrees</h3>
@@ -442,6 +474,7 @@
               never trample your working tree — and finished work arrives as a
               reviewable pull request automatically.
             </p>
+            <a class="feature-post-link" href="/blog/dedicated-agent-worktrees/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Parallel agents</h3>
@@ -449,6 +482,7 @@
               Run as many agents as you like across your issues at once, with
               live activity indicators showing who's working right now.
             </p>
+            <a class="feature-post-link" href="/blog/parallel-agents/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Resumable sessions</h3>
@@ -456,6 +490,7 @@
               Pick any conversation back up where it left off — sessions
               persist, survive restarts, and keep their full context.
             </p>
+            <a class="feature-post-link" href="/blog/resumable-sessions/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Rich live transcripts</h3>
@@ -464,6 +499,7 @@
               calls, diffs, and results as cards, with a raw-output toggle for
               the curious.
             </p>
+            <a class="feature-post-link" href="/blog/rich-live-transcripts/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Agents can ask you questions</h3>
@@ -472,6 +508,7 @@
               an interactive multiple-choice card. Click an answer and the agent
               continues.
             </p>
+            <a class="feature-post-link" href="/blog/agents-can-ask-you-questions/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Native terminal</h3>
@@ -479,6 +516,7 @@
               A real VT100 terminal widget renders agent and workflow output
               with full color and emoji — not a flat log viewer.
             </p>
+            <a class="feature-post-link" href="/blog/native-terminal/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Your app is the IDE</h3>
@@ -487,6 +525,7 @@
               <code>claude</code> in a repo and it connects to ForkMesh for diff
               views and selection context, just like an editor extension.
             </p>
+            <a class="feature-post-link" href="/blog/your-app-is-the-ide/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Live usage meter</h3>
@@ -494,6 +533,7 @@
               See your Claude 5-hour and weekly usage right in the app, updated
               every minute, so you always know how much agent runway is left.
             </p>
+            <a class="feature-post-link" href="/blog/live-usage-meter/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Custom agent instructions</h3>
@@ -501,6 +541,7 @@
               Replace the built-in agent workflow with your own preamble in
               Settings — your rules govern every session.
             </p>
+            <a class="feature-post-link" href="/blog/custom-agent-instructions/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -517,6 +558,7 @@
               Real workflows run on push, with the latest live log always one
               click away and full runs rendered in the native terminal.
             </p>
+            <a class="feature-post-link" href="/blog/actions/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Artifacts</h3>
@@ -524,6 +566,7 @@
               Workflow outputs are collected per run and browsable from the
               repository's Artifacts tab.
             </p>
+            <a class="feature-post-link" href="/blog/artifacts/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Releases &amp; tags</h3>
@@ -532,6 +575,7 @@
               seconds — release notes live in the repository like everything
               else.
             </p>
+            <a class="feature-post-link" href="/blog/releases-and-tags/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Content-addressed release storage</h3>
@@ -540,6 +584,7 @@
               SHA-256 — keeping the Git history lean while downloads stay
               verifiable end-to-end.
             </p>
+            <a class="feature-post-link" href="/blog/content-addressed-release-storage/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>One-line installer</h3>
@@ -548,6 +593,7 @@
               with SHA-256-verified binaries — and a matching one-line
               uninstaller when you need it.
             </p>
+            <a class="feature-post-link" href="/blog/one-line-installer/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Quality &amp; Security tabs</h3>
@@ -555,6 +601,7 @@
               Per-repository quality and security views keep checks, advisories,
               and repository health next to the code they describe.
             </p>
+            <a class="feature-post-link" href="/blog/quality-and-security-tabs/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Insights</h3>
@@ -562,6 +609,7 @@
               Contribution and activity insights per repository — see where the
               energy is going.
             </p>
+            <a class="feature-post-link" href="/blog/insights/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -578,6 +626,7 @@
               Every repository gets chat rooms encrypted end-to-end. The relay
               sees only ciphertext and persists no message bodies — ever.
             </p>
+            <a class="feature-post-link" href="/blog/encrypted-repo-rooms/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Direct messages</h3>
@@ -585,6 +634,7 @@
               Message any node operator directly, with the same
               encrypt-before-send guarantee as rooms.
             </p>
+            <a class="feature-post-link" href="/blog/direct-messages/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Coves <span class="feature-tag">AES-256-GCM</span></h3>
@@ -594,6 +644,7 @@
               ciphertext, and every unlock is recorded in an access log the
               creator can audit.
             </p>
+            <a class="feature-post-link" href="/blog/coves/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Discussions</h3>
@@ -601,6 +652,7 @@
               Longer-form threaded conversations per repository — signed,
               synced, and browsable like issues.
             </p>
+            <a class="feature-post-link" href="/blog/discussions/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Web chat</h3>
@@ -608,6 +660,7 @@
               Join the conversation from the browser too — the website speaks
               the same room protocol as the desktop app.
             </p>
+            <a class="feature-post-link" href="/blog/web-chat/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -628,6 +681,7 @@
               Releases, Mirror nodes, Artifacts, Shortcuts, and Settings — every
               view one click apart.
             </p>
+            <a class="feature-post-link" href="/blog/complete-repository-workspace/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Source control &amp; worktrees</h3>
@@ -635,6 +689,7 @@
               Stage, commit, branch, and manage multiple worktrees from the app
               — including the worktrees your agents are working in.
             </p>
+            <a class="feature-post-link" href="/blog/source-control-and-worktrees/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Voice dictation <span class="feature-tag">On-device</span></h3>
@@ -642,6 +697,7 @@
               Dictate issues, comments, and prompts with built-in Whisper speech
               recognition — transcribed locally, streamed live as you speak.
             </p>
+            <a class="feature-post-link" href="/blog/voice-dictation/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Screenshot &amp; markup</h3>
@@ -649,6 +705,7 @@
               Capture any region of the screen, annotate it with built-in
               drawing tools, and drop it straight into an issue, PR, or chat.
             </p>
+            <a class="feature-post-link" href="/blog/screenshot-and-markup/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Markdown everywhere</h3>
@@ -657,6 +714,7 @@
               discussions, and chat — plus emoji reactions and cross-references
               that link issues, PRs, and commits together.
             </p>
+            <a class="feature-post-link" href="/blog/markdown-everywhere/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>QR handoffs</h3>
@@ -664,6 +722,7 @@
               Repos, invites, and addresses render as QR codes for instant
               scannable handoff to a phone.
             </p>
+            <a class="feature-post-link" href="/blog/qr-handoffs/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Keyboard-first navigation</h3>
@@ -671,6 +730,7 @@
               Shortcuts for every major view and arrow-key navigation across
               tables keep your hands on the keyboard.
             </p>
+            <a class="feature-post-link" href="/blog/keyboard-first-navigation/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Fork with intent</h3>
@@ -678,6 +738,7 @@
               Fork any repository in the mesh and choose exactly where the copy
               lands in your working tree.
             </p>
+            <a class="feature-post-link" href="/blog/fork-with-intent/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Built to stay up</h3>
@@ -686,6 +747,7 @@
               network activity log keep long-running nodes healthy — and tell
               you exactly what happened when something hiccups.
             </p>
+            <a class="feature-post-link" href="/blog/built-to-stay-up/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -704,6 +766,7 @@
               Sign up with nothing but a key and a password — no email, no
               phone. Optional 2FA and optional email recovery if you want them.
             </p>
+            <a class="feature-post-link" href="/blog/anonymous-accounts/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Public node profiles</h3>
@@ -712,6 +775,7 @@
               and the version it runs — click any node on the network page to
               see it.
             </p>
+            <a class="feature-post-link" href="/blog/public-node-profiles/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Solana donations <span class="feature-tag">SOL · USDT</span></h3>
@@ -720,6 +784,7 @@
               confirmation, priced live via Pyth. Per-node deposit keys mean no
               shared custodial wallet.
             </p>
+            <a class="feature-post-link" href="/blog/solana-donations/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Make it rain</h3>
@@ -727,6 +792,7 @@
               Donate to a single node — or spray a contribution across every
               node in the federation at once.
             </p>
+            <a class="feature-post-link" href="/blog/make-it-rain/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Issue bounties</h3>
@@ -735,6 +801,7 @@
               the chain, confirms the deposit, and pays the contributor when
               their pull request merges — 90% to the author, 10% to the network.
             </p>
+            <a class="feature-post-link" href="/blog/issue-bounties/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Mirror rewards</h3>
@@ -742,6 +809,7 @@
               Nodes that preserve code get recognized and rewarded for it, with
               a payouts page tracking what mirroring has earned.
             </p>
+            <a class="feature-post-link" href="/blog/mirror-rewards/">Read the blog post →</a>
           </article>
         </div>
       </section>
@@ -760,6 +828,7 @@
               issues, and PRs — straight from forkmesh.com, streamed live from
               its host. No clone, no account required.
             </p>
+            <a class="feature-post-link" href="/blog/web-repo-browser/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Clean repo URLs</h3>
@@ -768,6 +837,7 @@
               repository — shareable links that keep working even when the
               original host is offline.
             </p>
+            <a class="feature-post-link" href="/blog/clean-repo-urls/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Mobile app <span class="feature-tag">Flutter</span></h3>
@@ -775,6 +845,7 @@
               Carry the mesh in your pocket: browse repositories, follow
               activity, chat, and get notifications from a native mobile app.
             </p>
+            <a class="feature-post-link" href="/blog/mobile-app/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>VS Code extension</h3>
@@ -783,6 +854,7 @@
               with Claude Code" or "start with Codex" on every issue. Works in
               VS Code, Cursor, Windsurf, and friends.
             </p>
+            <a class="feature-post-link" href="/blog/vs-code-extension/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Docs with search</h3>
@@ -790,6 +862,7 @@
               Searchable documentation covering the repository model, host
               tunnels, cloning, and the collaboration protocol.
             </p>
+            <a class="feature-post-link" href="/blog/docs-with-search/">Read the blog post →</a>
           </article>
           <article class="feature-item">
             <h3>Status, blog &amp; changelog</h3>
@@ -797,6 +870,7 @@
               A public status page, a blog, and a human-readable changelog keep
               the network's story out in the open.
             </p>
+            <a class="feature-post-link" href="/blog/status-blog-and-changelog/">Read the blog post →</a>
           </article>
         </div>
       </section>

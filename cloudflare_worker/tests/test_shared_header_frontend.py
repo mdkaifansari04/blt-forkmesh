@@ -46,7 +46,7 @@ def test_shared_simple_header_renderer_contains_about_header_contract():
         'aria-label="Primary"',
         'href="/docs"',
         ">Docs</a>",
-        'href="/blogs"',
+        'href="/blog"',
         ">Blog</a>",
         'href="/login"',
         ">Login</a>",

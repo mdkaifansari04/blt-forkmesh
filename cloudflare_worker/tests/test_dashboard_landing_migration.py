@@ -1091,12 +1091,14 @@ def test_clean_marketing_routes_target_static_pages():
         "/docs/ /docs 308",
         "/network /network.html 200",
         "/network/ /network 308",
-        "/blog /blogs 308",
+        "/blog /blog.html 200",
+        "/blog/ /blog 308",
+        "/blogs /blog 308",
     ):
         assert redirect in REDIRECTS
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
-    for route in ("/blog", "/docs", "/network", "/desktop", "/blogs"):
+    for route in ("/blog", "/blogs", "/docs", "/network", "/desktop"):
         assert route not in run_worker_first
     for route in ("/dashboard.html", "/docs.html", "/network.html"):
         assert route in run_worker_first

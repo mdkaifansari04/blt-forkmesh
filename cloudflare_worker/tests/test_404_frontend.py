@@ -38,7 +38,7 @@ def test_404_page_keeps_homepage_brand_and_navigation_escape_routes():
         'href="/"',
         'src="/assets/logo.png"',
         'href="/docs"',
-        'href="/blogs"',
+        'href="/blog"',
         'href="/login"',
         "Back home",
         "Read docs",
