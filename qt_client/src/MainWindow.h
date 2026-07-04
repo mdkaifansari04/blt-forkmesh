@@ -696,6 +696,15 @@ private:
     // warning surfaces as the top-bar notification toast (with Reset / Why links),
     // not an in-page banner.
     void refreshRepoPinBanner();
+    // Periodic auto-heal: for EVERY repo this node is the source of truth for (not
+    // just the open one), re-attest the relay's integrity pin when the refs we
+    // serve have drifted past it. The automatic form of the manual "Reset
+    // integrity pin" — a source repo the owner isn't currently viewing would
+    // otherwise sit with every clone rejected until they happened to open it and
+    // click reset. Only re-signs our own authentic served refs (identical to any
+    // publish), and when the source is offline it simply never runs, so the pin
+    // freezes and keeps protecting clones against a tampered mirror as before.
+    void reattestStalePins();
     // Show the integrity-pin warning in the top-bar toast, persistent (like an error
     // toast) with clickable "Reset integrity pin" and "Why?" links.
     void showPinWarning();
@@ -1231,15 +1240,28 @@ private:
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
+    // Same as continueSelectedAgentSession, but for an arbitrary session id —
+    // used to resume a session steered from the website (adhoc #182) without
+    // disturbing whatever session is currently selected in the UI.
+    void continueAgentSession(int sessionId);
+    // Ask the given session's agent to merge base and resolve conflicts, then
+    // resume it — the action behind the "Fix conflicts with agent" button.
+    // Shared by that button (selected session) and the auto-fix setting below
+    // (any idle session, not necessarily the selected one).
+    void fixAgentConflictsWithAgent(int sessionId);
+    // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
+    // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
+    // De-duped per session so a conflict that persists across a failed retry
+    // isn't retried forever; the guard clears once the conflict is gone.
+    void maybeAutoFixAgentConflict(const AgentSession &session,
+                                   const AgentDiffStat &stat);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
     void sendPromptToSelectedAgent(const QString &prompt);
-    // Send the footer quick-add box's text to the agent session open above
-    // instead of the quick-add issue/new-agent flow. Shared by the up-arrow
-    // send-to-agent button and Enter in the box while the Agents tab is open
-    // on a selected session (adhoc #185).
-    void sendQuickAddToSelectedAgent();
+    // Same as sendPromptToSelectedAgent, but for an arbitrary session id
+    // (adhoc #182: the website can steer any of this node's agent sessions).
+    void sendPromptToAgentSession(int sessionId, const QString &prompt);
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -1312,6 +1334,9 @@ private:
     // jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
+    // Refreshes the count badge on the top-bar Agents nav button from
+    // m_agentSessions.size().
+    void updateAgentsNavBadge();
     void processAgentQueue();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
@@ -1473,6 +1498,7 @@ private:
     // bar between the file browser and the commits panel.
     void showOverviewCommits();
     void showOverviewFiles();
+    void showOverviewBranches();
     void loadRepoFileTree();
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
@@ -2190,6 +2216,25 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
+    // Website agent view (adhoc #182): the repo owner watches this node's
+    // Claude Code agent sessions and can steer a running one from the browser.
+    QUrl agentsApiUrl(const RepositoryRecord &repo) const;
+    // Push a full-replace snapshot of every owned/hosted repo's local agent
+    // sessions to the website. Called on a periodic timer and, debounced, right
+    // after a session's status changes.
+    void pushAgentSessionsSnapshot();
+    void pushAgentSessionsForRepo(RepositoryRecord repo, QList<AgentSession> sessions);
+    // Arms/re-arms a short debounce timer that calls pushAgentSessionsSnapshot()
+    // once it fires, so a burst of status flips coalesces into one request.
+    void scheduleAgentSessionsPush();
+    // Periodic drain of prompts the website owner queued for this node's agent
+    // sessions (steering a running one from the browser).
+    void drainAgentPrompts();
+    void drainAgentPromptsFor(RepositoryRecord repo);
+    // Deliver one queued website prompt to the matching session via
+    // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
+    // log + drop it if no local session with that id exists.
+    void deliverQueuedAgentPrompt(int sessionId, const QString &text);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
@@ -2309,6 +2354,7 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
+    void advanceTopMessageQueue(); // show the next queued error, or dismiss if none left
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
@@ -2524,6 +2570,7 @@ private:
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
+    QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
@@ -2539,6 +2586,11 @@ private:
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
+    // Pending error messages that arrived while another error toast was already
+    // counting down. A burst of quick failures (e.g. retries) would otherwise
+    // stomp each other before any could be read; queuing gives each its own
+    // full countdown once the current one finishes (see advanceTopMessageQueue).
+    QStringList m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
@@ -2561,10 +2613,11 @@ private:
     // git/cmake output, and phase headers so the user sees exactly what's running.
     QDialog *m_updateLogDialog = nullptr;
     QPlainTextEdit *m_updateLog = nullptr;
-    // Single-line live restart/update log pinned to the bottom of the window. Shows
-    // the newest log line while an update runs; click it to open the full window.
-    QPushButton *m_footerUpdateLog = nullptr;
-    QString m_footerUpdateLineRaw; // full text behind the elided footer line
+    // Scrollable live log pinned to the bottom of the window: shows as many recent
+    // lines as fit tall, with a scrollbar so earlier history can be scrolled back
+    // to. Streams every logSystem()/appendUpdateLog() line, including the
+    // session-start/session-end/rebuild markers.
+    QPlainTextEdit *m_footerUpdateLog = nullptr;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
@@ -3088,6 +3141,8 @@ private:
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
     QLabel *m_langLegend = nullptr;
+    QLabel *m_filesCountHeader = nullptr;
+    QLabel *m_filesCountRow = nullptr;
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
@@ -3705,6 +3760,12 @@ private:
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
+    // adhoc #182: push this node's agent sessions to the website + drain any
+    // steering prompts queued there. m_agentSyncDebounceTimer is a singleShot
+    // re-armed after a status flip so a burst of updates coalesces into one push.
+    QTimer *m_agentSyncPushTimer = nullptr;
+    QTimer *m_agentSyncDebounceTimer = nullptr;
+    QTimer *m_agentPromptDrainTimer = nullptr;
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.
@@ -3749,6 +3810,10 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
+    // Prevents an unresolved conflict from re-queuing the agent on every refresh;
+    // cleared once the session's AgentDiffStat stops reporting conflicted.
+    QSet<int> m_agentAutoFixAttempted;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.

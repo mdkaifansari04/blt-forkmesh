@@ -238,6 +238,34 @@ code {
   font-weight: 600;
 }
 
+/* Admin shortcut — lives in .header-actions (not .global-nav, which the mobile
+   breakpoint hides) so it stays visible at every width. Only revealed (hidden
+   attr removed) for a signed-in admin whose session carries an adminUrl passed
+   through from the Worker ADMIN_PATH. */
+.nav-admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  color: var(--accent-bright, #f59e0b);
+  background: color-mix(in srgb, var(--accent-bright, #f59e0b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-bright, #f59e0b) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 10px;
+}
+
+.nav-admin:hover {
+  color: var(--accent-bright, #f59e0b);
+  background: color-mix(in srgb, var(--accent-bright, #f59e0b) 20%, transparent);
+  text-decoration: none;
+}
+
+.nav-admin[hidden] {
+  display: none;
+}
+
 .header-search {
   flex: 1;
   max-width: 380px;
