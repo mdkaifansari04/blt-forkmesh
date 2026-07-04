@@ -4676,6 +4676,44 @@
     return row.online ? "live" : "";
   }
 
+  // Node detail chips shown under each row in the full "Connected nodes" list
+  // (not the compact home-page rail). Text fields fall back to an em dash when
+  // a node hasn't reported them; counts default to 0 rather than a dash since
+  // "no repos yet" is a real, distinct state from "field not tracked". CPU/RAM/
+  // Disk aren't collected by any node -> worker path today (that telemetry is
+  // desktop-only peer-room presence, see ServerNode::sampleSystemStats), so
+  // they always render as a dash here for parity with the desktop Mirror nodes
+  // panel's columns rather than being omitted.
+  function nodeDetailChips(row) {
+    const textChips = [
+      ["Commit", row.commit ? String(row.commit).slice(0, 7) : ""],
+      ["Synced", row.lastSync || ""],
+      ["Platform", row.platform || ""],
+      ["Version", row.version || ""],
+      ["CPU", ""],
+      ["RAM", ""],
+      ["Disk", ""],
+    ];
+    const countChips = [
+      ["Size", formatSize(row.sizeBytes)],
+      ["Issues", formatCount(row.issueCount)],
+      ["Commits", formatCount(row.commitCount)],
+      ["Branches", formatCount(row.branchCount)],
+      ["Pulls", formatCount(row.pullCount)],
+      ["Discussions", formatCount(row.discussionCount)],
+      ["Clones", formatCount(row.clonesServed)],
+      ["Website", formatCount(row.websiteServed)],
+      ["Artifacts", formatCount(row.artifactCount)],
+    ];
+    return [...textChips, ...countChips]
+      .map(([label, value]) => `
+        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono">
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="text-foreground">${escapeHtml(value === "" || value === undefined || value === null ? "—" : value)}</span>
+        </span>`)
+      .join("");
+  }
+
   function renderNetworkRows(rows) {
     const list = $("[data-network-node-list]");
     const rail = $("[data-network-rail-nodes]");
@@ -4687,12 +4725,15 @@
     if (list) {
       list.innerHTML = recent.length
         ? recent.map((row) => `
-          <div class="px-4 py-3 flex items-center gap-4 hover:bg-secondary/50 transition-colors">
-            <div class="flex items-center gap-2 flex-1 min-w-0">
-              <i data-lucide="circle" class="${nodeDotClass(row, "w-2 h-2")}"></i>
-              <span class="text-sm ${row.online ? "text-foreground" : "text-muted-foreground"} font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
+          <div class="px-4 py-3 hover:bg-secondary/50 transition-colors">
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2 flex-1 min-w-0">
+                <i data-lucide="circle" class="${nodeDotClass(row, "w-2 h-2")}"></i>
+                <span class="text-sm ${row.online ? "text-foreground" : "text-muted-foreground"} font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
+              </div>
+              <span class="text-xs text-muted-foreground w-20 text-right font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
             </div>
-            <span class="text-xs text-muted-foreground w-20 text-right font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
+            <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
         : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
@@ -4723,6 +4764,10 @@
       const uptime = Array.isArray(leaderboards.uptime)
         ? leaderboards.uptime
         : [];
+      const nodeDetails = new Map(
+        (Array.isArray(leaderboards.nodes) ? leaderboards.nodes : [])
+          .map((node) => [String(node.name || "").trim().toLowerCase(), node]),
+      );
       const activityHours = Array.isArray(history.hours)
         ? history.hours
         : [];
@@ -4753,17 +4798,21 @@
       uptime.forEach((row) => {
         const name = String(row.name || "").trim();
         if (!name) return;
-        nodeRows.set(name.toLowerCase(), {
+        const key = name.toLowerCase();
+        nodeRows.set(key, {
+          ...nodeDetails.get(key),
           name,
           minutes: Number(row.minutes) || 0,
-          online: onlineSet.has(name.toLowerCase()),
+          online: onlineSet.has(key),
         });
       });
       onlineNames.forEach((name) => {
         const clean = String(name || "").trim();
         if (!clean) return;
         const key = clean.toLowerCase();
-        if (!nodeRows.has(key)) nodeRows.set(key, { name: clean, minutes: 0, online: true });
+        if (!nodeRows.has(key)) {
+          nodeRows.set(key, { ...nodeDetails.get(key), name: clean, minutes: 0, online: true });
+        }
       });
       const rows = [...nodeRows.values()].sort(
         (a, b) =>
