@@ -1283,6 +1283,15 @@ private:
     // Same as sendPromptToSelectedAgent, but for an arbitrary session id
     // (adhoc #182: the website can steer any of this node's agent sessions).
     void sendPromptToAgentSession(int sessionId, const QString &prompt);
+    // Full issue title + description + every comment, formatted for an agent
+    // prompt. Shared by the initial issue-assignment prompt and the "Send
+    // issue context" resend action, so a run that missed the context the
+    // first time (or was given a bare "Continue" on resume) can be handed
+    // the whole thing again on demand (adhoc #256).
+    QString issueContextPrompt(const Issue &issue) const;
+    // Re-sends the full context of the issue linked to the currently-open
+    // agent session (adhoc #256's "Send issue context" action).
+    void sendIssueContextToSelectedAgent();
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -2092,6 +2101,9 @@ private:
     // Rebuilds the row of attachment chips (thumbnail + an "x" to remove each)
     // shown next to the paperclip once images are queued.
     void rebuildQuickAddAttachChips();
+    // Clicking a chip's thumbnail (issue #319) opens the original image full-size
+    // in a lightbox dialog.
+    void showQuickAddImageDetail(const QString &path);
     // Screenshot button (next to the rebuild/restart button): drops a full-screen
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
