@@ -958,6 +958,7 @@
   const AGENT_NEW_MODEL_OPTIONS = [
     { value: "", label: "Provider default" },
     { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    { value: "claude-sonnet-5", label: "Claude Sonnet 5" },
     { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
     { value: "fable-5", label: "Fable 5" },
