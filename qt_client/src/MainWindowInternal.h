@@ -658,7 +658,11 @@ private:
 class TokenUsageMiniChart : public QWidget
 {
 public:
-    explicit TokenUsageMiniChart(QWidget *parent = nullptr) : QWidget(parent)
+    explicit TokenUsageMiniChart(const QString &title =
+                                     QStringLiteral("Claude Code usage"),
+                                 bool remainingMode = false,
+                                 QWidget *parent = nullptr)
+        : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setFixedSize(60, 30);
@@ -682,11 +686,28 @@ public:
     // clears (issue #50). Pass an empty string to mark it unknown.
     void setReset(bool weekly, const QString &remaining)
     {
-        QString &slot = weekly ? m_weeklyReset : m_fiveHourReset;
-        if (slot == remaining)
+        setWindowNote(weekly,
+                      remaining.isEmpty()
+                          ? QString()
+                          : QStringLiteral("resets in %1").arg(remaining));
+    }
+
+    void setWindowNote(bool weekly, const QString &note)
+    {
+        QString &slot = weekly ? m_weeklyNote : m_fiveHourNote;
+        if (slot == note)
             return;
-        slot = remaining;
+        slot = note;
         refreshTooltip();
+    }
+
+    // For Codex we do not get a live utilization percentage from the CLI today,
+    // so the top bar shows the rolling-window time remaining that ForkMesh
+    // already tracks when Codex sessions start.
+    void setRemaining(bool weekly, int percent, const QString &note)
+    {
+        setUsage(weekly, percent);
+        setWindowNote(weekly, note);
     }
 
     // The per-session token/cost detail that used to live on the agent detail
@@ -752,8 +773,15 @@ private:
         c.setAlpha(alpha);
         return c;
     }
-    static QColor barColor(int pct)
+    QColor barColor(int pct) const
     {
+        if (m_remainingMode) {
+            if (pct <= 10)
+                return QColor("#f85149"); // red: nearly out of window
+            if (pct <= 30)
+                return QColor("#d29922"); // amber: low remaining time
+            return QColor("#3fb950");     // green: plenty remaining
+        }
         if (pct >= 90)
             return QColor("#f85149"); // red: near the cap
         if (pct >= 70)
@@ -762,29 +790,34 @@ private:
     }
     void refreshTooltip()
     {
-        auto line = [](const QString &label, int v, const QString &reset) {
-            QString s =
-                QStringLiteral("%1: %2").arg(
-                    label, v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
-                                 : QStringLiteral("%1%").arg(v));
-            if (!reset.isEmpty())
-                s += QString::fromUtf8(" \xC2\xB7 resets in ") + reset; // ·
+        auto line = [this](const QString &label, int v, const QString &note) {
+            const QString value =
+                v < 0 ? QString::fromUtf8("\xE2\x80\x94") // em dash
+                      : QStringLiteral("%1%").arg(v);
+            QString s = m_remainingMode
+                            ? QStringLiteral("%1 remaining: %2").arg(label, value)
+                            : QStringLiteral("%1: %2").arg(label, value);
+            if (!note.isEmpty())
+                s += QString::fromUtf8(" \xC2\xB7 ") + note; // ·
             return s;
         };
-        QString tip = QStringLiteral("Claude Code usage\n%1\n%2")
-                          .arg(line(QStringLiteral("5-hour"), m_fiveHour,
-                                    m_fiveHourReset),
+        QString tip = QStringLiteral("%1\n%2\n%3")
+                          .arg(m_title,
+                               line(QStringLiteral("5-hour"), m_fiveHour,
+                                    m_fiveHourNote),
                                line(QStringLiteral("Weekly"), m_weekly,
-                                    m_weeklyReset));
+                                    m_weeklyNote));
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
         setToolTip(tip);
     }
 
+    QString m_title;
+    bool m_remainingMode = false;
     int m_fiveHour = -1;
     int m_weekly = -1;
-    QString m_fiveHourReset; // "resets in ..." text for the 5-hour window
-    QString m_weeklyReset;   // "resets in ..." text for the weekly window
+    QString m_fiveHourNote; // extra tooltip text for the 5-hour window
+    QString m_weeklyNote;   // extra tooltip text for the weekly window
     QString m_stats; // per-session token/cost line, shown under the gauges
 };
 
@@ -2423,7 +2456,8 @@ const QString kCodexProvider = QStringLiteral("codex");
 
 // Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
-// iconography; Codex and OpenAI both authenticate with the OpenAI key.
+// iconography. Codex uses the logged-in Codex CLI account; OpenAI API uses the
+// saved OpenAI key.
 inline bool agentIsClaudeProvider(const QString &provider)
 {
     return provider.startsWith(QLatin1String("claude"));
@@ -2436,7 +2470,7 @@ inline bool agentIsCodexProvider(const QString &provider)
 
 inline bool agentUsesOpenAiKey(const QString &provider)
 {
-    return provider == QLatin1String("openai") || agentIsCodexProvider(provider);
+    return provider == QLatin1String("openai");
 }
 
 // User's preferred default agent (Settings → Agents). One of the canonical
@@ -2445,21 +2479,33 @@ inline bool agentUsesOpenAiKey(const QString &provider)
 // for an unset/unknown stored value.
 const QString kDefaultAgentProviderSetting =
     QStringLiteral("agents/defaultProvider");
+const QString kQuickAddAgentProviderSetting =
+    QStringLiteral("agents/quickAddProvider");
 const QString kFallbackAgentProvider = QStringLiteral("openai");
+
+inline bool agentProviderIsKnown(const QString &provider)
+{
+    return agentIsCodexProvider(provider) ||
+           provider == QLatin1String("openai") ||
+           provider == QLatin1String("claude-api") ||
+           provider == QLatin1String("claude-code");
+}
 
 inline QString defaultAgentProvider()
 {
+    const QString value = QSettings()
+                              .value(kDefaultAgentProviderSetting,
+                                     kFallbackAgentProvider)
+                              .toString()
+                              .trimmed();
+    return agentProviderIsKnown(value) ? value : kFallbackAgentProvider;
+}
+
+inline QString quickAddAgentProvider()
+{
     const QString value =
-        QSettings()
-            .value(kDefaultAgentProviderSetting, kFallbackAgentProvider)
-            .toString()
-            .trimmed();
-    if (agentIsCodexProvider(value) ||
-        value == QLatin1String("openai") ||
-        value == QLatin1String("claude-api") ||
-        value == QLatin1String("claude-code"))
-        return value;
-    return kFallbackAgentProvider;
+        QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
+    return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
 
 // Point a provider QComboBox (built with the codex/openai/claude-api/claude-code
@@ -2470,6 +2516,14 @@ inline void selectDefaultAgentProvider(QComboBox *combo)
     if (!combo)
         return;
     const int index = combo->findData(defaultAgentProvider());
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+inline void selectQuickAddAgentProvider(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    const int index = combo->findData(quickAddAgentProvider());
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
@@ -2647,8 +2701,63 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     if (!combo)
         return;
     combo->clear();
+    combo->setEditable(false);
     combo->setProperty("allowAutoModel", true);
     combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
+}
+
+inline QString codexChatGptModelId(const QString &model)
+{
+    const QString trimmed = model.trimmed();
+    if (trimmed.isEmpty() || trimmed == QLatin1String("gpt-5.5") ||
+        trimmed == QLatin1String("gpt-5.5-codex"))
+        return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.4"))
+        return QStringLiteral("gpt-5.4");
+    if (trimmed == QLatin1String("gpt-5.4-mini") ||
+        trimmed == QLatin1String("gpt-5.4-Mini"))
+        return QStringLiteral("gpt-5.4-mini");
+    return QStringLiteral("gpt-5.5");
+}
+
+inline void populateCodexModelCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->setEditable(false);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setProperty("allowAutoModel", false);
+    combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
+    combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
+    combo->addItem(QStringLiteral("GPT-5.4-Mini"),
+                   QStringLiteral("gpt-5.4-mini"));
+}
+
+inline QString selectedModelComboValue(QComboBox *combo)
+{
+    if (!combo)
+        return QString();
+    const QString text = combo->currentText().trimmed();
+    const int idx = combo->currentIndex();
+    if (idx >= 0 && combo->itemText(idx) == text)
+        return combo->itemData(idx).toString().trimmed();
+    return text;
+}
+
+inline void selectModelComboValue(QComboBox *combo, const QString &model)
+{
+    if (!combo)
+        return;
+    const QString trimmed = model.trimmed();
+    const int idx = combo->findData(trimmed);
+    if (idx >= 0) {
+        combo->setCurrentIndex(idx);
+    } else if (combo->isEditable()) {
+        combo->setEditText(trimmed);
+    } else if (combo->count() > 0) {
+        combo->setCurrentIndex(0);
+    }
 }
 
 // Friendly label for a session's `model` field, so the agent header can show
@@ -2673,6 +2782,13 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("gpt-4.1-nano"), QStringLiteral("GPT-4.1 nano")},
         {QStringLiteral("gpt-4.1-mini"), QStringLiteral("GPT-4.1 mini")},
         {QStringLiteral("gpt-4.1"), QStringLiteral("GPT-4.1")},
+        {QStringLiteral("gpt-5"), QStringLiteral("GPT-5")},
+        {QStringLiteral("gpt-5.1"), QStringLiteral("GPT-5.1")},
+        {QStringLiteral("gpt-5.1-codex"), QStringLiteral("GPT-5.1 Codex")},
+        {QStringLiteral("gpt-5.4"), QStringLiteral("GPT-5.4")},
+        {QStringLiteral("gpt-5.4-mini"), QStringLiteral("GPT-5.4-Mini")},
+        {QStringLiteral("gpt-5.5"), QStringLiteral("GPT-5.5")},
+        {QStringLiteral("gpt-5.5-codex"), QStringLiteral("GPT-5.5 Codex")},
     };
     return kLabels.value(model.trimmed(), model.trimmed());
 }
@@ -2689,7 +2805,19 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     combo->clear();
     if (provider == QLatin1String("claude-code")) {
         // Live models populated by refreshClaudeModelCombo / mergeLiveClaudeModels
+    } else if (agentIsCodexProvider(provider)) {
+        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
+        combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
+        combo->addItem(QStringLiteral("GPT-5.4-Mini"),
+                       QStringLiteral("gpt-5.4-mini"));
     } else if (agentUsesOpenAiKey(provider)) {
+        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
+        combo->addItem(QStringLiteral("GPT-5.5 Codex"),
+                       QStringLiteral("gpt-5.5-codex"));
+        combo->addItem(QStringLiteral("GPT-5.1 Codex"),
+                       QStringLiteral("gpt-5.1-codex"));
+        combo->addItem(QStringLiteral("GPT-5.1"), QStringLiteral("gpt-5.1"));
+        combo->addItem(QStringLiteral("GPT-5"), QStringLiteral("gpt-5"));
         combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
         combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
         combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));
@@ -2708,6 +2836,9 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
 inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
 {
     if (!combo || models.isEmpty())
+        return;
+    const QVariant claudeModelCombo = combo->property("claudeModelCombo");
+    if (claudeModelCombo.isValid() && !claudeModelCombo.toBool())
         return;
     QSignalBlocker block(combo);
     const QVariant picked = combo->currentData();

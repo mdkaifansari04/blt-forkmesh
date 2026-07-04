@@ -762,10 +762,13 @@ QWidget *MainWindow::buildSettingsSection()
     });
 
     m_codexModelEdit = new QLineEdit;
-    m_codexModelEdit->setPlaceholderText("Optional, e.g. gpt-5.1-codex");
-    m_codexModelEdit->setText(QSettings().value(kCodexModelSetting).toString().trimmed());
+    m_codexModelEdit->setPlaceholderText("Optional, e.g. gpt-5.5");
+    const QString codexModel =
+        codexChatGptModelId(QSettings().value(kCodexModelSetting).toString());
+    m_codexModelEdit->setText(codexModel);
+    QSettings().setValue(kCodexModelSetting, codexModel);
     connect(m_codexModelEdit, &QLineEdit::editingFinished, this, [this] {
-        const QString model = m_codexModelEdit->text().trimmed();
+        const QString model = codexChatGptModelId(m_codexModelEdit->text());
         m_codexModelEdit->setText(model);
         QSettings().setValue(kCodexModelSetting, model);
     });

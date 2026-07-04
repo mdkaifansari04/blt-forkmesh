@@ -603,6 +603,34 @@ QString MainWindow::testIssueAgentProvider() const
                                 : QString();
 }
 
+void MainWindow::testSetQuickAddAgentProvider(const QString &provider)
+{
+    if (!m_quickAddAgentProvider)
+        return;
+    const int index = m_quickAddAgentProvider->findData(provider);
+    m_quickAddAgentProvider->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+QStringList MainWindow::testQuickAddModelLabels() const
+{
+    QStringList labels;
+    if (!m_quickAddClaudeModel)
+        return labels;
+    for (int i = 0; i < m_quickAddClaudeModel->count(); ++i)
+        labels << m_quickAddClaudeModel->itemText(i);
+    return labels;
+}
+
+bool MainWindow::testQuickAddModelVisible() const
+{
+    return m_quickAddClaudeModel && m_quickAddClaudeModel->isVisible();
+}
+
+bool MainWindow::testQuickAddModelEditable() const
+{
+    return m_quickAddClaudeModel && m_quickAddClaudeModel->isEditable();
+}
+
 QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
 {
     if (!m_worktreesTable)

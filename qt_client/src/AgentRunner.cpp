@@ -362,6 +362,7 @@ void AgentRunner::launch(Phase phase, const QString &program,
     // inherited key, then reset only the one ForkMesh configured.
     const QString provider = m_session.provider;
     env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    env.remove(QStringLiteral("CODEX_API_KEY"));
     env.remove(QStringLiteral("OPENAI_API_KEY"));
     if (!m_config.apiKeyName.isEmpty())
         env.remove(m_config.apiKeyName);
@@ -471,6 +472,17 @@ void AgentRunner::onProcessFinished(int exitCode)
             log.contains(QStringLiteral("401 Unauthorized"), Qt::CaseInsensitive)) {
             message += QStringLiteral(
                 " OpenAI rejected the API key; rotate it and re-enter it in Settings.");
+        } else if (!m_session.provider.startsWith(QLatin1String("claude")) &&
+                   (log.contains(QStringLiteral("quota exceeded"),
+                                 Qt::CaseInsensitive) ||
+                    log.contains(QStringLiteral("insufficient_quota"),
+                                 Qt::CaseInsensitive) ||
+                    log.contains(QStringLiteral("billing details"),
+                                 Qt::CaseInsensitive))) {
+            message += QStringLiteral(
+                " OpenAI reports that the API-key-backed account is out of quota. "
+                "Use the Codex provider to run your logged-in Codex CLI account, "
+                "or update the OpenAI API key/billing project in Settings.");
         }
         complete(false, AgentStatus::Failed, message);
         return;
@@ -733,8 +745,6 @@ QString AgentRunner::buildPrompt() const
             prompt << transcript.right(12000);
         }
     }
-    if (m_session.createPr)
-        prompt << QStringLiteral("\nA pull request should be created from your patch after this run.");
     prompt << QStringLiteral("\nReturn concise progress and final notes.");
     return prompt.join(QLatin1Char('\n'));
 }
@@ -801,6 +811,21 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
         return QStringLiteral(
             "OpenAI rejected the API key. Set a valid OpenAI API key in Settings, "
             "then click Continue.");
+    }
+    if (!claude &&
+        (has("quota exceeded") || has("insufficient_quota") ||
+         has("billing details"))) {
+        m_attentionRaised = true;
+        if (m_session.provider == QLatin1String("codex"))
+            return QStringLiteral(
+                "Codex is reporting an OpenAI API quota/billing limit. ForkMesh "
+                "now runs the Codex provider through your logged-in Codex CLI "
+                "account instead of the saved API key; restart this session after "
+                "updating to this build.");
+        return QStringLiteral(
+            "OpenAI reports that this API key or project is out of quota. Update "
+            "the OpenAI API key/billing project in Settings, or switch the prompt "
+            "agent to Codex to use your logged-in Codex CLI account.");
     }
     return QString();
 }

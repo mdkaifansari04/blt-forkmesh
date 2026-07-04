@@ -323,6 +323,10 @@ public:
     QString testQuickAddAgentProvider() const;
     QString testIssueAgentProvider() const;
     void testSetDefaultAgentProvider(const QString &provider);
+    void testSetQuickAddAgentProvider(const QString &provider);
+    QStringList testQuickAddModelLabels() const;
+    bool testQuickAddModelVisible() const;
+    bool testQuickAddModelEditable() const;
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
     // so a test can prove the detail pane doesn't go blank after a refresh.
@@ -1375,6 +1379,10 @@ private:
     // consumed yet, so an immediate refresh still shows the pre-start figure —
     // the delayed follow-up catches the first turn's usage.
     void bumpClaudeCodeUsage();
+    // Codex currently exposes ForkMesh's locally tracked rolling-window
+    // remaining time rather than a live provider utilization API. Keep the
+    // top-bar Codex meter in sync with the Agents-page usage-limit countdown.
+    void refreshCodexUsageRemaining();
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
@@ -2642,11 +2650,12 @@ private:
     QLabel *m_repoLabel = nullptr;
     QLabel *m_navNodeName = nullptr;     // node name shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
-    // Super-tiny Claude Code usage chart in the top-right cluster (issue #266):
-    // two horizontal bars (5-hour + weekly) sitting beside the earnings/avatar,
-    // fed by rate-limit events. Held as a QWidget* and poked via static_cast,
-    // since its concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
+    // Super-tiny Claude Code and Codex usage charts in the top-right cluster
+    // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
+    // earnings/avatar. Held as QWidget* and poked via static_cast, since their
+    // concrete type (TokenUsageMiniChart) is private to MainWindow.cpp.
     QWidget *m_navTokenUsage = nullptr;
+    QWidget *m_navCodexUsage = nullptr;
     // Reward-availability cluster, now living in the node profile panel right
     // under "Get paid to mirror": a clear on/off switch (ToggleSwitch, private to
     // MainWindowChat.cpp) that takes this node offline (stops serving + the
@@ -2908,9 +2917,8 @@ private:
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
     QComboBox *m_quickAddAgentProvider = nullptr;
-    // Claude model chooser (adhoc #261): pick opus/sonnet/etc. for Claude Code
-    // quick-add runs. Only meaningful for the "Claude Code" provider, so it's
-    // shown/hidden as the provider selection changes.
+    // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
+    // Claude model list; Codex gets an editable OpenAI model list.
     QComboBox *m_quickAddClaudeModel = nullptr;
     // Permission-mode chooser (issue #348): Ask before edits/Edit automatically/
     // Plan mode/Auto mode, styled like the provider/model combos beside it and
