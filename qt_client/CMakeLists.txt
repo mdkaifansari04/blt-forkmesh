@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.47 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.52 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -237,6 +237,7 @@ set_source_files_properties(
     src/HeadlessConsole.h
     src/KebabHeaderView.h
     src/MainWindow.h
+    src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
     src/RepoHost.h

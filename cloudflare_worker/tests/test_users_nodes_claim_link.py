@@ -13,6 +13,9 @@ import asyncio
 import re
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
@@ -742,8 +745,9 @@ def test_wire_contracts_across_worker_qt_and_installer():
 def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     entry = ENTRY.read_text(encoding="utf-8")
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
-    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
-        encoding="utf-8")
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker composes into one /dashboard.js (see src/dashboard_bundle.py).
+    dashboard_js = assembled_dashboard_js()
     login_js = (ROOT / "cloudflare_worker" / "public" / "login.js").read_text(
         encoding="utf-8")
 
@@ -767,10 +771,12 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
                   "index.html").read_text(encoding="utf-8")
     dashboard_html = (ROOT / "cloudflare_worker" / "public" /
                       "dashboard.html").read_text(encoding="utf-8")
-    for html in (index_html, dashboard_html):
-        assert "data-link-grant-row" in html
-        assert "data-link-grant-confirm" in html
+    # The shell is split into partials the Worker composes; the confirm row lives
+    # in the assembled document. The two shell files stay byte-identical.
     assert index_html == dashboard_html
+    composed = assembled_dashboard()
+    assert "data-link-grant-row" in composed
+    assert "data-link-grant-confirm" in composed
     assert "data-link-grant-confirm" in dashboard_js
 
     # A logged-out browser bounces through login and resumes via ?next= (local
@@ -781,8 +787,7 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
 
 
 def test_dashboard_exposes_a_claim_node_panel():
-    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
-        encoding="utf-8")
+    dashboard_js = assembled_dashboard_js()
     for marker in ("claim-node", "claim-confirm", "renderClaimNodePanel",
                    "data-claim-node-input", "data-claim-code-input"):
         assert marker in dashboard_js
@@ -791,9 +796,10 @@ def test_dashboard_exposes_a_claim_node_panel():
                  "index.html").read_text(encoding="utf-8")
     dashboard_html = (ROOT / "cloudflare_worker" / "public" / "dashboard.html").read_text(
         encoding="utf-8")
-    for html in (index_html, dashboard_html):
-        assert "data-claim-node-input" in html
-        assert "data-claim-code-confirm" in html
-    # The two dashboard copies must stay byte-identical (one is served, the
-    # other 308-redirects to it; a frontend test elsewhere asserts equality).
+    # The claim panel lives in a shell partial the Worker composes; assert it on
+    # the assembled document. The two shell files must stay byte-identical (one is
+    # served, the other 308-redirects to it; a frontend test asserts equality).
     assert index_html == dashboard_html
+    composed = assembled_dashboard()
+    assert "data-claim-node-input" in composed
+    assert "data-claim-code-confirm" in composed

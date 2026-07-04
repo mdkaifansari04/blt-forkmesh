@@ -3,6 +3,9 @@
 import ast
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 PUBLIC = ROOT / "public"
@@ -43,6 +46,11 @@ def _load_notification_helpers():
 
 
 def _read(path: Path) -> str:
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py);
+    # assert on the composed script.
+    if path.name == "dashboard.js":
+        return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
 
 
@@ -102,10 +110,12 @@ def test_worker_indexes_notifications_from_existing_event_sources():
 
 
 def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    # The two shell files stay byte-identical; the markers live in the composed
+    # document the Worker serves (header + modals partials).
+    assert _read(PUBLIC / "dashboard" / "index.html") == _read(PUBLIC / "dashboard.html")
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert "Notifications are intentionally hidden" not in dashboard
     assert "Notification reader modal is intentionally hidden" not in dashboard
     assert "Notifications disabled until notification data is wired" not in dashboard
@@ -128,7 +138,8 @@ def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
 def test_worker_exposes_signed_thread_subscription_route_and_schema():
     # Subscriptions (issue #361): a signed subscribe/unsubscribe endpoint plus the
     # table that backs it.
-    assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in ENTRY_TEXT
+    urls_text = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
+    assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in urls_text
     assert "async def subscribe_handler" in ENTRY_TEXT
     assert "REPO_SUBSCRIBE_RE.match(url.path)" in ENTRY_TEXT
     assert "await subscribe_handler(self.env, request, owner, repo)" in ENTRY_TEXT

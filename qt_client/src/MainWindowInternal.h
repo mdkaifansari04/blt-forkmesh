@@ -2330,6 +2330,12 @@ const QString kClaudeFallbackModelSetting =
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
 const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
+// When an idle agent session's branch would conflict with base (the same
+// condition that shows the "Fix conflicts with agent" button), automatically
+// ask the agent to merge base and resolve the conflicts instead of waiting for
+// a manual click. Default on; can be disabled in Settings.
+const QString kAutoFixAgentConflictsSetting =
+    QStringLiteral("agents/autoFixConflicts");
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
@@ -2558,7 +2564,9 @@ inline QString agentModelLabel(const QString &model)
         {QStringLiteral("haiku"), QStringLiteral("Haiku")},
         {QStringLiteral("fable"), QStringLiteral("Fable")},
         {QStringLiteral("claude-haiku-4-5"), QStringLiteral("Haiku 4.5")},
+        {QStringLiteral("claude-haiku-4-5-20251001"), QStringLiteral("Haiku 4.5")},
         {QStringLiteral("claude-sonnet-4-6"), QStringLiteral("Sonnet 4.6")},
+        {QStringLiteral("claude-sonnet-5"), QStringLiteral("Sonnet 5")},
         {QStringLiteral("claude-opus-4-8"), QStringLiteral("Opus 4.8")},
         {QStringLiteral("claude-fable-5"), QStringLiteral("Fable 5")},
         {QStringLiteral("gpt-4.1-nano"), QStringLiteral("GPT-4.1 nano")},

@@ -601,6 +601,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoAgentOnStallSetting, enabled);
     });
 
+    // When an idle agent's branch would conflict with base — the same check
+    // that shows the "Fix conflicts with agent" button — automatically ask the
+    // agent to merge and resolve it instead of waiting for a manual click.
+    // On by default.
+    auto *autoFixConflictsCheck =
+        new QCheckBox("Auto-fix agent branch conflicts");
+    autoFixConflictsCheck->setChecked(
+        QSettings().value(kAutoFixAgentConflictsSetting, true).toBool());
+    autoFixConflictsCheck->setToolTip(
+        "When an idle agent's branch conflicts with the base branch, "
+        "automatically ask the agent to merge and resolve the conflicts "
+        "(the same action as the \"Fix conflicts with agent\" button). "
+        "On by default; only attempted once per detected conflict.");
+    connect(autoFixConflictsCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -1206,6 +1223,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
+    agentsCol->addWidget(autoFixConflictsCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(usageLabel);
     agentsCol->addWidget(usageHint);
@@ -2267,10 +2285,13 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         const char *badge;
     };
     static const Rule rules[] = {
-        // App start/stop markers — keep above "fork" so "ForkMesh" in the
-        // start line doesn't get tagged FORK.
+        // App start/stop/rebuild-restart markers — keep above "fork" so
+        // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
         {"session ended", "#f2cc60", "SESSION"},
+        {"quick update started", "#f2cc60", "SESSION"},
+        {"rebuild & restart started", "#f2cc60", "SESSION"},
+        {"restarting now", "#f2cc60", "SESSION"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -2630,10 +2651,6 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
-    // Re-elide the footer restart-log line for the new width.
-    if (m_footerUpdateLog && m_footerUpdateLog->isVisible() &&
-        !m_footerUpdateLineRaw.isEmpty())
-        setFooterUpdateLine(m_footerUpdateLineRaw);
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,

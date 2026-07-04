@@ -12,6 +12,7 @@
 #include "KebabHeaderView.h"
 
 #include <QLayoutItem>
+#include <QPair>
 #include <QPixmap>
 
 using namespace forkmesh::ui;
@@ -4382,9 +4383,16 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         // Enter sends the prompt; Shift+Enter inserts a newline (the box is now a
         // two-line QPlainTextEdit, which would otherwise just add a newline).
+        // With an agent session already open above, Enter follows up on that
+        // agent instead of starting a brand-new one — the same routing the
+        // up-arrow "send to agent" button next to it already does, just bound
+        // to the more natural key.
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
             !(ke->modifiers() & Qt::ShiftModifier)) {
-            quickAddIssue();
+            if (m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton)
+                m_quickAddSendToAgentButton->click();
+            else
+                quickAddIssue();
             return true;
         }
         // Up/Down walk the quick-add prompt history (adhoc #200): Up recalls the
@@ -6540,7 +6548,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         // the merged store below by open-event identity, since a freshly merged
         // web submission's real issue number isn't known until after the merge
         // (proposed number 0 gets reassigned inside applyRemoteEvent).
-        QList<IssueEvent> agentRequests;
+        QList<QPair<IssueEvent, QString>> agentRequests;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
@@ -6557,6 +6565,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             for (const QJsonValue &a : metaObj.value("assignees").toArray())
                 meta.assignees << a.toString();
             meta.wantsAgent = metaObj.value("wantsAgent").toBool();
+            meta.wantsAgentModel = metaObj.value("model").toString();
             if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
                 ++merged;
                 const QString who =
@@ -6572,7 +6581,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                     lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
                     lastIssueNumber = number;
                     if (meta.wantsAgent)
-                        agentRequests << ev;
+                        agentRequests << qMakePair(ev, meta.wantsAgentModel);
                 }
             }
         }
@@ -6591,7 +6600,9 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         // Issues tab currently shows (adhoc #105).
         if (!agentRequests.isEmpty()) {
             const QList<Issue> mergedIssues = store.loadAll();
-            for (const IssueEvent &wanted : std::as_const(agentRequests)) {
+            for (const auto &request : std::as_const(agentRequests)) {
+                const IssueEvent &wanted = request.first;
+                const QString &wantedModel = request.second;
                 for (const Issue &candidate : mergedIssues) {
                     if (candidate.isDeleted())
                         continue;
@@ -6624,7 +6635,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                         if (!alreadyAssigned)
                             startAgentForIssue(candidate, defaultAgentProvider(),
                                                /*createPr=*/true, /*quiet=*/true,
-                                               QString(), &repo);
+                                               wantedModel, &repo);
                         break;
                     }
                 }
