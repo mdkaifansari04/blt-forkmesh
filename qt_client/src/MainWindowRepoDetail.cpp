@@ -462,8 +462,9 @@ QWidget *MainWindow::buildRepoOverviewPage()
 
     m_overviewList = new QTreeWidget;
     m_overviewList->setObjectName("overviewList");
-    m_overviewList->setColumnCount(5);
-    m_overviewList->setHeaderLabels({"Name", "Size", "LoC", "Last commit", "Updated"});
+    m_overviewList->setColumnCount(6);
+    m_overviewList->setHeaderLabels(
+        {"Name", "Size", "LoC", "Files", "Last commit", "Updated"});
     m_overviewList->setRootIsDecorated(false);
     m_overviewList->setUniformRowHeights(true);
     m_overviewList->setSortingEnabled(false); // we sort the cached rows ourselves
@@ -474,8 +475,9 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Fixed);
     m_overviewList->setColumnWidth(1, 130);
     m_overviewList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_overviewList->header()->setSectionResizeMode(3, QHeaderView::Stretch);
-    m_overviewList->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_overviewList->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_overviewList->header()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_overviewList->header()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     // Sorting is done by clicking the column headers. We keep Qt's own row
     // sorting off and reorder the cached rows ourselves (populateOverviewTree),
     // so folders stay grouped first by name and the ".." up-row stays pinned.
@@ -485,10 +487,10 @@ QWidget *MainWindow::buildRepoOverviewPage()
     connect(m_overviewList->header(), &QHeaderView::sortIndicatorChanged, this,
             [this](int col, Qt::SortOrder order) {
                 // Map each column to the metric populateOverviewTree sorts on.
-                static const char *const keys[] = {"name", "size", "loc",
-                                                   "subject", "updated"};
+                static const char *const keys[] = {"name",  "size",    "loc",
+                                                   "files", "subject", "updated"};
                 m_overviewSortKey = QString::fromLatin1(
-                    col >= 0 && col < 5 ? keys[col] : "name");
+                    col >= 0 && col < 6 ? keys[col] : "name");
                 m_overviewSortDesc = (order == Qt::DescendingOrder);
                 populateOverviewTree();
             });
@@ -2686,6 +2688,10 @@ void MainWindow::loadRepoOverview(const QString &path)
     // from a single recursive ls-tree. The total is the size-bar denominator so a
     // bar shows each entry's share of the entire repository.
     QHash<QString, qint64> childBytes;
+    // Recursive file count per top-level entry (directories = number of blobs
+    // beneath them), shown in the overview's Files column. ls-tree -r lists every
+    // blob once, so counting per top-level path segment is a single pass.
+    QHash<QString, qint64> childFiles;
     QByteArray sizeOut;
     if (messageRow.isEmpty() &&
         runGitCapture(dir, {"ls-tree", "-r", "-l", "-z", currentRef()}, &sizeOut,
@@ -2707,7 +2713,9 @@ void MainWindow::loadRepoOverview(const QString &path)
             if (!prefix.isEmpty() && !blob.startsWith(prefix))
                 continue;
             const QString rel = prefix.isEmpty() ? blob : blob.mid(prefix.size());
-            childBytes[rel.section('/', 0, 0)] += sz;
+            const QString top = rel.section('/', 0, 0);
+            childBytes[top] += sz;
+            childFiles[top] += 1;
         }
     }
 
@@ -2764,6 +2772,7 @@ void MainWindow::loadRepoOverview(const QString &path)
             e.path = path.isEmpty() ? e.name : path + "/" + e.name;
             e.size = childBytes.value(e.name, 0);
             e.loc = childLoc.value(e.name, 0);
+            e.fileCount = childFiles.value(e.name, 0);
             // Last commit that touched this entry: timestamp (for sorting), relative
             // "x ago" and subject (shown in the row).
             QByteArray logOut;
@@ -2883,6 +2892,10 @@ void MainWindow::populateOverviewTree()
                   } else if (key == QLatin1String("loc")) {
                       if (a.loc != b.loc)
                           return desc ? a.loc > b.loc : a.loc < b.loc;
+                  } else if (key == QLatin1String("files")) {
+                      if (a.fileCount != b.fileCount)
+                          return desc ? a.fileCount > b.fileCount
+                                      : a.fileCount < b.fileCount;
                   } else if (key == QLatin1String("updated")) {
                       if (a.commitTs != b.commitTs)
                           return desc ? a.commitTs > b.commitTs
@@ -2913,9 +2926,21 @@ void MainWindow::populateOverviewTree()
         if (e.loc > 0)
             item->setToolTip(2, QString::fromUtf8("%1 lines of code")
                                     .arg(QLocale().toString(e.loc)));
-        item->setText(3, e.subject);
-        item->setToolTip(3, e.subject);
-        item->setText(4, e.whenText);
+        // Files column: recursive file count for directories (files themselves
+        // are a single file, so leave their cell as an em dash).
+        item->setText(3, e.isDir && e.fileCount > 0
+                             ? QLocale().toString(e.fileCount)
+                             : QString::fromUtf8("\xE2\x80\x94"));
+        item->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+        item->setForeground(3, QColor("#8b949e"));
+        if (e.isDir && e.fileCount > 0)
+            item->setToolTip(3, QString::fromUtf8("%1 file%2")
+                                    .arg(QLocale().toString(e.fileCount),
+                                         e.fileCount == 1 ? QString()
+                                                          : QStringLiteral("s")));
+        item->setText(4, e.subject);
+        item->setToolTip(4, e.subject);
+        item->setText(5, e.whenText);
         const double frac = m_overviewRepoBytes > 0
                                 ? double(e.size) / double(m_overviewRepoBytes)
                                 : 0.0;
