@@ -2685,6 +2685,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
+    // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
+    // section of its own — it just jumps via openAgentsOverview() the same way
+    // the footer "Agents:" label does. Sits between Repo and Chat in the nav
+    // row. Not part of m_navGroup since there's no dedicated section to check.
+    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
+    m_agentsNavButton->setObjectName("topNavButton");
+    m_agentsNavButton->setCursor(Qt::PointingHandCursor);
+    m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
+    setOcticon(m_agentsNavButton, "terminal", 16);
+    connect(m_agentsNavButton, &QPushButton::clicked, this,
+            &MainWindow::openAgentsOverview);
+    // Count badge, same look as the chat unread badge, pinned to its top-right
+    // corner. Shows the total number of known agent sessions.
+    m_agentsNavBadge = new QLabel(m_agentsNavButton);
+    m_agentsNavBadge->setObjectName("chatUnreadBadge");
+    m_agentsNavBadge->setAlignment(Qt::AlignCenter);
+    m_agentsNavBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_agentsNavBadge->hide();
+
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new QPushButton(QStringLiteral("Chat"));
     m_chatButton->setObjectName("topNavButton");
@@ -2948,6 +2967,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->setContentsMargins(0, 0, 0, 0);
     navRow->setSpacing(8);
     navRow->addWidget(m_repoViewButton);
+    navRow->addWidget(m_agentsNavButton);
     navRow->addWidget(m_chatButton);
     navRow->addWidget(m_notificationButton);
     navRow->addWidget(m_settingsNavButton);
