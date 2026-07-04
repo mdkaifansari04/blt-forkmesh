@@ -1991,6 +1991,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+        # "mainnode" is a canonical/branding owner that no node ever registers a
+        # host tunnel under: browse/clone to mainnode/forkmesh fails over to
+        # whichever node hosts a live "forkmesh" mirror (install_source picks a
+        # mirror the same way). So the host_presence row keyed on the literal
+        # mainnode/forkmesh path is never written, and reading it alone always
+        # reports the mainnode offline even while the repo is perfectly
+        # reachable through a mirror. Fold in the freshest heartbeat across
+        # every forkmesh mirror so "mainnode online" tracks real reachability.
+        try:
+            repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+            pres_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {str(r.get("repo_bi")): int(r.get("ts") or 0)
+                        for r in (pres_rows or []) if r.get("repo_bi")}
+            for r in (repo_rows or []):
+                rec = await decrypt_row(env, r.get("data"))
+                if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                    continue
+                if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+                    continue
+                ts = presence.get(str(r.get("key_bi")), 0)
+                if ts and (last_ts is None or ts > last_ts):
+                    last_ts = ts
+        except Exception:
+            pass
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
