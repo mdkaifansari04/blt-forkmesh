@@ -949,6 +949,16 @@
     { value: "openai", label: "OpenAI API" },
   ];
 
+  // Agent-model dropdown (adhoc #276): lets the owner choose which Claude model
+  // the agent uses. Empty value leaves the provider's own default in place.
+  const AGENT_MODEL_OPTIONS = [
+    { value: "", label: "Provider default" },
+    { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    { value: "fable-5", label: "Fable 5" },
+  ];
+
   function repoAgentsCanPrompt(status) {
     return !AGENT_TERMINAL_STATUSES.has(String(status || "").toLowerCase());
   }
@@ -1030,13 +1040,18 @@
   // drain recognises the "new" sentinel agent id and spins up an ad-hoc run.
   function renderRepoAgentNewComposer() {
     return `
-      <form data-repo-agent-new-form class="flex items-center gap-2 border-b border-border bg-secondary/30 px-4 py-3">
-        <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
-        <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
-          ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-        </select>
-        <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
-        <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
+      <form data-repo-agent-new-form class="flex flex-col gap-2 border-b border-border bg-secondary/30 px-4 py-3">
+        <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+        <div class="flex items-center gap-2">
+          <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
+            ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+          </select>
+          <select data-repo-agent-new-model title="Agent model" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
+            ${AGENT_MODEL_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+          </select>
+          <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
+          <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
+        </div>
       </form>`;
   }
 
@@ -1050,6 +1065,8 @@
     const priorComposerValue = priorComposer ? priorComposer.value : "";
     const priorProvider = container.querySelector("[data-repo-agent-new-provider]");
     const priorProviderValue = priorProvider ? priorProvider.value : "";
+    const priorModel = container.querySelector("[data-repo-agent-new-model]");
+    const priorModelValue = priorModel ? priorModel.value : "";
     // When a detail page is open for a still-present agent, render that instead
     // of the list (adhoc #259). If the selected agent has vanished from a fresh
     // fetch, fall back to the list so we never strand the user on a dead page.
@@ -1071,6 +1088,8 @@
     if (composer && priorComposerValue) composer.value = priorComposerValue;
     const provider = container.querySelector("[data-repo-agent-new-provider]");
     if (provider && priorProviderValue) provider.value = priorProviderValue;
+    const model = container.querySelector("[data-repo-agent-new-model]");
+    if (model && priorModelValue) model.value = priorModelValue;
     window.lucide?.createIcons();
   }
 
@@ -1280,6 +1299,7 @@
   async function handleRepoAgentNewSubmit(repo, form) {
     const input = form.querySelector("[data-repo-agent-new-input]");
     const providerSelect = form.querySelector("[data-repo-agent-new-provider]");
+    const modelSelect = form.querySelector("[data-repo-agent-new-model]");
     const submit = form.querySelector("[data-repo-agent-new-submit]");
     const hint = form.querySelector("[data-repo-agent-new-hint]");
     const setHint = (text, tone) => {
@@ -1302,6 +1322,7 @@
           ownerAccount: state.session?.nodeName || "",
           text,
           provider: String(providerSelect?.value || ""),
+          model: String(modelSelect?.value || ""),
         }),
       });
       const data = await response.json().catch(() => ({}));
