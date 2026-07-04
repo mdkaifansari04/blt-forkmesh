@@ -13,6 +13,8 @@ def _load_notification_helpers():
     want_funcs = {
         "notification_mentions",
         "notification_payload",
+        "_thread_key",
+        "_html_escape",
     }
     want_assigns = {
         "NODE_NAME_RE",
@@ -123,6 +125,67 @@ def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
         assert mock not in dashboard_js
 
 
+def test_worker_exposes_signed_thread_subscription_route_and_schema():
+    # Subscriptions (issue #361): a signed subscribe/unsubscribe endpoint plus the
+    # table that backs it.
+    assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in ENTRY_TEXT
+    assert "async def subscribe_handler" in ENTRY_TEXT
+    assert "REPO_SUBSCRIBE_RE.match(url.path)" in ENTRY_TEXT
+    assert "await subscribe_handler(self.env, request, owner, repo)" in ENTRY_TEXT
+    assert "CREATE TABLE IF NOT EXISTS thread_subscriptions" in ENTRY_TEXT
+    assert "thread_bi TEXT NOT NULL" in ENTRY_TEXT
+    assert "idx_thread_subscriptions_thread" in ENTRY_TEXT
+    assert "forkmesh-subscribe-v1" in ENTRY_TEXT
+
+
+def test_worker_auto_subscribes_commenters_and_fans_out_to_followers():
+    # Anyone who comments is auto-subscribed and existing followers are notified,
+    # for both issues and PRs.
+    for marker in (
+        'await notify_subscribers(env, owner, repo, "issue"',
+        'await subscribe_thread(env, owner, repo, "issue"',
+        'await notify_subscribers(env, owner, repo, "pull"',
+        'await subscribe_thread(env, owner, repo, "pull"',
+        "async def subscribe_thread",
+        "async def notify_subscribers",
+    ):
+        assert marker in ENTRY_TEXT
+
+
+def test_subscribed_notification_kind_exists():
+    assert '"subscribed"' in ENTRY_TEXT
+    assert '"credits_refilled"' in ENTRY_TEXT  # issue #346 rides the same rail
+
+
+def test_email_digest_bridge_is_wired_to_the_cron_and_verified_email():
+    for marker in (
+        "async def send_notification_digests",
+        "await send_notification_digests(self.env)",
+        'rec.get("email_verified")',
+        'rec.get("email_notifications") is False',
+        "NOTIFICATION_DIGEST_INTERVAL_MS",
+        "NOTIFICATION_DIGEST_MIN_AGE_MS",
+        "def _notification_digest_email",
+        "await _send_email(env, email, subject, text, html)",
+    ):
+        assert marker in ENTRY_TEXT
+
+
+def test_thread_key_is_stable_and_scoped():
+    ns = _load_notification_helpers()
+    key = ns["_thread_key"]("alice", "repo", "issue", 7)
+    assert key == "thread:alice/repo:issue:7"
+    # A brand-new submission (no durable number) collapses to a shared 0 key,
+    # which the subscribe/notify helpers guard against.
+    assert ns["_thread_key"]("alice", "repo", "issue", 0).endswith(":issue:0")
+    assert ns["_thread_key"]("a", "b", "pull", None).endswith(":pull:0")
+
+
+def test_digest_html_escapes_untrusted_notification_text():
+    ns = _load_notification_helpers()
+    assert ns["_html_escape"]("<script>&\"x") == "&lt;script&gt;&amp;&quot;x"
+
+
 if __name__ == "__main__":
     for test in (
         test_worker_exposes_first_class_notifications_route_and_schema,
@@ -130,6 +193,12 @@ if __name__ == "__main__":
         test_notification_mentions_extract_node_handles_once_without_false_positives,
         test_worker_indexes_notifications_from_existing_event_sources,
         test_dashboard_notifications_are_wired_to_real_api_not_mock_data,
+        test_worker_exposes_signed_thread_subscription_route_and_schema,
+        test_worker_auto_subscribes_commenters_and_fans_out_to_followers,
+        test_subscribed_notification_kind_exists,
+        test_email_digest_bridge_is_wired_to_the_cron_and_verified_email,
+        test_thread_key_is_stable_and_scoped,
+        test_digest_html_escapes_untrusted_notification_text,
     ):
         test()
         print("PASS", test.__name__)
