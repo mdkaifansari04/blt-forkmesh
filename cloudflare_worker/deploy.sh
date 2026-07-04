@@ -558,11 +558,10 @@ case "${1:-deploy}" in
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        # pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}"
-        pywrangler deploy --env ""
+        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
-        push_secrets
+        # push_secrets
         # Prove the public origin is actually serving what we just uploaded. A
         # failed/no-op/wrong-account deploy now aborts here instead of printing a
         # phantom success.
