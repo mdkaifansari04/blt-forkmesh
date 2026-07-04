@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 363
 title: [docs + code] Mainnode protocol spec + fully configurable mainnode URL
-status: open
+status: closed
 labels: [infra]
 milestone: v1
 priority: 30
