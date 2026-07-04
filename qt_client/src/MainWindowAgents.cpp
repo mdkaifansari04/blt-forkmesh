@@ -2239,25 +2239,18 @@ void MainWindow::reloadAgents()
 // corner, showing the total number of known agent sessions.
 void MainWindow::updateAgentsNavBadge()
 {
-    if (!m_agentsNavButton || !m_agentsNavBadge)
+    if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
     if (total > 0) {
-        const QString text =
-            total > 99 ? QStringLiteral("99+") : QString::number(total);
-        m_agentsNavBadge->setText(text);
-        const int w = qMax(15, m_agentsNavBadge->fontMetrics()
-                                   .horizontalAdvance(text) + 12);
-        m_agentsNavBadge->resize(w, 15);
-        m_agentsNavBadge->move(qMax(0, m_agentsNavButton->width() - w), 0);
-        m_agentsNavBadge->show();
-        m_agentsNavBadge->raise();
+        m_agentsNavButton->setText(
+            QStringLiteral("Agents (%1)").arg(formatCount(total)));
         m_agentsNavButton->setToolTip(
             QStringLiteral("Agents \xE2\x80\x94 %1 session%2")
                 .arg(total)
                 .arg(total == 1 ? QString() : QStringLiteral("s")));
     } else {
-        m_agentsNavBadge->hide();
+        m_agentsNavButton->setText(QStringLiteral("Agents"));
         m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     }
 }
