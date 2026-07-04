@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
@@ -5791,6 +5792,7 @@ QWidget *MainWindow::buildHostsSection()
     bodyCol->addWidget(hostsHint);
 
     m_hostsTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
@@ -5935,6 +5937,7 @@ QWidget *MainWindow::buildRelaysSection()
     outer->addLayout(controls);
 
     m_relaysTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_relaysTable); // 3-dots per-column menu (issue #318)
     m_relaysTable->setObjectName("issueTable");
     m_relaysTable->setHorizontalHeaderLabels(
         {QStringLiteral("Relay"), QStringLiteral("Status"),
