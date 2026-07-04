@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.9 (2026-07-03)"
+INSTALLER_VERSION="0.12.10 (2026-07-04)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -1111,24 +1111,25 @@ elif launch_forkmesh; then
     say "  Enter this code in your ForkMesh desktop app to link the new node"
     say "  to your account (a popup opens during a Hosts-panel install; the"
     say "  code expires 30 minutes after the node registers)."
-    # Stream the daemon's own log into this same SSH session for a few seconds
-    # so a Hosts-panel install shows whether the node actually connected to the
-    # relay and registered — instead of leaving the operator staring at "Done"
-    # with no way to tell a silent registration failure (e.g. relay unreachable
-    # right at boot) from a node that's about to appear (adhoc #219). The
-    # daemon keeps running after this returns; only the tail is time-boxed.
-    say ""
-    say "Following $LOG_PATH for a few seconds…"
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 12 tail -n +1 -f "$LOG_PATH" 2>/dev/null || true
-    else
+    # Stream the freshly-started daemon's own log into this SSH session for a
+    # short bounded window (adhoc #226). Without this the node's live startup —
+    # connecting to the relay, registering, syncing the catalog — vanishes into
+    # a log file on the remote box and the operator's installer screen just
+    # shows "running as a background daemon" then stops. Tailing it here lets
+    # the desktop app's Live output box show the node actually coming alive.
+    if command -v tail >/dev/null 2>&1; then
+      say ""
+      say "--- Live node output (first few seconds) ---"
+      # Wait briefly for the daemon to create/populate the log, then follow it.
+      _w=0
+      while [ ! -s "$LOG_PATH" ] && [ "$_w" -lt 40 ]; do sleep 0.25; _w=$((_w+1)); done
       tail -n +1 -f "$LOG_PATH" 2>/dev/null &
-      tail_pid=$!
-      sleep 12
-      kill "$tail_pid" 2>/dev/null || true
-      wait "$tail_pid" 2>/dev/null || true
+      _tail_pid=$!
+      sleep 15
+      kill "$_tail_pid" 2>/dev/null
+      wait "$_tail_pid" 2>/dev/null
+      say "--- (live output continues in $LOG_PATH) ---"
     fi
-    say "(log tail ended — the daemon keeps running; full log stays at $LOG_PATH)"
   else
     say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
   fi

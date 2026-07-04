@@ -31,7 +31,7 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
     "_clean_agent_session", "_verify_owner_password", "_authorize_owner",
-    "_owner_pubkey", "_login_locked_until",
+    "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
 }
 
@@ -233,7 +233,7 @@ def test_post_agents_valid_signature_stores_sessions_visible_via_list():
 
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "alice",
         }),
         "alice", "proj",
     ))
@@ -268,8 +268,12 @@ def test_post_agents_bad_or_missing_signature_rejected():
     assert bad_sig == {"status": 401, "data": {"error": "unauthorized"}}
 
 
-def test_agents_list_wrong_password_401_and_leaks_nothing():
-    accounts = {"alice": _owner_account()}
+def test_agents_list_non_owner_403_forbidden():
+    accounts = {
+        "alice": _owner_account(),
+        "mallory": {"pubkey": "PK-mallory", "status": "active",
+                    "pass_hash": "h", "pass_salt": "s", "is_admin": False},
+    }
     ns = _harness(accounts)
     env = object()
 
@@ -280,12 +284,12 @@ def test_agents_list_wrong_password_401_and_leaks_nothing():
 
     resp = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": "wrong-password",
+            "ownerAccount": "mallory",
         }),
         "alice", "proj",
     ))
-    assert resp["status"] == 401
-    assert resp["data"] == {"error": "bad_owner_password"}
+    assert resp["status"] == 403
+    assert resp["data"] == {"error": "not_authorized"}
     assert "agents" not in resp["data"]
     assert "Fix the thing" not in str(resp["data"])
 
@@ -297,7 +301,7 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
 
     sent = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "alice",
             "text": "please continue",
         }),
         "alice", "proj", "42",
@@ -319,7 +323,7 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
     assert drained_again["data"]["prompts"] == []
 
 
-def test_non_owner_own_correct_password_still_forbidden():
+def test_non_owner_forbidden_even_without_password():
     accounts = {
         "alice": _owner_account(),
         "mallory": {"pubkey": "PK-mallory", "status": "active",
@@ -330,7 +334,7 @@ def test_non_owner_own_correct_password_still_forbidden():
 
     list_resp = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "mallory", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "mallory",
         }),
         "alice", "proj",
     ))
@@ -338,7 +342,7 @@ def test_non_owner_own_correct_password_still_forbidden():
 
     prompt_resp = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "mallory", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "mallory",
             "text": "hijack",
         }),
         "alice", "proj", "42",
@@ -362,7 +366,7 @@ def test_admin_account_may_list_and_prompt_a_non_owned_repo():
 
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "root-admin", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "root-admin",
         }),
         "alice", "proj",
     ))
@@ -377,7 +381,7 @@ def test_prompt_validates_text_and_queue_cap():
 
     empty = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD, "text": "   ",
+            "ownerAccount": "alice", "text": "   ",
         }),
         "alice", "proj", "42",
     ))
@@ -385,7 +389,7 @@ def test_prompt_validates_text_and_queue_cap():
 
     too_long = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "alice",
             "text": "x" * 8001,
         }),
         "alice", "proj", "42",
@@ -395,7 +399,7 @@ def test_prompt_validates_text_and_queue_cap():
     for i in range(50):
         ok = asyncio.run(ns["agents_prompt_handler"](
             env, _Request("POST", body={
-                "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+                "ownerAccount": "alice",
                 "text": "msg %d" % i,
             }),
             "alice", "proj", "42",
@@ -403,7 +407,7 @@ def test_prompt_validates_text_and_queue_cap():
         assert ok["status"] == 200
     full = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "alice",
             "text": "one too many",
         }),
         "alice", "proj", "42",
@@ -426,11 +430,9 @@ def test_worker_wires_up_all_three_agent_routes():
     assert "CREATE TABLE IF NOT EXISTS agent_prompts" in ENTRY_TEXT
 
 
-def test_issues_handler_wants_agent_reuses_shared_password_helper():
-    # adhoc #182 factored the wantsAgent password re-check (issue #373 /
-    # adhoc #141) into _verify_owner_password so agents_list/prompt could
-    # reuse it; behaviour/response codes must be unchanged.
+def test_issues_handler_wants_agent_uses_authorization_helper():
+    # adhoc #225 changed wantsAgent from password verification to just checking
+    # ownership via _authorize_owner_account (same as agents_list/prompt).
     start = ENTRY_TEXT.index('if meta_in.get("wantsAgent"):')
     wants_agent_body = ENTRY_TEXT[start:ENTRY_TEXT.index("meta = {", start)]
-    assert "_verify_owner_password(env, owner, data)" in wants_agent_body
-    assert "too_many_attempts" not in wants_agent_body  # now lives in the helper
+    assert "_authorize_owner_account(env, owner, data)" in wants_agent_body
