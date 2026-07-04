@@ -11,6 +11,11 @@
         </button>
         <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
           <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <span
+            data-app-version
+            class="hidden font-mono text-[10px] leading-none text-muted-foreground"
+            title="ForkMesh version"
+          ></span>
         </a>
 
         <nav data-top-nav class="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0 lg:flex">
@@ -103,11 +108,11 @@
           <a
             data-admin-button
             href="#"
-            class="hidden ml-0.5 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-500 hover:bg-amber-500/20 transition-colors"
+            class="hidden ml-0.5 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 sm:px-3 text-xs font-semibold text-amber-500 hover:bg-amber-500/20 transition-colors"
             title="Admin panel"
           >
             <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
-            <span class="hidden sm:inline">Admin</span>
+            <span>Admin</span>
           </a>
           <button
             data-profile-settings-button
