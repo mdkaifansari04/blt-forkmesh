@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 362
 title: Private repositories as end-to-end encrypted mirrors (hybrid X25519 + ML-KEM)
-status: open
+status: closed
 labels: [feature, security]
 milestone: v1
 priority: 25
