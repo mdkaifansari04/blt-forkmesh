@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -744,8 +745,9 @@ def test_wire_contracts_across_worker_qt_and_installer():
 def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     entry = ENTRY.read_text(encoding="utf-8")
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
-    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
-        encoding="utf-8")
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker composes into one /dashboard.js (see src/dashboard_bundle.py).
+    dashboard_js = assembled_dashboard_js()
     login_js = (ROOT / "cloudflare_worker" / "public" / "login.js").read_text(
         encoding="utf-8")
 
@@ -785,8 +787,7 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
 
 
 def test_dashboard_exposes_a_claim_node_panel():
-    dashboard_js = (ROOT / "cloudflare_worker" / "public" / "dashboard.js").read_text(
-        encoding="utf-8")
+    dashboard_js = assembled_dashboard_js()
     for marker in ("claim-node", "claim-confirm", "renderClaimNodePanel",
                    "data-claim-node-input", "data-claim-code-input"):
         assert marker in dashboard_js

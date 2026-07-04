@@ -11,10 +11,14 @@ swap-back right before signing so the signed hash covers what is sent.
 import re
 from pathlib import Path
 
+from _dashboard_bundle import assembled_dashboard_js
+
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-DASHBOARD_JS = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
+# dashboard.js is split into ordered public/dashboard/js/*.js fragments composed
+# into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
+DASHBOARD_JS = assembled_dashboard_js()
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 
