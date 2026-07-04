@@ -2014,6 +2014,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+
+        # Regression (adhoc #189): there is no reserved "mainnode" owner
+        # account — "mainnode/forkmesh" is just the fixed path the flagship
+        # chat room happens to use (FLAGSHIP_ROOM_KEY), not a real repo
+        # identity any desktop host ever registers under, so the check above
+        # never sees a heartbeat even with a live self-hosted instance. Fold
+        # in the real signal too: repositories.key_bi is computed the same
+        # way as host_presence.repo_bi (blind_index of "owner/name"), so join
+        # the two directly to find whichever real owner is actually hosting a
+        # repo named "forkmesh".
+        repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        presence_rows = await d1_all(
+            env, "SELECT repo_bi, ts FROM host_presence")
+        presence = {r["repo_bi"]: int(r["ts"]) for r in presence_rows}
+        for row in repo_rows:
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                continue
+            if _is_blocked_catalog_identity(
+                    env, rec.get("owner"), rec.get("name")):
+                continue
+            ts = presence.get(row.get("key_bi"))
+            if ts is not None and (last_ts is None or ts > last_ts):
+                last_ts = ts
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
@@ -2102,6 +2126,18 @@ async def _record_bounty_payout(env, rec, transfers):
                 env, "project", owner + "/" + repo, owner + "/" + repo, lamports)
 
 
+def _catalog_updated_ms(rec):
+    # Best-effort parse of a catalog record's free-form updatedAt string, so we
+    # can tell which of a node's several repo mirrors last reported in (used to
+    # pick the "latest" commit/platform/version for the node as a whole). Any
+    # unparseable value sorts last rather than raising.
+    try:
+        ms = float(Date.parse(str(rec.get("updatedAt") or "")))
+        return ms if ms == ms else -1  # NaN check (NaN != NaN)
+    except Exception:
+        return -1
+
+
 async def network_leaderboards(env):
     cached = await edge_cache_match(NETWORK_LEADERBOARDS_CACHE_KEY)
     if cached is not None:
@@ -2150,6 +2186,12 @@ async def network_leaderboards(env):
     hosted_board = []
     largest_board = []          # per owner/repo, by reported mirror size
     bytes_by_owner = {}         # owner -> total bytes hosted across their repos
+    # Per-node detail card for the Network page's "Connected nodes" list: sums
+    # the per-repo counters a node reports (adhoc #56's commit/issues/platform/
+    # version/id fields) across every repo it mirrors, and keeps the commit/
+    # branch/platform/version/sync-time from whichever of its repos reported in
+    # most recently — so a multi-repo node shows one coherent "latest" state.
+    node_details = {}
     for row in repo_rows:
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
@@ -2167,6 +2209,30 @@ async def network_leaderboards(env):
             size_bytes = 0
         if size_bytes > 0:
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
+        detail = node_details.setdefault(owner.lower(), {
+            "name": owner, "sizeBytes": 0,
+            "issueCount": 0, "commitCount": 0, "branchCount": 0,
+            "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
+            "clonesServed": 0, "websiteServed": 0,
+            "commit": "", "branch": "", "lastSync": "",
+            "platform": "", "version": "", "_updatedMs": -1,
+        })
+        detail["sizeBytes"] += size_bytes
+        for field in ("issueCount", "commitCount", "branchCount", "pullCount",
+                      "discussionCount", "artifactCount", "clonesServed",
+                      "websiteServed"):
+            try:
+                detail[field] += max(0, int(rec.get(field, 0) or 0))
+            except (TypeError, ValueError):
+                pass
+        updated_ms = _catalog_updated_ms(rec)
+        if updated_ms > detail["_updatedMs"]:
+            detail["_updatedMs"] = updated_ms
+            detail["commit"] = clean_string(rec.get("commit", ""), 64)
+            detail["branch"] = clean_string(rec.get("branch", ""), 120)
+            detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)
+            detail["platform"] = clean_string(rec.get("platform", ""), 16)
+            detail["version"] = clean_string(rec.get("version", ""), 32)
         if name:
             mirror_owners.setdefault(name, set()).add(owner.lower())
             if size_bytes > 0:
@@ -2177,6 +2243,12 @@ async def network_leaderboards(env):
                 hosted_board.append(
                     {"name": owner + "/" + name, "since": ts,
                      "ageMs": max(0, now - ts)})
+    node_board = [
+        {k: v for k, v in detail.items() if k != "_updatedMs"}
+        for detail in node_details.values()
+    ]
+    node_board.sort(key=lambda n: (-n["sizeBytes"], n["name"]))
+
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
     repo_board.sort(key=lambda n: (-n["repos"], n["name"]))
 
@@ -2219,6 +2291,7 @@ async def network_leaderboards(env):
         {"ok": True,
          "windowHours": ONLINE_HISTORY_RETAIN_MS // 3600000,
          "uptime": uptime_board[:LEADERBOARD_LIMIT],
+         "nodes": node_board,
          "repos": repo_board[:LEADERBOARD_LIMIT],
          "mirrors": mirror_board[:LEADERBOARD_LIMIT],
          "hosted": hosted_board[:LEADERBOARD_LIMIT],

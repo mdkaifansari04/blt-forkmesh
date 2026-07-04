@@ -64,6 +64,22 @@ if [ "${FORKMESH_ASSUME_YES:-0}" != "1" ] && [ "${1:-}" != "--yes" ]; then
   fi
 fi
 
+# A headless install (e.g. a VPS) runs the binary as a plain background
+# process (nohup, no systemd unit). Deleting the binary out from under it just
+# unlinks the inode: the running process keeps executing from the deleted
+# file and keeps reporting its (now stale) presence/version to the network,
+# which is why mirrors could still show an old version after "uninstalling"
+# the host. Stop it first.
+if pgrep -f -- "$BIN" >/dev/null 2>&1; then
+  pkill -f -- "$BIN" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f -- "$BIN" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  pgrep -f -- "$BIN" >/dev/null 2>&1 && pkill -9 -f -- "$BIN" 2>/dev/null || true
+  say "Stopped the running ForkMesh daemon"
+fi
+
 for d in "${dirs[@]}"; do
   if [ -e "$d" ]; then rm -rf -- "$d" && say "Removed $d"; fi
 done
