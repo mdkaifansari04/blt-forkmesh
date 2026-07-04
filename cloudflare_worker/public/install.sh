@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.13 (2026-07-04)"
+INSTALLER_VERSION="0.12.14 (2026-07-04)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -255,6 +255,46 @@ ensure_mirror_candidates() {
 # (called inline before a fresh install — skips the interactive confirmation,
 # since a reinstall is already gated by its own Qt-side dialog / explicit flag,
 # and returns instead of exiting so the caller can carry on installing).
+# Stop every running ForkMesh daemon on this host. Matches by exact process
+# name AND by the known binary/source paths, then SIGKILLs stragglers. If a
+# daemon survives (almost always because it is owned by another user, e.g. a
+# root/sudo install), retries once with `sudo -n` and, failing that, warns
+# loudly rather than leaving a phantom old node reporting to the network.
+# $1: a short context label for the log line (unused beyond readability).
+stop_forkmesh_daemons() {
+  local running=0
+  _fm_alive() { pgrep -x forkmesh >/dev/null 2>&1 \
+    || pgrep -f -- "$BIN" >/dev/null 2>&1 \
+    || pgrep -f -- "$SRC" >/dev/null 2>&1; }
+  if _fm_alive; then
+    running=1
+    pkill -x forkmesh   2>/dev/null || true
+    pkill -f -- "$BIN"  2>/dev/null || true
+    pkill -f -- "$SRC"  2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do _fm_alive || break; sleep 0.5; done
+    if _fm_alive; then
+      pkill -9 -x forkmesh   2>/dev/null || true
+      pkill -9 -f -- "$BIN"  2>/dev/null || true
+      pkill -9 -f -- "$SRC"  2>/dev/null || true
+    fi
+  fi
+  # Still alive after SIGKILL => not ours to signal. Try a non-interactive sudo
+  # (never prompts, so `curl | bash` can't hang), then give up with a warning.
+  if _fm_alive; then
+    if [ "$(id -u 2>/dev/null)" != "0" ] && command -v sudo >/dev/null 2>&1; then
+      sudo -n pkill -9 -x forkmesh 2>/dev/null || true
+      sudo -n pkill -9 -f -- "$BIN" 2>/dev/null || true
+    fi
+    if _fm_alive; then
+      warn "A ForkMesh daemon is STILL running (it is likely owned by root — re-run this uninstall with sudo). Until it is stopped it will keep reporting an old version to the network."
+    else
+      say "Stopped the running ForkMesh daemon"
+    fi
+  elif [ "$running" = "1" ]; then
+    say "Stopped the running ForkMesh daemon"
+  fi
+}
+
 uninstall_forkmesh() {
   local mode="${1:-full}"; shift || true
   local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -309,16 +349,14 @@ uninstall_forkmesh() {
   # the binary out from under it just unlinks the inode: the running process
   # keeps executing from the deleted file and keeps reporting its (now stale)
   # presence/version to the network, which is why mirrors could still show an
-  # old version after "uninstalling" the host. Stop it first.
-  if pgrep -f -- "$BIN" >/dev/null 2>&1; then
-    pkill -f -- "$BIN" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      pgrep -f -- "$BIN" >/dev/null 2>&1 || break
-      sleep 0.5
-    done
-    pgrep -f -- "$BIN" >/dev/null 2>&1 && pkill -9 -f -- "$BIN" 2>/dev/null || true
-    say "Stopped the running ForkMesh daemon"
-  fi
+  # old version after "uninstalling" the host. Stop it first — and match it
+  # more than one way, because the process we must kill may NOT be the binary
+  # at the current $BIN path:
+  #   • by exact process name ("forkmesh")  — catches an OLD install that lived
+  #     at a different path, and a copy still executing from a deleted/replaced
+  #     inode after an in-app update (the classic "still on an old version").
+  #   • by $BIN and by the source build dir — the normal and in-place locations.
+  stop_forkmesh_daemons "installer uninstall"
 
   local d f
   for d in "${dirs[@]}"; do
