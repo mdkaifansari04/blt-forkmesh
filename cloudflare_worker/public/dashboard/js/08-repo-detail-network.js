@@ -539,9 +539,28 @@
     if (modal) setNotificationModalOpen(true);
   }
 
+  async function renderAppVersion() {
+    // Show the live ForkMesh release version (same number as the desktop app —
+    // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
+    // var) next to the logo. Best-effort: stay hidden if the endpoint or version
+    // is unavailable so the header never shows a broken "v".
+    const el = $("[data-app-version]");
+    if (!el) return;
+    try {
+      const data = await fetchJson("/api/version");
+      const version = (data && data.version ? String(data.version) : "").trim();
+      if (!version) return;
+      el.textContent = version[0] === "v" ? version : "v" + version;
+      el.classList.remove("hidden");
+    } catch (_) {
+      /* leave the version chip hidden */
+    }
+  }
+
   async function init() {
     const session = readSession();
     state.session = session;
+    renderAppVersion();
     const grant = pendingLinkGrant();
     if (grant && !session?.nodeName) {
       // A link grant arrived but nobody is logged in: bounce through login and
