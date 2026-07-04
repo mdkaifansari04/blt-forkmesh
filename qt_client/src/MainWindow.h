@@ -2189,6 +2189,24 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
+    // Website agent view (adhoc #182): the repo owner watches this node's
+    // Claude Code agent sessions and can steer a running one from the browser.
+    QUrl agentsApiUrl(const RepositoryRecord &repo) const;
+    // Push a full-replace snapshot of every owned/hosted repo's local agent
+    // sessions to the website. Called on a periodic timer and, debounced, right
+    // after a session's status changes.
+    void pushAgentSessionsSnapshot();
+    void pushAgentSessionsForRepo(RepositoryRecord repo, QList<AgentSession> sessions);
+    // Arms/re-arms a short debounce timer that calls pushAgentSessionsSnapshot()
+    // once it fires, so a burst of status flips coalesces into one request.
+    void scheduleAgentSessionsPush();
+    // Periodic drain of prompts the website owner queued for this node's agent
+    // sessions (steering a running one from the browser).
+    void drainAgentPrompts();
+    void drainAgentPromptsFor(RepositoryRecord repo);
+    // Deliver one queued website prompt to the matching live session, or log +
+    // drop it if the session isn't found / isn't currently running.
+    void deliverQueuedAgentPrompt(int sessionId, const QString &text);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
@@ -3711,6 +3729,12 @@ private:
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
+    // adhoc #182: push this node's agent sessions to the website + drain any
+    // steering prompts queued there. m_agentSyncDebounceTimer is a singleShot
+    // re-armed after a status flip so a burst of updates coalesces into one push.
+    QTimer *m_agentSyncPushTimer = nullptr;
+    QTimer *m_agentSyncDebounceTimer = nullptr;
+    QTimer *m_agentPromptDrainTimer = nullptr;
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.
