@@ -1468,6 +1468,7 @@ private:
     // bar between the file browser and the commits panel.
     void showOverviewCommits();
     void showOverviewFiles();
+    void showOverviewBranches();
     void loadRepoFileTree();
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
