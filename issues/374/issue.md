@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 374
 title: testing detail
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
