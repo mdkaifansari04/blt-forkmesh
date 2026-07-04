@@ -409,8 +409,9 @@ public:
     // Flags this process as a no-GUI (headless / offscreen) node. main() sets it
     // right after construction so startSession can auto-register a fresh mirror's
     // account — the desktop opens a "Join ForkMesh" dialog for that, which a
-    // headless VM has no way to click.
-    void setHeadlessMode(bool headless) { m_headless = headless; }
+    // headless VM has no way to click. Also clears any persisted parked-offline
+    // state, since a headless node has no GUI toggle to bring itself back online.
+    void setHeadlessMode(bool headless);
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
     // Pull the latest version from the live install mirror, rebuild and relaunch
