@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 373
 title: if I am on the issue tab on the website and I click refresh please stay on the issue tab
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
