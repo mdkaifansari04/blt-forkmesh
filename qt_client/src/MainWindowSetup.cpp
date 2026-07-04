@@ -1092,20 +1092,32 @@ void MainWindow::sendNodeHeartbeat()
     const QByteArray canonical =
         ("forkmesh-heartbeat-v1\n" + name + "\n" + ts).toUtf8();
     const QString solana = savedSolanaAddress();
-    const QJsonObject body{{"nodeName", name}, {"solana", solana}, {"ts", ts},
-                           {"sig", m_profileIdentity.signData(canonical)}};
+    // Issue #346: an opt-in refill notification piggybacks this already-signed
+    // channel instead of a dedicated endpoint. 5h takes priority when both
+    // flags are set in the same tick; the other stays pending for the next beat.
+    const QString creditsRefilled = m_pendingCreditsRefilled5h
+        ? QStringLiteral("5h")
+        : (m_pendingCreditsRefilledWeekly ? QStringLiteral("weekly") : QString());
+    QJsonObject body{{"nodeName", name}, {"solana", solana}, {"ts", ts},
+                     {"sig", m_profileIdentity.signData(canonical)}};
+    if (!creditsRefilled.isEmpty())
+        body.insert(QStringLiteral("creditsRefilled"), creditsRefilled);
     QNetworkRequest request(accountsApiUrl("heartbeat"));
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, creditsRefilled]() {
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(QStringLiteral("heartbeat"),
                                       QDateTime::currentMSecsSinceEpoch());
             reply->deleteLater();
             return;
         }
+        if (creditsRefilled == QLatin1String("5h"))
+            m_pendingCreditsRefilled5h = false;
+        else if (creditsRefilled == QLatin1String("weekly"))
+            m_pendingCreditsRefilledWeekly = false;
         m_pollBackoff.noteSuccess(QStringLiteral("heartbeat"));
         const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();

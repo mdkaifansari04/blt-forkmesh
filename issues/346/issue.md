@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 346
 title: Have a feature / setting where the node can email you when your Claude code credits have refilled if they previously ran out
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 43

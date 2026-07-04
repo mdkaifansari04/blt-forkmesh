@@ -168,6 +168,32 @@ def test_subscribed_notification_kind_exists():
     assert '"credits_refilled"' in ENTRY_TEXT  # issue #346 rides the same rail
 
 
+def test_heartbeat_reports_credits_refilled_from_the_node_itself():
+    # Issue #346: only the node knows when its own Claude Code usage window
+    # refilled after running out, so it rides the already-signed heartbeat
+    # (accounts/heartbeat) rather than a new endpoint.
+    heartbeat_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_heartbeat"):
+        ENTRY_TEXT.index("async def _account_treasury_address")
+    ]
+    for marker in (
+        'data.get("creditsRefilled", "")',
+        'credits_kind in ("5h", "weekly")',
+        'await enqueue_notification(\n            env, name, "credits_refilled"',
+        'dedupe="credits_refilled:" + credits_kind',
+    ):
+        assert marker in heartbeat_body
+
+    qt_src = ROOT.parent / "qt_client" / "src"
+    qt_text = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(qt_src.glob("MainWindow*.cpp"))
+    )
+    assert 'body.insert(QStringLiteral("creditsRefilled")' in qt_text
+    assert "kEmailOnCreditsRefillSetting" in qt_text
+    assert "maybeEmailCreditsRefilled" in qt_text
+
+
 def test_email_digest_bridge_is_wired_to_the_cron_and_verified_email():
     for marker in (
         "async def send_notification_digests",
