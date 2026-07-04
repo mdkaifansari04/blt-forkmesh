@@ -2453,6 +2453,16 @@ private:
     // Rebuild the chat's right-hand online-members column from m_homeRoster.
     void refreshChatMembers();
     void promptAddChannel();
+    // Create an invite-only room (see ServerNode::createPrivateChannel) and start
+    // in it. Its name is remembered so it survives a reconnect/restart.
+    void promptAddPrivateChannel();
+    // Offer the online members as invitees for the current private room.
+    void promptInviteToPrivateChannel();
+    // Re-create the private rooms we own/were invited to after a fresh connect,
+    // since the backend clears its channel set each session.
+    void restorePrivateChannels();
+    // Save m_privateChannels to QSettings so they outlive a restart.
+    void persistPrivateChannels();
     void sendCurrentMessage();
     void onComposerEdited(const QString &text);
     // @-mention autocomplete in the chat composer: refresh the candidate names
@@ -2700,6 +2710,7 @@ private:
     QLabel *m_statusLine;
     QLabel *m_channelTitle;
     QLabel *m_encryptionLabel;
+    QPushButton *m_inviteButton = nullptr; // "Invite" — shown only in private rooms
     QListWidget *m_channelList;
     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
     QString m_navSolanaBalanceAddress;
@@ -4412,6 +4423,10 @@ private:
     QString m_profileSolanaValue;
 
     QStringList m_channels;
+    // Invite-only rooms this node owns or was invited to. Badged in the sidebar
+    // and persisted so they reappear after a reconnect (the backend clears its
+    // channel set each session). See promptAddPrivateChannel / inviteToChannel.
+    QSet<QString> m_privateChannels;
     QList<RepositoryRecord> m_repositories;
     QList<RepoHost *> m_repoHosts;
     QList<MemberInfo> m_homeRoster;

@@ -1826,6 +1826,12 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::typingChanged, this, &MainWindow::onTypingChanged);
     connect(backend, &ChatBackend::systemMessage, this, &MainWindow::logSystem);
     connect(backend, &ChatBackend::channelsChanged, this, &MainWindow::setChannels);
+    connect(backend, &ChatBackend::privateChannelJoined, this,
+            [this](const QString &channel) {
+                m_privateChannels.insert(channel);
+                persistPrivateChannels();
+                refreshChannelList();
+            });
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);

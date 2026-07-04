@@ -974,6 +974,7 @@ void MainWindow::startSession()
 
     // Reset chat state.
     m_channels.clear();
+    m_privateChannels.clear(); // repopulated from QSettings by restorePrivateChannels()
     m_welcomeAnnounced = false; // re-evaluate the one-time greeting for this identity
     m_currentConversation.clear();
     m_history.clear();
@@ -1031,6 +1032,9 @@ void MainWindow::startSession()
         m_backend->addChannel(QStringLiteral("general"));
         m_backend->addChannel(QStringLiteral("welcome"));
         m_backend->addChannel(QStringLiteral("random"));
+        // Re-create any invite-only rooms this node owned or was invited to; the
+        // backend clears its channel set each session, so they'd vanish otherwise.
+        restorePrivateChannels();
         logSystem("Encryption: client-side AES-256-GCM mainnode room encryption.");
         const QJsonObject signedProfile =
             m_profileIdentity.signedProfile(m_userName,

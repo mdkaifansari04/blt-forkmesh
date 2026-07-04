@@ -132,6 +132,17 @@ public:
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;
+    // Create an invite-only room. Unlike addChannel it is NOT advertised to the
+    // whole network (no hello/channel broadcast), so it only appears for peers
+    // who are explicitly invited via inviteToChannel — the same honour-model as
+    // direct messages, which are addressed to one node and ignored by the rest.
+    virtual void createPrivateChannel(const QString &channel) { Q_UNUSED(channel); }
+    // Invite one member (by node id) into a private channel: sends them the room
+    // name so it appears in their sidebar. No-op for backends without rooms.
+    virtual void inviteToChannel(const QString &peerId, const QString &channel) {
+        Q_UNUSED(peerId);
+        Q_UNUSED(channel);
+    }
     // Advertise to other nodes which repos this node mirrors, each with the
     // HEAD commit/branch it currently holds so peers can see mirror freshness.
     virtual void setMirroredRepos(const QList<MirrorAdvert> &repos) { Q_UNUSED(repos); }
@@ -188,6 +199,9 @@ signals:
                           const QString &privilegedCommand);
     void firewallHealthy();
     void channelsChanged(const QStringList &channels);
+    // A private (invite-only) room was created locally or joined via an invite,
+    // so the UI can badge it and remember it across reconnects.
+    void privateChannelJoined(const QString &channel);
     void rosterChanged(const QList<MemberInfo> &members);
     // A peer refreshed its mirror of "owner/name" from the source of truth.
     void mirrorUpdated(const QString &ownerName, const QString &peerName);
