@@ -208,7 +208,12 @@
     setRepoTab(tab);
     // The Agents auto-refresh poll only makes sense while that tab is the one
     // on screen; leaving it (to any other tab) stops the poll.
-    if (tab !== "agents") stopRepoAgentsAutoRefresh();
+    if (tab !== "agents") {
+      stopRepoAgentsAutoRefresh();
+      // Leaving the tab closes any open agent detail page (adhoc #259) so
+      // returning to Agents lands on the session list, not a stale transcript.
+      state.agentsView.selectedAgentId = null;
+    }
     if (!state.selectedRepo) return;
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
