@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.8 (2026-07-03)"
+INSTALLER_VERSION="0.12.9 (2026-07-03)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -1111,6 +1111,24 @@ elif launch_forkmesh; then
     say "  Enter this code in your ForkMesh desktop app to link the new node"
     say "  to your account (a popup opens during a Hosts-panel install; the"
     say "  code expires 30 minutes after the node registers)."
+    # Stream the daemon's own log into this same SSH session for a few seconds
+    # so a Hosts-panel install shows whether the node actually connected to the
+    # relay and registered — instead of leaving the operator staring at "Done"
+    # with no way to tell a silent registration failure (e.g. relay unreachable
+    # right at boot) from a node that's about to appear (adhoc #219). The
+    # daemon keeps running after this returns; only the tail is time-boxed.
+    say ""
+    say "Following $LOG_PATH for a few seconds…"
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 12 tail -n +1 -f "$LOG_PATH" 2>/dev/null || true
+    else
+      tail -n +1 -f "$LOG_PATH" 2>/dev/null &
+      tail_pid=$!
+      sleep 12
+      kill "$tail_pid" 2>/dev/null || true
+      wait "$tail_pid" 2>/dev/null || true
+    fi
+    say "(log tail ended — the daemon keeps running; full log stays at $LOG_PATH)"
   else
     say "Done — launching ForkMesh now. (Next time, just run:  forkmesh)"
   fi
