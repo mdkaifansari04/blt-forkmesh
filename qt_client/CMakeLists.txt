@@ -213,15 +213,42 @@ foreach(_moc ${FORKMESH_MOC_SOURCES})
     list(APPEND FORKMESH_MOC_DIRS "${_moc_dir}")
 endforeach()
 list(REMOVE_DUPLICATES FORKMESH_MOC_DIRS)
-# qt_wrap_cpp() above marks each header it moc's with the source property
-# SKIP_AUTOMOC ON (see Qt6CoreMacros.cmake). Source file properties are
-# directory-scoped, not target-scoped, so that also suppresses AUTOMOC for
-# src/BackoffNetworkAccessManager.h when the test targets below list it as a
-# plain source: its Q_OBJECT vtable never got moc'd there, leaving the
-# forkmesh-tests link with an undefined vtable reference. The forkmesh target
+# qt_wrap_cpp() above marks each INPUT header it moc's with the source
+# property SKIP_AUTOMOC ON (see Qt6CoreMacros.cmake) -- note FORKMESH_MOC_SOURCES
+# itself now holds the *generated* moc_*.cpp outputs, not these headers. Source
+# file properties are directory-scoped, not target-scoped, so that also
+# suppresses AUTOMOC for every one of these headers when an AUTOMOC-enabled
+# test target below lists it as a plain source (every one of them is also
+# part of FORKMESH_APP_SOURCES) -- their Q_OBJECT vtables/staticMetaObjects
+# never get moc'd there, leaving forkmesh-tests/forkmesh-window-tests/
+# forkmesh-perf-tests with undefined references at link time (caught building
+# forkmesh-perf-tests for issue #357 from a clean configure --
+# forkmesh-window-tests has the exact same latent bug). The forkmesh target
 # doesn't need SKIP_AUTOMOC (its whole-target AUTOMOC is already OFF), so it's
 # safe to reset it here for the still-AUTOMOC-enabled test targets.
-set_source_files_properties(src/BackoffNetworkAccessManager.h PROPERTIES SKIP_AUTOMOC OFF)
+set_source_files_properties(
+    src/ActionRunner.h
+    src/AgentRunner.h
+    src/BackoffNetworkAccessManager.h
+    src/ChatBackend.h
+    src/ClaudeIdeBridge.h
+    src/ClaudeStreamSession.h
+    src/ClaudeTranscriptView.h
+    src/HeadlessConsole.h
+    src/KebabHeaderView.h
+    src/MainWindow.h
+    src/MarkupCanvas.h
+    src/MessageRow.h
+    src/RepoHost.h
+    src/ScreenCaptureOverlay.h
+    src/ScreenDrawOverlay.h
+    src/ScreenshotMarkupWindow.h
+    src/ScrollJumpButtons.h
+    src/ServerNode.h
+    src/StallWatchdog.h
+    src/TerminalWidget.h
+    PROPERTIES SKIP_AUTOMOC OFF SKIP_AUTOGEN OFF
+)
 target_include_directories(forkmesh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
@@ -357,14 +384,9 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-e2e PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
-    # Feeding RepoHost.h to qt_wrap_cpp for the `forkmesh` target above marks it
-    # SKIP_AUTOMOC (a directory-scoped source property), which would otherwise
-    # stop AUTOMOC from generating RepoHost's moc for the AUTOMOC-driven test
-    # targets — leaving its vtable/signals unresolved at link time. Clear the
-    # skip so the test targets moc it normally (the app itself has AUTOMOC OFF
-    # and moc's it explicitly, so it is unaffected).
-    set_source_files_properties(src/RepoHost.h PROPERTIES
-        SKIP_AUTOMOC OFF SKIP_AUTOGEN OFF)
+    # RepoHost.h's SKIP_AUTOMOC is already cleared for every AUTOMOC-enabled
+    # test target above (it's one of the qt_wrap_cpp() inputs reset alongside
+    # MainWindow.h/ChatBackend.h/etc.).
     if(APPLE)
         set_target_properties(forkmesh-e2e PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
