@@ -3316,6 +3316,7 @@ private:
         bool isDir = false;
         qint64 size = 0;     // blob bytes (recursive sum for directories)
         qint64 loc = 0;      // lines of code (recursive sum for directories)
+        qint64 fileCount = 0; // number of files (recursive) — shown for directories
         qint64 commitTs = 0; // last commit unix time that touched this entry
         QString subject;     // last commit subject
         QString whenText;    // relative "x ago"
