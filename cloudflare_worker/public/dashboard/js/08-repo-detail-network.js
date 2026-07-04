@@ -989,6 +989,12 @@
     if (agentPromptForm && state.selectedRepo) {
       event.preventDefault();
       handleRepoAgentPromptSubmit(state.selectedRepo, agentPromptForm);
+      return;
+    }
+    const agentNewForm = event.target.closest("[data-repo-agent-new-form]");
+    if (agentNewForm && state.selectedRepo) {
+      event.preventDefault();
+      handleRepoAgentNewSubmit(state.selectedRepo, agentNewForm);
     }
   });
 
