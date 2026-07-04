@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 333
 title: have the ability to search through a PR for text on the review pane
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 26
