@@ -297,6 +297,130 @@ def test_operational_hour_does_not_carry_a_stale_reason():
     assert this_hour["reason"] is None
 
 
+# --- current-state snapshot (issue #356) ------------------------------------
+
+def _run_history_current(
+    repo_count=7, online_labels=("alice", "bob"), error_count=3,
+    mainnode_online=True,
+):
+    async def noop(*_a, **_k):
+        return None
+
+    async def d1_all(_env, sql, *_args):
+        return []
+
+    async def d1_first(_env, sql, *_args):
+        if "FROM repositories" in sql:
+            return {"n": repo_count}
+        if "FROM error_log" in sql:
+            return {"n": error_count}
+        if "FROM host_presence" in sql:
+            return {"ts": _Clock.value} if mainnode_online else None
+        return {}
+
+    async def _live_online_nodes(_env, _now):
+        # owner_bi -> label, same shape as the real helper
+        return {"bi%d" % i: label for i, label in enumerate(online_labels)}
+
+    async def blind_index(_env, _value):
+        return "mainnode_bi"
+
+    captured = {}
+
+    def json_response(payload, cache_seconds=None):
+        captured.update(payload)
+        return payload
+
+    extra = {
+        "Date": _Clock,
+        "ensure_schema": noop,
+        "d1_all": d1_all,
+        "d1_first": d1_first,
+        "_live_online_nodes": _live_online_nodes,
+        "blind_index": blind_index,
+        "json_response": json_response,
+    }
+    g = _load("status_history", extra_globals=extra)
+    asyncio.run(g["status_history"](object()))
+    return captured
+
+
+def test_current_snapshot_reports_the_four_headline_metrics():
+    out = _run_history_current(
+        repo_count=42, online_labels=("alice", "bob", "carol"),
+        error_count=5, mainnode_online=True,
+    )
+    current = out["current"]
+    assert current["catalogRepos"] == 42
+    assert current["onlineNodes"] == 3
+    assert current["errors24h"] == 5
+    assert current["mainnodeOnline"] is True
+
+
+def test_current_online_count_dedupes_by_node_label_not_row_count():
+    # _live_online_nodes keys by owner, but two entries can carry the same label
+    # (e.g. an ad-hoc re-key); the headline count must be distinct labels.
+    out = _run_history_current(online_labels=("alice", "alice", "bob"))
+    assert out["current"]["onlineNodes"] == 2
+
+
+def test_current_snapshot_offline_mainnode_is_false():
+    out = _run_history_current(mainnode_online=False)
+    assert out["current"]["mainnodeOnline"] is False
+
+
+def test_current_snapshot_survives_a_failing_read():
+    # A blank/failing metric is None, and it must not blank the rest of the page.
+    def _load_broken():
+        async def noop(*_a, **_k):
+            return None
+
+        async def d1_all(_env, sql, *_args):
+            return []
+
+        async def d1_first(_env, sql, *_args):
+            if "FROM repositories" in sql:
+                raise RuntimeError("boom")
+            return {"n": 0}
+
+        async def _live_online_nodes(_env, _now):
+            return {}
+
+        async def blind_index(_env, _value):
+            return "bi"
+
+        captured = {}
+
+        def json_response(payload, cache_seconds=None):
+            captured.update(payload)
+            return payload
+
+        extra = {
+            "Date": _Clock, "ensure_schema": noop, "d1_all": d1_all,
+            "d1_first": d1_first, "_live_online_nodes": _live_online_nodes,
+            "blind_index": blind_index, "json_response": json_response,
+        }
+        g = _load("status_history", extra_globals=extra)
+        asyncio.run(g["status_history"](object()))
+        return captured
+
+    out = _load_broken()
+    assert out["current"]["catalogRepos"] is None
+    assert out["current"]["onlineNodes"] == 0
+    # systems still rendered despite the failed metric
+    assert len(out["systems"]) == 5
+
+
+def test_status_page_renders_current_state_grid():
+    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
+    assert 'id="status-current"' in status_html
+    assert "stat-mainnode" in status_html
+    assert "stat-nodes" in status_html
+    assert "stat-repos" in status_html
+    assert "stat-errors" in status_html
+    assert "data.current" in status_html
+
+
 # --- static wiring -----------------------------------------------------------
 
 def test_worker_exposes_status_route_and_schema():
