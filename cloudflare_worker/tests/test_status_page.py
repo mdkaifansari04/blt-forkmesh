@@ -16,19 +16,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# Route regexes now live in the extracted urls.py module (imported by entry.py);
+# parse it alongside entry.py so the assign nodes below still resolve.
+URLS = ROOT / "src" / "urls.py"
+URLS_TEXT = URLS.read_text(encoding="utf-8")
 
 DAY_MS = 86400000
 
 
 def _load(*names, extra_globals=None):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    urls_tree = ast.parse(URLS_TEXT, filename=str(URLS))
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
     }
     selected = []
-    for node in tree.body:
+    for node in list(urls_tree.body) + list(tree.body):
         if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
             alias.name == "re" for alias in node.names
         ):
@@ -353,6 +358,10 @@ def _run_history_current(
         return None
 
     async def d1_all(_env, sql, *_args):
+        if "FROM repositories" in sql:
+            return [{"key_bi": "mirror_bi", "data": "enc"}] if mainnode_online else []
+        if "FROM host_presence" in sql:
+            return [{"repo_bi": "mirror_bi", "ts": _Clock.value}] if mainnode_online else []
         return []
 
     async def d1_first(_env, sql, *_args):
@@ -360,9 +369,10 @@ def _run_history_current(
             return {"n": repo_count}
         if "FROM error_log" in sql:
             return {"n": error_count}
-        if "FROM host_presence" in sql:
-            return {"ts": _Clock.value} if mainnode_online else None
         return {}
+
+    async def decrypt_row(_env, _data):
+        return {"owner": "alice", "name": "forkmesh"}
 
     async def _live_online_nodes(_env, _now):
         # owner_bi -> label, same shape as the real helper
@@ -382,6 +392,9 @@ def _run_history_current(
         "ensure_schema": noop,
         "d1_all": d1_all,
         "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "safe_segment": lambda s: str(s or "").strip().lower(),
+        "_is_blocked_catalog_identity": lambda *_a: False,
         "_live_online_nodes": _live_online_nodes,
         "blind_index": blind_index,
         "json_response": json_response,
