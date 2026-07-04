@@ -11,8 +11,9 @@ designed in docs/design/release-binary-publishing.md:
   * `latest` semver resolution;
   * the same-name re-upload decision (§7 edge cases).
 
-Like test_repo_state.py, helpers are extracted from entry.py by AST so the JS
-runtime / WebCrypto bindings are never imported.
+Like test_repo_state.py, helpers are extracted by AST so the JS runtime /
+WebCrypto bindings are never imported. The pure release spine now lives in
+releases.py (route regexes in urls.py); both are parsed alongside entry.py.
 """
 
 import ast
@@ -23,15 +24,19 @@ from pathlib import Path
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 # Route regexes (RELEASE_BLOB_RE, REPO_RELEASE_DOWNLOADS_RE) live in urls.py now.
 URLS = Path(__file__).resolve().parents[1] / "src" / "urls.py"
+# The pure release helpers + their regexes live in releases.py now.
+RELEASES = Path(__file__).resolve().parents[1] / "src" / "releases.py"
 
 
 def _load(*names):
-    """Load named module-level functions and Assign(constants) from entry.py."""
+    """Load named module-level functions and Assign(constants) from the sources."""
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     urls_tree = ast.parse(URLS.read_text(encoding="utf-8"), filename=str(URLS))
+    releases_tree = ast.parse(
+        RELEASES.read_text(encoding="utf-8"), filename=str(RELEASES))
     wanted = set(names)
     body = []
-    for node in list(urls_tree.body) + list(tree.body):
+    for node in list(urls_tree.body) + list(releases_tree.body) + list(tree.body):
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             body.append(node)
         elif isinstance(node, ast.Assign):
