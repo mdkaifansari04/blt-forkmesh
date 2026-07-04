@@ -238,6 +238,32 @@ code {
   font-weight: 600;
 }
 
+/* Hamburger for the shared header. Hidden on desktop; the mobile breakpoint
+   reveals it and turns .global-nav into a dropdown panel. Injected by
+   static-page.js so every page carrying the shared header gets it. */
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.nav-toggle:hover {
+  background: var(--card-soft);
+}
+
+.nav-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* Admin shortcut — lives in .header-actions (not .global-nav, which the mobile
    breakpoint hides) so it stays visible at every width. Only revealed (hidden
    attr removed) for a signed-in admin whose session carries an adminUrl passed
@@ -2385,8 +2411,41 @@ button.issue-row {
     gap: 8px;
   }
 
+  .nav-toggle {
+    display: inline-flex;
+  }
+
+  /* The nav collapses into a full-width dropdown anchored under the sticky
+     header; revealed by .site-header.nav-open (toggled from static-page.js). */
   .global-nav {
     display: none;
+    position: absolute;
+    top: 56px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 8px 12px 12px;
+    background: color-mix(in srgb, var(--card) 97%, transparent);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .site-header.nav-open .global-nav {
+    display: flex;
+  }
+
+  .global-nav a {
+    padding: 11px 12px;
+    font-size: 15px;
+  }
+
+  .global-nav a.nav-cta {
+    margin-left: 0;
+    margin-top: 4px;
+    text-align: center;
   }
 
   .clients-pill {
