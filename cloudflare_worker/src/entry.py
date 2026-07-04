@@ -7724,10 +7724,17 @@ async def send_notification_digests(env):
         rec = await decrypt_row(env, acct.get("data", ""))
         if not rec or rec.get("status") != "active":
             continue
-        email = clean_string(rec.get("email", ""), 254).strip()
-        if not email or not rec.get("email_verified"):
+        # Use the node owner's email if the node has an owner; otherwise use the node's email.
+        email_rec = rec
+        owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
+        if owner:
+            _, owner_rec = await _account_row(env, owner)
+            if owner_rec and owner_rec.get("status") == "active":
+                email_rec = owner_rec
+        email = clean_string(email_rec.get("email", ""), 254).strip()
+        if not email or not email_rec.get("email_verified"):
             continue
-        if rec.get("email_notifications") is False:
+        if email_rec.get("email_notifications") is False:
             continue  # explicit opt-out
         last = int(rec.get("last_digest_ts", 0) or 0)
         if last and now - last < NOTIFICATION_DIGEST_INTERVAL_MS:
