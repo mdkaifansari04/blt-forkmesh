@@ -641,10 +641,8 @@ void MainWindow::switchToWorktree(const QString &branch)
 // #123). Selecting the row fires currentCellChanged -> showBranchDiff.
 void MainWindow::switchToBranch(const QString &branch)
 {
-    if (m_repoDetailTabs && m_repoDetailTabs->button(m_branchesTabIndex))
-        m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
-    if (m_repoDetailStack && m_branchesTabIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
+    // The branches panel lives inside the Code overview now (no top-level tab).
+    showOverviewBranches();
     loadBranchesPanel();
     if (!m_branchesTable || branch.isEmpty())
         return;
@@ -1557,7 +1555,10 @@ QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 14, 16, 16);
+    // Flush horizontally: this panel now sits inside the Code overview body stack,
+    // whose column already supplies the page's left/right padding (like the
+    // commits panel), so it should line up with the file list above it.
+    layout->setContentsMargins(0, 4, 0, 0);
     layout->setSpacing(10);
 
     auto *headerRow = new QHBoxLayout;
@@ -3352,21 +3353,88 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     }
 
     // A merge commit is needed: it has to happen on a checkout, so the working
-    // tree must be clean before we switch branches and merge.
+    // tree must be clean before we switch branches and merge. When it isn't, we
+    // used to just refuse with "commit or stash local changes" — opaque, and it
+    // left the user to do it by hand. Instead, show exactly which files are in the
+    // way and offer to stash them, run the update, then restore them on top, so the
+    // pull "just goes through" without losing any work (adhoc #183).
     QByteArray status;
     QString err;
-    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
-        !status.trimmed().isEmpty()) {
+    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err)) {
         setRepoDetailNotice(
-            err.isEmpty() ? "Commit or stash local changes before updating this branch."
-                          : err.left(240),
+            err.isEmpty() ? "Could not read the repository status." : err.left(240),
             true);
         return;
     }
+    bool stashed = false;
+    if (!status.trimmed().isEmpty()) {
+        // Surface the actual dirty paths (transparency) instead of a bare warning.
+        QStringList files;
+        for (const QString &l :
+             QString::fromUtf8(status).split('\n', Qt::SkipEmptyParts))
+            files << l.mid(3); // strip the two-char XY status + space
+        const QString n = QString::number(files.size());
+        const QString plural = files.size() == 1 ? QString() : QStringLiteral("s");
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(QStringLiteral("Update %1 from %2").arg(branch, base));
+        box.setText(QStringLiteral("The working tree has uncommitted changes in %1 "
+                                   "file%2, so %3 can't be merged in directly.")
+                        .arg(n, plural, base));
+        box.setInformativeText(
+            QStringLiteral("Stash those changes, update %1 from %2, then restore them "
+                           "on top? Nothing is discarded.")
+                .arg(branch, base));
+        box.setDetailedText(files.join('\n'));
+        QPushButton *stashBtn = box.addButton(
+            QStringLiteral("Stash, update & restore"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(stashBtn);
+        box.exec();
+        if (box.clickedButton() != stashBtn) {
+            setRepoDetailNotice(
+                QStringLiteral("Left %1 unchanged; commit or stash its %2 uncommitted "
+                               "file%3 to update from %4.")
+                    .arg(branch, n, plural, base));
+            return;
+        }
+        if (!runGitCapture(
+                dir,
+                {"stash", "push", "-u", "-m",
+                 QStringLiteral("forkmesh: auto-stash before pulling %1 into %2")
+                     .arg(base, branch)},
+                nullptr, &err)) {
+            setRepoDetailNotice(
+                err.isEmpty() ? "Could not stash the local changes." : err.left(240),
+                true);
+            return;
+        }
+        stashed = true;
+        logSystem(QStringLiteral("Git: auto-stashed local changes before pulling %1 "
+                                 "into %2.")
+                      .arg(base, branch));
+    }
+
+    // Restores an auto-stash after the update, whatever the outcome. Returns a note
+    // to append to the detail message: describes the restore so the user can see it
+    // happened, or how to recover the stash if the pop didn't apply cleanly.
+    auto restoreStash = [&]() -> QString {
+        if (!stashed)
+            return QString();
+        stashed = false;
+        if (runGitCapture(dir, {"stash", "pop"}, nullptr, nullptr))
+            return QStringLiteral(" Your stashed changes were restored.");
+        // Pop failed/conflicted — git keeps the stash on the stack, so nothing is
+        // lost; tell the user how to reapply it.
+        return QStringLiteral(" Your local changes couldn't be cleanly restored and "
+                              "remain stashed — run \"git stash pop\" to reapply them.");
+    };
 
     if (!isCurrent && !checkoutReleasingWorktree(dir, branch, &err)) {
+        const QString note = restoreStash();
         setRepoDetailNotice(
-            QStringLiteral("Could not check out %1: %2").arg(branch, err.left(200)),
+            QStringLiteral("Could not check out %1: %2%3")
+                .arg(branch, err.left(200), note),
             true);
         return;
     }
@@ -3385,9 +3453,10 @@ void MainWindow::updateBranchFromBase(const QString &branch)
             runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
             if (!isCurrent && !currentBranch.isEmpty())
                 runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+            const QString note = restoreStash();
             setRepoDetailNotice(
-                QStringLiteral("Could not merge %1 into %2: %3")
-                    .arg(base, branch, err.left(200)),
+                QStringLiteral("Could not merge %1 into %2: %3%4")
+                    .arg(base, branch, err.left(200), note),
                 true);
             return;
         }
@@ -3408,17 +3477,21 @@ void MainWindow::updateBranchFromBase(const QString &branch)
             runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
             if (!isCurrent && !currentBranch.isEmpty())
                 runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+            const QString note = restoreStash();
             setRepoDetailNotice(
                 QStringLiteral("Cancelled the merge of %1 into %2; %2 was left "
-                               "unchanged.")
-                    .arg(base, branch));
+                               "unchanged.%3")
+                    .arg(base, branch, note));
             return;
         }
         if (!isCurrent && !currentBranch.isEmpty())
             runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
+        const QString note = restoreStash();
         logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
                       .arg(base, branch));
-        setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 with %2 (conflicts resolved).%3")
+                .arg(branch, base, note));
         m_branchesCache.clear(); // branch was updated — bust cache
         // Re-render the detail pane's scope/files-changed lists, not just the
         // ahead/behind label — they still reflected the pre-pull commit range.
@@ -3430,8 +3503,10 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     if (!isCurrent && !currentBranch.isEmpty())
         runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
 
+    const QString note = restoreStash();
     logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
-    setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
+    setRepoDetailNotice(
+        QStringLiteral("Updated %1 with %2.%3").arg(branch, base, note));
     m_branchesCache.clear(); // branch was updated — bust cache
     // Re-render the detail pane's scope/files-changed lists, not just the
     // ahead/behind label — they still reflected the pre-pull commit range.

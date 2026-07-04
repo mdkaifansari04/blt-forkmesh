@@ -79,6 +79,13 @@ MAX_PENDING_COMMIT_COMMENTS = 500
 # Discussion inbox: signed open/comment events for read-only contributors.
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
+# Agent-session sync (adhoc #182): desktop -> website push of Claude Code agent
+# sessions for a repo, and website -> desktop queued prompts for a running one.
+MAX_AGENT_SESSIONS = 300
+MAX_AGENT_STRING = 300
+MAX_AGENT_TITLE = 240
+MAX_AGENT_PROMPT_TEXT = 8000
+MAX_PENDING_AGENT_PROMPTS = 50
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -133,6 +140,14 @@ REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
 REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
 # Public mirror health for a logical repo group.
 REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
+# Agent-session sync (adhoc #182): desktop node push/drain of Claude Code agent
+# sessions for a repo (signed the same way as issue-inbox drain), the
+# website's password-gated read of that same list, and a queued text prompt
+# the owner sends from the website to one running agent.
+REPO_AGENTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents$")
+REPO_AGENTS_LIST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents/list$")
+REPO_AGENTS_PROMPT_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/prompt$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
@@ -1931,18 +1946,32 @@ async def status_history(env):
                 "uptimePct": uptime, "hours": hours,
                 "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent day with any data, not the
-        # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
-        # today's badge red.
-        latest = next((d for d in reversed(days) if d["checks"]), None)
-        if latest is None:
-            status = "unknown"
-        elif latest["failures"] == 0:
-            status = "operational"
-        elif latest["failures"] >= latest["checks"]:
-            status = "down"
+        # Current status comes from the most recent HOUR with any data, not
+        # the whole current day's aggregate — otherwise an incident that was
+        # resolved an hour ago keeps the badge red/yellow for the rest of the
+        # day even once every recent check has gone back to green.
+        latest_hour = None
+        for d in reversed(days):
+            for h in reversed(d["hours"]):
+                if h["checks"]:
+                    latest_hour = h
+                    break
+            if latest_hour:
+                break
+        if latest_hour is not None:
+            status = latest_hour["status"]
         else:
-            status = "degraded"
+            # No hourly rows at all (e.g. pre-migration data) — fall back to
+            # the most recent day's aggregate so the badge isn't stuck unknown.
+            latest_day = next((d for d in reversed(days) if d["checks"]), None)
+            if latest_day is None:
+                status = "unknown"
+            elif latest_day["failures"] == 0:
+                status = "operational"
+            elif latest_day["failures"] >= latest_day["checks"]:
+                status = "down"
+            else:
+                status = "degraded"
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None
@@ -1991,30 +2020,6 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
-        # "mainnode" is a canonical/branding owner that no node ever registers a
-        # host tunnel under: browse/clone to mainnode/forkmesh fails over to
-        # whichever node hosts a live "forkmesh" mirror (install_source picks a
-        # mirror the same way). So the host_presence row keyed on the literal
-        # mainnode/forkmesh path is never written, and reading it alone always
-        # reports the mainnode offline even while the repo is perfectly
-        # reachable through a mirror. Fold in the freshest heartbeat across
-        # every forkmesh mirror so "mainnode online" tracks real reachability.
-        try:
-            repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
-            pres_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
-            presence = {str(r.get("repo_bi")): int(r.get("ts") or 0)
-                        for r in (pres_rows or []) if r.get("repo_bi")}
-            for r in (repo_rows or []):
-                rec = await decrypt_row(env, r.get("data"))
-                if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
-                    continue
-                if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
-                    continue
-                ts = presence.get(str(r.get("key_bi")), 0)
-                if ts and (last_ts is None or ts > last_ts):
-                    last_ts = ts
-        except Exception:
-            pass
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
@@ -2688,6 +2693,21 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL, submitter_bi TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_discussion_inbox_repo ON discussion_inbox(repo_bi)",
+    # Agent-session sync (website "Agents" tab, adhoc #182): the desktop app
+    # pushes a full-replace snapshot of its running/finished Claude Code agent
+    # sessions for a repo (one row per session, keyed by the desktop's local
+    # session id) so the owner can see them on the website.
+    """CREATE TABLE IF NOT EXISTS repo_agents (
+        repo_bi TEXT NOT NULL, agent_id TEXT NOT NULL,
+        data TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, agent_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_agents_repo ON repo_agents(repo_bi)",
+    # Prompts the website owner queues for a running agent; the desktop drains
+    # (selects + deletes) this table the same way it drains issue_inbox.
+    """CREATE TABLE IF NOT EXISTS agent_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
+        agent_id TEXT NOT NULL, data TEXT NOT NULL, queued_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_agent_prompts_repo ON agent_prompts(repo_bi)",
     # Issue bounty escrow: one row per (repo, issue number). data is the encrypted
     # record holding the deposit address, its Ed25519 seed, the required amount,
     # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
@@ -4038,6 +4058,8 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_first_hosted WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+    await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
 
 
 async def _delete_repo_namespace(env, owner_bi, owner):
@@ -7415,6 +7437,36 @@ async def _authorize_owner(env, request, owner):
     return await ed25519_verify(owner_pub, sig, canonical)
 
 
+async def _verify_owner_password(env, owner, data):
+    # Re-proves control of a privileged account via password: the repo owner
+    # itself, or a network admin acting on the owner's behalf. Used anywhere a
+    # browser (no signing key) requests an immediate, unreviewed side effect —
+    # starting an agent (issue #373's wantsAgent), listing agent sessions, or
+    # prompting one (adhoc #182) — so a client can't spoof ownership just by
+    # naming an account in the request body. Returns (True, None) on success,
+    # or (False, error_json_response) with the same status/body the callers
+    # used before this was factored out.
+    actor = clean_string(data.get("ownerAccount", "") or owner, 120)
+    actor_bi, actor_rec = await _account_row(env, actor)
+    if await _login_locked_until(env, actor_bi):
+        return False, json_response({"error": "too_many_attempts"}, status=429)
+    owner_password = str(data.get("ownerPassword", "") or "")[:256]
+    verified = bool(
+        actor_rec and actor_rec.get("status") == "active" and
+        actor_rec.get("pass_hash") and owner_password and
+        await verify_password(owner_password,
+                              actor_rec.get("pass_salt", ""),
+                              actor_rec.get("pass_hash", "")))
+    if not verified:
+        await _login_record_fail(env, actor_bi)
+        return False, json_response({"error": "bad_owner_password"}, status=401)
+    if actor.lower() != str(owner or "").lower() \
+            and not await _is_admin(env, actor):
+        return False, json_response({"error": "not_authorized"}, status=403)
+    await _login_clear(env, actor_bi)
+    return True, None
+
+
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
     # in this repo's inbox (table is a fixed literal, safe to interpolate).
@@ -7989,26 +8041,9 @@ async def issues_handler(env, request, owner, repo):
             # client-side checkbox on a raw submission.
             wants_agent = False
             if meta_in.get("wantsAgent"):
-                actor = clean_string(data.get("ownerAccount", "") or owner, 120)
-                actor_bi, actor_rec = await _account_row(env, actor)
-                if await _login_locked_until(env, actor_bi):
-                    return json_response({"error": "too_many_attempts"}, status=429)
-                owner_password = str(data.get("ownerPassword", "") or "")[:256]
-                verified = bool(
-                    actor_rec and actor_rec.get("status") == "active" and
-                    actor_rec.get("pass_hash") and owner_password and
-                    await verify_password(owner_password,
-                                          actor_rec.get("pass_salt", ""),
-                                          actor_rec.get("pass_hash", "")))
-                if not verified:
-                    await _login_record_fail(env, actor_bi)
-                    return json_response({"error": "bad_owner_password"}, status=401)
-                # The proven account must actually be entitled to command the
-                # node: the repo owner itself, or a network admin.
-                if actor.lower() != str(owner or "").lower() \
-                        and not await _is_admin(env, actor):
-                    return json_response({"error": "not_authorized"}, status=403)
-                await _login_clear(env, actor_bi)
+                ok, err = await _verify_owner_password(env, owner, data)
+                if not ok:
+                    return err
                 wants_agent = True
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
@@ -8311,6 +8346,154 @@ async def discussions_handler(env, request, owner, repo):
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+# --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
+#
+# The desktop app runs Claude Code coding "agent" sessions per repo/issue.
+# There's no existing sync of that state to the worker; these three routes
+# add it end to end:
+#   POST /agents        desktop -> worker: full-replace push of this repo's
+#                        sessions, authenticated like an issue-inbox drain
+#                        (_authorize_owner: ts+sig query params).
+#   GET  /agents         desktop -> worker: drain (select + delete) any
+#                        prompts the website queued for this repo's agents.
+#   POST /agents/list    website -> worker: owner-password-gated read of the
+#                        current session list (browsers hold no signing key).
+#   POST /agents/<id>/prompt
+#                        website -> worker: owner-password-gated, queue one
+#                        text prompt for a specific running agent.
+def _clean_agent_session(item):
+    """Normalize one posted agent-session dict, or None if it's unusable."""
+    if not isinstance(item, dict):
+        return None
+    try:
+        agent_id = int(item.get("id", 0))
+    except (TypeError, ValueError):
+        return None
+    if not agent_id:
+        return None
+    out = {"id": agent_id}
+    try:
+        out["issueNumber"] = int(item.get("issueNumber", 0) or 0)
+    except (TypeError, ValueError):
+        out["issueNumber"] = 0
+    out["issueTitle"] = clean_string(item.get("issueTitle", ""), MAX_AGENT_TITLE)
+    for field in ("status", "provider", "model", "branchName", "lastError"):
+        out[field] = clean_string(item.get(field, ""), MAX_AGENT_STRING)
+    for field in ("createdAtMs", "startedAtMs", "finishedAtMs", "numTurns", "durationMs"):
+        try:
+            out[field] = int(item.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            out[field] = 0
+    try:
+        out["costUsd"] = float(item.get("costUsd", 0) or 0)
+    except (TypeError, ValueError):
+        out["costUsd"] = 0.0
+    return out
+
+
+async def agents_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    method = method_name(request)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+
+    if method == "POST":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        sessions_in = data.get("sessions")
+        if not isinstance(sessions_in, list):
+            sessions_in = []
+        # Cap to the most recent MAX_AGENT_SESSIONS entries rather than
+        # rejecting the whole push outright (same truncate-not-reject
+        # convention as the labels/assignees lists in issues_handler).
+        sessions = [s for s in
+                    (_clean_agent_session(item) for item in sessions_in[:MAX_AGENT_SESSIONS]) if s]
+        # Full-replace semantics: the desktop always pushes its whole current
+        # view of this repo's sessions, so the stored set is exactly that.
+        await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+        now = int(Date.now())
+        for session in sessions:
+            await d1_run(
+                env,
+                "INSERT INTO repo_agents (repo_bi, agent_id, data, updated_at) "
+                "VALUES (?,?,?,?)",
+                repo_bi, str(session["id"]), await encrypt_row(env, session), now,
+            )
+        return json_response({"ok": True})
+
+    if method == "GET":
+        if not await _authorize_owner(env, request, owner):
+            return json_response({"error": "unauthorized"}, status=401)
+        rows = await d1_all(
+            env,
+            "SELECT id, data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi,
+        )
+        prompts = [rec for rec in
+                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+        return json_response({"ok": True, "prompts": prompts})
+
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def agents_list_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    ok, err = await _verify_owner_password(env, owner, data)
+    if not ok:
+        return err
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    rows = await d1_all(
+        env, "SELECT data FROM repo_agents WHERE repo_bi=? ORDER BY updated_at DESC",
+        repo_bi,
+    )
+    agents = [rec for rec in
+              [await decrypt_row(env, r["data"]) for r in rows] if rec]
+    return json_response({"ok": True, "agents": agents})
+
+
+async def agents_prompt_handler(env, request, owner, repo, agent_id):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    ok, err = await _verify_owner_password(env, owner, data)
+    if not ok:
+        return err
+    text = str(data.get("text", "") or "").strip()
+    if not text:
+        return json_response({"error": "text_required"}, status=400)
+    if len(text) > MAX_AGENT_PROMPT_TEXT:
+        return json_response({"error": "text_too_long"}, status=400)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM agent_prompts WHERE repo_bi=?", repo_bi
+    )
+    if count and count.get("c", 0) >= MAX_PENDING_AGENT_PROMPTS:
+        return json_response({"error": "prompt_queue_full"}, status=429)
+    now = int(Date.now())
+    item = {"agentId": agent_id, "text": text, "queuedAt": now}
+    await d1_run(
+        env,
+        "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
+        "VALUES (?,?,?,?)",
+        repo_bi, agent_id, await encrypt_row(env, item), now,
+    )
+    return json_response({"ok": True})
 
 
 # --- Error log + admin dashboard -------------------------------------------
@@ -9804,6 +9987,31 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
 
+        agents_list_match = REPO_AGENTS_LIST_RE.match(url.path)
+        if agents_list_match:
+            owner = safe_segment(agents_list_match.group(1))
+            repo = safe_segment(agents_list_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await agents_list_handler(self.env, request, owner, repo)
+
+        agents_prompt_match = REPO_AGENTS_PROMPT_RE.match(url.path)
+        if agents_prompt_match:
+            owner = safe_segment(agents_prompt_match.group(1))
+            repo = safe_segment(agents_prompt_match.group(2))
+            agent_id = safe_segment(agents_prompt_match.group(3))
+            if not owner or not repo or not agent_id:
+                return json_response({"error": "not_found"}, status=404)
+            return await agents_prompt_handler(self.env, request, owner, repo, agent_id)
+
+        agents_match = REPO_AGENTS_RE.match(url.path)
+        if agents_match:
+            owner = safe_segment(agents_match.group(1))
+            repo = safe_segment(agents_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await agents_handler(self.env, request, owner, repo)
+
         release_downloads_match = REPO_RELEASE_DOWNLOADS_RE.match(url.path)
         if release_downloads_match:
             owner = safe_segment(release_downloads_match.group(1))
@@ -10057,6 +10265,8 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
+        url = urlparse(request.url)
+        is_info = url.path.endswith("/info/refs")
         # Private repos clone only with an owner-key-signed view token carried in
         # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
         # supplies credentials from the clone URL or a credential helper.
@@ -10079,8 +10289,6 @@ class Default(WorkerEntrypoint):
             # per request. The integrity gate still applies on the serving node:
             # a mirror must advertise a source-attested state (clone_state_pins),
             # so serving in place never weakens the tamper check.
-            url = urlparse(request.url)
-            is_info = url.path.endswith("/info/refs")
             # Auto-heal a mirror namespace while the source of truth is online:
             # hand the clone to the authoritative source instead of this mirror. A
             # mirror whose refs fail the integrity pin (stale, diverged, or running
@@ -10117,9 +10325,50 @@ class Default(WorkerEntrypoint):
                         # which answers with git's clean "no host" advertisement
                         # instead of taking the whole request down.
                         pass
+            elif not is_info:
+                # Source's host IS connected, but a paired info/refs that just
+                # timed out (below) may have failed over to a mirror and pinned
+                # it. The upload-pack POST negotiates against the refs that first
+                # request advertised, so it MUST follow that same mirror even
+                # though the named source's tunnel now looks live — otherwise the
+                # pack is negotiated against a different node's refs and the
+                # clone breaks. Read-only pin lookup; no rotation.
+                serving = await self._fresh_clone_pin(owner, repo)
+                if serving and serving.lower() != owner.lower():
+                    try:
+                        return await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/git-upload-pack" % (serving, repo))
+                    except Exception:
+                        pass
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
-        return await host_object.fetch(request)
+        response = await host_object.fetch(request)
+        # The named source's host is connected but stalled answering the (small,
+        # idempotent) info/refs advertisement — GIT_TIMEOUT_MS elapses and its
+        # host DO returns 504. The upfront liveness check above sees the live
+        # WebSocket and never fails over, so the client's clone dead-ends. Retry
+        # the advertisement once from a live mirror and pin it (clone_sticky), so
+        # the paired upload-pack POST follows the same node. Only info/refs (a
+        # bodyless GET) is safe to replay this way; the POST body is already in
+        # flight, so it relies on the pin instead. Private repos are excluded —
+        # they never fall a clone over to a mirror.
+        if is_info and not await _repo_is_private(self.env, owner, repo):
+            try:
+                status = int(response.status)
+            except Exception:
+                status = 0
+            if status in (503, 504):
+                serving = await self._sticky_clone_fallback(
+                    owner, repo, refresh=True)
+                if serving and serving.lower() != owner.lower():
+                    try:
+                        return await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/info/refs" % (serving, repo))
+                    except Exception:
+                        pass
+        return response
 
     async def _git_push(self, request, owner_raw, repo_raw):
         # git push (issue #358): receive-pack proxied to the owner's own host DO.
@@ -10297,6 +10546,32 @@ class Default(WorkerEntrypoint):
                     repo_bi, choice, now,
                 )
             return choice
+        except Exception:
+            return None
+
+    async def _fresh_clone_pin(self, owner, repo):
+        # The mirror a recent info/refs failed over to and pinned in clone_sticky,
+        # if that pin is still fresh (<= CLONE_STICKY_MS) and the mirror still has
+        # a live host. Read-only: never selects, rotates or writes a pin — used by
+        # the upload-pack POST to follow whatever info/refs advertised, even when
+        # the named source's own tunnel has since come back. Best-effort; any
+        # failure (and the common no-pin case) returns None so the POST falls
+        # through to the named source.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT owner, ts FROM clone_sticky WHERE repo_bi=?", repo_bi)
+            if not row:
+                return None
+            pick = str(row.get("owner") or "")
+            fresh = now - int(row.get("ts") or 0) <= CLONE_STICKY_MS
+            if pick and fresh and pick.lower() != owner.lower():
+                if await self._source_has_live_host(pick, repo):
+                    return pick
+            return None
         except Exception:
             return None
 

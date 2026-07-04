@@ -1200,8 +1200,15 @@ void MainWindow::loadMirrorNodesPanel()
 
         // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
-        if (online)
-            activityDots.append({node.id, node.name, true, node.self});
+        const bool integrityFailing =
+            integrityByNode.value(node.name.trimmed().toLower()) ==
+            QLatin1String("rejected");
+        // Only online nodes normally get a dot; keep an offline one too when
+        // it's failing the integrity pin, so the warning doesn't just vanish
+        // from the strip (adhoc #196).
+        if (online || integrityFailing)
+            activityDots.append(
+                {node.id, node.name, online, node.self, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
             node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
@@ -1217,8 +1224,7 @@ void MainWindow::loadMirrorNodesPanel()
                                  ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                                        .arg(online ? "online" : "offline")
                                  : (online ? "Online now" : "Offline"));
-        if (integrityByNode.value(node.name.trimmed().toLower()) ==
-            QLatin1String("rejected"))
+        if (integrityFailing)
             markPinRejected(nameItem);
         m_mirrorNodesTable->setItem(row, 0, nameItem);
 
@@ -1425,9 +1431,13 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName.compare(sourceOwner, Qt::CaseInsensitive) == 0;
             const bool online =
                 m.value("status").toString() == QLatin1String("online");
-            if (online)
-                activityDots.append(
-                    {m.value("id").toString(), nodeName, true, false});
+            const bool integrityFailing =
+                m.value("integrity").toString() == QLatin1String("rejected");
+            // Only online nodes normally get a dot; keep an offline one too
+            // when it's failing the integrity pin (adhoc #196).
+            if (online || integrityFailing)
+                activityDots.append({m.value("id").toString(), nodeName,
+                                     online, false, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             auto *nameItem = new SortTableWidgetItem(
@@ -1443,7 +1453,7 @@ void MainWindow::loadMirrorNodesPanel()
                 online
                     ? QStringLiteral("Online now")
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
-            if (m.value("integrity").toString() == QLatin1String("rejected"))
+            if (integrityFailing)
                 markPinRejected(nameItem);
             m_mirrorNodesTable->setItem(row, 0, nameItem);
             // Latest commit: the publishing node mirrors its served HEAD into the
