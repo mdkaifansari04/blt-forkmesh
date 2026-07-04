@@ -276,10 +276,10 @@
                 "sans-serif",
               ],
               "favorit-mono": [
-                "ABCFavoritMono",
                 "ui-monospace",
                 "SFMono-Regular",
                 "Menlo",
+                "Consolas",
                 "monospace",
               ],
             },
@@ -290,33 +290,46 @@
     <style>
       @font-face {
         font-family: "Domine";
-        src: url("/assets/fonts/Lato-Bold.ttf") format("truetype");
+        src: url("/assets/fonts/Domine-Regular.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Domine";
+        src: url("/assets/fonts/Domine-Bold.ttf") format("truetype");
         font-weight: 700;
         font-style: normal;
         font-display: swap;
       }
       @font-face {
         font-family: "ABCFavorit";
-        src: url("/assets/fonts/Lato-Bold.ttf") format("truetype");
-        font-weight: 700;
-        font-style: normal;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "ABCFavoritMono";
-        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
         font-weight: 400;
         font-style: normal;
         font-display: swap;
       }
       @font-face {
-        font-family: "ABCFavoritMono";
-        src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 600;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
         font-weight: 700;
         font-style: normal;
         font-display: swap;
       }
-
       :root {
         --background: #090909;
         --foreground: #f5f5f5;
@@ -333,6 +346,10 @@
         --border-muted: #313131;
         --ring: oklch(0.556 0 0);
         --radius: 0.625rem;
+        --landing-body-font: Inter, ui-sans-serif, system-ui, sans-serif;
+        --landing-hero-font: Domine, Georgia, serif;
+        --landing-heading-font: ABCFavorit, Inter, ui-sans-serif, system-ui, sans-serif;
+        --landing-mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
       * {
@@ -343,7 +360,7 @@
         min-height: 100%;
         background: #090909;
         color: var(--foreground);
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-family: var(--landing-body-font);
         -webkit-font-smoothing: antialiased;
         text-rendering: geometricPrecision;
       }
@@ -356,17 +373,45 @@
       }
 
       .font-domine {
-        font-family: Domine, Georgia, serif;
+        font-family: var(--landing-hero-font);
         font-synthesis: none;
       }
 
       .font-favorit {
-        font-family: ABCFavorit, Inter, ui-sans-serif, system-ui, sans-serif;
+        font-family: var(--landing-heading-font);
       }
 
       .font-favorit-mono {
-        font-family:
-          ABCFavoritMono, ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-family: var(--landing-mono-font);
+      }
+
+      .hero-section h1 {
+        font-family: var(--landing-hero-font);
+        font-synthesis: none;
+      }
+
+      #features h2,
+      #network h2,
+      #solution h2,
+      #pricing.forkmesh h2,
+      #faq .faq-title,
+      .feature-card h3,
+      #solution article h3,
+      #pricing.forkmesh .step h3,
+      #faq-list .faq-item summary {
+        font-family: var(--landing-heading-font);
+      }
+
+      .hero-section p,
+      #features p,
+      #network p,
+      #solution p,
+      #pricing.forkmesh .lead,
+      #pricing.forkmesh .step p,
+      #faq .faq-intro,
+      #faq-list .faq-item p,
+      #faq .faq-note {
+        font-family: var(--landing-body-font);
       }
 
       @keyframes fade-blur-up {
@@ -927,7 +972,7 @@
         border-radius: 3px;
         background: rgba(90, 176, 239, 0.15);
         color: #5ab0ef;
-        font-family: ABCFavoritMono, ui-monospace, monospace;
+        font-family: var(--landing-mono-font);
         font-size: 8px;
         font-weight: 700;
       }
@@ -964,8 +1009,7 @@
         flex: 1;
         overflow: auto;
         padding: 10px 0;
-        font-family:
-          ABCFavoritMono, ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-family: var(--landing-mono-font);
         font-size: 11.5px;
         line-height: 1.7;
         counter-reset: line;
@@ -1020,11 +1064,11 @@
         --pricing-text: #f2f2f0;
         --pricing-muted: #6f6f72;
         --pricing-line: #222224;
-        --pricing-mono: ABCFavoritMono, ui-monospace, SFMono-Regular, Menlo, monospace;
         width: 100%;
         margin: 0 auto;
         padding: 96px 0;
         color: var(--pricing-text);
+        font-family: var(--landing-body-font);
         text-align: center;
       }
 
@@ -1036,7 +1080,6 @@
       #pricing.forkmesh .index {
         margin-bottom: 24px;
         color: var(--pricing-muted);
-        font-family: var(--pricing-mono);
         font-size: 11px;
         letter-spacing: 0.1em;
       }
@@ -1044,7 +1087,7 @@
       #pricing.forkmesh h2 {
         margin: 0 0 20px;
         color: var(--pricing-text);
-        font-family: ABCFavorit, Inter, ui-sans-serif, system-ui, sans-serif;
+        font-family: var(--landing-heading-font);
         font-size: 48px;
         font-weight: 600;
         line-height: 1.08;
@@ -1087,7 +1130,6 @@
 
       #pricing.forkmesh .row .v {
         color: var(--pricing-text);
-        font-family: var(--pricing-mono);
         font-size: 14px;
         text-align: right;
         white-space: nowrap;
@@ -1117,7 +1159,6 @@
         align-items: baseline;
         justify-content: center;
         gap: 14px;
-        font-family: var(--pricing-mono);
       }
 
       #pricing.forkmesh .formula-row .op {
@@ -1161,7 +1202,6 @@
       #pricing.forkmesh .step .num {
         margin-bottom: 10px;
         color: var(--pricing-muted);
-        font-family: var(--pricing-mono);
         font-size: 11px;
       }
 
@@ -1196,7 +1236,6 @@
 
       #pricing.forkmesh .cta-block .price strong {
         color: var(--pricing-text);
-        font-family: var(--pricing-mono);
       }
 
       #pricing.forkmesh .btn {
@@ -1783,6 +1822,8 @@
         }
       }
     </style>
+      <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
   </head>
   <body class="min-h-full bg-background text-foreground">
     <main class="overflow-hidden">
@@ -1861,7 +1902,7 @@
                   <li>
                     <a
                       class="block text-muted-foreground duration-150 hover:text-accent-foreground"
-                      href="#pricing"
+                      href="/pricing"
                       >Pricing</a
                     >
                   </li>
@@ -1904,7 +1945,7 @@
                     <li>
                       <a
                         class="block text-muted-foreground duration-150 hover:text-accent-foreground"
-                        href="#pricing"
+                        href="/pricing"
                         >Pricing</a
                       >
                     </li>
@@ -1935,12 +1976,12 @@
                   <a
                     class="button-primary hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
                     href="/signup"
-                    >Sign Up / Log In</a
+                    >Get Started</a
                   >
                   <a
                     class="button-primary show-on-scroll hidden h-7 rounded-lg px-2.5 text-[0.8rem]"
                     href="/signup"
-                    >Sign Up / Log In</a
+                    >Get Started</a
                   >
                 </div>
               </div>
@@ -1961,11 +2002,16 @@
           aria-hidden="true"
           class="hero-scene pointer-events-none absolute inset-x-0 top-0 z-0 overflow-hidden"
         >
-          <img
+          <video
+            aria-hidden="true"
+            autoplay
             class="hero-background w-full h-full"
-            src="/assets/video/network.jpg"
-            alt=""
-          />
+            loop
+            muted
+            playsinline
+            preload="auto"
+            src="/assets/hero.mp4"
+          ></video>
           <div class="hero-dim"></div>
           <div class="hero-side-vignette"></div>
           <div class="hero-top-fade"></div>
@@ -1973,47 +2019,8 @@
         <div class="hero-stage relative z-10 min-h-[100svh] pt-24 md:pt-36">
           <div class="mx-auto max-w-7xl px-6">
             <div class="text-center sm:mx-auto lg:mr-auto lg:mt-0">
-              <a
-                href="#features"
-                class="motion-in group mx-auto flex w-fit items-center gap-4 rounded-full border border-[#3B3B3B] bg-muted p-1 pl-4 shadow-md shadow-zinc-950/5 transition-colors duration-300 hover:bg-background"
-              >
-                <span class="text-sm text-foreground"
-                  >Local-first Git preservation network</span
-                >
-                <span
-                  class="block h-4 w-0.5 border-l border-background bg-zinc-700"
-                ></span>
-                <span
-                  class="size-6 overflow-hidden rounded-full bg-background duration-500 group-hover:bg-muted"
-                >
-                  <span
-                    class="flex w-12 -translate-x-1/2 duration-500 ease-in-out group-hover:translate-x-0"
-                  >
-                    <svg
-                      class="size-6 p-1.5"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    >
-                      <path d="M5 12h14"></path>
-                      <path d="m12 5 7 7-7 7"></path>
-                    </svg>
-                    <svg
-                      class="size-6 p-1.5"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    >
-                      <path d="M5 12h14"></path>
-                      <path d="m12 5 7 7-7 7"></path>
-                    </svg>
-                  </span>
-                </span>
-              </a>
               <h1
-                class="motion-in motion-delay-1 mx-auto mt-8 max-w-4xl text-balance font-domine text-5xl leading-[1.05] tracking-normal md:text-7xl lg:mt-16 xl:text-[5.25rem]"
+                class="motion-in motion-delay-1 mx-auto mt-8 max-w-4xl font-bold text-balance font-domine text-5xl leading-[1.05] tracking-normal md:text-7xl lg:mt-16 xl:text-[5.25rem]"
               >
                 Never lose the code that matters
               </h1>
@@ -2025,31 +2032,9 @@
                 stay portable, verifiable, and always cloneable. Mirror the
                 projects you rely on, and earn as you help keep them online.
               </p>
-              <ul
-                class="motion-in motion-delay-2 mx-auto mt-8 flex max-w-2xl flex-wrap items-center justify-center gap-2 text-sm"
-              >
-                <li
-                  class="inline-flex items-center gap-2 rounded-full border border-[#3B3B3B] bg-muted/50 px-3.5 py-1.5 text-foreground/90 backdrop-blur-sm"
-                >
-                  <span aria-hidden="true" class="text-accent">&#10003;</span>
-                  Always cloneable &mdash; no single point of failure
-                </li>
-                <li
-                  class="inline-flex items-center gap-2 rounded-full border border-[#3B3B3B] bg-muted/50 px-3.5 py-1.5 text-foreground/90 backdrop-blur-sm"
-                >
-                  <span aria-hidden="true" class="text-accent">&#10003;</span>
-                  Signed &amp; end-to-end encrypted
-                </li>
-                <li
-                  class="inline-flex items-center gap-2 rounded-full border border-[#3B3B3B] bg-muted/50 px-3.5 py-1.5 text-foreground/90 backdrop-blur-sm"
-                >
-                  <span aria-hidden="true" class="text-accent">&#10003;</span>
-                  Get paid to mirror repos
-                </li>
-              </ul>
               <div
                 id="install-banner"
-                class="motion-in motion-delay-3 mx-auto mt-10 flex w-full max-w-xl items-center gap-3 rounded-xl border border-[#3B3B3B] bg-muted/60 py-2 pl-4 pr-2 text-left backdrop-blur-sm"
+                class="motion-in motion-delay-3 mx-auto mt-10 flex w-full max-w-xl items-center gap-3 rounded-xl border border-[#3B3B3B] bg-muted/80 py-2 pl-4 pr-2 text-left backdrop-blur-md"
               >
                 <span
                   aria-hidden="true"
@@ -2071,51 +2056,19 @@
                 </button>
               </div>
               <div
-                id="install-os-buttons"
-                class="motion-in motion-delay-3 mx-auto mt-4 flex w-full max-w-xl flex-wrap items-center justify-center gap-2"
-              >
-                <a
-                  href="/desktop#macos"
-                  class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm"
-                >
-                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.8-3.5.8-.7 0-1.9-.8-3.1-.8-1.6 0-3 .9-3.8 2.4-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7 1.4 0 1.8.7 3 .7 1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.4-.9-2.4-3.6zM14.1 5.9c.6-.8 1.1-1.9.9-3-1 0-2.1.6-2.8 1.4-.6.7-1.1 1.8-1 2.9 1.1.1 2.2-.6 2.9-1.3z"/>
-                  </svg>
-                  Install for macOS
-                </a>
-                <a
-                  href="/desktop#windows"
-                  class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm"
-                >
-                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M3 5.6 10.4 4.6v6.9H3V5.6zm0 12.8 7.4 1v-6.8H3v5.8zM11.3 4.5 21 3v8.5h-9.7V4.5zm0 8.1H21V21l-9.7-1.3v-7.1z"/>
-                  </svg>
-                  Install for Windows
-                </a>
-                <a
-                  href="/desktop#linux"
-                  class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm"
-                >
-                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M12 2c-2 0-3.3 1.6-3.3 3.9 0 1.5.2 2.3.2 3.4 0 1-.6 1.7-1.3 2.7-.8 1.1-1.8 2.3-1.8 4 0 .5.1.9.3 1.2-.2.3-.4.7-.4 1.2 0 1.2 1.1 1.8 2.5 2.1 1 .2 1.9.7 2.5 1.2.4.4.9.6 1.4.6s1-.2 1.4-.6c.6-.5 1.5-1 2.5-1.2 1.4-.3 2.5-.9 2.5-2.1 0-.5-.2-.9-.4-1.2.2-.3.3-.7.3-1.2 0-1.7-1-2.9-1.8-4-.7-1-1.3-1.7-1.3-2.7 0-1.1.2-1.9.2-3.4C15.3 3.6 14 2 12 2zm-1.6 4c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm3.2 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z"/>
-                  </svg>
-                  Install for Linux
-                </a>
-              </div>
-              <div
                 class="motion-in motion-delay-3 mt-6 flex flex-col items-center justify-center gap-2 md:flex-row"
               >
                 <div class="rounded-xl bg-white/20 p-1">
                   <a
                     href="/signup"
                     class="button-primary rounded-xl px-5 text-base"
-                    >Sign Up / Log In</a
+                    >Get Started</a
                   >
                 </div>
                 <a
-                  href="/dashboard"
+                  href="/desktop"
                   class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-5 text-base"
-                  >Browse repositories
+                  >Install Now
                   <span aria-hidden="true">&rarr;</span></a
                 >
                 <a href="/docs" class="button-ghost h-10 rounded-xl px-5"
@@ -2818,7 +2771,7 @@
               pretend to own the missing Git data.
             </p>
             <a
-              href="#network"
+              href="/docs"
               class="mt-4 inline-block text-sm font-medium text-foreground underline-offset-4 hover:underline"
               >Learn more</a
             >
@@ -2898,7 +2851,7 @@
               history alongside the repository.
             </p>
             <a
-              href="#product"
+              href="/docs"
               class="mt-4 inline-block text-sm font-medium text-foreground underline-offset-4 hover:underline"
               >Learn more</a
             >
@@ -3201,325 +3154,7 @@
         </div>
       </section>
 
-      <footer id="signup" class="relative overflow-hidden">
-        <div
-          class="relative z-10 mx-auto max-w-4xl px-5 pb-40 pt-24 text-center lg:pt-32"
-        >
-          <video
-            aria-hidden="true"
-            autoplay
-            class="mx-auto mb-4 block"
-            height="170"
-            loop
-            muted
-            playsinline
-            poster="/assets/video/3d-integrate-night-fallback.jpg"
-            preload="auto"
-            src="/assets/video/3d-integrate-night.mp4"
-            width="170"
-          ></video>
-          <h2
-            class="text-balance font-domine text-6xl leading-[1.05] tracking-tight text-foreground"
-          >
-            Source code preservation,
-            <span class="text-[#9672EE]">reimagined</span>
-          </h2>
-          <p
-            class="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground"
-          >
-            Create an account, publish a repo, and connect your local node for
-            portable, verifiable Git collaboration.
-          </p>
-          <div
-            class="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row lg:mt-12"
-          >
-            <a href="/signup" class="button-primary rounded-xl px-5 text-base"
-              >Sign Up / Log In</a
-            >
-            <a href="/docs" class="button-ghost h-10 rounded-xl px-5"
-              >Read docs</a
-            >
-          </div>
-        </div>
-
-        <div
-          aria-hidden="true"
-          class="site-footer-word-wrap relative -mb-[7.5rem] flex select-none justify-center overflow-hidden"
-        >
-          <div
-            id="footer-glow"
-            class="site-footer-glow relative inline-block"
-            style="
-              --footer-glow-opacity: 0;
-              --footer-glow-x: 50%;
-              --footer-glow-y: 50%;
-            "
-          >
-            <span
-              class="site-footer-word footer-glow-base text-[23vw] font-semibold leading-none tracking-normal text-[#0d0d0d]"
-              >forkmesh</span
-            >
-            <span
-              class="site-footer-word footer-glow-text pointer-events-none absolute inset-0 text-[23vw] font-semibold leading-none tracking-normal transition-opacity duration-200 ease-out will-change-[opacity,mask-image]"
-              >forkmesh</span
-            >
-          </div>
-        </div>
-
-        <div
-          class="site-footer-panel relative z-10 border-t-[0.5px] border-[#3B3B3B] bg-black"
-        >
-          <div
-            class="site-footer-links-grid mx-auto grid max-w-7xl grid-cols-2 gap-x-10 gap-y-12 px-5 md:grid-cols-3 lg:grid-cols-6 lg:px-8"
-          >
-            <div
-              class="site-footer-brand col-span-2 md:col-span-3 lg:col-span-1"
-            >
-              <a href="/" aria-label="home" class="flex items-center space-x-2">
-                <img
-                  src="/assets/logo.png"
-                  alt="ForkMesh logo"
-                  class="site-footer-logo h-10 w-auto"
-                />
-              </a>
-              <p
-                class="site-footer-brand-copy mt-5 text-sm leading-relaxed text-muted-foreground"
-              >
-                Local-first distributed source-code preservation and
-                collaboration infrastructure.
-              </p>
-              <div class="site-footer-socials mt-6 flex gap-2">
-                <a
-                  href="https://x.com/forkmesh"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="X (Twitter)"
-                  class="site-footer-social-link flex size-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                >
-                  <svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
-                    <path
-                      d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
-                    ></path>
-                  </svg>
-                </a>
-                <a
-                  href="https://reddit.com/r/forkmesh"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="Reddit"
-                  class="site-footer-social-link flex size-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                >
-                  <svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
-                    <path
-                      d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"
-                    ></path>
-                  </svg>
-                </a>
-                <a
-                  href="/chat"
-                  aria-label="Chat"
-                  class="site-footer-social-link flex size-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                >
-                  <svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
-                    <path
-                      d="M4.804 21.644A6.707 6.707 0 0 0 6 21.75a6.721 6.721 0 0 0 3.583-1.029c.774.182 1.584.279 2.417.279 5.322 0 9.75-3.97 9.75-9 0-5.03-4.428-9-9.75-9s-9.75 3.97-9.75 9c0 2.409 1.025 4.587 2.674 6.192.232.226.277.428.254.543a3.73 3.73 0 0 1-.814 1.686.75.75 0 0 0 .44 1.223Z"
-                    ></path>
-                  </svg>
-                </a>
-              </div>
-              <a
-                href="/status"
-                class="site-footer-status-pill mt-6 inline-flex items-center gap-2 rounded-lg border-[0.5px] border-[#3B3B3B] px-3 py-1.5 text-sm text-muted-foreground"
-              >
-                <span
-                  class="site-footer-status-dot size-2 rounded-full bg-green"
-                ></span>
-                System status
-              </a>
-            </div>
-            <div>
-              <h3
-                class="site-footer-column-title text-sm font-medium text-foreground"
-              >
-                Explore
-              </h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#features"
-                    >Features</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#network"
-                    >Network discovery</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#solution"
-                    >Solution</a
-                  >
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3
-                class="site-footer-column-title text-sm font-medium text-foreground"
-              >
-                Product
-              </h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#features"
-                    >Local-first Git</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#features"
-                    >Encrypted rooms</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#solution"
-                    >Live node routing</a
-                  >
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3
-                class="site-footer-column-title text-sm font-medium text-foreground"
-              >
-                Plans
-              </h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#pricing"
-                    >Pricing</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/signup"
-                    >Create account</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/signup"
-                    >Sign Up / Log In</a
-                  >
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3
-                class="site-footer-column-title text-sm font-medium text-foreground"
-              >
-                Learn
-              </h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#faq"
-                    >FAQ</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#solution"
-                    >Signed events</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="#features"
-                    >Source preservation</a
-                  >
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3
-                class="site-footer-column-title text-sm font-medium text-foreground"
-              >
-                Community
-              </h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/signup"
-                    >Sign Up / Log In</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/docs"
-                    >Read docs</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/status"
-                    >System status</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="/chat"
-                    >Community chat</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="https://reddit.com/r/forkmesh"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >Reddit</a
-                  >
-                </li>
-                <li>
-                  <a
-                    class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    href="https://x.com/forkmesh"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >X (Twitter)</a
-                  >
-                </li>
-              </ul>
-            </div>
-          </div>
-          <div
-            class="site-footer-copyright mx-auto max-w-7xl border-t-[0.5px] border-[#3B3B3B] px-5 py-6 text-sm text-muted-foreground lg:px-8"
-          >
-            © 2026 ForkMesh. Built for local-first Git collaboration.
-          </div>
-        </div>
-      </footer>
+      <div data-forkmesh-footer="landing"></div>
     </main>
 
     <script>
@@ -3815,27 +3450,6 @@
         });
       })();
 
-      (() => {
-        const glow = document.getElementById("footer-glow");
-        if (!glow) return;
-        const move = (event) => {
-          const rect = glow.getBoundingClientRect();
-          glow.style.setProperty(
-            "--footer-glow-x",
-            `${event.clientX - rect.left}px`,
-          );
-          glow.style.setProperty(
-            "--footer-glow-y",
-            `${event.clientY - rect.top}px`,
-          );
-          glow.style.setProperty("--footer-glow-opacity", "1");
-        };
-        glow.addEventListener("pointerenter", move);
-        glow.addEventListener("pointermove", move);
-        glow.addEventListener("pointerleave", () => {
-          glow.style.setProperty("--footer-glow-opacity", "0");
-        });
-      })();
     </script>
   </body>
 </html>
