@@ -58,6 +58,8 @@ ForkMesh is well past "prototype." Here's what you can do right now:
 - Run **multiple agents in parallel**, resume past sessions, and watch live
   activity indicators as they work.
 - Kick off agents from your editor with the **IDE extension**.
+- **No desktop client required:** repo owners can create agent sessions, send
+  prompts, and assign issues to an agent straight from the website.
 
 **Funding**
 - **Solana bounties:** fund any issue with one click. ForkMesh watches the
