@@ -9,6 +9,8 @@
 #include "MainWindowInternal.h"
 #include "ScreenAlignmentTarget.h"
 
+#include <QDoubleSpinBox>
+
 using namespace forkmesh::ui;
 
 // ----------------------------------------------------------------- settings
@@ -504,6 +506,96 @@ QWidget *MainWindow::buildSettingsSection()
     connect(verboseNetLogCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kVerboseNetworkLogSetting, enabled);
     });
+
+    // Per-PR bounties (issue #347): reward every merged pull request's author
+    // with a fixed bounty, funded either per-merge (a QR) or from a pre-funded
+    // inbuilt wallet. Off by default.
+    auto *bountyLabel = new QLabel("PR BOUNTIES");
+    bountyLabel->setObjectName("sectionLabel");
+    auto *autoBountyCheck =
+        new QCheckBox("Reward every merged pull request");
+    autoBountyCheck->setChecked(
+        QSettings().value(kAutoPrBountyEnabledSetting, false).toBool());
+    autoBountyCheck->setToolTip(
+        "When on, merging a pull request you own rewards its author with the "
+        "bounty below. Off by default.");
+    auto *bountyHint = new QLabel(
+        "Only applies to repositories you own. Amounts reuse the SOL-priced "
+        "bounty flow (minimum $1).");
+    bountyHint->setObjectName("modeHint");
+    bountyHint->setWordWrap(true);
+
+    auto *bountyAmount = new QDoubleSpinBox;
+    bountyAmount->setRange(1.0, 100000.0);
+    bountyAmount->setDecimals(2);
+    bountyAmount->setPrefix("$");
+    bountyAmount->setValue(
+        QSettings().value(kAutoPrBountyAmountSetting, 1.0).toDouble());
+    bountyAmount->setToolTip(
+        "Reward paid to each merged pull request's author (USD, priced to SOL "
+        "at payout).");
+    auto *bountyAmountLabel = new QLabel("Reward per PR");
+    bountyAmountLabel->setObjectName("statusLine");
+    auto *bountyAmountRow = new QHBoxLayout;
+    bountyAmountRow->setSpacing(8);
+    bountyAmountRow->addWidget(bountyAmountLabel);
+    bountyAmountRow->addWidget(bountyAmount);
+    bountyAmountRow->addStretch();
+
+    auto *bountyModeCombo = new QComboBox;
+    bountyModeCombo->addItem("Pay per PR (funding QR at each merge)",
+                             QStringLiteral("perPr"));
+    bountyModeCombo->addItem("Pay from the inbuilt bounty wallet",
+                             QStringLiteral("wallet"));
+    {
+        const QString mode =
+            QSettings().value(kAutoPrBountyModeSetting,
+                              QStringLiteral("perPr")).toString();
+        const int mi = bountyModeCombo->findData(mode);
+        bountyModeCombo->setCurrentIndex(mi < 0 ? 0 : mi);
+    }
+    bountyModeCombo->setToolTip(
+        "\"Pay per PR\" shows a funding QR each time you merge. \"Inbuilt wallet\" "
+        "pays automatically from a wallet you pre-fund with a little SOL.");
+    auto *fundWalletBtn = new QPushButton("Fund inbuilt wallet…");
+    fundWalletBtn->setObjectName("ghostButton");
+    fundWalletBtn->setCursor(Qt::PointingHandCursor);
+    fundWalletBtn->setToolTip(
+        "Show the inbuilt bounty wallet's deposit address and balance so you can "
+        "top it up with SOL.");
+    auto *bountyModeRow = new QHBoxLayout;
+    bountyModeRow->setSpacing(8);
+    bountyModeRow->addWidget(bountyModeCombo);
+    bountyModeRow->addWidget(fundWalletBtn);
+    bountyModeRow->addStretch();
+
+    const auto syncBountyEnabled = [autoBountyCheck, bountyAmount,
+                                    bountyModeCombo, fundWalletBtn] {
+        const bool on = autoBountyCheck->isChecked();
+        bountyAmount->setEnabled(on);
+        bountyModeCombo->setEnabled(on);
+        fundWalletBtn->setEnabled(
+            on && bountyModeCombo->currentData().toString() ==
+                      QLatin1String("wallet"));
+    };
+    connect(autoBountyCheck, &QCheckBox::toggled, this,
+            [this, syncBountyEnabled](bool enabled) {
+                QSettings().setValue(kAutoPrBountyEnabledSetting, enabled);
+                syncBountyEnabled();
+            });
+    connect(bountyAmount, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [](double v) {
+                QSettings().setValue(kAutoPrBountyAmountSetting, v);
+            });
+    connect(bountyModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, bountyModeCombo, syncBountyEnabled](int) {
+                QSettings().setValue(kAutoPrBountyModeSetting,
+                                     bountyModeCombo->currentData().toString());
+                syncBountyEnabled();
+            });
+    connect(fundWalletBtn, &QPushButton::clicked, this,
+            &MainWindow::showBountyWalletDialog);
+    syncBountyEnabled();
 
     // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
     // Mirror nodes view. Off by default on the desktop so a personal machine
@@ -1147,6 +1239,12 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
     generalCol->addWidget(verboseNetLogCheck);
+    generalCol->addSpacing(6);
+    generalCol->addWidget(bountyLabel);
+    generalCol->addWidget(autoBountyCheck);
+    generalCol->addWidget(bountyHint);
+    generalCol->addLayout(bountyAmountRow);
+    generalCol->addLayout(bountyModeRow);
     generalCol->addSpacing(6);
     generalCol->addWidget(nodeStatsLabel);
     generalCol->addWidget(nodeStatsHint);

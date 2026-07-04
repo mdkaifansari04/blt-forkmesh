@@ -2127,6 +2127,16 @@ inline bool notifyEnabled(const QString &key)
 {
     return QSettings().value(key, false).toBool();
 }
+// Per-PR bounty (issue #347): when enabled, every merged pull request rewards
+// its author with a fixed bounty. The amount is USD-priced (reusing the same
+// SOL pricing pipeline as issue bounties). Mode selects how it's funded:
+// "perPr" shows a funding QR at each merge; "wallet" auto-pays by debiting the
+// owner's pre-funded inbuilt bounty wallet (worker action "wallet").
+const QString kAutoPrBountyEnabledSetting =
+    QStringLiteral("bounty/autoPrEnabled");
+const QString kAutoPrBountyAmountSetting =
+    QStringLiteral("bounty/autoPrAmountUsd");
+const QString kAutoPrBountyModeSetting = QStringLiteral("bounty/autoPrMode");
 const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
 // Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
 // older boolean above (migrated on first read).
