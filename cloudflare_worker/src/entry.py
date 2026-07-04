@@ -1043,6 +1043,22 @@ def build_repo_mirrors_payload(
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
 
+    # Is the logical repo's source of truth (a working-copy holder — "local-node")
+    # online right now? While it is, a clone of a mirror whose refs fail the
+    # integrity pin is transparently served from the source instead of the mirror
+    # (see Default._online_source_of_truth), so that mirror is auto-healing, not
+    # blocking — reported as "healing" rather than "rejected". The hard reject (and
+    # its tamper protection) still applies when the source is offline.
+    source_online = False
+    for row in members:
+        rec = row["data"]
+        if str(rec.get("source") or "local-node") != "local-node":
+            continue
+        seen = _mirror_ms((presence or {}).get(row.get("key_bi")))
+        if seen and now - seen <= stale_ms:
+            source_online = True
+            break
+
     def _int_field(rec, name):
         try:
             return int(rec.get(name))
@@ -1075,14 +1091,20 @@ def build_repo_mirrors_payload(
         # recent history — or every clone it serves is rejected with "repository
         # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
         # a pin, or nothing is pinned and the gate fails open), "rejected" (its
-        # fingerprint matches no attested state), "unknown" (legacy record with
-        # no fingerprint; the gate checks its live refs, which we can't see here).
+        # fingerprint matches no attested state AND the source is offline, so the
+        # tamper gate is actively blocking its clones), "healing" (fingerprint
+        # matches nothing yet, but the source of truth is online, so clones are
+        # served from the source and the mirror clears once it re-syncs — not a
+        # failure), "unknown" (legacy record with no fingerprint; the gate checks
+        # its live refs, which we can't see here).
         state_hash = str(rec.get("stateHash") or "").strip().lower()
         pins = clone_state_pins(rec, key, public_rows, history)
         if not pins or state_hash in pins:
             integrity = "ok"
         elif not state_hash:
             integrity = "unknown"
+        elif source_online:
+            integrity = "healing"
         else:
             integrity = "rejected"
         mirrors.append({
@@ -10007,6 +10029,28 @@ class Default(WorkerEntrypoint):
             # so serving in place never weakens the tamper check.
             url = urlparse(request.url)
             is_info = url.path.endswith("/info/refs")
+            # Auto-heal a mirror namespace while the source of truth is online:
+            # hand the clone to the authoritative source instead of this mirror. A
+            # mirror whose refs fail the integrity pin (stale, diverged, or running
+            # an agent) would otherwise reject every clone here; the source is
+            # online and canonical, so it serves the request and the mirror clears
+            # once it re-syncs — its own unverified bytes are never served. Skipped
+            # when the source is offline, so the tamper gate still fully protects
+            # clones then. Cheap in the common case (cloning the source itself):
+            # _online_source_of_truth returns after a single indexed lookup. Both
+            # clone requests (info/refs + upload-pack POST) take this branch while
+            # the source stays online, so they reach the same node.
+            src_owner, src_repo = await self._online_source_of_truth(owner, repo)
+            if src_owner:
+                tail = "info/refs" if is_info else "git-upload-pack"
+                try:
+                    return await self._forward_to_node(
+                        request, url, src_repo, src_owner,
+                        "/%s/%s/%s" % (src_owner, src_repo, tail))
+                except Exception:
+                    # Best-effort: fall through to the normal route (which may
+                    # still mirror-fallback) rather than take the request down.
+                    pass
             if not await self._source_has_live_host(owner, repo):
                 serving = await self._sticky_clone_fallback(
                     owner, repo, refresh=is_info)
@@ -10065,6 +10109,67 @@ class Default(WorkerEntrypoint):
             return int(hosts or 0) > 0
         except Exception:
             return False
+
+    async def _online_source_of_truth(self, owner, repo):
+        # If owner/repo is a MIRROR whose logical repo (grouped by root commit,
+        # name fallback) has a working-copy holder — its source of truth — with a
+        # live host right now, return (source_owner, source_repo); otherwise
+        # (None, None). Cloning a mirror namespace while the source is online is
+        # routed to the source: the source is canonical, so this auto-heals a
+        # mirror whose refs fail the integrity pin (stale, diverged, or running an
+        # agent) without ever serving the mirror's own unverified bytes. The
+        # tamper gate still fully protects clones when the source is OFFLINE — the
+        # caller only consults this while looking for an online node to serve.
+        # Cheap for the common case: when THIS namespace itself holds the working
+        # copy (the usual clone target), we return after one indexed lookup and
+        # never scan the catalog. Best-effort: any failure returns (None, None).
+        try:
+            owner_l = (owner or "").strip().lower()
+            repo_l = (repo or "").strip().lower()
+            if not owner_l or not repo_l:
+                return None, None
+            await ensure_schema(self.env)
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT data, is_private FROM repositories WHERE key_bi=?", repo_bi)
+            if not row or int(row.get("is_private") or 0):
+                return None, None
+            target = await decrypt_row(self.env, row.get("data"))
+            if not target:
+                return None, None
+            # The named namespace holds the working copy — it IS a source of
+            # truth, so serve it directly (no catalog scan, no self-redirect).
+            if str(target.get("source") or "local-node") == "local-node":
+                return None, None
+            # Find the freshest-synced source-of-truth record in the same group.
+            rows = await d1_all(
+                self.env, "SELECT data FROM repositories WHERE is_private = 0")
+            best_owner = None
+            best_repo = None
+            best_sync = -1
+            for r in rows:
+                rec = await decrypt_row(self.env, r.get("data"))
+                if not rec:
+                    continue
+                if str(rec.get("source") or "local-node") != "local-node":
+                    continue
+                if not repo_mirror_same_group(target, rec):
+                    continue
+                rec_owner = str(rec.get("owner") or "").strip()
+                rec_name = str(rec.get("name") or "").strip()
+                if not rec_owner or not rec_name or rec_owner.lower() == owner_l:
+                    continue
+                sync = _mirror_ms(rec.get("lastSync")) or 0
+                if sync > best_sync:
+                    best_sync = sync
+                    best_owner = rec_owner
+                    best_repo = rec_name
+            if best_owner and await self._source_has_live_host(best_owner, best_repo):
+                return best_owner, best_repo
+            return None, None
+        except Exception:
+            return None, None
 
     async def _forward_to_node(self, request, url, repo, node, new_path):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host
