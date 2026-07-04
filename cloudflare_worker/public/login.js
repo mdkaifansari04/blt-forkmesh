@@ -36,6 +36,7 @@
         pubkey: body.pubkey,
         emailVerified: Boolean(body.emailVerified),
         isAdmin: Boolean(body.isAdmin),
+        adminUrl: body.adminUrl || "",
         solana: body.solana || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
         avatarPng: body.avatarPng || "",

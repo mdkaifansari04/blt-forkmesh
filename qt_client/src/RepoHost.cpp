@@ -206,6 +206,105 @@ QJsonObject blobReplyFor(const QString &mirrorPath, const QString &path,
     return reply;
 }
 
+// Repo-scoped search over a bare mirror (issue #360). One `git grep` at the tip
+// ref classifies every hit by path: issues/<N>/… and pulls/<N>/… fold into that
+// issue/PR (deduped by number, titled from the record's frontmatter); everything
+// else is a code match. Fixed-string, case-insensitive; caps every bucket hard
+// so the reply can't balloon into a huge tunnel payload. Runs off the GUI thread
+// (git grep can be slow on a big tree), so it must not touch `this`.
+QString frontMatterTitle(const QString &mirrorPath, const QString &ref,
+                         const QString &relPath)
+{
+    QByteArray output;
+    if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + relPath}, output))
+        return QString();
+    for (const QByteArray &line : output.left(4096).split('\n')) {
+        const QString text = QString::fromUtf8(line);
+        if (text.startsWith(QLatin1String("title:")))
+            return text.mid(6).trimmed();
+    }
+    return QString();
+}
+
+QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
+{
+    constexpr int kMaxCode = 60;
+    constexpr int kMaxIssues = 30;
+    constexpr int kMaxPulls = 30;
+
+    const QString query = rawQuery.trimmed();
+    if (query.size() < 2 || query.contains(QChar('\0')))
+        return {{"ok", false}, {"error", "bad_query"}};
+    const QString ref = baseRefFor(mirrorPath);
+    if (ref.isEmpty())
+        return {{"ok", true}, {"issues", QJsonArray()}, {"pulls", QJsonArray()},
+                {"code", QJsonArray()}};
+
+    QByteArray output;
+    // Exit 1 (no matches) makes runGit "fail" with empty stderr; treat that as an
+    // empty result rather than an error by running the process directly.
+    {
+        QProcess process;
+        process.start("git", {"-C", mirrorPath, "grep", "-n", "-I", "-i", "-F",
+                              "-e", query, ref});
+        if (!process.waitForFinished(8000)) {
+            process.kill();
+            process.waitForFinished(1000);
+            return {{"ok", false}, {"error", "search_timeout"}};
+        }
+        output = process.readAllStandardOutput();
+    }
+
+    QJsonArray code;
+    QJsonArray issues;
+    QJsonArray pulls;
+    QSet<int> seenIssue;
+    QSet<int> seenPull;
+    static const QRegularExpression rowRe(QStringLiteral("^(.+?):(\\d+):(.*)$"));
+    static const QRegularExpression numberedRe(
+        QStringLiteral("^(issues|pulls)/(\\d+)/"));
+    const QString prefix = ref + QLatin1Char(':');
+
+    for (const QByteArray &raw : output.split('\n')) {
+        if (code.size() >= kMaxCode && issues.size() >= kMaxIssues &&
+            pulls.size() >= kMaxPulls)
+            break;
+        QString line = QString::fromUtf8(raw);
+        if (line.startsWith(prefix))
+            line = line.mid(prefix.size());
+        const QRegularExpressionMatch m = rowRe.match(line);
+        if (!m.hasMatch())
+            continue;
+        const QString path = m.captured(1);
+        const int lineNo = m.captured(2).toInt();
+        const QString text = m.captured(3).trimmed().left(200);
+
+        const QRegularExpressionMatch nm = numberedRe.match(path);
+        if (nm.hasMatch()) {
+            const int number = nm.captured(2).toInt();
+            const bool isIssue = nm.captured(1) == QLatin1String("issues");
+            QSet<int> &seen = isIssue ? seenIssue : seenPull;
+            if (seen.contains(number))
+                continue;
+            QJsonArray &bucket = isIssue ? issues : pulls;
+            if (bucket.size() >= (isIssue ? kMaxIssues : kMaxPulls))
+                continue;
+            seen.insert(number);
+            const QString titleFile =
+                isIssue ? QStringLiteral("issues/%1/issue.md").arg(number)
+                        : QStringLiteral("pulls/%1/pull.md").arg(number);
+            bucket.append(QJsonObject{
+                {"number", number},
+                {"title", frontMatterTitle(mirrorPath, ref, titleFile)},
+                {"snippet", text}});
+        } else if (code.size() < kMaxCode) {
+            code.append(QJsonObject{
+                {"path", path}, {"line", lineNo}, {"text", text}});
+        }
+    }
+    return {{"ok", true}, {"issues", issues}, {"pulls", pulls}, {"code", code}};
+}
+
 // Count the numbered sub-directories (1/, 2/, …) under a top-level folder such
 // as issues/, pulls/ or discussions/. Each maps to one filed item, so this is
 // the tally the website shows in its tab badges. A missing folder counts as 0.
@@ -560,6 +659,8 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = QStringLiteral("view commit %1").arg(path);
     else if (op == "branches")
         action = QStringLiteral("list branches");
+    else if (op == "search")
+        action = QStringLiteral("search '%1'").arg(path);
     else if (op == "release-blob")
         action = QStringLiteral("download release asset %1").arg(path);
     else
@@ -628,6 +729,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
         const QString mirrorPath = m_mirrorPath;
         runOffThread(
             [mirrorPath, path, branch] { return blobReplyFor(mirrorPath, path, branch); },
+            [this, reqId, op, path](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", path);
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
+
+    // Repo-scoped search (issue #360): `path` carries the query, not a repo path,
+    // so it bypasses the isSafeRepoPath gate below and runs off-thread (git grep
+    // can be slow) like "blob" does.
+    if (op == "search") {
+        const QString mirrorPath = m_mirrorPath;
+        const QString query = path;
+        runOffThread(
+            [mirrorPath, query] { return searchReplyFor(mirrorPath, query); },
             [this, reqId, op, path](QJsonObject reply) {
                 reply.insert("type", "response");
                 reply.insert("reqId", reqId);
