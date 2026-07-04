@@ -5,7 +5,7 @@ title: Update qt app design
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 65
 progress: 0
 assignees: []
 createdAt: 1783051676
