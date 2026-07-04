@@ -4,7 +4,7 @@ number: 1
 title: fix(worker): canonicalize public routes and shared chrome
 base: main
 head: kaif/public-routes-shared-chrome
-status: open
+status: merged
 ts: 1783173142154
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
