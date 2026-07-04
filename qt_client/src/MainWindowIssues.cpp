@@ -4382,15 +4382,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         // Enter sends the prompt; Shift+Enter inserts a newline (the box is now a
         // two-line QPlainTextEdit, which would otherwise just add a newline).
-        // On the Agents tab with a session open above, Enter steers that agent
-        // (mirroring the up-arrow send-to-agent button) instead of starting a
-        // new one via quickAddIssue() (adhoc #185).
+        // With an agent session already open above, Enter follows up on that
+        // agent instead of starting a brand-new one — the same routing the
+        // up-arrow "send to agent" button next to it already does, just bound
+        // to the more natural key.
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
             !(ke->modifiers() & Qt::ShiftModifier)) {
-            const bool onAgentsTab =
-                m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-            if (onAgentsTab && m_selectedAgentSessionId >= 0)
-                sendQuickAddToSelectedAgent();
+            if (m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton)
+                m_quickAddSendToAgentButton->click();
             else
                 quickAddIssue();
             return true;

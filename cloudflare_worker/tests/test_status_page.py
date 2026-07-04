@@ -16,19 +16,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# Route regexes now live in the extracted urls.py module (imported by entry.py);
+# parse it alongside entry.py so the assign nodes below still resolve.
+URLS = ROOT / "src" / "urls.py"
+URLS_TEXT = URLS.read_text(encoding="utf-8")
 
 DAY_MS = 86400000
 
 
 def _load(*names, extra_globals=None):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    urls_tree = ast.parse(URLS_TEXT, filename=str(URLS))
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
     }
     selected = []
-    for node in tree.body:
+    for node in list(urls_tree.body) + list(tree.body):
         if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
             alias.name == "re" for alias in node.names
         ):
@@ -252,7 +257,53 @@ def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
     assert by_id["website"]["uptimePct"] < 100.0
 
 
+def test_current_status_uses_latest_hour_not_the_whole_days_aggregate():
+    # A blip two hours ago that has since cleared shouldn't keep today's badge
+    # degraded for the rest of the day — the banner should track the most
+    # recent hour, not the day's cumulative failure count.
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    rows = [{"day_ts": cur_day, "system": "api", "checks": 3, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour - 2 * HOUR_MS, "system": "api", "checks": 1,
+         "failures": 1, "reason": "502 on /api/x: boom"},
+        {"hour_ts": cur_hour - 1 * HOUR_MS, "system": "api", "checks": 1,
+         "failures": 0, "reason": None},
+        {"hour_ts": cur_hour, "system": "api", "checks": 1,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["api"]["status"] == "operational"
+    assert by_id["api"]["reason"] is None
+
+
 HOUR_MS = 3600000
+
+
+def test_recovered_git_hosting_earlier_today_clears_the_badge():
+    # Hosts dropped off overnight (a failing hour) but are back now (the
+    # current hour is operational): the headline badge must read operational
+    # and drop the stale "no desktop hosts checked in" reason, even though the
+    # whole-day aggregate still counts the earlier failures. Regression for
+    # "we have hosts online but /status shows git hosting down (1h 34m ago)".
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    prev_hour = cur_hour - HOUR_MS
+    rows = [{"day_ts": cur_day, "system": "git_hosting",
+             "checks": 120, "failures": 60}]
+    hour_rows = [
+        {"hour_ts": prev_hour, "system": "git_hosting", "checks": 60,
+         "failures": 60,
+         "reason": "No desktop hosts have checked in within the last 10 minutes"},
+        {"hour_ts": cur_hour, "system": "git_hosting", "checks": 60,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["git_hosting"]["status"] == "operational"
+    assert by_id["git_hosting"]["reason"] is None
+    assert by_id["git_hosting"]["reasonTs"] is None
 
 
 def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
@@ -307,6 +358,10 @@ def _run_history_current(
         return None
 
     async def d1_all(_env, sql, *_args):
+        if "FROM repositories" in sql:
+            return [{"key_bi": "mirror_bi", "data": "enc"}] if mainnode_online else []
+        if "FROM host_presence" in sql:
+            return [{"repo_bi": "mirror_bi", "ts": _Clock.value}] if mainnode_online else []
         return []
 
     async def d1_first(_env, sql, *_args):
@@ -314,9 +369,10 @@ def _run_history_current(
             return {"n": repo_count}
         if "FROM error_log" in sql:
             return {"n": error_count}
-        if "FROM host_presence" in sql:
-            return {"ts": _Clock.value} if mainnode_online else None
         return {}
+
+    async def decrypt_row(_env, _data):
+        return {"owner": "alice", "name": "forkmesh"}
 
     async def _live_online_nodes(_env, _now):
         # owner_bi -> label, same shape as the real helper
@@ -336,6 +392,9 @@ def _run_history_current(
         "ensure_schema": noop,
         "d1_all": d1_all,
         "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "safe_segment": lambda s: str(s or "").strip().lower(),
+        "_is_blocked_catalog_identity": lambda *_a: False,
         "_live_online_nodes": _live_online_nodes,
         "blind_index": blind_index,
         "json_response": json_response,
@@ -367,6 +426,66 @@ def test_current_online_count_dedupes_by_node_label_not_row_count():
 def test_current_snapshot_offline_mainnode_is_false():
     out = _run_history_current(mainnode_online=False)
     assert out["current"]["mainnodeOnline"] is False
+
+
+def test_current_mainnode_online_via_forkmesh_mirror_heartbeat():
+    # Regression (adhoc #189): no node ever registers a host tunnel under the
+    # literal "mainnode" owner, so host_presence for mainnode/forkmesh is never
+    # written. The banner must still read online when a real node hosts a live
+    # "forkmesh" mirror, whose fresh heartbeat is folded into the last-seen ts.
+    def _load_with_mirror():
+        async def noop(*_a, **_k):
+            return None
+
+        async def d1_all(_env, sql, *_args):
+            if "FROM repositories" in sql:
+                return [{"key_bi": "mirror_bi", "data": "enc"},
+                        {"key_bi": "other_bi", "data": "enc2"}]
+            if "FROM host_presence" in sql:
+                return [{"repo_bi": "mirror_bi", "ts": _Clock.value - 1000}]
+            return []
+
+        async def d1_first(_env, sql, *_args):
+            if "FROM repositories" in sql:
+                return {"n": 1}
+            if "FROM error_log" in sql:
+                return {"n": 0}
+            # The literal mainnode/forkmesh presence row never exists.
+            if "FROM host_presence" in sql:
+                return None
+            return {}
+
+        async def decrypt_row(_env, data):
+            return {"owner": "alice", "name": "forkmesh"} if data == "enc" \
+                else {"owner": "bob", "name": "notforkmesh"}
+
+        async def _live_online_nodes(_env, _now):
+            return {"bi0": "alice"}
+
+        async def blind_index(_env, _value):
+            return "mainnode_bi"
+
+        captured = {}
+
+        def json_response(payload, cache_seconds=None):
+            captured.update(payload)
+            return payload
+
+        extra = {
+            "Date": _Clock, "ensure_schema": noop, "d1_all": d1_all,
+            "d1_first": d1_first, "decrypt_row": decrypt_row,
+            "safe_segment": lambda s: str(s or "").strip().lower(),
+            "_is_blocked_catalog_identity": lambda *_a: False,
+            "_live_online_nodes": _live_online_nodes,
+            "blind_index": blind_index, "json_response": json_response,
+        }
+        g = _load("status_history", extra_globals=extra)
+        asyncio.run(g["status_history"](object()))
+        return captured
+
+    out = _load_with_mirror()
+    assert out["current"]["mainnodeOnline"] is True
+    assert out["current"]["mainnodeLastSeenTs"] == _Clock.value - 1000
 
 
 def test_current_snapshot_survives_a_failing_read():

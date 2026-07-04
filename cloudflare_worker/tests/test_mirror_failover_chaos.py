@@ -34,14 +34,17 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+# Route regexes (e.g. GIT_PACK_RE) live in the extracted urls.py module now.
+URLS = Path(__file__).resolve().parents[1] / "src" / "urls.py"
 
 
 def _load(names, extra_globals=None):
     """Exec the named top-level defs/constants out of entry.py in isolation."""
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    urls_tree = ast.parse(URLS.read_text(encoding="utf-8"), filename=str(URLS))
     wanted = set(names)
     selected = []
-    for node in tree.body:
+    for node in list(urls_tree.body) + list(tree.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in wanted:
                 selected.append(node)

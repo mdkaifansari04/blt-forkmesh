@@ -1104,6 +1104,9 @@ protected:
 // idle dots sit at a steady online green. Only this node generates live serve
 // events, so its own dot is the one that blinks in practice, but the strip is
 // keyed by node id so any node's activity can be surfaced as the mesh grows.
+// A node the relay's integrity gate is rejecting draws as a green triangle
+// instead of a circle, and is kept in the strip even while offline, so the
+// warning stays visible instead of the node just disappearing (adhoc #196).
 class MirrorActivityStrip : public QWidget
 {
 public:
@@ -1113,6 +1116,12 @@ public:
         QString name;
         bool online = false;
         bool self = false;
+        // Relay's integrity gate is rejecting this node's clones (adhoc #196).
+        // Normally only online nodes get a dot at all, so an offline node
+        // failing the check would otherwise vanish from the strip entirely;
+        // it's kept and drawn as a triangle instead of a circle so the warning
+        // stays visible even while the node is offline.
+        bool integrityFailing = false;
     };
 
     explicit MirrorActivityStrip(QWidget *parent = nullptr) : QWidget(parent)
@@ -1193,11 +1202,14 @@ protected:
             if (const Dot *d = dotAt(he->pos())) {
                 QToolTip::showText(
                     he->globalPos(),
-                    QStringLiteral("%1%2 \xC2\xB7 %3")
+                    QStringLiteral("%1%2 \xC2\xB7 %3%4")
                         .arg(d->name,
                              d->self ? QStringLiteral(" (you)") : QString(),
                              d->online ? QStringLiteral("online")
-                                       : QStringLiteral("offline")),
+                                       : QStringLiteral("offline"),
+                             d->integrityFailing
+                                 ? QStringLiteral(" \xC2\xB7 failing integrity pin")
+                                 : QString()),
                     this);
             } else {
                 QToolTip::hideText();
@@ -1233,8 +1245,19 @@ protected:
                 p.drawEllipse(QPointF(x, cy), hr, hr);
             }
             p.setPen(Qt::NoPen);
-            p.setBrush(col);
-            p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            if (d.integrityFailing) {
+                // Offline-but-failing nodes would otherwise be an invisible
+                // gap in the strip; draw a green warning triangle in their
+                // place so the problem stays visible even while offline.
+                p.setBrush(QColor("#3fb950"));
+                const QPolygonF triangle({QPointF(x, cy - kRadius - 1.0),
+                                          QPointF(x + kRadius + 1.0, cy + kRadius - 1.0),
+                                          QPointF(x - kRadius - 1.0, cy + kRadius - 1.0)});
+                p.drawPolygon(triangle);
+            } else {
+                p.setBrush(col);
+                p.drawEllipse(QPointF(x, cy), kRadius, kRadius);
+            }
             ++drawn;
             x += kSpacing;
             if (x > width() - kRadius)
@@ -2149,6 +2172,14 @@ const QString kTelemetryCrashOffsetSetting =
     QStringLiteral("diagnostics/telemetryCrashOffset");
 const QString kTelemetryStallOffsetSetting =
     QStringLiteral("diagnostics/telemetryStallOffset");
+// How many bytes of crashes.log had already been seen as of the last startup,
+// so a crash that ended the previous session (which never gets a chance to log
+// itself — the process is gone) shows up as a line in *this* session's own log
+// instead of only ever living in crashes.log/stderr/journalctl (adhoc #200).
+// Independent of kTelemetryCrashOffsetSetting/telemetry opt-in: this in-app
+// notice always fires, regardless of whether the user enabled the upload.
+const QString kCrashLogSeenOffsetSetting =
+    QStringLiteral("diagnostics/crashLogSeenOffset");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
@@ -2299,6 +2330,12 @@ const QString kClaudeFallbackModelSetting =
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
 const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
+// When an idle agent session's branch would conflict with base (the same
+// condition that shows the "Fix conflicts with agent" button), automatically
+// ask the agent to merge base and resolve the conflicts instead of waiting for
+// a manual click. Default on; can be disabled in Settings.
+const QString kAutoFixAgentConflictsSetting =
+    QStringLiteral("agents/autoFixConflicts");
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");

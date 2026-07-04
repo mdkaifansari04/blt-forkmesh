@@ -865,14 +865,27 @@ void MainWindow::startSession()
     authenticateSilently(name);
 #endif
 
-    // A headless mirror VM has no GUI to click "Join ForkMesh", so a fresh node
-    // would connect for chat but never register its account — and without a
-    // key-bound account the relay rejects its catalog writes and host tokens, so
-    // its mirrors never appear on the website. Auto-register it (free, key-bound,
-    // no dialog) here, mirroring what a desktop user does by hand. Guarded on
-    // hasActiveAccountSession() so a returning VM whose silent auth already
-    // succeeded never re-registers, and skipped under the test server-bypass.
-    if (m_headless && !hasActiveAccountSession() && isValidNodeName(name)) {
+    // A node that mirrors a public repo needs a key-bound account or the relay
+    // rejects its catalog writes and host tokens — so it hosts/chats and shows up
+    // online in every peer's roster, yet never appears on the website (adhoc #207:
+    // "threaded-byte" was online and mirroring but had no account at all). A
+    // headless VM has no GUI to click "Join ForkMesh"; a desktop node that already
+    // opted into publishing a mirror has effectively made the same choice. So
+    // auto-register (free, key-bound, no dialog) for a headless node OR any node
+    // that is already publishing a mirror to the network, mirroring what a desktop
+    // user does by hand. Guarded on hasActiveAccountSession() so a returning node
+    // whose silent auth already succeeded never re-registers, and skipped under the
+    // test server-bypass.
+    const bool publishesMirror = [this] {
+        for (const RepositoryRecord &r : std::as_const(m_repositories)) {
+            if (!r.previewOnly && r.publishToNetwork && !r.mirrorPath.isEmpty() &&
+                QDir(r.mirrorPath).exists())
+                return true;
+        }
+        return false;
+    }();
+    if ((m_headless || publishesMirror) && !hasActiveAccountSession() &&
+        isValidNodeName(name)) {
         bool registered = false;
 #ifdef FORKMESH_WINDOW_TESTS
         if (!m_testBypassServerStart)
@@ -2281,34 +2294,16 @@ void MainWindow::styleFooterUpdateLog()
     if (!m_footerUpdateLog)
         return;
     // Theme-aware so the strip reads on either canvas (it carries its own inline
-    // sheet, not the global one). Tint the text by the current line's tone: red
-    // for failures ("!!"/"ERROR"), the accent for phase headers ("==>"/"$ "),
-    // muted body grey otherwise.
+    // sheet, not the global one).
     const bool dark = currentThemeIsDark();
-    // Tone is driven by the message body, so skip any leading
-    // "yyyy-MM-dd HH:mm:ss  " stamp (position 10 is the date/time space) before
-    // matching the narrative markers.
-    const QString &raw = m_footerUpdateLineRaw;
-    const QString clean = (raw.size() >= 21 && raw.at(10) == QLatin1Char(' '))
-                              ? raw.mid(21)
-                              : raw;
-    QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
-    if (clean.startsWith(QStringLiteral("!!")) ||
-        clean.startsWith(QStringLiteral("ERROR")))
-        colour = dark ? QStringLiteral("#ff6b6b") : QStringLiteral("#cf222e");
-    else if (clean.startsWith(QStringLiteral("==>")) ||
-             clean.startsWith(QStringLiteral("$ ")))
-        colour = dark ? QStringLiteral("#58a6ff") : QStringLiteral("#0969da");
+    const QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
     const QString border = dark ? QStringLiteral("#21262d") : QStringLiteral("#d0d7de");
     const QString canvas = dark ? QStringLiteral("#0d1117") : QStringLiteral("#f6f8fa");
-    const QString hover = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
     m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPushButton#footerUpdateLog{color:%1;border:none;"
+        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:%1;border:none;"
                        "border-right:1px solid %2;background:%3;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;"
-                       "text-align:left;}"
-                       "QPushButton#footerUpdateLog:hover{color:%4;}")
-            .arg(colour, border, canvas, hover));
+                       "font-family:monospace;font-size:11px;padding:3px 12px;}")
+            .arg(colour, border, canvas));
 }
 
 void MainWindow::setFooterUpdateLine(const QString &line)
@@ -2318,17 +2313,14 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     const QString clean = line.trimmed();
     if (clean.isEmpty())
         return;
-    m_footerUpdateLineRaw = clean;
-    m_footerUpdateLog->show();
-    styleFooterUpdateLog();
-    // Elide the visible strip to a single line that fits the current width so a
-    // long compiler line never stretches the window, but expose the full,
-    // untruncated log line in the tooltip so it's always readable on hover.
-    m_footerUpdateLog->setToolTip(
-        clean + QStringLiteral("\n\nClick to open the full log."));
-    const QFontMetrics fm(m_footerUpdateLog->font());
-    const int avail = qMax(40, m_footerUpdateLog->width() - 28);
-    m_footerUpdateLog->setText(fm.elidedText(clean, Qt::ElideRight, avail));
+    // Only auto-scroll to the new line if the view was already at (or very near)
+    // the bottom — otherwise a user who scrolled up to search back through
+    // history would get yanked back down by every new event.
+    QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
+    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    m_footerUpdateLog->appendPlainText(clean);
+    if (wasAtBottom && bar)
+        bar->setValue(bar->maximum());
 }
 
 void MainWindow::setUpdateStatus(const QString &status, bool isError)
@@ -2451,6 +2443,7 @@ void MainWindow::runQuickUpdate()
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("quick update started"));
+    logSystem(QStringLiteral("=== Quick update started (will rebuild & restart) ==="));
     saveProfileName(m_nameEdit->text());
     m_buildButton = m_updateButton;
     m_buildStatusLabel = m_updateStatus;
@@ -2534,6 +2527,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
             forkmesh::releaseSingleInstance();
             QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
             logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
+            logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
             QCoreApplication::quit();
         });
         return;
@@ -2564,6 +2558,7 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     forkmesh::releaseSingleInstance();
     QProcess::startDetached(appPath, {});
     logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
+    logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
     QCoreApplication::quit();
 }
 
@@ -2598,6 +2593,7 @@ void MainWindow::updateRebuildRestart()
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("update, rebuild & restart started"));
+    logSystem(QStringLiteral("=== Update, rebuild & restart started ==="));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
 

@@ -283,23 +283,29 @@ def _compile_method(class_name, method_name, extra_globals):
 def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     # A downed source's host_presence row can lag reality for up to
     # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
-    # whose host DO answers no_host (503) or times out (504). The router must
-    # then serve once more in place from an online mirror of the same logical
-    # repo — excluding the node that just failed — instead of surfacing the
-    # error while a live mirror sits unused.
+    # whose host DO answers no_host (503), times out (504), or answers but can't
+    # build the reply (502 — e.g. a freshly-added mirror whose clone is
+    # empty/still syncing). The router must then serve once more in place from
+    # an online mirror of the same logical repo — excluding the node that just
+    # failed — instead of surfacing the error while a live mirror sits unused.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "public_browse" in browse
-    assert "(0, 503, 504)" in browse  # rotated pick failed/errored -> named owner
-    assert "(503, 504)" in browse     # named owner failed -> remaining mirrors
-    assert "exclude=owner" in browse
+    assert "(0, 502, 503, 504)" in browse  # rotated pick failed/errored -> named owner
+    assert "(502, 503, 504)" in browse     # named owner failed -> remaining mirrors
+    # The retry must skip BOTH the named owner and a mirror that already failed
+    # this request's first hop, so it can't re-pick the flapping node and
+    # surface its error while other live mirrors sit unused.
+    assert "exclude=[owner, failed_mirror]" in browse
+    assert "failed_mirror = served" in browse
     assert "_forward_to_node" in browse
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
-    # The retry path passes exclude=<failed owner>; _select_browse_mirror must
-    # filter that node out of the candidate rotation or the retry could 302
-    # straight back to the dead node it just came from.
+    # The retry path passes exclude=[<failed owner>, <failed mirror>];
+    # _select_browse_mirror must filter every named node out of the candidate
+    # rotation or the retry could route straight back to a node it just came
+    # from. `exclude` accepts a single name or an iterable of names.
     # _select_browse_mirror lives on the worker entrypoint class, whose name we
     # don't want to hard-code; find it by scanning every class.
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
@@ -312,7 +318,10 @@ def test_select_browse_mirror_drops_the_excluded_node():
                     src = ast.unparse(item)
     assert src, "_select_browse_mirror not found in entry.py"
     assert "exclude=None" in src
-    assert "c.lower() != exclude.lower()" in src
+    # A string exclude is normalised to a one-element list, an iterable is used
+    # as-is, and every entry is dropped from the candidate rotation.
+    assert "isinstance(exclude, str)" in src
+    assert "c.lower() not in excluded" in src
 
 
 def test_host_disconnect_expires_presence_immediately():
@@ -411,6 +420,35 @@ def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
     assert "_forward_to_node" in src
     assert "git-upload-pack" in src
     assert "status=302" not in src  # same-URL serving, no redirects
+
+
+def test_clone_falls_back_when_a_live_source_stalls_info_refs():
+    # A connected-but-stalled host answers info/refs with a 504 (GIT_TIMEOUT_MS
+    # elapses in its host DO). The upfront liveness check sees the live socket
+    # and never fails over, so without a post-fetch retry the clone dead-ends on
+    # exactly the reported "504 on /owner/repo/info/refs". _git_host must inspect
+    # the response status and, on 503/504 for the (idempotent, bodyless) info/refs
+    # GET, serve the advertisement from a live mirror and pin it so the paired
+    # upload-pack POST follows the same node.
+    src = _worker_method_source("_git_host")
+    assert "response = await host_object.fetch(request)" in src
+    assert "response.status" in src
+    assert "(503, 504)" in src
+    assert "is_info" in src
+    assert "_fresh_clone_pin" in src  # POST follows the mirror info/refs pinned
+    assert "return response" in src   # normal path still returns the source's reply
+
+
+def test_fresh_clone_pin_is_read_only_and_live_checked():
+    # The upload-pack POST follows whatever info/refs pinned even when the named
+    # source's tunnel is back up. The lookup must never select/rotate/write a pin
+    # (that's info/refs' job) — a plain fresh, non-owner, still-live pin or None.
+    src = _worker_method_source("_fresh_clone_pin")
+    assert "clone_sticky" in src
+    assert "CLONE_STICKY_MS" in src
+    assert "_source_has_live_host(pick, repo)" in src
+    assert "ON CONFLICT" not in src and "INSERT" not in src  # read-only
+    assert "!= owner.lower()" in src or "!= owner" in src
 
 
 def test_sticky_clone_pick_is_pinned_and_live_checked():
