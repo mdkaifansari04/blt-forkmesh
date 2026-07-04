@@ -15,7 +15,11 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# SCHEMA_STATEMENTS (the CREATE TABLE/INDEX DDL) was split out of entry.py
+# into schema.py; concatenate it so the schema-text assertions below resolve.
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8")
+    + "\n" + (ENTRY.parent / "schema.py").read_text(encoding="utf-8"))
 
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 HOUR_MS = 60 * 60 * 1000

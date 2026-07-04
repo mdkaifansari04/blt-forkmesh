@@ -30,9 +30,14 @@ import pytest
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 MIRRORS = ENTRY.parent / "mirrors.py"
+CATALOG = ENTRY.parent / "catalog.py"
 # Mirror grouping / clone-selection helpers were extracted from entry.py into
-# mirrors.py; parse both sources so the AST loaders below still find them.
-_WORKER_SRC = ENTRY.read_text(encoding="utf-8") + "\n" + MIRRORS.read_text(encoding="utf-8")
+# mirrors.py, and the catalog-record sanitization helpers into catalog.py;
+# parse all sources so the AST loaders below still find them.
+_WORKER_SRC = (
+    ENTRY.read_text(encoding="utf-8") + "\n"
+    + MIRRORS.read_text(encoding="utf-8") + "\n"
+    + CATALOG.read_text(encoding="utf-8"))
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FORKMESH_SKIP_PERF_TESTS") == "1",
