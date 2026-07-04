@@ -969,6 +969,54 @@ int main(int argc, char *argv[])
                   snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
               "review model treats legacy line-comments as unresolved threads");
 
+        // --- Agent provenance from signed commit trailers (issue #365) --------
+        // A PR whose commit series carries the ForkMesh-Agent trailer is
+        // attributable to a tool/model without any local AgentSession; the
+        // per-file map lets the review UI filter by authorship.
+        {
+            const QString agentMbox =
+                "From 1111111 Mon Sep 17 00:00:00 2001\n"
+                "From: Bot <bot@example.com>\n"
+                "Subject: [PATCH 1/2] agent change\n\n"
+                "Body line.\n\n"
+                "ForkMesh-Agent: claude-code/claude-opus-4-8\n"
+                "---\n"
+                "diff --git a/src/agent.cpp b/src/agent.cpp\n"
+                "index 000..111 100644\n"
+                "--- a/src/agent.cpp\n+++ b/src/agent.cpp\n"
+                "@@ -0,0 +1 @@\n+agent\n"
+                "From 2222222 Mon Sep 17 00:00:00 2001\n"
+                "From: Human <dev@example.com>\n"
+                "Subject: [PATCH 2/2] human change\n\n"
+                "Hand-written.\n"
+                "---\n"
+                "diff --git a/src/human.cpp b/src/human.cpp\n"
+                "index 000..222 100644\n"
+                "--- a/src/human.cpp\n+++ b/src/human.cpp\n"
+                "@@ -0,0 +1 @@\n+human\n";
+            PullRequest agentPr;
+            agentPr.commits = agentMbox;
+            const PullAgentProvenance prov = pullAgentProvenance(agentPr);
+            check(prov.isAgent && prov.tool == "claude-code" &&
+                      prov.model == "claude-opus-4-8",
+                  "pullAgentProvenance reads the ForkMesh-Agent trailer");
+            const QHash<QString, bool> authorship = pullFileAuthorship(agentPr);
+            check(authorship.value("src/agent.cpp") == true &&
+                      authorship.value("src/human.cpp") == false,
+                  "pullFileAuthorship maps each file to its commit's authorship");
+
+            PullRequest humanPr;
+            humanPr.commits =
+                "From 3333333 Mon Sep 17 00:00:00 2001\n"
+                "From: Human <dev@example.com>\n"
+                "Subject: [PATCH] plain change\n\n"
+                "No trailer here.\n"
+                "---\n"
+                "diff --git a/src/x.cpp b/src/x.cpp\n";
+            check(!pullAgentProvenance(humanPr).isAgent,
+                  "pullAgentProvenance treats an un-trailered PR as human-authored");
+        }
+
         // --- PullStore deletePullFile excises one file, keeps the rest -------
         // Regression for issue #258: deleting a file used to rebuild the PR by
         // replaying its commits onto the current base with `git am`, which drops
