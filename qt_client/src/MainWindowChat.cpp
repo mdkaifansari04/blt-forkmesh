@@ -5675,6 +5675,20 @@ QWidget *MainWindow::buildHostsSection()
     connect(m_hostInstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostInstallAllFromBinary);
     titleRow->addWidget(m_hostInstallAllButton);
+    // Uninstall + reinstall from binary across every saved host (adhoc #258):
+    // wipe each host's existing install + data, then install a fresh copy from
+    // this app's binary so a stuck/stale node comes back cleanly.
+    m_hostReinstallAllButton =
+        new QPushButton(QStringLiteral("Uninstall + reinstall (all hosts)"));
+    m_hostReinstallAllButton->setCursor(Qt::PointingHandCursor);
+    m_hostReinstallAllButton->setToolTip(QStringLiteral(
+        "For every saved host: remove ForkMesh and ALL of its data, then "
+        "install a fresh copy from this app's binary and re-link it to your "
+        "account."));
+    setOcticon(m_hostReinstallAllButton, "sync", 14);
+    connect(m_hostReinstallAllButton, &QPushButton::clicked, this,
+            &MainWindow::runHostReinstallAllFromBinary);
+    titleRow->addWidget(m_hostReinstallAllButton);
     outer->addLayout(titleRow);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
@@ -6406,7 +6420,8 @@ const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 } // namespace
 
 void MainWindow::runHostInstall(bool forceUploadBinary,
-                                std::function<void(bool)> onFinished)
+                                std::function<void(bool)> onFinished,
+                                bool reinstall)
 {
     if (m_hostInstallProcess &&
         m_hostInstallProcess->state() != QProcess::NotRunning) {
@@ -6481,9 +6496,17 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // clone-source mirror to auto-resolve to a real online one. The headless
     // installer then starts the node as a background daemon under this name so it
     // actually joins the network and shows up in the Mirror nodes list.
+    // FORKMESH_OWNER carries this account's owner name so the installer can echo
+    // which account the fresh node is being attached to (adhoc #258), and
+    // FORKMESH_REINSTALL=1 tells it to wipe any existing install + data first.
+    QString envPrefix = QStringLiteral("FORKMESH_NODE_NAME=%1").arg(shq(node));
+    const QString owner = accountOwner();
+    if (!owner.isEmpty())
+        envPrefix += QStringLiteral(" FORKMESH_OWNER=%1").arg(shq(owner));
+    if (reinstall)
+        envPrefix += QStringLiteral(" FORKMESH_REINSTALL=1");
     QString pipeline =
-        QStringLiteral("curl -fsSL %1 | FORKMESH_NODE_NAME=%2 bash")
-            .arg(shq(installUrl), shq(node));
+        QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
     const bool needSudo = user != QStringLiteral("root");
     if (uploadBinary) {
         // The binary follows on the SSH session's stdin. Everything before the
@@ -6504,10 +6527,10 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
             QStringLiteral(
                 "up=\"$(mktemp \"${TMPDIR:-/tmp}/forkmesh-upload.XXXXXX\")\" && "
                 "while IFS= read -r l; do [ \"$l\" = %1 ] && break; done && "
-                "cat > \"$up\" && curl -fsSL %2 | FORKMESH_NODE_NAME=%3 "
+                "cat > \"$up\" && curl -fsSL %2 | %3 "
                 "FORKMESH_LOCAL_BINARY=\"$up\" FORKMESH_LOCAL_OS=%4 "
                 "FORKMESH_LOCAL_ARCH=%5 bash; st=$?; rm -f \"$up\"; exit $st")
-                .arg(shq(kHostUploadMarker), shq(installUrl), shq(node),
+                .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
                      shq(os), shq(QSysInfo::currentCpuArchitecture()));
     }
     const QString remoteCmd =
@@ -6606,23 +6629,27 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 "and sshpass on this machine and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
-            [this, ip, user, node, pass, onFinished](int code, QProcess::ExitStatus status) {
+            [this, ip, user, node, pass, onFinished, reinstall](int code, QProcess::ExitStatus status) {
                 if (m_hostInstallButton)
                     m_hostInstallButton->setEnabled(true);
                 const bool ok = status == QProcess::NormalExit && code == 0;
+                const QString verb = reinstall ? QStringLiteral("Reinstall")
+                                               : QStringLiteral("Install");
                 if (ok) {
                     appendHostInstallLog(QString::fromUtf8(
-                        "\n\xE2\x9C\x94 Install finished. Node \"%1\" will join "
+                        "\n\xE2\x9C\x94 %1 finished. Node \"%2\" will join "
                         "the network and appear in the Mirror nodes list "
-                        "shortly.\n").arg(node));
+                        "shortly.\n").arg(verb, node));
                     if (m_hostInstallStatus)
                         m_hostInstallStatus->setText(QString::fromUtf8(
-                            "\xE2\x9C\x94 Installed on %1 as node \"%2\".")
-                            .arg(ip, node));
+                            "\xE2\x9C\x94 %1ed on %2 as node \"%3\".")
+                            .arg(reinstall ? QStringLiteral("Reinstall")
+                                           : QStringLiteral("Install"),
+                                 ip, node));
                     rememberHost(node, ip, user, pass);
                 } else {
                     appendHostInstallLog(QString::fromUtf8(
-                        "\n\xE2\x9C\x98 Install failed (exit %1).\n").arg(code));
+                        "\n\xE2\x9C\x98 %1 failed (exit %2).\n").arg(verb).arg(code));
                     if (m_hostInstallStatus)
                         m_hostInstallStatus->setText(QString::fromUtf8(
                             "\xE2\x9C\x98 Install failed \xE2\x80\x94 see the "
@@ -6688,6 +6715,60 @@ void MainWindow::installNextHostFromBinary(QList<int> remainingRows)
     runHostInstall(/*forceUploadBinary=*/true, [this, remainingRows](bool /*ok*/) {
         installNextHostFromBinary(remainingRows);
     });
+}
+
+void MainWindow::runHostReinstallAllFromBinary()
+{
+    if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QStringLiteral("No saved hosts to reinstall."));
+        return;
+    }
+    if (m_hostInstallProcess &&
+        m_hostInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host session is already running."));
+        return;
+    }
+    // Destructive: each host loses ALL of its ForkMesh data (identity key,
+    // mirrors, chat) before the fresh install. Gate the whole run behind one
+    // confirmation, the same way the per-host uninstall does.
+    const int rowCount = m_hostsTable->rowCount();
+    const QMessageBox::StandardButton choice = QMessageBox::warning(
+        this, QStringLiteral("Uninstall + reinstall all hosts"),
+        QString::fromUtf8(
+            "This will REMOVE ForkMesh and ALL of its data (identity key, "
+            "mirrors, chat) from every one of your %1 saved host(s), then "
+            "install a fresh copy from this app's binary and re-link each one "
+            "to your account.\n\nThis cannot be undone. Continue?")
+            .arg(rowCount),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (choice != QMessageBox::Yes)
+        return;
+    QList<int> rows;
+    rows.reserve(rowCount);
+    for (int i = 0; i < rowCount; ++i)
+        rows.append(i);
+    reinstallNextHostFromBinary(rows);
+}
+
+void MainWindow::reinstallNextHostFromBinary(QList<int> remainingRows)
+{
+    if (remainingRows.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Finished reinstalling from binary on all hosts."));
+        return;
+    }
+    const int row = remainingRows.takeFirst();
+    loadHostIntoForm(row, 0);
+    runHostInstall(
+        /*forceUploadBinary=*/true,
+        [this, remainingRows](bool /*ok*/) {
+            reinstallNextHostFromBinary(remainingRows);
+        },
+        /*reinstall=*/true);
 }
 
 void MainWindow::runHostUninstall()
