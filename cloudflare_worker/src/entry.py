@@ -1969,6 +1969,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+        # "mainnode" is a canonical/branding owner that no node ever registers a
+        # host tunnel under: browse/clone to mainnode/forkmesh fails over to
+        # whichever node hosts a live "forkmesh" mirror (install_source picks a
+        # mirror the same way). So the host_presence row keyed on the literal
+        # mainnode/forkmesh path is never written, and reading it alone always
+        # reports the mainnode offline even while the repo is perfectly
+        # reachable through a mirror. Fold in the freshest heartbeat across
+        # every forkmesh mirror so "mainnode online" tracks real reachability.
+        try:
+            repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+            pres_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {str(r.get("repo_bi")): int(r.get("ts") or 0)
+                        for r in (pres_rows or []) if r.get("repo_bi")}
+            for r in (repo_rows or []):
+                rec = await decrypt_row(env, r.get("data"))
+                if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                    continue
+                if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+                    continue
+                ts = presence.get(str(r.get("key_bi")), 0)
+                if ts and (last_ts is None or ts > last_ts):
+                    last_ts = ts
+        except Exception:
+            pass
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
@@ -9834,11 +9858,14 @@ class Default(WorkerEntrypoint):
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
                         if served and served.lower() != owner.lower():
-                            # A failed forward (exception or 503/504: the pick's
-                            # presence row outlived its tunnel) falls through to
-                            # the named owner's own route, whose failure handler
-                            # below tries the remaining mirrors — a broken
-                            # mirror hop must degrade, never take the page down.
+                            # A failed forward (exception, 503/504: the pick's
+                            # presence row outlived its tunnel, or 502: its host
+                            # answered but couldn't produce the tree — e.g. a
+                            # freshly-added mirror whose clone is empty/still
+                            # syncing) falls through to the named owner's own
+                            # route, whose failure handler below tries the
+                            # remaining mirrors — a broken mirror hop must
+                            # degrade, never take the page down.
                             forwarded = None
                             try:
                                 forwarded = await self._forward_to_node(
@@ -9849,24 +9876,27 @@ class Default(WorkerEntrypoint):
                             except Exception:
                                 fstatus = 0
                             if forwarded is not None and \
-                                    fstatus not in (0, 503, 504):
+                                    fstatus not in (0, 502, 503, 504):
                                 return forwarded
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(request)
             if public_browse:
-                # The routed node couldn't serve (no host connected: 503, or a
-                # dead-but-lingering tunnel: 504). Its host_presence row can lag
-                # reality for up to HOST_PRESENCE_STALE_MS, during which the
-                # rotation above still picks it — so on failure, serve once more
-                # in place from an online mirror of the same logical repo,
-                # excluding the node that just failed. Best-effort: if that
-                # forward fails too, return the named node's original error.
+                # The routed node couldn't serve (no host connected: 503, a
+                # dead-but-lingering tunnel: 504, or a host that answered but
+                # couldn't build the reply: 502 — e.g. a freshly-added mirror
+                # whose clone is empty/still syncing, so ls-tree has no ref).
+                # Its host_presence row can lag reality for up to
+                # HOST_PRESENCE_STALE_MS, during which the rotation above still
+                # picks it — so on failure, serve once more in place from an
+                # online mirror of the same logical repo, excluding the node
+                # that just failed. Best-effort: if that forward fails too,
+                # return the named node's original error.
                 try:
                     status = int(response.status)
                 except Exception:
                     status = 0
-                if status in (503, 504):
+                if status in (502, 503, 504):
                     fallback = await self._select_browse_mirror(
                         owner, repo, exclude=owner)
                     if fallback and fallback.lower() != owner.lower():
@@ -10005,6 +10035,8 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
+        url = urlparse(request.url)
+        is_info = url.path.endswith("/info/refs")
         # Private repos clone only with an owner-key-signed view token carried in
         # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
         # supplies credentials from the clone URL or a credential helper.
@@ -10027,8 +10059,6 @@ class Default(WorkerEntrypoint):
             # per request. The integrity gate still applies on the serving node:
             # a mirror must advertise a source-attested state (clone_state_pins),
             # so serving in place never weakens the tamper check.
-            url = urlparse(request.url)
-            is_info = url.path.endswith("/info/refs")
             if not await self._source_has_live_host(owner, repo):
                 serving = await self._sticky_clone_fallback(
                     owner, repo, refresh=is_info)
@@ -10043,9 +10073,50 @@ class Default(WorkerEntrypoint):
                         # which answers with git's clean "no host" advertisement
                         # instead of taking the whole request down.
                         pass
+            elif not is_info:
+                # Source's host IS connected, but a paired info/refs that just
+                # timed out (below) may have failed over to a mirror and pinned
+                # it. The upload-pack POST negotiates against the refs that first
+                # request advertised, so it MUST follow that same mirror even
+                # though the named source's tunnel now looks live — otherwise the
+                # pack is negotiated against a different node's refs and the
+                # clone breaks. Read-only pin lookup; no rotation.
+                serving = await self._fresh_clone_pin(owner, repo)
+                if serving and serving.lower() != owner.lower():
+                    try:
+                        return await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/git-upload-pack" % (serving, repo))
+                    except Exception:
+                        pass
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
-        return await host_object.fetch(request)
+        response = await host_object.fetch(request)
+        # The named source's host is connected but stalled answering the (small,
+        # idempotent) info/refs advertisement — GIT_TIMEOUT_MS elapses and its
+        # host DO returns 504. The upfront liveness check above sees the live
+        # WebSocket and never fails over, so the client's clone dead-ends. Retry
+        # the advertisement once from a live mirror and pin it (clone_sticky), so
+        # the paired upload-pack POST follows the same node. Only info/refs (a
+        # bodyless GET) is safe to replay this way; the POST body is already in
+        # flight, so it relies on the pin instead. Private repos are excluded —
+        # they never fall a clone over to a mirror.
+        if is_info and not await _repo_is_private(self.env, owner, repo):
+            try:
+                status = int(response.status)
+            except Exception:
+                status = 0
+            if status in (503, 504):
+                serving = await self._sticky_clone_fallback(
+                    owner, repo, refresh=True)
+                if serving and serving.lower() != owner.lower():
+                    try:
+                        return await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/info/refs" % (serving, repo))
+                    except Exception:
+                        pass
+        return response
 
     async def _git_push(self, request, owner_raw, repo_raw):
         # git push (issue #358): receive-pack proxied to the owner's own host DO.
@@ -10162,6 +10233,32 @@ class Default(WorkerEntrypoint):
                     repo_bi, choice, now,
                 )
             return choice
+        except Exception:
+            return None
+
+    async def _fresh_clone_pin(self, owner, repo):
+        # The mirror a recent info/refs failed over to and pinned in clone_sticky,
+        # if that pin is still fresh (<= CLONE_STICKY_MS) and the mirror still has
+        # a live host. Read-only: never selects, rotates or writes a pin — used by
+        # the upload-pack POST to follow whatever info/refs advertised, even when
+        # the named source's own tunnel has since come back. Best-effort; any
+        # failure (and the common no-pin case) returns None so the POST falls
+        # through to the named source.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT owner, ts FROM clone_sticky WHERE repo_bi=?", repo_bi)
+            if not row:
+                return None
+            pick = str(row.get("owner") or "")
+            fresh = now - int(row.get("ts") or 0) <= CLONE_STICKY_MS
+            if pick and fresh and pick.lower() != owner.lower():
+                if await self._source_has_live_host(pick, repo):
+                    return pick
+            return None
         except Exception:
             return None
 
