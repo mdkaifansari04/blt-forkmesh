@@ -2677,6 +2677,11 @@ SCHEMA_STATEMENTS = [
     # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
     """CREATE TABLE IF NOT EXISTS issue_bounty (
         bounty_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
+    # Inbuilt per-owner bounty wallet (issue #347): one row per owner. data is the
+    # encrypted custody deposit key the owner pre-funds; per-PR bounties in
+    # "wallet" mode are paid by debiting it. wallet_bi = blind_index("bounty-wallet:<owner>").
+    """CREATE TABLE IF NOT EXISTS bounty_wallet (
+        wallet_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
     # Server-side 5xx / error log surfaced on the admin dashboard.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
@@ -3818,7 +3823,8 @@ async def _move_bounties_namespace(env, old_owner, new_owner, repo,
             number = 0
         if number <= 0:
             continue
-        new_bi = await _bounty_bi(env, new_owner, repo, number)
+        new_bi = await _bounty_bi(env, new_owner, repo, number,
+                                  rec.get("kind", ""))
         old_bi = row.get("bounty_bi")
         if new_bi != old_bi:
             existing = await d1_first(
@@ -5798,8 +5804,37 @@ async def _usd_to_lamports(env, usd):
     return int(round((float(usd) / price) * LAMPORTS_PER_SOL))
 
 
-async def _bounty_bi(env, owner, repo, number):
-    return await blind_index(env, owner + "/" + repo + "#" + str(int(number)))
+async def _bounty_bi(env, owner, repo, number, kind=""):
+    # kind "" is an issue bounty (key "<owner>/<repo>#<number>", unchanged);
+    # kind "pr" is a per-pull-request bounty (key "…#pr-<number>"), so an issue
+    # and a pull request that happen to share a number never collide.
+    prefix = (kind + "-") if kind else ""
+    return await blind_index(
+        env, owner + "/" + repo + "#" + prefix + str(int(number)))
+
+
+async def _bounty_wallet_bi(env, owner):
+    # The owner's inbuilt bounty wallet — a single custody deposit key per owner,
+    # pre-funded by the owner and debited to auto-pay per-PR bounties.
+    return await blind_index(env, "bounty-wallet:" + owner)
+
+
+async def _load_bounty_wallet(env, wallet_bi):
+    row = await d1_first(
+        env, "SELECT data FROM bounty_wallet WHERE wallet_bi=?", wallet_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data", ""))
+
+
+async def _save_bounty_wallet(env, wallet_bi, rec):
+    enc = await encrypt_row(env, rec)
+    await d1_run(
+        env,
+        """INSERT INTO bounty_wallet (wallet_bi, data) VALUES (?,?)
+           ON CONFLICT(wallet_bi) DO UPDATE SET data=excluded.data""",
+        wallet_bi, enc,
+    )
 
 
 async def _load_bounty(env, bounty_bi):
@@ -5964,13 +5999,55 @@ async def bounties_handler(env, request, owner, repo):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     action = (data.get("action") or "create").strip()
+
+    if action == "wallet":
+        # Mint (once) and report the owner's inbuilt bounty wallet: a custody
+        # deposit address the owner pre-funds and that per-PR bounties in "wallet"
+        # mode debit. Owner-signed so only the owner can learn/fund their wallet.
+        try:
+            ts = int(data.get("ts", 0))
+        except (TypeError, ValueError):
+            ts = 0
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=401)
+        owner_pub = await _owner_pubkey(env, owner)
+        if not owner_pub:
+            return json_response({"error": "no_owner_key"}, status=403)
+        canonical = ("forkmesh-bounty-wallet-v1\n" + owner + "\n" +
+                     str(ts)).encode()
+        if not await ed25519_verify(owner_pub, data.get("sig", ""), canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+        wallet_bi = await _bounty_wallet_bi(env, owner)
+        wrec = await _load_bounty_wallet(env, wallet_bi)
+        if not wrec or not wrec.get("address"):
+            addr, secret = await _new_solana_keypair()
+            if not addr:
+                return json_response({"error": "keypair_failed"}, status=500)
+            wrec = {"owner": owner, "address": addr, "secret": secret,
+                    "created_at": int(Date.now())}
+            await _save_bounty_wallet(env, wallet_bi, wrec)
+        balance = await _solana_balance_lamports(env, wrec["address"])
+        balance = int(balance) if balance is not None else 0
+        return json_response({
+            "address": wrec["address"],
+            "balanceLamports": balance,
+            "balanceSol": _amount_sol(balance),
+            "uri": _solana_pay_uri(wrec["address"], 0,
+                                   message="ForkMesh bounty wallet"),
+        })
+
     try:
         number = int(data.get("number", 0))
     except (TypeError, ValueError):
         number = 0
     if number <= 0:
         return json_response({"error": "number_required"}, status=400)
-    bounty_bi = await _bounty_bi(env, owner, repo, number)
+    # kind "" is an issue bounty; "pr" is a per-pull-request bounty (issue #347),
+    # keyed separately so an issue and a PR sharing a number never collide.
+    kind = clean_string(data.get("kind", ""), 8)
+    if kind not in ("", "pr"):
+        kind = ""
+    bounty_bi = await _bounty_bi(env, owner, repo, number, kind)
     rec = await _load_bounty(env, bounty_bi)
 
     if action == "create":
@@ -6024,6 +6101,54 @@ async def bounties_handler(env, request, owner, repo):
             cand = (author_rec or {}).get("solana", "")
             if cand and SOLANA_RE.match(cand):
                 payee = cand
+
+        # Wallet mode (issue #347): instead of minting an escrow for the owner to
+        # fund by hand, debit the owner's pre-funded inbuilt bounty wallet and pay
+        # the split directly — the bounty is settled in one step.
+        if data.get("fromWallet"):
+            if not payee:
+                return json_response({"error": "payee_unresolved"}, status=400)
+            wallet_bi = await _bounty_wallet_bi(env, owner)
+            wrec = await _load_bounty_wallet(env, wallet_bi)
+            if not wrec or not wrec.get("address") or not wrec.get("secret"):
+                return json_response({"error": "no_wallet"}, status=409)
+            balance = await _solana_balance_lamports(env, wrec["address"])
+            balance = int(balance) if balance is not None else 0
+            needed = required + SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+            if balance < needed:
+                return json_response(
+                    {"error": "insufficient_wallet_balance",
+                     "balanceLamports": balance,
+                     "requiredLamports": required}, status=402)
+            treasury_lamports = required * BOUNTY_TREASURY_BPS // 10000
+            payee_lamports = required - treasury_lamports
+            transfers = []
+            if payee_lamports > 0:
+                transfers.append((payee, payee_lamports))
+            if treasury_lamports > 0:
+                transfers.append((treasury, treasury_lamports))
+            send_sig = await _solana_send_transfers(
+                env, wrec["address"], wrec["secret"], transfers)
+            if not send_sig:
+                return json_response({"error": "wallet_transfer_failed"},
+                                     status=502)
+            rec = {
+                "owner": owner, "repo": repo, "number": number, "kind": kind,
+                "address": "", "secret": "",
+                "amount_usd": amount_usd, "required_lamports": required,
+                "received_lamports": required, "confirmed": True,
+                "status": "paid", "created_at": int(Date.now()),
+                "payee": payee, "payee_authorized": True,
+                "payout_sig": send_sig, "paid_at": int(Date.now()),
+                "paid_from_wallet": True,
+                "payout_transfers": [
+                    {"address": a, "lamports": l} for a, l in transfers],
+            }
+            await _save_bounty(env, bounty_bi, rec)
+            await _record_bounty_payout(env, rec, transfers)
+            await notify_bounty_event(env, rec, "bounty_paid")
+            return json_response(_bounty_public(rec))
+
         # Reuse an existing unpaid address (top-ups raise the target) so a repeat
         # call doesn't strand funds at a stale address.
         if (rec and rec.get("address") and
@@ -6038,7 +6163,7 @@ async def bounties_handler(env, request, owner, repo):
             if not addr:
                 return json_response({"error": "keypair_failed"}, status=500)
             rec = {
-                "owner": owner, "repo": repo, "number": number,
+                "owner": owner, "repo": repo, "number": number, "kind": kind,
                 "address": addr, "secret": secret,
                 "amount_usd": amount_usd, "required_lamports": required,
                 "received_lamports": 0, "confirmed": False, "status": "open",

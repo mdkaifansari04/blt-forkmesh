@@ -3732,6 +3732,7 @@ void MainWindow::mergeCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
+    autoBountyForMergedPull(current);
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
@@ -6038,11 +6039,127 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
     }
 }
 
+void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
+{
+    // Issue #347: reward every merged PR's author with the configured fixed
+    // bounty, independent of any issue bounty. Only the repo owner can create a
+    // bounty (the worker requires an owner signature), so this is a no-op on a
+    // node that doesn't own the repo.
+    if (!QSettings().value(kAutoPrBountyEnabledSetting, false).toBool())
+        return;
+    if (!m_networkAccess || !m_profileIdentity.isValid())
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.owner.isEmpty() || repo.owner != accountOwner())
+        return;
+    const QString payeeNode = pr.authorName.trimmed().toLower();
+    if (payeeNode.isEmpty())
+        return;
+    // The bounty amount reuses the USD-priced issue-bounty pipeline (min $1).
+    const double amount = QSettings().value(kAutoPrBountyAmountSetting, 1.0).toDouble();
+    if (amount < 1.0)
+        return;
+    const bool walletMode =
+        QSettings().value(kAutoPrBountyModeSetting).toString() ==
+        QLatin1String("wallet");
+    const int number = pr.number;
+
+    // Owner-signed create, keyed to the PR (kind "pr"). The canonical matches the
+    // issue-bounty flow (it binds owner/repo/number/payee); "pr" only affects the
+    // worker's storage key so an issue and a PR sharing a number don't collide.
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-bounty-create-v1\n" + repo.owner + "\n" + repo.name + "\n" +
+         QString::number(number) + "\n" + payeeNode + "\n" + ts).toUtf8();
+    const QJsonObject payload{{"action", "create"},
+                              {"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"kind", QStringLiteral("pr")},
+                              {"amountUsd", amount},
+                              {"payeeNode", payeeNode},
+                              {"fromWallet", walletMode},
+                              {"ts", ts},
+                              {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(bountyApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repo, number, amount, walletMode] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString err = obj.value("error").toString(reply->errorString());
+            if (err == QLatin1String("insufficient_wallet_balance"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but the inbuilt bounty wallet "
+                                   "is low on SOL — top it up in Settings to pay "
+                                   "its $%2 reward.")
+                        .arg(number)
+                        .arg(QString::number(amount, 'f', 2)),
+                    true);
+            else if (err == QLatin1String("no_wallet"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but no inbuilt bounty wallet is "
+                                   "funded yet — set one up in Settings.")
+                        .arg(number),
+                    true);
+            else if (err == QLatin1String("payee_unresolved"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but its author has no Solana "
+                                   "payout address, so no bounty was paid.")
+                        .arg(number),
+                    true);
+            else
+                flashMessage(
+                    QStringLiteral("Could not reward pull #%1: %2").arg(number).arg(err),
+                    true);
+            return;
+        }
+        if (walletMode) {
+            // The worker debits the inbuilt wallet and pays out in one step.
+            logSystem(QStringLiteral("Rewarded pull #%1's author with a $%2 bounty "
+                                     "from the inbuilt wallet (tx %3).")
+                          .arg(number)
+                          .arg(QString::number(amount, 'f', 2))
+                          .arg(obj.value("payoutSig").toString().left(12)));
+            flashMessage(QStringLiteral("Paid pull #%1's author a $%2 bounty from the "
+                                        "inbuilt wallet.")
+                             .arg(number)
+                             .arg(QString::number(amount, 'f', 2)));
+            return;
+        }
+        // Pay-per-PR: mint the escrow and show the funding QR for this merge.
+        const QString address = obj.value("address").toString();
+        if (address.isEmpty()) {
+            flashMessage(QStringLiteral("Could not create the reward deposit for "
+                                        "pull #%1.").arg(number),
+                         true);
+            return;
+        }
+        const QString uri = obj.value("uri").toString(
+            QStringLiteral("solana:%1").arg(address));
+        const QString amountSol = obj.value("amountSol").toString();
+        logSystem(QString::fromUtf8("Reward escrow for pull #%1 ready to fund "
+                                    "($%2 \xE2\x89\x88 %3 SOL).")
+                      .arg(number)
+                      .arg(QString::number(amount, 'f', 2))
+                      .arg(amountSol));
+        showBountyQrDialog(repo, number, uri, address, amount, amountSol,
+                           QStringLiteral("pr"));
+    });
+}
+
 void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
-                                  double amount)
+                                  double amount, const QString &kind)
 {
     if (!m_networkAccess)
         return;
+    const bool isPr = kind == QLatin1String("pr");
     // Poll the escrow status; the worker auto-splits a funded escrow to the
     // author + treasury when status is checked. Stop once paid (or give up after
     // a generous window — the cron backstop still pays it out either way).
@@ -6050,23 +6167,25 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
     auto *timer = new QTimer(this);
     timer->setInterval(8000);
     connect(timer, &QTimer::timeout, this,
-            [this, repo, number, amount, attempts, timer] {
+            [this, repo, number, amount, isPr, attempts, timer] {
         if (!m_networkAccess || ++(*attempts) > 75) { // ~10 minutes
             timer->stop();
             timer->deleteLater();
             delete attempts;
             return;
         }
-        const QJsonObject payload{{"action", "status"},
-                                  {"owner", repo.owner},
-                                  {"repo", repo.name},
-                                  {"number", number}};
+        QJsonObject payload{{"action", "status"},
+                            {"owner", repo.owner},
+                            {"repo", repo.name},
+                            {"number", number}};
+        if (isPr)
+            payload.insert("kind", QStringLiteral("pr"));
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount, attempts, timer] {
+                [this, reply, repo, number, amount, isPr, attempts, timer] {
             const QByteArray body = reply->readAll();
             reply->deleteLater();
             const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6075,19 +6194,24 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
             timer->stop();
             timer->deleteLater();
             delete attempts;
-            IssueStore writeStore = issueStoreForCurrentRepo();
-            QString error;
-            writeStore.setBounty(number, amount, obj.value("payee").toString(),
-                                 QStringLiteral("paid"), &error);
-            logSystem(QStringLiteral("Bounty for issue #%1 funded and split to the "
+            const QString subject = isPr ? QStringLiteral("pull request #%1")
+                                         : QStringLiteral("issue #%1");
+            if (!isPr) {
+                IssueStore writeStore = issueStoreForCurrentRepo();
+                QString error;
+                writeStore.setBounty(number, amount,
+                                     obj.value("payee").toString(),
+                                     QStringLiteral("paid"), &error);
+                if (m_repoDetailIndex == issuesRepoIndex())
+                    reloadIssues();
+            }
+            logSystem(QStringLiteral("Bounty for %1 funded and split to the "
                                      "author + treasury (tx %2).")
-                          .arg(number)
+                          .arg(subject.arg(number))
                           .arg(obj.value("payoutSig").toString().left(12)));
-            flashMessage(QStringLiteral("Bounty for issue #%1 paid out to the author "
+            flashMessage(QStringLiteral("Bounty for %1 paid out to the author "
                                         "+ treasury.")
-                             .arg(number));
-            if (m_repoDetailIndex == issuesRepoIndex())
-                reloadIssues();
+                             .arg(subject.arg(number)));
         });
     });
     timer->start();
@@ -6364,6 +6488,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
+    autoBountyForMergedPull(current);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
     markAgentSessionsMerged(m_currentPullNumber, head);
