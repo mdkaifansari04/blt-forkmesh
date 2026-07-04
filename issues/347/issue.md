@@ -5,7 +5,7 @@ title: make it so that there can be a setting that all PRs receive x amount of S
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 53
 progress: 0
 assignees: []
 createdAt: 1783105099203
