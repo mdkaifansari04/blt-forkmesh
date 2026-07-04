@@ -69,15 +69,41 @@ fi
 # unlinks the inode: the running process keeps executing from the deleted
 # file and keeps reporting its (now stale) presence/version to the network,
 # which is why mirrors could still show an old version after "uninstalling"
-# the host. Stop it first.
-if pgrep -f -- "$BIN" >/dev/null 2>&1; then
-  pkill -f -- "$BIN" 2>/dev/null || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f -- "$BIN" >/dev/null 2>&1 || break
-    sleep 0.5
-  done
-  pgrep -f -- "$BIN" >/dev/null 2>&1 && pkill -9 -f -- "$BIN" 2>/dev/null || true
-  say "Stopped the running ForkMesh daemon"
+# the host. Stop it first — and match it more than one way, because the process
+# we must kill may NOT be the binary at the current $BIN path:
+#   • by exact process name ("forkmesh")  — catches an OLD install that lived
+#     at a different path, and a copy still executing from a deleted/replaced
+#     inode after an in-app update (the classic "still on an old version").
+#   • by $BIN and by the source build dir — the normal and in-place locations.
+_fm_alive() { pgrep -x forkmesh >/dev/null 2>&1 \
+  || pgrep -f -- "$BIN" >/dev/null 2>&1 \
+  || pgrep -f -- "$SRC" >/dev/null 2>&1; }
+if _fm_alive; then
+  pkill -x forkmesh   2>/dev/null || true
+  pkill -f -- "$BIN"  2>/dev/null || true
+  pkill -f -- "$SRC"  2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do _fm_alive || break; sleep 0.5; done
+  if _fm_alive; then
+    pkill -9 -x forkmesh   2>/dev/null || true
+    pkill -9 -f -- "$BIN"  2>/dev/null || true
+    pkill -9 -f -- "$SRC"  2>/dev/null || true
+  fi
+  # Still alive after SIGKILL => not ours to signal (almost always a root/sudo
+  # install). Try a non-interactive sudo (never prompts, so curl|bash can't
+  # hang), then give up with a loud warning rather than leaving a phantom node.
+  if _fm_alive; then
+    if [ "$(id -u 2>/dev/null)" != "0" ] && command -v sudo >/dev/null 2>&1; then
+      sudo -n pkill -9 -x forkmesh 2>/dev/null || true
+      sudo -n pkill -9 -f -- "$BIN" 2>/dev/null || true
+    fi
+    if _fm_alive; then
+      warn "A ForkMesh daemon is STILL running (it is likely owned by root — re-run this uninstall with sudo). Until it is stopped it will keep reporting an old version to the network."
+    else
+      say "Stopped the running ForkMesh daemon"
+    fi
+  else
+    say "Stopped the running ForkMesh daemon"
+  fi
 fi
 
 for d in "${dirs[@]}"; do
