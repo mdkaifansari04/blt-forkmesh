@@ -7384,36 +7384,6 @@ async def _authorize_owner(env, request, owner):
     return await ed25519_verify(owner_pub, sig, canonical)
 
 
-async def _verify_owner_password(env, owner, data):
-    # Re-proves control of a privileged account via password: the repo owner
-    # itself, or a network admin acting on the owner's behalf. Used anywhere a
-    # browser (no signing key) requests an immediate, unreviewed side effect —
-    # starting an agent (issue #373's wantsAgent), listing agent sessions, or
-    # prompting one (adhoc #182) — so a client can't spoof ownership just by
-    # naming an account in the request body. Returns (True, None) on success,
-    # or (False, error_json_response) with the same status/body the callers
-    # used before this was factored out.
-    actor = clean_string(data.get("ownerAccount", "") or owner, 120)
-    actor_bi, actor_rec = await _account_row(env, actor)
-    if await _login_locked_until(env, actor_bi):
-        return False, json_response({"error": "too_many_attempts"}, status=429)
-    owner_password = str(data.get("ownerPassword", "") or "")[:256]
-    verified = bool(
-        actor_rec and actor_rec.get("status") == "active" and
-        actor_rec.get("pass_hash") and owner_password and
-        await verify_password(owner_password,
-                              actor_rec.get("pass_salt", ""),
-                              actor_rec.get("pass_hash", "")))
-    if not verified:
-        await _login_record_fail(env, actor_bi)
-        return False, json_response({"error": "bad_owner_password"}, status=401)
-    if actor.lower() != str(owner or "").lower() \
-            and not await _is_admin(env, actor):
-        return False, json_response({"error": "not_authorized"}, status=403)
-    await _login_clear(env, actor_bi)
-    return True, None
-
-
 async def _authorize_owner_account(env, owner, data):
     # Checks if the named account is the repo owner or a network admin, without
     # requiring password verification. Used for agents tab on website (adhoc #225).

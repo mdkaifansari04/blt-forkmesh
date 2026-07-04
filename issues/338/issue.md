@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 338
 title: Update readme to reflect recent changes
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 67
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783052674
 author: HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE
 authorName: jett
