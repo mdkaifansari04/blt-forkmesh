@@ -5,9 +5,13 @@ mirror"), not "host offline", on both the repo card and the repo detail page."""
 
 from pathlib import Path
 
+from _dashboard_bundle import assembled_dashboard_js
+
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-DASHBOARD_JS = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
+# dashboard.js is split into ordered public/dashboard/js/*.js fragments composed
+# into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
+DASHBOARD_JS = assembled_dashboard_js()
 
 
 def test_dashboard_defines_group_liveness_helpers():
