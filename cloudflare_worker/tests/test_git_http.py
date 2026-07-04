@@ -10,11 +10,14 @@ import pytest
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+# decode_git_request_body now lives in the extracted stdlib-only git_http.py
+# module; the ForkMeshHost/Default method-source checks below still read entry.py.
+GIT_HTTP = ENTRY.parent / "git_http.py"
 
 
 def _load_decoder():
     """Load the real helper without importing the Workers-only JS modules."""
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse(GIT_HTTP.read_text(encoding="utf-8"), filename=str(GIT_HTTP))
     function = next(
         node
         for node in tree.body
@@ -23,7 +26,7 @@ def _load_decoder():
     )
     module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
     namespace = {"gzip": gzip, "io": io}
-    exec(compile(module, str(ENTRY), "exec"), namespace)
+    exec(compile(module, str(GIT_HTTP), "exec"), namespace)
     return namespace["decode_git_request_body"]
 
 
