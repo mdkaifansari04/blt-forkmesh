@@ -37,6 +37,10 @@
     linkGrant: null,
     repoMirrors: [],
     repoServedBy: null,
+    // Owner-only "Agents" tab (adhoc #182): the owner password is re-entered
+    // once per page load and kept ONLY in memory (never localStorage) so the
+    // list/refresh/prompt calls don't re-prompt on every action.
+    agentsView: { password: "", agents: [] },
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -173,6 +177,11 @@
     return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} s`;
   }
 
+  function formatUsd(value) {
+    const number = Number(value);
+    return `$${(Number.isFinite(number) ? number : 0).toFixed(2)}`;
+  }
+
   function normalizedCount(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? number : null;
@@ -249,6 +258,18 @@
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) — tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
   const REPO_TAB_ROUTES = ["commits", "releases", "issues", "pulls", "discussions", "mirrors"];
+
+  // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
+  // for the account that can actually see it — sessionCanAssignAgent gates it
+  // the same way it gates the "Assign to agent" issue checkbox (owner or
+  // admin). A non-owner deep-linking /owner/repo/agents must NOT recognize it
+  // as a tab route (it falls through to the harmless tree/blob path instead),
+  // so the tab is never even addressable, let alone clickable, for them.
+  function repoTabRoutesFor(repo) {
+    return repo && sessionCanAssignAgent(repo)
+      ? REPO_TAB_ROUTES.concat(["agents"])
+      : REPO_TAB_ROUTES;
+  }
 
   // Splits the current path into segments, stripping a leading /dashboard
   // route prefix (e.g. /dashboard/owner/repo/issues -> ["owner","repo","issues"])
@@ -1689,11 +1710,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["issues", "pulls", "discussions", "releases"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["issues", "pulls", "discussions", "releases", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "issues") loadRepoIssues(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
+      else if (tab === "agents") loadRepoAgents(state.selectedRepo);
       else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
     } else if (tab === "issues") {
       // Re-selecting the tab should return to the issues list even if the
@@ -3411,6 +3433,190 @@
     return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
   }
 
+  // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
+  //
+  // Shows the desktop app's running/finished Claude Code agent sessions for
+  // this repo, and lets the owner send a follow-up prompt to a live one. The
+  // desktop pushes the session list; the browser has no signing key, so it
+  // re-proves account ownership with a password (same _verify_owner_password
+  // check the worker already uses for the "Assign to agent" issue checkbox).
+  // The password is cached only in state.agentsView for this page load —
+  // never localStorage — and reset whenever a repo is (re)opened.
+
+  // A session counts as still actionable (promptable) unless it's reached one
+  // of these terminal states. Mirrors the worker/desktop's own status names;
+  // kept as an allowlist-of-terminal-states so an unrecognized/future status
+  // defaults to promptable rather than silently hiding the input.
+  const AGENT_TERMINAL_STATUSES = new Set(["success", "failed", "stopped", "cleared"]);
+
+  function repoAgentsCanPrompt(status) {
+    return !AGENT_TERMINAL_STATUSES.has(String(status || "").toLowerCase());
+  }
+
+  function repoAgentStatusTone(status) {
+    const value = String(status || "").toLowerCase();
+    if (value === "success") return "text-primary";
+    if (value === "failed" || value === "stopped") return "text-destructive";
+    return "text-yellow-500";
+  }
+
+  function renderRepoAgentsPasswordPrompt(hintText = "") {
+    return `
+      <form data-repo-agents-password-form class="grid gap-2 p-4">
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you to view agent sessions
+          <input data-repo-agents-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+        </label>
+        <div class="flex items-center justify-between gap-3">
+          <span data-repo-agents-hint class="text-[11px] text-muted-foreground">${escapeHtml(hintText)}</span>
+          <button type="submit" class="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"><i data-lucide="unlock" class="h-3.5 w-3.5"></i>Unlock</button>
+        </div>
+      </form>`;
+  }
+
+  function renderRepoAgentRow(agent) {
+    const promptable = repoAgentsCanPrompt(agent.status);
+    const issueLabel = agent.issueNumber
+      ? `#${agent.issueNumber} ${agent.issueTitle || ""}`.trim()
+      : (agent.issueTitle || "");
+    return `
+      <div data-repo-agent-row data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-2 px-4 py-3 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
+          ${issueLabel ? `<span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>` : ""}
+          <span class="ml-auto font-mono text-muted-foreground">${escapeHtml(agent.model || "")}</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-muted-foreground">
+          ${agent.provider ? `<span>${escapeHtml(agent.provider)}</span>` : ""}
+          <span>${formatCount(agent.numTurns)} turns</span>
+          ${agent.durationMs ? `<span>${escapeHtml(formatServeSpeed(agent.durationMs))}</span>` : ""}
+          <span>${escapeHtml(formatUsd(agent.costUsd))}</span>
+          ${agent.branchName ? `<span class="font-mono">${escapeHtml(agent.branchName)}</span>` : ""}
+        </div>
+        ${agent.lastError ? `<div class="text-destructive">${escapeHtml(agent.lastError)}</div>` : ""}
+        ${promptable ? `
+        <form data-repo-agent-prompt-form class="flex items-center gap-2">
+          <input data-repo-agent-prompt-input type="text" maxlength="8000" placeholder="Send a message to this agent" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+          <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
+        </form>
+        <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>` : ""}
+      </div>`;
+  }
+
+  function renderRepoAgentsList(agents) {
+    const container = $("[data-repo-agents]");
+    if (!container) return;
+    container.innerHTML = agents.length
+      ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the desktop app.</div>';
+    window.lucide?.createIcons();
+  }
+
+  async function requestRepoAgentsList(repo, password) {
+    const response = await fetch(`${repoApiBase(repo)}/agents/list`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        ownerPassword: password,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return Array.isArray(data.agents) ? data.agents : [];
+  }
+
+  async function loadRepoAgents(repo) {
+    const container = $("[data-repo-agents]");
+    if (!container || !repo) return;
+    if (!state.agentsView.password) {
+      container.innerHTML = renderRepoAgentsPasswordPrompt();
+      window.lucide?.createIcons();
+      return;
+    }
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
+    try {
+      const agents = await requestRepoAgentsList(repo, state.agentsView.password);
+      state.agentsView.agents = agents;
+      renderRepoAgentsList(agents);
+    } catch (error) {
+      const code = String(error?.message || "");
+      // The cached password didn't work (wrong, expired lockout, or the
+      // account lost owner/admin standing) — drop it and re-prompt rather
+      // than silently retrying with a password we know is bad.
+      state.agentsView.password = "";
+      container.innerHTML = renderRepoAgentsPasswordPrompt(
+        code === "too_many_attempts" ? "Too many attempts. Try again later."
+          : code === "not_authorized" ? "This account can't view agents for this repository."
+          : code === "bad_owner_password" ? "Incorrect password."
+          : "Could not load agent sessions. Please try again.");
+      window.lucide?.createIcons();
+    }
+  }
+
+  async function handleRepoAgentsPasswordSubmit(repo, form) {
+    const input = form.querySelector("[data-repo-agents-password]");
+    const password = String(input?.value || "");
+    if (!password) return;
+    state.agentsView.password = password;
+    await loadRepoAgents(repo);
+  }
+
+  async function handleRepoAgentPromptSubmit(repo, form) {
+    const row = form.closest("[data-repo-agent-row]");
+    const agentId = row?.dataset.repoAgentId || "";
+    const input = form.querySelector("[data-repo-agent-prompt-input]");
+    const submit = form.querySelector("[data-repo-agent-prompt-submit]");
+    const hint = row?.querySelector("[data-repo-agent-prompt-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    const text = String(input?.value || "").trim();
+    if (!agentId) return;
+    if (!text) {
+      setHint("Write a message before sending.", "bad");
+      return;
+    }
+    if (!state.agentsView.password) {
+      setHint("Unlock the agents list first.", "bad");
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Sending...");
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/agents/${encodeURIComponent(agentId)}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          ownerAccount: state.session?.nodeName || "",
+          ownerPassword: state.agentsView.password,
+          text,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      if (input) input.value = "";
+      setHint("Sent to the agent.", "good");
+    } catch (error) {
+      const code = String(error?.message || "");
+      setHint(
+        code === "text_required" ? "Write a message before sending."
+          : code === "text_too_long" ? "Message is too long."
+          : code === "prompt_queue_full" ? "Too many pending messages for this repository — try again shortly."
+          : (code === "bad_owner_password" || code === "not_authorized" || code === "too_many_attempts")
+            ? "Your session password expired — refresh the list and unlock again."
+            : "Could not send the message. Please try again.",
+        "bad");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
+
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
@@ -3936,6 +4142,9 @@
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
+    } else if (active === "agents") {
+      state.loadedRepoTabs.agents = true;
+      loadRepoAgents(repo);
     }
   }
 
@@ -4205,6 +4414,9 @@
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
     state.repoServedBy = null;
+    // The cached owner password is only good for this repo's page session —
+    // navigating to a (possibly different) repo re-prompts.
+    state.agentsView = { password: "", agents: [] };
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
@@ -4225,7 +4437,7 @@
       && decodeURIComponent(routeParts[1]) === (repo.name || "");
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
-    const detailPath = REPO_TAB_ROUTES.includes(routeKind)
+    const detailPath = repoTabRoutesFor(repo).includes(routeKind)
       ? `${repoPathUrl(repo)}/${routeKind}`
       : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
     navigateHistory(detailPath);
@@ -4249,7 +4461,9 @@
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
       mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
+      agents: { label: "Agents", icon: "bot", count: "" },
     };
+    const canSeeAgentsTab = sessionCanAssignAgent(repo);
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div class="rounded-t-lg border border-border bg-background">
@@ -4270,7 +4484,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "releases", "issues", "pulls", "discussions", "mirrors"].map((tab) => {
+            ${["code", "commits", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -4359,6 +4573,7 @@
             ${renderRepoCollectionPanel("pulls", repo, null, null)}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
+            ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about class="min-w-0 rounded-lg border border-border bg-background p-4">
             <div class="flex items-center justify-between gap-3">
@@ -4396,7 +4611,7 @@
     window.lucide?.createIcons();
     // Restore whichever tab the URL points at (e.g. a refresh on
     // /owner/repo/issues) instead of always defaulting back to Code.
-    setRepoTab(REPO_TAB_ROUTES.includes(routeKind) ? routeKind : "code");
+    setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
@@ -5066,6 +5281,12 @@
         }
         return;
       }
+
+      const agentsRefreshButton = event.target.closest("[data-repo-agents-refresh]");
+      if (agentsRefreshButton && state.selectedRepo) {
+        loadRepoAgents(state.selectedRepo);
+        return;
+      }
   });
 
   document.addEventListener("submit", (event) => {
@@ -5079,6 +5300,18 @@
     if (discussionReplyForm && state.selectedRepo) {
       event.preventDefault();
       handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
+      return;
+    }
+    const agentsPasswordForm = event.target.closest("[data-repo-agents-password-form]");
+    if (agentsPasswordForm && state.selectedRepo) {
+      event.preventDefault();
+      handleRepoAgentsPasswordSubmit(state.selectedRepo, agentsPasswordForm);
+      return;
+    }
+    const agentPromptForm = event.target.closest("[data-repo-agent-prompt-form]");
+    if (agentPromptForm && state.selectedRepo) {
+      event.preventDefault();
+      handleRepoAgentPromptSubmit(state.selectedRepo, agentPromptForm);
     }
   });
 
@@ -5181,7 +5414,7 @@
       const parts = repoRouteParts();
       const kind = parts[2];
       const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
-      if (REPO_TAB_ROUTES.includes(kind)) {
+      if (repoTabRoutesFor(repo).includes(kind)) {
         // Feature tab (issues, pulls, etc.): restore without re-loading
         // records since they cache in state.
         setRepoTab(kind);
