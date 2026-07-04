@@ -564,7 +564,13 @@
     // The worker only honors wantsAgent when this re-proves account ownership
     // (password check) — a raw client-side checkbox isn't enough, since it
     // makes the owner's node start a coding agent unattended (adhoc #105).
-    if (assignAgent) payload.ownerPassword = ownerPassword;
+    // ownerAccount names which account is re-proving itself: the repo owner, or
+    // an admin acting on the owner's behalf (adhoc #141). The worker verifies
+    // that account's password and that it's the owner or an admin.
+    if (assignAgent) {
+      payload.ownerPassword = ownerPassword;
+      payload.ownerAccount = state.session?.nodeName || "";
+    }
     const response = await fetch(`${repoApiBase(repo)}/issues`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -575,6 +581,88 @@
       throw new Error(data.error || `HTTP ${response.status}`);
     }
     return data;
+  }
+
+  // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
+  // reply body) and the desktop's discussion inbox POST (verify_discussion_event
+  // in the worker). Replies are signed against the discussion's real number —
+  // unlike a new discussion's "open" event, they don't use the placeholder 0.
+  async function submitWebDiscussionComment(repo, number, body) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    const contentHash = await sha256HexLower(cleanBody);
+    const canonical = `forkmesh-discussion-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type: "comment",
+      id: "comment-web-" + ts,
+      body: cleanBody,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/discussions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  async function handleDiscussionReplySubmit(repo, form) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoDiscussionReplyNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-discussion-reply-body]");
+    const submit = form.querySelector("[data-repo-discussion-reply-submit]");
+    const hint = form.querySelector("[data-repo-discussion-reply-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This discussion hasn't finished loading yet.", "bad");
+      return;
+    }
+    if (!body) {
+      setHint("Write a reply before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebDiscussionComment(repo, number, body);
+      const list = form.parentElement?.querySelector("[data-repo-discussion-conversation]");
+      if (list) {
+        if (list.dataset.empty === "true") list.innerHTML = "";
+        list.dataset.empty = "false";
+        list.insertAdjacentHTML("beforeend", renderPullConversationEvent({
+          type: "comment", authorName: state.session?.nodeName || "you",
+          ts: Math.floor(Date.now() / 1000), body,
+        }));
+      }
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Reply sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "discussion_too_large" ? "The reply is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the reply's signature."
+          : "Could not send the reply. Please try again.",
+        "bad");
+    }
   }
 
   function sessionFromAccountPayload(body, base = {}) {
@@ -797,10 +885,12 @@
     }
     applyAvatar(avatar, session);
     if (adminButton) {
-      adminButton.classList.toggle("hidden", !session?.isAdmin);
-      if (session?.isAdmin && session?.adminUrl) {
-        adminButton.href = session.adminUrl;
-      }
+      const adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
+      // Only show the button once we actually have somewhere to send it —
+      // an admin session without adminUrl (ADMIN_PATH not picked up from the
+      // Worker env yet) would otherwise show a button that links to "#".
+      adminButton.classList.toggle("hidden", !adminUrl);
+      adminButton.href = adminUrl || "#";
     }
     renderProfileModal(session);
     renderProfilePage(session);
@@ -2739,7 +2829,7 @@
       ? items.slice(start, end)
       : items;
     return pageItems.map((item) => `
-      <button type="button" ${item.pending ? "disabled" : ""} data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors ${item.pending ? "cursor-default opacity-80" : "hover:bg-secondary/40"}">
+      <button type="button" data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.pending ? item.localId : item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors hover:bg-secondary/40">
         <i data-lucide="${config.icon}" class="mt-0.5 h-4 w-4 ${config.tone}"></i>
         <span class="min-w-0">
           <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -2992,6 +3082,60 @@
     }).filter(Boolean);
   }
 
+  // A discussion's replies are an append-only, signed event log stored as
+  // discussions/<N>/NNNN-comment.md files alongside discussion.md (see
+  // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
+  // row renderer since a discussion comment event has the same shape.
+  function renderRepoDiscussionConversation(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No replies yet on this discussion.</div>';
+    return rows.map(renderPullConversationEvent).join("");
+  }
+
+  async function loadRepoDiscussionConversation(repo, number) {
+    let tree;
+    try {
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `discussions/${number}` }));
+    } catch (_) {
+      return [];
+    }
+    const files = (Array.isArray(tree.entries) ? tree.entries : [])
+      .filter((entry) => entry.type !== "tree" && /^\d+-comment\.md$/.test(String(entry.name || "")))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!files.length) return [];
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `discussions/${number}/${entry.name}`));
+    return files.map((entry) => {
+      const blob = blobs[`discussions/${number}/${entry.name}`];
+      if (!blob) return null;
+      const parsed = parseFrontMatter(blobText(blob));
+      const values = parsed.values || {};
+      return {
+        type: "comment",
+        author: values.author || "",
+        authorName: values.authorName || "",
+        ts: values.ts || "",
+        body: parsed.body || "",
+      };
+    }).filter(Boolean);
+  }
+
+  function renderDiscussionReplyForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
+    }
+    const who = escapeHtml(state.session.nodeName);
+    return `
+      <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Reply
+          <textarea data-repo-discussion-reply-body rows="3" placeholder="Write a reply. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Replying as ${who}. Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-discussion-reply-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Reply</button>
+        </div>
+      </form>`;
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -3016,7 +3160,7 @@
     ];
   }
 
-  function renderRepoRecordDetail(repo, kind, number, parsed) {
+  function renderRepoRecordDetail(repo, kind, number, parsed, options = {}) {
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
@@ -3024,6 +3168,9 @@
     const author = values.authorName || values.author || "unknown";
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
+    const recordLabel = options.pending ? "pending" : `#${escapeHtml(number)}`;
+    const pendingNotice = options.pending ? `
+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = kind === "pulls" ? `
@@ -3046,12 +3193,23 @@
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
           ${renderRepoPullPatch(pullPatch.patch)}
         </section>` : "";
+    const discussionConversation = parsed.discussionConversation || [];
+    const discussionConversationSection = kind === "discussions" ? `
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Replies</span>
+            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(discussionConversation.length)} ${discussionConversation.length === 1 ? "reply" : "replies"}</span>
+          </div>
+          <div data-repo-discussion-conversation data-empty="${discussionConversation.length ? "false" : "true"}">${renderRepoDiscussionConversation(discussionConversation)}</div>
+          ${renderDiscussionReplyForm(number)}
+        </section>` : "";
     return `
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-4 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
-          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · #${escapeHtml(number)}</span>
+          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
         </div>
+        ${pendingNotice}
         <header class="rounded-lg border border-border bg-secondary/30 p-4">
           <div class="flex min-w-0 flex-wrap items-center gap-2">
             <i data-lucide="${config.icon}" class="h-4 w-4 ${config.tone}"></i>
@@ -3069,6 +3227,7 @@
         </section>
         ${pullConversationSection}
         ${pullFilesSection}
+        ${discussionConversationSection}
       </article>`;
   }
 
@@ -3076,6 +3235,20 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
+    // Issues just submitted from this session sit in the maintainer's inbox
+    // until drained, so there's nothing to fetch from the mirror yet — render
+    // the detail straight from the local placeholder instead.
+    const pendingItem = kind === "issues"
+      ? state.issuesView.items.find((item) => item.pending && item.localId === number)
+      : null;
+    if (pendingItem) {
+      container.innerHTML = renderRepoRecordDetail(repo, kind, number, {
+        values: { title: pendingItem.title, status: pendingItem.status, authorName: pendingItem.author },
+        body: pendingItem.body,
+      }, { pending: true });
+      window.lucide?.createIcons();
+      return;
+    }
     const recordPath = `${config.dir}/${number}/${config.file}`;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
     try {
@@ -3084,6 +3257,7 @@
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
+      if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
@@ -3228,11 +3402,20 @@
     return Boolean(owner) && owner === String(repo?.owner || "").toLowerCase();
   }
 
+  // True when the logged-in account may assign an issue to a coding agent on
+  // this repo's node: the repo owner itself, or an admin acting on the owner's
+  // behalf (admin node-ownership, adhoc #141). The backend independently
+  // re-checks both the account password and admin status, so this is only the
+  // client-side gate for showing the checkbox.
+  function sessionCanAssignAgent(repo) {
+    return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
+  }
+
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
     const who = escapeHtml(state.session?.nodeName || "you");
-    const canAssignAgent = sessionOwnsRepo(repo);
+    const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -3257,7 +3440,7 @@
         <div class="grid gap-2">
           <label class="flex items-center gap-2 text-xs text-muted-foreground">
             <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
-            <span>Assign to agent — once filed, your node starts a coding agent on it automatically</span>
+            <span>Assign to agent — once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
           </label>
           <label data-repo-issue-agent-password-row class="hidden grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you
             <input data-repo-issue-agent-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
@@ -3415,6 +3598,7 @@
       // top of this session's issue list, so the submitter sees it right away.
       state.issuesView.items = [{
         number: null,
+        localId: `pending-${Date.now().toString(36)}`,
         title,
         status: "open",
         author: state.session?.nodeName || "you",
@@ -3440,6 +3624,7 @@
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "bad_owner_password" ? "That account password isn't correct."
+          : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
           : code === "too_many_attempts" ? "Too many password attempts. Try again later."
           : "Could not send the issue. Please try again.",
         "bad");
@@ -4026,14 +4211,24 @@
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
     // Show the clean, shareable /owner/name URL in the address bar instead of
-    // the /dashboard?repo=... target that 404.html bounces repo links to (and
-    // instead of a bare /dashboard when the repo is opened from the list). Leave
-    // a URL that already points inside this repo (e.g. an /owner/name/tree/...
-    // deep link) untouched so the tree/blob restore below still sees its path.
-    const detailPath = repoPathUrl(repo);
-    if (!location.pathname.startsWith(detailPath)) {
-      navigateHistory(detailPath);
-    }
+    // the /dashboard/owner/name... path that 404.html bounces refreshed repo
+    // links (including /owner/name/issues etc.) to. Carry over whatever tab or
+    // tree/blob suffix the incoming URL already pointed at instead of
+    // collapsing it to the bare repo root — otherwise a refresh on the Issues
+    // tab would lose its place and land back on Code. Only trust that suffix
+    // when the URL is actually addressing THIS repo already (a fresh open from
+    // the repo list/sidebar while some other repo's tab URL is showing should
+    // still land on Code, not inherit the other repo's tab).
+    const routeParts = repoRouteParts();
+    const routeMatchesRepo = routeParts.length >= 2
+      && decodeURIComponent(routeParts[0]) === (repo.owner || "")
+      && decodeURIComponent(routeParts[1]) === (repo.name || "");
+    const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
+    const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
+    const detailPath = REPO_TAB_ROUTES.includes(routeKind)
+      ? `${repoPathUrl(repo)}/${routeKind}`
+      : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
+    navigateHistory(detailPath);
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
@@ -4199,14 +4394,11 @@
       </div>`;
     setSection("explore");
     window.lucide?.createIcons();
-    const parts = repoRouteParts();
-    const kind = parts[2];
-    const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
     // Restore whichever tab the URL points at (e.g. a refresh on
     // /owner/repo/issues) instead of always defaulting back to Code.
-    setRepoTab(REPO_TAB_ROUTES.includes(kind) ? kind : "code");
-    loadRepositoryTree(repo, kind === "tree" ? path : "");
-    if (kind === "blob" && path) loadRepositoryBlob(repo, path);
+    setRepoTab(REPO_TAB_ROUTES.includes(routeKind) ? routeKind : "code");
+    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
   }
 
@@ -4881,6 +5073,12 @@
     if (issueForm && state.selectedRepo) {
       event.preventDefault();
       handleIssueComposeSubmit(state.selectedRepo, issueForm);
+      return;
+    }
+    const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");
+    if (discussionReplyForm && state.selectedRepo) {
+      event.preventDefault();
+      handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
     }
   });
 
