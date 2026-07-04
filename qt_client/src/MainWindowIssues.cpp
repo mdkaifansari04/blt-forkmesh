@@ -4420,17 +4420,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             break;
         }
     }
-    // Agents composer: Enter sends the queued message; Shift+Enter inserts a
-    // newline (issue #41). Mirrors the Claude Code conversation input.
-    if (obj == m_agentPromptEdit && event->type() == QEvent::KeyPress) {
-        auto *ke = static_cast<QKeyEvent *>(event);
-        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
-            && !(ke->modifiers() & Qt::ShiftModifier)) {
-            if (m_agentSendPromptButton)
-                m_agentSendPromptButton->click();
-            return true;
-        }
-    }
     // Drag along the issue list's Progress column to set a row's percent.
     if (m_issueTable && obj == m_issueTable->viewport() &&
         (event->type() == QEvent::MouseButtonPress ||
@@ -4508,8 +4497,8 @@ bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
         QWidget *host = w;
         while (host && !qobject_cast<QTextEdit *>(host) && !qobject_cast<QPlainTextEdit *>(host))
             host = host->parentWidget();
-        // Don't offer to send the prompt boxes' own text back into themselves.
-        if (!host || host == m_issueQuickAdd || host == m_agentPromptEdit)
+        // Don't offer to send the prompt box's own text back into itself.
+        if (!host || host == m_issueQuickAdd)
             return false;
         if (auto *te = qobject_cast<QTextEdit *>(host)) {
             selected = te->textCursor().selectedText();
@@ -4541,14 +4530,12 @@ bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
     return true;
 }
 
-// Appends text to whichever prompt box is the live target: the per-agent
-// composer when an agent session's detail panel is open and on screen, else
-// the footer's always-present global quick-add box.
+// Appends text to the footer's always-present global quick-add box — the only
+// prompt target left since the per-agent composer's input field was removed
+// (adhoc #139; the quick-add bar's "send to agent" button covers that case).
 void MainWindow::appendTextToActivePrompt(const QString &text)
 {
-    QPlainTextEdit *target = (m_agentPromptEdit && m_agentPromptEdit->isVisible())
-        ? m_agentPromptEdit
-        : m_issueQuickAdd;
+    QPlainTextEdit *target = m_issueQuickAdd;
     if (!target)
         return;
     QTextCursor cursor = target->textCursor();
