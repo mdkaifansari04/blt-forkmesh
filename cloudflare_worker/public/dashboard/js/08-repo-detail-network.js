@@ -954,9 +954,15 @@
       }
 
       // Open an agent's detail page — live transcript + prompt (adhoc #259).
+      // Toggle: clicking a selected agent returns to the list (issue #375).
       const agentOpenButton = event.target.closest("[data-repo-agent-open]");
       if (agentOpenButton && state.selectedRepo) {
-        openRepoAgentDetail(state.selectedRepo, agentOpenButton.dataset.repoAgentId || "");
+        const agentId = agentOpenButton.dataset.repoAgentId || "";
+        if (String(state.agentsView.selectedAgentId ?? "") === String(agentId)) {
+          closeRepoAgentDetail(state.selectedRepo);
+        } else {
+          openRepoAgentDetail(state.selectedRepo, agentId);
+        }
         return;
       }
       const agentBackButton = event.target.closest("[data-repo-agent-back]");
