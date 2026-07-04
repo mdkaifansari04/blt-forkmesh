@@ -2699,7 +2699,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // Count badge, same look as the chat unread badge, pinned to its top-right
     // corner. Shows the total number of known agent sessions.
     m_agentsNavBadge = new QLabel(m_agentsNavButton);
-    m_agentsNavBadge->setObjectName("chatUnreadBadge");
+    m_agentsNavBadge->setObjectName("agentsNavBadge");
     m_agentsNavBadge->setAlignment(Qt::AlignCenter);
     m_agentsNavBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_agentsNavBadge->hide();
