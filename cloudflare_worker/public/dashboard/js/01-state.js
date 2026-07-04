@@ -38,8 +38,10 @@
     repoMirrors: [],
     repoServedBy: null,
     // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
-    // no password required.
-    agentsView: { agents: [] },
+    // no password required. selectedAgentId (adhoc #259) is the id of the agent
+    // whose detail page — live transcript + prompt — is currently open, or null
+    // for the session list.
+    agentsView: { agents: [], selectedAgentId: null },
   };
 
   // Auto-refresh timer for the Agents tab (adhoc #182): polls the session list
@@ -47,6 +49,12 @@
   // updates and prompt replies show up without a manual click. Cleared on tab
   // switch and on repo (re)open — see stopRepoAgentsAutoRefresh callers below.
   let repoAgentsRefreshTimer = null;
+
+  // Faster poll (adhoc #259) that keeps the open agent detail page's transcript
+  // live while it's on screen. Separate from the list poll so it can refresh
+  // just the transcript pane without rebuilding the prompt input or losing the
+  // caret. Cleared whenever the detail page closes — see stopRepoAgentTranscriptRefresh.
+  let repoAgentTranscriptTimer = null;
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
