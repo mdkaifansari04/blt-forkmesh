@@ -1352,8 +1352,8 @@ void MainWindow::loadMirrorNodesPanel()
                     .arg(nodeIssues == 1 ? "" : "s"));
         m_mirrorNodesTable->setItem(row, 4, issuesItem);
 
-        // Commits / Branches / Pulls / Discussions / Worktrees: more per-node
-        // tallies advertised alongside the issue count, so the panel shows how much
+        // Commits / Branches / Pulls / Discussions: more per-node tallies
+        // advertised alongside the issue count, so the panel shows how much
         // history each node mirrors and how busy it is. Em-dash for older peers.
         m_mirrorNodesTable->setItem(
             row, 5,
@@ -1369,28 +1369,24 @@ void MainWindow::loadMirrorNodesPanel()
             row, 8,
             makeCountCell(advert ? advert->discussionCount : -1, "discussion",
                           "discussions"));
-        m_mirrorNodesTable->setItem(
-            row, 9,
-            makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
-                          "worktrees"));
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
-        m_mirrorNodesTable->setItem(row, 10, makeCpuUsageCell(node.cpuPercent));
+        m_mirrorNodesTable->setItem(row, 9, makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 11, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+            row, 10, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
         m_mirrorNodesTable->setItem(
-            row, 12,
+            row, 11,
             makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
 
         m_mirrorNodesTable->setItem(
-            row, 13,
+            row, 12,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 14,
+            row, 13,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -1398,7 +1394,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 15, idItem);
+        m_mirrorNodesTable->setItem(row, 14, idItem);
 
         // Clones / website serves: per-node local counters. Our own row reads the
         // freshest count straight from the local tally (keyed as onRequestServed
@@ -1415,15 +1411,15 @@ void MainWindow::loadMirrorNodesPanel()
             nodeClones = s.first;
             nodeWebsite = s.second;
         }
-        m_mirrorNodesTable->setItem(row, 16,
+        m_mirrorNodesTable->setItem(row, 15,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
         m_mirrorNodesTable->setItem(
-            row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
+            row, 16, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
         // Artifacts: how many release binaries this node is hosting for download
         // in its content-addressed store (issue #304). A mirror replicates these
         // separately from git, so the count reflects what it can actually serve.
         m_mirrorNodesTable->setItem(
-            row, 18,
+            row, 17,
             makeCountCell(advert ? advert->artifactCount : -1, "artifact",
                           "artifacts"));
         ++count;
@@ -1514,10 +1510,10 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
-            // Issues / commit / branch / pull / discussion / worktree counts /
-            // platform / version / node id: also mirrored into the catalog record by
-            // the publishing node, so they show for an offline node too (adhoc #56).
-            // Only the live CPU/RAM/disk telemetry (cols 10-12) stays unknown for
+            // Issues / commit / branch / pull / discussion counts / platform /
+            // version / node id: also mirrored into the catalog record by the
+            // publishing node, so they show for an offline node too (adhoc #56).
+            // Only the live CPU/RAM/disk telemetry (cols 9-11) stays unknown for
             // catalog rows — it's broadcast per heartbeat, never stored.
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
@@ -1546,22 +1542,18 @@ void MainWindow::loadMirrorNodesPanel()
                 row, 8,
                 makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
                               "discussions"));
-            m_mirrorNodesTable->setItem(
-                row, 9,
-                makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
-                              "worktrees"));
-            for (int col : {10, 11, 12})
+            for (int col : {9, 10, 11})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
-                row, 13,
+                row, 12,
                 new QTableWidgetItem(catPlatform.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catPlatform));
             const QString catVersion = m.value("version").toString();
             m_mirrorNodesTable->setItem(
-                row, 14,
+                row, 13,
                 new QTableWidgetItem(catVersion.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catVersion));
@@ -1574,19 +1566,19 @@ void MainWindow::loadMirrorNodesPanel()
                                             : QString()));
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
-            m_mirrorNodesTable->setItem(row, 15, catIdItem);
+            m_mirrorNodesTable->setItem(row, 14, catIdItem);
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
             const int catWebsite = m.value("websiteServed").toInt(-1);
             m_mirrorNodesTable->setItem(
-                row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
+                row, 15, makeServeCountCell(catClones, clonesTip(catClones)));
             m_mirrorNodesTable->setItem(
-                row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
+                row, 16, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             // Artifacts the publishing node reported hosting for download, so the
             // count shows for an offline node too.
             m_mirrorNodesTable->setItem(
-                row, 18,
+                row, 17,
                 makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
                               "artifacts"));
             ++count;
