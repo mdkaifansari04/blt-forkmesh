@@ -43,6 +43,12 @@
     agentsView: { password: "", agents: [] },
   };
 
+  // Auto-refresh timer for the Agents tab (adhoc #182): polls the session list
+  // every ~10s while that tab is active and unlocked, so status/turn/cost
+  // updates and prompt replies show up without a manual click. Cleared on tab
+  // switch and on repo (re)open — see stopRepoAgentsAutoRefresh callers below.
+  let repoAgentsRefreshTimer = null;
+
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const MAX_REPO_FILE_FINDER_RESULTS = 500;
@@ -1706,6 +1712,9 @@
   // records doesn't fire record reads for tabs nobody opened.
   function activateRepoTab(tab) {
     setRepoTab(tab);
+    // The Agents auto-refresh poll only makes sense while that tab is the one
+    // on screen; leaving it (to any other tab) stops the poll.
+    if (tab !== "agents") stopRepoAgentsAutoRefresh();
     if (!state.selectedRepo) return;
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
@@ -1721,6 +1730,10 @@
       // Re-selecting the tab should return to the issues list even if the
       // new-issue compose form was left open.
       renderRepoIssues();
+    } else if (tab === "agents" && state.agentsView.password) {
+      // Already unlocked and loaded on an earlier visit this page load —
+      // just resume polling instead of re-fetching immediately.
+      startRepoAgentsAutoRefresh(state.selectedRepo);
     }
   }
 
@@ -3527,10 +3540,35 @@
     return Array.isArray(data.agents) ? data.agents : [];
   }
 
+  function stopRepoAgentsAutoRefresh() {
+    if (repoAgentsRefreshTimer) {
+      window.clearInterval(repoAgentsRefreshTimer);
+      repoAgentsRefreshTimer = null;
+    }
+  }
+
+  // Re-arms a fresh ~10s interval after every successful load, and self-stops
+  // the moment it's no longer applicable (repo switched, tab left, or the
+  // cached password was dropped) rather than trusting whoever started it to
+  // remember to clean up on every possible exit path.
+  function startRepoAgentsAutoRefresh(repo) {
+    stopRepoAgentsAutoRefresh();
+    if (!repo || !state.agentsView.password) return;
+    repoAgentsRefreshTimer = window.setInterval(() => {
+      if (!state.selectedRepo || repoKey(state.selectedRepo) !== repoKey(repo) ||
+          state.activeRepoTab !== "agents" || !state.agentsView.password) {
+        stopRepoAgentsAutoRefresh();
+        return;
+      }
+      loadRepoAgents(repo);
+    }, 10000);
+  }
+
   async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
     if (!state.agentsView.password) {
+      stopRepoAgentsAutoRefresh();
       container.innerHTML = renderRepoAgentsPasswordPrompt();
       window.lucide?.createIcons();
       return;
@@ -3540,12 +3578,14 @@
       const agents = await requestRepoAgentsList(repo, state.agentsView.password);
       state.agentsView.agents = agents;
       renderRepoAgentsList(agents);
+      startRepoAgentsAutoRefresh(repo);
     } catch (error) {
       const code = String(error?.message || "");
       // The cached password didn't work (wrong, expired lockout, or the
       // account lost owner/admin standing) — drop it and re-prompt rather
       // than silently retrying with a password we know is bad.
       state.agentsView.password = "";
+      stopRepoAgentsAutoRefresh();
       container.innerHTML = renderRepoAgentsPasswordPrompt(
         code === "too_many_attempts" ? "Too many attempts. Try again later."
           : code === "not_authorized" ? "This account can't view agents for this repository."
@@ -4417,6 +4457,7 @@
     // The cached owner password is only good for this repo's page session —
     // navigating to a (possibly different) repo re-prompts.
     state.agentsView = { password: "", agents: [] };
+    stopRepoAgentsAutoRefresh();
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
