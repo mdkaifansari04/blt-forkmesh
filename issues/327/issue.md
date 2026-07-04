@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 327
 title: Make sure issues reported from the web are able to have screenshots attached
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 23
 progress: 0
 assignees: []
 createdAt: 1782960111
