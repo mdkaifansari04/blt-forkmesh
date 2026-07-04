@@ -2136,6 +2136,19 @@ const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
     QStringLiteral("diagnostics/autoAgentOnStall");
+// Opt-in (OFF by default): on startup, upload the previous session's crash
+// summary and UI-stall records to the mainnode so bugs users hit reach a triage
+// queue instead of dying in a local log (issue #354). Only the app version, OS,
+// and an anonymized node hash go with it; repo names and filesystem paths are
+// scrubbed client-side before the payload is built. kTelemetryCrashOffsetSetting
+// / kTelemetryStallOffsetSetting remember how many bytes of each log were already
+// sent, so a restart never re-uploads the same records.
+const QString kUploadTelemetrySetting =
+    QStringLiteral("diagnostics/uploadTelemetry");
+const QString kTelemetryCrashOffsetSetting =
+    QStringLiteral("diagnostics/telemetryCrashOffset");
+const QString kTelemetryStallOffsetSetting =
+    QStringLiteral("diagnostics/telemetryStallOffset");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
