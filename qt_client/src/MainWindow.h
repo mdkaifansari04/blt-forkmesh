@@ -1231,10 +1231,17 @@ private:
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
+    // Same as continueSelectedAgentSession, but for an arbitrary session id —
+    // used to resume a session steered from the website (adhoc #182) without
+    // disturbing whatever session is currently selected in the UI.
+    void continueAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
     void sendPromptToSelectedAgent(const QString &prompt);
+    // Same as sendPromptToSelectedAgent, but for an arbitrary session id
+    // (adhoc #182: the website can steer any of this node's agent sessions).
+    void sendPromptToAgentSession(int sessionId, const QString &prompt);
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -2204,8 +2211,9 @@ private:
     // sessions (steering a running one from the browser).
     void drainAgentPrompts();
     void drainAgentPromptsFor(RepositoryRecord repo);
-    // Deliver one queued website prompt to the matching live session, or log +
-    // drop it if the session isn't found / isn't currently running.
+    // Deliver one queued website prompt to the matching session via
+    // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
+    // log + drop it if no local session with that id exists.
     void deliverQueuedAgentPrompt(int sessionId, const QString &text);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.

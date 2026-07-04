@@ -1209,13 +1209,21 @@ QWidget *MainWindow::buildAgentsTab()
 // footer quick-add's up-arrow ("send to the visible agent") button.
 void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
 {
-    if (prompt.isEmpty() || m_selectedAgentSessionId < 0)
+    sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
+}
+
+// Same as sendPromptToSelectedAgent, but for an arbitrary session id rather
+// than whichever one is currently open in the UI (adhoc #182: the website can
+// steer any of this node's agent sessions, not just the locally-selected one).
+void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
+{
+    if (prompt.isEmpty() || sessionId < 0)
         return;
-    if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
+    if (ClaudeStreamSession *s = m_streamSessions.value(sessionId);
         s && s->running()) {
         // Steer the live Claude Code transcript session: record the turn in
         // this session's buffer so it survives view switches, then send it.
-        const int sid = m_selectedAgentSessionId;
+        const int sid = sessionId;
         QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
                          {QStringLiteral("text"), prompt}};
         applyTranscriptEvent(sid, turn);
@@ -1236,9 +1244,9 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
                 m_agentStore->saveSession(*as);
             updateAgentStatusCell(sid);
         }
-    } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+    } else if (AgentRunner *runner = runnerForSession(sessionId)) {
         runner->steer(prompt);
-    } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+    } else if (AgentSession *session = findAgentSession(sessionId)) {
         // No live process: the session is stopped, waiting, failed or done.
         // Restart it and fold this message into the resumed run as a steering
         // instruction so the queued message actually takes effect (adhoc #177).
@@ -1254,7 +1262,7 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
                 *session,
                 QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
                     .arg(prompt));
-        continueSelectedAgentSession();
+        continueAgentSession(sid);
     }
 }
 
@@ -1299,7 +1307,10 @@ void MainWindow::pushAgentSessionsSnapshot()
     // (mirrors pollOwnedInboxes).
     QSet<QString> seen;
     for (const RepositoryRecord &repo : m_repositories) {
-        if (repo.previewOnly)
+        // Only a repo actually published to the network has a website page to
+        // show agents on in the first place — skip local-only/unpublished ones
+        // rather than hitting an endpoint the worker has no catalog entry for.
+        if (repo.previewOnly || !repo.publishToNetwork)
             continue;
         const QString key = repo.owner + "/" + repo.name;
         if (seen.contains(key) || !byRepo.contains(key))
@@ -1399,7 +1410,9 @@ void MainWindow::drainAgentPrompts()
         return;
     QSet<QString> seen;
     for (const RepositoryRecord &repo : m_repositories) {
-        if (repo.previewOnly)
+        // Same publish gate as pushAgentSessionsSnapshot: no website page, no
+        // prompts to have been queued there.
+        if (repo.previewOnly || !repo.publishToNetwork)
             continue;
         const QString key = repo.owner + "/" + repo.name;
         if (seen.contains(key))
@@ -1463,42 +1476,24 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
     });
 }
 
-// Steer a running agent session with a prompt queued from the website. Mirrors
-// the live-session branch of sendPromptToSelectedAgent, but by session id
-// rather than the currently-selected one — a website prompt can target any
-// session, not just whichever one happens to be open locally. Out of scope: a
-// session that isn't currently running (finished/stopped) is just logged and
-// dropped rather than resumed (that's a larger feature).
+// Steer an agent session with a prompt queued from the website, by session id
+// rather than whichever one happens to be open locally — this is
+// sendPromptToAgentSession's caller for the website-drain path (adhoc #182).
 void MainWindow::deliverQueuedAgentPrompt(int sessionId, const QString &text)
 {
-    AgentSession *session = findAgentSession(sessionId);
-    if (!session) {
+    if (!findAgentSession(sessionId)) {
         logSystem(QStringLiteral(
             "Dropped a website prompt: no local agent session #%1.")
                       .arg(sessionId));
         return;
     }
-    ClaudeStreamSession *stream = m_streamSessions.value(sessionId);
-    if (!stream || !stream->running()) {
-        logSystem(QStringLiteral(
-            "Dropped a website prompt for agent #%1: session isn't running.")
-                      .arg(sessionId));
-        return;
-    }
-    QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                     {QStringLiteral("text"), text}};
-    applyTranscriptEvent(sessionId, turn);
-    stream->sendUserText(text);
-    if (sessionId == m_selectedAgentSessionId)
-        bumpClaudeCodeUsage(); // issue #84: nudge the rolling-window usage poll
-    if (session->status != AgentStatus::Running) {
-        session->status = AgentStatus::Running;
-        session->finishedAtMs = 0;
-        session->lastError.clear();
-        if (m_agentStore)
-            m_agentStore->saveSession(*session);
-        updateAgentStatusCell(sessionId);
-    }
+    // Delegate to the same steer-or-resume logic as the in-app composer
+    // (sendPromptToSelectedAgent's per-id sibling): a running session gets the
+    // text sent straight to its live process, an idle runner is steered, and a
+    // stopped/finished session is resumed with the message folded in as a
+    // steering instruction (adhoc #177) — a website prompt shouldn't be
+    // dropped just because the session isn't running right now.
+    sendPromptToAgentSession(sessionId, text);
 }
 
 void MainWindow::testOpenAiAgentKey()
@@ -3867,9 +3862,21 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
 
 void MainWindow::continueSelectedAgentSession()
 {
-    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+    continueAgentSession(m_selectedAgentSessionId);
+}
+
+// Same as continueSelectedAgentSession, but for an arbitrary session id
+// (adhoc #182: a website-queued prompt may resume a session that isn't the
+// one currently open locally). showAgentSession() moves the UI's selection
+// and opens the detail pane — a background resume triggered from the browser
+// must not yank the view away from whatever the user is looking at, so it's
+// only called here when the resumed session was already the selected one
+// (i.e. this is really the continueSelectedAgentSession path).
+void MainWindow::continueAgentSession(int sessionId)
+{
+    if (!m_agentStore || sessionId <= 0)
         return;
-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
     // Already running (in its own runner) or queued — nothing to do. Other
@@ -3895,11 +3902,12 @@ void MainWindow::continueSelectedAgentSession()
     // Capture the id before reloadAgents() rebuilds m_agentSessions, which frees
     // the backing array and leaves `session` dangling (a use-after-free crash if
     // dereferenced afterwards).
-    const int sessionId = session->id;
-    if (!m_agentQueue.contains(sessionId))
-        m_agentQueue.append(sessionId);
+    const int sid = session->id;
+    if (!m_agentQueue.contains(sid))
+        m_agentQueue.append(sid);
     reloadAgents();
-    showAgentSession(sessionId);
+    if (sid == m_selectedAgentSessionId)
+        showAgentSession(sid);
     processAgentQueue();
 }
 
