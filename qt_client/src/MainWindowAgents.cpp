@@ -1172,6 +1172,23 @@ QWidget *MainWindow::buildAgentsTab()
 // footer quick-add's up-arrow ("send to the visible agent") button.
 void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
 {
+    // The composer's model dropdown is the user's live choice for what runs
+    // next; without this the session kept coasting on whatever model it
+    // happened to launch with, so switching the dropdown before following up
+    // on an idle/stopped agent silently did nothing. Only a restart (the
+    // no-live-process branch in sendPromptToAgentSession below) actually picks
+    // the new model up — a still-running process can't be retargeted mid-turn
+    // — but stashing it on the session now means the very next resume honors it.
+    if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+        session && session->provider == QLatin1String("claude-code") &&
+        m_quickAddClaudeModel) {
+        const QString chosen = m_quickAddClaudeModel->currentData().toString();
+        if (session->model != chosen) {
+            session->model = chosen;
+            if (m_agentStore)
+                m_agentStore->saveSession(*session);
+        }
+    }
     sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
 }
 
