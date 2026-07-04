@@ -4718,70 +4718,108 @@ void MainWindow::pushCurrentRepoUpstream()
         upstream = QString::fromUtf8(upstreamOut).trimmed();
     }
 
-    // Secret scanning push protection: scan new commits (or all tracked files
-    // for relay repos) and warn the user before any data leaves this node.
-    if (repo.secretScanningEnabled) {
-        const QList<RepoSecurityFinding> findings =
-            RepoSecurity::findSecretsInPush(repo.localPath, upstream);
-        if (!findings.isEmpty()) {
-            QString detail;
-            const int shown = qMin(findings.size(), 5);
-            for (int i = 0; i < shown; ++i) {
-                const RepoSecurityFinding &f = findings.at(i);
-                detail += QStringLiteral("• %1 in %2 (line %3)\n")
-                              .arg(f.title, f.path)
-                              .arg(f.line);
-            }
-            if (findings.size() > shown)
-                detail += QStringLiteral("  … and %1 more\n")
-                              .arg(findings.size() - shown);
+    // The secret scan walks the pushed commits (or every tracked file for a relay
+    // repo) and the ahead-count runs rev-list — both are git reads heavy enough to
+    // freeze the GUI thread on a large repo (StallWatchdog's top push offender,
+    // issue #353). Run them off-thread and resume on the GUI thread for the
+    // (possibly modal) result. Mark the repo "pushing" now so the button flips to
+    // its busy state and the entry guard blocks a second click during the scan.
+    m_pushingRepos.insert(index);
+    updateRepoPushButton();
 
-            QMessageBox box(this);
-            box.setWindowTitle(QStringLiteral("Secret scanning: push blocked"));
-            box.setIcon(QMessageBox::Critical);
-            box.setText(
-                QStringLiteral(
-                    "Push protection detected %1 probable secret%2 in the "
-                    "commits being pushed for %3/%4.\n\n%5\n"
-                    "Rotate any exposed credentials before pushing.")
-                    .arg(findings.size())
-                    .arg(findings.size() == 1 ? QString() : QStringLiteral("s"))
-                    .arg(repo.owner, repo.name, detail));
-            auto *cancelBtn =
-                box.addButton(QStringLiteral("Cancel push"), QMessageBox::RejectRole);
-            auto *bypassBtn =
-                box.addButton(QStringLiteral("Push anyway"), QMessageBox::DestructiveRole);
-            box.setDefaultButton(cancelBtn);
-            box.exec();
-            if (box.clickedButton() != bypassBtn) {
+    struct PushScan {
+        QList<RepoSecurityFinding> findings;
+        int ahead = 0;
+    };
+    const bool scanEnabled = repo.secretScanningEnabled;
+    const QString localPath = repo.localPath;
+    runOffThread<PushScan>(
+        [scanEnabled, localPath, upstream, isRelay]() {
+            PushScan scan;
+            if (scanEnabled)
+                scan.findings = RepoSecurity::findSecretsInPush(localPath, upstream);
+            if (!isRelay) {
+                QByteArray countOut;
+                runGitCapture(localPath,
+                              {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                               QStringLiteral("@{upstream}..HEAD")},
+                              &countOut, nullptr);
+                scan.ahead = QString::fromUtf8(countOut).trimmed().toInt();
+            }
+            return scan;
+        },
+        [this, index, repo, upstream, isRelay](PushScan scan) {
+            // The repo list can be rebuilt while the scan runs; bail (releasing the
+            // pushing marker) if this index no longer points at the same repo.
+            if (index < 0 || index >= m_repositories.size() ||
+                m_repositories.at(index).localPath != repo.localPath) {
+                m_pushingRepos.remove(index);
                 updateRepoPushButton();
                 return;
             }
-            logSystem(QStringLiteral(
-                          "Git: secret-scan bypass: pushing %1/%2 despite %3 finding%4.")
-                          .arg(repo.owner, repo.name)
-                          .arg(findings.size())
-                          .arg(findings.size() == 1 ? QString() : QStringLiteral("s")));
-        }
-    }
+            if (!scan.findings.isEmpty()) {
+                QString detail;
+                const int shown = qMin(scan.findings.size(), 5);
+                for (int i = 0; i < shown; ++i) {
+                    const RepoSecurityFinding &f = scan.findings.at(i);
+                    detail += QStringLiteral("• %1 in %2 (line %3)\n")
+                                  .arg(f.title, f.path)
+                                  .arg(f.line);
+                }
+                if (scan.findings.size() > shown)
+                    detail += QStringLiteral("  … and %1 more\n")
+                                  .arg(scan.findings.size() - shown);
 
-    if (isRelay) {
-        logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to the "
-                                 "served mirror.")
-                      .arg(repo.owner, repo.name));
-        syncRepository(index, /*quiet=*/false);
-        updateRepoPushButton();
-        return;
-    }
+                QMessageBox box(this);
+                box.setWindowTitle(QStringLiteral("Secret scanning: push blocked"));
+                box.setIcon(QMessageBox::Critical);
+                box.setText(
+                    QStringLiteral(
+                        "Push protection detected %1 probable secret%2 in the "
+                        "commits being pushed for %3/%4.\n\n%5\n"
+                        "Rotate any exposed credentials before pushing.")
+                        .arg(scan.findings.size())
+                        .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s"))
+                        .arg(repo.owner, repo.name, detail));
+                auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
+                                                QMessageBox::RejectRole);
+                auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
+                                                QMessageBox::DestructiveRole);
+                box.setDefaultButton(cancelBtn);
+                box.exec();
+                if (box.clickedButton() != bypassBtn) {
+                    m_pushingRepos.remove(index);
+                    updateRepoPushButton();
+                    return;
+                }
+                logSystem(
+                    QStringLiteral(
+                        "Git: secret-scan bypass: pushing %1/%2 despite %3 finding%4.")
+                        .arg(repo.owner, repo.name)
+                        .arg(scan.findings.size())
+                        .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s")));
+            }
 
-    QByteArray countOut;
-    runGitCapture(repo.localPath,
-                  {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                   QStringLiteral("@{upstream}..HEAD")},
-                  &countOut, nullptr);
-    const int ahead = QString::fromUtf8(countOut).trimmed().toInt();
+            if (isRelay) {
+                m_pushingRepos.remove(index);
+                logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to "
+                                         "the served mirror.")
+                              .arg(repo.owner, repo.name));
+                syncRepository(index, /*quiet=*/false);
+                updateRepoPushButton();
+                return;
+            }
+            startRepoPush(index, repo, upstream, scan.ahead);
+        });
+}
 
-    m_pushingRepos.insert(index);
+// Kick off the actual (already-async) `git push`, wiring up the completion/error
+// handlers. Split out of pushCurrentRepoUpstream so the off-thread secret scan can
+// resume here on the GUI thread once the push is approved. The repo is assumed to
+// already be marked in m_pushingRepos.
+void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
+                               const QString &upstream, int ahead)
+{
     updateRepoPushButton();
     logSystem(QStringLiteral("Git: pushing %1/%2 to %3.")
                   .arg(repo.owner, repo.name, upstream));
