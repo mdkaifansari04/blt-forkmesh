@@ -855,6 +855,7 @@
     const emailEl = $("[data-profile-page-email]");
     const accountStatus = $("[data-profile-page-account-status]");
     const payoutStatus = $("[data-profile-page-payout-status]");
+    const adminStatus = $("[data-profile-page-admin-status]");
     const emailStatus = $("[data-profile-page-email-status]");
     const verifyButton = $("[data-profile-page-verify-email]");
     const solanaInput = $("[data-profile-page-solana]");
@@ -865,6 +866,7 @@
     if (emailEl) emailEl.textContent = email;
     if (accountStatus) accountStatus.textContent = session?.status || "active";
     if (payoutStatus) payoutStatus.textContent = session?.hasPayoutAddress ? "Configured" : "Not configured";
+    if (adminStatus) adminStatus.textContent = session?.isAdmin ? "Yes" : "No";
     if (emailStatus) {
       emailStatus.textContent = session?.emailVerified
         ? `${email} is verified.`
