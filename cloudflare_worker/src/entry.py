@@ -8265,6 +8265,13 @@ async def agents_handler(env, request, owner, repo):
         # convention as the labels/assignees lists in issues_handler).
         sessions = [s for s in
                     (_clean_agent_session(item) for item in sessions_in[:MAX_AGENT_SESSIONS]) if s]
+        # Dedupe by id, keeping the last occurrence: repo_agents is keyed on
+        # (repo_bi, agent_id), so a payload with a repeated id would otherwise
+        # violate that primary key on the second INSERT below.
+        by_id = {}
+        for session in sessions:
+            by_id[session["id"]] = session
+        sessions = list(by_id.values())
         # Full-replace semantics: the desktop always pushes its whole current
         # view of this repo's sessions, so the stored set is exactly that.
         await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
