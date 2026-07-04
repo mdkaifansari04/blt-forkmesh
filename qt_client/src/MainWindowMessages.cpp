@@ -588,10 +588,33 @@ void MainWindow::refreshChatMembers()
     // the 5-minute freshness window this panel promises), so member.online
     // here is never more than a few minutes stale.
     QList<MemberInfo> members;
+    // De-duplicate by identity so one person running several nodes (or a node
+    // that re-registered under a new key while an old roster entry still
+    // heartbeats) shows up once, not four times. Key on the display name
+    // (case-insensitive) since that is "the person"; keep our own entry, and
+    // prefer the copy that already has a real avatar so the tile isn't a
+    // generated letter when a photo is available.
+    QHash<QString, int> seenByName; // lowercased name -> index in `members`
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         const bool online = member.self ? (m_backend != nullptr) : member.online;
-        if (online)
+        if (!online)
+            continue;
+        const QString key = member.self
+                                ? QStringLiteral("\x01self")
+                                : member.name.trimmed().toLower();
+        if (key.isEmpty()) {
             members.append(member);
+            continue;
+        }
+        const auto it = seenByName.constFind(key);
+        if (it == seenByName.constEnd()) {
+            seenByName.insert(key, members.size());
+            members.append(member);
+        } else if (m_avatars.value(members.at(*it).id).isNull() &&
+                   !m_avatars.value(member.id).isNull()) {
+            // Replace the earlier avatar-less duplicate with this richer one.
+            members[*it] = member;
+        }
     }
     std::sort(members.begin(), members.end(),
               [](const MemberInfo &a, const MemberInfo &b) {
@@ -695,8 +718,13 @@ void MainWindow::refreshChannelList()
     QSignalBlocker blocker(m_channelList);
     m_channelList->clear();
     for (const QString &channel : std::as_const(m_channels)) {
-        auto *item = new QListWidgetItem(
-            (m_unread.contains(channel) ? "\xE2\x97\x8F " : "") + channel);
+        // Private rooms get a padlock so they read differently from public
+        // channels in the same list.
+        const QString prefix = (m_unread.contains(channel) ? "\xE2\x97\x8F " : "") +
+                               (m_privateChannels.contains(channel)
+                                    ? QString::fromUtf8("\xF0\x9F\x94\x92 ")
+                                    : QString());
+        auto *item = new QListWidgetItem(prefix + channel);
         item->setData(Qt::UserRole, channel);
         m_channelList->addItem(item);
         if (channel == m_currentConversation)
@@ -741,6 +769,8 @@ void MainWindow::switchConversation(const QString &conversation)
                                             QStringLiteral("unknown"));
     m_channelTitle->setText(title);
     m_messageInput->setPlaceholderText("Message " + title);
+    if (m_inviteButton)
+        m_inviteButton->setVisible(m_privateChannels.contains(conversation));
     rebuildConversationView();
     refreshTypingLabel();
 
@@ -779,6 +809,89 @@ void MainWindow::promptAddChannel()
         this, "Add channel", "Channel name:", QLineEdit::Normal, "#", &ok);
     if (ok && !name.trimmed().isEmpty() && name.trimmed() != "#")
         m_backend->addChannel(name);
+}
+
+void MainWindow::promptAddPrivateChannel()
+{
+    if (!m_backend)
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this, "New private room",
+        "Room name (only people you invite can see it):", QLineEdit::Normal, "#",
+        &ok);
+    const QString trimmed = name.trimmed();
+    if (!ok || trimmed.isEmpty() || trimmed == "#")
+        return;
+    m_backend->createPrivateChannel(trimmed);
+    // Jump into the new room. createPrivateChannel prepends '#' if missing, so
+    // match that when switching to it.
+    QString key = trimmed;
+    if (!key.startsWith('#'))
+        key.prepend('#');
+    switchConversation(key);
+    // Offer to invite people right away.
+    promptInviteToPrivateChannel();
+}
+
+void MainWindow::promptInviteToPrivateChannel()
+{
+    if (!m_backend)
+        return;
+    const QString channel = m_currentConversation;
+    if (channel.isEmpty() || !m_privateChannels.contains(channel)) {
+        QMessageBox::information(this, "Invite",
+                                 "Open a private room first, then invite people.");
+        return;
+    }
+
+    // Build the list of invitable members: every online node that isn't us,
+    // de-duplicated by name so one person's several nodes aren't offered twice.
+    QMenu menu(this);
+    QSet<QString> seen;
+    bool any = false;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        if (member.self || !member.online || member.id.isEmpty())
+            continue;
+        const QString key = member.name.trimmed().toLower();
+        if (!key.isEmpty() && seen.contains(key))
+            continue;
+        if (!key.isEmpty())
+            seen.insert(key);
+        any = true;
+        const QString peerId = member.id;
+        const QString peerName = member.name;
+        QAction *act = menu.addAction(member.name);
+        connect(act, &QAction::triggered, this, [this, peerId, peerName, channel] {
+            m_backend->inviteToChannel(peerId, channel);
+            logSystem("Invited " + peerName + " to " + channel + ".");
+        });
+    }
+    if (!any) {
+        QAction *empty = menu.addAction("No other members online");
+        empty->setEnabled(false);
+    }
+    menu.exec(QCursor::pos());
+}
+
+void MainWindow::restorePrivateChannels()
+{
+    if (!m_backend)
+        return;
+    const QStringList saved =
+        QSettings().value(QStringLiteral("chat/privateChannels")).toStringList();
+    for (const QString &name : saved) {
+        const QString trimmed = name.trimmed();
+        if (!trimmed.isEmpty())
+            m_backend->createPrivateChannel(trimmed);
+    }
+}
+
+void MainWindow::persistPrivateChannels()
+{
+    QStringList list(m_privateChannels.constBegin(), m_privateChannels.constEnd());
+    list.sort();
+    QSettings().setValue(QStringLiteral("chat/privateChannels"), list);
 }
 
 void MainWindow::sendCurrentMessage()
