@@ -1414,206 +1414,37 @@ void MainWindow::positionRepoPushButton()
     }
 }
 
-void MainWindow::ensureAgentSpinnerOverlay()
-{
-    if (m_agentSpinnerOverlay || !m_repoAgentsTab)
-        return;
-    QWidget *tabBar = m_repoAgentsTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
-    if (!page)
-        return;
-    // Parented to the repo-detail page (which has room above the tab bar) so the
-    // strip can float over the meta band just above the Agents tab without being
-    // clipped to the tab button.
-    m_agentSpinnerOverlay = new QWidget(page);
-    m_agentSpinnerOverlay->setObjectName("agentSpinnerOverlay");
-    m_agentSpinnerOverlay->setAttribute(Qt::WA_StyledBackground, true);
-    styleAgentSpinnerOverlay();
-    auto *outer = new QHBoxLayout(m_agentSpinnerOverlay);
-    outer->setContentsMargins(5, 3, 5, 3);
-    outer->setSpacing(0);
-    m_agentSpinnerScroll = new QScrollArea;
-    m_agentSpinnerScroll->setFrameShape(QFrame::NoFrame);
-    m_agentSpinnerScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_agentSpinnerScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_agentSpinnerScroll->setWidgetResizable(true);
-    m_agentSpinnerScroll->setStyleSheet("background:transparent;");
-    m_agentSpinnerScroll->viewport()->setStyleSheet("background:transparent;");
-    auto *inner = new QWidget;
-    inner->setStyleSheet("background:transparent;");
-    m_agentSpinnerRow = new QHBoxLayout(inner);
-    m_agentSpinnerRow->setContentsMargins(0, 0, 0, 0);
-    m_agentSpinnerRow->setSpacing(5);
-    m_agentSpinnerScroll->setWidget(inner);
-    outer->addWidget(m_agentSpinnerScroll);
-    m_agentSpinnerOverlay->hide();
-}
-
-void MainWindow::styleAgentSpinnerOverlay()
-{
-    if (!m_agentSpinnerOverlay)
-        return;
-    // The strip floats over the meta band above the Agents tab. A near-transparent
-    // wash let the page (and the spinners themselves) bleed through and read as
-    // washed-out; back it with the opaque surface/border for the active theme so
-    // the running-agent spinners stand out clearly.
-    const bool dark = currentThemeIsDark();
-    m_agentSpinnerOverlay->setStyleSheet(
-        QStringLiteral("#agentSpinnerOverlay{background:%1;border:1px solid %2;"
-                       "border-radius:13px;}")
-            .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
-                 dark ? QStringLiteral("#30363d") : QStringLiteral("#d0d7de")));
-}
-
-void MainWindow::positionAgentSpinnerOverlay()
-{
-    if (!m_agentSpinnerOverlay || !m_repoAgentsTab || !m_agentSpinnerRow)
-        return;
-    QWidget *page = m_agentSpinnerOverlay->parentWidget();
-    if (!page)
-        return;
-    const int total = m_agentSpinnerRow->count();
-    const int visible = qMin(total, 5);
-    const int spinnerW = 20, gap = 5;
-    const int innerW = visible * spinnerW + (visible > 1 ? (visible - 1) * gap : 0);
-    const int w = innerW + 14; // inner + h-margins + 1px border each side
-    // 28 keeps the 20px spinners clear of the margins and the 1px border.
-    const int h = 28 + (total > 5 ? 8 : 0); // leave room for a thin scrollbar
-    const QPoint tl = m_repoAgentsTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
-    int y = tl.y() - h - 1;
-    if (y < 0)
-        y = 0;
-    if (x + w > page->width())
-        x = qMax(0, page->width() - w);
-    m_agentSpinnerOverlay->setGeometry(x, y, w, h);
-    m_agentSpinnerOverlay->raise();
-}
-
 void MainWindow::updateAgentsTabIndicator()
 {
-    if (!m_repoAgentsTab)
-        return;
-
-    // Sessions (and the running ones) for the currently-open repo.
+    // adhoc #178 removed the repo-detail Agents tab and its floating spinner
+    // overlay (redundant with the footer "Agents:" strip and issue/PR links),
+    // but the Agents table's own running-row Status glyph + elapsed-time cell
+    // still need a live tick, scoped to the currently-open repo like before.
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name  = m_repositories.at(m_repoDetailIndex).name;
     }
-    int n = 0;
-    int nRunning = 0, nWaiting = 0, nMerged = 0, nFailed = 0;
-    QList<const AgentSession *> running;
-    for (const AgentSession &s : std::as_const(m_agentSessions)) {
-        if (s.owner != owner || s.name != name)
-            continue;
-        ++n;
-        if (s.id <= kExternalIdBase)
-            continue; // external (watch-only): its spinner comes from m_externalClaude
-        if (s.merged) {
-            ++nMerged;
-        } else if (s.status == AgentStatus::Running || s.status == AgentStatus::Queued) {
-            ++nRunning;
-            if (s.status == AgentStatus::Running)
-                running.append(&s);
-        } else if (s.status == AgentStatus::Waiting) {
-            ++nWaiting;
-        } else if (s.status == AgentStatus::Failed || s.status == AgentStatus::Stopped) {
-            ++nFailed;
+    bool anyRunning = !m_externalClaude.isEmpty();
+    if (!anyRunning) {
+        for (const AgentSession &s : std::as_const(m_agentSessions)) {
+            if (s.owner == owner && s.name == name && !s.merged &&
+                s.status == AgentStatus::Running) {
+                anyRunning = true;
+                break;
+            }
         }
     }
-    {
-        // ↻ = running/queued, ✋ = waiting for user, ⎇ = merged, ✕ = failed
-        QString label = QStringLiteral("Agents");
-        QStringList parts;
-        if (nRunning > 0)
-            parts << QString::fromUtf8("%1 \xe2\x86\xbb").arg(nRunning);  // N↻
-        if (nWaiting > 0)
-            parts << QString::fromUtf8("%1 \xe2\x9c\x8b").arg(nWaiting);  // N✋
-        if (nMerged > 0)
-            parts << QString::fromUtf8("%1 \xe2\x8e\x87").arg(nMerged);   // N⎇
-        if (nFailed > 0)
-            parts << QString::fromUtf8("%1 \xe2\x9c\x95").arg(nFailed);   // N✕
-        if (!parts.isEmpty())
-            label += QLatin1Char(' ') + parts.join(QStringLiteral("  "));
-        m_repoAgentsTab->setText(label);
-    }
-
-    ensureAgentSpinnerOverlay();
-    const bool active = (!running.isEmpty() || !m_externalClaude.isEmpty()) &&
-                        m_repoAgentsTab->isVisible();
-    if (!active) {
+    if (!anyRunning) {
         if (m_agentsSpinTimer)
             m_agentsSpinTimer->stop();
-        m_agentSpinnerIds.clear();
-        if (m_agentSpinnerOverlay)
-            m_agentSpinnerOverlay->hide();
         return;
     }
-    if (!m_agentSpinnerOverlay)
-        return;
-
-    // Only rebuild the spinners when the set changes — recreating them every
-    // refresh would reset their rotation. The set = ForkMesh's own running
-    // sessions plus the external Claude Code sessions detected on disk.
-    QList<int> ids;
-    for (const AgentSession *s : std::as_const(running))
-        ids.append(s->id);
-    for (const ExternalClaudeSession &e : std::as_const(m_externalClaude))
-        ids.append(externalTempIdFor(e.uuid));
-    if (ids != m_agentSpinnerIds) {
-        m_agentSpinnerIds = ids;
-        while (QLayoutItem *item = m_agentSpinnerRow->takeAt(0)) {
-            if (QWidget *w = item->widget())
-                w->deleteLater();
-            delete item;
-        }
-        for (const AgentSession *s : std::as_const(running)) {
-            auto *spinner = new AgentSpinner;
-            spinner->setProvider(s->provider);
-            const QString task =
-                s->issueTitle.trimmed().isEmpty()
-                    ? QStringLiteral("Agent session #%1").arg(s->id)
-                    : QStringLiteral("#%1 %2").arg(s->issueNumber)
-                          .arg(s->issueTitle.trimmed());
-            spinner->setTask(QString::fromUtf8("%1 \xC2\xB7 %2")
-                                 .arg(task, agentProviderName(s->provider)));
-            const int sid = s->id;
-            spinner->setOnClick([this, sid] {
-                switchToAgentsTab(sid);
-                showAgentSession(sid);
-            });
-            m_agentSpinnerRow->addWidget(spinner);
-        }
-        // External (watch-only) Claude Code sessions: a dashed-ring spinner that,
-        // when clicked, mirrors the session into the list as a temporary entry.
-        for (const ExternalClaudeSession &e : std::as_const(m_externalClaude)) {
-            auto *spinner = new AgentSpinner;
-            spinner->setProvider(QStringLiteral("claude-code"));
-            spinner->setExternal(true);
-            QString task = QString::fromUtf8("External Claude Code: %1")
-                               .arg(e.title.isEmpty() ? QStringLiteral("session")
-                                                      : e.title);
-            if (!e.gitBranch.isEmpty())
-                task += QString::fromUtf8(" \xC2\xB7 %1").arg(e.gitBranch);
-            task += QString::fromUtf8(" \xC2\xB7 click to watch");
-            spinner->setTask(task);
-            const QString uuid = e.uuid;
-            spinner->setOnClick([this, uuid] { surfaceExternalSession(uuid); });
-            m_agentSpinnerRow->addWidget(spinner);
-        }
-    }
-    positionAgentSpinnerOverlay();
-    m_agentSpinnerOverlay->show();
-    m_agentSpinnerOverlay->raise();
-
-    // Keep indicators positioned as the window moves / tabs change.
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
         connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
             m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
             animateRunningAgentIcons(); // spin the running rows' Status glyph
-            positionAgentSpinnerOverlay();
         });
     }
     if (!m_agentsSpinTimer->isActive())
