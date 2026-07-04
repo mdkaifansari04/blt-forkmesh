@@ -588,25 +588,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setFixedSize(28, 28);
     m_quickAddSendToAgentButton->setToolTip(
         "Send to the agent open above, as a follow-up message");
-    connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
-        if (!m_issueQuickAdd)
-            return;
-        const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
-        if (m_selectedAgentSessionId < 0) {
-            logSystem(QStringLiteral(
-                "No agent open above to send that to \xE2\x80\x94 open one first."));
-            return;
-        }
-        if (prompt.isEmpty()) {
-            // No text typed: just resume the open session with the same agent,
-            // the same thing the old per-session Continue button did (adhoc #178).
-            continueSelectedAgentSession();
-            return;
-        }
-        recordQuickAddHistory(prompt);
-        m_issueQuickAdd->clear();
-        sendPromptToSelectedAgent(prompt);
-    });
+    connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this,
+            &MainWindow::sendQuickAddToSelectedAgent);
 
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
