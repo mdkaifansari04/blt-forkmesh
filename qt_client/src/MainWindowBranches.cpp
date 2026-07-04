@@ -2071,18 +2071,27 @@ void MainWindow::loadBranchesPanel()
     // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
     // may carry more than one session over its life; prefer one bound to an issue
     // and otherwise the most recent.
-    QHash<QString, const AgentSession *> branchSessions;
+    //
+    // Stored by value, not by pointer into m_agentSessions: the per-row git reads
+    // further down run under GitKeepAlive, which pumps the event loop, and a
+    // queued callback landing mid-pump (e.g. an agent finishing/being deleted)
+    // can append/remove entries and reallocate that list. A pointer taken here
+    // would dangle and crash (free(): invalid pointer) when later dereferenced —
+    // this is what crashed on a branch click after a merge freed its agent
+    // session (adhoc #200).
+    QHash<QString, AgentSession> branchSessions;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         for (const AgentSession &session : m_agentSessions) {
             if (session.branchName.isEmpty() || session.owner != repo.owner ||
                 session.name != repo.name)
                 continue;
-            const AgentSession *existing = branchSessions.value(session.branchName);
-            if (!existing || (session.issueNumber > 0 && existing->issueNumber <= 0) ||
+            const auto existing = branchSessions.constFind(session.branchName);
+            if (existing == branchSessions.constEnd() ||
+                (session.issueNumber > 0 && existing->issueNumber <= 0) ||
                 ((session.issueNumber > 0) == (existing->issueNumber > 0) &&
                  session.id > existing->id))
-                branchSessions.insert(session.branchName, &session);
+                branchSessions.insert(session.branchName, session);
         }
     }
 
@@ -2223,7 +2232,9 @@ void MainWindow::loadBranchesPanel()
         // (adhoc #191, #251). The text says which it is; the tooltip leads with
         // the status word and spells out the issue title / prompt.
         auto *attach = new QTableWidgetItem;
-        if (const AgentSession *session = branchSessions.value(branch)) {
+        const auto sessionIt = branchSessions.constFind(branch);
+        if (sessionIt != branchSessions.constEnd()) {
+            const AgentSession *session = &sessionIt.value();
             const QString statusWord =
                 session->merged ? QStringLiteral("merged")
                                 : agentStatusText(session->status);
