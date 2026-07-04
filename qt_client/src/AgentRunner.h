@@ -62,6 +62,12 @@ private:
     void runAgentProcess();
     void complete(bool ok, const QString &status, const QString &message);
     void cleanupWorktree();
+    // Stamp a `ForkMesh-Agent: <tool>/<model>` trailer onto the commits this run
+    // produced so machine authorship is attributable and signed in review (issue
+    // #365). The trailer travels inside the commit series and thus the pull sig.
+    void stampAgentProvenance();
+    // The trailer value for this session, "<provider>/<model>" (sanitised).
+    QString agentProvenanceValue() const;
     bool restorePreviousPatch();
     QString buildPrompt() const;
     QString expandCommand(const QString &promptPath) const;

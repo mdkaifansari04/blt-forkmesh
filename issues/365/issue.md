@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 365
 title: Agent provenance: attributable, signed agent authorship in the review UI
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 40
