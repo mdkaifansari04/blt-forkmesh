@@ -170,6 +170,15 @@ from dashboard_shell import (  # noqa: E402
     partial_path,
 )
 
+# The dashboard behaviour script is likewise split into ordered JS fragments
+# (public/dashboard/js/) concatenated back into one /dashboard.js at request
+# time — see dashboard_bundle.py. Same js-free sibling-module pattern.
+from dashboard_bundle import (  # noqa: E402
+    FRAGMENTS as DASHBOARD_JS_FRAGMENTS,
+    assemble_bundle,
+    fragment_path,
+)
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -10022,10 +10031,45 @@ class Default(WorkerEntrypoint):
         # direct-navigation to /dashboard/owner/repo lands on the assembled SPA.
         # (Handled here rather than via _redirects to avoid Cloudflare's
         # loop-detection false-positive on /dashboard/* → /dashboard/index.html.)
+        # Dashboard behaviour script: /dashboard.js is composed from its ordered
+        # JS fragments (public/dashboard/js/, see dashboard_bundle.py) rather than
+        # served as one monolithic static file. Handled before the /dashboard/*
+        # SPA-shell branch below (note: "/dashboard.js" has no trailing slash so
+        # it doesn't match that branch's startswith("/dashboard/")).
+        if url.path == "/dashboard.js":
+            return await self._serve_dashboard_bundle(url)
+
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
             return await self._serve_dashboard_shell(url)
 
         return json_response({"error": "not_found"}, status=404)
+
+    async def _serve_dashboard_bundle(self, url):
+        # Concatenate /dashboard.js from its ordered fragments (see
+        # dashboard_bundle.py). Each fragment is a real static asset, so
+        # env.ASSETS.fetch returns its raw bytes (bypassing the Worker) even
+        # though its /dashboard/js/... path is itself run_worker_first.
+        base = url.scheme + "://" + url.netloc + "/"
+
+        async def _asset_text(rel):
+            resp = await self.env.ASSETS.fetch(base + rel)
+            return await resp.text()
+
+        fragments = []
+        for name in DASHBOARD_JS_FRAGMENTS:
+            fragments.append(await _asset_text(fragment_path(name)))
+        js = assemble_bundle(fragments)
+        # The composed script is identical for every visitor, so let the edge
+        # cache it and keep the concatenation off the Worker CPU budget on the
+        # hot dashboard path (same treatment as the composed shell).
+        return Response(
+            js,
+            status=200,
+            headers={
+                "content-type": "text/javascript; charset=utf-8",
+                "cache-control": "public, max-age=300",
+            },
+        )
 
     async def _serve_dashboard_shell(self, url):
         # Compose dashboard/index.html and its <!--#include--> partials into one

@@ -5,6 +5,7 @@ from pathlib import Path
 import tomllib
 
 from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,11 @@ def _read(path: Path) -> str:
     if path.name == "dashboard.html" or (
             path.name == "index.html" and path.parent.name == "dashboard"):
         return assembled_dashboard()
+    # dashboard.js is likewise split into ordered public/dashboard/js/*.js
+    # fragments the Worker concatenates into one /dashboard.js at request time
+    # (see src/dashboard_bundle.py); assert on the composed script.
+    if path.name == "dashboard.js":
+        return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
 
 
