@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 AUTH_PAGES = (
@@ -118,7 +120,8 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
 
 
 def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
-    dashboard = _read(PUBLIC / "dashboard.html")
+    # Assert against the composed dashboard shell (see _dashboard_shell).
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "data-profile-settings-button" in dashboard
@@ -132,7 +135,7 @@ def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
 
 
 def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
-    dashboard = _read(PUBLIC / "dashboard.html")
+    dashboard = assembled_dashboard()
 
     assert 'data-view="profile"' in dashboard
     assert "data-profile-page-avatar" in dashboard
