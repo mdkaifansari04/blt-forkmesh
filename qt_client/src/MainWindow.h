@@ -784,7 +784,7 @@ private:
     void fetchFavicon(int index);
     QPixmap faviconFor(const ServerConfig &server) const;
     QWidget *buildHomeSection();
-    // Node profile: full-page centered section (index 9 in m_sectionStack).
+    // Node profile: full-page centered section (index 10 in m_sectionStack).
     QWidget *buildNodeProfileSection();
     QWidget *buildNodeProfilePanel(); // builds inner scroll area; called by buildNodeProfileSection
     void showNodeProfile(const QString &nodeId, const QString &nodeName);
@@ -876,6 +876,18 @@ private:
     QWidget *buildRelaysSection();
     void refreshRelaysTable();   // re-list relays and (re)probe each one
     void probeRelayRow(int row); // measure latency + read version for one relay
+    // Firewall: whitelist-only outbound request gate for traffic created by
+    // ForkMesh's shared network manager.
+    QWidget *buildFirewallSection();
+    void refreshFirewallTables();
+    void addFirewallRuleFromEdit();
+    void removeSelectedFirewallRules();
+    void clearFirewallHistory();
+    bool promptFirewallRequest(const QString &method, const QUrl &url,
+                               QString *allowRuleOut);
+    bool authorizeFirewallConnection(const QString &method, const QUrl &url);
+    void recordFirewallRequest(const QString &method, const QUrl &url,
+                               const QString &rule, bool allowed);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     QWidget *buildRepoDetailSection();
@@ -2733,6 +2745,7 @@ private:
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
+    QPushButton *m_firewallNavButton = nullptr; // "Firewall" top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
@@ -2775,6 +2788,24 @@ private:
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
     QPushButton *m_relaysRefreshButton = nullptr;
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
+    // Request firewall section: whitelist controls plus recent allow/deny
+    // decisions. This is separate from m_firewallBanner, which is the older
+    // inbound-peer troubleshooting banner inside Chat.
+    struct FirewallHistoryEntry {
+        QString method;
+        QString url;
+        QString destination;
+        QString rule;
+        bool allowed = false;
+        qint64 timestampMs = 0;
+    };
+    QCheckBox *m_requestFirewallEnabledCheck = nullptr;
+    QLabel *m_requestFirewallStatus = nullptr;
+    QLineEdit *m_requestFirewallRuleEdit = nullptr;
+    QTableWidget *m_requestFirewallRulesTable = nullptr;
+    QTableWidget *m_requestFirewallHistoryTable = nullptr;
+    QPushButton *m_requestFirewallRemoveButton = nullptr;
+    QList<FirewallHistoryEntry> m_requestFirewallHistory;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel

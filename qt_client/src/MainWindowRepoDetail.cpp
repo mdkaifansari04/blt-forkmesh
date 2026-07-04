@@ -3726,6 +3726,9 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Notifications", "bell", 3},
         {"Network log", "list-unordered", 4},
         {"Leaderboards", "graph", 5},
+        {"Hosts", "server", 7},
+        {"Relays", "broadcast", 8},
+        {"Firewall", "shield-check", 9},
         {"Settings", "gear", 1},
     };
     bool header = false;

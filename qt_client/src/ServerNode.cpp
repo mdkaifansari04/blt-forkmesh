@@ -14,6 +14,8 @@
 #include <QTimer>
 #include <QUuid>
 
+#include <utility>
+
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
 #endif
@@ -242,6 +244,11 @@ void ServerNode::setEndpoints(const QList<QUrl> &endpoints)
     m_url = m_endpoints.first();
 }
 
+void ServerNode::setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer)
+{
+    m_connectionAuthorizer = std::move(authorizer);
+}
+
 void ServerNode::advanceEndpoint()
 {
     if (m_endpoints.size() <= 1)
@@ -307,6 +314,13 @@ void ServerNode::openConnection()
     }
     m_wsReady = false;
     m_readBuffer.clear();
+
+    if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
+        emit systemMessage(QStringLiteral("Firewall blocked mainnode socket to %1.")
+                               .arg(m_url.host()));
+        scheduleReconnect();
+        return;
+    }
 
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
     connectSocketSignals();

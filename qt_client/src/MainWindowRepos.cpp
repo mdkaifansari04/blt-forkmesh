@@ -1776,6 +1776,9 @@ void MainWindow::startRepoHosts()
             continue;
         auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
                                   hostWsUrl(repo), this);
+        host->setConnectionAuthorizer([this](const QUrl &endpoint) {
+            return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
+        });
         // Sign a fresh host-auth token on every (re)connect so the relay can
         // verify this node holds the owner account's key before it may host.
         const QString tokenOwner = catalogOwner(repo);
@@ -3018,4 +3021,3 @@ void MainWindow::uninstallForkMesh()
 
     QCoreApplication::exit(0);
 }
-
