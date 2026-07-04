@@ -302,6 +302,12 @@ QWidget *MainWindow::buildChatPage()
     return page;
 }
 
+// How many lines of prior history to seed the always-on footer log with on
+// startup. Bounded well below kNetworkLogLimit so the corner widget (unlike the
+// full Log tab, which defers its own render until first visit) stays cheap to
+// populate on every launch while still giving a real scrollback to search.
+constexpr int kFooterLogSeedLines = 300;
+
 QWidget *MainWindow::buildNetworkLogDock()
 {
     // Full-width, grey-bordered quick-add bar: the issue input expands on the
@@ -725,31 +731,40 @@ QWidget *MainWindow::buildNetworkLogDock()
     cardLayout->addWidget(m_agentStatusRow);
     cardLayout->addWidget(promptWrapper);
 
-    // A thin single-line strip below the quick-add bar: the always-on live log.
-    // It streams the newest network/update line so the latest activity is visible
-    // at the bottom of the app at all times; clicking it opens the full log window.
-    m_footerUpdateLog = new QPushButton;
+    // A scrollable strip below the quick-add bar: the always-on live log. It
+    // fills as much height as the dock row allows (matching the prompt card
+    // beside it) and streams every network/update line, oldest at top, newest
+    // at bottom — the scrollbar lets you scroll back through history to search
+    // it instead of only ever seeing the latest line (adhoc #211).
+    m_footerUpdateLog = new QPlainTextEdit;
     m_footerUpdateLog->setObjectName("footerUpdateLog");
-    m_footerUpdateLog->setFlat(true);
-    m_footerUpdateLog->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->setReadOnly(true);
+    m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
+    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_footerUpdateLog->setToolTip("Live log. Click to open the full log.");
+    m_footerUpdateLog->setToolTip(
+        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
+    // Bound the live buffer the same way the seed below is bounded, so it can't
+    // grow without limit over a long-running session.
+    m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
     styleFooterUpdateLog();
-    // Seed the always-on strip with the most recent live-log line (or a ready
-    // placeholder) so it's populated on first paint; logSystem() then streams
-    // every new event onto it. Keep the full dated line so the timestamp shows.
+    // Seed the always-on strip with recent history (or a ready placeholder) so
+    // it's already scrollable on first paint; logSystem() then streams every new
+    // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
-        setFooterUpdateLine(m_networkLog.last());
+        const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
+        QStringList seed;
+        seed.reserve(m_networkLog.size() - from);
+        for (int i = from; i < m_networkLog.size(); ++i)
+            seed << m_networkLog.at(i);
+        m_footerUpdateLog->setPlainText(seed.join(QLatin1Char('\n')));
+        m_footerUpdateLog->verticalScrollBar()->setValue(
+            m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {
-        setFooterUpdateLine(QStringLiteral("ForkMesh ready"));
+        m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
     }
-    connect(m_footerUpdateLog, &QPushButton::clicked, this, [this] {
-        if (!m_updateLogDialog)
-            return;
-        m_updateLogDialog->show();
-        m_updateLogDialog->raise();
-        m_updateLogDialog->activateWindow();
-    });
 
     // Horizontal split: live-log strip on the left half, prompt card on the right.
     auto *dockRow = new QHBoxLayout(dock);
