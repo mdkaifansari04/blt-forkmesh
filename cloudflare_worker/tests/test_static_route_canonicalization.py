@@ -66,6 +66,11 @@ BLOCKED_HTML_ALIASES = {
     "/status.html",
 }
 
+BLOG_POST_REDIRECT_RULES = {
+    ("/blog/:slug", "/blog/:slug/", "308"),
+    ("/blog/:slug/", "/blog/:slug/index.html", "200"),
+}
+
 NON_ROUTED_HTML_ASSETS = {
     # Served by Cloudflare only for misses, not a navigable product route.
     "404.html",
@@ -95,11 +100,16 @@ def _redirect_rules():
 def test_public_redirects_have_one_canonical_route_per_public_html_page():
     rules = _redirect_rules()
     assert len({source for source, _, _ in rules}) == len(rules)
+    assert BLOG_POST_REDIRECT_RULES <= set(rules)
 
     html_200_rules = {
         source: target
         for source, target, status in rules
-        if status == "200" and target.endswith(".html")
+        if (
+            status == "200"
+            and target.endswith(".html")
+            and (source, target, status) not in BLOG_POST_REDIRECT_RULES
+        )
     }
 
     assert html_200_rules == CANONICAL_PAGE_ROUTES

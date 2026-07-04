@@ -195,6 +195,8 @@ def test_blog_paths_are_owned_by_redirects_not_python_worker():
     assert "/blog /blog.html 200" in redirects
     assert "/blog/ /blog 308" in redirects
     assert "/blogs /blog 308" in redirects
+    assert "/blog/:slug /blog/:slug/ 308" in redirects
+    assert "/blog/:slug/ /blog/:slug/index.html 200" in redirects
     assert "/blog.html /blog 308" not in redirects
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
