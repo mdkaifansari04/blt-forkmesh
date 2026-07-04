@@ -276,6 +276,31 @@ def test_current_status_uses_latest_hour_not_the_whole_days_aggregate():
 HOUR_MS = 3600000
 
 
+def test_recovered_git_hosting_earlier_today_clears_the_badge():
+    # Hosts dropped off overnight (a failing hour) but are back now (the
+    # current hour is operational): the headline badge must read operational
+    # and drop the stale "no desktop hosts checked in" reason, even though the
+    # whole-day aggregate still counts the earlier failures. Regression for
+    # "we have hosts online but /status shows git hosting down (1h 34m ago)".
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    prev_hour = cur_hour - HOUR_MS
+    rows = [{"day_ts": cur_day, "system": "git_hosting",
+             "checks": 120, "failures": 60}]
+    hour_rows = [
+        {"hour_ts": prev_hour, "system": "git_hosting", "checks": 60,
+         "failures": 60,
+         "reason": "No desktop hosts have checked in within the last 10 minutes"},
+        {"hour_ts": cur_hour, "system": "git_hosting", "checks": 60,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["git_hosting"]["status"] == "operational"
+    assert by_id["git_hosting"]["reason"] is None
+    assert by_id["git_hosting"]["reasonTs"] is None
+
+
 def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
