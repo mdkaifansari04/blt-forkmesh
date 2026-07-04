@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 #include <QComboBox>
 #include <QTimer>
@@ -91,6 +92,7 @@ QWidget *MainWindow::buildWorktreesTab()
     layout->addWidget(info);
 
     m_worktreesTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_worktreesTable); // 3-dots per-column menu (issue #318)
     m_worktreesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_worktreesTable);
     m_worktreesTable->setHorizontalHeaderLabels(
@@ -1622,6 +1624,7 @@ QWidget *MainWindow::buildBranchesTab()
     layout->addLayout(headerRow);
 
     m_branchesTable = new QTableWidget(0, 6);
+    installColumnHeaderMenu(m_branchesTable); // 3-dots per-column menu (issue #318)
     m_branchesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
