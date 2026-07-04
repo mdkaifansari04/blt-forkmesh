@@ -4,7 +4,7 @@ number: 4
 title: feat(public): add launch pricing page
 base: kaif/public-landing-refresh
 head: kaif/public-pricing-launch
-status: open
+status: merged
 ts: 1783173747712
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
