@@ -5,7 +5,7 @@
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
     state.repoServedBy = null;
-    state.agentsView = { agents: [] };
+    state.agentsView = { agents: [], selectedAgentId: null };
     stopRepoAgentsAutoRefresh();
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
@@ -943,7 +943,25 @@
 
       const agentsRefreshButton = event.target.closest("[data-repo-agents-refresh]");
       if (agentsRefreshButton && state.selectedRepo) {
-        loadRepoAgents(state.selectedRepo);
+        // On the detail page, Refresh reloads that agent's transcript; on the
+        // list it reloads the session list (adhoc #259).
+        if (state.agentsView.selectedAgentId != null) {
+          loadRepoAgentTranscript(state.selectedRepo, state.agentsView.selectedAgentId);
+        } else {
+          loadRepoAgents(state.selectedRepo);
+        }
+        return;
+      }
+
+      // Open an agent's detail page — live transcript + prompt (adhoc #259).
+      const agentOpenButton = event.target.closest("[data-repo-agent-open]");
+      if (agentOpenButton && state.selectedRepo) {
+        openRepoAgentDetail(state.selectedRepo, agentOpenButton.dataset.repoAgentId || "");
+        return;
+      }
+      const agentBackButton = event.target.closest("[data-repo-agent-back]");
+      if (agentBackButton && state.selectedRepo) {
+        closeRepoAgentDetail(state.selectedRepo);
         return;
       }
   });

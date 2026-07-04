@@ -960,15 +960,46 @@
     return "text-yellow-500";
   }
 
-  function renderRepoAgentRow(agent) {
-    const promptable = repoAgentsCanPrompt(agent.status);
-    const issueLabel = agent.issueNumber
+  function repoAgentIssueLabel(agent) {
+    return agent.issueNumber
       ? `#${agent.issueNumber} ${agent.issueTitle || ""}`.trim()
       : (agent.issueTitle || "");
+  }
+
+  // A summary row (adhoc #259): the inline prompt moved to the detail page, so
+  // the whole row is now a click target that opens the transcript + prompt view.
+  function renderRepoAgentRow(agent) {
+    const issueLabel = repoAgentIssueLabel(agent);
     return `
-      <div data-repo-agent-row data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-2 px-4 py-3 text-xs">
+      <button type="button" data-repo-agent-open data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid w-full gap-2 px-4 py-3 text-left text-xs transition-colors hover:bg-secondary/50">
         <div class="flex flex-wrap items-center gap-2">
           <span class="rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
+          ${issueLabel ? `<span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>` : ""}
+          <span class="ml-auto font-mono text-muted-foreground">${escapeHtml(agent.model || "")}</span>
+          <i data-lucide="chevron-right" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-muted-foreground">
+          ${agent.provider ? `<span>${escapeHtml(agent.provider)}</span>` : ""}
+          <span>${formatCount(agent.numTurns)} turns</span>
+          ${agent.durationMs ? `<span>${escapeHtml(formatServeSpeed(agent.durationMs))}</span>` : ""}
+          <span>${escapeHtml(formatUsd(agent.costUsd))}</span>
+          ${agent.branchName ? `<span class="font-mono">${escapeHtml(agent.branchName)}</span>` : ""}
+        </div>
+        ${agent.lastError ? `<div class="text-destructive">${escapeHtml(agent.lastError)}</div>` : ""}
+      </button>`;
+  }
+
+  // Detail page (adhoc #259): live transcript pane + a prompt area to interact
+  // with one agent. The wrapper carries data-repo-agent-id so the shared prompt
+  // submit / hint plumbing resolves the same way it did for an inline list row.
+  function renderRepoAgentDetail(agent) {
+    const promptable = repoAgentsCanPrompt(agent.status);
+    const issueLabel = repoAgentIssueLabel(agent);
+    return `
+      <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-3 px-4 py-3 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" data-repo-agent-back class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Agents</button>
+          <span data-repo-agent-status class="rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
           ${issueLabel ? `<span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>` : ""}
           <span class="ml-auto font-mono text-muted-foreground">${escapeHtml(agent.model || "")}</span>
         </div>
@@ -980,22 +1011,112 @@
           ${agent.branchName ? `<span class="font-mono">${escapeHtml(agent.branchName)}</span>` : ""}
         </div>
         ${agent.lastError ? `<div class="text-destructive">${escapeHtml(agent.lastError)}</div>` : ""}
+        <div class="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+          <i data-lucide="terminal" class="h-3.5 w-3.5"></i>Live transcript
+        </div>
+        <pre data-repo-agent-transcript class="max-h-[420px] min-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-secondary/40 p-3 font-mono text-[11px] leading-relaxed text-foreground">Loading transcript…</pre>
         ${promptable ? `
         <form data-repo-agent-prompt-form class="flex items-center gap-2">
           <input data-repo-agent-prompt-input type="text" maxlength="8000" placeholder="Send a message to this agent" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
           <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
         </form>
-        <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>` : ""}
+        <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>`
+          : '<div class="text-[11px] text-muted-foreground">This session has finished — you can no longer send it messages.</div>'}
       </div>`;
   }
 
   function renderRepoAgentsList(agents) {
     const container = $("[data-repo-agents]");
     if (!container) return;
+    // When a detail page is open for a still-present agent, render that instead
+    // of the list (adhoc #259). If the selected agent has vanished from a fresh
+    // fetch, fall back to the list so we never strand the user on a dead page.
+    const selectedId = state.agentsView.selectedAgentId;
+    const selected = selectedId != null
+      ? agents.find((a) => String(a.id ?? "") === String(selectedId))
+      : null;
+    if (selected) {
+      container.innerHTML = renderRepoAgentDetail(selected);
+      window.lucide?.createIcons();
+      return;
+    }
+    if (selectedId != null) state.agentsView.selectedAgentId = null;
     container.innerHTML = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
       : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the desktop app.</div>';
     window.lucide?.createIcons();
+  }
+
+  // Open / close the detail page for one agent, wiring up the faster transcript
+  // poll so the pane stays live while it's on screen (adhoc #259).
+  function openRepoAgentDetail(repo, agentId) {
+    state.agentsView.selectedAgentId = agentId;
+    renderRepoAgentsList(state.agentsView.agents);
+    loadRepoAgentTranscript(repo, agentId);
+    startRepoAgentTranscriptRefresh(repo, agentId);
+  }
+
+  function closeRepoAgentDetail(repo) {
+    stopRepoAgentTranscriptRefresh();
+    state.agentsView.selectedAgentId = null;
+    renderRepoAgentsList(state.agentsView.agents);
+  }
+
+  function stopRepoAgentTranscriptRefresh() {
+    if (repoAgentTranscriptTimer) {
+      window.clearInterval(repoAgentTranscriptTimer);
+      repoAgentTranscriptTimer = null;
+    }
+  }
+
+  function startRepoAgentTranscriptRefresh(repo, agentId) {
+    stopRepoAgentTranscriptRefresh();
+    if (!repo || agentId == null) return;
+    repoAgentTranscriptTimer = window.setInterval(() => {
+      if (!state.selectedRepo || repoKey(state.selectedRepo) !== repoKey(repo) ||
+          state.activeRepoTab !== "agents" ||
+          String(state.agentsView.selectedAgentId ?? "") !== String(agentId)) {
+        stopRepoAgentTranscriptRefresh();
+        return;
+      }
+      loadRepoAgentTranscript(repo, agentId);
+    }, 4000);
+  }
+
+  // Fetch + render one agent's transcript tail. Preserves the reader's scroll
+  // position unless they're already pinned to the bottom, in which case it keeps
+  // following the tail as new output streams in.
+  async function loadRepoAgentTranscript(repo, agentId) {
+    const pre = $("[data-repo-agent-transcript]");
+    if (!pre || !repo) return;
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/agents/${encodeURIComponent(agentId)}/transcript`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ ownerAccount: state.session?.nodeName || "" }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      // Only touch the pane if it's still the open agent — a slow response that
+      // lands after the user navigated away must not clobber the new view.
+      if (String(state.agentsView.selectedAgentId ?? "") !== String(agentId)) return;
+      const current = $("[data-repo-agent-transcript]");
+      if (!current) return;
+      const atBottom = current.scrollHeight - current.scrollTop - current.clientHeight < 24;
+      const text = String(data.transcript || "");
+      current.textContent = text || "No transcript yet — waiting for the agent to produce output.";
+      if (atBottom) current.scrollTop = current.scrollHeight;
+      const statusEl = $("[data-repo-agent-status]");
+      if (statusEl && data.status) {
+        statusEl.textContent = data.status;
+        statusEl.className = `rounded-full border border-border px-2 py-0.5 font-mono ${repoAgentStatusTone(data.status)}`;
+      }
+    } catch (error) {
+      const current = $("[data-repo-agent-transcript]");
+      if (current && (!current.textContent.trim().length || current.textContent === "Loading transcript…")) {
+        current.textContent = "Could not load the transcript. Retrying…";
+      }
+    }
   }
 
   async function requestRepoAgentsList(repo) {
@@ -1018,6 +1139,9 @@
       window.clearInterval(repoAgentsRefreshTimer);
       repoAgentsRefreshTimer = null;
     }
+    // The detail page's live-transcript poll is only meaningful while the Agents
+    // tab is showing, so tear it down alongside the list poll (adhoc #259).
+    stopRepoAgentTranscriptRefresh();
   }
 
   // Re-arms a fresh ~10s interval after every successful load, and self-stops
@@ -1052,8 +1176,10 @@
       // Skip the re-render entirely when a background poll comes back
       // identical to what's already on screen — rebuilding the same DOM every
       // 10s still repaints (and can drop focus/caret out of an open prompt
-      // input) even though nothing actually changed.
-      if (!unchanged) renderRepoAgentsList(agents);
+      // input) even though nothing actually changed. Also skip while a detail
+      // page is open (adhoc #259): its own transcript poll keeps it live, and
+      // rebuilding here would wipe the transcript scroll and prompt caret.
+      if (!unchanged && state.agentsView.selectedAgentId == null) renderRepoAgentsList(agents);
       startRepoAgentsAutoRefresh(repo);
     } catch (error) {
       const code = String(error?.message || "");
@@ -1071,7 +1197,10 @@
 
 
   async function handleRepoAgentPromptSubmit(repo, form) {
-    const row = form.closest("[data-repo-agent-row]");
+    // The prompt form now lives inside the detail page (adhoc #259); resolve the
+    // agent id from the nearest element carrying it (detail wrapper or, for any
+    // legacy inline row, the row itself).
+    const row = form.closest("[data-repo-agent-id]");
     const agentId = row?.dataset.repoAgentId || "";
     const input = form.querySelector("[data-repo-agent-prompt-input]");
     const submit = form.querySelector("[data-repo-agent-prompt-submit]");
