@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 354
 title: Opt-in crash and stall telemetry upload
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 5
