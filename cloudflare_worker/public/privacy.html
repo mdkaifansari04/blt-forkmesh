@@ -93,6 +93,10 @@
       .site-footer-status-dot { background: var(--green); box-shadow: 0 0 18px rgba(63,185,80,.55); }
 
     </style>
+      <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
   <body class="h-full">
     <main class="legal-shell flex min-h-screen flex-col">
@@ -100,16 +104,7 @@
       <div class="mesh-grid" aria-hidden="true"></div>
       <div class="mesh-vignette" aria-hidden="true"></div>
 
-      <header class="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-6 lg:px-8">
-        <a href="/" class="brand inline-flex items-center gap-3" aria-label="ForkMesh home">
-          <img class="brand-mark h-10 w-auto" src="/assets/logo.png" alt="" aria-hidden="true" />
-        </a>
-        <nav class="hidden items-center gap-6 text-sm text-muted-foreground md:flex" aria-label="Primary">
-          <a class="transition-colors hover:text-foreground" href="/docs">Docs</a>
-          <a class="transition-colors hover:text-foreground" href="/blogs">Blog</a>
-          <a class="transition-colors hover:text-foreground" href="/login">Login</a>
-        </nav>
-      </header>
+      <div data-forkmesh-header="simple"></div>
 
       <section class="relative z-10 mx-auto w-full max-w-4xl px-5 pb-8 pt-16 lg:px-8 lg:pt-24">
         <article class="legal-card rounded-[2rem] px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
@@ -146,69 +141,7 @@
         </article>
       </section>
 
-      <footer class="relative mt-24 overflow-hidden">
-        <div aria-hidden="true" class="site-footer-word-wrap relative -mb-[7.5rem] flex select-none justify-center overflow-hidden">
-          <div class="site-footer-glow relative inline-block">
-            <span class="site-footer-word footer-glow-base text-[23vw] font-semibold leading-none tracking-normal">forkmesh</span>
-            <span class="site-footer-word footer-glow-text pointer-events-none absolute inset-0 text-[23vw] font-semibold leading-none tracking-normal">forkmesh</span>
-          </div>
-        </div>
-        <div class="site-footer-panel relative z-10 border-t-[0.5px] border-[#3B3B3B] bg-black">
-          <div class="site-footer-links-grid mx-auto grid max-w-7xl grid-cols-2 gap-x-10 gap-y-12 px-5 py-14 md:grid-cols-3 lg:grid-cols-6 lg:px-8">
-            <div class="site-footer-brand col-span-2 md:col-span-3 lg:col-span-1">
-              <a href="/" aria-label="home" class="flex items-center space-x-2">
-                <img src="/assets/logo.png" alt="ForkMesh logo" class="site-footer-logo h-10 w-auto" />
-              </a>
-              <p class="site-footer-brand-copy mt-5 text-sm leading-relaxed text-muted-foreground">Local-first distributed source-code preservation and collaboration infrastructure.</p>
-              <div class="site-footer-status-pill mt-6 inline-flex items-center gap-2 rounded-lg border-[0.5px] border-[#3B3B3B] px-3 py-1.5 text-sm text-muted-foreground">
-                <span class="site-footer-status-dot size-2 rounded-full"></span>
-                Live now
-              </div>
-            </div>
-            <div>
-              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Explore</h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Features</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#network">Network discovery</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#solution">Solution</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Product</h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Local-first Git</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#features">Encrypted rooms</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#solution">Live node routing</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Plans</h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#pricing">Pricing</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/signup">Create account</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/signup">Sign Up / Log In</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Learn</h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/#faq">FAQ</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/docs">Read docs</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/blogs">Blog</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 class="site-footer-column-title text-sm font-medium text-foreground">Company</h3>
-              <ul class="site-footer-link-list mt-4 flex flex-col gap-3">
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/privacy">Privacy</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/terms">Terms</a></li>
-                <li><a class="site-footer-column-link text-sm text-muted-foreground transition-colors hover:text-foreground" href="/login">Login</a></li>
-              </ul>
-            </div>
-          </div>
-          <div class="site-footer-copyright mx-auto max-w-7xl border-t-[0.5px] border-[#3B3B3B] px-5 py-6 text-sm text-muted-foreground lg:px-8">© 2026 ForkMesh. Built for local-first Git collaboration.</div>
-        </div>
-      </footer>
+      <div data-forkmesh-footer="standard"></div>
     </main>
   </body>
 </html>

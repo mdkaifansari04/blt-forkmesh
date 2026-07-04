@@ -81,8 +81,10 @@ def test_login_and_signup_cross_links_remain():
     login = _read(PUBLIC / "login.html")
     signup = _read(PUBLIC / "signup.html")
 
-    assert ('href="/signup.html"' in login) or ('href="/signup"' in login)
-    assert ('href="/login.html"' in signup) or ('href="/login"' in signup)
+    assert 'href="/signup"' in login
+    assert 'href="/login"' in signup
+    assert 'href="/signup.html"' not in login
+    assert 'href="/login.html"' not in signup
 
 
 def test_signup_card_is_centered_vertically_like_login():
@@ -200,7 +202,7 @@ def test_login_persists_returned_session_details():
 def test_login_has_forgot_password_link():
     login = _read(PUBLIC / "login.html")
 
-    assert 'href="/forgot-password.html"' in login
+    assert 'href="/forgot-password"' in login
     assert "Forgot" in login
 
 
@@ -210,7 +212,7 @@ def test_forgot_password_page_exists_and_links_back():
     assert 'id="identifier"' in forgot
     assert 'id="forgot-btn"' in forgot
     assert 'src="/forgot-password.js' in forgot
-    assert 'href="/login.html"' in forgot
+    assert 'href="/login"' in forgot
 
 
 def test_forgot_password_js_posts_to_api():
@@ -228,7 +230,7 @@ def test_reset_password_page_exists():
     assert 'id="confirm"' in reset
     assert 'id="reset-btn"' in reset
     assert 'src="/reset-password.js' in reset
-    assert 'href="/login.html"' in reset
+    assert 'href="/login"' in reset
 
 
 def test_reset_password_js_posts_to_api_and_redirects():
@@ -239,7 +241,7 @@ def test_reset_password_js_posts_to_api_and_redirects():
     assert "node" in reset_js
     assert "token" in reset_js
     assert "exp" in reset_js
-    assert 'location.href = "/login.html"' in reset_js
+    assert 'location.href = "/login"' in reset_js
 
 
 def test_worker_handles_forgot_and_reset_password_routes():

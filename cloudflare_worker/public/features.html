@@ -118,41 +118,15 @@
       .features-outro p { color: var(--muted); max-width: 56ch; margin: 0 auto 20px; line-height: 1.6; }
       .features-outro .features-cta { justify-content: center; margin: 0; }
     </style>
+      <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
   <body>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="brand" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-          <span>ForkMesh</span>
-        </a>
-        <nav class="global-nav" aria-label="Global">
-          <a href="/dashboard">Repositories</a>
-          <a href="/network/">Network</a>
-          <a href="/docs/">Docs</a>
-          <a href="/status">Status</a>
-          <a href="/blogs">Blog</a>
-          <a href="/changelog.html">Changelog</a>
-          <a href="/chat">Chat</a>
-          <a class="nav-cta" href="/signup">Sign Up / Log In</a>
-        </nav>
-        <div class="header-actions">
-          <div class="clients-pill" aria-live="polite">
-            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
-            <span id="clients-count">Checking…</span>
-          </div>
-          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
-          </button>
-          <a class="nav-admin" data-admin-link href="#" hidden>Admin</a>
-          <a class="install-link" href="/#install-banner">Install</a>
-        </div>
-      </div>
-    </header>
+    <div data-forkmesh-header="simple"></div>
 
     <main class="features-wrap">
-      <p class="eyebrow">The full tour</p>
       <h1>Every feature in the mesh.</h1>
       <p class="features-lede">
         ForkMesh is a complete code forge that lives on machines you and your
@@ -161,7 +135,7 @@
         the apps that tie it together. All of it works today.
       </p>
       <div class="features-cta">
-        <a class="primary-button" href="/signup.html">Join the mesh</a>
+        <a class="primary-button" href="/signup">Join the mesh</a>
         <a class="secondary-button" href="/docs/">Read the docs</a>
       </div>
 
@@ -835,53 +809,12 @@
           — or staying friendly.
         </p>
         <div class="features-cta">
-          <a class="primary-button" href="/signup.html">Join the mesh</a>
+          <a class="primary-button" href="/signup">Join the mesh</a>
           <a class="secondary-button" href="/dashboard">Browse repositories</a>
         </div>
       </div>
     </main>
 
-    <footer class="site-footer">
-      <div class="footer-inner">
-        <div>
-          <div class="footer-brand">
-            <img src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span>ForkMesh</span>
-          </div>
-          <p class="footer-tagline">
-            Code hosting that lives on the network — distributed, signed, and
-            impossible to quietly take away.
-          </p>
-        </div>
-        <nav class="footer-links" aria-label="Footer">
-          <div class="footer-col">
-            <h3>Product</h3>
-            <a href="/features">Features</a>
-            <a href="/dashboard">Repositories</a>
-            <a href="/network/">Network</a>
-            <a href="/docs/">Docs</a>
-            <a href="/status">Status</a>
-            <a href="/changelog.html">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <h3>Company</h3>
-            <a href="/about.html">About</a>
-            <a href="/careers.html">Careers</a>
-            <a href="/blogs">Blog</a>
-            <a href="/signup">Sign Up / Log In</a>
-          </div>
-          <div class="footer-col">
-            <h3>Get in touch</h3>
-            <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>
-            <a href="/privacy.html">Privacy</a>
-            <a href="/terms.html">Terms</a>
-          </div>
-        </nav>
-      </div>
-      <div class="footer-bottom">
-        Questions or feedback? Email the founders at
-        <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
-      </div>
-    </footer>
+    <div data-forkmesh-footer="standard"></div>
   </body>
 </html>

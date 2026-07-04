@@ -67,6 +67,15 @@ def test_all_public_html_pages_use_logo_in_brand_link():
             html = assembled_dashboard()
         else:
             html = page.read_text(encoding="utf-8")
+        if '<div data-forkmesh-header="simple"></div>' in html:
+            header_js = (PUBLIC_DIR / "site-header.js").read_text(encoding="utf-8")
+            if (
+                'href="/"' in header_js
+                and 'src="/assets/logo.png"' in header_js
+                and 'aria-hidden="true"' in header_js
+            ):
+                continue
+
         parser = BrandLogoParser()
         parser.feed(html)
 

@@ -4,40 +4,6 @@
     <meta charset="utf-8" />
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script>
-      // Clean repository URLs like /owner/repo (and /owner/repo/tree|blob/...)
-      // are not static files, so Cloudflare serves this 404 page for them. Bounce
-      // them to the dashboard's repo view from here — i.e. AFTER static asset
-      // resolution. A /:owner/:repo rule in _redirects would instead hijack real
-      // two-segment assets such as /assets/logo.png and /favicon/site.webmanifest,
-      // because Cloudflare always applies _redirects before serving a matching
-      // static file. Runs before render to avoid flashing the 404 shell.
-      (function () {
-        var parts = window.location.pathname.split("/").filter(Boolean);
-        // First-segment names that are real site sections, never repo owners.
-        var reserved = [
-          "api", "assets", "favicon", "dashboard", "docs", "blogs", "blog",
-          "login", "signup", "network", "desktop", "features", "about",
-          "careers", "changelog", "privacy", "terms",
-        ];
-        var featureTabs = ["commits", "releases", "issues", "pulls", "discussions", "mirrors"];
-        var looksLikeRepo =
-          parts.length >= 2 &&
-          reserved.indexOf(parts[0].toLowerCase()) === -1 &&
-          (parts.length === 2 ||
-            (parts.length >= 3 && (parts[2] === "tree" || parts[2] === "blob" || featureTabs.indexOf(parts[2]) >= 0)));
-        if (looksLikeRepo) {
-          // Bounce to /dashboard/owner/repo (or with /tree|/blob|/<tab> path)
-          // so the SPA sees the full path and can restore the correct view.
-          var dashboardPath = "/dashboard/" + encodeURIComponent(parts[0]) + "/" + encodeURIComponent(parts[1]);
-          if (parts.length > 2) {
-            // Preserve /tree/..., /blob/..., or /issues (etc.) suffix
-            dashboardPath += "/" + parts.slice(2).map(function(p) { return encodeURIComponent(p); }).join("/");
-          }
-          window.location.replace(dashboardPath + window.location.hash);
-        }
-      })();
-    </script>
     <title>Page not found - ForkMesh</title>
     <meta
       name="description"

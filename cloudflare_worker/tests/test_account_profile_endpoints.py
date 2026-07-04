@@ -273,7 +273,8 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
 def test_login_page_links_to_password_reset():
     login_html = (Path(__file__).resolve().parents[1] /
                   "public" / "login.html").read_text(encoding="utf-8")
-    assert "/forgot-password.html" in login_html
+    assert "/forgot-password" in login_html
+    assert "/forgot-password.html" not in login_html
     for asset in ("forgot-password.html", "forgot-password.js",
                   "reset-password.html", "reset-password.js"):
         assert (Path(__file__).resolve().parents[1] / "public" / asset).exists()
@@ -285,7 +286,7 @@ if __name__ == "__main__":
         test_signup_endpoint_is_not_the_solana_payment_flow,
         test_worker_exposes_password_authenticated_profile_endpoint_for_wallet_and_verification,
         test_worker_profile_contract_includes_avatar_updates,
-        test_qt_client_publishes_effective_avatar_with_signed_heartbeat,
+        test_qt_client_publishes_effective_avatar_to_peers,
         test_profile_endpoint_supports_verified_node_rename_and_hard_delete,
         test_hard_delete_removes_account_identity_and_owned_namespace_state,
         test_namespace_rename_moves_account_repo_and_repo_scoped_state,
@@ -339,4 +340,5 @@ def test_reset_token_bound_to_current_hash_and_expiry():
 def test_login_page_links_to_password_reset():
     login_html = (Path(__file__).resolve().parents[1] /
                   "public" / "login.html").read_text(encoding="utf-8")
-    assert "/forgot-password.html" in login_html
+    assert "/forgot-password" in login_html
+    assert "/forgot-password.html" not in login_html

@@ -27,8 +27,9 @@
   }
 
   function setText(selector, value) {
-    const el = document.querySelector(selector);
-    if (el) el.textContent = value;
+    document.querySelectorAll(selector).forEach((el) => {
+      el.textContent = value;
+    });
   }
 
   // The last-known counts are cached so the header pill and stat cards render
@@ -248,9 +249,11 @@
     const hostsEl = document.querySelector("#network-hosts");
     if (location.protocol === "file:") {
       if (clientsCount) clientsCount.textContent = "Preview only";
-      setText("#network-clients", "—");
+      setText("#network-clients, [data-network-clients]", "—");
       if (reposEl) reposEl.textContent = "—";
+      setText("[data-network-repos]", "—");
       if (hostsEl) hostsEl.textContent = "—";
+      setText("[data-network-hosts]", "—");
       renderPayoutNodes([]);
       return;
     }
@@ -263,9 +266,11 @@
       const hosts = Number(data.hosts) || 0;
       const repos = Number(data.repos) || 0;
       renderOnline(clients + hosts);
-      setText("#network-clients", String(clients));
+      setText("#network-clients, [data-network-clients]", String(clients));
       if (reposEl) reposEl.textContent = String(repos);
+      setText("[data-network-repos]", String(repos));
       if (hostsEl) hostsEl.textContent = String(hosts);
+      setText("[data-network-hosts]", String(hosts));
       writeCachedStat("clients", clients);
       writeCachedStat("hosts", hosts);
       writeCachedStat("repos", repos);
@@ -273,6 +278,7 @@
     } catch (error) {
       if (clientsCount) clientsCount.textContent = "Reconnecting…";
       if (clientsDot) clientsDot.classList.remove("online");
+      renderPayoutNodes([]);
     }
   }
 
@@ -297,9 +303,9 @@
     const hosts = readCachedStat("hosts");
     const repos = readCachedStat("repos");
     if (clients !== null && hosts !== null) renderOnline(clients + hosts);
-    if (clients !== null) setText("#network-clients", String(clients));
-    if (hosts !== null) setText("#network-hosts", String(hosts));
-    if (repos !== null) setText("#network-repos", String(repos));
+    if (clients !== null) setText("#network-clients, [data-network-clients]", String(clients));
+    if (hosts !== null) setText("#network-hosts, [data-network-hosts]", String(hosts));
+    if (repos !== null) setText("#network-repos, [data-network-repos]", String(repos));
   }
 
   // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.

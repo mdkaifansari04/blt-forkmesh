@@ -54,7 +54,7 @@
     }
     if (res.ok) {
       setHint("Password updated. Redirecting to log in…", "good");
-      setTimeout(() => (location.href = "/login.html"), 900);
+      setTimeout(() => (location.href = "/login"), 900);
       return;
     }
     btn.disabled = false;
