@@ -905,6 +905,13 @@ void MainWindow::startSession()
                     !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
                     publishRepository(i, false);
             }
+        } else if (m_headless) {
+            // A headless VM has no GUI and nothing else ever calls
+            // registerNodeAccountSilently() again — so a transient failure here
+            // (relay unreachable right at boot is the common case on a fresh
+            // VPS) would otherwise strand the node unregistered forever, even
+            // though it keeps mirroring/chatting fine. Retry with backoff.
+            scheduleHeadlessRegisterRetry(name);
         }
     }
 
@@ -1872,6 +1879,44 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     logSystem("Account: registered headless node \"" + accountName +
               "\" (free, key-bound); its mirrors will now publish and host.");
     return true;
+}
+
+// Backoff retry for a headless node whose first registerNodeAccountSilently()
+// call (from startSession(), the only other call site) failed — most commonly
+// because the relay wasn't reachable yet moments after the box booted. Nothing
+// else in a headless run ever retries this, so without it the node would keep
+// mirroring/chatting fine but simply never show up on the website (adhoc #219).
+// Capped at a 5-minute steady-state interval and kept idempotent: once
+// registerNodeAccountSilently() succeeds (or an active session already exists)
+// the timer stops rescheduling itself.
+void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
+{
+    if (!m_headlessRegisterRetryTimer) {
+        m_headlessRegisterRetryTimer = new QTimer(this);
+        m_headlessRegisterRetryTimer->setSingleShot(true);
+        connect(m_headlessRegisterRetryTimer, &QTimer::timeout, this,
+                [this, accountName] {
+                    if (hasActiveAccountSession())
+                        return;
+                    if (registerNodeAccountSilently(accountName)) {
+                        m_headlessRegisterAttempt = 0;
+                        for (int i = 0; i < m_repositories.size(); ++i) {
+                            const RepositoryRecord &r = m_repositories.at(i);
+                            if (!r.previewOnly && r.publishToNetwork &&
+                                !r.mirrorPath.isEmpty() &&
+                                QDir(r.mirrorPath).exists())
+                                publishRepository(i, false);
+                        }
+                        return;
+                    }
+                    scheduleHeadlessRegisterRetry(accountName);
+                });
+    }
+    static const int delaysSec[] = {15, 30, 60, 120, 300};
+    const int idx = qMin(m_headlessRegisterAttempt,
+                         int(sizeof(delaysSec) / sizeof(delaysSec[0])) - 1);
+    ++m_headlessRegisterAttempt;
+    m_headlessRegisterRetryTimer->start(delaysSec[idx] * 1000);
 }
 
 // POST /api/accounts/login — log in by email (+ optional TOTP).

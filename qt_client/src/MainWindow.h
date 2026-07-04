@@ -469,6 +469,15 @@ private:
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
     bool m_headless = false;               // no-GUI node (offscreen); see setHeadlessMode
+    // A headless node has no GUI and no other periodic hook that retries
+    // registerNodeAccountSilently() — startSession() only calls it once, at
+    // first boot. If the relay is briefly unreachable right then (common on a
+    // fresh VPS: DNS/network still settling), the node was previously stranded
+    // unregistered forever, mirroring + chatting but never appearing on the
+    // website (adhoc #219). This timer retries with backoff until it succeeds.
+    QTimer *m_headlessRegisterRetryTimer = nullptr;
+    int m_headlessRegisterAttempt = 0;
+    void scheduleHeadlessRegisterRetry(const QString &accountName);
     // True first run only (no saved node name yet). Gates the "we're syncing" toast
     // + auto-open in ensureFlagshipRepo() so a fresh install lands on real content
     // without manual setup, without re-interrupting an existing user (adhoc #113).
