@@ -9,7 +9,11 @@ from _dashboard_bundle import assembled_dashboard_js
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 PUBLIC = ROOT / "public"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
+# concatenate it so the schema source-contract assertions below still resolve.
+SCHEMA = ENTRY.parent / "schema.py"
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 
 def _load_notification_helpers():

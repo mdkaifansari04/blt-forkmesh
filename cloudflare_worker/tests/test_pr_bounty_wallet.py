@@ -10,7 +10,11 @@ from issue bounties so a shared number never collides.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
+# concatenate it so the schema source-contract assertions below still resolve.
+ENTRY_TEXT = (
+    (ROOT / "src" / "entry.py").read_text(encoding="utf-8") + "\n"
+    + (ROOT / "src" / "schema.py").read_text(encoding="utf-8"))
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
     p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
