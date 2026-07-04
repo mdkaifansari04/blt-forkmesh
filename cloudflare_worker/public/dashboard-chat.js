@@ -357,8 +357,17 @@
     handlePlain(plain);
   }
 
+  // Durable message types the relay should retain (still encrypted) and replay
+  // to clients that join later — the same set the desktop node tags via
+  // kDurableTypes (ServerNode::sendEncrypted). Without this flag the relay's
+  // _maybe_retain drops the frame, so a message typed on the website is relayed
+  // live but never becomes part of the shared history nodes and other web
+  // visitors see on connect — leaving the website out of the shared chat.
+  const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
+
   function send(plain) {
     return encryptObject(plain).then((envelope) => {
+      if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
       if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope));
     });
   }

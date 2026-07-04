@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 361
 title: Notifications: mentions, subscriptions, and an email bridge
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 24

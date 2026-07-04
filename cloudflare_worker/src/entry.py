@@ -87,6 +87,7 @@ MAX_NOTIFICATIONS_FETCH = 100
 NOTIFICATION_RETAIN_MS = 90 * 24 * 60 * 60 * 1000
 NOTIFICATION_KINDS = frozenset({
     "mention",
+    "subscribed",
     "pull_submitted",
     "issue_assigned",
     "repo_shared",
@@ -95,8 +96,20 @@ NOTIFICATION_KINDS = frozenset({
     "release_published",
     "host_online",
     "host_offline",
+    "credits_refilled",
     "pending_inbox",
 })
+# Email digest bridge (issue #361): the cron rolls a recipient's unread
+# notifications into one email so a reply reaches people who don't have the app
+# open. Only recipients with a *verified* email get one (issue #320 fixed the
+# verification flow, a hard dependency). A notification is only digested once it
+# is a couple of minutes old, so a user actively reading in-app clears it before
+# any mail goes out; and at most one digest per recipient per interval. Any
+# notification kind rides this rail — including issue #346's credits_refilled.
+NOTIFICATION_DIGEST_INTERVAL_MS = 60 * 60 * 1000
+NOTIFICATION_DIGEST_MIN_AGE_MS = 3 * 60 * 1000
+NOTIFICATION_DIGEST_MAX_ITEMS = 20
+NOTIFICATION_DIGEST_MAX_RECIPIENTS = 200
 # Each room exposes a WebSocket (/ws) and a read-only live client count
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
@@ -109,6 +122,9 @@ REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.
 REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
+# Thread subscriptions (issue #361): a node signs a subscribe/unsubscribe for one
+# issue or PR so it gets notified of every reply, not just mentions of it.
+REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")
 # Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
 # and split it 90/10 to the PR author + treasury when the issue's PR merges.
 REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
@@ -2792,6 +2808,18 @@ SCHEMA_STATEMENTS = [
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_ts ON notifications(recipient_bi, ts)",
     "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_bi, read_at, ts)",
+    # Thread subscriptions (issue #361): who follows a given issue/PR. thread_bi is
+    # a blind index of "thread:<owner>/<repo>:<source>:<number>"; the encrypted
+    # data holds the subscriber's (public) node name plus a `muted` flag so an
+    # explicit unsubscribe survives the auto-subscribe that fires when someone
+    # comments. Enqueue reads the name back to fan a reply out to every follower.
+    """CREATE TABLE IF NOT EXISTS thread_subscriptions (
+        thread_bi TEXT NOT NULL,
+        subscriber_bi TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (thread_bi, subscriber_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_thread_subscriptions_thread ON thread_subscriptions(thread_bi)",
     # One row per completed release-asset download (served by _release_blob), so
     # the Releases tab can show a per-artifact download count and the admin
     # dashboard has a plain event log of them (same treatment as install_diag).
@@ -7416,6 +7444,94 @@ async def notify_mentions(env, owner, repo, actor, title, body, href, source):
         )
 
 
+def _thread_key(owner, repo, source, number):
+    try:
+        n = int(number or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return ("thread:" + (owner or "") + "/" + (repo or "") + ":" +
+            (source or "") + ":" + str(n))
+
+
+async def subscribe_thread(env, owner, repo, source, number, subscriber,
+                           muted=False):
+    # Record (or mute) one node's subscription to an issue/PR thread. Auto-called
+    # for anyone who comments so they hear about later replies; the signed
+    # subscribe endpoint calls it too. An explicit mute is sticky: a later
+    # auto-subscribe won't silently re-enable a thread the user muted.
+    subscriber = clean_string(subscriber, MAX_NODE_NAME).lower()
+    if not valid_node_name(subscriber):
+        return False
+    try:
+        number = int(number or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        # A brand-new submission has no durable number yet (the owner assigns it on
+        # drain), so its thread key would collide with every other new item.
+        return False
+    await ensure_schema(env)
+    thread_bi = await blind_index(env, _thread_key(owner, repo, source, number))
+    subscriber_bi = await blind_index(env, subscriber)
+    if not muted:
+        existing = await d1_first(
+            env,
+            "SELECT data FROM thread_subscriptions "
+            "WHERE thread_bi=? AND subscriber_bi=?",
+            thread_bi, subscriber_bi)
+        if existing:
+            rec = await decrypt_row(env, existing.get("data", ""))
+            if rec and rec.get("muted"):
+                return False  # keep an explicit unsubscribe
+            return True  # already subscribed
+    await d1_run(
+        env,
+        "INSERT INTO thread_subscriptions (thread_bi, subscriber_bi, ts, data) "
+        "VALUES (?,?,?,?) ON CONFLICT(thread_bi, subscriber_bi) DO UPDATE SET "
+        "ts=excluded.ts, data=excluded.data",
+        thread_bi, subscriber_bi, int(Date.now()),
+        await encrypt_row(env, {"node": subscriber, "muted": bool(muted)}),
+    )
+    return True
+
+
+async def notify_subscribers(env, owner, repo, source, number, actor, title,
+                             body, href):
+    # Fan a new comment out to everyone following the thread, minus the commenter
+    # and anyone already covered by an @mention on this same event (so a mentioned
+    # subscriber gets one notification, not two).
+    try:
+        number = int(number or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        return
+    await ensure_schema(env)
+    thread_bi = await blind_index(env, _thread_key(owner, repo, source, number))
+    rows = await d1_all(
+        env, "SELECT data FROM thread_subscriptions WHERE thread_bi=?", thread_bi)
+    if not rows:
+        return
+    mentioned = set(notification_mentions(title, body))
+    snippet = clean_string(body or title, 80)
+    for row in rows:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or rec.get("muted"):
+            continue
+        name = clean_string(rec.get("node", ""), MAX_NODE_NAME).lower()
+        if not valid_node_name(name) or name == actor or name in mentioned:
+            continue
+        await enqueue_notification(
+            env, name, "subscribed", "New activity in " + owner + "/" + repo,
+            body=(title or body or "There's a new reply on a thread you follow."),
+            repo=owner + "/" + repo, href=href, actor=actor, source=source,
+            dedupe="subscribed:" + owner + "/" + repo + ":" + source + ":" +
+                   str(number) + ":" + name + ":" + clean_string(actor, 80) +
+                   ":" + snippet,
+            meta={"number": number, "source": source},
+        )
+
+
 async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0):
     kind = "pull_submitted" if source == "pull" else "pending_inbox"
     label = {
@@ -7588,6 +7704,142 @@ async def notifications_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+async def subscribe_handler(env, request, owner, repo):
+    # Signed subscribe/unsubscribe for one issue or PR thread (issue #361). The
+    # request is signed with the node's own Ed25519 key — the same proof of
+    # control as a heartbeat — so only the account holder can watch or mute a
+    # thread on their own behalf.
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    source = clean_string(data.get("source", ""), 20)
+    if source not in ("issue", "pull"):
+        return json_response({"error": "bad_source"}, status=400)
+    try:
+        number = int(data.get("number", 0))
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        return json_response({"error": "bad_number"}, status=400)
+    subscribed = bool(data.get("subscribed", True))
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(node) or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    _, rec = await _account_row(env, node)
+    pubkey = rec.get("pubkey", "") if rec else ""
+    if not pubkey:
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
+                 "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
+                 "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    await subscribe_thread(env, owner, repo, source, number, node,
+                           muted=not subscribed)
+    return json_response({"ok": True, "subscribed": subscribed})
+
+
+async def send_notification_digests(env):
+    # Cron: roll each recipient's unread notifications into a single email so a
+    # reply reaches people who don't have the app open (issue #361). Only the main
+    # relay sends mail; recipients need a verified email and must not have opted
+    # out. Best-effort — never raise from the cron.
+    if not _is_main_relay(env):
+        return
+    await ensure_schema(env)
+    now = int(Date.now())
+    max_age_cut = now - NOTIFICATION_DIGEST_MIN_AGE_MS
+    recips = await d1_all(
+        env,
+        "SELECT DISTINCT recipient_bi FROM notifications "
+        "WHERE read_at=0 AND ts<=? LIMIT ?",
+        max_age_cut, NOTIFICATION_DIGEST_MAX_RECIPIENTS)
+    for recip in recips or []:
+        recipient_bi = recip.get("recipient_bi")
+        if not recipient_bi:
+            continue
+        acct = await d1_first(
+            env, "SELECT data FROM accounts WHERE name_bi=?", recipient_bi)
+        if not acct:
+            continue
+        rec = await decrypt_row(env, acct.get("data", ""))
+        if not rec or rec.get("status") != "active":
+            continue
+        email = clean_string(rec.get("email", ""), 254).strip()
+        if not email or not rec.get("email_verified"):
+            continue
+        if rec.get("email_notifications") is False:
+            continue  # explicit opt-out
+        last = int(rec.get("last_digest_ts", 0) or 0)
+        if last and now - last < NOTIFICATION_DIGEST_INTERVAL_MS:
+            continue
+        rows = await d1_all(
+            env,
+            "SELECT ts, data FROM notifications "
+            "WHERE recipient_bi=? AND read_at=0 AND ts>? AND ts<=? "
+            "ORDER BY ts DESC LIMIT ?",
+            recipient_bi, last, max_age_cut, NOTIFICATION_DIGEST_MAX_ITEMS)
+        items = []
+        newest = last
+        for row in rows or []:
+            payload = await decrypt_row(env, row.get("data", ""))
+            if not payload:
+                continue
+            items.append(payload)
+            newest = max(newest, int(row.get("ts") or 0))
+        if not items:
+            continue
+        node = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        subject, text, html = _notification_digest_email(node, items)
+        if await _send_email(env, email, subject, text, html):
+            rec["last_digest_ts"] = newest
+            await _save_account(env, recipient_bi, rec)
+
+
+def _notification_digest_email(node, items):
+    n = len(items)
+    subject = ("ForkMesh: " + str(n) + " new notification" +
+               ("s" if n != 1 else ""))
+    lines = ["Hi " + node + ",", "",
+             "You have " + str(n) + " unread ForkMesh notification" +
+             ("s" if n != 1 else "") + ":", ""]
+    html_items = []
+    for it in items:
+        title = clean_string(it.get("title", ""), 160) or "Notification"
+        body = clean_string(it.get("body", ""), 300)
+        repo = clean_string(it.get("repo", ""), 180)
+        prefix = ("[" + repo + "] ") if repo else ""
+        lines.append("- " + prefix + title)
+        if body:
+            lines.append("    " + body)
+        html_items.append(
+            "<li><strong>" + _html_escape(prefix + title) + "</strong>" +
+            ("<br><span style=\"color:#666\">" + _html_escape(body) + "</span>"
+             if body else "") + "</li>")
+    lines += ["", "Open ForkMesh to read and reply.",
+              "To stop these emails, turn off email notifications in your "
+              "profile settings."]
+    text = "\n".join(lines)
+    html = ("<p>Hi " + _html_escape(node) + ",</p>"
+            "<p>You have " + str(n) + " unread ForkMesh notification" +
+            ("s" if n != 1 else "") + ":</p><ul>" + "".join(html_items) +
+            "</ul><p>Open ForkMesh to read and reply.</p>"
+            "<p style=\"color:#888;font-size:13px\">To stop these emails, turn "
+            "off email notifications in your profile settings.</p>")
+    return subject, text, html
+
+
+def _html_escape(text):
+    return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
 def _build_rev(env):
     # The git rev deploy.sh stamps as a Worker var on every production deploy.
     try:
@@ -7684,25 +7936,33 @@ async def issues_handler(env, request, owner, repo):
             # "wantsAgent" makes the owner's node start a coding agent on this
             # issue automatically once merged — unlike the other meta fields
             # above, that's an immediate, unreviewed side effect, so it's only
-            # honored when the request proves it's the repo owner's own account
-            # (password re-check, same as other sensitive account actions), not
-            # just a client-side checkbox anyone could set on a raw submission.
+            # honored when the request re-proves a privileged account: the repo
+            # owner, or an admin acting on the owner's behalf (admin node-
+            # ownership, adhoc #141). The password re-check proves ownership of
+            # whichever account "ownerAccount" names, so it can't be spoofed by a
+            # client-side checkbox on a raw submission.
             wants_agent = False
             if meta_in.get("wantsAgent"):
-                owner_bi, owner_rec = await _account_row(env, owner)
-                if await _login_locked_until(env, owner_bi):
+                actor = clean_string(data.get("ownerAccount", "") or owner, 120)
+                actor_bi, actor_rec = await _account_row(env, actor)
+                if await _login_locked_until(env, actor_bi):
                     return json_response({"error": "too_many_attempts"}, status=429)
                 owner_password = str(data.get("ownerPassword", "") or "")[:256]
                 verified = bool(
-                    owner_rec and owner_rec.get("status") == "active" and
-                    owner_rec.get("pass_hash") and owner_password and
+                    actor_rec and actor_rec.get("status") == "active" and
+                    actor_rec.get("pass_hash") and owner_password and
                     await verify_password(owner_password,
-                                          owner_rec.get("pass_salt", ""),
-                                          owner_rec.get("pass_hash", "")))
+                                          actor_rec.get("pass_salt", ""),
+                                          actor_rec.get("pass_hash", "")))
                 if not verified:
-                    await _login_record_fail(env, owner_bi)
+                    await _login_record_fail(env, actor_bi)
                     return json_response({"error": "bad_owner_password"}, status=401)
-                await _login_clear(env, owner_bi)
+                # The proven account must actually be entitled to command the
+                # node: the repo owner itself, or a network admin.
+                if actor.lower() != str(owner or "").lower() \
+                        and not await _is_admin(env, actor):
+                    return json_response({"error": "not_authorized"}, status=403)
+                await _login_clear(env, actor_bi)
                 wants_agent = True
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
@@ -7735,6 +7995,13 @@ async def issues_handler(env, request, owner, repo):
         if isinstance(event.get("assignees"), list):
             assignees.extend(event.get("assignees"))
         await notify_issue_assignees(env, owner, repo, assignees, actor, item.get("titleIfNew", ""), number)
+        # Subscriptions (issue #361): tell everyone already following this issue
+        # about the new activity, then auto-subscribe the commenter so they hear
+        # about later replies. Both no-op for a brand-new issue (number 0).
+        await notify_subscribers(env, owner, repo, "issue", number, actor,
+                                 item.get("titleIfNew", ""), event.get("body", ""),
+                                 repo_web_href(owner, repo))
+        await subscribe_thread(env, owner, repo, "issue", number, actor)
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -7804,6 +8071,12 @@ async def pulls_handler(env, request, owner, repo):
             await notify_pending_inbox(env, owner, repo, "pull", actor, event.get("body", ""), number)
             await notify_mentions(env, owner, repo, actor, "Pull request comment", event.get("body", ""),
                                   repo_web_href(owner, repo), "pull")
+            # Subscriptions (issue #361): fan the comment out to the PR's
+            # followers, then auto-subscribe the commenter.
+            await notify_subscribers(env, owner, repo, "pull", number, actor,
+                                     "Pull request comment", event.get("body", ""),
+                                     repo_web_href(owner, repo))
+            await subscribe_thread(env, owner, repo, "pull", number, actor)
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -9132,6 +9405,15 @@ class Default(WorkerEntrypoint):
             await chat_history_prune_expired(self.env)
         except Exception:
             pass
+        # Email digest bridge (issue #361): roll each recipient's unread
+        # notifications into one email so a reply reaches people who don't have
+        # the app open. Per-recipient interval + min-age gates inside keep the
+        # per-minute cron cheap and stop it emailing notifications the user is
+        # actively reading.
+        try:
+            await send_notification_digests(self.env)
+        except Exception:
+            pass
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -9443,6 +9725,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await discussions_handler(self.env, request, owner, repo)
+
+        subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
+        if subscribe_match:
+            owner = safe_segment(subscribe_match.group(1))
+            repo = safe_segment(subscribe_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await subscribe_handler(self.env, request, owner, repo)
 
         bounty_match = REPO_BOUNTY_RE.match(url.path)
         if bounty_match:
