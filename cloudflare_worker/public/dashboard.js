@@ -2829,7 +2829,7 @@
       ? items.slice(start, end)
       : items;
     return pageItems.map((item) => `
-      <button type="button" ${item.pending ? "disabled" : ""} data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors ${item.pending ? "cursor-default opacity-80" : "hover:bg-secondary/40"}">
+      <button type="button" data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.pending ? item.localId : item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors hover:bg-secondary/40">
         <i data-lucide="${config.icon}" class="mt-0.5 h-4 w-4 ${config.tone}"></i>
         <span class="min-w-0">
           <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -3160,7 +3160,7 @@
     ];
   }
 
-  function renderRepoRecordDetail(repo, kind, number, parsed) {
+  function renderRepoRecordDetail(repo, kind, number, parsed, options = {}) {
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
@@ -3168,6 +3168,9 @@
     const author = values.authorName || values.author || "unknown";
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
+    const recordLabel = options.pending ? "pending" : `#${escapeHtml(number)}`;
+    const pendingNotice = options.pending ? `
+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = kind === "pulls" ? `
@@ -3204,8 +3207,9 @@
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-4 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
-          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · #${escapeHtml(number)}</span>
+          <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
         </div>
+        ${pendingNotice}
         <header class="rounded-lg border border-border bg-secondary/30 p-4">
           <div class="flex min-w-0 flex-wrap items-center gap-2">
             <i data-lucide="${config.icon}" class="h-4 w-4 ${config.tone}"></i>
@@ -3231,6 +3235,20 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
+    // Issues just submitted from this session sit in the maintainer's inbox
+    // until drained, so there's nothing to fetch from the mirror yet — render
+    // the detail straight from the local placeholder instead.
+    const pendingItem = kind === "issues"
+      ? state.issuesView.items.find((item) => item.pending && item.localId === number)
+      : null;
+    if (pendingItem) {
+      container.innerHTML = renderRepoRecordDetail(repo, kind, number, {
+        values: { title: pendingItem.title, status: pendingItem.status, authorName: pendingItem.author },
+        body: pendingItem.body,
+      }, { pending: true });
+      window.lucide?.createIcons();
+      return;
+    }
     const recordPath = `${config.dir}/${number}/${config.file}`;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
     try {
@@ -3580,6 +3598,7 @@
       // top of this session's issue list, so the submitter sees it right away.
       state.issuesView.items = [{
         number: null,
+        localId: `pending-${Date.now().toString(36)}`,
         title,
         status: "open",
         author: state.session?.nodeName || "you",
