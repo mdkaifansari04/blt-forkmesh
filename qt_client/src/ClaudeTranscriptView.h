@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QScrollArea>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class QVBoxLayout;
@@ -51,6 +52,12 @@ signals:
     // the pending tool_use to satisfy; answer is the assembled reply text. The
     // host sends it back to the CLI as a tool_result (see sendToolResult).
     void questionAnswered(const QString &toolUseId, const QString &answer);
+    // The user clicked one of the options on a heuristically-detected inline
+    // clarifying question (issue #212) — plain assistant prose that lays out a
+    // numbered list of choices instead of going through the AskUserQuestion
+    // tool. Unlike questionAnswered() there's no tool_use_id to satisfy; the
+    // host just sends `answer` as a normal follow-up prompt.
+    void inlineChoiceAnswered(const QString &answer);
     // The "Load N earlier events" notice was clicked, or the view was scrolled
     // near its top — the host should slice the next batch of earlier events off
     // its buffer and hand them to prependEarlierEvents(). Only emitted once per
@@ -113,6 +120,13 @@ public:
     void searchPrev();
     void clearSearch();
 
+    // Heuristic detection of a clarifying question the CLI asked in plain prose
+    // rather than through the AskUserQuestion tool — a numbered list of two or
+    // more options alongside a question mark (issue #212), e.g. "do you want
+    // me to: 1. ... or 2. ...?". Shared with MainWindow so the same rule flags
+    // the session "Waiting" (hand icon) as a real AskUserQuestion turn does.
+    static bool parseInlineChoices(const QString &markdown, QStringList &options);
+
 signals:
     void searchResultsChanged(int current, int total);
 
@@ -135,7 +149,10 @@ private:
                                  bool expanded);
     void addAssistantBlocks(const QJsonObject &message);
     // Plain (un-boxed) assistant prose, like the Claude Code conversation view.
-    void addAssistantText(const QString &markdown);
+    // Returns true if the text also read as an inline clarifying question (see
+    // parseInlineChoices), so the caller can treat the turn the same as a real
+    // AskUserQuestion for the activity-ticker state.
+    bool addAssistantText(const QString &markdown);
     // A "Name  subtitle" tool header line (the timeline rail supplies the dot).
     QWidget *dotHeader(const QString &name, const QString &subtitle);
     // One labelled row ("IN"/"OUT") inside a tool card's box.
@@ -163,6 +180,14 @@ private:
     // transcript rebuild/replay.
     void addAskUserQuestion(const QString &id, const QJsonObject &input);
     void markAskAnswered(const QString &id, const QString &answer);
+
+    // A lighter card for a heuristically-detected inline clarifying question
+    // (see parseInlineChoices): one clickable row per option, no tool_use_id
+    // involved. Clicking emits inlineChoiceAnswered() and locks the card.
+    QWidget *addInlineChoices(const QStringList &options);
+    // Disable a (possibly already-answered) inline-choice card in place, e.g.
+    // once the conversation has moved past it.
+    void lockInlineChoices(QWidget *box);
 
     QString toolSubtitle(const QString &name, const QJsonObject &input) const;
     QWidget *toolBody(const QString &name, const QJsonObject &input);
@@ -215,6 +240,10 @@ private:
         QPointer<QLabel> status;   // "✓ You answered: …"
     };
     QHash<QString, AskCard> m_askCards;
+    // The single most-recently-added, still-unanswered inline-choice card (see
+    // addInlineChoices), if any — locked the moment the conversation moves on
+    // (a new assistant turn or a user reply arrives).
+    QPointer<QWidget> m_openInlineChoices;
 
     Collapsible *m_liveThinking = nullptr;
     QLabel *m_thinkingBody = nullptr;

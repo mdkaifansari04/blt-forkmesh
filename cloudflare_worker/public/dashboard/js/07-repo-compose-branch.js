@@ -29,12 +29,20 @@
             <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
             <span>Assign to agent — once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
           </label>
-          <label class="ml-5 flex items-center gap-2 text-xs text-muted-foreground">
-            Model
-            <select data-repo-issue-agent-model disabled class="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary disabled:opacity-50">
-              ${AGENT_MODEL_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-            </select>
-          </label>
+          <div class="ml-5 flex flex-wrap items-center gap-4">
+            <label class="flex items-center gap-2 text-xs text-muted-foreground">
+              Agent
+              <select data-repo-issue-agent-provider disabled class="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary disabled:opacity-50">
+                ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-xs text-muted-foreground">
+              Model
+              <select data-repo-issue-agent-model disabled class="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary disabled:opacity-50">
+                ${AGENT_MODEL_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
@@ -51,8 +59,10 @@
     const attachmentsList = container.querySelector("[data-repo-issue-attachments]");
     const assignAgentInput = container.querySelector("[data-repo-issue-assign-agent]");
     const agentModelInput = container.querySelector("[data-repo-issue-agent-model]");
+    const agentProviderInput = container.querySelector("[data-repo-issue-agent-provider]");
     assignAgentInput?.addEventListener("change", () => {
       if (agentModelInput) agentModelInput.disabled = !assignAgentInput.checked;
+      if (agentProviderInput) agentProviderInput.disabled = !assignAgentInput.checked;
     });
     // Queued images: a short placeholder (not the data URL) is inserted into
     // the body textarea so it stays readable/editable; the real data: URL is
@@ -155,6 +165,7 @@
     const submit = form.querySelector("[data-repo-issue-submit]");
     const assignAgentInput = form.querySelector("[data-repo-issue-assign-agent]");
     const agentModelInput = form.querySelector("[data-repo-issue-agent-model]");
+    const agentProviderInput = form.querySelector("[data-repo-issue-agent-provider]");
     const hint = form.querySelector("[data-repo-issue-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -168,6 +179,7 @@
     }
     const assignAgent = Boolean(assignAgentInput?.checked);
     const agentModel = assignAgent ? String(agentModelInput?.value || "") : "";
+    const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
     // Swap each attached image's short placeholder back out for its real
     // data: URL now, right before signing — the signed content hash has to
     // cover exactly what gets sent.
@@ -177,7 +189,7 @@
     if (submit) submit.disabled = true;
     setHint("Signing and sending…");
     try {
-      await submitWebIssue(repo, title, body, assignAgent, agentModel);
+      await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it — but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.

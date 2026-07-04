@@ -6,6 +6,7 @@
 #include <QEasingCurve>
 #include <QEvent>
 #include <QFontDatabase>
+#include <functional>
 #include <QButtonGroup>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
@@ -444,6 +445,34 @@ private:
     }
     QPixmap m_full;
     bool m_expanded = false;
+};
+
+// One clickable row of an inline-choice card (see addInlineChoices): unlike a
+// QPushButton this wraps long text, since the CLI's heuristically-detected
+// options are often full sentences rather than short labels.
+class ChoiceOption : public QFrame
+{
+public:
+    explicit ChoiceOption(const QString &text, QWidget *parent = nullptr)
+        : QFrame(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        auto *v = new QVBoxLayout(this);
+        v->setContentsMargins(10, 8, 10, 8);
+        auto *l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setAttribute(Qt::WA_TransparentForMouseEvents); // clicks reach the frame
+        v->addWidget(l);
+    }
+
+    std::function<void()> onClick;
+
+protected:
+    void mousePressEvent(QMouseEvent *) override
+    {
+        if (onClick)
+            onClick();
+    }
 };
 
 ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent)
@@ -984,8 +1013,8 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
         const QString t = b.value(QStringLiteral("type")).toString();
         if (t == QLatin1String("text")) {
             const QString text = b.value(QStringLiteral("text")).toString();
-            if (!text.trimmed().isEmpty())
-                addAssistantText(text);
+            if (!text.trimmed().isEmpty() && addAssistantText(text))
+                askedQuestion = true; // inline multiple-choice prose (issue #212)
         } else if (t == QLatin1String("tool_use")) {
             hadTool = true;
             const QString name = b.value(QStringLiteral("name")).toString();
@@ -1112,7 +1141,25 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
 
 // Assistant prose renders as plain, full-width text (no card), matching the
 // Claude Code conversation view where only the user's turns are boxed.
-void ClaudeTranscriptView::addAssistantText(const QString &markdown)
+bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
+{
+    // A markdown ordered-list item: "1. ..." or "1) ...", one per line.
+    static const QRegularExpression item(
+        QStringLiteral("(?m)^[ \\t]{0,3}\\d{1,2}[.)][ \\t]+(.+)$"));
+    QStringList found;
+    auto it = item.globalMatch(markdown);
+    while (it.hasNext())
+        found << it.next().captured(1).trimmed();
+    // Require at least two options and something that actually reads like a
+    // question, so a plain numbered list (e.g. steps in a plan) isn't mistaken
+    // for a clarifying question.
+    if (found.size() < 2 || !markdown.contains(QLatin1Char('?')))
+        return false;
+    options = found;
+    return true;
+}
+
+bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
 {
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::MarkdownText);
@@ -1122,11 +1169,30 @@ void ClaudeTranscriptView::addAssistantText(const QString &markdown)
     l->setOpenExternalLinks(true);
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
+
+    QStringList options;
+    if (parseInlineChoices(markdown, options)) {
+        if (m_openInlineChoices)
+            lockInlineChoices(m_openInlineChoices); // the conversation moved on
+        auto *wrap = new QWidget;
+        wrap->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *v = new QVBoxLayout(wrap);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(8);
+        v->addWidget(l);
+        v->addWidget(addInlineChoices(options));
+        addRow(wrap, m_p.accent);
+        return true;
+    }
     addRow(l);
+    return false;
 }
 
 void ClaudeTranscriptView::addUserTurn(const QString &text)
 {
+    if (m_openInlineChoices)
+        lockInlineChoices(m_openInlineChoices); // a reply arrived; stop offering it
+
     auto *frame = new QFrame;
     frame->setStyleSheet(QStringLiteral("QFrame{background:%1;border:1px solid %2;"
                                         "border-left:3px solid %3;border-radius:8px;}")
@@ -1418,6 +1484,48 @@ void ClaudeTranscriptView::markAskAnswered(const QString &id, const QString &ans
         c.status->setText(QStringLiteral("✓ You answered: %1").arg(shown));
         c.status->setVisible(true);
     }
+}
+
+// A lighter card for a heuristically-detected inline clarifying question (see
+// parseInlineChoices): one clickable row per option. Clicking sends that
+// option's full text as the reply — there's no tool_use_id to satisfy, so the
+// host just forwards it as a normal follow-up prompt (issue #212).
+QWidget *ClaudeTranscriptView::addInlineChoices(const QStringList &options)
+{
+    auto *box = new QWidget;
+    box->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(6);
+
+    const QString css = QStringLiteral(
+        "color:%1;background:%2;border:1px solid %3;border-radius:6px;")
+        .arg(m_p.text, m_p.canvas, m_p.border);
+
+    for (const QString &opt : options) {
+        auto *row = new ChoiceOption(opt);
+        row->setStyleSheet(css);
+        v->addWidget(row);
+        row->onClick = [this, box, opt] {
+            lockInlineChoices(box);
+            emit inlineChoiceAnswered(opt);
+        };
+    }
+
+    m_openInlineChoices = box;
+    return box;
+}
+
+void ClaudeTranscriptView::lockInlineChoices(QWidget *box)
+{
+    if (!box || !box->isEnabled())
+        return; // already locked
+    box->setEnabled(false);
+    auto *fx = new QGraphicsOpacityEffect(box);
+    fx->setOpacity(0.5);
+    box->setGraphicsEffect(fx);
+    if (m_openInlineChoices == box)
+        m_openInlineChoices = nullptr;
 }
 
 void ClaudeTranscriptView::addResult(const QJsonObject &ev)

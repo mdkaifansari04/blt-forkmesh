@@ -83,6 +83,10 @@ struct RemoteIssueMeta {
     // "sonnet"); empty leaves the provider's own default. Only meaningful
     // alongside wantsAgent.
     QString wantsAgentModel;
+    // Agent provider the web submitter picked (e.g. "claude-code", "claude-api",
+    // "openai"); empty falls back to the node's default provider. Only meaningful
+    // alongside wantsAgent (adhoc #234 added the web-side dropdown).
+    QString wantsAgentProvider;
 };
 
 struct IssueLabel {
