@@ -522,6 +522,13 @@ private:
     // reply carried a confirmation code, shown on this machine so the person
     // standing at both screens can type it back into the website.
     void showNodeClaimCode(const QString &user, const QString &code);
+    // Admin node-ownership takeover (adhoc #141): an admin viewing another
+    // node's profile can request ownership; the heartbeat reply on the TARGET
+    // node then carries the pending request, prompted here for that node's own
+    // owner to approve or deny. requestNodeOwnership is the admin-side trigger.
+    void requestNodeOwnership();
+    void showOwnershipTransferPrompt(const QString &admin);
+    void submitOwnershipTransferDecision(bool approve);
     // Installer link-code flow (adhoc #53): the hosts/SSH installer printed a
     // link code on the fresh machine; confirm + submit it here, signed with
     // this account's key, so the new node is attached to this user.
@@ -671,6 +678,11 @@ private:
                                   RepoPushState *st);
     void applyRepoPushButtonState(int index, const RepoPushState &state);
     void pushCurrentRepoUpstream();
+    // Launch the async `git push` for a repo whose secret scan has completed and
+    // been approved (see pushCurrentRepoUpstream). The repo must already be marked
+    // in m_pushingRepos.
+    void startRepoPush(int index, const RepositoryRecord &repo,
+                       const QString &upstream, int ahead);
     // Integrity pin: sha256 over the canonical heads+tags advertisement of a bare
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
@@ -731,6 +743,12 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
+    // Opt-in crash/stall telemetry upload (issue #354). No-op unless the user
+    // enabled kUploadTelemetrySetting. On startup, reads the not-yet-uploaded
+    // tail of ~/.forkmesh/diagnostics/crashes.log and stalls.log, scrubs repo
+    // names / filesystem paths out, and POSTs a size-capped, anonymized payload
+    // (app version, OS, node hash) to /api/telemetry. Best-effort and silent.
+    void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
 
@@ -2915,6 +2933,20 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Bumped each time a branch is selected / a scope diff is requested so the
+    // off-thread git reads that build the scope list and render the diff can drop
+    // their result if the user has since switched branch or scope (issue #353 —
+    // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
+    int m_branchScopeLoadGen = 0;
+    int m_branchScopeDiffGen = 0;
+    // The last patch rendered into the branch-diff pane (with its empty-state
+    // message), cached so the per-file "Viewed" toggle can re-render synchronously
+    // — the toggle changes only the viewed set, not the patch, so it must not pay
+    // for (nor race) the now-async git read in renderBranchScopeDiff. Invalidated
+    // when a new branch is selected.
+    QByteArray m_branchDiffLastPatch;
+    QString m_branchDiffLastEmpty;
+    bool m_branchDiffLastValid = false;
     // "viewed" key for whatever scope the diff pane currently shows (whole branch,
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".
@@ -4177,6 +4209,8 @@ private:
     QPushButton *m_profileVerifyButton = nullptr;
     QLabel *m_profileEligibility = nullptr;
     QPushButton *m_profileMessageButton = nullptr;
+    // Admin-only "Take ownership" request on another node's profile (adhoc #141).
+    QPushButton *m_profileTakeOwnershipButton = nullptr;
     // "Get paid to mirror": opt-in CTA shown under the username on your own
     // profile. Flips to an "earning" label once the node is activated.
     QPushButton *m_profileGetPaidButton = nullptr;
@@ -4274,6 +4308,10 @@ private:
     // Last website-claim confirmation code already shown (adhoc #53), so the
     // per-minute heartbeat doesn't reopen the popup for the same claim.
     QString m_lastClaimCodeShown;
+    // Admin claiming this node last shown for an ownership-transfer prompt
+    // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
+    // while the request is still pending a decision.
+    QString m_lastOwnershipTransferAdminShown;
     // Avatar shown in the server rail (in place of the old settings gear); a
     // click opens Settings.
     QPushButton *m_avatarNavButton = nullptr;

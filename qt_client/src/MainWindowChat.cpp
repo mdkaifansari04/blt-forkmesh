@@ -2008,6 +2008,143 @@ void MainWindow::clearStallLog()
     updateFooterDiagnostics();
 }
 
+namespace {
+
+// Cap per field so a chatty crash/stall log can never inflate the telemetry
+// POST — the worker's isolate is small and this must never become an outage
+// vector (issue #354). Whole payload stays well under the worker's hard cap.
+constexpr int kTelemetryFieldCap = 8000;
+
+// Read the not-yet-uploaded tail of a diagnostics log, given how many bytes were
+// already sent. Returns the new tail and, via *newSize, the file's current size
+// so the caller can advance the stored offset only after a successful upload. If
+// the file shrank (rotated/cleared) since last time, the offset resets to 0.
+QString readDiagnosticsTail(const QString &path, qint64 offset, qint64 *newSize)
+{
+    QFile f(path);
+    *newSize = 0;
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const qint64 size = f.size();
+    *newSize = size;
+    qint64 from = offset;
+    if (from < 0 || from > size)
+        from = 0; // rotated or cleared: start over
+    if (from >= size)
+        return QString();
+    f.seek(from);
+    return QString::fromUtf8(f.readAll());
+}
+
+// Strip repo names and filesystem paths from a diagnostics blob before it leaves
+// the machine (privacy requirement, issue #354). Home directories carry the
+// username and every local repo checkout, so collapse them to "~"; other
+// absolute paths are reduced to their basename so a backtrace still names the
+// source file without leaking where it lives.
+QString scrubDiagnostics(QString text)
+{
+    if (text.isEmpty())
+        return text;
+    const QString home = QDir::homePath();
+    if (!home.isEmpty())
+        text.replace(home, QStringLiteral("~"));
+    // Any remaining /home/<user>/ or /Users/<user>/ (e.g. from another account's
+    // path recorded in a shared log) → ~/.
+    static const QRegularExpression userHome(
+        QStringLiteral("/(?:home|Users)/[^/\\s:]+"));
+    text.replace(userHome, QStringLiteral("~"));
+    // Absolute paths (a build/source dir, an object path in a frame) → basename,
+    // so "/opt/build/src/MainWindow.cpp:42" becomes "MainWindow.cpp:42".
+    static const QRegularExpression absPath(
+        QStringLiteral("/(?:[^/\\s():]+/)+([^/\\s():]+)"));
+    text.replace(absPath, QStringLiteral("\\1"));
+    if (text.size() > kTelemetryFieldCap)
+        text = text.right(kTelemetryFieldCap);
+    return text;
+}
+
+} // namespace
+
+// Opt-in crash/stall telemetry (issue #354). Off unless the user turned on
+// kUploadTelemetrySetting in Settings. Uploads only the tail of each diagnostics
+// log that hasn't been sent before (tracked by a byte offset), scrubbed of repo
+// names and paths, tagged with just the app version, OS, and an anonymized
+// one-way node hash. Fire-and-forget: never blocks startup, never surfaces UI.
+void MainWindow::maybeUploadDiagnostics()
+{
+    if (!QSettings().value(kUploadTelemetrySetting, false).toBool())
+        return;
+    if (!m_networkAccess)
+        return;
+
+    QSettings settings;
+    const QString diagDir = QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/");
+    const QString crashPath = diagDir + QStringLiteral("crashes.log");
+    const QString stallPath = m_stallLogPath.isEmpty()
+                                  ? diagDir + QStringLiteral("stalls.log")
+                                  : m_stallLogPath;
+
+    qint64 crashSize = 0, stallSize = 0;
+    const QString crash = scrubDiagnostics(readDiagnosticsTail(
+        crashPath, settings.value(kTelemetryCrashOffsetSetting, 0).toLongLong(),
+        &crashSize));
+    const QString stalls = scrubDiagnostics(readDiagnosticsTail(
+        stallPath, settings.value(kTelemetryStallOffsetSetting, 0).toLongLong(),
+        &stallSize));
+
+    QJsonArray events;
+    if (!crash.trimmed().isEmpty())
+        events.append(QJsonObject{{"kind", "crash"}, {"summary", crash}});
+    if (!stalls.trimmed().isEmpty())
+        events.append(QJsonObject{{"kind", "stall"}, {"summary", stalls}});
+    if (events.isEmpty()) {
+        // Nothing new to report; still advance the offsets so a later append
+        // doesn't re-scan the whole (unchanged) file.
+        settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
+        settings.setValue(kTelemetryStallOffsetSetting, stallSize);
+        return;
+    }
+
+    // Anonymized node hash: a one-way SHA-256 of our public key, so reports from
+    // the same node group together for triage without revealing the identity.
+    QString node;
+    if (m_profileIdentity.isValid() || m_profileIdentity.load())
+        node = QString::fromLatin1(
+            QCryptographicHash::hash(m_profileIdentity.publicKey().toUtf8(),
+                                     QCryptographicHash::Sha256)
+                .toHex());
+
+    QJsonObject body{
+        {"node", node},
+        {"version", QStringLiteral(FORKMESH_VERSION)},
+        {"os", QSysInfo::prettyProductName() + QLatin1Char(' ') +
+                   QSysInfo::currentCpuArchitecture()},
+        {"events", events},
+    };
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/telemetry"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, crashSize, stallSize] {
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        // Only advance the uploaded offsets once the mainnode has accepted the
+        // batch, so a transient failure re-sends the same records next startup.
+        if (status >= 200 && status < 300) {
+            QSettings settings;
+            settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
+            settings.setValue(kTelemetryStallOffsetSetting, stallSize);
+            logSystem(QStringLiteral("Uploaded opt-in crash/stall telemetry."));
+        }
+    });
+}
+
 // "Send to a new agent" button on the diagnostics dialog: hand the whole batch
 // of recorded stalls to one coding agent so the freezes get fixed. Mirrors the
 // auto-file prompt but bundles every entry (the auto-file path only ever fires
@@ -4581,70 +4718,108 @@ void MainWindow::pushCurrentRepoUpstream()
         upstream = QString::fromUtf8(upstreamOut).trimmed();
     }
 
-    // Secret scanning push protection: scan new commits (or all tracked files
-    // for relay repos) and warn the user before any data leaves this node.
-    if (repo.secretScanningEnabled) {
-        const QList<RepoSecurityFinding> findings =
-            RepoSecurity::findSecretsInPush(repo.localPath, upstream);
-        if (!findings.isEmpty()) {
-            QString detail;
-            const int shown = qMin(findings.size(), 5);
-            for (int i = 0; i < shown; ++i) {
-                const RepoSecurityFinding &f = findings.at(i);
-                detail += QStringLiteral("• %1 in %2 (line %3)\n")
-                              .arg(f.title, f.path)
-                              .arg(f.line);
-            }
-            if (findings.size() > shown)
-                detail += QStringLiteral("  … and %1 more\n")
-                              .arg(findings.size() - shown);
+    // The secret scan walks the pushed commits (or every tracked file for a relay
+    // repo) and the ahead-count runs rev-list — both are git reads heavy enough to
+    // freeze the GUI thread on a large repo (StallWatchdog's top push offender,
+    // issue #353). Run them off-thread and resume on the GUI thread for the
+    // (possibly modal) result. Mark the repo "pushing" now so the button flips to
+    // its busy state and the entry guard blocks a second click during the scan.
+    m_pushingRepos.insert(index);
+    updateRepoPushButton();
 
-            QMessageBox box(this);
-            box.setWindowTitle(QStringLiteral("Secret scanning: push blocked"));
-            box.setIcon(QMessageBox::Critical);
-            box.setText(
-                QStringLiteral(
-                    "Push protection detected %1 probable secret%2 in the "
-                    "commits being pushed for %3/%4.\n\n%5\n"
-                    "Rotate any exposed credentials before pushing.")
-                    .arg(findings.size())
-                    .arg(findings.size() == 1 ? QString() : QStringLiteral("s"))
-                    .arg(repo.owner, repo.name, detail));
-            auto *cancelBtn =
-                box.addButton(QStringLiteral("Cancel push"), QMessageBox::RejectRole);
-            auto *bypassBtn =
-                box.addButton(QStringLiteral("Push anyway"), QMessageBox::DestructiveRole);
-            box.setDefaultButton(cancelBtn);
-            box.exec();
-            if (box.clickedButton() != bypassBtn) {
+    struct PushScan {
+        QList<RepoSecurityFinding> findings;
+        int ahead = 0;
+    };
+    const bool scanEnabled = repo.secretScanningEnabled;
+    const QString localPath = repo.localPath;
+    runOffThread<PushScan>(
+        [scanEnabled, localPath, upstream, isRelay]() {
+            PushScan scan;
+            if (scanEnabled)
+                scan.findings = RepoSecurity::findSecretsInPush(localPath, upstream);
+            if (!isRelay) {
+                QByteArray countOut;
+                runGitCapture(localPath,
+                              {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                               QStringLiteral("@{upstream}..HEAD")},
+                              &countOut, nullptr);
+                scan.ahead = QString::fromUtf8(countOut).trimmed().toInt();
+            }
+            return scan;
+        },
+        [this, index, repo, upstream, isRelay](PushScan scan) {
+            // The repo list can be rebuilt while the scan runs; bail (releasing the
+            // pushing marker) if this index no longer points at the same repo.
+            if (index < 0 || index >= m_repositories.size() ||
+                m_repositories.at(index).localPath != repo.localPath) {
+                m_pushingRepos.remove(index);
                 updateRepoPushButton();
                 return;
             }
-            logSystem(QStringLiteral(
-                          "Git: secret-scan bypass: pushing %1/%2 despite %3 finding%4.")
-                          .arg(repo.owner, repo.name)
-                          .arg(findings.size())
-                          .arg(findings.size() == 1 ? QString() : QStringLiteral("s")));
-        }
-    }
+            if (!scan.findings.isEmpty()) {
+                QString detail;
+                const int shown = qMin(scan.findings.size(), 5);
+                for (int i = 0; i < shown; ++i) {
+                    const RepoSecurityFinding &f = scan.findings.at(i);
+                    detail += QStringLiteral("• %1 in %2 (line %3)\n")
+                                  .arg(f.title, f.path)
+                                  .arg(f.line);
+                }
+                if (scan.findings.size() > shown)
+                    detail += QStringLiteral("  … and %1 more\n")
+                                  .arg(scan.findings.size() - shown);
 
-    if (isRelay) {
-        logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to the "
-                                 "served mirror.")
-                      .arg(repo.owner, repo.name));
-        syncRepository(index, /*quiet=*/false);
-        updateRepoPushButton();
-        return;
-    }
+                QMessageBox box(this);
+                box.setWindowTitle(QStringLiteral("Secret scanning: push blocked"));
+                box.setIcon(QMessageBox::Critical);
+                box.setText(
+                    QStringLiteral(
+                        "Push protection detected %1 probable secret%2 in the "
+                        "commits being pushed for %3/%4.\n\n%5\n"
+                        "Rotate any exposed credentials before pushing.")
+                        .arg(scan.findings.size())
+                        .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s"))
+                        .arg(repo.owner, repo.name, detail));
+                auto *cancelBtn = box.addButton(QStringLiteral("Cancel push"),
+                                                QMessageBox::RejectRole);
+                auto *bypassBtn = box.addButton(QStringLiteral("Push anyway"),
+                                                QMessageBox::DestructiveRole);
+                box.setDefaultButton(cancelBtn);
+                box.exec();
+                if (box.clickedButton() != bypassBtn) {
+                    m_pushingRepos.remove(index);
+                    updateRepoPushButton();
+                    return;
+                }
+                logSystem(
+                    QStringLiteral(
+                        "Git: secret-scan bypass: pushing %1/%2 despite %3 finding%4.")
+                        .arg(repo.owner, repo.name)
+                        .arg(scan.findings.size())
+                        .arg(scan.findings.size() == 1 ? QString() : QStringLiteral("s")));
+            }
 
-    QByteArray countOut;
-    runGitCapture(repo.localPath,
-                  {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                   QStringLiteral("@{upstream}..HEAD")},
-                  &countOut, nullptr);
-    const int ahead = QString::fromUtf8(countOut).trimmed().toInt();
+            if (isRelay) {
+                m_pushingRepos.remove(index);
+                logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to "
+                                         "the served mirror.")
+                              .arg(repo.owner, repo.name));
+                syncRepository(index, /*quiet=*/false);
+                updateRepoPushButton();
+                return;
+            }
+            startRepoPush(index, repo, upstream, scan.ahead);
+        });
+}
 
-    m_pushingRepos.insert(index);
+// Kick off the actual (already-async) `git push`, wiring up the completion/error
+// handlers. Split out of pushCurrentRepoUpstream so the off-thread secret scan can
+// resume here on the GUI thread once the push is approved. The repo is assumed to
+// already be marked in m_pushingRepos.
+void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
+                               const QString &upstream, int ahead)
+{
     updateRepoPushButton();
     logSystem(QStringLiteral("Git: pushing %1/%2 to %3.")
                   .arg(repo.owner, repo.name, upstream));
@@ -6594,6 +6769,21 @@ QWidget *MainWindow::buildNodeProfilePanel()
             openDirectChat(m_profileNodeId, m_profileNodeName);
     });
 
+    // Admin-only (adhoc #141): request ownership of someone else's node. This
+    // only parks a pending marker on the target — the transfer only completes
+    // once that node's own owner approves the prompt it gets on its own
+    // heartbeat, so a hostile/compromised admin account still can't silently
+    // seize a node.
+    m_profileTakeOwnershipButton = new QPushButton("Take ownership");
+    m_profileTakeOwnershipButton->setObjectName("ghostButton");
+    m_profileTakeOwnershipButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_profileTakeOwnershipButton, "shield-check", 16);
+    m_profileTakeOwnershipButton->setToolTip(
+        "Request ownership of this node. It only transfers once the node's "
+        "current owner approves the confirmation prompt it receives.");
+    connect(m_profileTakeOwnershipButton, &QPushButton::clicked, this,
+            &MainWindow::requestNodeOwnership);
+
     // --- "Get paid to mirror": the one opt-in entry into the crypto side, sitting
     // directly under the username on your own profile. The core flow never shows
     // it; clicking sets a Solana payout address (if unset) and activates this node
@@ -6860,6 +7050,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     leftColumn->addWidget(m_profileStatus);
     leftColumn->addWidget(m_profileNote);
     leftColumn->addWidget(m_profileMessageButton, 0, Qt::AlignHCenter);
+    leftColumn->addWidget(m_profileTakeOwnershipButton, 0, Qt::AlignHCenter);
     leftColumn->addWidget(m_profileStatGrid);
     leftColumn->addWidget(detailsLabel);
     leftColumn->addWidget(m_profileDetails);
@@ -7110,6 +7301,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileNote->setVisible(!info.note.trimmed().isEmpty());
 
     m_profileMessageButton->setVisible(!info.self && !info.id.isEmpty());
+    // Admin-only takeover request; hidden entirely for non-admins and for your
+    // own profile (nothing to take ownership of there).
+    if (m_profileTakeOwnershipButton)
+        m_profileTakeOwnershipButton->setVisible(
+            !info.self && m_isAdmin && !info.name.isEmpty());
     // Restart / settings / logout only make sense for your own node.
     if (m_profileSelfActions)
         m_profileSelfActions->setVisible(info.self);

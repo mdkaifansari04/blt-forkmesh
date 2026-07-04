@@ -29,6 +29,8 @@
     },
     notifications: [],
     notificationUnread: 0,
+    pollProfileToken: null,
+    pollNotifToken: null,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [] },
     claimNode: { pendingNodeId: "" },
@@ -116,6 +118,8 @@
       window.clearInterval(state.profileSyncTimer);
       state.profileSyncTimer = null;
     }
+    state.pollProfileToken = null;
+    state.pollNotifToken = null;
     try {
       localStorage.removeItem("forkmesh.session");
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
@@ -586,6 +590,7 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
+      adminUrl: body.adminUrl || base.adminUrl || "",
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -647,11 +652,42 @@
     }
   }
 
+  // One lightweight /api/poll instead of re-fetching the full profile (avatar
+  // and all) and the full notification list every tick. The server returns
+  // cheap change tokens; we only fire the heavier fetches when a token moved.
+  // The unread count rides along, so the bell badge updates from the poll alone.
+  async function pollStatus(force = false) {
+    const node = String(state.session?.nodeName || "").trim().toLowerCase();
+    if (!validNodeName(node)) return;
+    let data;
+    try {
+      data = await fetchJson(`/api/poll?node=${encodeURIComponent(node)}`);
+    } catch (_) {
+      return;
+    }
+    const profileToken = data.profile?.token ?? null;
+    if (force || (profileToken !== null && profileToken !== state.pollProfileToken)) {
+      await refreshPublicProfile(state.session);
+    }
+    if (profileToken !== null) state.pollProfileToken = profileToken;
+
+    const notif = data.notif;
+    if (notif && typeof notif.unread === "number") {
+      state.notificationUnread = notif.unread;
+      renderNotificationPreview();
+    }
+    const notifToken = notif?.token ?? null;
+    if (force || (notifToken !== null && notifToken !== state.pollNotifToken)) {
+      await loadNotifications();
+    }
+    if (notifToken !== null) state.pollNotifToken = notifToken;
+  }
+
   function startProfileSync() {
     if (state.profileSyncTimer || !state.session?.nodeName) return;
     state.profileSyncTimer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      refreshPublicProfile(state.session);
+      pollStatus();
     }, PROFILE_SYNC_INTERVAL_MS);
   }
 
@@ -666,6 +702,39 @@
       button.classList.toggle("text-muted-foreground", !active);
       button.classList.toggle("hover:text-foreground", !active);
     });
+  }
+
+  // Top-level sections that get their own address-bar entry (?section=network,
+  // ?section=profile, ...) so a refresh or Back/Forward restores whichever page
+  // you were on instead of always dropping you back on the repos list. "repos"
+  // is the default, so it stays on the bare /dashboard URL. The repo-detail view
+  // ("explore") is addressed by the /owner/repo path instead, not here.
+  const SECTION_ROUTES = ["home", "repos", "network", "profile", "chat"];
+
+  function requestedSection() {
+    const value = (new URLSearchParams(location.search).get("section") || "").trim();
+    return SECTION_ROUTES.includes(value) ? value : "";
+  }
+
+  function sectionUrl(section) {
+    return section && section !== "repos" && SECTION_ROUTES.includes(section)
+      ? `/dashboard?section=${section}`
+      : "/dashboard";
+  }
+
+  // Switch to a top-level section AND reflect it in the URL (plus run any
+  // per-section load hooks) so the choice survives a refresh. Pass push:false
+  // when restoring from the URL (init/popstate) so we don't re-push it.
+  function showSection(section, { push = true } = {}) {
+    if (push) {
+      state.selectedRepo = null;
+      navigateHistory(sectionUrl(section));
+    }
+    setSection(section);
+    if (section === "profile") {
+      renderProfilePage(state.session);
+      refreshPublicProfile(state.session);
+    }
   }
 
   function setMobileSidebarOpen(open) {
@@ -718,6 +787,7 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
+    const adminButton = $("[data-admin-button]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
@@ -726,6 +796,12 @@
         : "Verify email in profile";
     }
     applyAvatar(avatar, session);
+    if (adminButton) {
+      adminButton.classList.toggle("hidden", !session?.isAdmin);
+      if (session?.isAdmin && session?.adminUrl) {
+        adminButton.href = session.adminUrl;
+      }
+    }
     renderProfileModal(session);
     renderProfilePage(session);
   }
@@ -812,6 +888,7 @@
     const emailEl = $("[data-profile-page-email]");
     const accountStatus = $("[data-profile-page-account-status]");
     const payoutStatus = $("[data-profile-page-payout-status]");
+    const adminStatus = $("[data-profile-page-admin-status]");
     const emailStatus = $("[data-profile-page-email-status]");
     const verifyButton = $("[data-profile-page-verify-email]");
     const solanaInput = $("[data-profile-page-solana]");
@@ -822,6 +899,7 @@
     if (emailEl) emailEl.textContent = email;
     if (accountStatus) accountStatus.textContent = session?.status || "active";
     if (payoutStatus) payoutStatus.textContent = session?.hasPayoutAddress ? "Configured" : "Not configured";
+    if (adminStatus) adminStatus.textContent = session?.isAdmin ? "Yes" : "No";
     if (emailStatus) {
       emailStatus.textContent = session?.emailVerified
         ? `${email} is verified.`
@@ -2629,6 +2707,7 @@
         date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
         meta: config.meta(values),
         body: parsed.body || "",
+        wantsAgent: config.dir === "issues" ? Boolean(values.wantsAgent) : false,
       };
     });
     return records.filter(Boolean);
@@ -2670,7 +2749,10 @@
           <span class="mt-1 line-clamp-2 text-xs text-muted-foreground">${escapeHtml(item.body || `${item.author} opened this signed ${config.itemLabel}`)}</span>
           <span class="mt-1 block truncate text-[10px] font-mono text-muted-foreground">${escapeHtml(item.author)} · ${escapeHtml(item.date)}${item.meta ? ` · ${escapeHtml(item.meta)}` : ""}</span>
         </span>
-        <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 shrink-0 text-[10px] font-mono text-foreground">${escapeHtml(item.state || "open")}</span>
+        <span class="self-start shrink-0 flex items-center gap-2">
+          ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
+          <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.state || "open")}</span>
+        </span>
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
@@ -3015,6 +3097,16 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
+  // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
+  // header once the real records are loaded (the initial render only knows a
+  // bundled total, not the open/closed split).
+  function setRepoCollectionCounts(kind, openCount, closedCount) {
+    const openEl = $(`[data-repo-collection-open-count="${kind}"]`);
+    if (openEl) openEl.textContent = tabCountLabel(openCount);
+    const closedEl = $(`[data-repo-collection-closed-count="${kind}"]`);
+    if (closedEl) closedEl.textContent = tabCountLabel(closedCount);
+  }
+
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
     // Total issue count from the root tree's bundled tallies; the first view of
@@ -3092,11 +3184,14 @@
           date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
           meta: repoCollectionConfig.issues.meta(values),
           body: parsed.body || "",
+          wantsAgent: Boolean(values.wantsAgent),
         };
       }).filter(Boolean);
       state.issuesView.items = items;
       state.issuesView.filter = "open";
       setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
+      const openIssues = items.filter((issue) => issue.status === "open").length;
+      setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the issues/ folder.</div>';
@@ -3113,6 +3208,11 @@
       container.innerHTML = items.length
         ? renderRepoRecordList(items, config, kind)
         : `<div class="px-4 py-3 text-sm text-muted-foreground">${config.empty}</div>`;
+      if (kind === "pulls") {
+        const openPulls = items.filter((item) => item.state === "open").length;
+        setRepoTabCount("pulls", openPulls);
+        setRepoCollectionCounts("pulls", openPulls, items.length - openPulls);
+      }
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a live desktop host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
     } finally {
@@ -3887,8 +3987,8 @@
           <div class="overflow-hidden rounded-lg border border-border bg-background">
             <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
               <div class="flex min-w-0 flex-wrap items-center gap-3 text-xs">
-                <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i>${tabCountLabel(openCount)} Open</span>
-                <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i>${tabCountLabel(closedCount)} Closed</span>
+                <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i><span data-repo-collection-open-count="${kind}">${tabCountLabel(openCount)}</span> Open</span>
+                <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i><span data-repo-collection-closed-count="${kind}">${tabCountLabel(closedCount)}</span> Closed</span>
               </div>
               ${kind === "issues" && state.session?.nodeName
                 ? `<button type="button" data-repo-issue-new class="inline-flex h-7 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`
@@ -3924,8 +4024,8 @@
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
-    const issuesCount = repoCount(repo, ["issues", "issuesCount", "openIssues"]);
-    const pullsCount = repoCount(repo, ["pulls", "pullsCount", "openPulls", "pullRequests"]);
+    const issuesCount = repoCount(repo, ["issueCount", "issues", "issuesCount", "openIssues"]);
+    const pullsCount = repoCount(repo, ["pullCount", "pulls", "pullsCount", "openPulls", "pullRequests"]);
     const discussionsCount = repoCount(repo, ["discussions", "discussionCount"]);
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
@@ -4047,8 +4147,8 @@
 		            </section>
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
-            ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
-            ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
+            ${renderRepoCollectionPanel("issues", repo, null, null)}
+            ${renderRepoCollectionPanel("pulls", repo, null, null)}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
           </div>
@@ -4407,9 +4507,11 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      await refreshPublicProfile(session);
+      // Seed the poll tokens and do the initial full profile + notification
+      // load in one pass; subsequent ticks poll /api/poll and only re-fetch
+      // what actually changed.
+      await pollStatus(true);
       startProfileSync();
-      loadNotifications();
     }
     try {
       const data = await fetchJson("/api/repositories");
@@ -4417,6 +4519,11 @@
       if (requested) {
         const repo = findRepository(requested);
         if (repo) renderRepoDetail(repo);
+        else showSection(requestedSection() || "repos", { push: false });
+      } else {
+        // Refresh landed on a section URL (?section=network/profile/...) —
+        // restore it instead of falling back to the repos list.
+        showSection(requestedSection() || "repos", { push: false });
       }
     } catch (_) {
       const list = $("#repoList");
@@ -4493,10 +4600,8 @@
       $("[data-profile-popover]")?.classList.add("hidden");
       $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
       setProfileHint("", "");
-      setSection("profile");
+      showSection("profile");
       closeMobileDrawers();
-      renderProfilePage(state.session);
-      refreshPublicProfile(state.session);
       return;
     }
 
@@ -4586,19 +4691,16 @@
     const sectionButton = event.target.closest("[data-section]");
     if (sectionButton) {
       const targetSection = sectionButton.dataset.section;
-      // Leaving a repo's /owner/name URL for a section without its own deep
-      // link (repos list, network, profile...) — push a /dashboard entry so
-      // Back returns to the repo instead of exiting the app.
-      if (targetSection !== "explore" && requestedRepoKey()) {
-        state.selectedRepo = null;
-        navigateHistory("/dashboard");
+      // Each section gets its own address-bar entry (?section=network, ...) so
+      // Back returns to the repo/prior page instead of exiting the app AND a
+      // refresh keeps you here. "explore" is the repo-detail view, addressed by
+      // its /owner/repo path, so it manages its own URL.
+      if (targetSection !== "explore") {
+        showSection(targetSection);
+      } else {
+        setSection(targetSection);
       }
-      setSection(targetSection);
       closeMobileDrawers();
-      if (targetSection === "profile") {
-        renderProfilePage(state.session);
-        refreshPublicProfile(state.session);
-      }
     }
 
     const pageButton = event.target.closest("[data-dashboard-repo-page]");
@@ -4787,10 +4889,8 @@
 	    $("[data-profile-popover]")?.classList.add("hidden");
 	    $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
 	    setProfileHint("", "");
-	    setSection("profile");
+	    showSection("profile");
 	    closeMobileDrawers();
-	    renderProfilePage(state.session);
-	    refreshPublicProfile(state.session);
 	  });
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
@@ -4859,7 +4959,9 @@
     const repo = requested ? findRepository(requested) : null;
     if (!repo) {
       state.selectedRepo = null;
-      setSection("repos");
+      // Restore whichever section the URL points at (Back out of a repo into
+      // Network/Profile, or forward into one) rather than snapping to repos.
+      showSection(requestedSection() || "repos", { push: false });
       return;
     }
     if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {

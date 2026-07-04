@@ -3234,7 +3234,9 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
             QSettings().value(kAutoSwitchToAgentSetting, true).toBool();
         const bool onAgentsTab =
             m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-        if (autoSwitch && !onAgentsTab) {
+        const bool onIssuesTab =
+            m_repoDetailStack && m_repoDetailStack->currentIndex() == 2;
+        if (autoSwitch && !onAgentsTab && !onIssuesTab) {
             switchToAgentsTab(sessionId);
         } else {
             setIssueInlineNotice(

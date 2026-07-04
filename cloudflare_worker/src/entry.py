@@ -48,6 +48,16 @@ MAX_ERROR_LOG = 500
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
 INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
+# Opt-in crash/stall telemetry from desktop nodes (issue #354). Bounded like the
+# install diagnostics so the unauthenticated POST endpoint can't grow D1, with a
+# hard body cap and a per-request event cap so a single POST can never blow up
+# the (small) isolate — this must never become an outage vector.
+MAX_TELEMETRY = 5000
+TELEMETRY_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
+TELEMETRY_MAX_BODY = 32 * 1024  # reject anything larger than this outright
+TELEMETRY_MAX_EVENTS = 4        # crash + stall (+ headroom) per node per startup
+TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
+TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
 MAX_FILES = 5000
@@ -176,6 +186,10 @@ PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 # present the code.
 CLAIM_CODE_TTL_MS = 10 * 60 * 1000
 CLAIM_CODE_MAX_ATTEMPTS = 5
+# An admin-initiated ownership takeover (adhoc #141) rides back to the target
+# node on its own heartbeat, same as a claim code, but the node may be offline
+# for a while before it's seen and approved/denied, so it gets a long window.
+OWNERSHIP_TRANSFER_TTL_MS = 24 * 60 * 60 * 1000
 LINK_CODE_TTL_MS = 30 * 60 * 1000
 LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
@@ -1883,7 +1897,47 @@ async def status_history(env):
             "uptimePct": overall_uptime, "days": days,
         })
 
-    return json_response({"ok": True, "now": now, "systems": systems}, cache_seconds=60)
+    # Current-state snapshot (issue #356): the headline health metrics rendered
+    # at the top of the page — mainnode host reachable, the distinct online node
+    # count (same signal as the /network/ headline, NOT raw host_presence rows,
+    # which over-count), catalog size, and errors logged in the last 24h. Each
+    # read is best-effort so one failing query can't blank the summary, and it
+    # all rides on the single /api/status fetch a page view already makes.
+    current = {}
+    try:
+        repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
+        current["catalogRepos"] = int((repo_row or {}).get("n", 0) or 0)
+    except Exception:
+        current["catalogRepos"] = None
+    try:
+        online = {
+            label for label in (await _live_online_nodes(env, now)).values() if label
+        }
+        current["onlineNodes"] = len(online)
+    except Exception:
+        current["onlineNodes"] = None
+    try:
+        err_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?",
+            now - 24 * 60 * 60 * 1000,
+        )
+        current["errors24h"] = int((err_row or {}).get("n", 0) or 0)
+    except Exception:
+        current["errors24h"] = None
+    try:
+        mainnode_bi = await blind_index(env, "mainnode/forkmesh")
+        host_row = await d1_first(
+            env, "SELECT ts FROM host_presence WHERE repo_bi = ? AND ts >= ?",
+            mainnode_bi, now - HOST_PRESENCE_STALE_MS,
+        )
+        current["mainnodeOnline"] = bool(host_row)
+    except Exception:
+        current["mainnodeOnline"] = None
+
+    return json_response(
+        {"ok": True, "now": now, "systems": systems, "current": current},
+        cache_seconds=60,
+    )
 
 
 # --- Leaderboards (/network/) ----------------------------------------------
@@ -2475,6 +2529,15 @@ CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
 
+# Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
+# constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
+# two async WebCrypto round trips each) on every blind_index / encrypt_row /
+# decrypt_row call was the dominant per-request CPU cost on hot polled endpoints
+# (/api/notifications, /api/accounts/<name>). Cache the imported CryptoKeys,
+# keyed by the current secret so a secret rotation still takes effect.
+_data_key_cache = {"secret": None, "key": None}
+_hmac_key_cache = {"secret": None, "key": None}
+
 SCHEMA_STATEMENTS = [
     # email_bi (blind index of the email) lets users log in by email, not just
     # node name (migration 0003). is_admin is an operator-settable flag and name
@@ -2555,6 +2618,17 @@ SCHEMA_STATEMENTS = [
         os TEXT, arch TEXT, pm TEXT, distro TEXT, version TEXT, detail TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_ts ON install_diag(ts)",
     "CREATE INDEX IF NOT EXISTS idx_install_diag_run ON install_diag(run)",
+    # Opt-in crash/stall telemetry from desktop nodes (issue #354). One row per
+    # reported event. `node` is a client-computed one-way hash of the node's
+    # public key (an anonymized grouping key, NOT the key or any account); no
+    # email/IP is stored. `summary` is the scrubbed crash/stall text — repo names
+    # and filesystem paths are removed client-side before it is ever sent. Purely
+    # operational, like error_log / install_diag.
+    """CREATE TABLE IF NOT EXISTS telemetry (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        node TEXT NOT NULL, kind TEXT NOT NULL, version TEXT, os TEXT,
+        summary TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts)",
     # Live host presence: lets /api/network/stats report "hosts online" without
     # probing every repo's tunnel Durable Object on every page view. repo_bi is a
     # blind index (no plaintext repo name), ts is refreshed while a host is active
@@ -2834,11 +2908,16 @@ def _require_data_secret(env):
 
 async def _data_key(env):
     secret = _require_data_secret(env)
+    if _data_key_cache["secret"] == secret and _data_key_cache["key"] is not None:
+        return _data_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "AES-GCM"}), False,
         _to_js(["encrypt", "decrypt"])
     )
+    _data_key_cache["secret"] = secret
+    _data_key_cache["key"] = key
+    return key
 
 
 async def encrypt_row(env, obj):
@@ -2870,11 +2949,16 @@ async def decrypt_row(env, stored, key=None):
 async def _hmac_key(env):
     # A distinct key context so the blind-index HMAC key isn't the AES key.
     secret = _require_data_secret(env) + ":blind-index"
+    if _hmac_key_cache["secret"] == secret and _hmac_key_cache["key"] is not None:
+        return _hmac_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
         _to_js(["sign"])
     )
+    _hmac_key_cache["secret"] = secret
+    _hmac_key_cache["key"] = key
+    return key
 
 
 async def blind_index(env, value):
@@ -3874,14 +3958,15 @@ async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
-    return {
+    is_admin = await _is_admin(env, name)
+    payload = {
         "ok": True,
         "nodeName": name,
         "email": rec.get("email", ""),
         "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
         "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, name),
+        "isAdmin": is_admin,
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),
@@ -3890,6 +3975,11 @@ async def _account_public_payload(env, rec):
         "owner": rec.get("owner", ""),
         "nodes": _owned_nodes(rec),
     }
+    if is_admin:
+        admin_path = _admin_path(env)
+        if admin_path:
+            payload["adminUrl"] = "/" + admin_path
+    return payload
 
 
 def _donation_expiry_fields(rec, now):
@@ -4810,6 +4900,19 @@ def _claim_pending(rec, now):
     return pending
 
 
+def _transfer_pending(rec, now):
+    pending = rec.get("ownership_transfer_pending")
+    if not isinstance(pending, dict):
+        return None
+    try:
+        expires = int(pending.get("expires") or 0)
+    except (TypeError, ValueError):
+        return None
+    if now >= expires or not pending.get("admin"):
+        return None
+    return pending
+
+
 async def _resolve_user_by_password(env, data):
     # Web-auth gate for the claim endpoints, matching _account_profile: a
     # state-changing dashboard action re-proves the password on each request
@@ -4850,6 +4953,7 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     prev_owner = node_rec.get("owner") or ""
     node_rec["owner"] = user_name
     node_rec.pop("claim_pending", None)
+    node_rec.pop("ownership_transfer_pending", None)
     await _save_account(env, node_bi, node_rec)
     if prev_owner and prev_owner != user_name:
         prev_bi, prev_rec = await _account_row(env, prev_owner)
@@ -5445,6 +5549,15 @@ async def _account_heartbeat(env, request):
                              "code": claim.get("code", "")}
     elif rec.get("claim_pending"):
         rec.pop("claim_pending", None)
+        await _save_account(env, name_bi, rec)
+    # An admin-initiated ownership takeover (adhoc #141) rides back the same
+    # way: only the node's own signed heartbeat carries it, so only whoever is
+    # actually logged into that machine ever sees the prompt.
+    transfer = _transfer_pending(rec, int(Date.now()))
+    if transfer:
+        response["ownershipTransfer"] = {"admin": transfer.get("admin", "")}
+    elif rec.get("ownership_transfer_pending"):
+        rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
     return json_response(response)
 
@@ -6916,6 +7029,92 @@ async def _admin_relay_approve(env, request):
     return json_response({"ok": True, "status": status})
 
 
+# --- Admin: node ownership takeover (adhoc #141) -----------------------------
+# An admin can request to take ownership of any node. The request only parks a
+# pending marker on the target node's own record; it does NOT transfer
+# ownership by itself. The marker rides back to that node on its own signed
+# heartbeat (same channel as a website claim code), the desktop app pops a
+# confirm/deny prompt, and only a signature from the node's own key — i.e. the
+# node the current owner is actually logged into — can approve or deny it.
+
+async def _admin_request_ownership(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    canonical = ("forkmesh-admin-request-ownership-v1\n" + node + "\n" +
+                 target + "\n" + ts).encode()
+    admin_rec = await _admin_authorized(env, node, ts, sig, canonical)
+    if not admin_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    admin_name = admin_rec.get("name", node)
+    if target == admin_name:
+        return json_response({"error": "cannot_request_self"}, status=400)
+    target_bi, target_rec = await _account_row(env, target)
+    if not target_rec or target_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if _account_kind(target_rec) != "node":
+        # An account that can log in is a user in its own right, not takeable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if target_rec.get("owner") == admin_name:
+        return json_response({"ok": True, "alreadyOwned": True, "nodeId": target})
+    now = int(Date.now())
+    target_rec["ownership_transfer_pending"] = {
+        "admin": admin_name,
+        "requestedAt": now,
+        "expires": now + OWNERSHIP_TRANSFER_TTL_MS,
+    }
+    await _save_account(env, target_bi, target_rec)
+    return json_response({"ok": True, "pending": True, "nodeId": target,
+                          "expiresAt": now + OWNERSHIP_TRANSFER_TTL_MS}, status=201)
+
+
+async def _account_ownership_transfer_confirm(env, request):
+    # Called from the target node's own desktop app in response to the
+    # heartbeat-delivered prompt, signed with the node's own key — the same
+    # proof-of-control the node uses for its heartbeat, not the admin's.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    action = clean_string(data.get("action", ""), 20)
+    if action not in ("approve", "deny"):
+        return json_response({"error": "bad_action"}, status=400)
+    if not valid_node_name(node_name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-ownership-transfer-confirm-v1\n" + node_name +
+                 "\n" + action + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    pending = _transfer_pending(node_rec, int(Date.now()))
+    if not pending:
+        return json_response({"error": "no_pending_transfer"}, status=404)
+    if action == "deny":
+        node_rec.pop("ownership_transfer_pending", None)
+        await _save_account(env, node_bi, node_rec)
+        return json_response({"ok": True, "denied": True, "nodeId": node_name})
+    admin_name = pending.get("admin", "")
+    node_rec.pop("ownership_transfer_pending", None)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, admin_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "owner": admin_name})
+
+
 async def _account_treasury_address(env, request):
     """Public: the ForkMesh treasury Solana address for in-app donations.
 
@@ -6984,6 +7183,10 @@ async def accounts_handler(env, request):
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
         return await _admin_relay_approve(env, request)
+    if url.path == "/api/accounts/admin-request-ownership" and method == "POST":
+        return await _admin_request_ownership(env, request)
+    if url.path == "/api/accounts/ownership-transfer-confirm" and method == "POST":
+        return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
@@ -7017,11 +7220,16 @@ async def accounts_handler(env, request):
         # claim, and let a node's own profile list the nodes linked to its user
         # account; node ownership is public catalog-adjacent data like the name
         # itself (same fields _account_public_payload already exposes).
+        # emailVerified is a boolean only (no address) so the dashboard's
+        # periodic self-profile poll (refreshPublicProfile, which reuses this
+        # same lookup) can pick up a verification that happened in another
+        # tab instead of showing "verify your email" forever (issue #320).
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
              "isAdmin": await _is_admin(env, rec.get("name", name)),
+             "emailVerified": bool(rec.get("email_verified")),
              "avatarPng": rec.get("avatar_png", ""),
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0),
@@ -7298,6 +7506,59 @@ async def notifications_handler(env, request):
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+def _build_rev(env):
+    # The git rev deploy.sh stamps as a Worker var on every production deploy.
+    try:
+        val = env.BUILD_REV
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return "dev"
+
+
+async def poll_handler(env, request):
+    # One lightweight digest the client polls on its regular tick INSTEAD of
+    # separately re-fetching the full profile (/api/accounts/<name> — avatar and
+    # all) and the full notification list every time. It returns only cheap
+    # change tokens (a couple of indexed reads, no avatar blob, no per-row
+    # notification decrypt); the client fires those heavier fetches only when a
+    # token here actually moves. Rolling three per-minute polls into one keeps
+    # the hot dashboard path off the Worker CPU limit.
+    await ensure_schema(env)
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    out = {"ok": True, "rev": _build_rev(env)}
+    if not valid_node_name(node):
+        return json_response(out)
+    name_bi, rec = await _account_row(env, node)
+    if rec:
+        # Token folds the profile fields the dashboard actually re-renders, so a
+        # change to any of them (verification, avatar, admin grant, ownership)
+        # invalidates it and triggers the full /api/accounts/<name> fetch.
+        out["profile"] = {"token": ":".join(str(x) for x in (
+            rec.get("status", ""),
+            1 if rec.get("email_verified") else 0,
+            rec.get("avatar_updated_at", 0) or 0,
+            1 if await _is_admin(env, node) else 0,
+            rec.get("owner", "") or "",
+        ))}
+        # Unread count is returned outright so the bell badge updates from the
+        # poll alone; token (latest ts + row total) moves on any add/remove so
+        # the full list is re-pulled only when it changed.
+        notif = await d1_first(
+            env,
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN read_at=0 THEN 1 ELSE 0 END) AS unread, "
+            "MAX(ts) AS latest FROM notifications WHERE recipient_bi=?",
+            name_bi)
+        total = int((notif or {}).get("total") or 0)
+        unread = int((notif or {}).get("unread") or 0)
+        latest = int((notif or {}).get("latest") or 0)
+        out["notif"] = {"unread": unread, "token": str(latest) + ":" + str(total)}
+    return json_response(out)
 
 
 async def issues_handler(env, request, owner, repo):
@@ -7792,6 +8053,99 @@ async def install_diag_handler(env, request):
     return json_response({"ok": True}, cache_control="no-store")
 
 
+def _sanitize_node_hash(value):
+    # The client's anonymized node hash is a hex SHA-256; keep only hex chars and
+    # clamp so a crafted value can't smuggle anything into the admin HTML or bloat
+    # a row. Empty (anonymous) is allowed.
+    if not isinstance(value, str):
+        return ""
+    return "".join(c for c in value.lower() if c in "0123456789abcdef")[:64]
+
+
+def _telemetry_rows(payload):
+    """Normalize a posted telemetry payload into rows to insert, or [].
+
+    Pure (no I/O) so it can be unit-tested. Anything malformed yields no rows —
+    the endpoint swallows it rather than 4xx-ing a best-effort background POST.
+    Every field is sanitized and hard-capped; at most TELEMETRY_MAX_EVENTS rows
+    come back, so one POST can never fan out unbounded work in the isolate.
+    Returns a list of (node, kind, version, os, summary) tuples.
+    """
+    if not isinstance(payload, dict):
+        return []
+    events = payload.get("events")
+    if not isinstance(events, list) or not events:
+        return []
+    node = _sanitize_node_hash(payload.get("node"))
+    version = _sanitize_diag_field(payload.get("version"), 48)
+    os_field = _sanitize_diag_field(payload.get("os"), 64)
+    rows = []
+    for event in events[:TELEMETRY_MAX_EVENTS]:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("kind")
+        if kind not in TELEMETRY_KINDS:
+            continue
+        summary = event.get("summary")
+        if not isinstance(summary, str):
+            continue
+        # Coarse control-character scrub + hard length cap. The client already
+        # removed repo names / paths; this is belt-and-braces so a crafted POST
+        # can't store arbitrarily large or binary junk.
+        summary = "".join(
+            c for c in summary if c == "\n" or c == "\t" or (c >= " " and c != "\x7f")
+        ).strip()[:TELEMETRY_MAX_SUMMARY]
+        if not summary:
+            continue
+        rows.append((node, kind, version, os_field, summary))
+    return rows
+
+
+async def telemetry_handler(env, request):
+    # Opt-in crash/stall telemetry from desktop nodes (issue #354). Unauthenticated
+    # and anonymous (a one-way node hash only, no account/email/IP). Best-effort:
+    # never errors out the caller, since the client fires this fire-and-forget on
+    # startup. The body is hard-capped BEFORE parsing so a huge POST can't blow up
+    # the small isolate — this must never become an outage vector.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        raw = await request.text()
+    except Exception:
+        raw = ""
+    if len(raw) > TELEMETRY_MAX_BODY:
+        # Reject oversized payloads outright rather than parsing them.
+        return json_response({"error": "payload_too_large"}, status=413,
+                             cache_control="no-store")
+    try:
+        payload = json.loads(raw) if raw else None
+    except Exception:
+        payload = None
+    rows = _telemetry_rows(payload)
+    if not rows:
+        return json_response({"ok": True}, cache_control="no-store")
+    try:
+        await ensure_schema(env)
+        now = int(Date.now())
+        for node, kind, version, os_field, summary in rows:
+            await d1_run(
+                env,
+                """INSERT INTO telemetry (ts, node, kind, version, os, summary)
+                   VALUES (?,?,?,?,?,?)""",
+                now, node, kind, version, os_field, summary,
+            )
+        # Bound the table so this open endpoint can't grow D1 without limit.
+        await d1_run(
+            env,
+            """DELETE FROM telemetry WHERE id NOT IN
+               (SELECT id FROM telemetry ORDER BY id DESC LIMIT ?)""",
+            MAX_TELEMETRY,
+        )
+    except Exception:
+        pass
+    return json_response({"ok": True}, cache_control="no-store")
+
+
 def _validate_security_report(payload):
     """Validate and sanitize a vulnerability report payload. Pure (no I/O).
 
@@ -7971,6 +8325,43 @@ async def install_diag_summary(env):
         "platforms": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in platforms],
         "managers": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in managers],
         "distros": [(str(r.get("k", "")), int(r.get("runs", 0) or 0)) for r in distros],
+    }
+
+
+async def telemetry_summary(env):
+    # Aggregate opt-in crash/stall telemetry (issue #354) for the admin dashboard:
+    # totals by kind, distinct reporting nodes, and coarse version/OS breakdowns,
+    # over the retained window. `node` is already an anonymized one-way hash.
+    await ensure_schema(env)
+    since = int(Date.now()) - TELEMETRY_RETAIN_MS
+    totals = await d1_all(
+        env,
+        """SELECT kind, COUNT(*) AS n, COUNT(DISTINCT node) AS nodes
+             FROM telemetry WHERE ts >= ? GROUP BY kind""",
+        since,
+    )
+    by_kind = {str(r.get("kind", "")): r for r in totals}
+    crashes = int((by_kind.get("crash") or {}).get("n", 0) or 0)
+    stalls = int((by_kind.get("stall") or {}).get("n", 0) or 0)
+    nodes_row = await d1_first(
+        env, "SELECT COUNT(DISTINCT node) AS n FROM telemetry WHERE ts >= ?", since)
+
+    async def _breakdown(col):
+        return await d1_all(
+            env,
+            "SELECT COALESCE(NULLIF(%s,''),'(unknown)') AS k, COUNT(*) AS n "
+            "FROM telemetry WHERE ts >= ? GROUP BY k ORDER BY n DESC LIMIT 20" % col,
+            since,
+        )
+
+    versions = await _breakdown("version")
+    systems = await _breakdown("os")
+    return {
+        "crashes": crashes,
+        "stalls": stalls,
+        "nodes": int((nodes_row or {}).get("n", 0) or 0),
+        "versions": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in versions],
+        "systems": [(str(r.get("k", "")), int(r.get("n", 0) or 0)) for r in systems],
     }
 
 
@@ -8245,6 +8636,33 @@ def _render_install_diag_overview(summary):
     )
 
 
+def _render_telemetry_overview(summary):
+    # Opt-in crash/stall telemetry: totals by kind + distinct reporting nodes,
+    # with coarse version / OS breakdowns. Counts are over a 30-day window and
+    # every node id is an anonymized one-way hash.
+    crashes = summary.get("crashes", 0)
+    stalls = summary.get("stalls", 0)
+    nodes = summary.get("nodes", 0)
+    cards = (
+        '<div class="cards">'
+        '<div class="card%s"><div class="n">%s</div><div class="l">crashes (30d)</div></div>'
+        '<div class="card"><div class="n">%s</div><div class="l">UI stalls (30d)</div></div>'
+        '<div class="card"><div class="n">%s</div><div class="l">reporting nodes</div></div>'
+        "</div>"
+        % (" warn" if crashes else "", _html_escape(crashes),
+           _html_escape(stalls), _html_escape(nodes)))
+    return (
+        '<div class="title">Crash &amp; stall telemetry</div>'
+        '<div class="meta">Opt-in (off by default). Anonymous: each node id is a '
+        'one-way hash of the node key, never tied to an account, email, or IP; '
+        'repo names and file paths are scrubbed client-side. 30-day window.</div>'
+        + cards
+        + '<div class="diaggrid">%s%s</div>'
+        % (_render_diag_breakdown("Version", summary.get("versions", [])),
+           _render_diag_breakdown("OS", summary.get("systems", [])))
+    )
+
+
 async def _render_table_view(env, table, csrf_field=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
@@ -8276,6 +8694,41 @@ async def _render_table_view(env, table, csrf_field=""):
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
         )
+
+    if table == "telemetry":
+        # Purpose-built crash/stall dashboard + recent events, newest first.
+        summary = await telemetry_summary(env)
+        recent = await d1_all(
+            env,
+            "SELECT rowid AS _rowid_, * FROM telemetry ORDER BY id DESC LIMIT 200")
+        body = []
+        for r in recent:
+            kind = str(r.get("kind", ""))
+            cls = "s5" if kind == "crash" else ""
+            body.append(
+                "<tr>"
+                + _admin_row_checkbox(r.get("_rowid_", ""))
+                + '<td data-ts="%s">%s</td>'
+                '<td class="%s">%s</td><td>%s</td><td>%s</td>'
+                "<td>%s</td><td>%s</td></tr>"
+                % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   cls, _html_escape(kind),
+                   _html_escape(r.get("version", "")), _html_escape(r.get("os", "")),
+                   _html_escape(str(r.get("node", ""))[:12]),
+                   _html_escape(r.get("summary", "")))
+            )
+        if not body:
+            events = '<div class="empty">No telemetry reported yet.</div>'
+        else:
+            events = (_admin_bulk_form_open(table, csrf_field)
+                      + "<table><thead><tr>" + _admin_select_all_th()
+                      + "<th>Time</th><th>Kind</th><th>Version</th><th>OS</th>"
+                      "<th>Node</th><th>Report</th>"
+                      "</tr></thead><tbody>" + "".join(body)
+                      + "</tbody></table></form>")
+        return (_render_telemetry_overview(summary)
+                + '<div class="title">Recent events · %d of %d row(s)</div>'
+                % (len(recent), total) + events)
 
     if table == "install_diag":
         # Purpose-built anonymous install funnel + recent events, newest first.
@@ -8759,17 +9212,10 @@ class Default(WorkerEntrypoint):
         # serving while the deploy reported success), and the script aborts loudly
         # instead of reporting a phantom success.
         if url.path in ("/api/version", "/api/version/"):
-            build_rev = "dev"
-            try:
-                val = self.env.BUILD_REV
-                if val:
-                    build_rev = str(val)
-            except (AttributeError, TypeError):
-                pass
             return json_response(
                 {
                     "ok": True,
-                    "rev": build_rev,
+                    "rev": _build_rev(self.env),
                     "now": Date.now(),
                 }
             )
@@ -8802,6 +9248,11 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/install-diag", "/api/install-diag/"):
             return await install_diag_handler(self.env, request)
 
+        # Opt-in crash/stall telemetry posted by desktop nodes (no auth, no IP;
+        # anonymized node hash only). See telemetry_handler / issue #354.
+        if url.path in ("/api/telemetry", "/api/telemetry/"):
+            return await telemetry_handler(self.env, request)
+
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):
             return await security_report_handler(self.env, request)
@@ -8812,6 +9263,12 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
+
+        # Consolidated lightweight status digest (version + profile/notification
+        # change tokens) so the client polls once instead of re-fetching the
+        # full profile and notification list every tick.
+        if url.path in ("/api/poll", "/api/poll/"):
+            return await poll_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
