@@ -473,6 +473,10 @@ void AgentRunner::onProcessFinished(int exitCode)
         return;
     }
 
+    // Attribute the commits this run produced to the agent before capturing the
+    // patch, so the provenance trailer is carried by the signed commit series.
+    stampAgentProvenance();
+
     QByteArray diff;
     QString diffError;
     if (runCapture(m_worktree,
@@ -611,6 +615,66 @@ void AgentRunner::cleanupWorktree()
                        m_worktree});
     QDir(m_worktree).removeRecursively();
     m_worktree.clear();
+}
+
+QString AgentRunner::agentProvenanceValue() const
+{
+    QString tool = m_session.provider.trimmed();
+    if (tool.isEmpty())
+        tool = QStringLiteral("agent");
+    const QString model = m_config.model.trimmed();
+    QString value = model.isEmpty() ? tool : tool + QLatin1Char('/') + model;
+    // Keep the trailer value shell-safe (it is embedded in a single-quoted
+    // `git commit --trailer` command below) and free of newlines.
+    value.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._+/ -]")),
+                  QString());
+    return value;
+}
+
+void AgentRunner::stampAgentProvenance()
+{
+    if (m_worktree.isEmpty() || m_session.baseRef.isEmpty())
+        return;
+    // Only stamp when the run actually committed something. Uncommitted changes
+    // would make `git rebase` refuse, so skip cleanly in that case too — the diff
+    // is still captured from the working tree.
+    QByteArray dirty;
+    if (runCapture(m_worktree, {QStringLiteral("status"), QStringLiteral("--porcelain")},
+                   &dirty, nullptr) &&
+        !QString::fromUtf8(dirty).trimmed().isEmpty()) {
+        emitLog(QStringLiteral(
+            "==> Skipping agent provenance trailer: worktree has uncommitted changes."));
+        return;
+    }
+    QByteArray count;
+    if (!runCapture(m_worktree,
+                    {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                     m_session.baseRef + QStringLiteral("..HEAD")},
+                    &count, nullptr) ||
+        QString::fromUtf8(count).trimmed().toInt() <= 0)
+        return;
+
+    const QString value = agentProvenanceValue();
+    // Rewrite each new commit's message to append the trailer. `--trailer`'s
+    // default addIfDifferentNeighbor policy makes a re-run (resumed session)
+    // idempotent, so already-stamped commits are left untouched.
+    const QString exec =
+        QStringLiteral("git commit --amend --no-edit --trailer 'ForkMesh-Agent: %1'")
+            .arg(value);
+    QProcess process;
+    process.start(QStringLiteral("git"),
+                  {QStringLiteral("-C"), m_worktree, QStringLiteral("rebase"),
+                   m_session.baseRef, QStringLiteral("--exec"), exec});
+    if (!process.waitForFinished(60000) || process.exitCode() != 0) {
+        // Leave history untouched rather than a half-finished rebase.
+        QProcess::execute(QStringLiteral("git"),
+                          {QStringLiteral("-C"), m_worktree,
+                           QStringLiteral("rebase"), QStringLiteral("--abort")});
+        emitLog(QStringLiteral("==> Could not stamp agent provenance trailer (%1).")
+                    .arg(QString::fromUtf8(process.readAllStandardError()).trimmed()));
+        return;
+    }
+    emitLog(QStringLiteral("==> Stamped ForkMesh-Agent provenance trailer: %1").arg(value));
 }
 
 QString AgentRunner::defaultPromptPreamble()

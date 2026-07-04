@@ -1,8 +1,25 @@
 #include "PullReviewModel.h"
 
 #include <QHash>
+#include <QRegularExpression>
+#include <QStringList>
 
 namespace {
+
+// The provenance trailer AgentRunner stamps on agent commits (issue #365).
+const QLatin1String kAgentTrailer("ForkMesh-Agent:");
+
+// Pull the trailer value out of a single commit message / patch body. Returns an
+// empty string when the commit has no ForkMesh-Agent trailer.
+QString agentTrailerIn(QStringView text)
+{
+    for (const auto &line : text.split(u'\n')) {
+        const QStringView t = line.trimmed();
+        if (t.startsWith(kAgentTrailer))
+            return t.mid(kAgentTrailer.size()).trimmed().toString();
+    }
+    return QString();
+}
 
 QString legacyThreadId(const PullEvent &ev, int index)
 {
@@ -47,7 +64,68 @@ void copyAnchor(PullReviewThread &thread, const PullEvent &ev)
         thread.lineEnd = ev.line;
 }
 
+// Split a format-patch mbox into its per-commit chunks. Each entry starts with a
+// mbox "From <sha> <date>" line at column 0.
+QStringList splitMboxPatches(const QString &mbox)
+{
+    static const QRegularExpression re(
+        QStringLiteral("(?m)^From [0-9a-fA-F]{7,40} "));
+    QStringList out;
+    QList<qsizetype> starts;
+    auto it = re.globalMatch(mbox);
+    while (it.hasNext())
+        starts.append(it.next().capturedStart());
+    for (int i = 0; i < starts.size(); ++i) {
+        const qsizetype begin = starts.at(i);
+        const qsizetype end = (i + 1 < starts.size()) ? starts.at(i + 1) : mbox.size();
+        out.append(mbox.mid(begin, end - begin));
+    }
+    return out;
+}
+
 } // namespace
+
+PullAgentProvenance pullAgentProvenance(const PullRequest &pr)
+{
+    PullAgentProvenance prov;
+    // The trailer rides inside the signed commit series; the first commit that
+    // carries it settles the tool/model for the whole PR.
+    const QString value = agentTrailerIn(pr.commits);
+    if (value.isEmpty())
+        return prov;
+    prov.isAgent = true;
+    prov.value = value;
+    const int slash = value.indexOf(u'/');
+    if (slash >= 0) {
+        prov.tool = value.left(slash);
+        prov.model = value.mid(slash + 1);
+    } else {
+        prov.tool = value;
+    }
+    return prov;
+}
+
+QHash<QString, bool> pullFileAuthorship(const PullRequest &pr)
+{
+    QHash<QString, bool> authorship;
+    for (const QString &patch : splitMboxPatches(pr.commits)) {
+        // The commit message (and its trailers) sit above the first diff header.
+        const qsizetype diffStart = patch.indexOf(QLatin1String("\ndiff --git "));
+        const QString message = diffStart < 0 ? patch : patch.left(diffStart);
+        const bool agent = !agentTrailerIn(message).isEmpty();
+        for (const QString &line :
+             patch.mid(diffStart < 0 ? patch.size() : diffStart).split(u'\n')) {
+            if (!line.startsWith(QLatin1String("diff --git ")))
+                continue;
+            const QString path = line.section(QLatin1String(" b/"), 1);
+            if (path.isEmpty())
+                continue;
+            // Any agent-stamped commit that touches a file marks it agent-authored.
+            authorship[path] = authorship.value(path, false) || agent;
+        }
+    }
+    return authorship;
+}
 
 PullReviewSnapshot buildPullReviewSnapshot(const PullRequest &pr)
 {
