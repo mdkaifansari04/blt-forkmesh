@@ -2,18 +2,18 @@
 schema: forkmesh-issue-v1
 number: 366
 title: Expose the mesh as an MCP server (repos, issues, PRs as tools)
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 41
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818265
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-366
 ts: 1783116818265
