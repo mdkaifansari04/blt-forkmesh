@@ -2172,6 +2172,14 @@ const QString kTelemetryCrashOffsetSetting =
     QStringLiteral("diagnostics/telemetryCrashOffset");
 const QString kTelemetryStallOffsetSetting =
     QStringLiteral("diagnostics/telemetryStallOffset");
+// How many bytes of crashes.log had already been seen as of the last startup,
+// so a crash that ended the previous session (which never gets a chance to log
+// itself — the process is gone) shows up as a line in *this* session's own log
+// instead of only ever living in crashes.log/stderr/journalctl (adhoc #200).
+// Independent of kTelemetryCrashOffsetSetting/telemetry opt-in: this in-app
+// notice always fires, regardless of whether the user enabled the upload.
+const QString kCrashLogSeenOffsetSetting =
+    QStringLiteral("diagnostics/crashLogSeenOffset");
 const QString kVotesSpentSetting = QStringLiteral("votes/spent");
 const QString kVotedSetting = QStringLiteral("votes/voted");
 // Personal access tokens used only to authenticate clones when importing a repo
