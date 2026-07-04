@@ -2688,9 +2688,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Not part of m_navGroup since there's no dedicated section to check.
+    // row. Checkable to show when the Agents tab is active (adhoc #201).
     m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
+    m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "terminal", 16);
@@ -2699,7 +2700,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // Count badge, same look as the chat unread badge, pinned to its top-right
     // corner. Shows the total number of known agent sessions.
     m_agentsNavBadge = new QLabel(m_agentsNavButton);
-    m_agentsNavBadge->setObjectName("chatUnreadBadge");
+    m_agentsNavBadge->setObjectName("agentsNavBadge");
     m_agentsNavBadge->setAlignment(Qt::AlignCenter);
     m_agentsNavBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_agentsNavBadge->hide();

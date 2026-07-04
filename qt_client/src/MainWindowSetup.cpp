@@ -865,14 +865,27 @@ void MainWindow::startSession()
     authenticateSilently(name);
 #endif
 
-    // A headless mirror VM has no GUI to click "Join ForkMesh", so a fresh node
-    // would connect for chat but never register its account — and without a
-    // key-bound account the relay rejects its catalog writes and host tokens, so
-    // its mirrors never appear on the website. Auto-register it (free, key-bound,
-    // no dialog) here, mirroring what a desktop user does by hand. Guarded on
-    // hasActiveAccountSession() so a returning VM whose silent auth already
-    // succeeded never re-registers, and skipped under the test server-bypass.
-    if (m_headless && !hasActiveAccountSession() && isValidNodeName(name)) {
+    // A node that mirrors a public repo needs a key-bound account or the relay
+    // rejects its catalog writes and host tokens — so it hosts/chats and shows up
+    // online in every peer's roster, yet never appears on the website (adhoc #207:
+    // "threaded-byte" was online and mirroring but had no account at all). A
+    // headless VM has no GUI to click "Join ForkMesh"; a desktop node that already
+    // opted into publishing a mirror has effectively made the same choice. So
+    // auto-register (free, key-bound, no dialog) for a headless node OR any node
+    // that is already publishing a mirror to the network, mirroring what a desktop
+    // user does by hand. Guarded on hasActiveAccountSession() so a returning node
+    // whose silent auth already succeeded never re-registers, and skipped under the
+    // test server-bypass.
+    const bool publishesMirror = [this] {
+        for (const RepositoryRecord &r : std::as_const(m_repositories)) {
+            if (!r.previewOnly && r.publishToNetwork && !r.mirrorPath.isEmpty() &&
+                QDir(r.mirrorPath).exists())
+                return true;
+        }
+        return false;
+    }();
+    if ((m_headless || publishesMirror) && !hasActiveAccountSession() &&
+        isValidNodeName(name)) {
         bool registered = false;
 #ifdef FORKMESH_WINDOW_TESTS
         if (!m_testBypassServerStart)
