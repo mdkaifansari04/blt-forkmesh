@@ -14,6 +14,10 @@
 /docs/ /docs 308
 /blog/ /blog 308
 /blogs /blog 308
+# Blog posts are directory indexes, but Workers Static Assets has
+# html_handling="none" so /blog/<slug>/ needs an explicit rewrite.
+/blog/:slug /blog/:slug/ 308
+/blog/:slug/ /blog/:slug/index.html 200
 /network /network.html 200
 /network/ /network 308
 /chat /chat.html 200
