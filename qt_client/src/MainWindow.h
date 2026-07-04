@@ -317,7 +317,7 @@ public:
     {
         return m_issueDetail && m_issueDetail->isVisible();
     }
-    // Provider id (openai/claude-api/claude-code) currently selected in each
+    // Provider id (codex/openai/claude-api/claude-code) currently selected in each
     // agent-assignment picker, plus a way to drive the Settings "Default agent"
     // combo as a user would, so tests can assert the default seeds/updates them.
     QString testQuickAddAgentProvider() const;
@@ -2867,7 +2867,7 @@ private:
     QCheckBox *m_autostartCheck = nullptr;
     QComboBox *m_themeCombo = nullptr;
     // Default coding-agent provider for new assignments; seeds the quick-add and
-    // issue-detail provider pickers. OpenAI API | Claude API | Claude Code.
+    // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
@@ -4354,7 +4354,7 @@ private:
     QPushButton *m_issueDeleteButton = nullptr;
     QLabel *m_issueAgentValue = nullptr;
     QCheckBox *m_issueAgentCreatePrCheck = nullptr;
-    QComboBox *m_issueAgentProvider = nullptr;   // OpenAI API | Claude API
+    QComboBox *m_issueAgentProvider = nullptr;   // Codex | OpenAI API | Claude API | Claude Code
     QComboBox *m_issueAgentModel = nullptr;      // model for the picked provider
     QPushButton *m_issueAssignAgentButton = nullptr;
     QPushButton *m_issueAgentViewButton = nullptr;

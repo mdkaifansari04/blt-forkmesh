@@ -131,9 +131,12 @@ void releaseBranchWorktree(const QString &repoPath, const QString &branch)
 QString providerTitle(const QString &provider)
 {
     // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
-    // API script; everything else (incl. legacy "codex") is OpenAI API.
+    // API script; "codex" is the local Codex CLI path, and legacy "openai"
+    // sessions keep their old label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
+    if (provider == QLatin1String("codex"))
+        return QStringLiteral("Codex");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -367,7 +370,7 @@ void AgentRunner::launch(Phase phase, const QString &program,
     if (usingConfiguredKey) {
         const QString key = m_config.apiKey.trimmed();
         env.insert(m_config.apiKeyName, key);
-        if (provider == QLatin1String("openai"))
+        if (provider == QLatin1String("openai") || provider == QLatin1String("codex"))
             env.insert(QStringLiteral("OPENAI_API_KEY"), key);
     }
     if (!m_config.model.trimmed().isEmpty())
