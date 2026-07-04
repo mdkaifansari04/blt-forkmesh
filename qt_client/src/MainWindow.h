@@ -54,6 +54,7 @@ struct AgentDiffStat {
 #include <QMetaType>
 #include <QPixmap>
 #include <QSet>
+#include <QTextCursor>
 #include <QThread>
 #include <QUrl>
 
@@ -1001,6 +1002,12 @@ private:
     // current scroll position; returns false when there is no further hunk in
     // that direction.
     bool pullScrollToAdjacentHunk(int delta);
+    // Text search over the Files-changed diff (issue #333): show/hide the find
+    // bar, recompute matches against the current diff text, and step between
+    // them.
+    void togglePullDiffSearch(bool show);
+    void pullDiffSearchRecompute();
+    void pullDiffSearchGoTo(int delta);
     // Handle a click on a diff line-number anchor ("cmt:<path>?s=<side>&l=<line>"):
     // prompt for a comment and attach it to that line of the PR file.
     void onPullDiffAnchorClicked(const QUrl &url);
@@ -3461,6 +3468,17 @@ private:
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
+    // Find-in-diff bar for the Files-changed pane (issue #333): a Ctrl+F/Esc
+    // toggled bar that highlights every match in m_pullDiff and steps between
+    // them, similar to a browser's in-page search.
+    QWidget *m_pullDiffSearchBar = nullptr;
+    QLineEdit *m_pullDiffSearchInput = nullptr;
+    QLabel *m_pullDiffSearchCount = nullptr;
+    // Matches for the current search term, recomputed whenever the term or the
+    // rendered diff changes (a re-render replaces the document, invalidating
+    // any previously-found cursors).
+    QList<QTextCursor> m_pullDiffSearchMatches;
+    int m_pullDiffSearchIndex = -1;
     // Signature (stylesheet + html) of what m_pullDiff currently shows, so
     // renderPullDiff can skip the costly QTextDocument table re-layout when a
     // refresh/poll re-renders the same file with unchanged content. Cleared
