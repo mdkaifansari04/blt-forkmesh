@@ -5,7 +5,12 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QEventLoop>
+#include <QFileInfo>
 #include <QList>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QSocketNotifier>
 #include <QStringList>
 
@@ -94,6 +99,8 @@ void HeadlessConsole::printHelp()
              "  repos               list local repositories\n"
              "  mirrors             repos this node mirrors / serves + cpu & memory\n"
              "  sync                sync mirrors + poll owned inboxes now\n"
+             "  e2e                 run the end-to-end mesh-loop self-test\n"
+             "                      (publish->browse->clone->issue->agent PR->merge)\n"
              "  setup <name> [sol]  pick a node name and connect (first run)\n"
              "  connect <name>      alias for setup\n"
              "  update              update to the latest version, rebuild & restart\n"
@@ -185,6 +192,8 @@ void HeadlessConsole::dispatch(const QString &raw)
     } else if (cmd == QLatin1String("sync")) {
         m_window->headlessSyncNow();
         m_out << "sync triggered" << Qt::endl;
+    } else if (cmd == QLatin1String("e2e")) {
+        runMeshLoopSelfTest();
     } else if (cmd == QLatin1String("setup") || cmd == QLatin1String("connect")) {
         if (args.isEmpty()) {
             m_out << "usage: setup <node-name> [solana-address]" << Qt::endl;
@@ -285,6 +294,59 @@ void HeadlessConsole::onSignal()
     shutdown(QStringLiteral("received signal %1; shutting down…")
                  .arg(int(static_cast<unsigned char>(sig))));
 #endif
+}
+
+void HeadlessConsole::runMeshLoopSelfTest()
+{
+    // The full loop lives in the `forkmesh-e2e` self-test binary (built by
+    // `cmake --build --target check`), which drives publish -> browse -> clone
+    // -> issue -> agent PR -> merge against an in-process relay stub with a stub
+    // agent. Running it as a subprocess keeps the test harness (and its stub
+    // relay) out of the shipping app while still letting an operator kick the
+    // whole loop from a headless node — the nightly reliability check (#352).
+    const QString dir = QCoreApplication::applicationDirPath();
+    const QString runner = QDir(dir).filePath(QStringLiteral("forkmesh-e2e"));
+    const QString stubAgent =
+        QDir(dir).filePath(QStringLiteral("forkmesh-e2e-stub-agent"));
+    if (!QFileInfo::exists(runner)) {
+        m_out << "e2e self-test binary not found next to this build ("
+              << runner << ").\n"
+              << "Build it with: cmake --build <build> --target check" << Qt::endl;
+        m_out.flush();
+        return;
+    }
+
+    m_out << "Running end-to-end mesh-loop self-test…" << Qt::endl;
+    m_out.flush();
+
+    QProcess proc;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (QFileInfo::exists(stubAgent))
+        env.insert(QStringLiteral("FORKMESH_E2E_STUB_AGENT"), stubAgent);
+    proc.setProcessEnvironment(env);
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    connect(&proc, &QProcess::readyReadStandardOutput, this, [this, &proc] {
+        m_out << QString::fromUtf8(proc.readAllStandardOutput());
+        m_out.flush();
+    });
+    // Keep the node's event loop live (it keeps serving) while the self-test
+    // runs, instead of blocking on waitForFinished.
+    QEventLoop loop;
+    connect(&proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            &loop, &QEventLoop::quit);
+    proc.start(runner, QStringList{});
+    if (!proc.waitForStarted(5000)) {
+        m_out << "e2e self-test failed to start." << Qt::endl;
+        m_out.flush();
+        return;
+    }
+    loop.exec();
+    m_out << QString::fromUtf8(proc.readAllStandardOutput());
+    m_out << (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0
+                  ? "e2e self-test PASSED."
+                  : "e2e self-test FAILED.")
+          << Qt::endl;
+    m_out.flush();
 }
 
 void HeadlessConsole::shutdown(const QString &reason)
