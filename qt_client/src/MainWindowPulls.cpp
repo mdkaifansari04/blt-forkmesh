@@ -3000,6 +3000,7 @@ void MainWindow::updatePullActionState()
     QString head;
     QString base;
     QString patch;
+    QString reviewSummary;
     for (const PullRequest &pr : m_currentPulls) {
         if (pr.number == m_currentPullNumber) {
             open   = pr.status == "open";
@@ -3008,9 +3009,15 @@ void MainWindow::updatePullActionState()
             head   = pr.head;
             base   = pr.base;
             patch  = pr.patch;
+            reviewSummary = pr.reviewSummary();
         }
     }
     const bool mergeable = writable && have && open;
+    // An unresolved "request changes" review holds the merge: a human reviewer's
+    // objection gates the button until it's approved (or the review cleared) —
+    // just as a failed check would, but for review state (issue #359).
+    const bool reviewBlocks =
+        reviewSummary == QLatin1String("changes_requested");
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
@@ -3043,6 +3050,12 @@ void MainWindow::updatePullActionState()
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#8b949e'>Checking for conflicts\xE2\x80\xA6"
                 "</span>"));
+            m_pullMergeStatus->show();
+        } else if (reviewBlocks) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#f85149'>\xE2\x9A\xA0 Changes requested "
+                "\xE2\x80\x94 a reviewer is blocking this merge. Resolve their "
+                "review (approve, or clear the request) to merge.</span>"));
             m_pullMergeStatus->show();
         } else if (mergeClean) {
             m_pullMergeStatus->setText(QString::fromUtf8(
@@ -3078,22 +3091,26 @@ void MainWindow::updatePullActionState()
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
     }
     if (m_pullMergeButton) {
-        m_pullMergeButton->setEnabled(mergeable && mergeClean && !conflictPending);
+        m_pullMergeButton->setEnabled(mergeable && mergeClean && !conflictPending &&
+                                      !reviewBlocks);
         m_pullMergeButton->setToolTip(
             conflictPending
                 ? QStringLiteral("Checking whether this pull request still applies "
                                  "cleanly…")
-                : mergeable && !mergeClean
-                      ? QStringLiteral("This pull request has conflicts — use "
-                                       "\"Resolve conflicts\" to commit a fix to its "
-                                       "branch, then merge.")
-                      : QStringLiteral("Apply and merge this pull request"));
+                : mergeable && reviewBlocks
+                      ? QStringLiteral("A reviewer has requested changes — resolve "
+                                       "their review before merging.")
+                      : mergeable && !mergeClean
+                            ? QStringLiteral("This pull request has conflicts — use "
+                                             "\"Resolve conflicts\" to commit a fix to "
+                                             "its branch, then merge.")
+                            : QStringLiteral("Apply and merge this pull request"));
     }
     // "Merge + delete branch" gates on the same merge-readiness as Merge (it
     // merges first), and on no delete worker already running.
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(mergeable && mergeClean &&
-                                            !conflictPending &&
+                                            !conflictPending && !reviewBlocks &&
                                             !m_pullDeleteInProgress);
     // "Build & preview" only makes sense when this repo's local checkout is a
     // ForkMesh source tree we know how to build (qt_client/CMakeLists.txt) and the
@@ -3605,6 +3622,15 @@ void MainWindow::mergeCurrentPull()
     }
     if (!found)
         return;
+    if (current.reviewSummary() == QLatin1String("changes_requested")) {
+        QMessageBox::warning(
+            this, "Merge pull request",
+            QStringLiteral("Pull request #%1 has an unresolved \"request changes\" "
+                           "review. Resolve the review (approve it, or clear the "
+                           "request) before merging.")
+                .arg(m_currentPullNumber));
+        return;
+    }
     if (QMessageBox::question(
             this, "Merge pull request",
             QStringLiteral("Apply and merge pull request #%1?")
@@ -6211,6 +6237,15 @@ void MainWindow::mergeAndDeleteCurrentPull()
     }
     if (!found)
         return;
+    if (current.reviewSummary() == QLatin1String("changes_requested")) {
+        QMessageBox::warning(
+            this, "Merge pull request",
+            QStringLiteral("Pull request #%1 has an unresolved \"request changes\" "
+                           "review. Resolve the review (approve it, or clear the "
+                           "request) before merging.")
+                .arg(m_currentPullNumber));
+        return;
+    }
 
     // Never touch the base branch (or the branch currently checked out): only a
     // distinct feature branch is a safe target.
