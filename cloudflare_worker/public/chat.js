@@ -386,10 +386,10 @@ function sendCurrentMessage() {
 }
 
 if (logEl && input && sendBtn) {
-  // Connect lazily on first intent so passive visitors aren't counted as
-  // clients; only people who actually chat join the room.
-  input.addEventListener("focus", connect);
-  nameInput.addEventListener("focus", connect);
+  // Connect right away so the room's message history (replayed by the relay
+  // on WebSocket open) is visible to anyone who loads the page, not just
+  // people who start typing.
+  connect();
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
   input.addEventListener("keydown", (event) => {
