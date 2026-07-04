@@ -29,6 +29,8 @@
     },
     notifications: [],
     notificationUnread: 0,
+    pollProfileToken: null,
+    pollNotifToken: null,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [] },
     claimNode: { pendingNodeId: "" },
@@ -116,6 +118,8 @@
       window.clearInterval(state.profileSyncTimer);
       state.profileSyncTimer = null;
     }
+    state.pollProfileToken = null;
+    state.pollNotifToken = null;
     try {
       localStorage.removeItem("forkmesh.session");
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
@@ -586,6 +590,7 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
+      adminUrl: body.adminUrl || base.adminUrl || "",
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -647,11 +652,42 @@
     }
   }
 
+  // One lightweight /api/poll instead of re-fetching the full profile (avatar
+  // and all) and the full notification list every tick. The server returns
+  // cheap change tokens; we only fire the heavier fetches when a token moved.
+  // The unread count rides along, so the bell badge updates from the poll alone.
+  async function pollStatus(force = false) {
+    const node = String(state.session?.nodeName || "").trim().toLowerCase();
+    if (!validNodeName(node)) return;
+    let data;
+    try {
+      data = await fetchJson(`/api/poll?node=${encodeURIComponent(node)}`);
+    } catch (_) {
+      return;
+    }
+    const profileToken = data.profile?.token ?? null;
+    if (force || (profileToken !== null && profileToken !== state.pollProfileToken)) {
+      await refreshPublicProfile(state.session);
+    }
+    if (profileToken !== null) state.pollProfileToken = profileToken;
+
+    const notif = data.notif;
+    if (notif && typeof notif.unread === "number") {
+      state.notificationUnread = notif.unread;
+      renderNotificationPreview();
+    }
+    const notifToken = notif?.token ?? null;
+    if (force || (notifToken !== null && notifToken !== state.pollNotifToken)) {
+      await loadNotifications();
+    }
+    if (notifToken !== null) state.pollNotifToken = notifToken;
+  }
+
   function startProfileSync() {
     if (state.profileSyncTimer || !state.session?.nodeName) return;
     state.profileSyncTimer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      refreshPublicProfile(state.session);
+      pollStatus();
     }, PROFILE_SYNC_INTERVAL_MS);
   }
 
@@ -718,6 +754,7 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
+    const adminButton = $("[data-admin-button]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
@@ -726,6 +763,12 @@
         : "Verify email in profile";
     }
     applyAvatar(avatar, session);
+    if (adminButton) {
+      adminButton.classList.toggle("hidden", !session?.isAdmin);
+      if (session?.isAdmin && session?.adminUrl) {
+        adminButton.href = session.adminUrl;
+      }
+    }
     renderProfileModal(session);
     renderProfilePage(session);
   }
@@ -2629,6 +2672,7 @@
         date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
         meta: config.meta(values),
         body: parsed.body || "",
+        wantsAgent: config.dir === "issues" ? Boolean(values.wantsAgent) : false,
       };
     });
     return records.filter(Boolean);
@@ -2670,7 +2714,10 @@
           <span class="mt-1 line-clamp-2 text-xs text-muted-foreground">${escapeHtml(item.body || `${item.author} opened this signed ${config.itemLabel}`)}</span>
           <span class="mt-1 block truncate text-[10px] font-mono text-muted-foreground">${escapeHtml(item.author)} · ${escapeHtml(item.date)}${item.meta ? ` · ${escapeHtml(item.meta)}` : ""}</span>
         </span>
-        <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 shrink-0 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
+        <span class="self-start shrink-0 flex items-center gap-2">
+          ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
+          <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
+        </span>
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
@@ -3092,6 +3139,7 @@
           date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
           meta: repoCollectionConfig.issues.meta(values),
           body: parsed.body || "",
+          wantsAgent: Boolean(values.wantsAgent),
         };
       }).filter(Boolean);
       state.issuesView.items = items;
@@ -3321,6 +3369,7 @@
         date: "just now",
         meta: "",
         body,
+        wantsAgent: assignAgent,
         pending: true,
       }, ...state.issuesView.items];
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
@@ -4419,9 +4468,11 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      await refreshPublicProfile(session);
+      // Seed the poll tokens and do the initial full profile + notification
+      // load in one pass; subsequent ticks poll /api/poll and only re-fetch
+      // what actually changed.
+      await pollStatus(true);
       startProfileSync();
-      loadNotifications();
     }
     try {
       const data = await fetchJson("/api/repositories");
