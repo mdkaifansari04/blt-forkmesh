@@ -7,7 +7,7 @@ labels: []
 milestone: 
 priority: 64
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782919997330
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
