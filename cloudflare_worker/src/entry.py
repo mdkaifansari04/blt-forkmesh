@@ -7999,6 +7999,7 @@ async def issues_handler(env, request, owner, repo):
             # owner, or an admin acting on the owner's behalf (adhoc #225).
             wants_agent = False
             agent_model = ""
+            agent_provider = ""
             if meta_in.get("wantsAgent"):
                 ok, err = await _authorize_owner_account(env, owner, data)
                 if not ok:
@@ -8009,6 +8010,11 @@ async def issues_handler(env, request, owner, repo):
                 # issue; empty leaves the provider's own default. Only meaningful
                 # alongside wantsAgent, so it's not parsed otherwise.
                 agent_model = clean_string(meta_in.get("model", ""), 60)
+                # Optional agent-provider choice from the web dropdown (adhoc #234);
+                # only a known provider is honored, else the node picks its default.
+                provider_in = clean_string(meta_in.get("provider", ""), 40)
+                if provider_in in ("claude-code", "claude-api", "openai"):
+                    agent_provider = provider_in
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
@@ -8018,6 +8024,7 @@ async def issues_handler(env, request, owner, repo):
                 if isinstance(assignees, list) else [],
                 "wantsAgent": wants_agent,
                 "model": agent_model,
+                "provider": agent_provider,
             }
         item = {
             "number": number,

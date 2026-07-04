@@ -1234,6 +1234,13 @@ void MainWindow::openRepoDetail(int repoIndex)
         if (combo >= 0)
             m_issuesRepoCombo->setCurrentIndex(combo);
     }
+    // Default the Agents-tab compose row's repo picker (adhoc #234) to the repo
+    // being opened, so a prompt started there runs in the repo on screen.
+    if (m_agentComposeRepo) {
+        const int combo = m_agentComposeRepo->findData(repoIndex);
+        if (combo >= 0)
+            m_agentComposeRepo->setCurrentIndex(combo);
+    }
     logStartup(QStringLiteral("  openRepo: info+branches+codeSize done"));
     // Pulls load before agents on purpose: the Agents table annotates each
     // session with its PR status (open/merged/closed) read from m_currentPulls,
