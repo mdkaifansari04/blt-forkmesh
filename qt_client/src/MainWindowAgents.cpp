@@ -6800,7 +6800,8 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
     // the run progresses — but only while that tab is on screen, since rebuilding
     // it probes git for every branch (ahead/behind + conflicts).
     if (m_branchesTable && m_repoDetailStack &&
-        m_repoDetailStack->currentIndex() == m_branchesTabIndex)
+        m_repoDetailStack->currentIndex() == 0 && m_overviewBodyStack &&
+        m_overviewBodyStack->currentIndex() == 2)
         loadBranchesPanel();
 }
 
