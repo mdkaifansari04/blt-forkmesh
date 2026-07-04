@@ -252,6 +252,27 @@ def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
     assert by_id["website"]["uptimePct"] < 100.0
 
 
+def test_current_status_uses_latest_hour_not_the_whole_days_aggregate():
+    # A blip two hours ago that has since cleared shouldn't keep today's badge
+    # degraded for the rest of the day — the banner should track the most
+    # recent hour, not the day's cumulative failure count.
+    cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    rows = [{"day_ts": cur_day, "system": "api", "checks": 3, "failures": 1}]
+    hour_rows = [
+        {"hour_ts": cur_hour - 2 * HOUR_MS, "system": "api", "checks": 1,
+         "failures": 1, "reason": "502 on /api/x: boom"},
+        {"hour_ts": cur_hour - 1 * HOUR_MS, "system": "api", "checks": 1,
+         "failures": 0, "reason": None},
+        {"hour_ts": cur_hour, "system": "api", "checks": 1,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    assert by_id["api"]["status"] == "operational"
+    assert by_id["api"]["reason"] is None
+
+
 HOUR_MS = 3600000
 
 
