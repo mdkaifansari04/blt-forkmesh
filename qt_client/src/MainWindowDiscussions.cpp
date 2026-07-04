@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -54,6 +55,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     }
 
     m_discussionTable = new QTableWidget(0, 6);
+    installColumnHeaderMenu(m_discussionTable); // 3-dots per-column menu (issue #318)
     m_discussionTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_discussionTable);
     m_discussionTable->setHorizontalHeaderLabels(
