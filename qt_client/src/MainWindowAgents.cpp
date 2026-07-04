@@ -44,14 +44,16 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s)
     cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
     cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
     // Status glyph next to the text (issue #108): a green spinner while running, a
-    // purple merge mark once it lands, a red stop sign when halted, an orange hand
-    // while it waits on the user, and a red X circle on failure (issue #322). The
-    // running glyph is seeded at frame 0 here; animateRunningAgentIcons() spins it.
-    // Other states carry no icon.
+    // purple merge mark once it lands, a green check on success, a red stop sign
+    // when halted, an orange hand while it waits on the user, and a red X circle
+    // on failure (issue #322). The running glyph is seeded at frame 0 here;
+    // animateRunningAgentIcons() spins it. Other states carry no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
         cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+    else if (s.status == AgentStatus::Success)
+        cell->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
     else if (s.status == AgentStatus::Stopped)
         cell->setIcon(themedOcticon("stop", QColor("#f85149"), 14));
     else if (s.status == AgentStatus::Waiting)
