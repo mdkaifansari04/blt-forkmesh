@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 357
 title: Performance budgets enforced in CI (startup, tab-open, relay p95)
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 12

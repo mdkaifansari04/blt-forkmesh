@@ -132,6 +132,13 @@ REPO_RELEASE_DOWNLOADS_RE = re.compile(
 # Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
 GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
 GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
+# git push endpoint (issue #358): receive-pack over the same relay tunnel, gated
+# by an owner-key-signed HTTP Basic token (see verify_push_token).
+GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
+# Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
+# message; matches the host's 256 KiB git-chunk ceiling so neither side trips
+# the relay's ~1 MiB message cap.
+GIT_REQ_CHUNK = 256 * 1024
 ROOM_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 TUNNEL_TIMEOUT_MS = 20000
 GIT_TIMEOUT_MS = 60000
@@ -3510,6 +3517,44 @@ async def verify_view_token(env, owner, repo, ts, sig):
         return False
     canonical = ("forkmesh-view-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
     return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def verify_push_token(env, owner, repo, ts, sig):
+    # Write gate for git push over the relay (issue #358): only the owner
+    # account's registered key may run receive-pack against the served mirror
+    # (collaborator keys are a later extension). Same shape as verify_host_token /
+    # verify_view_token — fresh ts + ed25519 over an explicit canonical string —
+    # but a distinct prefix so a host or view token can never be replayed as a
+    # push token, and vice versa. This ts-signed binding is deliberately the
+    # simplest thing that stays in the existing trust model (no server-side nonce
+    # state); the freshness window is the short-lived element.
+    if not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, owner)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-push-v1\n" + owner + "\n" + repo + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def _basic_auth_push_ok(env, owner, repo, request):
+    # git supplies the push token in HTTP Basic auth (password="<ts>.<sig>"),
+    # from the push URL or a credential helper. The username selects whose key
+    # signed it; only the owner may push for now (collaborator keys later).
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
+    except Exception:
+        return False
+    username, _, password = decoded.partition(":")
+    ts, _, sig = password.partition(".")
+    if not ts or not sig:
+        return False
+    if username and username != owner:
+        return False
+    return await verify_push_token(env, owner, repo, ts, sig)
 
 
 async def verify_catalog_view_token(env, viewer, ts, sig):
@@ -9234,11 +9279,20 @@ class Default(WorkerEntrypoint):
     async def _route(self, request, url):
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
-        if git_info and parse_qs(url.query).get("service", [""])[0] == "git-upload-pack":
-            return await self._git_host(request, git_info.group(1), git_info.group(2))
+        if git_info:
+            service = parse_qs(url.query).get("service", [""])[0]
+            if service == "git-upload-pack":
+                return await self._git_host(
+                    request, git_info.group(1), git_info.group(2))
+            if service == "git-receive-pack":
+                return await self._git_push(
+                    request, git_info.group(1), git_info.group(2))
         git_pack = GIT_PACK_RE.match(url.path)
         if git_pack and method_name(request) == "POST":
             return await self._git_host(request, git_pack.group(1), git_pack.group(2))
+        git_recv = GIT_RECEIVE_RE.match(url.path)
+        if git_recv and method_name(request) == "POST":
+            return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         # Static docs/network directories are canonical with a trailing slash.
         # Keep this as routing support only; all persistent v0.3.0 APIs stay below.
@@ -9689,6 +9743,23 @@ class Default(WorkerEntrypoint):
         host_object = self.env.FORKMESH_HOST.get(host_id)
         return await host_object.fetch(request)
 
+    async def _git_push(self, request, owner_raw, repo_raw):
+        # git push (issue #358): receive-pack proxied to the owner's own host DO.
+        # Unlike a clone this NEVER falls back to a mirror — a mirror is a
+        # read-only copy; a push must reach the working-copy holder that can run
+        # receive-pack and re-attest the integrity pin. Gated by an owner-key-
+        # signed HTTP Basic token; git sends no credentials until it sees a 401,
+        # so both info/refs and the POST challenge when auth is missing/invalid.
+        owner = safe_segment(owner_raw)
+        repo = safe_segment(repo_raw)
+        if not owner or not repo:
+            return Response("not found", status=404)
+        if not await _basic_auth_push_ok(self.env, owner, repo, request):
+            return _basic_auth_challenge()
+        host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+        host_object = self.env.FORKMESH_HOST.get(host_id)
+        return await host_object.fetch(request)
+
     async def _source_has_live_host(self, owner, repo):
         # Whether a desktop host is CONNECTED to this repo's host DO right now —
         # the ground truth, not the host_presence row (which lags an unclean
@@ -10089,6 +10160,11 @@ class ForkMeshHost(DurableObject):
         # Git smart-HTTP clone endpoints proxied to the host's git upload-pack.
         if path.endswith("/info/refs"):
             await self._mark_present(path)
+            service = parse_qs(url.query).get("service", [""])[0]
+            if service == "git-receive-pack":
+                # Push ref advertisement (issue #358); auth already enforced by
+                # the router's _git_push before it reached this DO.
+                return await self._git(request, "git-receive-info-refs")
             return await self._git(request, "git-info-refs")
         if path.endswith("/git-upload-pack"):
             await self._mark_present(path)
@@ -10103,6 +10179,13 @@ class ForkMeshHost(DurableObject):
             except Exception:
                 return Response("Could not read Git request body.", status=400)
             return await self._git(request, "git-upload-pack", body)
+        if path.endswith("/git-receive-pack"):
+            # git push (issue #358): the request body IS the pack (client->host),
+            # potentially hundreds of MB, so it must never be buffered in the
+            # isolate. _git streams it straight through the tunnel to the host's
+            # receive-pack stdin (see _stream_receive / _pump_request_body).
+            await self._mark_present(path)
+            return await self._git(request, "git-receive-pack")
 
         action = path.rsplit("/", 1)[-1]
         if action == "host":
@@ -10490,6 +10573,89 @@ class ForkMeshHost(DurableObject):
                     pass
                 return
 
+    async def _stream_receive(self, host, message, headers, request):
+        # git push (issue #358): the mirror image of _stream_request. There the
+        # big body is the REPLY (a clone's pack); here it is the REQUEST (the
+        # pushed pack), so the incoming body is pumped to the host chunk by chunk
+        # (_pump_request_body) and NEVER reassembled in the isolate — buffering a
+        # pack here is exactly what OOM'd the DO once. The host runs receive-pack
+        # and streams its small report-status reply back through the same
+        # git-chunk/git-end path a clone uses.
+        req_id = message["reqId"]
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self.pending[req_id] = future
+        transform = TransformStream.new()
+        writer = transform.writable.getWriter()
+        self.git_streams[req_id] = {"writer": writer, "last": int(Date.now())}
+        try:
+            host.send(json.dumps(message))
+            # Forward the pushed pack, then tell the host to close stdin so
+            # receive-pack can finish and reply. The host must set up the process
+            # on the "request" message above before these chunks arrive; WS
+            # message order guarantees it.
+            await self._pump_request_body(host, req_id, request)
+        except Exception:
+            self.pending.pop(req_id, None)
+            if self.git_streams.pop(req_id, None) is not None:
+                try:
+                    await writer.abort("host unavailable")
+                except Exception:
+                    pass
+            self._drop_host(host)
+            return Response("Host unavailable.", status=503), None
+        try:
+            result = await asyncio.wait_for(
+                future, timeout=GIT_TIMEOUT_MS / 1000)
+        except Exception:
+            self.pending.pop(req_id, None)
+            if self.git_streams.pop(req_id, None) is not None:
+                try:
+                    await writer.abort("host timed out")
+                except Exception:
+                    pass
+            return Response("Host timed out.", status=504), None
+        if not result.get("ok"):
+            if self.git_streams.pop(req_id, None) is not None:
+                try:
+                    await writer.abort("host error")
+                except Exception:
+                    pass
+            return None, result
+        asyncio.ensure_future(self._stream_watchdog(req_id))
+        return JsResponse.new(
+            transform.readable,
+            to_js({"status": 200, "headers": headers}),
+        ), None
+
+    async def _pump_request_body(self, host, req_id, request):
+        # Read the incoming request body as a stream and relay it to the host as
+        # git-req-chunk messages (base64, capped at GIT_REQ_CHUNK like the host's
+        # own git-chunk replies), ending with git-req-end so the host closes
+        # receive-pack's stdin. Reading via getReader() keeps a large push pack
+        # from ever sitting whole in DO memory.
+        body = getattr(request, "body", None)
+        if body is not None:
+            reader = body.getReader()
+            while True:
+                piece = await reader.read()
+                if piece.done:
+                    break
+                value = getattr(piece, "value", None)
+                if value is None:
+                    continue
+                # Copy the JS Uint8Array into Python bytes synchronously (a copy,
+                # not a view) before encoding — the reverse direction is the one
+                # that must round-trip through Uint8Array.new to stay GIL-safe.
+                data = bytes(value.to_py())
+                for i in range(0, len(data), GIT_REQ_CHUNK):
+                    host.send(json.dumps({
+                        "type": "git-req-chunk", "reqId": req_id,
+                        "data": base64.b64encode(
+                            data[i:i + GIT_REQ_CHUNK]).decode(),
+                    }))
+        host.send(json.dumps({"type": "git-req-end", "reqId": req_id}))
+
     async def _release_blob(self, sha256, repo_bi=None):
         # Stream a content-addressed release asset from a serving node: each
         # chunk flows straight to the client (see _stream_request), so
@@ -10642,22 +10808,30 @@ class ForkMeshHost(DurableObject):
         # (_stream_request); only the small info/refs advertisement is still
         # reassembled here, because the integrity gate must hash the complete
         # advertisement before releasing it.
+        # The push ops (issue #358) share this plumbing: git-receive-info-refs is
+        # the receive-pack ref advertisement (buffered like info/refs, but no
+        # integrity gate — pushing to the source, not cloning from a mirror), and
+        # git-receive-pack streams the pushed pack through to the host.
+        is_advertise = op in ("git-info-refs", "git-receive-info-refs")
+        is_receive = op in ("git-receive-info-refs", "git-receive-pack")
+        service = "git-receive-pack" if is_receive else "git-upload-pack"
+
         self._ensure()
         host = self._best_host()
         if host is None:
             # No desktop client is currently connected. Return a proper git
-            # smart-HTTP error so `git clone` shows a readable message instead
-            # of a confusing protocol error. For info/refs the response MUST
-            # use the advertisement content-type and pkt-line encoding.
+            # smart-HTTP error so git shows a readable message instead of a
+            # confusing protocol error. For info/refs the response MUST use the
+            # advertisement content-type and pkt-line encoding.
             err_msg = b"ERR no host is currently serving this repository\n"
-            if op == "git-info-refs":
+            if is_advertise:
                 body_out = (
-                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
+                    pkt_line(("# service=%s\n" % service).encode()) + b"0000" +
                     pkt_line(err_msg)
                 )
                 return git_bytes_response(
                     body_out,
-                    "application/x-git-upload-pack-advertisement",
+                    "application/x-%s-advertisement" % service,
                 )
             return Response(
                 "No client is hosting this repository.", status=503
@@ -10669,7 +10843,25 @@ class ForkMeshHost(DurableObject):
         if body:
             message["body"] = base64.b64encode(body).decode()
 
-        if op != "git-info-refs":
+        if op == "git-receive-pack":
+            # The request body (the pushed pack) streams straight to the host's
+            # receive-pack stdin — never buffered in the isolate — and the small
+            # report-status reply streams back.
+            response, err = await self._stream_receive(
+                host, message,
+                {
+                    "content-type": "application/x-git-receive-pack-result",
+                    "cache-control": "no-cache, max-age=0, must-revalidate",
+                },
+                request,
+            )
+            if response is not None:
+                return response
+            return Response(
+                "Host error: " + str(err.get("error", "")), status=502
+            )
+
+        if op == "git-upload-pack":
             response, err = await self._stream_request(
                 host, message,
                 {
@@ -10713,21 +10905,26 @@ class ForkMeshHost(DurableObject):
         # against the SOURCE's signed pins (current + recent history), never
         # just its own self-published hash, so a forged or rolled-back mirror
         # fails here and no clone ever receives it. (Fails open when nothing
-        # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.)
-        pinned = await self._state_pins(urlparse(request.url).path)
-        if pinned and await sha256_hex(advertised_refs_canonical(data)) not in pinned:
-            err = (b"ERR repository failed integrity check "
-                   b"(mirror may be tampered or out of date)\n")
-            body_out = (
-                pkt_line(b"# service=git-upload-pack\n") + b"0000" +
-                pkt_line(err)
-            )
-            return git_bytes_response(
-                body_out, "application/x-git-upload-pack-advertisement"
-            )
+        # is pinned, e.g. a not-yet-attested repo; see clone_state_pins.) The
+        # push advertisement (git-receive-info-refs) skips it: a push targets
+        # the owner's own source node, not a mirror, so there is nothing to
+        # attest against yet — the pin is re-attested AFTER the push lands.
+        if op == "git-info-refs":
+            pinned = await self._state_pins(urlparse(request.url).path)
+            if (pinned and await sha256_hex(advertised_refs_canonical(data))
+                    not in pinned):
+                err = (b"ERR repository failed integrity check "
+                       b"(mirror may be tampered or out of date)\n")
+                body_out = (
+                    pkt_line(b"# service=git-upload-pack\n") + b"0000" +
+                    pkt_line(err)
+                )
+                return git_bytes_response(
+                    body_out, "application/x-git-upload-pack-advertisement"
+                )
         body_out = (
-            pkt_line(b"# service=git-upload-pack\n") + b"0000" + data
+            pkt_line(("# service=%s\n" % service).encode()) + b"0000" + data
         )
         return git_bytes_response(
-            body_out, "application/x-git-upload-pack-advertisement"
+            body_out, "application/x-%s-advertisement" % service
         )
