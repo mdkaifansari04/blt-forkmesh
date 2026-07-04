@@ -7,6 +7,11 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "QrCode.h"
+
+#include <QClipboard>
+#include <QDialog>
+#include <QInputDialog>
 #include "KebabHeaderView.h"
 #include "ScreenAlignmentTarget.h"
 
@@ -89,6 +94,29 @@ QWidget *MainWindow::buildSettingsSection()
     form->addRow(m_settingsEmailLabel, m_settingsEmailVerifiedBadge);
     refreshSettingsEmailVerifiedBadge();
     form->addRow("Avatar", avatarRow);
+
+    // #368: identity key backup. The Ed25519 key under the app data dir is the
+    // one thing that can't be regenerated — lose it and every signature,
+    // catalog record and bounty binding is orphaned. Offer an encrypted export
+    // (keyfile + QR) and import, and nag until the user has taken a backup.
+    m_identityBackupNag = new QLabel;
+    m_identityBackupNag->setObjectName("identityBackupNag");
+    m_identityBackupNag->setWordWrap(true);
+    m_identityBackupNag->setStyleSheet("color:#f0b429;");
+    auto *backUpKeyButton = new QPushButton("Back up identity key…");
+    backUpKeyButton->setObjectName("ghostButton");
+    backUpKeyButton->setCursor(Qt::PointingHandCursor);
+    backUpKeyButton->setToolTip(
+        "Export, import, or show a QR of your passphrase-encrypted identity key. "
+        "Without a backup, losing this machine loses your ForkMesh identity.");
+    connect(backUpKeyButton, &QPushButton::clicked, this,
+            &MainWindow::backUpIdentityKey);
+    auto *backUpRow = new QHBoxLayout;
+    backUpRow->addWidget(backUpKeyButton);
+    backUpRow->addStretch();
+    form->addRow("Identity key", backUpRow);
+    form->addRow("", m_identityBackupNag);
+    refreshIdentityBackupNag();
 
     auto *startupLabel = new QLabel("STARTUP");
     startupLabel->setObjectName("sectionLabel");
@@ -1384,6 +1412,173 @@ QWidget *MainWindow::buildSettingsSection()
     reloadVariablesTable();
     setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
+}
+
+void MainWindow::refreshIdentityBackupNag()
+{
+    if (!m_identityBackupNag)
+        return;
+    const bool backedUp = m_profileIdentity.hasBackedUp();
+    m_identityBackupNag->setVisible(!backedUp);
+    if (!backedUp)
+        m_identityBackupNag->setText(
+            "⚠ You haven't backed up your identity key yet. If you lose this "
+            "machine, your ForkMesh identity is gone for good. Back it up now.");
+}
+
+void MainWindow::backUpIdentityKey()
+{
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        QMessageBox::warning(this, "Identity key",
+                             "No identity key is loaded yet.");
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Back up identity key");
+    auto *l = new QVBoxLayout(&dialog);
+
+    auto *intro = new QLabel(
+        "Your Ed25519 identity key signs everything you publish. Export it to a "
+        "passphrase-encrypted keyfile (or scan the QR onto another device) and "
+        "keep it somewhere safe. On a new machine, import it to keep your name, "
+        "signatures and bounty bindings. Public key:\n" +
+        m_profileIdentity.publicKey());
+    intro->setWordWrap(true);
+    intro->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->addWidget(intro);
+
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
+    l->addWidget(qrLabel);
+
+    // Prompt for a passphrase and return the encrypted keyfile text, or {}.
+    auto exportKeyfile = [this, &dialog]() -> QString {
+        bool ok = false;
+        const QString pass = QInputDialog::getText(
+            &dialog, "Encrypt keyfile",
+            "Choose a passphrase to encrypt the keyfile. You'll need it to "
+            "restore the key — it cannot be recovered.",
+            QLineEdit::Password, QString(), &ok);
+        if (!ok || pass.isEmpty())
+            return {};
+        const QString keyfile = m_profileIdentity.exportEncryptedKeyfile(pass);
+        if (keyfile.isEmpty())
+            QMessageBox::warning(&dialog, "Export failed",
+                                 "Could not encrypt the identity key.");
+        return keyfile;
+    };
+
+    auto *saveBtn = new QPushButton("Save keyfile…");
+    saveBtn->setObjectName("primaryButton");
+    saveBtn->setCursor(Qt::PointingHandCursor);
+    connect(saveBtn, &QPushButton::clicked, &dialog, [this, &dialog, exportKeyfile] {
+        const QString keyfile = exportKeyfile();
+        if (keyfile.isEmpty())
+            return;
+        const QString path = QFileDialog::getSaveFileName(
+            &dialog, "Save identity keyfile", "forkmesh-identity.keyfile.json",
+            "ForkMesh keyfile (*.json)");
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(&dialog, "Save failed",
+                                 "Could not write " + path);
+            return;
+        }
+        f.write(keyfile.toUtf8());
+        f.close();
+        m_profileIdentity.markBackedUp();
+        refreshIdentityBackupNag();
+        QMessageBox::information(&dialog, "Backed up",
+                                 "Identity key saved to " + path);
+    });
+
+    auto *qrBtn = new QPushButton("Show QR");
+    qrBtn->setObjectName("ghostButton");
+    qrBtn->setCursor(Qt::PointingHandCursor);
+    connect(qrBtn, &QPushButton::clicked, &dialog,
+            [this, &dialog, qrLabel, exportKeyfile] {
+                const QString keyfile = exportKeyfile();
+                if (keyfile.isEmpty())
+                    return;
+                const QImage qr = QrCode::encodeToImage(keyfile, 3, 3,
+                                                        QrCode::Ecl::Low);
+                if (qr.isNull()) {
+                    QMessageBox::warning(
+                        &dialog, "QR too large",
+                        "The encrypted keyfile is too large for a QR code; use "
+                        "\"Save keyfile\" instead.");
+                    return;
+                }
+                qrLabel->setPixmap(QPixmap::fromImage(qr));
+                m_profileIdentity.markBackedUp();
+                refreshIdentityBackupNag();
+            });
+
+    auto *importBtn = new QPushButton("Import keyfile…");
+    importBtn->setObjectName("ghostButton");
+    importBtn->setCursor(Qt::PointingHandCursor);
+    connect(importBtn, &QPushButton::clicked, &dialog, [this, &dialog] {
+        const QString path = QFileDialog::getOpenFileName(
+            &dialog, "Import identity keyfile", QString(),
+            "ForkMesh keyfile (*.json);;All files (*)");
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(&dialog, "Import failed",
+                                 "Could not read " + path);
+            return;
+        }
+        const QString keyfile = QString::fromUtf8(f.readAll());
+        f.close();
+        const QString incoming = ForkMeshIdentity::keyfilePublicKey(keyfile);
+        if (incoming.isEmpty()) {
+            QMessageBox::warning(&dialog, "Import failed",
+                                 "That file is not a ForkMesh identity keyfile.");
+            return;
+        }
+        if (incoming != m_profileIdentity.publicKey() &&
+            QMessageBox::question(
+                &dialog, "Replace identity?",
+                "This keyfile is a different identity than the one on this "
+                "machine. Importing it replaces your current key. Continue?",
+                QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+            return;
+        bool ok = false;
+        const QString pass = QInputDialog::getText(
+            &dialog, "Decrypt keyfile", "Enter the keyfile passphrase.",
+            QLineEdit::Password, QString(), &ok);
+        if (!ok || pass.isEmpty())
+            return;
+        if (!m_profileIdentity.importEncryptedKeyfile(keyfile, pass)) {
+            QMessageBox::warning(&dialog, "Import failed",
+                                 m_profileIdentity.errorString());
+            return;
+        }
+        refreshIdentityBackupNag();
+        QMessageBox::information(
+            &dialog, "Identity imported",
+            "Restored identity " + m_profileIdentity.shortPublicKey() +
+                ". Restart ForkMesh so every panel picks up the new key.");
+        dialog.accept();
+    });
+
+    auto *closeBtn = new QPushButton("Close");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    auto *row = new QHBoxLayout;
+    row->addWidget(saveBtn);
+    row->addWidget(qrBtn);
+    row->addWidget(importBtn);
+    row->addStretch(1);
+    row->addWidget(closeBtn);
+    l->addLayout(row);
+
+    dialog.exec();
 }
 
 QByteArray MainWindow::effectiveAvatar()

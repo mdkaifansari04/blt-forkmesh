@@ -1,4 +1,4 @@
-# ForkMesh Cloudflare Python Relay
+# ForkMesh Cloudflare Python Relay test
 
 This Python Worker serves the ForkMesh public site from `public/` and hosts test
 encrypted ForkMesh mainnode rooms at: test

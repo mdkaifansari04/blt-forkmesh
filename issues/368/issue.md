@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 368
 title: Identity key backup, export, and rotation
-status: open
+status: closed
 labels: [security, feature]
 milestone: Phase 2
 priority: 51
