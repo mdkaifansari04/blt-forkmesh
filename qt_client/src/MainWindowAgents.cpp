@@ -4063,6 +4063,9 @@ void MainWindow::switchToAgentsTab(int sessionId)
         m_repoDetailTabs->button(3)->setChecked(true);
     if (m_repoDetailStack)
         m_repoDetailStack->setCurrentIndex(3);
+    // Mark the Agents nav button as selected (adhoc #201).
+    if (m_agentsNavButton)
+        m_agentsNavButton->setChecked(true);
     reloadAgents();
     showAgentSession(sessionId);
 }
