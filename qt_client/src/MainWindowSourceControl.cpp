@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 #include <algorithm>
 
@@ -1574,6 +1575,7 @@ QWidget *MainWindow::buildRepoSecurityTab()
     layout->addWidget(findingsLabel);
 
     m_securityFindingsTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_securityFindingsTable); // 3-dots per-column menu (issue #318)
     m_securityFindingsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_securityFindingsTable);
     m_securityFindingsTable->setHorizontalHeaderLabels(
@@ -2202,6 +2204,7 @@ QWidget *MainWindow::buildRepoQualityTab()
     layout->addWidget(findingsLabel);
 
     m_qualityFindingsTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_qualityFindingsTable); // 3-dots per-column menu (issue #318)
     m_qualityFindingsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_qualityFindingsTable);
     m_qualityFindingsTable->setHorizontalHeaderLabels(
@@ -2458,6 +2461,7 @@ QWidget *MainWindow::buildInsightsTab()
     contributorsHeader->addWidget(m_insightsRangeCombo, 0, Qt::AlignVCenter);
 
     m_insightsContributors = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_insightsContributors); // 3-dots per-column menu (issue #318)
     m_insightsContributors->setHorizontalHeaderLabels(
         {"Contributor", "Commits", "Share", "Activity"});
     configureTable(m_insightsContributors);
