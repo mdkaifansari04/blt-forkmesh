@@ -905,8 +905,8 @@
   // True when the logged-in account may assign an issue to a coding agent on
   // this repo's node: the repo owner itself, or an admin acting on the owner's
   // behalf (admin node-ownership, adhoc #141). The backend independently
-  // re-checks both the account password and admin status, so this is only the
-  // client-side gate for showing the checkbox.
+  // re-checks the account name against owner/admin status (no password,
+  // adhoc #225), so this is only the client-side gate for showing the checkbox.
   function sessionCanAssignAgent(repo) {
     return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
   }
@@ -916,10 +916,9 @@
   // Shows the desktop app's running/finished Claude Code agent sessions for
   // this repo, and lets the owner send a follow-up prompt to a live one. The
   // desktop pushes the session list; the browser has no signing key, so it
-  // re-proves account ownership with a password (same _verify_owner_password
-  // check the worker already uses for the "Assign to agent" issue checkbox).
-  // The password is cached only in state.agentsView for this page load —
-  // never localStorage — and reset whenever a repo is (re)opened.
+  // re-proves account ownership by node account name (no password, adhoc #225)
+  // via the same ownerAccount check the worker uses for the "Assign to agent"
+  // issue checkbox.
 
   // A session counts as still actionable (promptable) unless it's reached one
   // of these terminal states. Mirrors the worker/desktop's own status names;

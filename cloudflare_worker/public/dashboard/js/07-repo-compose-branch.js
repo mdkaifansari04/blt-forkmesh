@@ -219,9 +219,7 @@
         code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
-          : code === "bad_owner_password" ? "That account password isn't correct."
           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
-          : code === "too_many_attempts" ? "Too many password attempts. Try again later."
           : "Could not send the issue. Please try again.",
         "bad");
     }
