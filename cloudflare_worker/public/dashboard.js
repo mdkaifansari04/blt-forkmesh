@@ -590,6 +590,7 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
+      adminUrl: body.adminUrl || base.adminUrl || "",
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -753,6 +754,7 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
+    const adminButton = $("[data-admin-button]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
@@ -761,6 +763,12 @@
         : "Verify email in profile";
     }
     applyAvatar(avatar, session);
+    if (adminButton) {
+      adminButton.classList.toggle("hidden", !session?.isAdmin);
+      if (session?.isAdmin && session?.adminUrl) {
+        adminButton.href = session.adminUrl;
+      }
+    }
     renderProfileModal(session);
     renderProfilePage(session);
   }
