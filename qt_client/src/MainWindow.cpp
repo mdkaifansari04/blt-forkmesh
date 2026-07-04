@@ -12,6 +12,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // individually (adhoc #126). See eventFilter's QEvent::ContextMenu branch.
     if (qApp)
         qApp->installEventFilter(this);
+    // Ctrl+K opens the global search overlay over the currently-open repo (issue
+    // #360). Application-wide so it fires from any tab; the handler no-ops with a
+    // notice when no repo detail is open.
+    auto *searchShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_K), this);
+    searchShortcut->setContext(Qt::ApplicationShortcut);
+    connect(searchShortcut, &QShortcut::activated, this,
+            &MainWindow::openGlobalSearch);
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     if (qApp && qApp->styleSheet().isEmpty())
