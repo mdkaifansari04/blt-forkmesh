@@ -3702,6 +3702,14 @@ private:
     // Free-text filter over the session list: matches issue number/title,
     // provider, status and PR. Empty shows everything (issue #82).
     QLineEdit *m_agentSearch = nullptr;
+    // Compose row at the top of the session list (adhoc #234): type a prompt,
+    // pick a repo and an agent provider, and start an ad-hoc agent right there
+    // without going through the footer quick-add bar.
+    QComboBox *m_agentComposeRepo = nullptr;
+    QLineEdit *m_agentComposePrompt = nullptr;
+    QComboBox *m_agentComposeProvider = nullptr;
+    QPushButton *m_agentComposeButton = nullptr;
+    void startAgentFromComposer();
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).
