@@ -120,7 +120,7 @@ REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$")
 # Release asset download (issue #304): the bytes live in the node's
 # content-addressed store (never in git), streamed back over the host tunnel.
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.
@@ -9429,7 +9429,7 @@ class Default(WorkerEntrypoint):
                 sig = params.get("sig", [""])[0]
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -10156,6 +10156,19 @@ class ForkMeshHost(DurableObject):
             if served_by:
                 payload["servedBy"] = served_by
             return json_response(payload)
+        if action == "search":
+            # Repo-scoped search (issue #360): the host runs one `git grep` over
+            # its mirror and returns capped issue/PR/code matches. The query rides
+            # as ?q=; the result buckets are already capped host-side, so this is a
+            # single tunnel round-trip — no per-record fan-out.
+            await self._mark_present(path)
+            query = (parse_qs(url.query).get("q", [""])[0] or "").strip()[:100]
+            if len(query) < 2:
+                return json_response(
+                    {"ok": False, "error": "query_too_short"}, status=400)
+            served = REPO_HOST_RE.match(path)
+            served_by = safe_segment(served.group(1)) if served else ""
+            return await self._tunnel("search", query, ref, served_by)
         if action in ("tree", "blob", "history", "commit", "branches"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
