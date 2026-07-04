@@ -29,7 +29,7 @@ struct IssueEvent {
     int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
-    QString agentProvider; // agent: openai|claude-api (legacy: codex, claude-code)
+    QString agentProvider; // agent: codex|openai|claude-api|claude-code
     int agentSessionId = 0; // agent
     QString agentStatus;   // agent
     bool agentCreatePr = false; // agent
@@ -83,9 +83,9 @@ struct RemoteIssueMeta {
     // "sonnet"); empty leaves the provider's own default. Only meaningful
     // alongside wantsAgent.
     QString wantsAgentModel;
-    // Agent provider the web submitter picked (e.g. "claude-code", "claude-api",
-    // "openai"); empty falls back to the node's default provider. Only meaningful
-    // alongside wantsAgent (adhoc #234 added the web-side dropdown).
+    // Agent provider the web submitter picked (e.g. "codex", "claude-code",
+    // "claude-api", "openai"); empty falls back to the node's default provider.
+    // Only meaningful alongside wantsAgent (adhoc #234 added the web-side dropdown).
     QString wantsAgentProvider;
 };
 

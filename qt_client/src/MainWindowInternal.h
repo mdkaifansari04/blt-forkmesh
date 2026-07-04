@@ -2419,17 +2419,29 @@ const QString kLegacyClaudeCodeTerminalCommand =
     QStringLiteral("claude \"$(cat {promptFile})\"");
 constexpr int kNetworkLogLimit = 2000;
 
-// Provider family helper: the Anthropic-backed "Claude API" script (plus the
+const QString kCodexProvider = QStringLiteral("codex");
+
+// Provider family helpers. The Anthropic-backed "Claude API" script (plus the
 // legacy "claude"/"claude-code" values) shares usage windows, spend tracking and
-// iconography; everything else is OpenAI-backed.
+// iconography; Codex and OpenAI both authenticate with the OpenAI key.
 inline bool agentIsClaudeProvider(const QString &provider)
 {
     return provider.startsWith(QLatin1String("claude"));
 }
 
+inline bool agentIsCodexProvider(const QString &provider)
+{
+    return provider == kCodexProvider;
+}
+
+inline bool agentUsesOpenAiKey(const QString &provider)
+{
+    return provider == QLatin1String("openai") || agentIsCodexProvider(provider);
+}
+
 // User's preferred default agent (Settings → Agents). One of the canonical
-// provider ids "openai", "claude-api" or "claude-code"; the quick-add and
-// issue-detail provider pickers start on this value. Falls back to OpenAI API
+// provider ids "codex", "openai", "claude-api" or "claude-code"; the quick-add
+// and issue-detail provider pickers start on this value. Falls back to OpenAI API
 // for an unset/unknown stored value.
 const QString kDefaultAgentProviderSetting =
     QStringLiteral("agents/defaultProvider");
@@ -2442,16 +2454,17 @@ inline QString defaultAgentProvider()
             .value(kDefaultAgentProviderSetting, kFallbackAgentProvider)
             .toString()
             .trimmed();
-    if (value == QLatin1String("openai") ||
+    if (agentIsCodexProvider(value) ||
+        value == QLatin1String("openai") ||
         value == QLatin1String("claude-api") ||
         value == QLatin1String("claude-code"))
         return value;
     return kFallbackAgentProvider;
 }
 
-// Point a provider QComboBox (built with the openai/claude-api/claude-code item
-// data) at the user's saved default agent, falling back to the first item when
-// the stored value isn't present.
+// Point a provider QComboBox (built with the codex/openai/claude-api/claude-code
+// item data) at the user's saved default agent, falling back to the first item
+// when the stored value isn't present.
 inline void selectDefaultAgentProvider(QComboBox *combo)
 {
     if (!combo)
@@ -2477,28 +2490,55 @@ public:
 protected:
     void showPopup() override
     {
+        setMaxVisibleItems(qMax(maxVisibleItems(), count()));
         QComboBox::showPopup();
         QAbstractItemView *v = view();
-        QWidget *popup = v ? v->window() : nullptr;
-        if (!v || !popup || popup == v || count() == 0)
+        if (!v || count() == 0)
             return;
+        QWidget *popup = v;
+        for (QWidget *w = v; w; w = w->parentWidget()) {
+            if (w->windowFlags().testFlag(Qt::Popup)) {
+                popup = w;
+                break;
+            }
+        }
+        if (!popup->windowFlags().testFlag(Qt::Popup)) {
+            QWidget *top = v->window();
+            if (top && top->windowFlags().testFlag(Qt::Popup))
+                popup = top;
+        }
         // Height for every row plus the view frame. sizeHintForRow under-reports
         // the styled row height (the rows aren't laid out with their stylesheet
         // metrics yet when the base showPopup returns) and the view's own
-        // sizeHint is just QListView's fixed default, so take the per-row hint
-        // and add a small cushion per row to cover the styling — generous is
-        // fine, it only adds a little bottom padding and is capped to the screen.
-        int rowH = v->sizeHintForRow(0);
-        if (rowH <= 0)
-            rowH = fontMetrics().height() + 8;
-        rowH += 8;
-        int height = 2 * v->frameWidth() + rowH * count();
+        // sizeHint is just QListView's fixed default, so sum the row hints and add
+        // a small cushion per row to cover the styling. If this still fits the
+        // screen, force the popup and the view to that height so no internal scroll
+        // buttons appear.
+        int rowsH = 0;
+        for (int row = 0; row < count(); ++row) {
+            int rowH = v->sizeHintForRow(row);
+            if (rowH <= 0)
+                rowH = fontMetrics().height() + 8;
+            rowsH += rowH + 8;
+        }
+        const int fullHeight = 2 * v->frameWidth() + rowsH;
         QRect geo = popup->geometry();
+        QScreen *screen = popup->screen();
+        if (!screen && windowHandle())
+            screen = windowHandle()->screen();
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
         const QRect avail =
-            popup->screen() ? popup->screen()->availableGeometry() : geo;
-        height = qMin(height, avail.height());
-        if (height <= geo.height())
-            return; // already tall enough (or genuinely too many items to fit)
+            screen ? screen->availableGeometry()
+                   : QRect(QPoint(0, 0), QSize(10000, 10000));
+        const int height = qMin(fullHeight, avail.height());
+        v->setVerticalScrollBarPolicy(fullHeight <= avail.height()
+                                          ? Qt::ScrollBarAlwaysOff
+                                          : Qt::ScrollBarAsNeeded);
+        v->setMinimumHeight(height);
+        popup->setMinimumHeight(height);
+        if (height <= geo.height() && geo.height() >= fullHeight)
+            return; // already tall enough
         geo.setHeight(height);
         // Keep the now-taller popup fully on screen: if growing it pushed the
         // bottom (or top, when it opened upward) past the screen edge, slide it
@@ -2649,7 +2689,7 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
     combo->clear();
     if (provider == QLatin1String("claude-code")) {
         // Live models populated by refreshClaudeModelCombo / mergeLiveClaudeModels
-    } else if (provider == QLatin1String("openai")) {
+    } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-4.1 nano"), QStringLiteral("gpt-4.1-nano"));
         combo->addItem(QStringLiteral("GPT-4.1 mini"), QStringLiteral("gpt-4.1-mini"));
         combo->addItem(QStringLiteral("GPT-4.1"), QStringLiteral("gpt-4.1"));

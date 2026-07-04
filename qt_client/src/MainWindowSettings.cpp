@@ -687,6 +687,7 @@ QWidget *MainWindow::buildSettingsSection()
     // agent" picker start on. Stored as the canonical provider id so the pickers
     // (built elsewhere) can seed themselves via selectDefaultAgentProvider().
     m_defaultAgentProviderCombo = new QComboBox;
+    m_defaultAgentProviderCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_defaultAgentProviderCombo->addItem(QStringLiteral("OpenAI API"),
                                          QStringLiteral("openai"));
     m_defaultAgentProviderCombo->addItem(QStringLiteral("Claude API"),
@@ -3277,4 +3278,3 @@ void MainWindow::submitVulnerabilityReport()
         }
     });
 }
-

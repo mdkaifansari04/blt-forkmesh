@@ -2,7 +2,9 @@
 #include "../src/PlatformLogFilter.h"
 
 #include <QAction>
+#include <QAbstractItemView>
 #include <QApplication>
+#include <QComboBox>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
@@ -880,10 +882,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    // issue #251: the Settings "Default agent" choice should seed the agent
-    // pickers. A window built while the default is Claude Code must start both
-    // the quick-add and issue-detail pickers there (not the OpenAI fallback),
-    // and changing the default afterwards must update the live pickers.
+    // issue #251 / adhoc #99: the Settings "Default agent" choice should seed the
+    // agent pickers. A window built while the default is Claude Code must start
+    // both the quick-add and issue-detail pickers there (not the OpenAI fallback),
+    // and changing the default afterwards must update the live pickers. Codex is a
+    // first-class provider in the same picker, and the quick-add popup should show
+    // every provider at once instead of opening as a tiny scrolled list.
     {
         QSettings().setValue(QStringLiteral("agents/defaultProvider"),
                              QStringLiteral("claude-code"));
@@ -896,6 +900,24 @@ int main(int argc, char *argv[])
                   .arg(seeded.testQuickAddAgentProvider(),
                        seeded.testIssueAgentProvider()));
 
+        QComboBox *quickProvider =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddAgentSelector"));
+        QStringList providerLabels;
+        if (quickProvider) {
+            for (int i = 0; i < quickProvider->count(); ++i)
+                providerLabels << quickProvider->itemText(i);
+        }
+        check(providerLabels == QStringList({QStringLiteral("Codex"),
+                                             QStringLiteral("OpenAI API"),
+                                             QStringLiteral("Claude API"),
+                                             QStringLiteral("Claude Code")}),
+              QStringLiteral("quick-add agent dropdown offers Codex plus existing providers"));
+        check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
+                  quickProvider->view() &&
+                  quickProvider->view()->verticalScrollBarPolicy() ==
+                      Qt::ScrollBarAlwaysOff,
+              QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
+
         seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&
                   seeded.testIssueAgentProvider() == QStringLiteral("claude-api"),
@@ -903,6 +925,14 @@ int main(int argc, char *argv[])
                       "(quick-add %1, issue %2)")
                   .arg(seeded.testQuickAddAgentProvider(),
                        seeded.testIssueAgentProvider()));
+        seeded.testSetDefaultAgentProvider(QStringLiteral("codex"));
+        check(seeded.testQuickAddAgentProvider() == QStringLiteral("codex") &&
+                  seeded.testIssueAgentProvider() == QStringLiteral("codex"),
+              QString("Codex default updates the live pickers (quick-add %1, issue %2)")
+                  .arg(seeded.testQuickAddAgentProvider(),
+                       seeded.testIssueAgentProvider()));
+        seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
+        QApplication::processEvents();
         stopChildProcesses(seeded);
     }
 

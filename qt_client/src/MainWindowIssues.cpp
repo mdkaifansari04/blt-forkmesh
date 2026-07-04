@@ -168,6 +168,7 @@ QWidget *MainWindow::buildIssuesSection()
     // the saved default. Seeded from the default agent (Settings -> Agents).
     m_issuePrioritizeAgentCombo = new QComboBox;
     m_issuePrioritizeAgentCombo->setObjectName("issueControlSm");
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("OpenAI API"),
                                          QStringLiteral("openai"));
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude API"),
@@ -737,8 +738,8 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAgentValue->setObjectName("statusLine");
     m_issueAgentValue->setWordWrap(true);
     m_issueAgentValue->setTextFormat(Qt::RichText);
-    // The same two API-key providers as the issue-list quick-add.
     m_issueAgentProvider = new QComboBox(meta);
+    m_issueAgentProvider->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_issueAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                   QStringLiteral("openai"));
     m_issueAgentProvider->addItem(QStringLiteral("Claude API"),
@@ -7226,4 +7227,3 @@ QString MainWindow::selfNodeStats() const
            formatDuration(totalMs) +
            (key.isEmpty() ? QString() : " \xC2\xB7 key " + key);
 }
-

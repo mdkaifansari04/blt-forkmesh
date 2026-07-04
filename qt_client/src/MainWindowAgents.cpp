@@ -15,11 +15,13 @@ using namespace forkmesh::ui;
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    // "Claude Code" runs the real `claude` CLI; the two API-key providers use the
-    // bundled script / Codex. Legacy "claude" sessions map to Claude API;
-    // everything else (incl. legacy "codex") to OpenAI API.
+    // "Claude Code" runs the real `claude` CLI; "Codex" runs the local `codex`
+    // CLI; legacy "claude" sessions map to Claude API and legacy "openai"
+    // sessions keep their old OpenAI API label.
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
+    if (agentIsCodexProvider(provider))
+        return QStringLiteral("Codex");
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
@@ -1580,6 +1582,7 @@ void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
     const QString provider =
         (providerOverride == QLatin1String("claude-code")
          || providerOverride == QLatin1String("claude-api")
+         || agentIsCodexProvider(providerOverride)
          || providerOverride == QLatin1String("openai"))
             ? providerOverride
             : defaultAgentProvider();
@@ -3513,9 +3516,9 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
     } else {
-        // OpenAI API: the Codex CLI driven with an isolated home so it
+        // Codex/OpenAI: the Codex CLI driven with an isolated home so it
         // authenticates with the OPENAI/CODEX API key rather than a login. Legacy
-        // "codex" sessions resolve here too.
+        // "openai" sessions resolve here too.
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();
@@ -7204,4 +7207,3 @@ void MainWindow::updateAgentActionState()
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
 }
-

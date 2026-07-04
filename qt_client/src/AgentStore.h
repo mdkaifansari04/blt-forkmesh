@@ -24,7 +24,7 @@ struct AgentSession {
     // to re-read their task from, so the free-form prompt is persisted here and
     // replayed verbatim when the session is resumed after an app restart.
     QString prompt;
-    QString provider; // openai | claude-api (legacy: codex, claude-code)
+    QString provider; // codex | openai | claude-api | claude-code
     // Preferred model for this session. Empty falls back to the provider's
     // default (the `claude` CLI's own default for Claude Code). For Claude Code
     // this is a CLI alias: opus | sonnet | haiku. Applied on the next launch or

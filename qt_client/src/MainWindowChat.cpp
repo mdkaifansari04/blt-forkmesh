@@ -391,6 +391,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         "When you add the issue, immediately assign a coding agent to it.");
     m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
+    m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
@@ -403,6 +404,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
+    m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // Claude model chooser (adhoc #261): live list of models from the provider.
     // Populated by refreshClaudeModelCombo; choice persisted and fed to
     // startClaudeCodeTranscript.
@@ -545,7 +547,7 @@ QWidget *MainWindow::buildNetworkLogDock()
         m_quickAddAgentProvider->setEnabled(agentRuns);
         m_quickAddCreatePr->setEnabled(agentRuns);
         // The model chooser only applies to the Claude Code CLI, so hide it for
-        // the API providers and grey it out when no agent will run (adhoc #261).
+        // the other providers and grey it out when no agent will run (adhoc #261).
         const bool claudeCode = m_quickAddAgentProvider->currentData().toString() ==
                                 QLatin1String("claude-code");
         m_quickAddClaudeModel->setVisible(claudeCode);
