@@ -3621,6 +3621,12 @@ void MainWindow::continueSelectedAgentSession()
     session->status = AgentStatus::Queued;
     session->lastError.clear();
     session->finishedAtMs = 0;
+    // The branch may already carry a "merged" badge from a prior run; continuing
+    // it reuses that same branch for more work, so it's in progress again, not
+    // a done-and-merged session — clear the flag so the list shows it queued/
+    // running instead of stuck on the stale merged badge.
+    session->merged = false;
+    session->mergedAtMs = 0;
     m_agentStore->saveSession(*session);
     m_agentStore->appendLog(
         *session,
@@ -5384,7 +5390,11 @@ QString MainWindow::lastClaudeSessionId(int sessionId) const
 // into a live one. Whatever terminal state the previous turn left behind
 // (Waiting, Failed from an error result, Success), the list must show it
 // Running now (adhoc #33). Mirrors continueSelectedAgentSession's reset: the
-// stale error/finish stamps belong to the previous run.
+// stale error/finish stamps belong to the previous run. A session whose branch
+// was already merged shows the purple "merged" badge instead of status/icon
+// (see applyAgentStatusCell) — but reusing that same branch for another turn
+// means it's no longer just a merged, done session, so clear the flag and let
+// the running spinner show again.
 void MainWindow::markAgentSessionRunning(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
@@ -5393,6 +5403,8 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     s->status = AgentStatus::Running;
     s->lastError.clear();
     s->finishedAtMs = 0;
+    s->merged = false;
+    s->mergedAtMs = 0;
     if (s->startedAtMs <= 0)
         s->startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (m_agentStore && !isExternalSession(sessionId))
