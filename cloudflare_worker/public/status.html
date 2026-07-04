@@ -296,7 +296,7 @@
                 const ago = fmtAgo(current.mainnodeLastSeenTs, now);
                 mainnodeDetail.textContent = ago
                   ? "No heartbeat since " + ago + " (host_presence stale)"
-                  : "No heartbeat ever recorded for mainnode/forkmesh";
+                  : "No heartbeat ever recorded for the self-hosted forkmesh repo";
               } else {
                 mainnodeDetail.textContent = "";
               }
@@ -335,7 +335,7 @@
                 label: "Mainnode",
                 detail: "host_presence has " +
                   (ago ? "no heartbeat in " + ago : "never seen a heartbeat") +
-                  " for repo mainnode/forkmesh (marked stale after " +
+                  " for the self-hosted forkmesh repo (marked stale after " +
                   Math.round((current.mainnodeStaleMs || 600000) / 60000) +
                   "m with no check-in).",
               });
