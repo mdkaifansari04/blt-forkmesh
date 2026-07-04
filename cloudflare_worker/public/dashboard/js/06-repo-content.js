@@ -927,6 +927,19 @@
   // defaults to promptable rather than silently hiding the input.
   const AGENT_TERMINAL_STATUSES = new Set(["success", "failed", "stopped", "cleared"]);
 
+  // Mirrors the desktop app's known model aliases (agentModelLabel in
+  // MainWindowInternal.h) so a web-picked model renders the same short label
+  // once the agent session shows up in the Agents tab. Empty value leaves the
+  // provider's own default in place.
+  const AGENT_MODEL_OPTIONS = [
+    { value: "", label: "Provider default" },
+    { value: "auto", label: "Auto" },
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+    { value: "haiku", label: "Haiku" },
+    { value: "fable", label: "Fable" },
+  ];
+
   function repoAgentsCanPrompt(status) {
     return !AGENT_TERMINAL_STATUSES.has(String(status || "").toLowerCase());
   }
@@ -1010,22 +1023,36 @@
         stopRepoAgentsAutoRefresh();
         return;
       }
-      loadRepoAgents(repo);
+      loadRepoAgents(repo, { silent: true });
     }, 10000);
   }
 
-  async function loadRepoAgents(repo) {
+  // silent=true is used by the auto-refresh poll: it re-fetches and re-renders
+  // the list in place without ever wiping it back to a "Loading..." placeholder
+  // first — doing that unconditionally every 10s was the source of the Agents
+  // tab's constant flicker, since the whole panel blanked out and popped back
+  // in on every poll even when nothing had changed.
+  async function loadRepoAgents(repo, { silent = false } = {}) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
+    if (!silent) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
     try {
       const agents = await requestRepoAgentsList(repo);
+      const unchanged = silent && JSON.stringify(agents) === JSON.stringify(state.agentsView.agents);
       state.agentsView.agents = agents;
-      renderRepoAgentsList(agents);
+      // Skip the re-render entirely when a background poll comes back
+      // identical to what's already on screen — rebuilding the same DOM every
+      // 10s still repaints (and can drop focus/caret out of an open prompt
+      // input) even though nothing actually changed.
+      if (!unchanged) renderRepoAgentsList(agents);
       startRepoAgentsAutoRefresh(repo);
     } catch (error) {
       const code = String(error?.message || "");
       stopRepoAgentsAutoRefresh();
+      // A background poll failing shouldn't blow away an already-rendered
+      // list with an error message — just stop polling quietly and leave the
+      // last good render on screen.
+      if (silent) return;
       container.innerHTML = `<div class="px-4 py-3 text-sm text-destructive">${
         code === "not_authorized" ? "You don't have permission to view agents for this repository."
           : "Could not load agent sessions. Please try again."}</div>`;
