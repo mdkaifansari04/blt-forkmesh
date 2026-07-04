@@ -5,7 +5,7 @@ title: Fix the layout of the web so that it looks better on mobile and everythin
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 61
 progress: 0
 assignees: []
 createdAt: 1782960503
