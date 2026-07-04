@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 367
 title: [code + live-ops] Exercise the bounty payout end-to-end on mainnet
-status: open
+status: closed
 labels: [security, infra]
 milestone: Phase 2
 priority: 50
