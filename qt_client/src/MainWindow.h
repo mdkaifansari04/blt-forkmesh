@@ -1063,9 +1063,16 @@ private:
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
     void fundBountiesForMergedPull(const PullRequest &pr);
+    // Issue #347: when the per-PR bounty setting is on, reward every merged pull
+    // request's author with the configured fixed bounty — either by showing a
+    // funding QR (perPr mode) or auto-paying from the inbuilt wallet (wallet
+    // mode). Independent of whether the PR closes a bountied issue.
+    void autoBountyForMergedPull(const PullRequest &pr);
     // Poll a bounty escrow after merge; once funded the worker splits it to the
-    // author + treasury, and this records the paid state on the issue.
-    void pollBountyPayout(const RepositoryRecord &repo, int number, double amount);
+    // author + treasury, and this records the paid state on the issue. kind ""
+    // is an issue bounty; "pr" is a per-pull-request bounty (issue #347).
+    void pollBountyPayout(const RepositoryRecord &repo, int number, double amount,
+                          const QString &kind = QString());
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
     // Pull requests linked to an issue: PRs whose references (closes/fixes/issue
     // #N, agent-created, or an explicit "Linked issue #N" note) point at this
@@ -2259,7 +2266,11 @@ private:
     // treasury; the dialog records the paid state on the issue.
     void showBountyQrDialog(const RepositoryRecord &repo, int number,
                             const QString &uri, const QString &address,
-                            double amountUsd, const QString &amountSol);
+                            double amountUsd, const QString &amountSol,
+                            const QString &kind = QString());
+    // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
+    // deposit address, QR and live balance so the owner can pre-fund it.
+    void showBountyWalletDialog();
     void submitIssueCommentToInbox(const QString &body);
     // Mirror node path: file a signed "assignees" event to the source of truth's
     // inbox so the looper's claim on an issue reaches the owner and syncs back to
