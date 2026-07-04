@@ -5574,6 +5574,24 @@ async def _account_heartbeat(env, request):
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
+    # Issue #346: the node itself is the only thing that knows when its local
+    # Claude Code usage window refilled after running out, so it rides this
+    # already-signed heartbeat to ask for a notification (opt-in on the
+    # desktop side). Not part of the signed canonical string, same as solana/
+    # avatarPng above — worst case a stale replay re-flags a notification the
+    # recipient already has, not a forgeable action on someone else's account.
+    credits_kind = clean_string(data.get("creditsRefilled", ""), 10)
+    if credits_kind in ("5h", "weekly"):
+        window = "5-hour" if credits_kind == "5h" else "weekly"
+        await enqueue_notification(
+            env, name, "credits_refilled",
+            "Claude Code credits refilled",
+            body=("Your " + window + " usage window has reset — Claude Code "
+                  "credits are available again."),
+            source="credits_refilled",
+            dedupe="credits_refilled:" + credits_kind,
+        )
+
     # Keep the payout address current if the node sent a valid one.
     if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
         rec["solana"] = solana
