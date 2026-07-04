@@ -2614,10 +2614,11 @@ private:
     // git/cmake output, and phase headers so the user sees exactly what's running.
     QDialog *m_updateLogDialog = nullptr;
     QPlainTextEdit *m_updateLog = nullptr;
-    // Single-line live restart/update log pinned to the bottom of the window. Shows
-    // the newest log line while an update runs; click it to open the full window.
-    QPushButton *m_footerUpdateLog = nullptr;
-    QString m_footerUpdateLineRaw; // full text behind the elided footer line
+    // Scrollable live log pinned to the bottom of the window: shows as many recent
+    // lines as fit tall, with a scrollbar so earlier history can be scrolled back
+    // to. Streams every logSystem()/appendUpdateLog() line, including the
+    // session-start/session-end/rebuild markers.
+    QPlainTextEdit *m_footerUpdateLog = nullptr;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
