@@ -1889,14 +1889,10 @@ private:
     void positionActionStrip();  // grow each bar by its run's elapsed time
     void positionRepoPushButton(); // float "Sync" just above the Code tab
     void updateActionStrip();    // build/show/hide the bars for in-flight runs
-    // Spin the Agents tab label while any agent session is running.
+    // Keep the running-session spinner timer alive/dead for the Agents table
+    // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
+    // the table's own running-row glyph + elapsed-time cell still animate).
     void updateAgentsTabIndicator();
-    // Lazily build the spinner overlay and place it just above the Agents tab.
-    void ensureAgentSpinnerOverlay();
-    // Paint the floating strip with an opaque, theme-matched surface so the
-    // running-agent spinners read clearly instead of washing out through it.
-    void styleAgentSpinnerOverlay();
-    void positionAgentSpinnerOverlay();
     // Re-render commit check glyphs in whichever repo-detail tab is visible.
     void refreshCommitStatusGlyphs();
     void refreshRepoSecurity();
@@ -2889,13 +2885,6 @@ private:
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
-    QPushButton *m_repoAgentsTab = nullptr;
-    // Floating strip of slowly-spinning provider marks shown just above the
-    // Agents tab while agents are busy (up to 5 visible, scroll for more).
-    QWidget *m_agentSpinnerOverlay = nullptr;
-    QScrollArea *m_agentSpinnerScroll = nullptr;
-    QHBoxLayout *m_agentSpinnerRow = nullptr;
-    QList<int> m_agentSpinnerIds; // running session ids currently shown (skip rebuilds)
     QPushButton *m_repoActionsTab = nullptr;
     // Floating strip of thin bars above the Actions tab — one per in-flight run,
     // each labelled with the workflow name and growing to the right the longer
