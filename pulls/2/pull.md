@@ -4,7 +4,7 @@ number: 2
 title: feat(public): refresh landing page and brand typography
 base: kaif/public-routes-shared-chrome
 head: kaif/public-landing-refresh
-status: open
+status: merged
 ts: 1783173747642
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
