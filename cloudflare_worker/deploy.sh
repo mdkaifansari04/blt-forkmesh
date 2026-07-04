@@ -175,6 +175,18 @@ build_rev() {
     fi
 }
 
+# The human-readable release version, read from the desktop app's authoritative
+# source (qt_client/CMakeLists.txt: `project(ForkMesh VERSION x.y.z ...)`) so the
+# website header shows the SAME version as the app and picks up a new number
+# automatically whenever a release bumps that line and redeploys. Passed to the
+# Worker as the APP_VERSION var (echoed back by /api/version). Empty if it can't
+# be parsed, in which case the header simply omits the version chip.
+app_version() {
+    local cmake="../qt_client/CMakeLists.txt"
+    [ -f "$cmake" ] || return 0
+    sed -n 's/^project(ForkMesh VERSION \([0-9][0-9.]*\).*/\1/p' "$cmake" | head -n1
+}
+
 # Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
 # host application-firewall rule that singles out the curl binary (an OpenSnitch
 # "deny process.path /usr/bin/curl" answered on a popup) blackholes every curl
@@ -546,7 +558,8 @@ case "${1:-deploy}" in
         require_cloudflare_account
         require_cloudflare_auth
         BUILD_REV="$(build_rev)"
-        echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV)..."
+        APP_VERSION="$(app_version)"
+        echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
         # wrangler.toml defines [env.dev] alongside the top-level (production)
         # config, so wrangler warns "no target environment specified" unless we
         # pass --env explicitly. Every pywrangler call below that touches the
@@ -558,7 +571,7 @@ case "${1:-deploy}" in
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}"
+        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         # push_secrets
