@@ -283,15 +283,16 @@ def _compile_method(class_name, method_name, extra_globals):
 def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     # A downed source's host_presence row can lag reality for up to
     # HOST_PRESENCE_STALE_MS, so the rotation may still route a browse at a node
-    # whose host DO answers no_host (503) or times out (504). The router must
-    # then serve once more in place from an online mirror of the same logical
-    # repo — excluding the node that just failed — instead of surfacing the
-    # error while a live mirror sits unused.
+    # whose host DO answers no_host (503), times out (504), or answers but can't
+    # build the reply (502 — e.g. a freshly-added mirror whose clone is
+    # empty/still syncing). The router must then serve once more in place from
+    # an online mirror of the same logical repo — excluding the node that just
+    # failed — instead of surfacing the error while a live mirror sits unused.
     src = _route_source()
     browse = src.split("REPO_HOST_RE")[-1]
     assert "public_browse" in browse
-    assert "(0, 503, 504)" in browse  # rotated pick failed/errored -> named owner
-    assert "(503, 504)" in browse     # named owner failed -> remaining mirrors
+    assert "(0, 502, 503, 504)" in browse  # rotated pick failed/errored -> named owner
+    assert "(502, 503, 504)" in browse     # named owner failed -> remaining mirrors
     assert "exclude=owner" in browse
     assert "_forward_to_node" in browse
 
