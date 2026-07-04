@@ -641,10 +641,8 @@ void MainWindow::switchToWorktree(const QString &branch)
 // #123). Selecting the row fires currentCellChanged -> showBranchDiff.
 void MainWindow::switchToBranch(const QString &branch)
 {
-    if (m_repoDetailTabs && m_repoDetailTabs->button(m_branchesTabIndex))
-        m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
-    if (m_repoDetailStack && m_branchesTabIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
+    // The branches panel lives inside the Code overview now (no top-level tab).
+    showOverviewBranches();
     loadBranchesPanel();
     if (!m_branchesTable || branch.isEmpty())
         return;
@@ -1557,7 +1555,10 @@ QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 14, 16, 16);
+    // Flush horizontally: this panel now sits inside the Code overview body stack,
+    // whose column already supplies the page's left/right padding (like the
+    // commits panel), so it should line up with the file list above it.
+    layout->setContentsMargins(0, 4, 0, 0);
     layout->setSpacing(10);
 
     auto *headerRow = new QHBoxLayout;
