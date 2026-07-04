@@ -1172,6 +1172,23 @@ QWidget *MainWindow::buildAgentsTab()
 // footer quick-add's up-arrow ("send to the visible agent") button.
 void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
 {
+    // The composer's model dropdown is the user's live choice for what runs
+    // next; without this the session kept coasting on whatever model it
+    // happened to launch with, so switching the dropdown before following up
+    // on an idle/stopped agent silently did nothing. Only a restart (the
+    // no-live-process branch in sendPromptToAgentSession below) actually picks
+    // the new model up — a still-running process can't be retargeted mid-turn
+    // — but stashing it on the session now means the very next resume honors it.
+    if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+        session && session->provider == QLatin1String("claude-code") &&
+        m_quickAddClaudeModel) {
+        const QString chosen = m_quickAddClaudeModel->currentData().toString();
+        if (session->model != chosen) {
+            session->model = chosen;
+            if (m_agentStore)
+                m_agentStore->saveSession(*session);
+        }
+    }
     sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
 }
 
@@ -2222,25 +2239,18 @@ void MainWindow::reloadAgents()
 // corner, showing the total number of known agent sessions.
 void MainWindow::updateAgentsNavBadge()
 {
-    if (!m_agentsNavButton || !m_agentsNavBadge)
+    if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
     if (total > 0) {
-        const QString text =
-            total > 99 ? QStringLiteral("99+") : QString::number(total);
-        m_agentsNavBadge->setText(text);
-        const int w = qMax(15, m_agentsNavBadge->fontMetrics()
-                                   .horizontalAdvance(text) + 12);
-        m_agentsNavBadge->resize(w, 15);
-        m_agentsNavBadge->move(qMax(0, m_agentsNavButton->width() - w), 0);
-        m_agentsNavBadge->show();
-        m_agentsNavBadge->raise();
+        m_agentsNavButton->setText(
+            QStringLiteral("Agents (%1)").arg(formatCount(total)));
         m_agentsNavButton->setToolTip(
             QStringLiteral("Agents \xE2\x80\x94 %1 session%2")
                 .arg(total)
                 .arg(total == 1 ? QString() : QStringLiteral("s")));
     } else {
-        m_agentsNavBadge->hide();
+        m_agentsNavButton->setText(QStringLiteral("Agents"));
         m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     }
 }
@@ -4895,13 +4905,25 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             appendAgentRawLog(line + QStringLiteral("\n\n"));
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
+        // The CLI process is meant to stay alive across turns — a genuinely
+        // finished turn is what the `result` event handler above marks Success
+        // (or Failed on an error result). Landing here with the session still
+        // Running/Waiting means the process died without ever sending one (a
+        // crash, or an app-restart resume whose `--resume` id no longer lined
+        // up), not that the task completed. Stamping Success on that was
+        // reported as "an agent I restarted mid-task shows as done" — re-queue
+        // it instead so it stays active and gets another resume attempt,
+        // mirroring initAgents()'s restart recovery (issue #242) rather than
+        // abandoning it with a false result.
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                as->status = AgentStatus::Success;
-                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                as->status = AgentStatus::Queued;
+                as->lastError.clear();
                 m_agentStore->saveSession(*as);
                 scheduleAgentSessionsPush(); // adhoc #182
+                if (!m_agentQueue.contains(sid))
+                    m_agentQueue.append(sid);
             }
         }
         maybeCreatePullForStreamSession(sid);
@@ -4914,6 +4936,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
+        processAgentQueue(); // pick the re-queued session back up
     });
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()

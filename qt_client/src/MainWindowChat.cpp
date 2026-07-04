@@ -2712,13 +2712,6 @@ QWidget *MainWindow::buildBreadcrumb()
     setOcticon(m_agentsNavButton, "terminal", 16);
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
-    // Count badge, same look as the chat unread badge, pinned to its top-right
-    // corner. Shows the total number of known agent sessions.
-    m_agentsNavBadge = new QLabel(m_agentsNavButton);
-    m_agentsNavBadge->setObjectName("agentsNavBadge");
-    m_agentsNavBadge->setAlignment(Qt::AlignCenter);
-    m_agentsNavBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_agentsNavBadge->hide();
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new QPushButton(QStringLiteral("Chat"));
