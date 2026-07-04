@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 356
 title: Public status page with uptime history
-status: open
+status: closed
 labels: [feature, infra]
 milestone: MVP launch
 priority: 8

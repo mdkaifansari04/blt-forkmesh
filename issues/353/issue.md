@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 353
 title: Eliminate remaining GUI-thread git calls (zero StallWatchdog events in normal use)
-status: open
+status: closed
 labels: [enhancement]
 milestone: MVP launch
 priority: 4

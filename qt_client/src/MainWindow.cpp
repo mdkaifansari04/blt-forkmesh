@@ -361,6 +361,11 @@ void MainWindow::runDeferredStartup()
             m_stack->setCurrentIndex(0); // first run / no saved name: show setup
         }
     }
+
+    // Opt-in only (off by default): send the previous session's crash + stall
+    // records to the mainnode's triage queue. No-op unless the user enabled it in
+    // Settings; fire-and-forget so it never delays the first interactive frame.
+    maybeUploadDiagnostics();
 }
 
 void MainWindow::applyTheme()
