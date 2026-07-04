@@ -6519,8 +6519,8 @@ void MainWindow::runHostInstall()
         appendHostInstallLog(chunk);
         // The installer prints "FORKMESH LINK CODE: NNNNNN" on the fresh
         // machine (adhoc #53). Watch the stream for it — through a rolling
-        // tail so a code split across read chunks still matches — and offer
-        // to link the new node to this account. Once per run.
+        // tail so a code split across read chunks still matches — and link the
+        // new node to this account. Once per run.
         if (!m_hostLinkPrompted) {
             m_hostInstallLinkTail = (m_hostInstallLinkTail + chunk).right(512);
             static const QRegularExpression linkRe(
@@ -6528,7 +6528,21 @@ void MainWindow::runHostInstall()
             const QRegularExpressionMatch m = linkRe.match(m_hostInstallLinkTail);
             if (m.hasMatch()) {
                 m_hostLinkPrompted = true;
-                promptHostLinkCode(m.captured(1));
+                const QString code = m.captured(1);
+                // This app provisioned the headless node, so its account is
+                // exactly the one the new node should belong to — link it
+                // automatically (adhoc #226) instead of making the user confirm
+                // a code they can't even see on the remote screen. Fall back to
+                // the manual prompt only when this app has no usable account to
+                // attach it to.
+                if (!accountOwner().isEmpty() && m_profileIdentity.isValid()) {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\nLinking node to your account (%1)\xE2\x80\xA6\n")
+                        .arg(accountOwner()));
+                    submitHostLinkCode(code);
+                } else {
+                    promptHostLinkCode(code);
+                }
             }
         }
     });
