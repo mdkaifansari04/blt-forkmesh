@@ -7,10 +7,14 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+MIRRORS = ENTRY.parent / "mirrors.py"
+# Mirror grouping / clone-selection helpers were extracted from entry.py into
+# mirrors.py; parse both sources so the AST loaders below still find them.
+_WORKER_SRC = ENTRY.read_text(encoding="utf-8") + "\n" + MIRRORS.read_text(encoding="utf-8")
 
 
 def _load(*names, extra_globals=None):
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse(_WORKER_SRC, filename=str(ENTRY))
     selected = [
         node
         for node in tree.body
