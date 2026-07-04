@@ -58,6 +58,8 @@ ForkMesh is well past "prototype." Here's what you can do right now:
 - Run **multiple agents in parallel**, resume past sessions, and watch live
   activity indicators as they work.
 - Kick off agents from your editor with the **IDE extension**.
+- **No desktop client required:** repo owners can create agent sessions, send
+  prompts, and assign issues to an agent straight from the website.
 
 **Funding**
 - **Solana bounties:** fund any issue with one click. ForkMesh watches the
@@ -161,8 +163,20 @@ forkmesh/
   ide_extension/      Editor integration for ForkMesh agents
   issues/             In-repo, signed issue tracker (the live roadmap)
   releases/           Release metadata and artifacts
+  tools/              Standalone helpers (MCP server, PR review)
   CHANGELOG.md        Human-readable, release-by-release history
 ```
+
+### MCP server
+
+`tools/forkmesh_mcp_server.py` exposes the mesh to any MCP-capable agent
+(Claude Code, Codex, …) as tools over the stdio transport: `list_repos`,
+`read_file`, `search_issues`, `create_issue`, `comment_on_issue`,
+`open_pr_from_branch`, and `get_pr_diff`. The write tools sign with the node
+identity key and produce the exact same native `issues/` and `pulls/` entries
+the desktop node writes — no privileged side door. The `.mcp.json` at the repo
+root registers it so Claude Code discovers it automatically. Run
+`python3 tools/test_forkmesh_mcp_server.py` to exercise it end-to-end.
 
 ---
 
