@@ -4091,8 +4091,19 @@ void MainWindow::applyNavDetailTab(const NavPlace &place)
         return;
     if (m_repoDetailStack->currentIndex() == place.detailTab)
         return; // already on this tab
-    if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab))
+    if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab)) {
         b->click(); // switches the tab and loads its data, like a real click
+        return;
+    }
+    // Agents (id 3) lost its top-bar button when it moved to the footer status
+    // strip (adhoc #178), so there's no button here to click and this used to
+    // silently no-op — Back/Forward would get stuck whenever the recorded spot
+    // was the Agents tab. Drive the stack directly instead, refreshing its data
+    // the same way switchToAgentsTab does.
+    if (place.detailTab == 3) {
+        m_repoDetailStack->setCurrentIndex(place.detailTab);
+        reloadAgents();
+    }
 }
 
 void MainWindow::navigateBack()
