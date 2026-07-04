@@ -88,8 +88,9 @@ QLineEdit:disabled, QSpinBox:disabled { color: #6e7681; border-color: #21262d; }
 QSpinBox::up-button, QSpinBox::down-button { width: 0; }
 QComboBox QAbstractItemView {
     background-color: #161b22; border: 1px solid #30363d;
-    selection-background-color: #1f6feb; color: #e6edf3;
+    selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
+QComboBox QAbstractItemView::item:selected { color: #0d1117; }
 QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
     border: none;
     background-color: transparent;
@@ -1151,7 +1152,8 @@ QAbstractItemView::item { border: 0px; }
 #fileTree::item:selected,
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #238636; color: #ffffff; }
-QComboBox QAbstractItemView { selection-background-color: #238636; }
+QComboBox QAbstractItemView { selection-background-color: #238636; selection-color: #0d1117; }
+QComboBox QAbstractItemView::item:selected { color: #0d1117; }
 
 /* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
    agent raw-output log. The rich transcript styles its own copy per scheme. */
@@ -1224,8 +1226,9 @@ QLineEdit:disabled, QSpinBox:disabled { color: #8c959f; border-color: #eaeef2; }
 QSpinBox::up-button, QSpinBox::down-button { width: 0; }
 QComboBox QAbstractItemView {
     background-color: #ffffff; border: 1px solid #d0d7de;
-    selection-background-color: #0969da; selection-color: #ffffff; color: #1f2328;
+    selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
+QComboBox QAbstractItemView::item:selected { color: #1f2328; }
 QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
     border: none;
     background-color: transparent;
@@ -2256,7 +2259,8 @@ QAbstractItemView::item { border: 0px; }
 #fileTree::item:selected,
 #commitsList::item:selected,
 #sidebar QListWidget::item:selected { background-color: #1f883d; color: #ffffff; }
-QComboBox QAbstractItemView { selection-background-color: #1f883d; }
+QComboBox QAbstractItemView { selection-background-color: #1f883d; selection-color: #1f2328; }
+QComboBox QAbstractItemView::item:selected { color: #1f2328; }
 
 /* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
    agent raw-output log. The rich transcript styles its own copy per scheme. */

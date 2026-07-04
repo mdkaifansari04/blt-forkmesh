@@ -889,6 +889,7 @@ int main(int argc, char *argv[])
     // first-class provider in the same picker, and the quick-add popup should show
     // every provider at once instead of opening as a tiny scrolled list.
     {
+        QSettings().remove(QStringLiteral("agents/quickAddProvider"));
         QSettings().setValue(QStringLiteral("agents/defaultProvider"),
                              QStringLiteral("claude-code"));
         MainWindow seeded;
@@ -917,6 +918,41 @@ int main(int argc, char *argv[])
                   quickProvider->view()->verticalScrollBarPolicy() ==
                       Qt::ScrollBarAlwaysOff,
               QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
+        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
+              QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+
+        seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
+        QApplication::processEvents();
+        const QStringList codexModels = seeded.testQuickAddModelLabels();
+        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable() &&
+                  codexModels ==
+                      QStringList({QStringLiteral("GPT-5.5"),
+                                   QStringLiteral("GPT-5.4"),
+                                   QStringLiteral("GPT-5.4-Mini")}),
+              QString("Codex prompt picker shows only ChatGPT-supported Codex models (%1)")
+                  .arg(codexModels.join(QStringLiteral(", "))));
+        check(std::none_of(codexModels.cbegin(), codexModels.cend(),
+                           [](const QString &label) {
+                               return label.startsWith(QStringLiteral("Claude "));
+                           }),
+              QStringLiteral("Codex prompt picker does not show Claude models"));
+        check(std::none_of(codexModels.cbegin(), codexModels.cend(),
+                           [](const QString &label) {
+                               return label.endsWith(QStringLiteral(" Codex"));
+                           }),
+              QStringLiteral("Codex prompt picker does not show ChatGPT-unsupported Codex API models"));
+        MainWindow rememberedPromptProvider;
+        rememberedPromptProvider.show();
+        QApplication::processEvents();
+        check(rememberedPromptProvider.testQuickAddAgentProvider() ==
+                  QStringLiteral("codex"),
+              QString("prompt area remembers the last selected agent provider (%1)")
+                  .arg(rememberedPromptProvider.testQuickAddAgentProvider()));
+        stopChildProcesses(rememberedPromptProvider);
+        seeded.testSetQuickAddAgentProvider(QStringLiteral("claude-api"));
+        QApplication::processEvents();
+        check(!seeded.testQuickAddModelVisible(),
+              QStringLiteral("prompt-row model picker stays hidden for API-only providers"));
 
         seeded.testSetDefaultAgentProvider(QStringLiteral("claude-api"));
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-api") &&

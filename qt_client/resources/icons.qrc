@@ -67,6 +67,7 @@
         <file alias="workflow.svg">icons/octicons/workflow.svg</file>
         <file alias="x.svg">icons/octicons/x.svg</file>
         <file alias="reddit.svg">icons/octicons/reddit.svg</file>
+        <file alias="mastodon.svg">icons/octicons/mastodon.svg</file>
         <file alias="twitter-bird.svg">icons/octicons/twitter-bird.svg</file>
     </qresource>
     <qresource prefix="/app">

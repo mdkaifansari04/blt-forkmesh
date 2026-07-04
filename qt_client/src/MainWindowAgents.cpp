@@ -1902,6 +1902,8 @@ void MainWindow::markAgentLimitWindow(const QString &provider)
     refreshAnchor(k5h, kAgentLimit5hMs);
     refreshAnchor(kWeek, kAgentLimitWeekMs);
     refreshAgentLimitLabel();
+    if (agentIsCodexProvider(provider))
+        refreshCodexUsageRemaining();
 }
 
 void MainWindow::refreshAgentLimitLabel()
@@ -1932,6 +1934,34 @@ void MainWindow::refreshAgentLimitLabel()
                  providerLine(QStringLiteral("Claude Code"),
                               kClaudeLimit5hStartSetting,
                               kClaudeLimitWeekStartSetting)));
+}
+
+void MainWindow::refreshCodexUsageRemaining()
+{
+    if (!m_navCodexUsage)
+        return;
+    auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    auto update = [&](bool weekly, const QString &key, qint64 windowMs) {
+        const qint64 start = settings.value(key).toLongLong();
+        if (start <= 0) {
+            chart->setRemaining(weekly, 100, QStringLiteral("ready"));
+            return;
+        }
+        const qint64 remaining = windowMs - (now - start);
+        if (remaining <= 0) {
+            chart->setRemaining(weekly, 100, QStringLiteral("ready"));
+            return;
+        }
+        const int pct =
+            qBound(0, qRound(remaining * 100.0 / double(windowMs)), 100);
+        chart->setRemaining(
+            weekly, pct,
+            QStringLiteral("resets in %1").arg(humanizeRemaining(remaining)));
+    };
+    update(false, kCodexLimit5hStartSetting, kAgentLimit5hMs);
+    update(true, kCodexLimitWeekStartSetting, kAgentLimitWeekMs);
 }
 
 void MainWindow::updateAgentTotalSpend()
@@ -3515,10 +3545,17 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    } else if (agentIsCodexProvider(provider)) {
+        // Codex: run the installed CLI against the user's normal Codex login, just
+        // like Claude Code. This keeps a ChatGPT/Codex plan upgrade from being
+        // bypassed by an old OpenAI API key with exhausted quota.
+        config.command = codexCommandSetting();
+        config.model = codexChatGptModelId(
+            QSettings().value(kCodexModelSetting).toString().trimmed());
     } else {
-        // Codex/OpenAI: the Codex CLI driven with an isolated home so it
-        // authenticates with the OPENAI/CODEX API key rather than a login. Legacy
-        // "openai" sessions resolve here too.
+        // OpenAI API: drive the Codex CLI with the saved OpenAI key in an isolated
+        // home so it cannot accidentally use the user's logged-in Codex account.
+        // Legacy "openai" sessions resolve here.
         config.command = codexCommandSetting();
         config.apiKeyName = QStringLiteral("CODEX_API_KEY");
         config.apiKey = QSettings().value(kCodexApiKeySetting).toString().trimmed();

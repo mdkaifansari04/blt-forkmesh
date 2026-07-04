@@ -3491,12 +3491,9 @@ void MainWindow::quickAddIssue()
             m_quickAddAgentProvider
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("claude-code");
-        // The quick-add model picker only shows/applies for Claude Code (adhoc
-        // #99 hides it for the other providers), so only feed it through then —
-        // otherwise the session's model stays empty like before.
-        const QString model = (provider == QLatin1String("claude-code") &&
-                               m_quickAddClaudeModel)
-                                  ? m_quickAddClaudeModel->currentData().toString()
+        const QString model = (provider == QLatin1String("claude-code") ||
+                               agentIsCodexProvider(provider))
+                                  ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
         // Hand any attached images to the agent the same way the new-agent
@@ -3575,9 +3572,9 @@ void MainWindow::quickAddIssue()
             m_quickAddAgentProvider
                 ? m_quickAddAgentProvider->currentData().toString()
                 : QStringLiteral("codex");
-        const QString model = (provider == QLatin1String("claude-code") &&
-                               m_quickAddClaudeModel)
-                                  ? m_quickAddClaudeModel->currentData().toString()
+        const QString model = (provider == QLatin1String("claude-code") ||
+                               agentIsCodexProvider(provider))
+                                  ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool oldCreatePr =
             m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();

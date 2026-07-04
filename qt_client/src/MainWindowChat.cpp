@@ -400,14 +400,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // tracked agent session, working until ForkMesh can open a PR from its diff.
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
                                      QStringLiteral("claude-code"));
-    selectDefaultAgentProvider(m_quickAddAgentProvider);
+    selectQuickAddAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Claude model chooser (adhoc #261): live list of models from the provider.
-    // Populated by refreshClaudeModelCombo; choice persisted and fed to
-    // startClaudeCodeTranscript.
+    // Model chooser (adhoc #261/#349): Claude Code uses the live Claude model
+    // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
     m_quickAddClaudeModel->setMinimumWidth(170);
@@ -415,17 +414,53 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
-    populateClaudeModelCombo(m_quickAddClaudeModel);
-    m_quickAddClaudeModel->setToolTip(
-        "Claude model the Claude Code agent runs as (passed to the CLI as --model).");
+    auto refreshQuickAddModelPicker = [this]() {
+        if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
+            return;
+        const QString provider = m_quickAddAgentProvider->currentData().toString();
+        const QSignalBlocker block(m_quickAddClaudeModel);
+        if (provider == QLatin1String("claude-code")) {
+            populateClaudeModelCombo(m_quickAddClaudeModel);
+            m_quickAddClaudeModel->setProperty("claudeModelCombo", true);
+            m_quickAddClaudeModel->setToolTip(
+                "Claude model the Claude Code agent runs as (passed to the CLI as --model).");
+            selectModelComboValue(
+                m_quickAddClaudeModel,
+                QSettings().value(kClaudeCodeModelSetting).toString().trimmed());
+            refreshClaudeModelCombo();
+        } else if (agentIsCodexProvider(provider)) {
+            populateCodexModelCombo(m_quickAddClaudeModel);
+            m_quickAddClaudeModel->setProperty("claudeModelCombo", false);
+            m_quickAddClaudeModel->setToolTip(
+                "Codex model passed to the Codex CLI.");
+            selectModelComboValue(
+                m_quickAddClaudeModel,
+                codexChatGptModelId(
+                    QSettings().value(kCodexModelSetting).toString().trimmed()));
+        } else {
+            m_quickAddClaudeModel->setProperty("claudeModelCombo", false);
+        }
+    };
     m_quickAddClaudeModel->view()->installEventFilter(this);
-    m_quickAddClaudeModel->setProperty("claudeModelCombo", true);
+    refreshQuickAddModelPicker();
+    auto persistQuickAddModel = [this]() {
+        if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
+            return;
+        const QString provider = m_quickAddAgentProvider->currentData().toString();
+        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
+        if (provider == QLatin1String("claude-code")) {
+            QSettings().setValue(kClaudeCodeModelSetting, model);
+        } else if (agentIsCodexProvider(provider)) {
+            const QString safeModel = codexChatGptModelId(model);
+            QSettings().setValue(kCodexModelSetting, safeModel);
+            if (m_codexModelEdit)
+                m_codexModelEdit->setText(safeModel);
+        }
+    };
     connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                QSettings().setValue(kClaudeCodeModelSetting,
-                                     m_quickAddClaudeModel->currentData().toString());
-            });
-    refreshClaudeModelCombo();
+            this, [persistQuickAddModel](int) { persistQuickAddModel(); });
+    connect(m_quickAddClaudeModel, &QComboBox::currentTextChanged, this,
+            [persistQuickAddModel](const QString &) { persistQuickAddModel(); });
     // Mode selector (issue #348): a dropdown in the same style as the
     // provider/model pickers, mirroring the Claude Code CLI's own permission-mode
     // picker (Ask before edits / Edit automatically / Plan mode / Auto mode).
@@ -546,11 +581,14 @@ QWidget *MainWindow::buildNetworkLogDock()
         const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
         m_quickAddAgentProvider->setEnabled(agentRuns);
         m_quickAddCreatePr->setEnabled(agentRuns);
-        // The model chooser only applies to the Claude Code CLI, so hide it for
-        // the other providers and grey it out when no agent will run (adhoc #261).
-        const bool claudeCode = m_quickAddAgentProvider->currentData().toString() ==
-                                QLatin1String("claude-code");
-        m_quickAddClaudeModel->setVisible(claudeCode);
+        // The prompt-row model chooser applies to the two CLI-backed providers:
+        // Claude Code gets its Claude model list, Codex gets its OpenAI model
+        // list. The API-only providers keep using their saved defaults here so
+        // the row stays aligned and uncluttered.
+        const QString provider = m_quickAddAgentProvider->currentData().toString();
+        const bool claudeCode = provider == QLatin1String("claude-code");
+        const bool codex = agentIsCodexProvider(provider);
+        m_quickAddClaudeModel->setVisible(claudeCode || codex);
         m_quickAddClaudeModel->setEnabled(agentRuns);
         // The permission-mode chooser only means anything for the Claude Code
         // CLI too (issue #348) — the API providers have no such concept.
@@ -562,7 +600,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddCreateIssue, &QCheckBox::toggled, this,
             [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [syncQuickAddAgentControls](int) { syncQuickAddAgentControls(); });
+            this, [this, syncQuickAddAgentControls, refreshQuickAddModelPicker](int) {
+                QSettings().setValue(
+                    kQuickAddAgentProviderSetting,
+                    m_quickAddAgentProvider->currentData().toString());
+                refreshQuickAddModelPicker();
+                syncQuickAddAgentControls();
+            });
     syncQuickAddAgentControls();
 
     // Slash-actions button (adhoc #116): a small bordered "/" box, like the
@@ -2515,6 +2559,15 @@ QWidget *MainWindow::buildBreadcrumb()
         restoreReset(false, kClaudeUsage5hResetSetting);
         restoreReset(true, kClaudeUsageWeekResetSetting);
     }
+    // Codex rides beside Claude Code using ForkMesh's locally tracked rolling
+    // usage windows. It shows remaining time in those windows because Codex does
+    // not currently feed the same live utilization events Claude Code does.
+    auto *codexUsage = new TokenUsageMiniChart(
+        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true);
+    m_navCodexUsage = codexUsage;
+    codexUsage->onHover = [this] { refreshCodexUsageRemaining(); };
+    refreshCodexUsageRemaining();
+    QTimer::singleShot(0, this, &MainWindow::refreshClaudeCodeUsage);
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
@@ -2887,11 +2940,22 @@ QWidget *MainWindow::buildBreadcrumb()
         QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
     });
 
+    auto *mastodonButton = new QPushButton;
+    mastodonButton->setObjectName("socialIconButton");
+    mastodonButton->setCursor(Qt::PointingHandCursor);
+    mastodonButton->setToolTip("ForkMesh on Mastodon");
+    mastodonButton->setFixedSize(28, 22);
+    setOcticon(mastodonButton, "mastodon", 14);
+    connect(mastodonButton, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl("https://mastodon.social/@forkmesh"));
+    });
+
     auto *socialColumn = new QVBoxLayout;
     socialColumn->setContentsMargins(0, 0, 0, 0);
     socialColumn->setSpacing(3);
     socialColumn->addWidget(redditButton);
     socialColumn->addWidget(twitterButton);
+    socialColumn->addWidget(mastodonButton);
 
     // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
     // of this process plus a count of detected UI stalls. Click to see the stall
@@ -2979,8 +3043,10 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
-    // The tiny token-usage chart tucks between the earnings and the avatar.
+    // The tiny provider usage charts tuck between the earnings and the avatar.
     mainRow->addSpacing(6);
+    mainRow->addWidget(m_navCodexUsage);
+    mainRow->addSpacing(2);
     mainRow->addWidget(m_navTokenUsage);
     mainRow->addSpacing(4);
     mainRow->addWidget(m_avatarNavButton);
