@@ -302,6 +302,12 @@ QWidget *MainWindow::buildChatPage()
     return page;
 }
 
+// How many lines of prior history to seed the always-on footer log with on
+// startup. Bounded well below kNetworkLogLimit so the corner widget (unlike the
+// full Log tab, which defers its own render until first visit) stays cheap to
+// populate on every launch while still giving a real scrollback to search.
+constexpr int kFooterLogSeedLines = 300;
+
 QWidget *MainWindow::buildNetworkLogDock()
 {
     // Full-width, grey-bordered quick-add bar: the issue input expands on the
@@ -725,31 +731,40 @@ QWidget *MainWindow::buildNetworkLogDock()
     cardLayout->addWidget(m_agentStatusRow);
     cardLayout->addWidget(promptWrapper);
 
-    // A thin single-line strip below the quick-add bar: the always-on live log.
-    // It streams the newest network/update line so the latest activity is visible
-    // at the bottom of the app at all times; clicking it opens the full log window.
-    m_footerUpdateLog = new QPushButton;
+    // A scrollable strip below the quick-add bar: the always-on live log. It
+    // fills as much height as the dock row allows (matching the prompt card
+    // beside it) and streams every network/update line, oldest at top, newest
+    // at bottom — the scrollbar lets you scroll back through history to search
+    // it instead of only ever seeing the latest line (adhoc #211).
+    m_footerUpdateLog = new QPlainTextEdit;
     m_footerUpdateLog->setObjectName("footerUpdateLog");
-    m_footerUpdateLog->setFlat(true);
-    m_footerUpdateLog->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->setReadOnly(true);
+    m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
+    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_footerUpdateLog->setToolTip("Live log. Click to open the full log.");
+    m_footerUpdateLog->setToolTip(
+        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
+    // Bound the live buffer the same way the seed below is bounded, so it can't
+    // grow without limit over a long-running session.
+    m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
     styleFooterUpdateLog();
-    // Seed the always-on strip with the most recent live-log line (or a ready
-    // placeholder) so it's populated on first paint; logSystem() then streams
-    // every new event onto it. Keep the full dated line so the timestamp shows.
+    // Seed the always-on strip with recent history (or a ready placeholder) so
+    // it's already scrollable on first paint; logSystem() then streams every new
+    // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
-        setFooterUpdateLine(m_networkLog.last());
+        const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
+        QStringList seed;
+        seed.reserve(m_networkLog.size() - from);
+        for (int i = from; i < m_networkLog.size(); ++i)
+            seed << m_networkLog.at(i);
+        m_footerUpdateLog->setPlainText(seed.join(QLatin1Char('\n')));
+        m_footerUpdateLog->verticalScrollBar()->setValue(
+            m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {
-        setFooterUpdateLine(QStringLiteral("ForkMesh ready"));
+        m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
     }
-    connect(m_footerUpdateLog, &QPushButton::clicked, this, [this] {
-        if (!m_updateLogDialog)
-            return;
-        m_updateLogDialog->show();
-        m_updateLogDialog->raise();
-        m_updateLogDialog->activateWindow();
-    });
 
     // Horizontal split: live-log strip on the left half, prompt card on the right.
     auto *dockRow = new QHBoxLayout(dock);
@@ -2597,7 +2612,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        dismissTopMessage();
+        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
     // A plain "x" to dismiss an error toast without copying it.
     m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
@@ -2606,7 +2621,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { dismissTopMessage(); });
+            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
@@ -2688,9 +2703,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Sits between Repo and Chat in the nav
-    // row. Not part of m_navGroup since there's no dedicated section to check.
+    // row. Checkable to show when the Agents tab is active (adhoc #201).
     m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
     m_agentsNavButton->setObjectName("topNavButton");
+    m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "terminal", 16);
@@ -2699,7 +2715,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // Count badge, same look as the chat unread badge, pinned to its top-right
     // corner. Shows the total number of known agent sessions.
     m_agentsNavBadge = new QLabel(m_agentsNavButton);
-    m_agentsNavBadge->setObjectName("chatUnreadBadge");
+    m_agentsNavBadge->setObjectName("agentsNavBadge");
     m_agentsNavBadge->setAlignment(Qt::AlignCenter);
     m_agentsNavBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_agentsNavBadge->hide();
@@ -4614,6 +4630,135 @@ void MainWindow::refreshRepoPinBanner()
     git->start("git", QStringList{"-C", mirrorPath, "for-each-ref",
                                   "--format=%(objectname) %(refname)",
                                   "refs/heads/", "refs/tags/"});
+}
+
+// Auto-heal the integrity pin across ALL of this node's source-of-truth repos,
+// not just the one whose detail is open (refreshRepoPinBanner) or reset by hand
+// (resetRepoPin). Only the node holding the working copy can re-sign the pin, so
+// when a source repo's served refs drift past its published pin — a direct git
+// op on the mirror, a sync that landed without a re-publish, a dropped publish —
+// every clone of it is rejected until the owner happens to open that repo and
+// click "Reset integrity pin". This closes that gap: while the source is online,
+// it keeps its own pins in step automatically. Security is unchanged — we only
+// re-attest OUR OWN authentic served refs (the same signing every publish does),
+// so mirrors are still validated against a pin the source signed; when the source
+// is offline this never runs, the pin freezes, and the relay's tamper gate keeps
+// protecting clones against a stale or forged mirror exactly as before.
+void MainWindow::reattestStalePins()
+{
+    if (!m_networkAccess || !hasActiveAccountSession())
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
+        return;
+
+    // The repos we are the source of truth for: a published, served mirror we own
+    // AND hold the working copy for. Same gate as refreshRepoPinBanner, applied to
+    // every repo rather than the open one. A pure mirror never attests — keeping
+    // its pin in step is its own source's job, and it lacks the owner key anyway.
+    struct SourceRepo {
+        int index;
+        QString cowner;
+        QString name;
+        QString mirrorPath;
+    };
+    QVector<SourceRepo> candidates;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.previewOnly || !repo.publishToNetwork ||
+            repo.mirrorPath.trimmed().isEmpty())
+            continue;
+        if (repo.localPath.trimmed().isEmpty() ||
+            !QDir(repo.localPath).exists(QStringLiteral(".git")))
+            continue;
+        if (catalogOwner(repo) != accountOwner())
+            continue;
+        candidates.append({i, catalogOwner(repo),
+                           repoSegment(repo.name, QStringLiteral("repository")),
+                           repo.mirrorPath});
+    }
+    if (candidates.isEmpty())
+        return;
+
+    // Hash each served ref set off the GUI thread (git for-each-ref shells out per
+    // repo — mirrorStateHash notes it must not run synchronously on the UI thread),
+    // then compare against the relay's published pins with a single catalog fetch
+    // and re-attest only the drifted ones.
+    runOffThread<QHash<int, QString>>(
+        [candidates] {
+            QHash<int, QString> hashes;
+            for (const SourceRepo &c : candidates) {
+                QByteArray out;
+                if (runGitCapture(c.mirrorPath,
+                                  {QStringLiteral("for-each-ref"),
+                                   QStringLiteral("--format=%(objectname) %(refname)"),
+                                   QStringLiteral("refs/heads/"),
+                                   QStringLiteral("refs/tags/")},
+                                  &out, nullptr))
+                    hashes.insert(c.index, hashForEachRefOutput(out));
+            }
+            return hashes;
+        },
+        [this, candidates](QHash<int, QString> hashes) {
+            QNetworkReply *reply =
+                m_networkAccess->get(QNetworkRequest(catalogListUrl()));
+            connect(reply, &QNetworkReply::finished, this,
+                    [this, reply, candidates, hashes] {
+                        reply->deleteLater();
+                        const QJsonArray repos =
+                            QJsonDocument::fromJson(reply->readAll())
+                                .object()
+                                .value(QStringLiteral("repositories"))
+                                .toArray();
+                        bool touchedOpen = false;
+                        for (const SourceRepo &c : candidates) {
+                            const QString localHash = hashes.value(c.index);
+                            if (localHash.isEmpty())
+                                continue; // for-each-ref failed; nothing to compare
+                            // The list order can shift between the async hops, so
+                            // confirm this index still points at the same repo.
+                            if (c.index < 0 || c.index >= m_repositories.size())
+                                continue;
+                            const RepositoryRecord &repo = m_repositories.at(c.index);
+                            if (repo.previewOnly ||
+                                catalogOwner(repo) != c.cowner ||
+                                repoSegment(repo.name,
+                                            QStringLiteral("repository")) != c.name)
+                                continue;
+                            QString pinned;
+                            bool found = false;
+                            for (const QJsonValue &v : repos) {
+                                const QJsonObject o = v.toObject();
+                                if (o.value(QStringLiteral("owner")).toString() ==
+                                        c.cowner &&
+                                    o.value(QStringLiteral("name")).toString() ==
+                                        c.name) {
+                                    pinned = o.value(QStringLiteral("stateHash"))
+                                                 .toString();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            // Only a non-empty pin that disagrees with our live refs
+                            // blocks clones; an absent pin fails open on the relay.
+                            if (!found || pinned.isEmpty() || pinned == localHash)
+                                continue;
+                            logSystem(
+                                QStringLiteral("Integrity pin: served refs of %1/%2 "
+                                               "drifted past the relay's pin; "
+                                               "re-attesting automatically.")
+                                    .arg(c.cowner, c.name));
+                            publishRepository(c.index, false);
+                            if (c.index == m_repoDetailIndex)
+                                touchedOpen = true;
+                        }
+                        // A re-attest of the open repo makes its warning toast stale;
+                        // re-check once the signed write has had a moment to land.
+                        if (touchedOpen)
+                            QTimer::singleShot(1500, this, [this] {
+                                refreshRepoPinBanner();
+                            });
+                    });
+        });
 }
 
 // Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error

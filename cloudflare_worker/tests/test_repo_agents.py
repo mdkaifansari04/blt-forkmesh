@@ -412,9 +412,10 @@ def test_prompt_validates_text_and_queue_cap():
 
 
 def test_worker_wires_up_all_three_agent_routes():
-    assert "REPO_AGENTS_RE = re.compile" in ENTRY_TEXT
-    assert "REPO_AGENTS_LIST_RE = re.compile" in ENTRY_TEXT
-    assert "REPO_AGENTS_PROMPT_RE = re.compile" in ENTRY_TEXT
+    urls_text = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
+    assert "REPO_AGENTS_RE = re.compile" in urls_text
+    assert "REPO_AGENTS_LIST_RE = re.compile" in urls_text
+    assert "REPO_AGENTS_PROMPT_RE = re.compile" in urls_text
     assert "async def agents_handler" in ENTRY_TEXT
     assert "async def agents_list_handler" in ENTRY_TEXT
     assert "async def agents_prompt_handler" in ENTRY_TEXT

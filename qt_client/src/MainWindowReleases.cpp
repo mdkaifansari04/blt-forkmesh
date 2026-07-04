@@ -1414,6 +1414,10 @@ void MainWindow::loadMirrorNodesPanel()
     // mirror with intermittent presence is invisible to the owner. Supplement
     // with the worker's /mirrors list — every node that has published a mirror
     // record for this source — adding any not already shown from the roster.
+    // Collect catalog-only mirrors (not in roster) for activity dots so the dots
+    // reflect the server's canonical mirror order, making it clear which dot
+    // represents which node when they pulse (adhoc #218).
+    QVector<MirrorActivityStrip::Dot> catalogOnlyDots;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
             const QJsonObject m = value.toObject();
@@ -1436,8 +1440,8 @@ void MainWindow::loadMirrorNodesPanel()
             // Only online nodes normally get a dot; keep an offline one too
             // when it's failing the integrity pin (adhoc #196).
             if (online || integrityFailing)
-                activityDots.append({m.value("id").toString(), nodeName,
-                                     online, false, integrityFailing});
+                catalogOnlyDots.append({m.value("id").toString(), nodeName,
+                                        online, false, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             auto *nameItem = new SortTableWidgetItem(
@@ -1568,6 +1572,11 @@ void MainWindow::loadMirrorNodesPanel()
             ++count;
         }
     }
+    // Append catalog-only mirrors to the activity dots so they're in the server's
+    // canonical order, making it unambiguous which dot represents which node when
+    // they pulse (adhoc #218).
+    activityDots.append(catalogOnlyDots);
+
     // Refresh the catalog mirror list (throttled per source); the async reply
     // re-renders this panel so newly-discovered mirrors appear without a restart.
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();

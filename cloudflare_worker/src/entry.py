@@ -21,6 +21,21 @@ from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
+# Solana custody plumbing (base58/base64url codecs, JSON-RPC client, transfer
+# signing, Pyth price read) lives in its own module — see solana.py (adhoc #215).
+from solana import (
+    _base58_encode,
+    _b64url_encode,
+    _shortvec,
+    _sol_usd_from_http,
+    _sol_usd_from_pyth,
+    _solana_latest_blockhash,
+    _solana_rpc,
+    _solana_send_transaction,
+    _solana_sign_message,
+    _solana_transfer_message,
+)
+
 MAX_ROOM_NAME = 80
 MAX_REPO_SEGMENT = 80
 MAX_CONNECTIONS = 128
@@ -117,55 +132,34 @@ NOTIFICATION_DIGEST_INTERVAL_MS = 60 * 60 * 1000
 NOTIFICATION_DIGEST_MIN_AGE_MS = 3 * 60 * 1000
 NOTIFICATION_DIGEST_MAX_ITEMS = 20
 NOTIFICATION_DIGEST_MAX_RECIPIENTS = 200
-# Each room exposes a WebSocket (/ws) and a read-only live client count
-# (/clients); the Durable Object picks behavior from the upgrade header.
-ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
-REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$")
-# Issue inbox: signed submissions from people without write access to the repo.
-REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
-# Pull-request inbox: signed PR submissions from any node.
-REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
-# Commit-comment inbox: signed per-commit comments from any node.
-REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
-# Discussion inbox: signed discussion open/comment submissions from any node.
-REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
-# Thread subscriptions (issue #361): a node signs a subscribe/unsubscribe for one
-# issue or PR so it gets notified of every reply, not just mentions of it.
-REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")
-# Issue bounty escrow: mint a per-bounty Solana deposit address, confirm funding,
-# and split it 90/10 to the PR author + treasury when the issue's PR merges.
-REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
-# Private-repo collaborator ACL (issue #9): owner-signed grant/revoke/list of the
-# accounts a private repo is shared with.
-REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
-# Public mirror health for a logical repo group.
-REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
-# Agent-session sync (adhoc #182): desktop node push/drain of Claude Code agent
-# sessions for a repo (signed the same way as issue-inbox drain), the
-# website's password-gated read of that same list, and a queued text prompt
-# the owner sends from the website to one running agent.
-REPO_AGENTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents$")
-REPO_AGENTS_LIST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents/list$")
-REPO_AGENTS_PROMPT_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/prompt$")
-# Live tunnel: desktop clients connect to /host; the website pulls /tree and
-# /blob, which the worker forwards to the best-connected host.
-REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$")
-# Release asset download (issue #304): the bytes live in the node's
-# content-addressed store (never in git), streamed back over the host tunnel.
-# Stable, content-addressed URL — immutable, so it caches forever at the edge.
-RELEASE_BLOB_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/releases/blob/sha256/([0-9a-f]{64})$")
-# Per-artifact download counts for a repo's releases (issue: Releases tab).
-REPO_RELEASE_DOWNLOADS_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/releases/downloads$")
-# Git smart-HTTP clone endpoints: git clone https://host/<node>/<repo>
-GIT_INFO_RE = re.compile(r"^/([^/]+)/([^/]+)/info/refs$")
-GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
-# git push endpoint (issue #358): receive-pack over the same relay tunnel, gated
-# by an owner-key-signed HTTP Basic token (see verify_push_token).
-GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
+# HTTP route patterns (git smart-HTTP, repo APIs, accounts) live in urls.py so the
+# router's match table is one small, scannable module instead of buried in this
+# 11k-line file. The Worker runtime bundles sibling modules in src/, so this
+# import resolves both on Cloudflare and in the test suite (which parses urls.py
+# the same way it parses this file).
+from urls import (  # noqa: E402
+    ROOM_RE,
+    REPO_ROOM_RE,
+    REPO_ISSUES_RE,
+    REPO_PULLS_RE,
+    REPO_COMMITS_RE,
+    REPO_DISCUSSIONS_RE,
+    REPO_SUBSCRIBE_RE,
+    REPO_BOUNTY_RE,
+    REPO_SHARES_RE,
+    REPO_MIRRORS_RE,
+    REPO_AGENTS_RE,
+    REPO_AGENTS_LIST_RE,
+    REPO_AGENTS_PROMPT_RE,
+    REPO_HOST_RE,
+    RELEASE_BLOB_RE,
+    REPO_RELEASE_DOWNLOADS_RE,
+    GIT_INFO_RE,
+    GIT_PACK_RE,
+    GIT_RECEIVE_RE,
+    ACCOUNTS_RE,
+)
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -208,7 +202,7 @@ MAX_NODE_NAME = 63
 # (issue #351) accepts this as an alternative to the account's chosen name,
 # since that's what users copy when the app tells them their "node ID".
 NODE_PUBKEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
+# ACCOUNTS_RE is imported from urls.py with the rest of the route table.
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 # Login brute-force throttle: after LOGIN_MAX_FAILS failures (counted within a
 # rolling window) the identifier is locked out for LOGIN_LOCKOUT_MS.
@@ -1058,6 +1052,22 @@ def build_repo_mirrors_payload(
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
 
+    # Is the logical repo's source of truth (a working-copy holder — "local-node")
+    # online right now? While it is, a clone of a mirror whose refs fail the
+    # integrity pin is transparently served from the source instead of the mirror
+    # (see Default._online_source_of_truth), so that mirror is auto-healing, not
+    # blocking — reported as "healing" rather than "rejected". The hard reject (and
+    # its tamper protection) still applies when the source is offline.
+    source_online = False
+    for row in members:
+        rec = row["data"]
+        if str(rec.get("source") or "local-node") != "local-node":
+            continue
+        seen = _mirror_ms((presence or {}).get(row.get("key_bi")))
+        if seen and now - seen <= stale_ms:
+            source_online = True
+            break
+
     def _int_field(rec, name):
         try:
             return int(rec.get(name))
@@ -1090,14 +1100,20 @@ def build_repo_mirrors_payload(
         # recent history — or every clone it serves is rejected with "repository
         # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
         # a pin, or nothing is pinned and the gate fails open), "rejected" (its
-        # fingerprint matches no attested state), "unknown" (legacy record with
-        # no fingerprint; the gate checks its live refs, which we can't see here).
+        # fingerprint matches no attested state AND the source is offline, so the
+        # tamper gate is actively blocking its clones), "healing" (fingerprint
+        # matches nothing yet, but the source of truth is online, so clones are
+        # served from the source and the mirror clears once it re-syncs — not a
+        # failure), "unknown" (legacy record with no fingerprint; the gate checks
+        # its live refs, which we can't see here).
         state_hash = str(rec.get("stateHash") or "").strip().lower()
         pins = clone_state_pins(rec, key, public_rows, history)
         if not pins or state_hash in pins:
             integrity = "ok"
         elif not state_hash:
             integrity = "unknown"
+        elif source_online:
+            integrity = "healing"
         else:
             integrity = "rejected"
         mirrors.append({
@@ -1998,6 +2014,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+
+        # Regression (adhoc #189): there is no reserved "mainnode" owner
+        # account — "mainnode/forkmesh" is just the fixed path the flagship
+        # chat room happens to use (FLAGSHIP_ROOM_KEY), not a real repo
+        # identity any desktop host ever registers under, so the check above
+        # never sees a heartbeat even with a live self-hosted instance. Fold
+        # in the real signal too: repositories.key_bi is computed the same
+        # way as host_presence.repo_bi (blind_index of "owner/name"), so join
+        # the two directly to find whichever real owner is actually hosting a
+        # repo named "forkmesh".
+        repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        presence_rows = await d1_all(
+            env, "SELECT repo_bi, ts FROM host_presence")
+        presence = {r["repo_bi"]: int(r["ts"]) for r in presence_rows}
+        for row in repo_rows:
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                continue
+            if _is_blocked_catalog_identity(
+                    env, rec.get("owner"), rec.get("name")):
+                continue
+            ts = presence.get(row.get("key_bi"))
+            if ts is not None and (last_ts is None or ts > last_ts):
+                last_ts = ts
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
@@ -2086,6 +2126,18 @@ async def _record_bounty_payout(env, rec, transfers):
                 env, "project", owner + "/" + repo, owner + "/" + repo, lamports)
 
 
+def _catalog_updated_ms(rec):
+    # Best-effort parse of a catalog record's free-form updatedAt string, so we
+    # can tell which of a node's several repo mirrors last reported in (used to
+    # pick the "latest" commit/platform/version for the node as a whole). Any
+    # unparseable value sorts last rather than raising.
+    try:
+        ms = float(Date.parse(str(rec.get("updatedAt") or "")))
+        return ms if ms == ms else -1  # NaN check (NaN != NaN)
+    except Exception:
+        return -1
+
+
 async def network_leaderboards(env):
     cached = await edge_cache_match(NETWORK_LEADERBOARDS_CACHE_KEY)
     if cached is not None:
@@ -2134,6 +2186,12 @@ async def network_leaderboards(env):
     hosted_board = []
     largest_board = []          # per owner/repo, by reported mirror size
     bytes_by_owner = {}         # owner -> total bytes hosted across their repos
+    # Per-node detail card for the Network page's "Connected nodes" list: sums
+    # the per-repo counters a node reports (adhoc #56's commit/issues/platform/
+    # version/id fields) across every repo it mirrors, and keeps the commit/
+    # branch/platform/version/sync-time from whichever of its repos reported in
+    # most recently — so a multi-repo node shows one coherent "latest" state.
+    node_details = {}
     for row in repo_rows:
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
@@ -2151,6 +2209,30 @@ async def network_leaderboards(env):
             size_bytes = 0
         if size_bytes > 0:
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
+        detail = node_details.setdefault(owner.lower(), {
+            "name": owner, "sizeBytes": 0,
+            "issueCount": 0, "commitCount": 0, "branchCount": 0,
+            "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
+            "clonesServed": 0, "websiteServed": 0,
+            "commit": "", "branch": "", "lastSync": "",
+            "platform": "", "version": "", "_updatedMs": -1,
+        })
+        detail["sizeBytes"] += size_bytes
+        for field in ("issueCount", "commitCount", "branchCount", "pullCount",
+                      "discussionCount", "artifactCount", "clonesServed",
+                      "websiteServed"):
+            try:
+                detail[field] += max(0, int(rec.get(field, 0) or 0))
+            except (TypeError, ValueError):
+                pass
+        updated_ms = _catalog_updated_ms(rec)
+        if updated_ms > detail["_updatedMs"]:
+            detail["_updatedMs"] = updated_ms
+            detail["commit"] = clean_string(rec.get("commit", ""), 64)
+            detail["branch"] = clean_string(rec.get("branch", ""), 120)
+            detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)
+            detail["platform"] = clean_string(rec.get("platform", ""), 16)
+            detail["version"] = clean_string(rec.get("version", ""), 32)
         if name:
             mirror_owners.setdefault(name, set()).add(owner.lower())
             if size_bytes > 0:
@@ -2161,6 +2243,12 @@ async def network_leaderboards(env):
                 hosted_board.append(
                     {"name": owner + "/" + name, "since": ts,
                      "ageMs": max(0, now - ts)})
+    node_board = [
+        {k: v for k, v in detail.items() if k != "_updatedMs"}
+        for detail in node_details.values()
+    ]
+    node_board.sort(key=lambda n: (-n["sizeBytes"], n["name"]))
+
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
     repo_board.sort(key=lambda n: (-n["repos"], n["name"]))
 
@@ -2203,6 +2291,7 @@ async def network_leaderboards(env):
         {"ok": True,
          "windowHours": ONLINE_HISTORY_RETAIN_MS // 3600000,
          "uptime": uptime_board[:LEADERBOARD_LIMIT],
+         "nodes": node_board,
          "repos": repo_board[:LEADERBOARD_LIMIT],
          "mirrors": mirror_board[:LEADERBOARD_LIMIT],
          "hosted": hosted_board[:LEADERBOARD_LIMIT],
@@ -2567,9 +2656,6 @@ MIN_JOIN_LAMPORTS = 5_000_000            # 0.005 SOL — used only if pricing fa
 # Sane bounds for a fetched SOL/USD price (USD per 1 SOL).
 SOL_USD_MIN = 1.0
 SOL_USD_MAX = 100_000.0
-# Pyth SOL/USD price account on Solana mainnet (read on-chain via our own RPC so
-# the price doesn't depend on a third-party HTTP price API). Overridable via env.
-PYTH_SOL_USD_ACCOUNT_DEFAULT = "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"
 # Process-local price cache so we don't refetch on every signup poll.
 _SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
 _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
@@ -4284,56 +4370,8 @@ async def _account_reserve(env, request):
 # Step 2 (the "Join" step): create a Solana payment request for this signup.
 # Signup payments land in unique per-account deposit wallets; the worker sweeps
 # confirmed deposits to the treasury and currently-online node payout addresses.
-BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-BASE58_INDEX = {ch: i for i, ch in enumerate(BASE58_ALPHABET)}
-SOLANA_SYSTEM_PROGRAM = "11111111111111111111111111111111"
-
-
-def _base58_encode(data):
-    n = int.from_bytes(data, "big")
-    out = ""
-    while n:
-        n, rem = divmod(n, 58)
-        out = BASE58_ALPHABET[rem] + out
-    pad = 0
-    for b in data:
-        if b == 0:
-            pad += 1
-        else:
-            break
-    return "1" * pad + (out or "1")
-
-
-def _base58_decode(value):
-    n = 0
-    for ch in value:
-        if ch not in BASE58_INDEX:
-            return b""
-        n = n * 58 + BASE58_INDEX[ch]
-    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
-    pad = 0
-    for ch in value:
-        if ch == "1":
-            pad += 1
-        else:
-            break
-    return b"\x00" * pad + raw
-
-
-def _b64url_encode(data):
-    return base64.urlsafe_b64encode(data).decode().rstrip("=")
-
-
-def _shortvec(n):
-    out = bytearray()
-    while True:
-        elem = n & 0x7F
-        n >>= 7
-        if n:
-            elem |= 0x80
-        out.append(elem)
-        if not n:
-            return bytes(out)
+# The base58/base64url codecs, JSON-RPC client, transfer-message assembly and
+# Ed25519 signing all live in solana.py (imported at the top of this module).
 
 
 def _amount_sol(lamports):
@@ -4348,68 +4386,6 @@ def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMe
     uri += ("&label=" + quote("ForkMesh") +
             "&message=" + quote(message))
     return uri
-
-
-# Reliability: the canonical public RPC (api.mainnet-beta.solana.com) rate-limits
-# / blocks datacenter (Cloudflare) egress, which silently broke getBalance and
-# left signups stuck "checking". We fail over across several keyless public
-# endpoints, and an operator can prepend their OWN node (or a keyed provider) via
-# SOLANA_RPC_URL (space/comma separated) so no third party is required at all.
-_SOLANA_PUBLIC_RPCS = (
-    "https://solana-rpc.publicnode.com",
-    "https://rpc.ankr.com/solana",
-    "https://solana.drpc.org",
-    "https://api.mainnet-beta.solana.com",
-)
-# Remember the endpoint that last answered so we hit it first instead of
-# re-walking dead hosts on every poll.
-_SOLANA_RPC_PREFERRED = {"url": ""}
-
-
-def _solana_endpoints(env):
-    endpoints = []
-    configured = (getattr(env, "SOLANA_RPC_URL", "") or "").replace(",", " ").split()
-    for part in configured:
-        part = part.strip()
-        if part and part not in endpoints:
-            endpoints.append(part)
-    for default in _SOLANA_PUBLIC_RPCS:
-        if default not in endpoints:
-            endpoints.append(default)
-    # Try the last-good endpoint first.
-    preferred = _SOLANA_RPC_PREFERRED["url"]
-    if preferred in endpoints:
-        endpoints.remove(preferred)
-        endpoints.insert(0, preferred)
-    return endpoints
-
-
-async def _solana_rpc(env, method, params):
-    from js import fetch as js_fetch
-    payload = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-    for endpoint in _solana_endpoints(env):
-        try:
-            resp = await js_fetch(
-                endpoint,
-                to_js({
-                    "method": "POST",
-                    "headers": {"content-type": "application/json",
-                                "accept": "application/json"},
-                    "body": payload,
-                }),
-            )
-            if not (200 <= int(getattr(resp, "status", 0)) < 300):
-                continue
-            data = json.loads(await resp.text())
-        except Exception:
-            continue
-        # A well-formed JSON-RPC reply carries "result"; anything else (including
-        # a rate-limit error object) means try the next endpoint.
-        if isinstance(data, dict) and "result" in data:
-            _SOLANA_RPC_PREFERRED["url"] = endpoint
-            return data
-    return None
 
 
 # --- Low-level balance check ------------------------------------------------
@@ -4430,77 +4406,6 @@ async def _solana_balance_lamports(env, address):
         return int(result.get("value"))
     except (TypeError, ValueError):
         return None
-
-
-async def _solana_latest_blockhash(env):
-    resp = await _solana_rpc(env, "getLatestBlockhash", [])
-    if not isinstance(resp, dict):
-        return ""
-    try:
-        return str(resp["result"]["value"]["blockhash"] or "")
-    except Exception:
-        return ""
-
-
-async def _solana_send_transaction(env, tx_bytes):
-    encoded = base64.b64encode(tx_bytes).decode()
-    resp = await _solana_rpc(
-        env, "sendTransaction",
-        [encoded, {"encoding": "base64", "skipPreflight": False}],
-    )
-    if not isinstance(resp, dict):
-        return ""
-    result = resp.get("result")
-    return str(result or "") if result else ""
-
-
-def _solana_transfer_message(from_addr, transfers, blockhash):
-    account_addrs = [from_addr]
-    for to_addr, _lamports in transfers:
-        if to_addr not in account_addrs:
-            account_addrs.append(to_addr)
-    if SOLANA_SYSTEM_PROGRAM not in account_addrs:
-        account_addrs.append(SOLANA_SYSTEM_PROGRAM)
-    program_idx = account_addrs.index(SOLANA_SYSTEM_PROGRAM)
-    out = bytearray()
-    out += bytes([1, 0, 1])
-    out += _shortvec(len(account_addrs))
-    for addr in account_addrs:
-        raw = _base58_decode(addr)
-        if len(raw) != 32:
-            return b""
-        out += raw
-    blockhash_raw = _base58_decode(blockhash)
-    if len(blockhash_raw) != 32:
-        return b""
-    out += blockhash_raw
-    out += _shortvec(len(transfers))
-    for to_addr, lamports in transfers:
-        data = struct.pack("<IQ", 2, int(lamports))
-        out += bytes([program_idx])
-        out += _shortvec(2) + bytes([0, account_addrs.index(to_addr)])
-        out += _shortvec(len(data)) + data
-    return bytes(out)
-
-
-async def _solana_sign_message(from_addr, seed_b64url, message):
-    pub = _base58_decode(from_addr)
-    if len(pub) != 32 or not seed_b64url or not message:
-        return b""
-    try:
-        jwk = {
-            "kty": "OKP", "crv": "Ed25519", "x": _b64url_encode(pub),
-            "d": seed_b64url, "ext": True, "key_ops": ["sign"],
-        }
-        key = await js_crypto.subtle.importKey(
-            "jwk", to_js(jwk), to_js({"name": "Ed25519"}), False,
-            _to_js(["sign"])
-        )
-        sig = await js_crypto.subtle.sign(
-            to_js({"name": "Ed25519"}), key, _to_js(message))
-        return bytes(Uint8Array.new(sig).to_py())
-    except Exception:
-        return b""
 
 
 async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
@@ -4537,57 +4442,6 @@ async def _new_solana_keypair():
 
 
 # --- SOL/USD price + dynamic minimum ----------------------------------------
-def _parse_pyth_price(raw_bytes):
-    # Pyth v2 price account: exponent (i32 LE) at offset 20, aggregate price
-    # (i64 LE) at offset 208. price = agg_price * 10**expo. Guarded so a layout
-    # mismatch falls through to the bounds check rather than returning garbage.
-    try:
-        if len(raw_bytes) < 216:
-            return 0.0
-        expo = int.from_bytes(raw_bytes[20:24], "little", signed=True)
-        agg = int.from_bytes(raw_bytes[208:216], "little", signed=True)
-        if agg <= 0 or expo < -18 or expo > 0:
-            return 0.0
-        return agg * (10.0 ** expo)
-    except Exception:
-        return 0.0
-
-
-async def _sol_usd_from_pyth(env):
-    account = (getattr(env, "PYTH_SOL_USD_ACCOUNT", "") or
-               PYTH_SOL_USD_ACCOUNT_DEFAULT).strip()
-    resp = await _solana_rpc(
-        env, "getAccountInfo", [account, {"encoding": "base64"}])
-    if not isinstance(resp, dict):
-        return 0.0
-    value = (resp.get("result") or {}).get("value") if isinstance(
-        resp.get("result"), dict) else None
-    data = value.get("data") if isinstance(value, dict) else None
-    if not isinstance(data, list) or not data:
-        return 0.0
-    try:
-        raw = base64.b64decode(data[0])
-    except Exception:
-        return 0.0
-    return _parse_pyth_price(raw)
-
-
-async def _sol_usd_from_http(env):
-    # Fallback only: a configurable HTTP price source (default CoinGecko).
-    from js import fetch as js_fetch
-    url = (getattr(env, "SOL_PRICE_URL", "") or
-           "https://api.coingecko.com/api/v3/simple/price"
-           "?ids=solana&vs_currencies=usd").strip()
-    try:
-        resp = await js_fetch(url, to_js({"method": "GET"}))
-        if not (200 <= int(getattr(resp, "status", 0)) < 300):
-            return 0.0
-        body = json.loads(await resp.text())
-        return float((body.get("solana") or {}).get("usd") or 0.0)
-    except Exception:
-        return 0.0
-
-
 async def _sol_usd_price(env):
     now = int(Date.now())
     if (_SOL_USD_CACHE["usd"] > 0 and
@@ -10061,6 +9915,10 @@ class Default(WorkerEntrypoint):
                     # survives as a legacy pin: a URL that carries it skips the
                     # rotation (old redirected links keep working).
                     public_browse = True
+                    # A mirror that failed the first browse hop, so the failure
+                    # handler below skips it on retry instead of re-picking the
+                    # same flapping node and returning its error.
+                    failed_mirror = None
                     params = parse_qs(url.query)
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
@@ -10086,6 +9944,7 @@ class Default(WorkerEntrypoint):
                             if forwarded is not None and \
                                     fstatus not in (0, 502, 503, 504):
                                 return forwarded
+                            failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(request)
@@ -10106,7 +9965,7 @@ class Default(WorkerEntrypoint):
                     status = 0
                 if status in (502, 503, 504):
                     fallback = await self._select_browse_mirror(
-                        owner, repo, exclude=owner)
+                        owner, repo, exclude=[owner, failed_mirror])
                     if fallback and fallback.lower() != owner.lower():
                         try:
                             return await self._forward_to_node(
@@ -10194,7 +10053,10 @@ class Default(WorkerEntrypoint):
         # used on retry after that node's host DO failed to serve, since its
         # presence row may not have aged out yet. Best-effort: any failure
         # returns None so the request just falls through to the normal
-        # named-owner route.
+        # named-owner route. `exclude` may be a single node name or an iterable
+        # of names — every one is dropped, so a retry can skip BOTH the named
+        # source and a mirror that already failed this request instead of
+        # re-picking the flapping node and surfacing its error.
         try:
             await ensure_schema(self.env)
             now = int(Date.now())
@@ -10225,8 +10087,10 @@ class Default(WorkerEntrypoint):
             candidates = browse_mirror_candidates(
                 owner, repo, catalog_rows, presence, now, HOST_PRESENCE_STALE_MS)
             if exclude:
+                names = [exclude] if isinstance(exclude, str) else list(exclude)
+                excluded = {n.lower() for n in names if n}
                 candidates = [
-                    c for c in candidates if c.lower() != exclude.lower()]
+                    c for c in candidates if c.lower() not in excluded]
             if not candidates:
                 return None
             if len(candidates) == 1:
@@ -10267,6 +10131,28 @@ class Default(WorkerEntrypoint):
             # per request. The integrity gate still applies on the serving node:
             # a mirror must advertise a source-attested state (clone_state_pins),
             # so serving in place never weakens the tamper check.
+            # Auto-heal a mirror namespace while the source of truth is online:
+            # hand the clone to the authoritative source instead of this mirror. A
+            # mirror whose refs fail the integrity pin (stale, diverged, or running
+            # an agent) would otherwise reject every clone here; the source is
+            # online and canonical, so it serves the request and the mirror clears
+            # once it re-syncs — its own unverified bytes are never served. Skipped
+            # when the source is offline, so the tamper gate still fully protects
+            # clones then. Cheap in the common case (cloning the source itself):
+            # _online_source_of_truth returns after a single indexed lookup. Both
+            # clone requests (info/refs + upload-pack POST) take this branch while
+            # the source stays online, so they reach the same node.
+            src_owner, src_repo = await self._online_source_of_truth(owner, repo)
+            if src_owner:
+                tail = "info/refs" if is_info else "git-upload-pack"
+                try:
+                    return await self._forward_to_node(
+                        request, url, src_repo, src_owner,
+                        "/%s/%s/%s" % (src_owner, src_repo, tail))
+                except Exception:
+                    # Best-effort: fall through to the normal route (which may
+                    # still mirror-fallback) rather than take the request down.
+                    pass
             if not await self._source_has_live_host(owner, repo):
                 serving = await self._sticky_clone_fallback(
                     owner, repo, refresh=is_info)
@@ -10366,6 +10252,67 @@ class Default(WorkerEntrypoint):
             return int(hosts or 0) > 0
         except Exception:
             return False
+
+    async def _online_source_of_truth(self, owner, repo):
+        # If owner/repo is a MIRROR whose logical repo (grouped by root commit,
+        # name fallback) has a working-copy holder — its source of truth — with a
+        # live host right now, return (source_owner, source_repo); otherwise
+        # (None, None). Cloning a mirror namespace while the source is online is
+        # routed to the source: the source is canonical, so this auto-heals a
+        # mirror whose refs fail the integrity pin (stale, diverged, or running an
+        # agent) without ever serving the mirror's own unverified bytes. The
+        # tamper gate still fully protects clones when the source is OFFLINE — the
+        # caller only consults this while looking for an online node to serve.
+        # Cheap for the common case: when THIS namespace itself holds the working
+        # copy (the usual clone target), we return after one indexed lookup and
+        # never scan the catalog. Best-effort: any failure returns (None, None).
+        try:
+            owner_l = (owner or "").strip().lower()
+            repo_l = (repo or "").strip().lower()
+            if not owner_l or not repo_l:
+                return None, None
+            await ensure_schema(self.env)
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT data, is_private FROM repositories WHERE key_bi=?", repo_bi)
+            if not row or int(row.get("is_private") or 0):
+                return None, None
+            target = await decrypt_row(self.env, row.get("data"))
+            if not target:
+                return None, None
+            # The named namespace holds the working copy — it IS a source of
+            # truth, so serve it directly (no catalog scan, no self-redirect).
+            if str(target.get("source") or "local-node") == "local-node":
+                return None, None
+            # Find the freshest-synced source-of-truth record in the same group.
+            rows = await d1_all(
+                self.env, "SELECT data FROM repositories WHERE is_private = 0")
+            best_owner = None
+            best_repo = None
+            best_sync = -1
+            for r in rows:
+                rec = await decrypt_row(self.env, r.get("data"))
+                if not rec:
+                    continue
+                if str(rec.get("source") or "local-node") != "local-node":
+                    continue
+                if not repo_mirror_same_group(target, rec):
+                    continue
+                rec_owner = str(rec.get("owner") or "").strip()
+                rec_name = str(rec.get("name") or "").strip()
+                if not rec_owner or not rec_name or rec_owner.lower() == owner_l:
+                    continue
+                sync = _mirror_ms(rec.get("lastSync")) or 0
+                if sync > best_sync:
+                    best_sync = sync
+                    best_owner = rec_owner
+                    best_repo = rec_name
+            if best_owner and await self._source_has_live_host(best_owner, best_repo):
+                return best_owner, best_repo
+            return None, None
+        except Exception:
+            return None, None
 
     async def _forward_to_node(self, request, url, repo, node, new_path):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host

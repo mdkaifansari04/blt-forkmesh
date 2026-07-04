@@ -641,10 +641,8 @@ void MainWindow::switchToWorktree(const QString &branch)
 // #123). Selecting the row fires currentCellChanged -> showBranchDiff.
 void MainWindow::switchToBranch(const QString &branch)
 {
-    if (m_repoDetailTabs && m_repoDetailTabs->button(m_branchesTabIndex))
-        m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
-    if (m_repoDetailStack && m_branchesTabIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
+    // The branches panel lives inside the Code overview now (no top-level tab).
+    showOverviewBranches();
     loadBranchesPanel();
     if (!m_branchesTable || branch.isEmpty())
         return;
@@ -1557,7 +1555,10 @@ QWidget *MainWindow::buildBranchesTab()
 {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(16, 14, 16, 16);
+    // Flush horizontally: this panel now sits inside the Code overview body stack,
+    // whose column already supplies the page's left/right padding (like the
+    // commits panel), so it should line up with the file list above it.
+    layout->setContentsMargins(0, 4, 0, 0);
     layout->setSpacing(10);
 
     auto *headerRow = new QHBoxLayout;
@@ -2071,18 +2072,27 @@ void MainWindow::loadBranchesPanel()
     // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
     // may carry more than one session over its life; prefer one bound to an issue
     // and otherwise the most recent.
-    QHash<QString, const AgentSession *> branchSessions;
+    //
+    // Stored by value, not by pointer into m_agentSessions: the per-row git reads
+    // further down run under GitKeepAlive, which pumps the event loop, and a
+    // queued callback landing mid-pump (e.g. an agent finishing/being deleted)
+    // can append/remove entries and reallocate that list. A pointer taken here
+    // would dangle and crash (free(): invalid pointer) when later dereferenced —
+    // this is what crashed on a branch click after a merge freed its agent
+    // session (adhoc #200).
+    QHash<QString, AgentSession> branchSessions;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         for (const AgentSession &session : m_agentSessions) {
             if (session.branchName.isEmpty() || session.owner != repo.owner ||
                 session.name != repo.name)
                 continue;
-            const AgentSession *existing = branchSessions.value(session.branchName);
-            if (!existing || (session.issueNumber > 0 && existing->issueNumber <= 0) ||
+            const auto existing = branchSessions.constFind(session.branchName);
+            if (existing == branchSessions.constEnd() ||
+                (session.issueNumber > 0 && existing->issueNumber <= 0) ||
                 ((session.issueNumber > 0) == (existing->issueNumber > 0) &&
                  session.id > existing->id))
-                branchSessions.insert(session.branchName, &session);
+                branchSessions.insert(session.branchName, session);
         }
     }
 
@@ -2223,7 +2233,9 @@ void MainWindow::loadBranchesPanel()
         // (adhoc #191, #251). The text says which it is; the tooltip leads with
         // the status word and spells out the issue title / prompt.
         auto *attach = new QTableWidgetItem;
-        if (const AgentSession *session = branchSessions.value(branch)) {
+        const auto sessionIt = branchSessions.constFind(branch);
+        if (sessionIt != branchSessions.constEnd()) {
+            const AgentSession *session = &sessionIt.value();
             const QString statusWord =
                 session->merged ? QStringLiteral("merged")
                                 : agentStatusText(session->status);
@@ -3334,11 +3346,43 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     // When the branch is strictly behind (no commits of its own that base lacks)
     // and isn't checked out, advance the ref without touching the working tree.
     if (ahead == 0 && !isCurrent) {
+        // `isCurrent` only reflects *this* checkout's HEAD. The branch can still be
+        // checked out in a separate agent worktree (e.g. an issue session under
+        // /tmp/forkmesh-worktrees/...), and git flatly refuses to fetch into a ref
+        // that's live in another worktree — surfacing a cryptic
+        // "fatal: refusing to fetch into branch '...' checked out at '...'".
+        // Explain what's actually happening instead of dumping the raw error, so
+        // it's obvious the branch is busy in an active session (adhoc #205).
+        const QString otherWorktree = worktreePathForBranch(dir, branch);
+        if (!otherWorktree.isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral(
+                    "%1 is behind %2 but is checked out by an active agent session at "
+                    "%3, so it can't be updated from here — git won't fetch into a "
+                    "branch that's live in another worktree. Stop or finish that agent "
+                    "first, or let it update from %2 itself.")
+                    .arg(branch, base, otherWorktree),
+                true);
+            return;
+        }
         QString err;
         if (!runGitCapture(dir, {"fetch", ".", base + ":" + branch}, nullptr, &err)) {
-            setRepoDetailNotice(
-                err.isEmpty() ? "Could not fast-forward the branch." : err.left(240),
-                true);
+            // Fallback: if git still refused (e.g. a worktree we couldn't enumerate),
+            // rewrite its terse "refusing to fetch into branch" into plain language
+            // rather than leaking raw git output.
+            QString msg = err.trimmed();
+            if (msg.contains(QLatin1String("refusing to fetch into branch"))) {
+                msg = QStringLiteral(
+                          "%1 can't be updated from here because it's currently checked "
+                          "out in another worktree (an active agent session). Stop or "
+                          "finish that agent first, or let it update from %2 itself.")
+                          .arg(branch, base);
+            } else if (msg.isEmpty()) {
+                msg = QStringLiteral("Could not fast-forward the branch.");
+            } else {
+                msg = msg.left(240);
+            }
+            setRepoDetailNotice(msg, true);
             return;
         }
         logSystem(QStringLiteral("Git: fast-forwarded %1 to %2.").arg(branch, base));

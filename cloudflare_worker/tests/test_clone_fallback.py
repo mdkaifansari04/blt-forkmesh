@@ -293,14 +293,19 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     assert "public_browse" in browse
     assert "(0, 502, 503, 504)" in browse  # rotated pick failed/errored -> named owner
     assert "(502, 503, 504)" in browse     # named owner failed -> remaining mirrors
-    assert "exclude=owner" in browse
+    # The retry must skip BOTH the named owner and a mirror that already failed
+    # this request's first hop, so it can't re-pick the flapping node and
+    # surface its error while other live mirrors sit unused.
+    assert "exclude=[owner, failed_mirror]" in browse
+    assert "failed_mirror = served" in browse
     assert "_forward_to_node" in browse
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
-    # The retry path passes exclude=<failed owner>; _select_browse_mirror must
-    # filter that node out of the candidate rotation or the retry could 302
-    # straight back to the dead node it just came from.
+    # The retry path passes exclude=[<failed owner>, <failed mirror>];
+    # _select_browse_mirror must filter every named node out of the candidate
+    # rotation or the retry could route straight back to a node it just came
+    # from. `exclude` accepts a single name or an iterable of names.
     # _select_browse_mirror lives on the worker entrypoint class, whose name we
     # don't want to hard-code; find it by scanning every class.
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
@@ -313,7 +318,10 @@ def test_select_browse_mirror_drops_the_excluded_node():
                     src = ast.unparse(item)
     assert src, "_select_browse_mirror not found in entry.py"
     assert "exclude=None" in src
-    assert "c.lower() != exclude.lower()" in src
+    # A string exclude is normalised to a one-element list, an iterable is used
+    # as-is, and every entry is dropped from the candidate rotation.
+    assert "isinstance(exclude, str)" in src
+    assert "c.lower() not in excluded" in src
 
 
 def test_host_disconnect_expires_presence_immediately():
