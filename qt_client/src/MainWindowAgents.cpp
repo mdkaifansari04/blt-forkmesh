@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -389,6 +390,7 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 13);
     m_agentTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
