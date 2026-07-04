@@ -5,7 +5,7 @@ title: have the ability to search through a PR for text on the review pane
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 26
 progress: 0
 assignees: []
 createdAt: 1783037435293
