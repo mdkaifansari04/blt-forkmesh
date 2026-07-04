@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 347
 title: make it so that there can be a setting that all PRs receive x amount of SOL when they are merged - also have another option to either pay per PR or have an inbuilt wallet that stores a small amoutn of sol used for paying the PRs
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 53
