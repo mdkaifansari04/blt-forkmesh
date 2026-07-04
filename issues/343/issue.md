@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 343
 title: show the version number the node is running on the right list here on the web
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 66
