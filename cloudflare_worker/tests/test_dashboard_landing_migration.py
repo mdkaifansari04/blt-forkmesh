@@ -1179,10 +1179,22 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     assert "const detailPath = repoPathUrl(repo);" not in render_body
 
 
-def test_desktop_client_stub_exists():
+def test_desktop_client_install_page_exists():
     html = _read(PUBLIC / "desktop.html")
 
-    assert "<title>Desktop Client" in html
+    assert "<title>Install ForkMesh Desktop" in html
+    # Per-OS install sections the homepage buttons deep-link into.
+    for anchor in ('id="macos"', 'id="windows"', 'id="linux"'):
+        assert anchor in html
+    assert "curl -fsSL https://forkmesh.com/install.sh | bash" in html
+
+
+def test_homepage_hero_has_per_os_install_buttons():
+    index = _read(PUBLIC / "index.html")
+
+    assert 'id="install-os-buttons"' in index
+    for href in ("/desktop#macos", "/desktop#windows", "/desktop#linux"):
+        assert href in index
 
 
 def test_homepage_network_selector_hides_mobile_beam_and_bars():
