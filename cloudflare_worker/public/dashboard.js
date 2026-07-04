@@ -577,6 +577,88 @@
     return data;
   }
 
+  // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
+  // reply body) and the desktop's discussion inbox POST (verify_discussion_event
+  // in the worker). Replies are signed against the discussion's real number —
+  // unlike a new discussion's "open" event, they don't use the placeholder 0.
+  async function submitWebDiscussionComment(repo, number, body) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    const contentHash = await sha256HexLower(cleanBody);
+    const canonical = `forkmesh-discussion-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type: "comment",
+      id: "comment-web-" + ts,
+      body: cleanBody,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/discussions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  async function handleDiscussionReplySubmit(repo, form) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoDiscussionReplyNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-discussion-reply-body]");
+    const submit = form.querySelector("[data-repo-discussion-reply-submit]");
+    const hint = form.querySelector("[data-repo-discussion-reply-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This discussion hasn't finished loading yet.", "bad");
+      return;
+    }
+    if (!body) {
+      setHint("Write a reply before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebDiscussionComment(repo, number, body);
+      const list = form.parentElement?.querySelector("[data-repo-discussion-conversation]");
+      if (list) {
+        if (list.dataset.empty === "true") list.innerHTML = "";
+        list.dataset.empty = "false";
+        list.insertAdjacentHTML("beforeend", renderPullConversationEvent({
+          type: "comment", authorName: state.session?.nodeName || "you",
+          ts: Math.floor(Date.now() / 1000), body,
+        }));
+      }
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Reply sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "discussion_too_large" ? "The reply is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the reply's signature."
+          : "Could not send the reply. Please try again.",
+        "bad");
+    }
+  }
+
   function sessionFromAccountPayload(body, base = {}) {
     const nextSession = {
       ...(base || {}),
@@ -2992,6 +3074,60 @@
     }).filter(Boolean);
   }
 
+  // A discussion's replies are an append-only, signed event log stored as
+  // discussions/<N>/NNNN-comment.md files alongside discussion.md (see
+  // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
+  // row renderer since a discussion comment event has the same shape.
+  function renderRepoDiscussionConversation(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No replies yet on this discussion.</div>';
+    return rows.map(renderPullConversationEvent).join("");
+  }
+
+  async function loadRepoDiscussionConversation(repo, number) {
+    let tree;
+    try {
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `discussions/${number}` }));
+    } catch (_) {
+      return [];
+    }
+    const files = (Array.isArray(tree.entries) ? tree.entries : [])
+      .filter((entry) => entry.type !== "tree" && /^\d+-comment\.md$/.test(String(entry.name || "")))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!files.length) return [];
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `discussions/${number}/${entry.name}`));
+    return files.map((entry) => {
+      const blob = blobs[`discussions/${number}/${entry.name}`];
+      if (!blob) return null;
+      const parsed = parseFrontMatter(blobText(blob));
+      const values = parsed.values || {};
+      return {
+        type: "comment",
+        author: values.author || "",
+        authorName: values.authorName || "",
+        ts: values.ts || "",
+        body: parsed.body || "",
+      };
+    }).filter(Boolean);
+  }
+
+  function renderDiscussionReplyForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
+    }
+    const who = escapeHtml(state.session.nodeName);
+    return `
+      <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Reply
+          <textarea data-repo-discussion-reply-body rows="3" placeholder="Write a reply. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Replying as ${who}. Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-discussion-reply-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Reply</button>
+        </div>
+      </form>`;
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -3046,6 +3182,16 @@
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
           ${renderRepoPullPatch(pullPatch.patch)}
         </section>` : "";
+    const discussionConversation = parsed.discussionConversation || [];
+    const discussionConversationSection = kind === "discussions" ? `
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Replies</span>
+            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(discussionConversation.length)} ${discussionConversation.length === 1 ? "reply" : "replies"}</span>
+          </div>
+          <div data-repo-discussion-conversation data-empty="${discussionConversation.length ? "false" : "true"}">${renderRepoDiscussionConversation(discussionConversation)}</div>
+          ${renderDiscussionReplyForm(number)}
+        </section>` : "";
     return `
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-4 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -3069,6 +3215,7 @@
         </section>
         ${pullConversationSection}
         ${pullFilesSection}
+        ${discussionConversationSection}
       </article>`;
   }
 
@@ -3084,6 +3231,7 @@
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
+      if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;
@@ -4881,6 +5029,12 @@
     if (issueForm && state.selectedRepo) {
       event.preventDefault();
       handleIssueComposeSubmit(state.selectedRepo, issueForm);
+      return;
+    }
+    const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");
+    if (discussionReplyForm && state.selectedRepo) {
+      event.preventDefault();
+      handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
     }
   });
 
