@@ -34,13 +34,17 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+MIRRORS = ENTRY.parent / "mirrors.py"
+# Mirror grouping / clone-selection helpers were extracted from entry.py into
+# mirrors.py; parse both sources so the AST loaders below still find them.
+_WORKER_SRC = ENTRY.read_text(encoding="utf-8") + "\n" + MIRRORS.read_text(encoding="utf-8")
 # Route regexes (e.g. GIT_PACK_RE) live in the extracted urls.py module now.
 URLS = Path(__file__).resolve().parents[1] / "src" / "urls.py"
 
 
 def _load(names, extra_globals=None):
     """Exec the named top-level defs/constants out of entry.py in isolation."""
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse(_WORKER_SRC, filename=str(ENTRY))
     urls_tree = ast.parse(URLS.read_text(encoding="utf-8"), filename=str(URLS))
     wanted = set(names)
     selected = []

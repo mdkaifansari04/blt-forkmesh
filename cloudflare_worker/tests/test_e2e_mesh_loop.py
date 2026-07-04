@@ -18,17 +18,23 @@ import hashlib
 from pathlib import Path
 
 
-ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+SRC = Path(__file__).resolve().parents[1] / "src"
+ENTRY = SRC / "entry.py"
+# Helpers now live in entry.py or one of its extracted sibling modules; search
+# each source for the requested FunctionDefs.
+_SOURCES = (ENTRY, SRC / "git_http.py")
 
 
 def _load(*names, extra_globals=None):
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
-    selected = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in names
-    ]
+    selected = []
+    for source in _SOURCES:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        selected += [
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in names
+        ]
     found = {node.name for node in selected}
     assert set(names) - found == set(), "missing: %s" % sorted(set(names) - found)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
