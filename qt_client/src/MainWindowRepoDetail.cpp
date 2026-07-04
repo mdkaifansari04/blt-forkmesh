@@ -1659,13 +1659,6 @@ void MainWindow::loadRepoFileTree()
         if (tab < 0)
             continue;
         const QString path = QString::fromUtf8(record.mid(tab + 1));
-        // Coves are encrypted vaults whose slug-based filename leaks their name to
-        // anyone browsing the tree (including mirror nodes that can't unlock them).
-        // Keep them out of the file browser entirely — and out of folder-size totals
-        // — so they reveal nothing here; they live in Settings → Coves. (#231)
-        if (path.endsWith(QStringLiteral(".cove"), Qt::CaseInsensitive) &&
-            path.startsWith(CoveStore::covesDirRel() + "/"))
-            continue;
         const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
         const qint64 size =
             meta.size() >= 4 ? QString::fromUtf8(meta.at(3)).toLongLong() : 0;
