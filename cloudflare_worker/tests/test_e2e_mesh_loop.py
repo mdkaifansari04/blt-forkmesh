@@ -22,7 +22,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 ENTRY = SRC / "entry.py"
 # Helpers now live in entry.py or one of its extracted sibling modules; search
 # each source for the requested FunctionDefs.
-_SOURCES = (ENTRY, SRC / "git_http.py")
+_SOURCES = (ENTRY, SRC / "git_http.py", SRC / "events.py")
 
 
 def _load(*names, extra_globals=None):
@@ -88,7 +88,8 @@ def test_issue_event_canonical_string_format():
     )
     # The literal format string must be present in verify_issue_event so this
     # cross-language contract fails loudly if the worker canonical ever changes.
-    src = ENTRY.read_text(encoding="utf-8")
+    src = (ENTRY.read_text(encoding="utf-8")
+           + (SRC / "events.py").read_text(encoding="utf-8"))
     assert '"forkmesh-issue-event-v1\\n" + event_type + "\\n" + str(int(number)) + "\\n" +' in src
     assert canonical.startswith("forkmesh-issue-event-v1\nopen\n1\nAUTHOR\n42\n")
     assert len(content_hash) == 64
