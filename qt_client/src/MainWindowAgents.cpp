@@ -4912,13 +4912,25 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             appendAgentRawLog(line + QStringLiteral("\n\n"));
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
+        // The CLI process is meant to stay alive across turns — a genuinely
+        // finished turn is what the `result` event handler above marks Success
+        // (or Failed on an error result). Landing here with the session still
+        // Running/Waiting means the process died without ever sending one (a
+        // crash, or an app-restart resume whose `--resume` id no longer lined
+        // up), not that the task completed. Stamping Success on that was
+        // reported as "an agent I restarted mid-task shows as done" — re-queue
+        // it instead so it stays active and gets another resume attempt,
+        // mirroring initAgents()'s restart recovery (issue #242) rather than
+        // abandoning it with a false result.
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                as->status = AgentStatus::Success;
-                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                as->status = AgentStatus::Queued;
+                as->lastError.clear();
                 m_agentStore->saveSession(*as);
                 scheduleAgentSessionsPush(); // adhoc #182
+                if (!m_agentQueue.contains(sid))
+                    m_agentQueue.append(sid);
             }
         }
         maybeCreatePullForStreamSession(sid);
@@ -4931,6 +4943,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
+        processAgentQueue(); // pick the re-queued session back up
     });
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()
