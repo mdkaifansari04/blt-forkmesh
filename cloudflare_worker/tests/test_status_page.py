@@ -358,6 +358,10 @@ def _run_history_current(
         return None
 
     async def d1_all(_env, sql, *_args):
+        if "FROM repositories" in sql:
+            return [{"key_bi": "mirror_bi", "data": "enc"}] if mainnode_online else []
+        if "FROM host_presence" in sql:
+            return [{"repo_bi": "mirror_bi", "ts": _Clock.value}] if mainnode_online else []
         return []
 
     async def d1_first(_env, sql, *_args):
@@ -365,9 +369,10 @@ def _run_history_current(
             return {"n": repo_count}
         if "FROM error_log" in sql:
             return {"n": error_count}
-        if "FROM host_presence" in sql:
-            return {"ts": _Clock.value} if mainnode_online else None
         return {}
+
+    async def decrypt_row(_env, _data):
+        return {"owner": "alice", "name": "forkmesh"}
 
     async def _live_online_nodes(_env, _now):
         # owner_bi -> label, same shape as the real helper
@@ -387,6 +392,9 @@ def _run_history_current(
         "ensure_schema": noop,
         "d1_all": d1_all,
         "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "safe_segment": lambda s: str(s or "").strip().lower(),
+        "_is_blocked_catalog_identity": lambda *_a: False,
         "_live_online_nodes": _live_online_nodes,
         "blind_index": blind_index,
         "json_response": json_response,
