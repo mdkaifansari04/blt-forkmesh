@@ -419,7 +419,6 @@
 
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
-    inputEl.addEventListener("focus", connect);
     sendEl.addEventListener("click", () => sendFrom(inputEl));
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -433,4 +432,7 @@
   setStatus("Not connected");
   wireInput(fullInput, fullSend);
   wireInput(sideInput, sideSend);
+  // Connect right away so the room's message history (replayed by the relay
+  // on WebSocket open) is visible without the visitor first focusing an input.
+  connect();
 })();
