@@ -70,10 +70,12 @@
         <div class="stat-card">
           <span>Mainnode</span>
           <strong id="stat-mainnode">—</strong>
+          <small id="stat-mainnode-detail"></small>
         </div>
         <div class="stat-card">
           <span>Nodes online</span>
           <strong id="stat-nodes">—</strong>
+          <small id="stat-nodes-detail"></small>
         </div>
         <div class="stat-card">
           <span>Repositories</span>
@@ -84,6 +86,8 @@
           <strong id="stat-errors">—</strong>
         </div>
       </div>
+
+      <div id="status-reasons" class="status-reasons" hidden></div>
 
       <section class="panel doc-panel" aria-labelledby="status-systems-title">
         <div class="panel-header">
@@ -101,6 +105,7 @@
             <span class="status-legend-item"><span class="status-dot is-degraded"></span>Degraded</span>
             <span class="status-legend-item"><span class="status-dot is-down"></span>Down</span>
             <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data</span>
+            <span class="status-legend-item"><span class="status-day-hour-swatch is-future"></span>Later today (not elapsed)</span>
           </div>
         </div>
       </section>
@@ -175,11 +180,25 @@
           return start + " – " + end;
         }
 
+        function fmtAgo(ts, now) {
+          if (typeof ts !== "number") return null;
+          const deltaMs = Math.max(0, now - ts);
+          const mins = Math.round(deltaMs / 60000);
+          if (mins < 1) return "just now";
+          if (mins < 60) return mins + "m ago";
+          const hours = Math.floor(mins / 60);
+          const remMins = mins % 60;
+          if (hours < 24) return hours + "h" + (remMins ? " " + remMins + "m" : "") + " ago";
+          const days = Math.floor(hours / 24);
+          return days + "d ago";
+        }
+
         const HOUR_STATUS_LABEL = {
           operational: "Operational",
           degraded: "Degraded",
           down: "Down",
           unknown: "No data",
+          future: "Not yet elapsed",
         };
 
         function hourTooltip(dayTs, hour) {
@@ -248,6 +267,7 @@
 
           const current = data.current || {};
           const currentEl = document.getElementById("status-current");
+          const now = typeof data.now === "number" ? data.now : Date.now();
           if (currentEl) {
             const fmtNum = (n) =>
               typeof n === "number" ? n.toLocaleString() : "—";
@@ -258,9 +278,36 @@
                 ? "Offline"
                 : "—";
             document.getElementById("stat-mainnode").textContent = mainnode;
+
+            const mainnodeDetail = document.getElementById("stat-mainnode-detail");
+            if (mainnodeDetail) {
+              if (current.mainnodeOnline === true) {
+                mainnodeDetail.textContent = "Heartbeat received within the last " +
+                  Math.round((current.mainnodeStaleMs || 600000) / 60000) + "m";
+              } else if (current.mainnodeOnline === false) {
+                const ago = fmtAgo(current.mainnodeLastSeenTs, now);
+                mainnodeDetail.textContent = ago
+                  ? "No heartbeat since " + ago + " (host_presence stale)"
+                  : "No heartbeat ever recorded for mainnode/forkmesh";
+              } else {
+                mainnodeDetail.textContent = "";
+              }
+            }
+
             document.getElementById("stat-nodes").textContent = fmtNum(
               current.onlineNodes,
             );
+            const nodesDetail = document.getElementById("stat-nodes-detail");
+            if (nodesDetail) {
+              if (current.mainnodeOnline === false && (current.onlineNodes || 0) > 0) {
+                nodesDetail.textContent = "Traffic is being served by mirror node(s), not mainnode";
+              } else if (current.mainnodeOnline === false) {
+                nodesDetail.textContent = "No node — including mainnode — has a live tunnel";
+              } else {
+                nodesDetail.textContent = "";
+              }
+            }
+
             document.getElementById("stat-repos").textContent = fmtNum(
               current.catalogRepos,
             );
@@ -268,6 +315,56 @@
               current.errors24h,
             );
             currentEl.hidden = false;
+          }
+
+          const reasonsEl = document.getElementById("status-reasons");
+          if (reasonsEl) {
+            const items = [];
+            if (current.mainnodeOnline === false) {
+              const ago = fmtAgo(current.mainnodeLastSeenTs, now);
+              items.push({
+                status: "down",
+                label: "Mainnode",
+                detail: "host_presence has " +
+                  (ago ? "no heartbeat in " + ago : "never seen a heartbeat") +
+                  " for repo mainnode/forkmesh (marked stale after " +
+                  Math.round((current.mainnodeStaleMs || 600000) / 60000) +
+                  "m with no check-in).",
+              });
+            }
+            systems.forEach((system) => {
+              if (system.status !== "operational" && system.reason) {
+                const when = fmtAgo(system.reasonTs, now);
+                items.push({
+                  status: system.status,
+                  label: system.label || system.id,
+                  detail: system.reason + (when ? " (" + when + ")" : ""),
+                });
+              }
+            });
+            if (items.length) {
+              reasonsEl.innerHTML = "";
+              const heading = document.createElement("p");
+              heading.className = "status-reasons-title";
+              heading.textContent = "Why:";
+              reasonsEl.appendChild(heading);
+              const ul = document.createElement("ul");
+              items.forEach((item) => {
+                const li = document.createElement("li");
+                const dot = document.createElement("span");
+                dot.className = "status-dot is-" + item.status;
+                li.appendChild(dot);
+                const strong = document.createElement("strong");
+                strong.textContent = item.label + " — ";
+                li.appendChild(strong);
+                li.appendChild(document.createTextNode(item.detail));
+                ul.appendChild(li);
+              });
+              reasonsEl.appendChild(ul);
+              reasonsEl.hidden = false;
+            } else {
+              reasonsEl.hidden = true;
+            }
           }
 
           if (!systems.length) {
@@ -299,10 +396,26 @@
             head.appendChild(meta);
             row.appendChild(head);
 
+            if (system.status !== "operational" && system.reason) {
+              const why = document.createElement("p");
+              why.className = "status-row-reason is-" + system.status;
+              const when = fmtAgo(system.reasonTs, now);
+              why.textContent = system.reason + (when ? " (" + when + ")" : "");
+              row.appendChild(why);
+            }
+
             const days = document.createElement("div");
             days.className = "status-days";
-            (system.days || []).forEach((day) => {
+            const dayList = system.days || [];
+            dayList.forEach((day, dayIndex) => {
+              const isLastDay = dayIndex === dayList.length - 1;
               const cell = document.createElement("div");
+              const hours = day.hours && day.hours.length ? day.hours : [];
+              // A day only ever has < 24 hours when it's the current, still-
+              // in-progress day (see hoursElapsed) — never treat that as
+              // "no data": render the elapsed hours plus dimmed placeholders
+              // for the hours that simply haven't happened yet.
+              const isPartialToday = isLastDay && hours.length > 0 && hours.length < 24;
               const state = !day.checks
                 ? "unknown"
                 : day.failures === 0
@@ -310,20 +423,32 @@
                 : day.failures >= day.checks
                 ? "down"
                 : "degraded";
-              cell.className = "status-day is-" + state;
+              cell.className = "status-day is-" + state +
+                (hours.length ? " has-hours" : "") +
+                (isPartialToday ? " is-partial" : "");
               const label = day.checks
-                ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime"
+                ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime" +
+                  (isPartialToday ? " so far (" + hours.length + "/24h elapsed)" : "")
                 : fmtDay(day.dayTs) + ": no data";
               cell.setAttribute("aria-label", label);
 
-              const hours = day.hours && day.hours.length ? day.hours : [];
               hours.forEach((hour) => {
                 const slice = document.createElement("div");
                 slice.className = "status-day-hour is-" + (hour.status || "unknown");
                 slice.title = hourTooltip(day.dayTs, hour);
                 cell.appendChild(slice);
               });
+              if (isPartialToday) {
+                for (let h = hours.length; h < 24; h++) {
+                  const slice = document.createElement("div");
+                  slice.className = "status-day-hour is-future";
+                  slice.title = fmtDay(day.dayTs) + ", " + fmtHourRange(day.dayTs + h * 3600000) +
+                    ": hasn't happened yet";
+                  cell.appendChild(slice);
+                }
+              }
               if (!hours.length) cell.title = label;
+              else if (isPartialToday) cell.title = label;
 
               days.appendChild(cell);
             });

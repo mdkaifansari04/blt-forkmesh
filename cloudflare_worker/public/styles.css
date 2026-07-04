@@ -554,6 +554,16 @@ main {
   letter-spacing: -0.02em;
 }
 
+.stat-card small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.stat-card small:empty {
+  display: none;
+}
+
 /* ===== Home grid ===== */
 .home-grid {
   display: grid;
@@ -1987,34 +1997,65 @@ button.issue-row {
   font-size: 12px;
 }
 
+.status-row-reason {
+  margin: -4px 0 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--foreground);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.status-row-reason.is-down {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
 .status-days {
   display: flex;
   gap: 3px;
 }
 
+/* Each day-cell is a 6x4 grid of hour slivers. The cell background is a
+   fixed neutral "track" colour (never the status colour) so grid seams stay
+   visible even on an all-green or all-orange day — without this, a uniform
+   day used to blend into a single flat block indistinguishable from a
+   still-in-progress (partial) day. Only true no-data days (no hours at all)
+   fall back to a solid status-coloured block. */
 .status-day {
   flex: 1;
   min-width: 22px;
   aspect-ratio: 3 / 2;
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--border);
   cursor: default;
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   grid-auto-rows: 1fr;
-  gap: 1px;
+  gap: 2px;
   padding: 2px;
   box-sizing: border-box;
+  transition: transform 0.1s ease;
 }
 
-.status-day.is-operational { background: var(--accent-bright); }
-.status-day.is-degraded { background: var(--warning); }
-.status-day.is-down { background: var(--danger); }
-.status-day.is-unknown { background: var(--border); }
+.status-day.has-hours:hover {
+  transform: scale(1.06);
+}
+
+.status-day:not(.has-hours).is-operational { background: var(--accent-bright); }
+.status-day:not(.has-hours).is-degraded { background: var(--warning); }
+.status-day:not(.has-hours).is-down { background: var(--danger); }
+.status-day:not(.has-hours).is-unknown { background: var(--border); }
+
+.status-day.is-partial {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 18%, transparent);
+}
 
 .status-day-hour {
   cursor: default;
-  border-radius: 1px;
+  border-radius: 1.5px;
   background: var(--border);
 }
 
@@ -2022,6 +2063,53 @@ button.issue-row {
 .status-day-hour.is-degraded { background: var(--warning); }
 .status-day-hour.is-down { background: var(--danger); }
 .status-day-hour.is-unknown { background: var(--border); }
+
+/* Hours later today that simply haven't happened yet — visually hollow so a
+   partial day never reads as a completed, fully-green/orange block. */
+.status-day-hour.is-future {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 90%, var(--foreground) 10%);
+}
+
+.status-reasons {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+
+.status-reasons-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.status-reasons ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status-reasons li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.status-reasons li .status-dot {
+  flex: none;
+  transform: translateY(-1px);
+}
 
 .status-legend {
   display: flex;
@@ -2036,6 +2124,19 @@ button.issue-row {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.status-day-hour-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 1.5px;
+  flex: none;
+  background: var(--border);
+}
+
+.status-day-hour-swatch.is-future {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 90%, var(--foreground) 10%);
 }
 
 .status-empty {
