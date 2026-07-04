@@ -1969,6 +1969,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+        # "mainnode" is a canonical/branding owner that no node ever registers a
+        # host tunnel under: browse/clone to mainnode/forkmesh fails over to
+        # whichever node hosts a live "forkmesh" mirror (install_source picks a
+        # mirror the same way). So the host_presence row keyed on the literal
+        # mainnode/forkmesh path is never written, and reading it alone always
+        # reports the mainnode offline even while the repo is perfectly
+        # reachable through a mirror. Fold in the freshest heartbeat across
+        # every forkmesh mirror so "mainnode online" tracks real reachability.
+        try:
+            repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+            pres_rows = await d1_all(env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {str(r.get("repo_bi")): int(r.get("ts") or 0)
+                        for r in (pres_rows or []) if r.get("repo_bi")}
+            for r in (repo_rows or []):
+                rec = await decrypt_row(env, r.get("data"))
+                if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                    continue
+                if _is_blocked_catalog_identity(env, rec.get("owner"), rec.get("name")):
+                    continue
+                ts = presence.get(str(r.get("key_bi")), 0)
+                if ts and (last_ts is None or ts > last_ts):
+                    last_ts = ts
+        except Exception:
+            pass
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
@@ -9834,11 +9858,14 @@ class Default(WorkerEntrypoint):
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
                         if served and served.lower() != owner.lower():
-                            # A failed forward (exception or 503/504: the pick's
-                            # presence row outlived its tunnel) falls through to
-                            # the named owner's own route, whose failure handler
-                            # below tries the remaining mirrors — a broken
-                            # mirror hop must degrade, never take the page down.
+                            # A failed forward (exception, 503/504: the pick's
+                            # presence row outlived its tunnel, or 502: its host
+                            # answered but couldn't produce the tree — e.g. a
+                            # freshly-added mirror whose clone is empty/still
+                            # syncing) falls through to the named owner's own
+                            # route, whose failure handler below tries the
+                            # remaining mirrors — a broken mirror hop must
+                            # degrade, never take the page down.
                             forwarded = None
                             try:
                                 forwarded = await self._forward_to_node(
@@ -9849,24 +9876,27 @@ class Default(WorkerEntrypoint):
                             except Exception:
                                 fstatus = 0
                             if forwarded is not None and \
-                                    fstatus not in (0, 503, 504):
+                                    fstatus not in (0, 502, 503, 504):
                                 return forwarded
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(request)
             if public_browse:
-                # The routed node couldn't serve (no host connected: 503, or a
-                # dead-but-lingering tunnel: 504). Its host_presence row can lag
-                # reality for up to HOST_PRESENCE_STALE_MS, during which the
-                # rotation above still picks it — so on failure, serve once more
-                # in place from an online mirror of the same logical repo,
-                # excluding the node that just failed. Best-effort: if that
-                # forward fails too, return the named node's original error.
+                # The routed node couldn't serve (no host connected: 503, a
+                # dead-but-lingering tunnel: 504, or a host that answered but
+                # couldn't build the reply: 502 — e.g. a freshly-added mirror
+                # whose clone is empty/still syncing, so ls-tree has no ref).
+                # Its host_presence row can lag reality for up to
+                # HOST_PRESENCE_STALE_MS, during which the rotation above still
+                # picks it — so on failure, serve once more in place from an
+                # online mirror of the same logical repo, excluding the node
+                # that just failed. Best-effort: if that forward fails too,
+                # return the named node's original error.
                 try:
                     status = int(response.status)
                 except Exception:
                     status = 0
-                if status in (503, 504):
+                if status in (502, 503, 504):
                     fallback = await self._select_browse_mirror(
                         owner, repo, exclude=owner)
                     if fallback and fallback.lower() != owner.lower():
