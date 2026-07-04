@@ -176,6 +176,10 @@ PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 # present the code.
 CLAIM_CODE_TTL_MS = 10 * 60 * 1000
 CLAIM_CODE_MAX_ATTEMPTS = 5
+# An admin-initiated ownership takeover (adhoc #141) rides back to the target
+# node on its own heartbeat, same as a claim code, but the node may be offline
+# for a while before it's seen and approved/denied, so it gets a long window.
+OWNERSHIP_TRANSFER_TTL_MS = 24 * 60 * 60 * 1000
 LINK_CODE_TTL_MS = 30 * 60 * 1000
 LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
@@ -2475,6 +2479,15 @@ CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
 
+# Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
+# constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
+# two async WebCrypto round trips each) on every blind_index / encrypt_row /
+# decrypt_row call was the dominant per-request CPU cost on hot polled endpoints
+# (/api/notifications, /api/accounts/<name>). Cache the imported CryptoKeys,
+# keyed by the current secret so a secret rotation still takes effect.
+_data_key_cache = {"secret": None, "key": None}
+_hmac_key_cache = {"secret": None, "key": None}
+
 SCHEMA_STATEMENTS = [
     # email_bi (blind index of the email) lets users log in by email, not just
     # node name (migration 0003). is_admin is an operator-settable flag and name
@@ -2834,11 +2847,16 @@ def _require_data_secret(env):
 
 async def _data_key(env):
     secret = _require_data_secret(env)
+    if _data_key_cache["secret"] == secret and _data_key_cache["key"] is not None:
+        return _data_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "AES-GCM"}), False,
         _to_js(["encrypt", "decrypt"])
     )
+    _data_key_cache["secret"] = secret
+    _data_key_cache["key"] = key
+    return key
 
 
 async def encrypt_row(env, obj):
@@ -2870,11 +2888,16 @@ async def decrypt_row(env, stored, key=None):
 async def _hmac_key(env):
     # A distinct key context so the blind-index HMAC key isn't the AES key.
     secret = _require_data_secret(env) + ":blind-index"
+    if _hmac_key_cache["secret"] == secret and _hmac_key_cache["key"] is not None:
+        return _hmac_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
         _to_js(["sign"])
     )
+    _hmac_key_cache["secret"] = secret
+    _hmac_key_cache["key"] = key
+    return key
 
 
 async def blind_index(env, value):
@@ -3874,14 +3897,15 @@ async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
-    return {
+    is_admin = await _is_admin(env, name)
+    payload = {
         "ok": True,
         "nodeName": name,
         "email": rec.get("email", ""),
         "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
         "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, name),
+        "isAdmin": is_admin,
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),
@@ -3890,6 +3914,11 @@ async def _account_public_payload(env, rec):
         "owner": rec.get("owner", ""),
         "nodes": _owned_nodes(rec),
     }
+    if is_admin:
+        admin_path = _admin_path(env)
+        if admin_path:
+            payload["adminUrl"] = "/" + admin_path
+    return payload
 
 
 def _donation_expiry_fields(rec, now):
@@ -4810,6 +4839,19 @@ def _claim_pending(rec, now):
     return pending
 
 
+def _transfer_pending(rec, now):
+    pending = rec.get("ownership_transfer_pending")
+    if not isinstance(pending, dict):
+        return None
+    try:
+        expires = int(pending.get("expires") or 0)
+    except (TypeError, ValueError):
+        return None
+    if now >= expires or not pending.get("admin"):
+        return None
+    return pending
+
+
 async def _resolve_user_by_password(env, data):
     # Web-auth gate for the claim endpoints, matching _account_profile: a
     # state-changing dashboard action re-proves the password on each request
@@ -4850,6 +4892,7 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
     prev_owner = node_rec.get("owner") or ""
     node_rec["owner"] = user_name
     node_rec.pop("claim_pending", None)
+    node_rec.pop("ownership_transfer_pending", None)
     await _save_account(env, node_bi, node_rec)
     if prev_owner and prev_owner != user_name:
         prev_bi, prev_rec = await _account_row(env, prev_owner)
@@ -5445,6 +5488,15 @@ async def _account_heartbeat(env, request):
                              "code": claim.get("code", "")}
     elif rec.get("claim_pending"):
         rec.pop("claim_pending", None)
+        await _save_account(env, name_bi, rec)
+    # An admin-initiated ownership takeover (adhoc #141) rides back the same
+    # way: only the node's own signed heartbeat carries it, so only whoever is
+    # actually logged into that machine ever sees the prompt.
+    transfer = _transfer_pending(rec, int(Date.now()))
+    if transfer:
+        response["ownershipTransfer"] = {"admin": transfer.get("admin", "")}
+    elif rec.get("ownership_transfer_pending"):
+        rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
     return json_response(response)
 
@@ -6916,6 +6968,92 @@ async def _admin_relay_approve(env, request):
     return json_response({"ok": True, "status": status})
 
 
+# --- Admin: node ownership takeover (adhoc #141) -----------------------------
+# An admin can request to take ownership of any node. The request only parks a
+# pending marker on the target node's own record; it does NOT transfer
+# ownership by itself. The marker rides back to that node on its own signed
+# heartbeat (same channel as a website claim code), the desktop app pops a
+# confirm/deny prompt, and only a signature from the node's own key — i.e. the
+# node the current owner is actually logged into — can approve or deny it.
+
+async def _admin_request_ownership(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    canonical = ("forkmesh-admin-request-ownership-v1\n" + node + "\n" +
+                 target + "\n" + ts).encode()
+    admin_rec = await _admin_authorized(env, node, ts, sig, canonical)
+    if not admin_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    admin_name = admin_rec.get("name", node)
+    if target == admin_name:
+        return json_response({"error": "cannot_request_self"}, status=400)
+    target_bi, target_rec = await _account_row(env, target)
+    if not target_rec or target_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if _account_kind(target_rec) != "node":
+        # An account that can log in is a user in its own right, not takeable.
+        return json_response({"error": "not_a_node"}, status=403)
+    if target_rec.get("owner") == admin_name:
+        return json_response({"ok": True, "alreadyOwned": True, "nodeId": target})
+    now = int(Date.now())
+    target_rec["ownership_transfer_pending"] = {
+        "admin": admin_name,
+        "requestedAt": now,
+        "expires": now + OWNERSHIP_TRANSFER_TTL_MS,
+    }
+    await _save_account(env, target_bi, target_rec)
+    return json_response({"ok": True, "pending": True, "nodeId": target,
+                          "expiresAt": now + OWNERSHIP_TRANSFER_TTL_MS}, status=201)
+
+
+async def _account_ownership_transfer_confirm(env, request):
+    # Called from the target node's own desktop app in response to the
+    # heartbeat-delivered prompt, signed with the node's own key — the same
+    # proof-of-control the node uses for its heartbeat, not the admin's.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node_name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    action = clean_string(data.get("action", ""), 20)
+    if action not in ("approve", "deny"):
+        return json_response({"error": "bad_action"}, status=400)
+    if not valid_node_name(node_name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    node_bi, node_rec = await _account_row(env, node_name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    pubkey = node_rec.get("pubkey", "")
+    if not pubkey or not _ts_ok(ts):
+        return json_response({"error": "unauthorized"}, status=401)
+    canonical = ("forkmesh-ownership-transfer-confirm-v1\n" + node_name +
+                 "\n" + action + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    pending = _transfer_pending(node_rec, int(Date.now()))
+    if not pending:
+        return json_response({"error": "no_pending_transfer"}, status=404)
+    if action == "deny":
+        node_rec.pop("ownership_transfer_pending", None)
+        await _save_account(env, node_bi, node_rec)
+        return json_response({"ok": True, "denied": True, "nodeId": node_name})
+    admin_name = pending.get("admin", "")
+    node_rec.pop("ownership_transfer_pending", None)
+    await _link_node_to_user(env, node_name, node_bi, node_rec, admin_name)
+    return json_response({"ok": True, "linked": True, "nodeId": node_name,
+                          "owner": admin_name})
+
+
 async def _account_treasury_address(env, request):
     """Public: the ForkMesh treasury Solana address for in-app donations.
 
@@ -6984,6 +7122,10 @@ async def accounts_handler(env, request):
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
         return await _admin_relay_approve(env, request)
+    if url.path == "/api/accounts/admin-request-ownership" and method == "POST":
+        return await _admin_request_ownership(env, request)
+    if url.path == "/api/accounts/ownership-transfer-confirm" and method == "POST":
+        return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
@@ -7017,11 +7159,16 @@ async def accounts_handler(env, request):
         # claim, and let a node's own profile list the nodes linked to its user
         # account; node ownership is public catalog-adjacent data like the name
         # itself (same fields _account_public_payload already exposes).
+        # emailVerified is a boolean only (no address) so the dashboard's
+        # periodic self-profile poll (refreshPublicProfile, which reuses this
+        # same lookup) can pick up a verification that happened in another
+        # tab instead of showing "verify your email" forever (issue #320).
         return json_response(
             {"ok": True, "exists": True, "available": not taken,
              "name": rec.get("name", name), "status": rec.get("status", ""),
              "pubkey": rec.get("pubkey", ""),
              "isAdmin": await _is_admin(env, rec.get("name", name)),
+             "emailVerified": bool(rec.get("email_verified")),
              "avatarPng": rec.get("avatar_png", ""),
              "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
              "createdAt": rec.get("created_at", 0),
@@ -7298,6 +7445,59 @@ async def notifications_handler(env, request):
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+def _build_rev(env):
+    # The git rev deploy.sh stamps as a Worker var on every production deploy.
+    try:
+        val = env.BUILD_REV
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return "dev"
+
+
+async def poll_handler(env, request):
+    # One lightweight digest the client polls on its regular tick INSTEAD of
+    # separately re-fetching the full profile (/api/accounts/<name> — avatar and
+    # all) and the full notification list every time. It returns only cheap
+    # change tokens (a couple of indexed reads, no avatar blob, no per-row
+    # notification decrypt); the client fires those heavier fetches only when a
+    # token here actually moves. Rolling three per-minute polls into one keeps
+    # the hot dashboard path off the Worker CPU limit.
+    await ensure_schema(env)
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    out = {"ok": True, "rev": _build_rev(env)}
+    if not valid_node_name(node):
+        return json_response(out)
+    name_bi, rec = await _account_row(env, node)
+    if rec:
+        # Token folds the profile fields the dashboard actually re-renders, so a
+        # change to any of them (verification, avatar, admin grant, ownership)
+        # invalidates it and triggers the full /api/accounts/<name> fetch.
+        out["profile"] = {"token": ":".join(str(x) for x in (
+            rec.get("status", ""),
+            1 if rec.get("email_verified") else 0,
+            rec.get("avatar_updated_at", 0) or 0,
+            1 if await _is_admin(env, node) else 0,
+            rec.get("owner", "") or "",
+        ))}
+        # Unread count is returned outright so the bell badge updates from the
+        # poll alone; token (latest ts + row total) moves on any add/remove so
+        # the full list is re-pulled only when it changed.
+        notif = await d1_first(
+            env,
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN read_at=0 THEN 1 ELSE 0 END) AS unread, "
+            "MAX(ts) AS latest FROM notifications WHERE recipient_bi=?",
+            name_bi)
+        total = int((notif or {}).get("total") or 0)
+        unread = int((notif or {}).get("unread") or 0)
+        latest = int((notif or {}).get("latest") or 0)
+        out["notif"] = {"unread": unread, "token": str(latest) + ":" + str(total)}
+    return json_response(out)
 
 
 async def issues_handler(env, request, owner, repo):
@@ -8759,17 +8959,10 @@ class Default(WorkerEntrypoint):
         # serving while the deploy reported success), and the script aborts loudly
         # instead of reporting a phantom success.
         if url.path in ("/api/version", "/api/version/"):
-            build_rev = "dev"
-            try:
-                val = self.env.BUILD_REV
-                if val:
-                    build_rev = str(val)
-            except (AttributeError, TypeError):
-                pass
             return json_response(
                 {
                     "ok": True,
-                    "rev": build_rev,
+                    "rev": _build_rev(self.env),
                     "now": Date.now(),
                 }
             )
@@ -8812,6 +9005,12 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
+
+        # Consolidated lightweight status digest (version + profile/notification
+        # change tokens) so the client polls once instead of re-fetching the
+        # full profile and notification list every tick.
+        if url.path in ("/api/poll", "/api/poll/"):
+            return await poll_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
