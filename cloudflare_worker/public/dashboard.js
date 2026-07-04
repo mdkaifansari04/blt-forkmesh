@@ -3062,6 +3062,16 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
+  // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
+  // header once the real records are loaded (the initial render only knows a
+  // bundled total, not the open/closed split).
+  function setRepoCollectionCounts(kind, openCount, closedCount) {
+    const openEl = $(`[data-repo-collection-open-count="${kind}"]`);
+    if (openEl) openEl.textContent = tabCountLabel(openCount);
+    const closedEl = $(`[data-repo-collection-closed-count="${kind}"]`);
+    if (closedEl) closedEl.textContent = tabCountLabel(closedCount);
+  }
+
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
     // Total issue count from the root tree's bundled tallies; the first view of
@@ -3145,6 +3155,8 @@
       state.issuesView.items = items;
       state.issuesView.filter = "open";
       setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
+      const openIssues = items.filter((issue) => issue.status === "open").length;
+      setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the issues/ folder.</div>';
@@ -3161,6 +3173,11 @@
       container.innerHTML = items.length
         ? renderRepoRecordList(items, config, kind)
         : `<div class="px-4 py-3 text-sm text-muted-foreground">${config.empty}</div>`;
+      if (kind === "pulls") {
+        const openPulls = items.filter((item) => item.state === "open").length;
+        setRepoTabCount("pulls", openPulls);
+        setRepoCollectionCounts("pulls", openPulls, items.length - openPulls);
+      }
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${escapeHtml(config.label)} are unavailable until a live desktop host serves the ${escapeHtml(config.dir)}/ folder.</div>`;
     } finally {
@@ -3935,8 +3952,8 @@
           <div class="overflow-hidden rounded-lg border border-border bg-background">
             <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
               <div class="flex min-w-0 flex-wrap items-center gap-3 text-xs">
-                <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i>${tabCountLabel(openCount)} Open</span>
-                <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i>${tabCountLabel(closedCount)} Closed</span>
+                <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i><span data-repo-collection-open-count="${kind}">${tabCountLabel(openCount)}</span> Open</span>
+                <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i><span data-repo-collection-closed-count="${kind}">${tabCountLabel(closedCount)}</span> Closed</span>
               </div>
               ${kind === "issues" && state.session?.nodeName
                 ? `<button type="button" data-repo-issue-new class="inline-flex h-7 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`
@@ -4095,8 +4112,8 @@
 		            </section>
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
-            ${renderRepoCollectionPanel("issues", repo, issuesCount, null)}
-            ${renderRepoCollectionPanel("pulls", repo, pullsCount, null)}
+            ${renderRepoCollectionPanel("issues", repo, null, null)}
+            ${renderRepoCollectionPanel("pulls", repo, null, null)}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
           </div>
