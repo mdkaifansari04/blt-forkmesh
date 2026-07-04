@@ -223,7 +223,31 @@ ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
     m_rosterStorageKey =
         QString::fromLatin1(QCryptographicHash::hash(material, QCryptographicHash::Sha256)
                                 .toHex());
+    m_endpoints = {m_url}; // default to the single URL; setEndpoints() adds failovers
     loadKnownPeers();
+}
+
+void ServerNode::setEndpoints(const QList<QUrl> &endpoints)
+{
+    QList<QUrl> valid;
+    for (const QUrl &u : endpoints) {
+        if (u.isValid() && (u.scheme() == "ws" || u.scheme() == "wss") &&
+            !valid.contains(u))
+            valid.append(u);
+    }
+    if (valid.isEmpty())
+        return;
+    m_endpoints = valid;
+    m_endpointIndex = 0;
+    m_url = m_endpoints.first();
+}
+
+void ServerNode::advanceEndpoint()
+{
+    if (m_endpoints.size() <= 1)
+        return;
+    m_endpointIndex = (m_endpointIndex + 1) % m_endpoints.size();
+    m_url = m_endpoints.at(m_endpointIndex);
 }
 
 bool ServerNode::start()
@@ -261,8 +285,13 @@ bool ServerNode::start()
         });
     }
 
+    // A fresh join starts from the most-preferred mainnode with fast retries.
+    if (!m_endpoints.isEmpty()) {
+        m_endpointIndex = 0;
+        m_url = m_endpoints.first();
+    }
     emit statusChanged("Connecting to " + m_url.host() + "...");
-    m_reconnectAttempts = 0; // a fresh join starts with fast retries
+    m_reconnectAttempts = 0;
     openConnection();
     return true;
 }
@@ -301,6 +330,10 @@ void ServerNode::scheduleReconnect()
         connect(m_reconnectTimer, &QTimer::timeout, this, [this] {
             if (m_userStopped)
                 return;
+            // Fail over to the next configured mainnode before each retry so a
+            // dead/quota-limited endpoint is skipped instead of hammered forever
+            // (issue #364). With a single endpoint this is a no-op.
+            advanceEndpoint();
             emit statusChanged("Reconnecting to " + m_url.host() + "...");
             openConnection();
         });
@@ -318,7 +351,12 @@ void ServerNode::scheduleReconnect()
     // exponential growth visible for longer and cuts the steady-state
     // request rate once it does plateau. Jitter keeps many nodes from
     // reconnecting in lockstep; the counter resets once an upgrade succeeds.
-    const int shift = qMin(m_reconnectAttempts, 9);
+    // With multiple mainnodes, probe them all at the fast rate before the delay
+    // grows: the backoff shift advances once per full cycle through the endpoint
+    // list (issue #364), so failover to a healthy peer stays quick while a
+    // network-wide outage still ramps down to the 5-minute ceiling.
+    const int endpointCount = qMax(1, int(m_endpoints.size()));
+    const int shift = qMin(m_reconnectAttempts / endpointCount, 9);
     ++m_reconnectAttempts;
     int delay = qMin(1000 << shift, 300000);
     delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
