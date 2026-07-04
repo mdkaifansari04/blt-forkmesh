@@ -5,7 +5,7 @@ title: Have a feature / setting where the node can email you when your Claude co
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 43
 progress: 0
 assignees: []
 createdAt: 1783097325
