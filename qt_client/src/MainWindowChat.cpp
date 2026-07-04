@@ -5648,20 +5648,35 @@ QWidget *MainWindow::buildHostsSection()
     outer->setContentsMargins(24, 20, 24, 24);
     outer->setSpacing(12);
 
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
     auto *title = new QLabel(QStringLiteral("Hosts"));
     title->setObjectName("sectionTitle");
     QFont titleFont = title->font();
     titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
     titleFont.setBold(true);
     title->setFont(titleFont);
-    outer->addWidget(title);
+    titleRow->addWidget(title);
+    titleRow->addStretch(1);
+    // Bulk one-click install: upload this app's own release binary to every
+    // saved host in turn, instead of clicking Install (binary) on each row.
+    m_hostInstallAllButton = new QPushButton(QStringLiteral("Install from binary (all hosts)"));
+    m_hostInstallAllButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_hostInstallAllButton, "upload", 14);
+    connect(m_hostInstallAllButton, &QPushButton::clicked, this,
+            &MainWindow::runHostInstallAllFromBinary);
+    titleRow->addWidget(m_hostInstallAllButton);
+    outer->addLayout(titleRow);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "Provision a remote machine onto the network. Enter its address and SSH "
         "login and give it a node name, then click Add host to save it. With the "
         "host saved, click Install ForkMesh and it will SSH in and run the hosted "
         "installer in a plain shell. When it finishes the new node joins the "
-        "network and shows up in each repository's Mirror nodes list."));
+        "network and shows up in each repository's Mirror nodes list. Install "
+        "(binary) on a saved host, or Install from binary (all hosts) above, "
+        "uploads this app's own release binary to the host instead of having it "
+        "download the release itself."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -5737,7 +5752,7 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_hostInstallButton, "rocket", 14);
     connect(m_hostInstallButton, &QPushButton::clicked, this,
-            &MainWindow::runHostInstall);
+            [this] { runHostInstall(); });
     runRow->addWidget(m_hostInstallButton);
     m_hostInstallStatus = new QLabel;
     m_hostInstallStatus->setObjectName("mutedLabel");
@@ -5850,6 +5865,21 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(updateBtn);
+
+        // Per-row "Install (binary)" button: one-click direct-upload install —
+        // reload the saved host into the form and run the installer with this
+        // app's own release binary uploaded over the SSH session, regardless of
+        // the form's "Upload the release from this app" checkbox state.
+        auto *installBinaryBtn = new QPushButton(QStringLiteral("Install (binary)"));
+        installBinaryBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(installBinaryBtn, "upload", 12);
+        connect(installBinaryBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                loadHostIntoForm(i, 0);
+                runHostInstall(/*forceUploadBinary=*/true);
+            });
+        });
+        cellRow->addWidget(installBinaryBtn);
 
         // Per-row Uninstall button: reload the saved host into the form and run
         // the hosted uninstaller against it, after a confirmation prompt since it
@@ -6364,13 +6394,16 @@ namespace {
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 } // namespace
 
-void MainWindow::runHostInstall()
+void MainWindow::runHostInstall(bool forceUploadBinary,
+                                std::function<void(bool)> onFinished)
 {
     if (m_hostInstallProcess &&
         m_hostInstallProcess->state() != QProcess::NotRunning) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(
                 QStringLiteral("An install is already running."));
+        if (onFinished)
+            onFinished(false);
         return;
     }
 
@@ -6383,6 +6416,8 @@ void MainWindow::runHostInstall()
             m_hostInstallStatus->setText(QString::fromUtf8(
                 "Enter the host IP, SSH username, password and a node name "
                 "first."));
+        if (onFinished)
+            onFinished(false);
         return;
     }
     const QString installUrl = installScriptUrl();
@@ -6390,6 +6425,8 @@ void MainWindow::runHostInstall()
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(
                 QStringLiteral("Could not resolve the installer URL."));
+        if (onFinished)
+            onFinished(false);
         return;
     }
 
@@ -6397,8 +6434,11 @@ void MainWindow::runHostInstall()
     // the host over the SSH session's stdin instead of the host downloading it
     // from the relay's release endpoint. Read the bytes up front so a locked or
     // missing binary fails here, before anything touches the remote machine.
-    const bool uploadBinary =
-        m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked();
+    // forceUploadBinary is set by the per-row / install-all "Install (binary)"
+    // actions (adhoc #257), which always direct-upload regardless of whether
+    // the form's checkbox happens to be ticked.
+    const bool uploadBinary = forceUploadBinary ||
+        (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked());
     QByteArray uploadBytes;
     if (uploadBinary) {
         QFile self(QCoreApplication::applicationFilePath());
@@ -6409,6 +6449,8 @@ void MainWindow::runHostInstall()
                     QString::fromUtf8("Could not read this app's binary (%1) "
                                       "to upload it.")
                         .arg(QCoreApplication::applicationFilePath()));
+            if (onFinished)
+                onFinished(false);
             return;
         }
     }
@@ -6553,7 +6595,7 @@ void MainWindow::runHostInstall()
                 "and sshpass on this machine and try again.\n"));
     });
     connect(proc, &QProcess::finished, this,
-            [this, ip, user, node, pass](int code, QProcess::ExitStatus status) {
+            [this, ip, user, node, pass, onFinished](int code, QProcess::ExitStatus status) {
                 if (m_hostInstallButton)
                     m_hostInstallButton->setEnabled(true);
                 const bool ok = status == QProcess::NormalExit && code == 0;
@@ -6580,6 +6622,8 @@ void MainWindow::runHostInstall()
                     m_hostInstallProcess->deleteLater();
                     m_hostInstallProcess = nullptr;
                 }
+                if (onFinished)
+                    onFinished(ok);
             });
 
     proc->start(QStringLiteral("sshpass"), sshArgs);
@@ -6597,6 +6641,42 @@ void MainWindow::runHostInstall()
         proc->write(uploadBytes);
     }
     proc->closeWriteChannel();
+}
+
+void MainWindow::runHostInstallAllFromBinary()
+{
+    if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QStringLiteral("No saved hosts to install."));
+        return;
+    }
+    if (m_hostInstallProcess &&
+        m_hostInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("An install is already running."));
+        return;
+    }
+    QList<int> rows;
+    rows.reserve(m_hostsTable->rowCount());
+    for (int i = 0; i < m_hostsTable->rowCount(); ++i)
+        rows.append(i);
+    installNextHostFromBinary(rows);
+}
+
+void MainWindow::installNextHostFromBinary(QList<int> remainingRows)
+{
+    if (remainingRows.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Finished installing from binary on all hosts."));
+        return;
+    }
+    const int row = remainingRows.takeFirst();
+    loadHostIntoForm(row, 0);
+    runHostInstall(/*forceUploadBinary=*/true, [this, remainingRows](bool /*ok*/) {
+        installNextHostFromBinary(remainingRows);
+    });
 }
 
 void MainWindow::runHostUninstall()
