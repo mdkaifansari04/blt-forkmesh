@@ -319,7 +319,27 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
-    # Register both suites with CTest so they run independently of the app:
+    # A third suite (issue #357): performance budgets for startup and
+    # repo-detail tab switches. Kept in its own binary rather than folded into
+    # forkmesh-window-tests, which is known-flaky in some sandboxed
+    # environments — a perf gate must be individually skippable
+    # (FORKMESH_SKIP_PERF_TESTS=1) without disabling window-tests' functional
+    # coverage.
+    qt_add_executable(forkmesh-perf-tests
+        tests/test_perf_budgets.cpp
+        ${FORKMESH_APP_SOURCES}
+    )
+    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(forkmesh-perf-tests PRIVATE util Qt6::DBus)
+        target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
+    endif()
+    target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    if(APPLE)
+        set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # Register all suites with CTest so they run independently of the app:
     #   ctest --test-dir build            (runs the already-built binaries)
     #   cmake --build build --target check (builds the tests, then runs them)
     # The headless smoke tests need an offscreen Qt platform.
@@ -327,11 +347,12 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
-    set_tests_properties(forkmesh-tests forkmesh-window-tests PROPERTIES
+    add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
+    set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests)
+    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests forkmesh-perf-tests)
 endif()
