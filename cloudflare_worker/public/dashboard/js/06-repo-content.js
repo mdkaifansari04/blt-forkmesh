@@ -1025,9 +1025,26 @@
       </div>`;
   }
 
+  // Composer pinned to the top of the agents list (adhoc #266): type a prompt
+  // and send it to a brand-new agent on the owner's node. The node's prompt
+  // drain recognises the "new" sentinel agent id and spins up an ad-hoc run.
+  function renderRepoAgentNewComposer() {
+    return `
+      <form data-repo-agent-new-form class="flex items-center gap-2 border-b border-border bg-secondary/30 px-4 py-3">
+        <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+        <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
+        <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
+      </form>`;
+  }
+
   function renderRepoAgentsList(agents) {
     const container = $("[data-repo-agents]");
     if (!container) return;
+    // Preserve whatever the user has half-typed into the top composer across the
+    // frequent re-renders a running agent triggers (turns/cost/status all move),
+    // so a background poll never eats their caret mid-sentence.
+    const priorComposer = container.querySelector("[data-repo-agent-new-input]");
+    const priorComposerValue = priorComposer ? priorComposer.value : "";
     // When a detail page is open for a still-present agent, render that instead
     // of the list (adhoc #259). If the selected agent has vanished from a fresh
     // fetch, fall back to the list so we never strand the user on a dead page.
@@ -1041,9 +1058,12 @@
       return;
     }
     if (selectedId != null) state.agentsView.selectedAgentId = null;
-    container.innerHTML = agents.length
+    const listBody = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
-      : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the desktop app.</div>';
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one above, or from the desktop app.</div>';
+    container.innerHTML = renderRepoAgentNewComposer() + listBody;
+    const composer = container.querySelector("[data-repo-agent-new-input]");
+    if (composer && priorComposerValue) composer.value = priorComposerValue;
     window.lucide?.createIcons();
   }
 
@@ -1241,6 +1261,54 @@
           : code === "prompt_queue_full" ? "Too many pending messages for this repository — try again shortly."
           : code === "not_authorized" ? "You don't have permission to send messages."
             : "Could not send the message. Please try again.",
+        "bad");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  // Top-of-list composer: queue a "new agent" prompt for this repo (adhoc #266).
+  // Reuses the per-agent prompt endpoint with the "new" sentinel agent id, which
+  // the owner's node turns into a fresh ad-hoc agent run on drain.
+  async function handleRepoAgentNewSubmit(repo, form) {
+    const input = form.querySelector("[data-repo-agent-new-input]");
+    const submit = form.querySelector("[data-repo-agent-new-submit]");
+    const hint = form.querySelector("[data-repo-agent-new-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    const text = String(input?.value || "").trim();
+    if (!text) {
+      setHint("Enter a prompt to start an agent.", "bad");
+      return;
+    }
+    if (submit) submit.disabled = true;
+    setHint("Starting…");
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/agents/new/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          ownerAccount: state.session?.nodeName || "",
+          text,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      if (input) input.value = "";
+      setHint("Sent — the node will start a new agent shortly.", "good");
+    } catch (error) {
+      const code = String(error?.message || "");
+      setHint(
+        code === "text_required" ? "Enter a prompt to start an agent."
+          : code === "text_too_long" ? "Prompt is too long."
+          : code === "prompt_queue_full" ? "Too many pending prompts for this repository — try again shortly."
+          : code === "not_authorized" ? "You don't have permission to start agents."
+            : "Could not start the agent. Please try again.",
         "bad");
     } finally {
       if (submit) submit.disabled = false;
