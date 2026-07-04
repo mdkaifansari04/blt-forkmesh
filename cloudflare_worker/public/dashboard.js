@@ -564,7 +564,13 @@
     // The worker only honors wantsAgent when this re-proves account ownership
     // (password check) — a raw client-side checkbox isn't enough, since it
     // makes the owner's node start a coding agent unattended (adhoc #105).
-    if (assignAgent) payload.ownerPassword = ownerPassword;
+    // ownerAccount names which account is re-proving itself: the repo owner, or
+    // an admin acting on the owner's behalf (adhoc #141). The worker verifies
+    // that account's password and that it's the owner or an admin.
+    if (assignAgent) {
+      payload.ownerPassword = ownerPassword;
+      payload.ownerAccount = state.session?.nodeName || "";
+    }
     const response = await fetch(`${repoApiBase(repo)}/issues`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -3230,11 +3236,20 @@
     return Boolean(owner) && owner === String(repo?.owner || "").toLowerCase();
   }
 
+  // True when the logged-in account may assign an issue to a coding agent on
+  // this repo's node: the repo owner itself, or an admin acting on the owner's
+  // behalf (admin node-ownership, adhoc #141). The backend independently
+  // re-checks both the account password and admin status, so this is only the
+  // client-side gate for showing the checkbox.
+  function sessionCanAssignAgent(repo) {
+    return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
+  }
+
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
     const who = escapeHtml(state.session?.nodeName || "you");
-    const canAssignAgent = sessionOwnsRepo(repo);
+    const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -3259,7 +3274,7 @@
         <div class="grid gap-2">
           <label class="flex items-center gap-2 text-xs text-muted-foreground">
             <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
-            <span>Assign to agent — once filed, your node starts a coding agent on it automatically</span>
+            <span>Assign to agent — once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
           </label>
           <label data-repo-issue-agent-password-row class="hidden grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you
             <input data-repo-issue-agent-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
@@ -3442,6 +3457,7 @@
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "bad_owner_password" ? "That account password isn't correct."
+          : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
           : code === "too_many_attempts" ? "Too many password attempts. Try again later."
           : "Could not send the issue. Please try again.",
         "bad");
