@@ -704,6 +704,7 @@ QWidget *MainWindow::buildAgentsTab()
                 s->status = AgentStatus::Success;
                 s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_agentStore->saveSession(*s);
+                scheduleAgentSessionsPush(); // adhoc #182
                 reloadAgents();
             }
         }
@@ -1092,6 +1093,23 @@ QWidget *MainWindow::buildAgentsTab()
     });
     m_agentHourlyTimer->start();
 
+    // adhoc #182: push a snapshot of this node's agent sessions to the website
+    // (repo owner can watch them there) and drain any steering prompts queued
+    // from the browser. Same cadence family as the mirror sync / inbox poll
+    // timers elsewhere in this window — a first pass shortly after launch, then
+    // on a short interval so the website stays close to live.
+    m_agentSyncPushTimer = new QTimer(this);
+    connect(m_agentSyncPushTimer, &QTimer::timeout, this,
+            &MainWindow::pushAgentSessionsSnapshot);
+    m_agentSyncPushTimer->start(30 * 1000);
+    QTimer::singleShot(10 * 1000, this, &MainWindow::pushAgentSessionsSnapshot);
+
+    m_agentPromptDrainTimer = new QTimer(this);
+    connect(m_agentPromptDrainTimer, &QTimer::timeout, this,
+            &MainWindow::drainAgentPrompts);
+    m_agentPromptDrainTimer->start(30 * 1000);
+    QTimer::singleShot(15 * 1000, this, &MainWindow::drainAgentPrompts);
+
     // Issue #290 used to re-pull the OAuth usage endpoint on a steady one-minute
     // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
     // even with no agent running. That meant a network round trip every minute
@@ -1169,13 +1187,21 @@ QWidget *MainWindow::buildAgentsTab()
 // footer quick-add's up-arrow ("send to the visible agent") button.
 void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
 {
-    if (prompt.isEmpty() || m_selectedAgentSessionId < 0)
+    sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
+}
+
+// Same as sendPromptToSelectedAgent, but for an arbitrary session id rather
+// than whichever one is currently open in the UI (adhoc #182: the website can
+// steer any of this node's agent sessions, not just the locally-selected one).
+void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
+{
+    if (prompt.isEmpty() || sessionId < 0)
         return;
-    if (ClaudeStreamSession *s = m_streamSessions.value(m_selectedAgentSessionId);
+    if (ClaudeStreamSession *s = m_streamSessions.value(sessionId);
         s && s->running()) {
         // Steer the live Claude Code transcript session: record the turn in
         // this session's buffer so it survives view switches, then send it.
-        const int sid = m_selectedAgentSessionId;
+        const int sid = sessionId;
         QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
                          {QStringLiteral("text"), prompt}};
         applyTranscriptEvent(sid, turn);
@@ -1196,9 +1222,9 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
                 m_agentStore->saveSession(*as);
             updateAgentStatusCell(sid);
         }
-    } else if (AgentRunner *runner = runnerForSession(m_selectedAgentSessionId)) {
+    } else if (AgentRunner *runner = runnerForSession(sessionId)) {
         runner->steer(prompt);
-    } else if (AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+    } else if (AgentSession *session = findAgentSession(sessionId)) {
         // No live process: the session is stopped, waiting, failed or done.
         // Restart it and fold this message into the resumed run as a steering
         // instruction so the queued message actually takes effect (adhoc #177).
@@ -1214,8 +1240,238 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
                 *session,
                 QStringLiteral("\n==> User steering prompt (queued for restart)\n%1")
                     .arg(prompt));
-        continueSelectedAgentSession();
+        continueAgentSession(sid);
     }
+}
+
+// ---- Website agent sync (adhoc #182) ---------------------------------------
+// The repo owner can watch this node's agent sessions on the website and
+// steer a running one from the browser. Two directions: push a snapshot of
+// local sessions up, and drain any prompts the owner queued there.
+
+QUrl MainWindow::agentsApiUrl(const RepositoryRecord &repo) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) +
+                "/" + repoSegment(repo.name, QStringLiteral("repository")) +
+                "/agents");
+    return url;
+}
+
+// Full-replace snapshot: send ALL of this repo's current sessions every call,
+// not a diff (the worker overwrites its stored list). Called on a periodic
+// timer (m_agentSyncPushTimer) and, debounced, right after a session's status
+// changes (scheduleAgentSessionsPush).
+void MainWindow::pushAgentSessionsSnapshot()
+{
+    if (!m_networkAccess || !m_agentStore || m_repositories.isEmpty())
+        return;
+    // AgentSession::owner/name are the repo's owner/name (see repoKey()), not
+    // this node's own account — group sessions by the repo they belong to.
+    QHash<QString, QList<AgentSession>> byRepo;
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.owner.isEmpty() || s.name.isEmpty())
+            continue;
+        // Only publish sessions on repos this node's own account owns — a
+        // mirror hosting someone else's repo has no local say over its agents.
+        if (s.owner.compare(m_userName, Qt::CaseInsensitive) != 0)
+            continue;
+        byRepo[s.owner + "/" + s.name].append(s);
+    }
+    if (byRepo.isEmpty())
+        return;
+
+    // Dedup by owner/name so a preview and its owned copy don't double-push
+    // (mirrors pollOwnedInboxes).
+    QSet<QString> seen;
+    for (const RepositoryRecord &repo : m_repositories) {
+        // Only a repo actually published to the network has a website page to
+        // show agents on in the first place — skip local-only/unpublished ones
+        // rather than hitting an endpoint the worker has no catalog entry for.
+        if (repo.previewOnly || !repo.publishToNetwork)
+            continue;
+        const QString key = repo.owner + "/" + repo.name;
+        if (seen.contains(key) || !byRepo.contains(key))
+            continue;
+        seen.insert(key);
+        // Only a repo actually hosted locally (a writable working copy) is
+        // ours to publish agent state for, matching the inbox-drain guard.
+        const RepositoryRecord writable = writableRecordFor(repo);
+        IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (!probe.canWrite())
+            continue;
+        pushAgentSessionsForRepo(repo, byRepo.value(key));
+    }
+}
+
+void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
+                                          QList<AgentSession> sessions)
+{
+    if (!m_networkAccess)
+        return;
+    if (sessions.size() > 300) // worker contract caps at 300
+        sessions = sessions.mid(0, 300);
+
+    QJsonArray arr;
+    for (const AgentSession &s : sessions) {
+        arr.append(QJsonObject{
+            {"id", s.id},
+            {"issueNumber", s.issueNumber},
+            {"issueTitle", s.issueTitle},
+            {"status", s.status},
+            {"provider", s.provider},
+            {"model", s.model},
+            {"branchName", s.branchName},
+            {"createdAtMs", s.createdAtMs},
+            {"startedAtMs", s.startedAtMs},
+            {"finishedAtMs", s.finishedAtMs},
+            {"numTurns", s.numTurns},
+            {"durationMs", s.durationMs},
+            {"costUsd", s.costUsd},
+            {"lastError", s.lastError},
+        });
+    }
+
+    QUrl url = agentsApiUrl(repo);
+    const QString backoffKey = "agentPush:" + url.toString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!m_pollBackoff.ready(backoffKey, nowMs))
+        return;
+
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString ts = QString::number(nowMs);
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    const QString sig = m_profileIdentity.signData(canonical);
+
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", sig);
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    const QJsonObject payload{{"sessions", arr}};
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
+            return;
+        }
+        m_pollBackoff.noteSuccess(backoffKey);
+    });
+}
+
+// Arms (or re-arms) a short debounce timer so a burst of status flips — e.g. a
+// run finishing and immediately looper-starting the next one — coalesces into
+// a single snapshot push instead of one request per flip.
+void MainWindow::scheduleAgentSessionsPush()
+{
+    if (!m_agentSyncDebounceTimer) {
+        m_agentSyncDebounceTimer = new QTimer(this);
+        m_agentSyncDebounceTimer->setSingleShot(true);
+        connect(m_agentSyncDebounceTimer, &QTimer::timeout, this,
+                &MainWindow::pushAgentSessionsSnapshot);
+    }
+    m_agentSyncDebounceTimer->start(3000);
+}
+
+// Periodic drain of prompts the website owner queued for this node's agent
+// sessions, across every repo we own/host locally.
+void MainWindow::drainAgentPrompts()
+{
+    if (!m_networkAccess || m_repositories.isEmpty())
+        return;
+    QSet<QString> seen;
+    for (const RepositoryRecord &repo : m_repositories) {
+        // Same publish gate as pushAgentSessionsSnapshot: no website page, no
+        // prompts to have been queued there.
+        if (repo.previewOnly || !repo.publishToNetwork)
+            continue;
+        const QString key = repo.owner + "/" + repo.name;
+        if (seen.contains(key))
+            continue;
+        const RepositoryRecord writable = writableRecordFor(repo);
+        IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                         m_userName);
+        if (!probe.canWrite())
+            continue; // not the owner/hoster of this repo
+        seen.insert(key);
+        drainAgentPromptsFor(repo);
+    }
+}
+
+void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
+{
+    if (!m_networkAccess)
+        return;
+    QUrl url = agentsApiUrl(repo);
+    const QString backoffKey = "agentDrain:" + url.toString();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!m_pollBackoff.ready(backoffKey, nowMs))
+        return;
+
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString ts = QString::number(nowMs);
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    const QString sig = m_profileIdentity.signData(canonical);
+
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", sig);
+    url.setQuery(query);
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
+            return;
+        }
+        m_pollBackoff.noteSuccess(backoffKey);
+        const QJsonArray prompts = QJsonDocument::fromJson(reply->readAll())
+                                       .object()
+                                       .value("prompts")
+                                       .toArray();
+        for (const QJsonValue &value : prompts) {
+            const QJsonObject item = value.toObject();
+            const QString text = item.value("text").toString();
+            bool ok = false;
+            const int sessionId = item.value("agentId").toString().toInt(&ok);
+            if (!ok || text.isEmpty()) {
+                logSystem(QStringLiteral(
+                    "Dropped a malformed website agent prompt."));
+                continue;
+            }
+            deliverQueuedAgentPrompt(sessionId, text);
+        }
+    });
+}
+
+// Steer an agent session with a prompt queued from the website, by session id
+// rather than whichever one happens to be open locally — this is
+// sendPromptToAgentSession's caller for the website-drain path (adhoc #182).
+void MainWindow::deliverQueuedAgentPrompt(int sessionId, const QString &text)
+{
+    if (!findAgentSession(sessionId)) {
+        logSystem(QStringLiteral(
+            "Dropped a website prompt: no local agent session #%1.")
+                      .arg(sessionId));
+        return;
+    }
+    // Delegate to the same steer-or-resume logic as the in-app composer
+    // (sendPromptToSelectedAgent's per-id sibling): a running session gets the
+    // text sent straight to its live process, an idle runner is steered, and a
+    // stopped/finished session is resumed with the message folded in as a
+    // steering instruction (adhoc #177) — a website prompt shouldn't be
+    // dropped just because the session isn't running right now.
+    sendPromptToAgentSession(sessionId, text);
 }
 
 void MainWindow::testOpenAiAgentKey()
@@ -3613,9 +3869,21 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
 
 void MainWindow::continueSelectedAgentSession()
 {
-    if (!m_agentStore || m_selectedAgentSessionId <= 0)
+    continueAgentSession(m_selectedAgentSessionId);
+}
+
+// Same as continueSelectedAgentSession, but for an arbitrary session id
+// (adhoc #182: a website-queued prompt may resume a session that isn't the
+// one currently open locally). showAgentSession() moves the UI's selection
+// and opens the detail pane — a background resume triggered from the browser
+// must not yank the view away from whatever the user is looking at, so it's
+// only called here when the resumed session was already the selected one
+// (i.e. this is really the continueSelectedAgentSession path).
+void MainWindow::continueAgentSession(int sessionId)
+{
+    if (!m_agentStore || sessionId <= 0)
         return;
-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
     // Already running (in its own runner) or queued — nothing to do. Other
@@ -3641,11 +3909,12 @@ void MainWindow::continueSelectedAgentSession()
     // Capture the id before reloadAgents() rebuilds m_agentSessions, which frees
     // the backing array and leaves `session` dangling (a use-after-free crash if
     // dereferenced afterwards).
-    const int sessionId = session->id;
-    if (!m_agentQueue.contains(sessionId))
-        m_agentQueue.append(sessionId);
+    const int sid = session->id;
+    if (!m_agentQueue.contains(sid))
+        m_agentQueue.append(sid);
     reloadAgents();
-    showAgentSession(sessionId);
+    if (sid == m_selectedAgentSessionId)
+        showAgentSession(sid);
     processAgentQueue();
 }
 
@@ -4585,6 +4854,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 as->status = AgentStatus::Success;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_agentStore->saveSession(*as);
+                scheduleAgentSessionsPush(); // adhoc #182
             }
         }
         maybeCreatePullForStreamSession(sid);
@@ -4834,6 +5104,7 @@ void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
         as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
         if (m_agentStore)
             m_agentStore->saveSession(*as);
+        scheduleAgentSessionsPush(); // adhoc #182
     }
 
     // A delete path passes refreshUi=false: it removes the session next and
@@ -5456,6 +5727,11 @@ void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 // table rebuild (which would re-render the open transcript) on status flips.
 void MainWindow::updateAgentStatusCell(int sessionId)
 {
+    // Every call site here is a genuine status transition (queued->running,
+    // running->waiting/success/failed, etc.) — piggyback the debounced website
+    // push so the browser view picks it up shortly after, without a request
+    // per flip (adhoc #182).
+    scheduleAgentSessionsPush();
     if (!m_agentTable)
         return;
     AgentSession *s = findAgentSession(sessionId);
