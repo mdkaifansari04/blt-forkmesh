@@ -114,6 +114,47 @@
 
   applyTheme();
 
+  // Mobile navigation: the shared .global-nav is hidden on narrow screens, so
+  // inject a hamburger that reveals it as a dropdown panel. Without this the
+  // header links (Repositories, Network, Docs, Sign Up…) are unreachable on
+  // phones. Runs on every page carrying the shared header.
+  (function initMobileNav() {
+    const header = document.querySelector(".site-header");
+    const nav = header && header.querySelector(".global-nav");
+    if (!header || !nav) return;
+    const host = header.querySelector(".header-actions") ||
+      header.querySelector(".header-inner");
+    if (!host) return;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "nav-toggle";
+    toggle.setAttribute("aria-label", "Toggle navigation menu");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"></path></svg>';
+    host.appendChild(toggle);
+    function setOpen(open) {
+      header.classList.toggle("nav-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setOpen(!header.classList.contains("nav-open"));
+    });
+    // Collapse after following a link, or when tapping outside the menu.
+    nav.addEventListener("click", (event) => {
+      if (event.target.closest("a")) setOpen(false);
+    });
+    document.addEventListener("click", (event) => {
+      if (header.classList.contains("nav-open") && !header.contains(event.target)) {
+        setOpen(false);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setOpen(false);
+    });
+  })();
+
   // Reveal the header "Admin" link for a signed-in admin. The adminUrl is
   // derived from the Worker's ADMIN_PATH env and carried in the session that
   // login/dashboard persist to localStorage, so static pages can surface the
