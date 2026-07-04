@@ -520,12 +520,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
         "Open the Branches panel to view, compare, switch and delete branches");
     setOcticon(m_branchesButton, "git-branch", 16);
     connect(m_branchesButton, &QPushButton::clicked, this, [this] {
-        if (m_branchesTabIndex >= 0 && m_repoDetailTabs &&
-            m_repoDetailTabs->button(m_branchesTabIndex)) {
-            m_repoDetailTabs->button(m_branchesTabIndex)->setChecked(true);
-            m_repoDetailStack->setCurrentIndex(m_branchesTabIndex);
-            loadBranchesPanel();
-        }
+        // Branches has no top-level tab anymore: its panel lives inside the Code
+        // overview, under the toolbar, toggled by this button (same pattern as
+        // the commit strip's "N Commits" toggle for the Commits panel).
+        showOverviewBranches();
+        loadBranchesPanel();
     });
     m_toolbarCommitsButton = new QPushButton("Commits");
     m_toolbarCommitsButton->setObjectName("ghostButton");
@@ -591,6 +590,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack = new QStackedWidget;
     m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
+    m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
 
     // Left column: toolbar, latest commit, then the swappable body.
     auto *leftColumn = new QWidget;
@@ -2507,6 +2507,30 @@ void MainWindow::showOverviewFiles()
 {
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(0);
+    if (m_historyButton)
+        m_historyButton->setChecked(false);
+}
+
+// Show the branches panel in the Code overview, under the toolbar — the same
+// in-page navigation showOverviewCommits does for commits. Pure navigation; the
+// caller layers loadBranchesPanel() on top to (re)build the rows.
+void MainWindow::showOverviewBranches()
+{
+    // Callers can be anywhere (an agent header link, another tab): land on the
+    // Code tab's overview page first.
+    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+        m_repoDetailTabs->button(0)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0);
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(true);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
+    if (m_overviewBodyStack)
+        m_overviewBodyStack->setCurrentIndex(2);
+    // The commits toggle isn't lit when branches show.
     if (m_historyButton)
         m_historyButton->setChecked(false);
 }
@@ -6525,7 +6549,10 @@ void MainWindow::loadBranchesAndTags()
     // tab-switch handler refreshes them when the user opens them.
     if (m_repoDetailStack) {
         const int current = m_repoDetailStack->currentIndex();
-        if (current == m_branchesTabIndex)
+        // The branches panel now lives inside the Code overview (index 0), shown
+        // when the overview body stack is on its branches page (index 2).
+        if (current == 0 && m_overviewBodyStack &&
+            m_overviewBodyStack->currentIndex() == 2)
             loadBranchesPanel();
         else if (current == m_releasesTabIndex)
             loadReleasesPanel();
@@ -6671,9 +6698,11 @@ QWidget *MainWindow::buildRepoDetailSection()
         // the Code overview, toggled by the commit strip's "N Commits" button.
         // Agents (id 3) also no longer gets a top-bar tab (adhoc #178) — it's
         // reached via the footer status strip, spinner overlays and issue/PR
-        // links instead. Both entries stay in the list so every later tab
-        // keeps its positional id.
-        if (i == 1 || i == 3)
+        // links instead. Branches (id 10) likewise lost its top-bar tab: its
+        // panel now lives inside the Code overview, toggled by the toolbar's
+        // "N branches" button. All three entries stay in the list so every later
+        // tab keeps its positional id.
+        if (i == 1 || i == 3 || i == 10)
             continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
@@ -6695,8 +6724,6 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoDiscussionsTab = b;
         if (i == 6)
             m_repoActionsTab = b; // handle for the Actions (N) badge
-        if (i == 10)
-            m_repoBranchesTab = b; // handle for the Branches (N) badge
         if (i == 11)
             m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
         if (i == 12)
@@ -6813,7 +6840,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_insightsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildInsightsTab());                    // 9
     m_branchesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildBranchesTab());                    // 10 Branches
+    // Branches has no top-level tab: its panel lives inside the Code overview
+    // (built above in buildRepoOverviewPage). This placeholder keeps the
+    // positional ids of every later tab (Worktrees=11 …) unchanged.
+    m_repoDetailStack->addWidget(new QWidget);                           // 10 Branches (moved)
     m_worktreesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildWorktreesTab());                   // 11 Worktrees
     m_releasesTabIndex = m_repoDetailStack->count();
@@ -6891,8 +6921,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             refreshRepoQuality();
         else if (id == m_insightsTabIndex)
             loadRepoInsights();
-        else if (id == m_branchesTabIndex)
-            loadBranchesPanel();
+        // id == m_branchesTabIndex has no top-bar button anymore; the Branches
+        // panel is opened by the Code overview's "N branches" toolbar button.
         else if (id == m_worktreesTabIndex)
             loadWorktreesPanel();
         else if (id == m_releasesTabIndex)
