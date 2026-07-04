@@ -237,6 +237,7 @@ set_source_files_properties(
     src/HeadlessConsole.h
     src/KebabHeaderView.h
     src/MainWindow.h
+    src/MarkdownEditor.h
     src/MarkupCanvas.h
     src/MessageRow.h
     src/RepoHost.h

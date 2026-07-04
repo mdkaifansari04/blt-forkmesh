@@ -160,6 +160,16 @@ from urls import (  # noqa: E402
     ACCOUNTS_RE,
 )
 
+# The dashboard SPA shell is split into HTML partials (public/dashboard/partials/)
+# stitched back together at request time — see dashboard_shell.py. Like urls.py,
+# this is a js-free sibling module the runtime bundles and the test suite imports
+# directly.
+from dashboard_shell import (  # noqa: E402
+    assemble_shell,
+    included_partials,
+    partial_path,
+)
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -9982,16 +9992,44 @@ class Default(WorkerEntrypoint):
             room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
             return await room_object.fetch(request)
 
-        # Dashboard SPA shell: /dashboard/* paths are client-side routes, not
-        # real files. Serve dashboard/index.html via the assets binding so that
-        # direct-navigation to /dashboard/owner/repo lands on the SPA correctly.
+        # Dashboard SPA shell: /dashboard and /dashboard/* paths are client-side
+        # routes, not real files. The shell is split into HTML partials
+        # (public/dashboard/partials/) that we stitch together here so that
+        # direct-navigation to /dashboard/owner/repo lands on the assembled SPA.
         # (Handled here rather than via _redirects to avoid Cloudflare's
         # loop-detection false-positive on /dashboard/* → /dashboard/index.html.)
-        if url.path.startswith("/dashboard/"):
-            shell_url = url.scheme + "://" + url.netloc + "/dashboard/index.html"
-            return await self.env.ASSETS.fetch(shell_url)
+        if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
+            return await self._serve_dashboard_shell(url)
 
         return json_response({"error": "not_found"}, status=404)
+
+    async def _serve_dashboard_shell(self, url):
+        # Compose dashboard/index.html and its <!--#include--> partials into one
+        # HTML document (see dashboard_shell.py). Each partial is a real static
+        # asset, so env.ASSETS.fetch returns its raw bytes (bypassing the Worker)
+        # even though its /dashboard/partials/... path is itself run_worker_first.
+        base = url.scheme + "://" + url.netloc + "/"
+
+        async def _asset_text(rel):
+            resp = await self.env.ASSETS.fetch(base + rel)
+            return await resp.text()
+
+        shell = await _asset_text("dashboard/index.html")
+        partials = {}
+        for name in included_partials(shell):
+            partials[name] = await _asset_text(partial_path(name))
+        html = assemble_shell(shell, partials)
+        # The shell is identical for every visitor (all per-account data is
+        # hydrated client-side), so let the edge cache the composed document and
+        # keep this off the Worker CPU budget on the hot dashboard path.
+        return Response(
+            html,
+            status=200,
+            headers={
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": "public, max-age=300",
+            },
+        )
 
     async def _select_clone_fallback(self, owner, repo, force=False):
         # When owner/repo's own host is offline, find a healthy online mirror of the

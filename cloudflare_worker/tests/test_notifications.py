@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 PUBLIC = ROOT / "public"
@@ -102,10 +104,12 @@ def test_worker_indexes_notifications_from_existing_event_sources():
 
 
 def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    # The two shell files stay byte-identical; the markers live in the composed
+    # document the Worker serves (header + modals partials).
+    assert _read(PUBLIC / "dashboard" / "index.html") == _read(PUBLIC / "dashboard.html")
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert "Notifications are intentionally hidden" not in dashboard
     assert "Notification reader modal is intentionally hidden" not in dashboard
     assert "Notifications disabled until notification data is wired" not in dashboard
