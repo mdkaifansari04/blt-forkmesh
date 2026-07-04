@@ -820,6 +820,26 @@ int MainWindow::testRepoTabContentTop()
 }
 #endif
 
+void MainWindow::setHeadlessMode(bool headless)
+{
+    m_headless = headless;
+    // A headless mirror exists to serve its repos, and it has no GUI toggle to
+    // bring itself back online. So a persisted parked-offline flag — inherited
+    // from a prior desktop session on this box, or left over from before the
+    // machine was converted to a headless daemon — would silently strand it:
+    // still connected to the room and syncing its mirror (so it publishes a fresh
+    // catalog record and shows up in the Mirror nodes list), yet never starting a
+    // host tunnel or sending the online heartbeat. The node then appears offline
+    // on the Network page and serves nothing, with no way for a headless operator
+    // to fix it (adhoc #216: "mirror1" was connected and syncing but never online
+    // or serving). Force such a node online here, before startSession reads the
+    // flag, so a headless daemon always serves.
+    if (headless && m_nodeOffline) {
+        m_nodeOffline = false;
+        QSettings().setValue(kNodeOfflineSetting, false);
+    }
+}
+
 void MainWindow::startSession()
 {
     // Picking a name is the very first thing on first run — we don't quietly

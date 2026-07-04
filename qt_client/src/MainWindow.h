@@ -409,8 +409,9 @@ public:
     // Flags this process as a no-GUI (headless / offscreen) node. main() sets it
     // right after construction so startSession can auto-register a fresh mirror's
     // account — the desktop opens a "Join ForkMesh" dialog for that, which a
-    // headless VM has no way to click.
-    void setHeadlessMode(bool headless) { m_headless = headless; }
+    // headless VM has no way to click. Also clears any persisted parked-offline
+    // state, since a headless node has no GUI toggle to bring itself back online.
+    void setHeadlessMode(bool headless);
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
     // Pull the latest version from the live install mirror, rebuild and relaunch
@@ -2571,7 +2572,6 @@ private:
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
-    QLabel *m_agentsNavBadge = nullptr; // count badge over the agents nav button
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
