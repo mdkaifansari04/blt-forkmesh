@@ -1113,8 +1113,28 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
 
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
-    assert "const parts = repoRouteParts();" in render_body
-    assert 'setRepoTab(REPO_TAB_ROUTES.includes(kind) ? kind : "code");' in render_body
+    assert "const routeParts = repoRouteParts();" in render_body
+    assert 'setRepoTab(REPO_TAB_ROUTES.includes(routeKind) ? routeKind : "code");' in render_body
+
+
+def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
+    # Regression test: a hard refresh on /owner/repo/issues doesn't hit a
+    # static asset, so Cloudflare serves 404.html, which bounces the browser
+    # to /dashboard/owner/repo/issues. renderRepoDetail used to normalize that
+    # back to a bare /owner/repo URL (it only checked whether the current path
+    # *started with* the bare repo path, which is never true for the
+    # /dashboard/-prefixed bounce path), silently discarding the /issues
+    # segment before the tab-restore logic ever read it back out of the URL.
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    render_start = dashboard_js.index("function renderRepoDetail(repo)")
+    render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
+
+    assert "routeMatchesRepo" in render_body
+    assert 'REPO_TAB_ROUTES.includes(routeKind)\n      ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
+    assert "navigateHistory(detailPath);" in render_body
+    # The old bare-collapse call must be gone.
+    assert "const detailPath = repoPathUrl(repo);" not in render_body
 
 
 def test_desktop_client_stub_exists():
