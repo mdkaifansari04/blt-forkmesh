@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 370
 title: [build infra + ops: needs signing certs] Signed installers and auto-update for Windows/macOS/Linux
-status: open
+status: closed
 labels: [infra]
 milestone: Phase 2
 priority: 60
