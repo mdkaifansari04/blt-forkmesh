@@ -15,6 +15,9 @@ from urllib.parse import unquote
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+# clean_string/safe_segment/safe_catalog_record were extracted into catalog.py;
+# parse both sources so the AST loader below still finds them.
+CATALOG = ENTRY.parent / "catalog.py"
 
 # Names pulled verbatim from entry.py; the rest of the module (JS imports, async
 # crypto) is never executed.
@@ -22,7 +25,9 @@ _WANT_FUNCS = ("clean_string", "safe_segment", "safe_catalog_record")
 
 
 def _load_record_builder():
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    tree = ast.parse(
+        ENTRY.read_text(encoding="utf-8") + "\n"
+        + CATALOG.read_text(encoding="utf-8"), filename=str(ENTRY))
     funcs = [
         node
         for node in tree.body
