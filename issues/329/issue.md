@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 329
 title: Fix the layout of the web so that it looks better on mobile and everything is accessible
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 61
