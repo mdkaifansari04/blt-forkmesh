@@ -45,6 +45,11 @@ REPO_AGENTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents$")
 REPO_AGENTS_LIST_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/agents/list$")
 REPO_AGENTS_PROMPT_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/prompt$")
+# One agent session's live transcript (adhoc #259): the desktop pushes a bounded
+# tail of each session's run log with the sessions snapshot; the website's agent
+# detail page polls this to render (and keep live) the transcript.
+REPO_AGENTS_TRANSCRIPT_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/agents/([^/]+)/transcript$")
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(

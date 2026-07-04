@@ -1402,6 +1402,13 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
 
     QJsonArray arr;
     for (const AgentSession &s : sessions) {
+        // Bounded tail of the run log for the website's live transcript view
+        // (adhoc #259). The cap matches the worker's MAX_AGENT_TRANSCRIPT so the
+        // full-replace snapshot stays small even with several sessions per repo.
+        constexpr int kMaxTranscript = 16000;
+        QString transcript = m_agentStore ? m_agentStore->readLog(s) : QString();
+        if (transcript.size() > kMaxTranscript)
+            transcript = transcript.right(kMaxTranscript);
         arr.append(QJsonObject{
             {"id", s.id},
             {"issueNumber", s.issueNumber},
@@ -1417,6 +1424,7 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
             {"durationMs", s.durationMs},
             {"costUsd", s.costUsd},
             {"lastError", s.lastError},
+            {"transcript", transcript},
         });
     }
 

@@ -101,6 +101,10 @@ MAX_AGENT_STRING = 300
 MAX_AGENT_TITLE = 240
 MAX_AGENT_PROMPT_TEXT = 8000
 MAX_PENDING_AGENT_PROMPTS = 50
+# Bounded tail of an agent session's run log the desktop pushes for the website
+# detail page's live transcript (adhoc #259). Kept modest so the full-replace
+# sessions push stays small even with several sessions per repo.
+MAX_AGENT_TRANSCRIPT = 16000
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -151,6 +155,7 @@ from urls import (  # noqa: E402
     REPO_AGENTS_RE,
     REPO_AGENTS_LIST_RE,
     REPO_AGENTS_PROMPT_RE,
+    REPO_AGENTS_TRANSCRIPT_RE,
     REPO_HOST_RE,
     RELEASE_BLOB_RE,
     REPO_RELEASE_DOWNLOADS_RE,
@@ -7824,6 +7829,9 @@ def _clean_agent_session(item):
     except (TypeError, ValueError):
         out["issueNumber"] = 0
     out["issueTitle"] = clean_string(item.get("issueTitle", ""), MAX_AGENT_TITLE)
+    # Bounded run-log tail for the website's live transcript view (adhoc #259);
+    # empty for pushes from older desktop builds that don't send it.
+    out["transcript"] = clean_string(item.get("transcript", ""), MAX_AGENT_TRANSCRIPT)
     for field in ("status", "provider", "model", "branchName", "lastError"):
         out[field] = clean_string(item.get(field, ""), MAX_AGENT_STRING)
     for field in ("createdAtMs", "startedAtMs", "finishedAtMs", "numTurns", "durationMs"):
@@ -7912,7 +7920,37 @@ async def agents_list_handler(env, request, owner, repo):
     )
     agents = [rec for rec in
               [await decrypt_row(env, r["data"]) for r in rows] if rec]
+    # The transcript tail can be large; keep it out of the list payload and let
+    # the detail page fetch just the selected agent's transcript on demand.
+    for rec in agents:
+        rec.pop("transcript", None)
     return json_response({"ok": True, "agents": agents})
+
+
+async def agents_transcript_handler(env, request, owner, repo, agent_id):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    ok, err = await _authorize_owner_account(env, owner, data)
+    if not ok:
+        return err
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repo_agents WHERE repo_bi=? AND agent_id=?",
+        repo_bi, str(agent_id),
+    )
+    rec = await decrypt_row(env, row["data"]) if row else None
+    if not rec:
+        return json_response({"error": "not_found"}, status=404)
+    return json_response({
+        "ok": True,
+        "transcript": rec.get("transcript", ""),
+        "status": rec.get("status", ""),
+    })
 
 
 async def agents_prompt_handler(env, request, owner, repo, agent_id):
@@ -9446,6 +9484,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await agents_list_handler(self.env, request, owner, repo)
+
+        agents_transcript_match = REPO_AGENTS_TRANSCRIPT_RE.match(url.path)
+        if agents_transcript_match:
+            owner = safe_segment(agents_transcript_match.group(1))
+            repo = safe_segment(agents_transcript_match.group(2))
+            agent_id = safe_segment(agents_transcript_match.group(3))
+            if not owner or not repo or not agent_id:
+                return json_response({"error": "not_found"}, status=404)
+            return await agents_transcript_handler(self.env, request, owner, repo, agent_id)
 
         agents_prompt_match = REPO_AGENTS_PROMPT_RE.match(url.path)
         if agents_prompt_match:
