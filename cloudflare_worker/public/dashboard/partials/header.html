@@ -1,0 +1,130 @@
+      <header data-app-header class="relative h-14 border-b border-border bg-card flex items-center gap-6 px-4 shrink-0">
+        <button
+          data-mobile-menu-toggle
+          type="button"
+          aria-label="Open dashboard menu"
+          aria-controls="dashboardSidebar"
+          aria-expanded="false"
+          class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+        >
+          <i data-lucide="menu" class="h-4 w-4"></i>
+        </button>
+        <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+        </a>
+
+        <nav data-top-nav class="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0 lg:flex">
+          <!-- Home dashboard tab is intentionally hidden until the activity feed is functional.
+          <button data-section="home" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Home
+          </button>
+          -->
+          <button data-section="repos" data-nav-link aria-current="page" class="inline-flex text-sm text-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Repositories
+          </button>
+          <button data-section="network" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Network
+          </button>
+          <a href="/docs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Docs
+          </a>
+          <!-- Desktop Client is intentionally hidden until that flow is ready.
+          <a href="/desktop" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Desktop Client
+          </a>
+          -->
+          <a href="/blogs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
+            Blogs
+          </a>
+        </nav>
+
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            data-mobile-network-toggle
+            type="button"
+            aria-label="Open network drawer"
+            aria-controls="networkRail"
+            aria-expanded="false"
+            class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+          >
+            <i data-lucide="activity" class="h-4 w-4"></i>
+          </button>
+          <a
+            href="/mirror-payouts"
+            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Get paid to mirror code"
+          >
+            <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-3.5 w-3.5 shrink-0 rounded-full object-contain" />
+            <span class="hidden sm:inline">Get paid to mirror</span>
+          </a>
+          <div class="relative">
+            <button
+              id="notificationToggle"
+              type="button"
+              aria-label="Open notifications"
+              aria-expanded="false"
+              class="relative p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors"
+            >
+              <i data-lucide="bell" class="w-4 h-4"></i>
+              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary"></span>
+            </button>
+            <div
+              id="notificationDropdown"
+              class="hidden absolute right-0 top-full mt-2 w-80 rounded-lg border border-border bg-card shadow-2xl shadow-background/40 overflow-hidden z-50"
+            >
+              <div class="px-3 py-2 border-b border-border flex items-center justify-between">
+                <span class="text-xs font-medium text-foreground">Notifications</span>
+                <span data-notification-count class="text-[10px] text-muted-foreground font-mono">0 new</span>
+              </div>
+              <div data-notification-preview-list class="py-1"></div>
+              <div class="border-t border-border p-2">
+                <button data-show-all-notifications type="button" class="w-full rounded-md px-3 py-2 text-center text-xs font-medium text-primary hover:bg-secondary transition-colors">
+                  Show all notifications
+                </button>
+              </div>
+            </div>
+          </div>
+          <button
+            id="networkRailToggle"
+            data-network-rail-toggle
+            type="button"
+            aria-label="Close network panel"
+            aria-expanded="true"
+            class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors hidden lg:inline-flex"
+          >
+            <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
+            <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
+          </button>
+          <a
+            data-guest-auth-link
+            href="/signup"
+            class="hidden ml-0.5 items-center whitespace-nowrap rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
+          >Sign Up / Log In</a>
+          <a
+            data-admin-button
+            href="#"
+            class="hidden ml-0.5 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-500 hover:bg-amber-500/20 transition-colors"
+            title="Admin panel"
+          >
+            <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
+            <span class="hidden sm:inline">Admin</span>
+          </a>
+          <button
+            data-profile-settings-button
+            type="button"
+            aria-label="Open profile"
+            title="Profile"
+            class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+          >
+            <span
+              data-dashboard-profile-avatar
+              class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
+              style="width: 28px; height: 28px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 10.5px"
+            >
+              <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
+              <span data-avatar-initial>Y</span>
+            </span>
+            <span data-dashboard-profile-name class="sr-only">My Profile</span>
+          </button>
+        </div>
+      </header>
