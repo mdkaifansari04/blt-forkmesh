@@ -5469,11 +5469,15 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             notifyAgentWaiting(sessionId, false);
     }
 
-    // The turn finished (or the CLI is asking to use a tool while in manual mode):
-    // the agent is now waiting on the user — surface it (see notifyAgentWaiting).
+    // The CLI is asking to use a tool while in manual mode: the agent is blocked
+    // on the user's approval — surface it (see notifyAgentWaiting). A plain
+    // `result` (the turn finishing normally, e.g. the agent reporting "Done") is
+    // NOT a wait: it's handled below as a successful completion. Only genuine
+    // input-required states — a permission prompt here, or an AskUserQuestion
+    // multiple-choice handled above — mark the session "Waiting" (adhoc #163).
     const QString type = ev.value(QStringLiteral("type")).toString();
-    if (type == QLatin1String("result") || type == QLatin1String("control_request"))
-        notifyAgentWaiting(sessionId, type == QLatin1String("control_request"));
+    if (type == QLatin1String("control_request"))
+        notifyAgentWaiting(sessionId, /*needsPermission=*/true);
 
     // A system/init event is the CLI announcing a (re)started session — the
     // "● session started" transcript divider. Persisted history never replays
@@ -5512,6 +5516,16 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 const QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
                 as->lastError = detail.isEmpty() ? subtype : detail;
+            } else if (as->status == AgentStatus::Running) {
+                // A clean `result` means the turn finished successfully — the agent
+                // said its piece (e.g. "Done") and isn't blocked on the user. Mark
+                // it "Done" (Success) rather than "Waiting" (adhoc #163). The
+                // process stays alive for follow-ups; a new user turn flips it back
+                // to Running. Guarded on Running so a prior AskUserQuestion/permission
+                // "Waiting" set earlier in this turn isn't clobbered.
+                as->status = AgentStatus::Success;
+                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                as->lastError.clear();
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
