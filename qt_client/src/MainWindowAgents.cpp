@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -389,6 +390,7 @@ QWidget *MainWindow::buildAgentsTab()
 
     m_agentTable = new QTableWidget(0, 13);
     m_agentTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
     // Activity delegate below draws the matching outline slice for its cell.
@@ -1246,6 +1248,43 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
     }
 }
 
+// Re-sends the full title + description + comment thread of the issue linked
+// to the currently-open agent session (adhoc #256). Lets the user recover
+// when the agent missed the context the first time — e.g. a resumed session
+// only ever gets a bare "Continue where you left off." (see
+// startClaudeCodeTranscript), which carries none of it.
+void MainWindow::sendIssueContextToSelectedAgent()
+{
+    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (!session || session->issueNumber <= 0) {
+        logSystem(QStringLiteral(
+            "No issue-linked agent open above to send context to \xE2\x80\x94 "
+            "open one first."));
+        return;
+    }
+    const int repoIndex = repoIndexFor(session->owner, session->name);
+    if (repoIndex < 0) {
+        logSystem(QStringLiteral("Can't find this session's repository."));
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    const QList<Issue> issues =
+        IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName)
+            .loadAll();
+    const Issue *issue = nullptr;
+    for (const Issue &candidate : issues)
+        if (candidate.number == session->issueNumber) {
+            issue = &candidate;
+            break;
+        }
+    if (!issue) {
+        logSystem(QStringLiteral("Could not find issue #%1 to resend its context.")
+                      .arg(session->issueNumber));
+        return;
+    }
+    sendPromptToSelectedAgent(issueContextPrompt(*issue));
+}
+
 // ---- Website agent sync (adhoc #182) ---------------------------------------
 // The repo owner can watch this node's agent sessions on the website and
 // steer a running one from the browser. Two directions: push a snapshot of
@@ -1847,9 +1886,35 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     // gauges were retired in issue #84 in favour of this single chart.
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
-    QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
-                                : kClaudeUsage5hPctSetting,
-                         pct);
+    QSettings settings;
+    settings.setValue(weekly ? kClaudeUsageWeekPctSetting
+                             : kClaudeUsage5hPctSetting,
+                      pct);
+    // Issue #346: track "ran out" (>=99%) so a later drop can be recognised as
+    // a refill rather than just another low-usage poll, and fire the opt-in
+    // email once when that happens.
+    const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
+                                        : kClaudeUsage5hExhaustedSetting;
+    if (pct >= 99) {
+        settings.setValue(exhaustedKey, true);
+    } else if (pct < 90 && settings.value(exhaustedKey, false).toBool()) {
+        settings.setValue(exhaustedKey, false);
+        maybeEmailCreditsRefilled(weekly);
+    }
+}
+
+void MainWindow::maybeEmailCreditsRefilled(bool weekly)
+{
+    if (!QSettings().value(kEmailOnCreditsRefillSetting, false).toBool())
+        return;
+    // Rides the existing signed heartbeat channel (accounts/heartbeat) rather
+    // than a dedicated endpoint; the worker turns the flag into an in-app
+    // notification that the email digest cron mails out (issue #361's rail).
+    if (weekly)
+        m_pendingCreditsRefilledWeekly = true;
+    else
+        m_pendingCreditsRefilled5h = true;
+    sendNodeHeartbeat();
 }
 
 void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
@@ -4731,6 +4796,43 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
     proc->closeWriteChannel();
 }
 
+// Title + full description + every comment, formatted as a self-contained
+// block for an agent prompt (adhoc #256). The description lives in the
+// issue's "open" event body (issue.md's body text); comments are every
+// subsequent "comment" event, oldest first, matching the thread as read in
+// the app.
+QString MainWindow::issueContextPrompt(const Issue &issue) const
+{
+    QString description;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type == QLatin1String("open")) {
+            description = ev.body.trimmed();
+            break;
+        }
+    }
+    QString commentThread;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type != QLatin1String("comment"))
+            continue;
+        const QString text = ev.body.trimmed();
+        if (text.isEmpty())
+            continue;
+        const QString who = ev.authorName.isEmpty() ? ev.author : ev.authorName;
+        commentThread += QStringLiteral("\n\n--- comment by %1 ---\n%2")
+                             .arg(who, text.left(6000));
+    }
+    QString out = QStringLiteral("Issue #%1: %2\n")
+                      .arg(issue.number)
+                      .arg(issue.title);
+    out += description.isEmpty()
+               ? QStringLiteral("\n(No description was given.)\n")
+               : QStringLiteral("\n%1\n").arg(description.left(20000));
+    if (!commentThread.isEmpty())
+        out += QStringLiteral("\nComments on the issue (newest last):%1\n")
+                   .arg(commentThread);
+    return out;
+}
+
 void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
                                            const QString &repoPath,
                                            const QString &customPrompt)
@@ -4765,37 +4867,22 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
 
     const QString baseName =
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
-    // Comment thread: issues/<n>/issue.md holds only the original description, so
-    // fold the issue's signed comment events into the prompt — otherwise the agent
-    // never sees the follow-up discussion that often refines or redirects the task.
-    QString commentThread;
-    for (const IssueEvent &ev : issue.events) {
-        if (ev.type != QLatin1String("comment"))
-            continue;
-        const QString text = ev.body.trimmed();
-        if (text.isEmpty())
-            continue;
-        const QString who = ev.authorName.isEmpty() ? ev.author : ev.authorName;
-        commentThread += QStringLiteral("\n\n--- comment by %1 ---\n%2")
-                             .arg(who, text.left(6000));
-    }
-    if (!commentThread.isEmpty())
-        commentThread = QStringLiteral("\n\nComments on the issue (newest last):")
-                        + commentThread;
     // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
-    // issue-assigned sessions point the agent at issues/<n>/issue.md. Both share
+    // issue-assigned sessions get the full title + description + comment thread
+    // embedded directly (adhoc #256) — pointing only at issues/<n>/issue.md left
+    // the agent to go dig it up itself, and it sometimes never did. Both share
     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
     const QString lead =
         customPrompt.trimmed().isEmpty()
             ? QStringLiteral(
-                  "Resolve ForkMesh issue #%1: %2\n\n"
-                  "You are working in a dedicated git worktree on branch `%3` "
-                  "(forked from `%4`). The full issue is in issues/%1/issue.md.%5")
-                  .arg(session.issueNumber)
-                  .arg(issue.title)
-                  .arg(session.branchName)
-                  .arg(baseName)
-                  .arg(commentThread)
+                  "Resolve the following ForkMesh issue end to end.\n\n"
+                  "%1\n"
+                  "You are working in a dedicated git worktree on branch `%2` "
+                  "(forked from `%3`). The description and comments above are "
+                  "the full issue context; issues/%4/issue.md holds the same "
+                  "description verbatim if you need to reference the raw file.\n")
+                  .arg(issueContextPrompt(issue), session.branchName, baseName,
+                       QString::number(session.issueNumber))
             : QStringLiteral(
                   "%1\n\n"
                   "You are working in a dedicated git worktree on branch `%2` "

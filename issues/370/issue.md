@@ -2,18 +2,18 @@
 schema: forkmesh-issue-v1
 number: 370
 title: [build infra + ops: needs signing certs] Signed installers and auto-update for Windows/macOS/Linux
-status: open
+status: closed
 labels: [infra]
 milestone: Phase 2
 priority: 60
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818269
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-370
 ts: 1783116818269

@@ -829,10 +829,21 @@ private:
     // output. Once the install finishes the new node joins the network and shows
     // up in the per-repo Mirror nodes list on its own.
     QWidget *buildHostsSection();
-    void runHostInstall();
+    // forceUploadBinary bypasses the "Upload the release from this app"
+    // checkbox (used by the per-row / install-all-from-binary buttons, which
+    // are always direct-upload regardless of the form's checkbox state).
+    // onFinished, if given, is called once with whether the install succeeded
+    // — used to chain installs when running against every saved host.
+    void runHostInstall(bool forceUploadBinary = false,
+                        std::function<void(bool)> onFinished = {});
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
+    // Direct-upload install (adhoc #257) against every saved host, one at a
+    // time: loads each row into the form and runs runHostInstall(true, ...),
+    // chaining to the next host once the previous one finishes.
+    void runHostInstallAllFromBinary();
+    void installNextHostFromBinary(QList<int> remainingRows);
     void appendHostInstallLog(const QString &text);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
@@ -964,6 +975,9 @@ private:
     void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
+    // Files-changed authorship filter: show only agent- or human-authored files
+    // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
+    void applyPullFileAuthorFilter();
     void renderPullReviewSummary(const PullRequest &pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
@@ -1279,6 +1293,15 @@ private:
     // Same as sendPromptToSelectedAgent, but for an arbitrary session id
     // (adhoc #182: the website can steer any of this node's agent sessions).
     void sendPromptToAgentSession(int sessionId, const QString &prompt);
+    // Full issue title + description + every comment, formatted for an agent
+    // prompt. Shared by the initial issue-assignment prompt and the "Send
+    // issue context" resend action, so a run that missed the context the
+    // first time (or was given a bare "Continue" on resume) can be handed
+    // the whole thing again on demand (adhoc #256).
+    QString issueContextPrompt(const Issue &issue) const;
+    // Re-sends the full context of the issue linked to the currently-open
+    // agent session (adhoc #256's "Send issue context" action).
+    void sendIssueContextToSelectedAgent();
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -1332,6 +1355,11 @@ private:
     // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
     // Xh / Xd" countdown, and cache it so the figure survives a restart.
     void applyClaudeReset(bool weekly, qint64 resetMs);
+    // Issue #346: when a Claude Code usage window that was previously maxed out
+    // (>=99%) drops back down, optionally tell the node's owner by email — the
+    // only useful signal for a headless node that has no one watching its
+    // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
+    void maybeEmailCreditsRefilled(bool weekly);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -2088,6 +2116,9 @@ private:
     // Rebuilds the row of attachment chips (thumbnail + an "x" to remove each)
     // shown next to the paperclip once images are queued.
     void rebuildQuickAddAttachChips();
+    // Clicking a chip's thumbnail (issue #319) opens the original image full-size
+    // in a lightbox dialog.
+    void showQuickAddImageDetail(const QString &path);
     // Screenshot button (next to the rebuild/restart button): drops a full-screen
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
@@ -2685,6 +2716,9 @@ private:
     QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
+    // Bulk direct-upload install (adhoc #257): runs the upload-binary install
+    // against every saved host, one after another.
+    QPushButton *m_hostInstallAllButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     // ANSI parser state for the live install log: a carry buffer holding an
@@ -3324,6 +3358,7 @@ private:
         bool isDir = false;
         qint64 size = 0;     // blob bytes (recursive sum for directories)
         qint64 loc = 0;      // lines of code (recursive sum for directories)
+        qint64 fileCount = 0; // number of files (recursive) — shown for directories
         qint64 commitTs = 0; // last commit unix time that touched this entry
         QString subject;     // last commit subject
         QString whenText;    // relative "x ago"
@@ -3366,6 +3401,11 @@ private:
     // that is offline or rate-limiting (HTTP 429) stops getting hammered on
     // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
     NetworkBackoff m_pollBackoff;
+    // Issue #346: a refill notification waiting to ride the next signed
+    // heartbeat (kept as flags, not fired directly, so it retries on the
+    // periodic heartbeat timer if the immediate send fails).
+    bool m_pendingCreditsRefilled5h = false;
+    bool m_pendingCreditsRefilledWeekly = false;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
@@ -3432,6 +3472,12 @@ private:
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
+    // Files-changed authorship filter (issue #365): All / Agent-authored /
+    // Human-authored, driven by m_pullFileAuthorship. Hidden unless the PR mixes
+    // agent and human commits.
+    QComboBox *m_pullFileAuthorFilter = nullptr;
+    // current PR: file path -> true when an agent-stamped commit touched it.
+    QHash<QString, bool> m_pullFileAuthorship;
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;

@@ -5520,6 +5520,24 @@ async def _account_heartbeat(env, request):
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
+    # Issue #346: the node itself is the only thing that knows when its local
+    # Claude Code usage window refilled after running out, so it rides this
+    # already-signed heartbeat to ask for a notification (opt-in on the
+    # desktop side). Not part of the signed canonical string, same as solana/
+    # avatarPng above — worst case a stale replay re-flags a notification the
+    # recipient already has, not a forgeable action on someone else's account.
+    credits_kind = clean_string(data.get("creditsRefilled", ""), 10)
+    if credits_kind in ("5h", "weekly"):
+        window = "5-hour" if credits_kind == "5h" else "weekly"
+        await enqueue_notification(
+            env, name, "credits_refilled",
+            "Claude Code credits refilled",
+            body=("Your " + window + " usage window has reset — Claude Code "
+                  "credits are available again."),
+            source="credits_refilled",
+            dedupe="credits_refilled:" + credits_kind,
+        )
+
     # Keep the payout address current if the node sent a valid one.
     if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
         rec["solana"] = solana
@@ -7411,36 +7429,6 @@ async def _authorize_owner(env, request, owner):
         return False
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
     return await ed25519_verify(owner_pub, sig, canonical)
-
-
-async def _verify_owner_password(env, owner, data):
-    # Re-proves control of a privileged account via password: the repo owner
-    # itself, or a network admin acting on the owner's behalf. Used anywhere a
-    # browser (no signing key) requests an immediate, unreviewed side effect —
-    # starting an agent (issue #373's wantsAgent), listing agent sessions, or
-    # prompting one (adhoc #182) — so a client can't spoof ownership just by
-    # naming an account in the request body. Returns (True, None) on success,
-    # or (False, error_json_response) with the same status/body the callers
-    # used before this was factored out.
-    actor = clean_string(data.get("ownerAccount", "") or owner, 120)
-    actor_bi, actor_rec = await _account_row(env, actor)
-    if await _login_locked_until(env, actor_bi):
-        return False, json_response({"error": "too_many_attempts"}, status=429)
-    owner_password = str(data.get("ownerPassword", "") or "")[:256]
-    verified = bool(
-        actor_rec and actor_rec.get("status") == "active" and
-        actor_rec.get("pass_hash") and owner_password and
-        await verify_password(owner_password,
-                              actor_rec.get("pass_salt", ""),
-                              actor_rec.get("pass_hash", "")))
-    if not verified:
-        await _login_record_fail(env, actor_bi)
-        return False, json_response({"error": "bad_owner_password"}, status=401)
-    if actor.lower() != str(owner or "").lower() \
-            and not await _is_admin(env, actor):
-        return False, json_response({"error": "not_authorized"}, status=403)
-    await _login_clear(env, actor_bi)
-    return True, None
 
 
 async def _authorize_owner_account(env, owner, data):
