@@ -704,6 +704,39 @@
     });
   }
 
+  // Top-level sections that get their own address-bar entry (?section=network,
+  // ?section=profile, ...) so a refresh or Back/Forward restores whichever page
+  // you were on instead of always dropping you back on the repos list. "repos"
+  // is the default, so it stays on the bare /dashboard URL. The repo-detail view
+  // ("explore") is addressed by the /owner/repo path instead, not here.
+  const SECTION_ROUTES = ["home", "repos", "network", "profile", "chat"];
+
+  function requestedSection() {
+    const value = (new URLSearchParams(location.search).get("section") || "").trim();
+    return SECTION_ROUTES.includes(value) ? value : "";
+  }
+
+  function sectionUrl(section) {
+    return section && section !== "repos" && SECTION_ROUTES.includes(section)
+      ? `/dashboard?section=${section}`
+      : "/dashboard";
+  }
+
+  // Switch to a top-level section AND reflect it in the URL (plus run any
+  // per-section load hooks) so the choice survives a refresh. Pass push:false
+  // when restoring from the URL (init/popstate) so we don't re-push it.
+  function showSection(section, { push = true } = {}) {
+    if (push) {
+      state.selectedRepo = null;
+      navigateHistory(sectionUrl(section));
+    }
+    setSection(section);
+    if (section === "profile") {
+      renderProfilePage(state.session);
+      refreshPublicProfile(state.session);
+    }
+  }
+
   function setMobileSidebarOpen(open) {
     document.body.classList.toggle("dashboard-sidebar-open", open);
     if (open) document.body.classList.remove("network-drawer-open");
@@ -4499,6 +4532,11 @@
       if (requested) {
         const repo = findRepository(requested);
         if (repo) renderRepoDetail(repo);
+        else showSection(requestedSection() || "repos", { push: false });
+      } else {
+        // Refresh landed on a section URL (?section=network/profile/...) —
+        // restore it instead of falling back to the repos list.
+        showSection(requestedSection() || "repos", { push: false });
       }
     } catch (_) {
       const list = $("#repoList");
@@ -4575,10 +4613,8 @@
       $("[data-profile-popover]")?.classList.add("hidden");
       $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
       setProfileHint("", "");
-      setSection("profile");
+      showSection("profile");
       closeMobileDrawers();
-      renderProfilePage(state.session);
-      refreshPublicProfile(state.session);
       return;
     }
 
@@ -4668,19 +4704,16 @@
     const sectionButton = event.target.closest("[data-section]");
     if (sectionButton) {
       const targetSection = sectionButton.dataset.section;
-      // Leaving a repo's /owner/name URL for a section without its own deep
-      // link (repos list, network, profile...) — push a /dashboard entry so
-      // Back returns to the repo instead of exiting the app.
-      if (targetSection !== "explore" && requestedRepoKey()) {
-        state.selectedRepo = null;
-        navigateHistory("/dashboard");
+      // Each section gets its own address-bar entry (?section=network, ...) so
+      // Back returns to the repo/prior page instead of exiting the app AND a
+      // refresh keeps you here. "explore" is the repo-detail view, addressed by
+      // its /owner/repo path, so it manages its own URL.
+      if (targetSection !== "explore") {
+        showSection(targetSection);
+      } else {
+        setSection(targetSection);
       }
-      setSection(targetSection);
       closeMobileDrawers();
-      if (targetSection === "profile") {
-        renderProfilePage(state.session);
-        refreshPublicProfile(state.session);
-      }
     }
 
     const pageButton = event.target.closest("[data-dashboard-repo-page]");
@@ -4869,10 +4902,8 @@
 	    $("[data-profile-popover]")?.classList.add("hidden");
 	    $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
 	    setProfileHint("", "");
-	    setSection("profile");
+	    showSection("profile");
 	    closeMobileDrawers();
-	    renderProfilePage(state.session);
-	    refreshPublicProfile(state.session);
 	  });
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
@@ -4941,7 +4972,9 @@
     const repo = requested ? findRepository(requested) : null;
     if (!repo) {
       state.selectedRepo = null;
-      setSection("repos");
+      // Restore whichever section the URL points at (Back out of a repo into
+      // Network/Profile, or forward into one) rather than snapping to repos.
+      showSection(requestedSection() || "repos", { push: false });
       return;
     }
     if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
