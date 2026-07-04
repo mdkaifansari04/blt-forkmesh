@@ -1973,6 +1973,35 @@ void MainWindow::reloadAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentsTabIndicator();
     refreshAgentStatusRow();
+    updateAgentsNavBadge();
+}
+
+// Count badge on the top-bar Agents nav button (adhoc #194), same look as the
+// chat unread badge: sized to the text and pinned to the button's top-right
+// corner, showing the total number of known agent sessions.
+void MainWindow::updateAgentsNavBadge()
+{
+    if (!m_agentsNavButton || !m_agentsNavBadge)
+        return;
+    const int total = m_agentSessions.size();
+    if (total > 0) {
+        const QString text =
+            total > 99 ? QStringLiteral("99+") : QString::number(total);
+        m_agentsNavBadge->setText(text);
+        const int w = qMax(15, m_agentsNavBadge->fontMetrics()
+                                   .horizontalAdvance(text) + 12);
+        m_agentsNavBadge->resize(w, 15);
+        m_agentsNavBadge->move(qMax(0, m_agentsNavButton->width() - w), 0);
+        m_agentsNavBadge->show();
+        m_agentsNavBadge->raise();
+        m_agentsNavButton->setToolTip(
+            QStringLiteral("Agents \xE2\x80\x94 %1 session%2")
+                .arg(total)
+                .arg(total == 1 ? QString() : QStringLiteral("s")));
+    } else {
+        m_agentsNavBadge->hide();
+        m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
+    }
 }
 
 void MainWindow::refreshAgentTable()
