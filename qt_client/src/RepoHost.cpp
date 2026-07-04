@@ -668,18 +668,36 @@ void RepoHost::handleRequest(const QJsonObject &request)
     emit log(QStringLiteral("Host: served %1 for %2/%3.")
                  .arg(action, m_owner, m_name));
 
+    // A clone is two requests: info/refs (ref advertisement) then the
+    // git-upload-pack POST that negotiates `want <oid>` against those refs. On a
+    // live mirror a `fetch --prune` can advance a ref between the two, so by the
+    // time the POST lands the wanted OID is no longer an advertised tip and
+    // upload-pack aborts with "fatal: git upload-pack: not our ref <oid>",
+    // failing the clone. Allow wants for OIDs that were a tip or are still
+    // reachable from a ref (the moved commit is an ancestor of the new tip after
+    // a fast-forward fetch) so the concurrent-fetch race resolves instead of
+    // 500-ing the client.
+    static const QStringList kUploadPackConfig = {
+        "-c", "uploadpack.allowTipSHA1InWant=true",
+        "-c", "uploadpack.allowReachableSHA1InWant=true"};
+
     // Git smart-HTTP clone: stream the packfile/advertisement back in chunks.
     if (op == "git-info-refs") {
         runGitStream(reqId,
-                     {"upload-pack", "--stateless-rpc", "--advertise-refs",
-                      m_mirrorPath},
+                     kUploadPackConfig +
+                         QStringList{"upload-pack", "--stateless-rpc",
+                                     "--advertise-refs", m_mirrorPath},
                      QByteArray());
         return;
     }
     if (op == "git-upload-pack") {
         const QByteArray body =
             QByteArray::fromBase64(request.value("body").toString().toLatin1());
-        runGitStream(reqId, {"upload-pack", "--stateless-rpc", m_mirrorPath}, body);
+        runGitStream(reqId,
+                     kUploadPackConfig +
+                         QStringList{"upload-pack", "--stateless-rpc",
+                                     m_mirrorPath},
+                     body);
         return;
     }
     // git push (issue #358): advertise refs for receive-pack, then accept the
