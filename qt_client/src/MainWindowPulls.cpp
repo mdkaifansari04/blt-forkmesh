@@ -517,10 +517,67 @@ QWidget *MainWindow::buildPullsTab()
     diffSplit->setStretchFactor(0, 0);
     diffSplit->setStretchFactor(1, 1);
     diffSplit->setSizes({240, 600});
+
+    // ---- Find bar (issue #333): Ctrl+F over the Files-changed pane toggles a
+    // bar that highlights every occurrence of the typed text in the combined
+    // diff and steps between matches. Hidden until summoned.
+    m_pullDiffSearchInput = new QLineEdit;
+    m_pullDiffSearchInput->setObjectName("issueSearch");
+    m_pullDiffSearchInput->setPlaceholderText("Find in diff\xE2\x80\xA6");
+    m_pullDiffSearchInput->setClearButtonEnabled(true);
+    connect(m_pullDiffSearchInput, &QLineEdit::textChanged, this,
+            [this] { pullDiffSearchRecompute(); });
+    connect(m_pullDiffSearchInput, &QLineEdit::returnPressed, this, [this] {
+        pullDiffSearchGoTo(QGuiApplication::keyboardModifiers() & Qt::ShiftModifier
+                               ? -1
+                               : 1);
+    });
+    m_pullDiffSearchCount = new QLabel;
+    m_pullDiffSearchCount->setObjectName("hintLabel");
+    auto *searchPrev = new QPushButton;
+    searchPrev->setToolTip("Previous match");
+    setOcticon(searchPrev, "chevron-up", 14);
+    connect(searchPrev, &QPushButton::clicked, this,
+            [this] { pullDiffSearchGoTo(-1); });
+    auto *searchNext = new QPushButton;
+    searchNext->setToolTip("Next match");
+    setOcticon(searchNext, "chevron-down", 14);
+    connect(searchNext, &QPushButton::clicked, this,
+            [this] { pullDiffSearchGoTo(1); });
+    auto *searchClose = new QPushButton;
+    searchClose->setToolTip("Close find bar");
+    setOcticon(searchClose, "x", 14);
+    connect(searchClose, &QPushButton::clicked, this,
+            [this] { togglePullDiffSearch(false); });
+    for (QPushButton *b : {searchPrev, searchNext, searchClose}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_pullDiffSearchBar = new QWidget;
+    auto *searchBarLayout = new QHBoxLayout(m_pullDiffSearchBar);
+    searchBarLayout->setContentsMargins(0, 0, 0, 6);
+    searchBarLayout->addWidget(m_pullDiffSearchInput, 1);
+    searchBarLayout->addWidget(m_pullDiffSearchCount);
+    searchBarLayout->addWidget(searchPrev);
+    searchBarLayout->addWidget(searchNext);
+    searchBarLayout->addWidget(searchClose);
+    m_pullDiffSearchBar->setVisible(false);
+
     auto *filesPage = new QWidget;
     auto *filesPageLayout = new QVBoxLayout(filesPage);
     filesPageLayout->setContentsMargins(0, 0, 0, 0);
+    filesPageLayout->addWidget(m_pullDiffSearchBar);
     filesPageLayout->addWidget(diffSplit);
+
+    auto *findShortcut = new QShortcut(QKeySequence::Find, filesPage);
+    connect(findShortcut, &QShortcut::activated, this,
+            [this] { togglePullDiffSearch(true); });
+    auto *closeSearchShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
+                                              m_pullDiffSearchInput);
+    closeSearchShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(closeSearchShortcut, &QShortcut::activated, this,
+            [this] { togglePullDiffSearch(false); });
 
     // ---- Commits page: every commit that makes up this PR; clicking one opens
     // it in the repo's commit view.
@@ -1300,6 +1357,7 @@ void MainWindow::showPull(int number)
     m_currentPullNumber = found ? number : -1;
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
+    togglePullDiffSearch(false); // opening a different PR clears any find-in-diff state
     m_pullFileAuthorship.clear();
     if (m_pullFileAuthorFilter)
         m_pullFileAuthorFilter->hide();
@@ -1632,6 +1690,10 @@ void MainWindow::adjustDiffFont(int delta)
     }
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
     m_scmDiffCache.clear();      // re-render any cached SCM diff at the new size
+    // The re-scaled m_pullDiff got a fresh document too; rescan an open find
+    // bar's matches against it (issue #333).
+    if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
+        pullDiffSearchRecompute();
 }
 
 void MainWindow::renderPullDiff()
@@ -1804,6 +1866,10 @@ void MainWindow::renderPullDiff()
     m_pullDiffRenderKey = key;
 
     setDiffHtml(m_pullDiff, body);
+    // setDiffHtml just replaced the document, invalidating any cursors an open
+    // find bar was holding onto (issue #333) — rescan against the new one.
+    if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
+        pullDiffSearchRecompute();
 }
 
 // Scroll the all-files diff so the given file's section sits at the top.
@@ -1925,6 +1991,117 @@ bool MainWindow::pullScrollToAdjacentHunk(int delta)
         return false; // no further hunk in that direction
     vbar->setValue(std::clamp(target - 4, vbar->minimum(), vbar->maximum()));
     return true;
+}
+
+// Show or hide the find-in-diff bar (issue #333). Hiding clears both the
+// search text and the highlights, so re-opening it always starts fresh.
+void MainWindow::togglePullDiffSearch(bool show)
+{
+    if (!m_pullDiffSearchBar || !m_pullDiffSearchInput)
+        return;
+    m_pullDiffSearchBar->setVisible(show);
+    if (show) {
+        m_pullDiffSearchInput->setFocus();
+        m_pullDiffSearchInput->selectAll();
+    } else {
+        m_pullDiffSearchInput->clear(); // triggers pullDiffSearchRecompute to clear highlights
+        if (m_pullDiff)
+            m_pullDiff->setFocus();
+    }
+}
+
+// Rebuild m_pullDiff's extra selections from m_pullDiffSearchMatches, painting
+// the active match in a brighter color than the rest, and update the "n/m"
+// count label.
+static void applyPullDiffSearchHighlights(QTextBrowser *diff,
+                                          const QList<QTextCursor> &matches,
+                                          int activeIndex, QLabel *countLabel,
+                                          bool termEmpty)
+{
+    QList<QTextEdit::ExtraSelection> sels;
+    QTextCharFormat matchFmt;
+    matchFmt.setBackground(QColor("#e3b341"));
+    matchFmt.setForeground(QColor("#0d1117"));
+    QTextCharFormat currentFmt;
+    currentFmt.setBackground(QColor("#f78166"));
+    currentFmt.setForeground(QColor("#0d1117"));
+    for (int i = 0; i < matches.size(); ++i) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = matches.at(i);
+        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
+        sels.append(sel);
+    }
+    diff->setExtraSelections(sels);
+
+    if (!countLabel)
+        return;
+    countLabel->setText(termEmpty
+                            ? QString()
+                            : matches.isEmpty()
+                                  ? QStringLiteral("No results")
+                                  : QStringLiteral("%1/%2")
+                                        .arg(activeIndex + 1)
+                                        .arg(matches.size()));
+}
+
+// Re-scan the combined diff for the current search text and highlight every
+// match. Called on every keystroke and after each re-render, since a
+// re-render replaces the document and invalidates previously-found cursors.
+void MainWindow::pullDiffSearchRecompute()
+{
+    if (!m_pullDiff)
+        return;
+    m_pullDiffSearchMatches.clear();
+    m_pullDiffSearchIndex = -1;
+
+    const QString term =
+        m_pullDiffSearchInput ? m_pullDiffSearchInput->text() : QString();
+    if (!term.isEmpty()) {
+        QTextCursor cur = m_pullDiff->document()->find(term);
+        while (!cur.isNull()) {
+            m_pullDiffSearchMatches.append(cur);
+            if (m_pullDiffSearchMatches.size() >= 5000)
+                break; // safety cap on pathological match counts
+            cur = m_pullDiff->document()->find(term, cur);
+        }
+        if (!m_pullDiffSearchMatches.isEmpty())
+            m_pullDiffSearchIndex = 0;
+    }
+
+    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+                                  m_pullDiffSearchIndex, m_pullDiffSearchCount,
+                                  term.isEmpty());
+    if (m_pullDiffSearchIndex >= 0)
+        pullDiffSearchGoTo(0);
+}
+
+// Step the active match by delta (wrapping), re-highlight, and scroll it into
+// view. delta of 0 just scrolls to the current match (used right after a
+// recompute).
+void MainWindow::pullDiffSearchGoTo(int delta)
+{
+    if (!m_pullDiff || m_pullDiffSearchMatches.isEmpty())
+        return;
+    QScrollBar *vbar = m_pullDiff->verticalScrollBar();
+    if (!vbar)
+        return;
+
+    const int count = m_pullDiffSearchMatches.size();
+    m_pullDiffSearchIndex =
+        ((m_pullDiffSearchIndex + delta) % count + count) % count;
+    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+                                  m_pullDiffSearchIndex, m_pullDiffSearchCount,
+                                  false);
+
+    // Same viewport-relative-to-absolute trick as pullScrollToAdjacentHunk:
+    // cursorRect is always reported relative to the current viewport, so
+    // adding the current scroll offset gives the match's absolute position.
+    const QTextCursor &target = m_pullDiffSearchMatches.at(m_pullDiffSearchIndex);
+    QTextCursor lineCur(target);
+    lineCur.setPosition(target.selectionStart());
+    const int y = m_pullDiff->cursorRect(lineCur).top() + vbar->value();
+    const int centered = y - m_pullDiff->viewport()->height() / 3;
+    vbar->setValue(std::clamp(centered, vbar->minimum(), vbar->maximum()));
 }
 
 void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
