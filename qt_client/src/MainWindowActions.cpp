@@ -104,10 +104,13 @@ void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
                      QFileDevice::ExeOther);
 
     // Point the working copy's push URL at the local bare mirror so a plain
-    // `git push origin ...` from the terminal lands in the served mirror (whose
-    // post-receive hook above runs actions), instead of the relay clone URL —
-    // the relay serves git-upload-pack only and 404s git-receive-pack. The fetch
-    // URL is left alone so the owner can still pull. Best-effort.
+    // `git push origin ...` from the terminal lands directly in the served
+    // mirror (whose post-receive hook above runs actions + re-attests), instead
+    // of round-tripping through the relay. The relay now also accepts
+    // git-receive-pack over the tunnel (issue #358) for pushes from other
+    // machines; this local shortcut just avoids the network hop for the owner on
+    // this box. The fetch URL is left alone so the owner can still pull.
+    // Best-effort.
     if (!repo.localPath.trimmed().isEmpty() &&
         QFileInfo::exists(repo.localPath + QStringLiteral("/.git"))) {
         QByteArray current;

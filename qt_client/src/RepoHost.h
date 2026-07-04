@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -11,6 +12,7 @@
 class QTcpSocket;
 class QTimer;
 class QJsonObject;
+class QProcess;
 
 // Live file host for one mirrored repository. Connects out to the relay's
 // per-repo /host WebSocket and answers tree/blob requests by reading the local
@@ -62,6 +64,13 @@ private:
     // Run git upload-pack and stream stdout back as git-chunk/git-end messages.
     void runGitStream(const QString &reqId, const QStringList &args,
                       const QByteArray &input);
+    // git push (issue #358): receive-pack whose stdin (the pushed pack) arrives
+    // as a stream of git-req-chunk messages rather than one buffered body, so a
+    // large push is never held whole. startReceivePack spawns the process;
+    // feedReceivePack/finishReceiveInput relay stdin as the relay pumps it.
+    void startReceivePack(const QString &reqId);
+    void feedReceivePack(const QString &reqId, const QByteArray &data);
+    void finishReceiveInput(const QString &reqId);
     // Stream a content-addressed release binary (kept outside git) back over the
     // same git-chunk/git-end protocol. `sha256` is the asset's content address.
     void streamReleaseBlob(const QString &reqId, const QString &sha256);
@@ -89,4 +98,15 @@ private:
     QTimer *m_reconnect = nullptr;
     QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
     std::function<QString()> m_tokenProvider; // fresh /host auth token per connect
+
+    // In-flight receive-pack pushes keyed by reqId. Input can arrive before the
+    // process is running (QProcess is still Starting), so it is buffered and
+    // flushed on the started() signal — mirroring runGitStream's own guard.
+    struct ReceiveJob {
+        QProcess *process = nullptr;
+        QByteArray pendingInput; // stdin buffered until the process starts
+        bool started = false;
+        bool endReceived = false; // git-req-end seen before started()
+    };
+    QHash<QString, ReceiveJob *> m_receiveJobs;
 };
