@@ -625,10 +625,26 @@ void MainWindow::loadReleasesPanel()
             commitItem->setForeground(QColor("#8b949e"));
             m_releasesTable->setItem(row, 1, commitItem);
 
-            auto *whenItem = new QTableWidgetItem(f.value(1).trimmed());
+            // Parse the datetime string from git (format: "YYYY-MM-DD HH:MM")
+            // and convert to relative "x ago" format
+            const QString dateTimeStr = f.value(1).trimmed();
+            QString relativeTime = dateTimeStr;
+            if (!dateTimeStr.isEmpty()) {
+                QDateTime dt = QDateTime::fromString(dateTimeStr, "yyyy-MM-dd hh:mm");
+                if (dt.isValid()) {
+                    relativeTime = formatIssueRelativeTime(dt.toMSecsSinceEpoch());
+                }
+            }
+            auto *whenItem = new QTableWidgetItem(relativeTime);
             const QString tagger = f.value(5).trimmed();
-            if (!tagger.isEmpty())
-                whenItem->setToolTip(QStringLiteral("Tagged by %1").arg(tagger));
+            QString toolTip = dateTimeStr;
+            if (!tagger.isEmpty()) {
+                if (!toolTip.isEmpty())
+                    toolTip += QStringLiteral(" · ");
+                toolTip += QStringLiteral("Tagged by %1").arg(tagger);
+            }
+            if (!toolTip.isEmpty())
+                whenItem->setToolTip(toolTip);
             m_releasesTable->setItem(row, 2, whenItem);
 
             // Release notes column: promptNewRelease defaults the tag message's
