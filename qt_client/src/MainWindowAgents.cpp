@@ -1523,7 +1523,7 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
     url.setQuery(query);
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey, repo] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
@@ -1537,9 +1537,22 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
         for (const QJsonValue &value : prompts) {
             const QJsonObject item = value.toObject();
             const QString text = item.value("text").toString();
+            const QString agentId = item.value("agentId").toString();
+            if (text.isEmpty()) {
+                logSystem(QStringLiteral(
+                    "Dropped a malformed website agent prompt."));
+                continue;
+            }
+            // Sentinel "new" (adhoc #266): the website's top-of-list composer asks
+            // to spin up a brand-new ad-hoc agent for this repo from the prompt,
+            // rather than steer an existing session.
+            if (agentId == QLatin1String("new")) {
+                startWebNewAgentForRepo(repo, text);
+                continue;
+            }
             bool ok = false;
-            const int sessionId = item.value("agentId").toString().toInt(&ok);
-            if (!ok || text.isEmpty()) {
+            const int sessionId = agentId.toInt(&ok);
+            if (!ok) {
                 logSystem(QStringLiteral(
                     "Dropped a malformed website agent prompt."));
                 continue;
@@ -1567,6 +1580,38 @@ void MainWindow::deliverQueuedAgentPrompt(int sessionId, const QString &text)
     // steering instruction (adhoc #177) — a website prompt shouldn't be
     // dropped just because the session isn't running right now.
     sendPromptToAgentSession(sessionId, text);
+}
+
+// Start a brand-new ad-hoc agent for a repo from a prompt the website's
+// top-of-list composer queued (adhoc #266). Resolves the repo's index in
+// m_repositories, then hands off to the same startAdHocAgentForRepo the in-app
+// compose row uses, honouring the node's default provider/model choice.
+void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
+                                         const QString &task)
+{
+    int repoIndex = -1;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &r = m_repositories.at(i);
+        if (r.owner.compare(repo.owner, Qt::CaseInsensitive) == 0
+            && r.name.compare(repo.name, Qt::CaseInsensitive) == 0
+            && !r.localPath.isEmpty()) {
+            repoIndex = i;
+            break;
+        }
+    }
+    if (repoIndex < 0) {
+        logSystem(QStringLiteral(
+            "Dropped a website \"new agent\" prompt: no local checkout for %1/%2.")
+                      .arg(repo.owner, repo.name));
+        return;
+    }
+    const QString provider = defaultAgentProvider();
+    const QString model = provider == QLatin1String("claude-code")
+                              ? QSettings().value(kClaudeCodeModelSetting).toString()
+                              : QString();
+    logSystem(QStringLiteral("Starting a new agent for %1/%2 from a website prompt.")
+                  .arg(repo.owner, repo.name));
+    startAdHocAgentForRepo(repoIndex, task, provider, /*createPr=*/true, model);
 }
 
 void MainWindow::testOpenAiAgentKey()
@@ -5731,6 +5776,58 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     // Persist the turn so the transcript survives an app restart (issue #41).
     if (m_agentStore && m_streamSessionInfo.contains(sessionId))
         m_agentStore->appendEvent(m_streamSessionInfo.value(sessionId), ev);
+
+    // Mirror a readable rendering of each turn into the plain-text run log so the
+    // website's live transcript actually shows the conversation (adhoc #266). The
+    // rich native transcript (m_agentTranscript) is built from the stream-json
+    // events above, but the website only has the run log (readLog -> pushed as
+    // "transcript"), which otherwise never sees anything past the "==>" preamble
+    // for Claude Code sessions. Persisted history replays via
+    // ensureStreamEventsLoaded (not through here), so this only appends live
+    // turns and never double-writes on restart.
+    if (m_agentStore && m_streamSessionInfo.contains(sessionId)) {
+        const QString etype = ev.value(QStringLiteral("type")).toString();
+        QString logText;
+        if (etype == QLatin1String("_local_user")) {
+            const QString t = ev.value(QStringLiteral("text")).toString().trimmed();
+            if (!t.isEmpty())
+                logText = QStringLiteral("\n> ") + t + QLatin1Char('\n');
+        } else if (etype == QLatin1String("assistant")) {
+            const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
+                                           .value(QStringLiteral("content")).toArray();
+            for (const QJsonValue &bv : content) {
+                const QJsonObject b = bv.toObject();
+                const QString btype = b.value(QStringLiteral("type")).toString();
+                if (btype == QLatin1String("text")) {
+                    const QString t = b.value(QStringLiteral("text")).toString();
+                    if (!t.trimmed().isEmpty())
+                        logText += QLatin1Char('\n') + t.trimmed() + QLatin1Char('\n');
+                } else if (btype == QLatin1String("tool_use")) {
+                    const QString name = b.value(QStringLiteral("name")).toString();
+                    const QJsonObject input = b.value(QStringLiteral("input")).toObject();
+                    // Prefer the most descriptive single field per tool, else fall
+                    // back to a compact JSON dump so every tool call is visible.
+                    QString arg = input.value(QStringLiteral("file_path")).toString();
+                    if (arg.isEmpty())
+                        arg = input.value(QStringLiteral("command")).toString();
+                    if (arg.isEmpty())
+                        arg = input.value(QStringLiteral("path")).toString();
+                    if (arg.isEmpty())
+                        arg = input.value(QStringLiteral("pattern")).toString();
+                    if (arg.isEmpty() && !input.isEmpty())
+                        arg = QString::fromUtf8(
+                            QJsonDocument(input).toJson(QJsonDocument::Compact));
+                    if (arg.size() > 200)
+                        arg = arg.left(200) + QString::fromUtf8("\xE2\x80\xA6");
+                    logText += QStringLiteral("\n[%1%2]\n")
+                                   .arg(name, arg.isEmpty() ? QString()
+                                                            : QStringLiteral(" ") + arg);
+                }
+            }
+        }
+        if (!logText.isEmpty())
+            m_agentStore->appendLog(m_streamSessionInfo.value(sessionId), logText);
+    }
 
     if (ev.value(QStringLiteral("type")).toString() == QLatin1String("assistant")) {
         // Accumulate token usage so the agents list shows it live (see
