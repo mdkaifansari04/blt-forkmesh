@@ -1909,18 +1909,30 @@ async def status_history(env):
                 "uptimePct": uptime, "hours": hours,
                 "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent day with any data, not the
-        # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
-        # today's badge red.
-        latest = next((d for d in reversed(days) if d["checks"]), None)
-        if latest is None:
-            status = "unknown"
-        elif latest["failures"] == 0:
-            status = "operational"
-        elif latest["failures"] >= latest["checks"]:
-            status = "down"
+        # Current status comes from the most recent sampled *hour* with data,
+        # not the whole-day (or 30-day) aggregate: a resolved incident earlier
+        # today — e.g. an overnight window with no desktop host connected — must
+        # not keep the badge red once hosts are back online. The day aggregate
+        # would surface that stale failure (and its "checked in 1h 34m ago"
+        # reason) for the rest of the day even after recovery. Fall back to the
+        # day aggregate only when there are no hourly buckets to read from.
+        latest_hour = None
+        for d in reversed(days):
+            latest_hour = next((h for h in reversed(d["hours"]) if h["checks"]), None)
+            if latest_hour is not None:
+                break
+        if latest_hour is not None:
+            status = latest_hour["status"]
         else:
-            status = "degraded"
+            latest = next((d for d in reversed(days) if d["checks"]), None)
+            if latest is None:
+                status = "unknown"
+            elif latest["failures"] == 0:
+                status = "operational"
+            elif latest["failures"] >= latest["checks"]:
+                status = "down"
+            else:
+                status = "degraded"
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None
