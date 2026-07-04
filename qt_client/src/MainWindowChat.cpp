@@ -271,7 +271,9 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: hosts section built"));
     m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
     logStartup(QStringLiteral("  buildChatPage: relays section built"));
-    m_sectionStack->addWidget(buildNodeProfileSection()); // 9 Node profile (full page)
+    m_sectionStack->addWidget(buildFirewallSection());   // 9 Firewall
+    logStartup(QStringLiteral("  buildChatPage: firewall section built"));
+    m_sectionStack->addWidget(buildNodeProfileSection()); // 10 Node profile (full page)
     logStartup(QStringLiteral("  buildChatPage: node profile section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
@@ -2801,6 +2803,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relaysNavButton, &QPushButton::clicked, this,
             [this] { showSection(8); });
 
+    // Firewall: whitelist-only outbound request gate, beside Relays as section 9.
+    m_firewallNavButton = new QPushButton(QStringLiteral("Firewall"));
+    m_firewallNavButton->setObjectName("topNavButton");
+    m_firewallNavButton->setCheckable(true);
+    m_firewallNavButton->setCursor(Qt::PointingHandCursor);
+    m_firewallNavButton->setToolTip(
+        QString::fromUtf8("Firewall \xE2\x80\x94 outbound request whitelist"));
+    setOcticon(m_firewallNavButton, "shield-check", 16);
+    m_navGroup->addButton(m_firewallNavButton, 9); // section 9: Firewall
+    connect(m_firewallNavButton, &QPushButton::clicked, this,
+            [this] { showSection(9); });
+
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
     // it's a dev-iteration shortcut for the same fast rebuild as the profile panel.
@@ -2993,6 +3007,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
+    navRow->addWidget(m_firewallNavButton);
     navRow->addSpacing(16);
     // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
     navRow->addWidget(m_footerDiagnostics);
@@ -5389,6 +5404,8 @@ void MainWindow::showSection(int index)
     } else if (index == 8) {
         // Re-list and re-probe the relays each time the Relays section opens.
         refreshRelaysTable();
+    } else if (index == 9) {
+        refreshFirewallTables();
     }
 }
 
@@ -6148,6 +6165,452 @@ void MainWindow::probeRelayRow(int row)
         }
         markDone();
     });
+}
+
+// --- Firewall ---------------------------------------------------------------
+
+namespace {
+
+int requestFirewallPort(const QUrl &url)
+{
+    if (url.port() > 0)
+        return url.port();
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QLatin1String("https") || scheme == QLatin1String("wss"))
+        return 443;
+    if (scheme == QLatin1String("http") || scheme == QLatin1String("ws"))
+        return 80;
+    return -1;
+}
+
+QString requestFirewallDestination(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    const int port = requestFirewallPort(url);
+    return port > 0 ? QStringLiteral("%1:%2").arg(host).arg(port) : host;
+}
+
+QString requestFirewallUser()
+{
+#ifndef Q_OS_WIN
+    return QString::number(getuid());
+#else
+    const QString user = qEnvironmentVariable("USERNAME");
+    return user.isEmpty() ? QStringLiteral("current user") : user;
+#endif
+}
+
+BackoffNetworkAccessManager *requestFirewallManager(QNetworkAccessManager *manager)
+{
+    return qobject_cast<BackoffNetworkAccessManager *>(manager);
+}
+
+} // namespace
+
+QWidget *MainWindow::buildFirewallSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Firewall"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *summary = new QLabel(QStringLiteral(
+        "Whitelist only. Unlisted ForkMesh HTTP and relay-tunnel destinations "
+        "ask before connecting."));
+    summary->setObjectName("mutedLabel");
+    summary->setWordWrap(true);
+    outer->addWidget(summary);
+
+    auto *controls = new QHBoxLayout;
+    controls->setContentsMargins(0, 0, 0, 0);
+    m_requestFirewallEnabledCheck = new QCheckBox(QStringLiteral("Whitelist only"));
+    m_requestFirewallEnabledCheck->setCursor(Qt::PointingHandCursor);
+    const bool enabled =
+        QSettings().value(kRequestFirewallEnabledSetting, true).toBool();
+    m_requestFirewallEnabledCheck->setChecked(enabled);
+    connect(m_requestFirewallEnabledCheck, &QCheckBox::toggled, this,
+            [this](bool on) {
+                QSettings().setValue(kRequestFirewallEnabledSetting, on);
+                if (auto *manager = requestFirewallManager(m_networkAccess))
+                    manager->setFirewallEnabled(on);
+                logSystem(on ? QStringLiteral("Firewall: whitelist-only mode enabled.")
+                             : QStringLiteral("Firewall: whitelist-only mode disabled."));
+                refreshFirewallTables();
+            });
+    controls->addWidget(m_requestFirewallEnabledCheck);
+    m_requestFirewallStatus = new QLabel;
+    m_requestFirewallStatus->setObjectName("mutedLabel");
+    controls->addWidget(m_requestFirewallStatus, 1);
+    auto *clearHistory = new QPushButton(QStringLiteral("Clear history"));
+    clearHistory->setObjectName("repoAction");
+    clearHistory->setCursor(Qt::PointingHandCursor);
+    setOcticon(clearHistory, "trash", 16);
+    connect(clearHistory, &QPushButton::clicked, this,
+            &MainWindow::clearFirewallHistory);
+    controls->addWidget(clearHistory);
+    outer->addLayout(controls);
+
+    auto *ruleRow = new QHBoxLayout;
+    ruleRow->setContentsMargins(0, 0, 0, 0);
+    m_requestFirewallRuleEdit = new QLineEdit;
+    m_requestFirewallRuleEdit->setPlaceholderText(
+        QStringLiteral("host, host:port, *.domain, https://host/path, scheme:https, *"));
+    ruleRow->addWidget(m_requestFirewallRuleEdit, 1);
+    auto *addRule = new QPushButton(QStringLiteral("Add"));
+    addRule->setObjectName("repoAction");
+    addRule->setCursor(Qt::PointingHandCursor);
+    setOcticon(addRule, "plus", 16);
+    connect(addRule, &QPushButton::clicked, this,
+            &MainWindow::addFirewallRuleFromEdit);
+    connect(m_requestFirewallRuleEdit, &QLineEdit::returnPressed, this,
+            &MainWindow::addFirewallRuleFromEdit);
+    ruleRow->addWidget(addRule);
+    m_requestFirewallRemoveButton = new QPushButton(QStringLiteral("Remove"));
+    m_requestFirewallRemoveButton->setObjectName("repoAction");
+    m_requestFirewallRemoveButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_requestFirewallRemoveButton, "trash", 16);
+    connect(m_requestFirewallRemoveButton, &QPushButton::clicked, this,
+            &MainWindow::removeSelectedFirewallRules);
+    ruleRow->addWidget(m_requestFirewallRemoveButton);
+    outer->addLayout(ruleRow);
+
+    auto *rulesLabel = new QLabel(QStringLiteral("Whitelist"));
+    rulesLabel->setObjectName("sectionLabel");
+    outer->addWidget(rulesLabel);
+
+    m_requestFirewallRulesTable = new QTableWidget(0, 2);
+    installColumnHeaderMenu(m_requestFirewallRulesTable);
+    m_requestFirewallRulesTable->setObjectName("issueTable");
+    m_requestFirewallRulesTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Rule"), QStringLiteral("Stored as")});
+    m_requestFirewallRulesTable->verticalHeader()->setVisible(false);
+    m_requestFirewallRulesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_requestFirewallRulesTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_requestFirewallRulesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_requestFirewallRulesTable->setShowGrid(false);
+    m_requestFirewallRulesTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::Stretch);
+    m_requestFirewallRulesTable->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+    makeColumnsResizable(m_requestFirewallRulesTable);
+    outer->addWidget(m_requestFirewallRulesTable, 1);
+
+    auto *historyLabel = new QLabel(QStringLiteral("Recent requests"));
+    historyLabel->setObjectName("sectionLabel");
+    outer->addWidget(historyLabel);
+
+    m_requestFirewallHistoryTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_requestFirewallHistoryTable);
+    m_requestFirewallHistoryTable->setObjectName("issueTable");
+    m_requestFirewallHistoryTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Decision"), QStringLiteral("Method"),
+         QStringLiteral("Destination"), QStringLiteral("Rule"),
+         QStringLiteral("When")});
+    m_requestFirewallHistoryTable->verticalHeader()->setVisible(false);
+    m_requestFirewallHistoryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_requestFirewallHistoryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_requestFirewallHistoryTable->setShowGrid(false);
+    m_requestFirewallHistoryTable->setSortingEnabled(true);
+    m_requestFirewallHistoryTable->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::Stretch);
+    for (int c : {0, 1, 3, 4})
+        m_requestFirewallHistoryTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_requestFirewallHistoryTable);
+    outer->addWidget(m_requestFirewallHistoryTable, 1);
+
+    refreshFirewallTables();
+    return page;
+}
+
+void MainWindow::refreshFirewallTables()
+{
+    auto *manager = requestFirewallManager(m_networkAccess);
+    const QStringList rules =
+        manager ? manager->firewallRules() : requestFirewallWhitelistWithDefaults();
+    const bool enabled =
+        manager ? manager->firewallEnabled()
+                : QSettings().value(kRequestFirewallEnabledSetting, true).toBool();
+
+    if (m_requestFirewallEnabledCheck) {
+        QSignalBlocker block(m_requestFirewallEnabledCheck);
+        m_requestFirewallEnabledCheck->setChecked(enabled);
+    }
+    if (m_requestFirewallStatus) {
+        int blocked = 0;
+        for (const FirewallHistoryEntry &entry : std::as_const(m_requestFirewallHistory))
+            if (!entry.allowed)
+                ++blocked;
+        m_requestFirewallStatus->setText(
+            QStringLiteral("%1 - %2 whitelist rule(s), %3 blocked this session")
+                .arg(enabled ? QStringLiteral("Enabled") : QStringLiteral("Disabled"))
+                .arg(rules.size())
+                .arg(blocked));
+    }
+
+    if (m_requestFirewallRulesTable) {
+        TableRepaintGuard repaintGuard(m_requestFirewallRulesTable);
+        m_requestFirewallRulesTable->setRowCount(0);
+        for (const QString &rule : rules) {
+            const int row = m_requestFirewallRulesTable->rowCount();
+            m_requestFirewallRulesTable->insertRow(row);
+            auto *label = new QTableWidgetItem(
+                BackoffNetworkAccessManager::firewallRuleLabel(rule));
+            label->setData(Qt::UserRole, rule);
+            auto *raw = new QTableWidgetItem(rule);
+            raw->setData(Qt::UserRole, rule);
+            m_requestFirewallRulesTable->setItem(row, 0, label);
+            m_requestFirewallRulesTable->setItem(row, 1, raw);
+        }
+    }
+
+    if (m_requestFirewallHistoryTable) {
+        TableRepaintGuard repaintGuard(m_requestFirewallHistoryTable);
+        m_requestFirewallHistoryTable->setSortingEnabled(false);
+        m_requestFirewallHistoryTable->setRowCount(0);
+        for (const FirewallHistoryEntry &entry : std::as_const(m_requestFirewallHistory)) {
+            const int row = m_requestFirewallHistoryTable->rowCount();
+            m_requestFirewallHistoryTable->insertRow(row);
+            auto *decision =
+                new QTableWidgetItem(entry.allowed ? QStringLiteral("Allowed")
+                                                   : QStringLiteral("Blocked"));
+            decision->setForeground(entry.allowed ? QColor(QStringLiteral("#3fb950"))
+                                                  : QColor(QStringLiteral("#f85149")));
+            m_requestFirewallHistoryTable->setItem(row, 0, decision);
+            m_requestFirewallHistoryTable->setItem(row, 1,
+                new QTableWidgetItem(entry.method));
+            auto *dest = new QTableWidgetItem(entry.destination);
+            dest->setToolTip(entry.url);
+            m_requestFirewallHistoryTable->setItem(row, 2, dest);
+            m_requestFirewallHistoryTable->setItem(row, 3,
+                new QTableWidgetItem(
+                    entry.rule.isEmpty()
+                        ? QStringLiteral("-")
+                        : BackoffNetworkAccessManager::firewallRuleLabel(entry.rule)));
+            auto *when = new QTableWidgetItem(formatRepoDate(entry.timestampMs));
+            when->setData(Qt::UserRole, static_cast<qlonglong>(entry.timestampMs));
+            m_requestFirewallHistoryTable->setItem(row, 4, when);
+        }
+        m_requestFirewallHistoryTable->setSortingEnabled(true);
+        m_requestFirewallHistoryTable->sortItems(4, Qt::DescendingOrder);
+    }
+}
+
+void MainWindow::addFirewallRuleFromEdit()
+{
+    if (!m_requestFirewallRuleEdit)
+        return;
+    const QString raw = m_requestFirewallRuleEdit->text().trimmed();
+    const QString rule = BackoffNetworkAccessManager::canonicalFirewallRule(raw);
+    if (rule.isEmpty()) {
+        flashMessage(QStringLiteral("Enter a valid firewall rule."), true);
+        return;
+    }
+    auto *manager = requestFirewallManager(m_networkAccess);
+    bool added = false;
+    if (manager)
+        added = manager->addFirewallRule(rule);
+    QStringList rules = manager ? manager->firewallRules()
+                                : QSettings().value(kRequestFirewallWhitelistSetting)
+                                      .toStringList();
+    if (!rules.contains(rule)) {
+        rules.append(rule);
+        rules.sort(Qt::CaseInsensitive);
+        added = true;
+    }
+    QSettings().setValue(kRequestFirewallWhitelistSetting, rules);
+    m_requestFirewallRuleEdit->clear();
+    refreshFirewallTables();
+    flashMessage(added ? QStringLiteral("Firewall rule added.")
+                       : QStringLiteral("Firewall rule already exists."));
+}
+
+void MainWindow::removeSelectedFirewallRules()
+{
+    if (!m_requestFirewallRulesTable)
+        return;
+    QSet<QString> selectedRules;
+    const auto ranges = m_requestFirewallRulesTable->selectedRanges();
+    for (const QTableWidgetSelectionRange &range : ranges) {
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row) {
+            if (auto *item = m_requestFirewallRulesTable->item(row, 0))
+                selectedRules.insert(item->data(Qt::UserRole).toString());
+        }
+    }
+    if (selectedRules.isEmpty())
+        return;
+    auto *manager = requestFirewallManager(m_networkAccess);
+    QStringList rules = manager ? manager->firewallRules()
+                                : QSettings().value(kRequestFirewallWhitelistSetting)
+                                      .toStringList();
+    for (const QString &rule : std::as_const(selectedRules)) {
+        if (manager)
+            manager->removeFirewallRule(rule);
+        rules.removeAll(rule);
+    }
+    QSettings().setValue(kRequestFirewallWhitelistSetting,
+                         manager ? manager->firewallRules() : rules);
+    refreshFirewallTables();
+    flashMessage(QStringLiteral("Firewall rule removed."));
+}
+
+void MainWindow::clearFirewallHistory()
+{
+    m_requestFirewallHistory.clear();
+    refreshFirewallTables();
+}
+
+bool MainWindow::promptFirewallRequest(const QString &method, const QUrl &url,
+                                       QString *allowRuleOut)
+{
+    if (!url.isValid() || url.host().isEmpty())
+        return true;
+
+    const QString defaultRule = BackoffNetworkAccessManager::firewallRuleForUrl(url);
+    if (allowRuleOut)
+        *allowRuleOut = defaultRule;
+
+    // Offscreen test runs must not block forever behind a modal prompt.
+    if (QGuiApplication::platformName().contains(QStringLiteral("offscreen"),
+                                                 Qt::CaseInsensitive))
+        return false;
+
+    QApplication::alert(this, 0);
+    if (!isActiveWindow())
+        postNotification(QStringLiteral("ForkMesh firewall"),
+                         QStringLiteral("%1 wants to connect to %2")
+                             .arg(method, requestFirewallDestination(url)),
+                         true, QStringLiteral("dialog-warning"));
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("ForkMesh Firewall"));
+    dialog.setModal(true);
+    dialog.resize(640, 430);
+
+    auto *outer = new QVBoxLayout(&dialog);
+    outer->setContentsMargins(18, 16, 18, 16);
+    outer->setSpacing(12);
+
+    auto *heading = new QLabel(
+        QStringLiteral("<b>ForkMesh</b> is connecting to <b>%1</b> on TCP port %2")
+            .arg(url.host().toHtmlEscaped())
+            .arg(requestFirewallPort(url) > 0
+                     ? QString::number(requestFirewallPort(url))
+                     : QStringLiteral("unknown")));
+    heading->setWordWrap(true);
+    outer->addWidget(heading);
+
+    auto *details = new QFormLayout;
+    details->setLabelAlignment(Qt::AlignLeft);
+    details->addRow(QStringLiteral("Request"),
+                    new QLabel(method + QStringLiteral(" ") +
+                               url.toDisplayString(QUrl::RemoveUserInfo)));
+    details->addRow(QStringLiteral("Executed from"),
+                    new QLabel(QCoreApplication::applicationFilePath()));
+    details->addRow(QStringLiteral("Destination host"),
+                    new QLabel(url.host().toLower()));
+    details->addRow(QStringLiteral("Destination port"),
+                    new QLabel(requestFirewallPort(url) > 0
+                                   ? QString::number(requestFirewallPort(url))
+                                   : QStringLiteral("unknown")));
+    details->addRow(QStringLiteral("User ID"), new QLabel(requestFirewallUser()));
+    details->addRow(QStringLiteral("Process ID"),
+                    new QLabel(QString::number(QCoreApplication::applicationPid())));
+    outer->addLayout(details);
+
+    auto *ruleCombo = new QComboBox;
+    auto addRuleOption = [ruleCombo](const QString &label, const QString &rule) {
+        const QString canonical =
+            BackoffNetworkAccessManager::canonicalFirewallRule(rule);
+        if (!canonical.isEmpty())
+            ruleCombo->addItem(label, canonical);
+    };
+    addRuleOption(QStringLiteral("to this host"),
+                  BackoffNetworkAccessManager::firewallRuleForUrl(url));
+    addRuleOption(QStringLiteral("to this host and port"),
+                  BackoffNetworkAccessManager::firewallRuleForUrl(url, true));
+    addRuleOption(QStringLiteral("to this exact URL"),
+                  BackoffNetworkAccessManager::firewallRuleForExactUrl(url));
+    addRuleOption(QStringLiteral("all %1 requests").arg(url.scheme().toUpper()),
+                  QStringLiteral("scheme:") + url.scheme().toLower());
+    const QStringList hostParts = url.host().toLower().split(QLatin1Char('.'),
+                                                            Qt::SkipEmptyParts);
+    if (hostParts.size() > 2) {
+        const QString suffix =
+            hostParts.mid(hostParts.size() - 2).join(QLatin1Char('.'));
+        addRuleOption(QStringLiteral("to *.%1").arg(suffix),
+                      QStringLiteral("hostwild:") + suffix);
+    }
+    details->addRow(QStringLiteral("Allow rule"), ruleCombo);
+
+    auto *buttons = new QDialogButtonBox;
+    auto *deny = buttons->addButton(QStringLiteral("Deny once"),
+                                    QDialogButtonBox::RejectRole);
+    deny->setCursor(Qt::PointingHandCursor);
+    setOcticon(deny, "x", 16);
+    auto *allow = buttons->addButton(QStringLiteral("Allow"),
+                                     QDialogButtonBox::AcceptRole);
+    allow->setCursor(Qt::PointingHandCursor);
+    setOcticon(allow, "check-circle", 16);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    outer->addWidget(buttons);
+
+    const bool allowed = dialog.exec() == QDialog::Accepted;
+    if (allowed && allowRuleOut)
+        *allowRuleOut = ruleCombo->currentData().toString();
+    return allowed;
+}
+
+bool MainWindow::authorizeFirewallConnection(const QString &method, const QUrl &url)
+{
+    auto *manager = requestFirewallManager(m_networkAccess);
+    if (!manager || manager->firewallAllowsUrl(url))
+        return true;
+
+    QString rule = BackoffNetworkAccessManager::firewallRuleForUrl(url);
+    const bool allowed = promptFirewallRequest(method, url, &rule);
+    const QString canonical =
+        BackoffNetworkAccessManager::canonicalFirewallRule(rule);
+    if (allowed && !canonical.isEmpty()) {
+        manager->addFirewallRule(canonical);
+        QSettings().setValue(kRequestFirewallWhitelistSetting,
+                             manager->firewallRules());
+    }
+    recordFirewallRequest(method, url, canonical, allowed);
+    return allowed;
+}
+
+void MainWindow::recordFirewallRequest(const QString &method, const QUrl &url,
+                                       const QString &rule, bool allowed)
+{
+    FirewallHistoryEntry entry;
+    entry.method = method;
+    entry.url = url.toDisplayString(QUrl::RemoveUserInfo);
+    entry.destination = requestFirewallDestination(url);
+    entry.rule = rule;
+    entry.allowed = allowed;
+    entry.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    m_requestFirewallHistory.prepend(entry);
+    while (m_requestFirewallHistory.size() > kRequestFirewallHistoryLimit)
+        m_requestFirewallHistory.removeLast();
+
+    const QString message =
+        QStringLiteral("Firewall %1 %2 %3")
+            .arg(allowed ? QStringLiteral("allowed") : QStringLiteral("blocked"),
+                 method, entry.destination);
+    logSystem(message);
+    if (!allowed)
+        addNotification(QStringLiteral("Firewall blocked"), message, true);
+    refreshFirewallTables();
 }
 
 void MainWindow::loadHostIntoForm(int row, int /*column*/)
@@ -6986,7 +7449,7 @@ void MainWindow::submitHostLinkCode(const QString &code)
 QWidget *MainWindow::buildHomeSection()
 {
     auto *page = new QWidget;
-    // Node profile is now its own section (index 9), so home just holds the repo
+    // Node profile is now its own section (index 10), so home just holds the repo
     // detail panel filling the full width.
     m_repoDetailSection = buildRepoDetailSection();
     auto *layout = new QHBoxLayout(page);
@@ -7704,8 +8167,8 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
         m_profileBalanceButton->setText("Check balance");
     }
 
-    // Show the profile as its own full page (section 9 in m_sectionStack).
-    showSection(9);
+    // Show the profile as its own full page (section 10 in m_sectionStack).
+    showSection(10);
 }
 
 void MainWindow::refreshProfileHostingStats()
@@ -8277,4 +8740,3 @@ void MainWindow::clearRepoDetail()
         m_filesStack->setCurrentIndex(0);
     updateBreadcrumb();
 }
-

@@ -1,8 +1,12 @@
 #pragma once
 
 #include <QNetworkAccessManager>
+#include <QStringList>
+#include <QUrl>
 
 #include "NetworkBackoff.h"
+
+#include <functional>
 
 // Drop-in QNetworkAccessManager that gates every request against a
 // "<host>/api/*" path through NetworkBackoff, keyed per host.
@@ -24,12 +28,41 @@ class BackoffNetworkAccessManager : public QNetworkAccessManager
 {
     Q_OBJECT
 public:
+    using FirewallPrompt = std::function<bool(const QString &method, const QUrl &url,
+                                              QString *allowRuleOut)>;
+
     explicit BackoffNetworkAccessManager(QObject *parent = nullptr);
+
+    void setFirewallEnabled(bool enabled);
+    bool firewallEnabled() const { return m_firewallEnabled; }
+    void setFirewallRules(const QStringList &rules);
+    QStringList firewallRules() const { return m_firewallRules; }
+    bool firewallAllowsUrl(const QUrl &url) const { return firewallAllows(url); }
+    bool addFirewallRule(const QString &rule);
+    bool removeFirewallRule(const QString &rule);
+    void setFirewallPrompt(FirewallPrompt prompt);
+
+    static QString canonicalFirewallRule(const QString &rule);
+    static QString firewallRuleForUrl(const QUrl &url, bool includePort = false);
+    static QString firewallRuleForExactUrl(const QUrl &url);
+    static QString firewallMethodName(Operation op);
+    static QString firewallRuleLabel(const QString &rule);
+
+signals:
+    void firewallRequestDecided(const QString &method, const QUrl &url,
+                                const QString &rule, bool allowed);
 
 protected:
     QNetworkReply *createRequest(Operation op, const QNetworkRequest &request,
                                   QIODevice *outgoingData = nullptr) override;
 
 private:
+    static int normalizedPort(const QUrl &url);
+    static QString normalizedHost(const QString &host);
+    bool firewallAllows(const QUrl &url) const;
+
     NetworkBackoff m_backoff;
+    bool m_firewallEnabled = false;
+    QStringList m_firewallRules;
+    FirewallPrompt m_firewallPrompt;
 };

@@ -10,6 +10,8 @@
 #include <QTcpSocket>
 #include <QUrl>
 
+#include <functional>
+
 // QSettings keys for the per-metric "advertise this node's host stats" toggles
 // (adhoc #23). Each controls whether this node samples and broadcasts that metric
 // for the Mirror nodes view's CPU/RAM/disk bars. Headful nodes default these OFF
@@ -43,6 +45,7 @@ public:
     // to whichever mainnode answers. No-op (keeps the constructor URL) if the
     // filtered list is empty. Call before start().
     void setEndpoints(const QList<QUrl> &endpoints);
+    void setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer);
 
     void sendChat(const QString &channel, const QString &text) override;
     void sendDirect(const QString &targetId, const QString &text) override;
@@ -167,6 +170,7 @@ private:
     QString m_rosterStorageKey;
     RoomCrypto m_crypto;
     QTcpSocket *m_socket = nullptr;
+    std::function<bool(const QUrl &)> m_connectionAuthorizer;
     QByteArray m_readBuffer;
     QByteArray m_wsKey;
     bool m_wsReady = false;

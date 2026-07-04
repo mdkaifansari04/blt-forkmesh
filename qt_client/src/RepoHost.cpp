@@ -17,6 +17,8 @@
 #include <QThread>
 #include <QTimer>
 
+#include <utility>
+
 namespace {
 
 constexpr quint64 kMaxWsPayload = 8ull * 1024 * 1024;
@@ -388,6 +390,11 @@ void RepoHost::setTokenProvider(std::function<QString()> provider)
     m_tokenProvider = std::move(provider);
 }
 
+void RepoHost::setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer)
+{
+    m_connectionAuthorizer = std::move(authorizer);
+}
+
 void RepoHost::start()
 {
     m_stopping = false;
@@ -429,6 +436,13 @@ void RepoHost::connectSocket()
     m_wsReady = false;
     m_readBuffer.clear();
     m_lastRx = QDateTime::currentMSecsSinceEpoch();
+
+    if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
+        emit log(QStringLiteral("Firewall blocked host tunnel for %1/%2 to %3.")
+                     .arg(m_owner, m_name, m_url.host()));
+        scheduleReconnect();
+        return;
+    }
 
     const bool secure = m_url.scheme() == "wss";
     m_socket = secure ? new QSslSocket(this) : new QTcpSocket(this);

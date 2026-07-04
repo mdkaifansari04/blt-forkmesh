@@ -1001,6 +1001,9 @@ void MainWindow::startSession()
     auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
+    server->setConnectionAuthorizer([this](const QUrl &endpoint) {
+        return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
+    });
     // Fail over across every configured mainnode (issue #364): the active server
     // is tried first, then the rest in order, so a dead or quota-limited mainnode
     // no longer strands the client. ServerNode rotates through the list on each
@@ -2790,4 +2793,3 @@ void MainWindow::updateRebuildRestart()
         recloneFromMirror();
     }
 }
-

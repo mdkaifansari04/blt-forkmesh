@@ -34,6 +34,7 @@ public:
     // upgrade so the relay can verify this node may host owner/repo. Called on
     // every (re)connect so the timestamp never goes stale.
     void setTokenProvider(std::function<QString()> provider);
+    void setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer);
 
 signals:
     void log(const QString &line);
@@ -98,6 +99,7 @@ private:
     QTimer *m_reconnect = nullptr;
     QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
     std::function<QString()> m_tokenProvider; // fresh /host auth token per connect
+    std::function<bool(const QUrl &)> m_connectionAuthorizer;
 
     // In-flight receive-pack pushes keyed by reqId. Input can arrive before the
     // process is running (QProcess is still Starting), so it is buffered and

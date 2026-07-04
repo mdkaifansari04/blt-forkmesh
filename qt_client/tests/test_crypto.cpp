@@ -651,6 +651,32 @@ int main(int argc, char *argv[])
         runRequest(QStringLiteral("/static/app.js"));
         check(!seenPaths.isEmpty(),
               "non-/api/ paths bypass the backoff gate even during cooldown");
+
+        manager.setFirewallEnabled(true);
+        seenPaths.clear();
+        const QString deniedErr = runRequest(QStringLiteral("/static/firewall-block"));
+        check(seenPaths.isEmpty(),
+              "firewall-enabled manager blocks non-whitelisted requests locally");
+        check(deniedErr.contains(QStringLiteral("firewall"), Qt::CaseInsensitive),
+              "the firewall-denied reply reports a firewall block");
+
+        int prompts = 0;
+        manager.setFirewallPrompt(
+            [&](const QString &, const QUrl &url, QString *ruleOut) {
+                ++prompts;
+                if (ruleOut)
+                    *ruleOut = BackoffNetworkAccessManager::firewallRuleForUrl(url, true);
+                return true;
+            });
+        seenPaths.clear();
+        runRequest(QStringLiteral("/static/firewall-allow"));
+        check(prompts == 1 && !seenPaths.isEmpty(),
+              "allowing from the firewall prompt lets the request reach the network");
+
+        seenPaths.clear();
+        runRequest(QStringLiteral("/static/firewall-allow-again"));
+        check(prompts == 1 && !seenPaths.isEmpty(),
+              "the accepted firewall rule whitelists subsequent requests");
     }
 
     // --- Commit comment signing ------------------------------------------

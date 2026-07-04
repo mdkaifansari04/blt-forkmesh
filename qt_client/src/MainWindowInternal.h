@@ -132,6 +132,7 @@
 #include <QSysInfo>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStringList>
 #include <QStringListModel>
 #include <QStyle>
 #include <QStyledItemDelegate>
@@ -2162,6 +2163,38 @@ const QString kShowRebuildButtonSetting = QStringLiteral("ui/showRebuildButton")
 // for spotting chatty background traffic (adhoc #74).
 const QString kVerboseNetworkLogSetting =
     QStringLiteral("diagnostics/verboseNetworkLog");
+// App-level outbound firewall. Enabled by default: destinations must be on the
+// whitelist before requests from ForkMesh are allowed to reach the network.
+const QString kRequestFirewallEnabledSetting =
+    QStringLiteral("firewall/whitelistOnly");
+const QString kRequestFirewallWhitelistSetting =
+    QStringLiteral("firewall/whitelist");
+const QString kRequestFirewallDefaultSeededSetting =
+    QStringLiteral("firewall/defaultWhitelistSeeded");
+constexpr int kRequestFirewallHistoryLimit = 100;
+
+inline QStringList defaultRequestFirewallWhitelist()
+{
+    return {QStringLiteral("hostwild:forkmesh.com"),
+            QStringLiteral("hostwild:anthropic.com"),
+            QStringLiteral("hostwild:solana.com")};
+}
+
+inline QStringList requestFirewallWhitelistWithDefaults()
+{
+    QSettings settings;
+    QStringList rules = settings.value(kRequestFirewallWhitelistSetting).toStringList();
+    if (!settings.value(kRequestFirewallDefaultSeededSetting, false).toBool()) {
+        for (const QString &rule : defaultRequestFirewallWhitelist()) {
+            if (!rules.contains(rule))
+                rules.append(rule);
+        }
+        rules.sort(Qt::CaseInsensitive);
+        settings.setValue(kRequestFirewallWhitelistSetting, rules);
+        settings.setValue(kRequestFirewallDefaultSeededSetting, true);
+    }
+    return rules;
+}
 // On by default: when the periodic inbox poll finds new issues, merge and
 // commit them automatically — but only while the owner's working tree has no
 // uncommitted tracked changes, so issue commits never interleave with work in
