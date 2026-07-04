@@ -1,5 +1,5 @@
 diff --git a/cloudflare_worker/public/404.html b/cloudflare_worker/public/404.html
-index 69cd4421..48240e92 100644
+index 69cd44217..48240e922 100644
 --- a/cloudflare_worker/public/404.html
 +++ b/cloudflare_worker/public/404.html
 @@ -4,40 +4,6 @@
@@ -44,7 +44,7 @@ index 69cd4421..48240e92 100644
      <meta
        name="description"
 diff --git a/cloudflare_worker/public/_redirects b/cloudflare_worker/public/_redirects
-index b24003e8..4df0c15c 100644
+index b24003e8c..4df0c15c6 100644
 --- a/cloudflare_worker/public/_redirects
 +++ b/cloudflare_worker/public/_redirects
 @@ -1,23 +1,20 @@
@@ -95,7 +95,7 @@ index b24003e8..4df0c15c 100644
 +# /favicon/site.webmanifest because Cloudflare applies _redirects before serving
 +# matching static files.
 diff --git a/cloudflare_worker/public/blog/index.html b/cloudflare_worker/public/blog/index.html
-index 06ea1490..dfe8a11a 100644
+index 06ea14903..dfe8a11a2 100644
 --- a/cloudflare_worker/public/blog/index.html
 +++ b/cloudflare_worker/public/blog/index.html
 @@ -48,11 +48,11 @@
@@ -113,7 +113,7 @@ index 06ea1490..dfe8a11a 100644
            <a class="nav-cta" href="/signup">Sign Up / Log In</a>
          </nav>
 diff --git a/cloudflare_worker/public/blog/introducing-forkmesh/index.html b/cloudflare_worker/public/blog/introducing-forkmesh/index.html
-index 7c049dec..d025fadf 100644
+index 7c049dec7..d025fadf5 100644
 --- a/cloudflare_worker/public/blog/introducing-forkmesh/index.html
 +++ b/cloudflare_worker/public/blog/introducing-forkmesh/index.html
 @@ -72,11 +72,11 @@
@@ -131,7 +131,7 @@ index 7c049dec..d025fadf 100644
            <a class="nav-cta" href="/signup">Sign Up / Log In</a>
          </nav>
 diff --git a/cloudflare_worker/public/careers.html b/cloudflare_worker/public/careers.html
-index 59f70c9a..1cf5a1ca 100644
+index 59f70c9af..1cf5a1ca2 100644
 --- a/cloudflare_worker/public/careers.html
 +++ b/cloudflare_worker/public/careers.html
 @@ -48,38 +48,13 @@
@@ -232,7 +232,7 @@ index 59f70c9a..1cf5a1ca 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/changelog.html b/cloudflare_worker/public/changelog.html
-index 603abc91..72dc8160 100644
+index 603abc91d..72dc81603 100644
 --- a/cloudflare_worker/public/changelog.html
 +++ b/cloudflare_worker/public/changelog.html
 @@ -55,38 +55,13 @@
@@ -328,7 +328,7 @@ index 603abc91..72dc8160 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/desktop.html b/cloudflare_worker/public/desktop.html
-index e8bab40f..042e11d4 100644
+index e8bab40f0..042e11d45 100644
 --- a/cloudflare_worker/public/desktop.html
 +++ b/cloudflare_worker/public/desktop.html
 @@ -94,38 +94,13 @@
@@ -425,7 +425,7 @@ index e8bab40f..042e11d4 100644
      <script>
        // Copy buttons for the per-OS command blocks. The site-wide static-page.js
 diff --git a/cloudflare_worker/public/docs.html b/cloudflare_worker/public/docs.html
-index d7e936ec..0e6cfcb2 100644
+index d7e936ec3..0e6cfcb2e 100644
 --- a/cloudflare_worker/public/docs.html
 +++ b/cloudflare_worker/public/docs.html
 @@ -376,13 +376,13 @@
@@ -454,7 +454,7 @@ index d7e936ec..0e6cfcb2 100644
                >
                  <svg viewBox="0 0 24 24" aria-hidden="true">
 diff --git a/cloudflare_worker/public/docs/index.html b/cloudflare_worker/public/docs/index.html
-index d7e936ec..0e6cfcb2 100644
+index d7e936ec3..0e6cfcb2e 100644
 --- a/cloudflare_worker/public/docs/index.html
 +++ b/cloudflare_worker/public/docs/index.html
 @@ -376,13 +376,13 @@
@@ -483,7 +483,7 @@ index d7e936ec..0e6cfcb2 100644
                >
                  <svg viewBox="0 0 24 24" aria-hidden="true">
 diff --git a/cloudflare_worker/public/features.html b/cloudflare_worker/public/features.html
-index 280a2a33..28d0f958 100644
+index 280a2a33b..28d0f9580 100644
 --- a/cloudflare_worker/public/features.html
 +++ b/cloudflare_worker/public/features.html
 @@ -118,41 +118,15 @@
@@ -599,7 +599,7 @@ index 280a2a33..28d0f958 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/forgot-password.html b/cloudflare_worker/public/forgot-password.html
-index a2349ad3..51459061 100644
+index a2349ad3b..51459061e 100644
 --- a/cloudflare_worker/public/forgot-password.html
 +++ b/cloudflare_worker/public/forgot-password.html
 @@ -147,7 +147,7 @@
@@ -612,7 +612,7 @@ index a2349ad3..51459061 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/login.html b/cloudflare_worker/public/login.html
-index d6448785..bee85656 100644
+index d6448785a..bee856567 100644
 --- a/cloudflare_worker/public/login.html
 +++ b/cloudflare_worker/public/login.html
 @@ -189,8 +189,8 @@
@@ -627,7 +627,7 @@ index d6448785..bee85656 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/privacy.html b/cloudflare_worker/public/privacy.html
-index e7e49b85..ceabd74f 100644
+index e7e49b859..ceabd74fb 100644
 --- a/cloudflare_worker/public/privacy.html
 +++ b/cloudflare_worker/public/privacy.html
 @@ -93,6 +93,10 @@
@@ -731,7 +731,7 @@ index e7e49b85..ceabd74f 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/reset-password.html b/cloudflare_worker/public/reset-password.html
-index ad7c4366..6f057f55 100644
+index ad7c43660..6f057f557 100644
 --- a/cloudflare_worker/public/reset-password.html
 +++ b/cloudflare_worker/public/reset-password.html
 @@ -151,7 +151,7 @@
@@ -744,7 +744,7 @@ index ad7c4366..6f057f55 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/reset-password.js b/cloudflare_worker/public/reset-password.js
-index a5a1914a..b8073fbc 100644
+index a5a1914a7..b8073fbc2 100644
 --- a/cloudflare_worker/public/reset-password.js
 +++ b/cloudflare_worker/public/reset-password.js
 @@ -54,7 +54,7 @@
@@ -758,7 +758,7 @@ index a5a1914a..b8073fbc 100644
      btn.disabled = false;
 diff --git a/cloudflare_worker/public/site-footer.css b/cloudflare_worker/public/site-footer.css
 new file mode 100644
-index 00000000..38ea2a36
+index 000000000..38ea2a366
 --- /dev/null
 +++ b/cloudflare_worker/public/site-footer.css
 @@ -0,0 +1,244 @@
@@ -1008,7 +1008,7 @@ index 00000000..38ea2a36
 +}
 diff --git a/cloudflare_worker/public/site-footer.js b/cloudflare_worker/public/site-footer.js
 new file mode 100644
-index 00000000..52c3d155
+index 000000000..52c3d1556
 --- /dev/null
 +++ b/cloudflare_worker/public/site-footer.js
 @@ -0,0 +1,199 @@
@@ -1213,7 +1213,7 @@ index 00000000..52c3d155
 +})();
 diff --git a/cloudflare_worker/public/site-header.css b/cloudflare_worker/public/site-header.css
 new file mode 100644
-index 00000000..afbcbdf5
+index 000000000..afbcbdf5f
 --- /dev/null
 +++ b/cloudflare_worker/public/site-header.css
 @@ -0,0 +1,63 @@
@@ -1282,7 +1282,7 @@ index 00000000..afbcbdf5
 +}
 diff --git a/cloudflare_worker/public/site-header.js b/cloudflare_worker/public/site-header.js
 new file mode 100644
-index 00000000..7265b60a
+index 000000000..7265b60ae
 --- /dev/null
 +++ b/cloudflare_worker/public/site-header.js
 @@ -0,0 +1,19 @@
@@ -1306,7 +1306,7 @@ index 00000000..7265b60a
 +  });
 +})();
 diff --git a/cloudflare_worker/public/static-page.js b/cloudflare_worker/public/static-page.js
-index 9a84919a..abd4e960 100644
+index 9a84919ab..abd4e9608 100644
 --- a/cloudflare_worker/public/static-page.js
 +++ b/cloudflare_worker/public/static-page.js
 @@ -27,8 +27,9 @@
@@ -1369,7 +1369,7 @@ index 9a84919a..abd4e960 100644
  
    // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.
 diff --git a/cloudflare_worker/public/status.html b/cloudflare_worker/public/status.html
-index ab2ca837..679b72ec 100644
+index ab2ca837c..679b72ec1 100644
 --- a/cloudflare_worker/public/status.html
 +++ b/cloudflare_worker/public/status.html
 @@ -20,38 +20,13 @@
@@ -1465,7 +1465,7 @@ index ab2ca837..679b72ec 100644
      <script>
        (() => {
 diff --git a/cloudflare_worker/public/terms.html b/cloudflare_worker/public/terms.html
-index b63da85c..159f0654 100644
+index b63da85c9..159f06541 100644
 --- a/cloudflare_worker/public/terms.html
 +++ b/cloudflare_worker/public/terms.html
 @@ -93,6 +93,10 @@
@@ -1569,7 +1569,7 @@ index b63da85c..159f0654 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index d08c0b3e..8ae64a51 100644
+index d08c0b3ea..8ae64a51d 100644
 --- a/cloudflare_worker/src/entry.py
 +++ b/cloudflare_worker/src/entry.py
 @@ -183,6 +183,14 @@ from dashboard_bundle import (  # noqa: E402
@@ -1654,7 +1654,7 @@ index d08c0b3e..8ae64a51 100644
          # dashboard_bundle.py). Each fragment is a real static asset, so
 diff --git a/cloudflare_worker/src/static_routes.py b/cloudflare_worker/src/static_routes.py
 new file mode 100644
-index 00000000..1f503834
+index 000000000..1f503834d
 --- /dev/null
 +++ b/cloudflare_worker/src/static_routes.py
 @@ -0,0 +1,91 @@
@@ -1750,7 +1750,7 @@ index 00000000..1f503834
 +    kind = unquote(parts[2])
 +    return kind in ("tree", "blob") or kind in REPO_TAB_ROUTES
 diff --git a/cloudflare_worker/tests/test_account_profile_endpoints.py b/cloudflare_worker/tests/test_account_profile_endpoints.py
-index 4d2735c2..020f6e06 100644
+index 4d2735c23..020f6e062 100644
 --- a/cloudflare_worker/tests/test_account_profile_endpoints.py
 +++ b/cloudflare_worker/tests/test_account_profile_endpoints.py
 @@ -273,7 +273,8 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
@@ -1780,7 +1780,7 @@ index 4d2735c2..020f6e06 100644
 +    assert "/forgot-password" in login_html
 +    assert "/forgot-password.html" not in login_html
 diff --git a/cloudflare_worker/tests/test_auth_pages_frontend.py b/cloudflare_worker/tests/test_auth_pages_frontend.py
-index 37a40aed..7d2c7db6 100644
+index 37a40aed3..7d2c7db60 100644
 --- a/cloudflare_worker/tests/test_auth_pages_frontend.py
 +++ b/cloudflare_worker/tests/test_auth_pages_frontend.py
 @@ -81,8 +81,10 @@ def test_login_and_signup_cross_links_remain():
@@ -1833,7 +1833,7 @@ index 37a40aed..7d2c7db6 100644
  
  def test_worker_handles_forgot_and_reset_password_routes():
 diff --git a/cloudflare_worker/tests/test_blog_frontend.py b/cloudflare_worker/tests/test_blog_frontend.py
-index 4b3b9083..a80eca72 100644
+index 4b3b9083a..a80eca72d 100644
 --- a/cloudflare_worker/tests/test_blog_frontend.py
 +++ b/cloudflare_worker/tests/test_blog_frontend.py
 @@ -223,26 +223,25 @@ def test_blog_page_uses_blog_banner_assets():
@@ -1876,7 +1876,7 @@ index 4b3b9083..a80eca72 100644
 -    test_blog_paths_are_owned_by_python_worker()
 +    test_blog_paths_are_owned_by_redirects_not_python_worker()
 diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-index 2774f283..c335b6db 100644
+index 2774f283b..c335b6dbd 100644
 --- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
 +++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
 @@ -1086,26 +1086,29 @@ def test_dashboard_deep_link_assets_binding_is_wired_up():
@@ -1943,7 +1943,7 @@ index 2774f283..c335b6db 100644
  
  def test_dashboard_restores_feature_tab_on_hard_refresh():
 diff --git a/cloudflare_worker/tests/test_legal_pages_frontend.py b/cloudflare_worker/tests/test_legal_pages_frontend.py
-index 3e33f978..3b8a5f6f 100644
+index 3e33f9782..3b8a5f6f4 100644
 --- a/cloudflare_worker/tests/test_legal_pages_frontend.py
 +++ b/cloudflare_worker/tests/test_legal_pages_frontend.py
 @@ -1,7 +1,6 @@
@@ -2049,7 +2049,7 @@ index 3e33f978..3b8a5f6f 100644
 +    test_legal_pages_include_standard_footer_mount()
      test_legal_pages_preserve_core_content_and_cross_links()
 diff --git a/cloudflare_worker/tests/test_public_logo.py b/cloudflare_worker/tests/test_public_logo.py
-index 9e34c067..b6d26283 100644
+index 9e34c0677..b6d262837 100644
 --- a/cloudflare_worker/tests/test_public_logo.py
 +++ b/cloudflare_worker/tests/test_public_logo.py
 @@ -67,6 +67,15 @@ def test_all_public_html_pages_use_logo_in_brand_link():
@@ -2070,7 +2070,7 @@ index 9e34c067..b6d26283 100644
  
 diff --git a/cloudflare_worker/tests/test_shared_header_frontend.py b/cloudflare_worker/tests/test_shared_header_frontend.py
 new file mode 100644
-index 00000000..3ab11876
+index 000000000..3ab118769
 --- /dev/null
 +++ b/cloudflare_worker/tests/test_shared_header_frontend.py
 @@ -0,0 +1,62 @@
@@ -2138,7 +2138,7 @@ index 00000000..3ab11876
 +        assert marker in css
 diff --git a/cloudflare_worker/tests/test_static_route_canonicalization.py b/cloudflare_worker/tests/test_static_route_canonicalization.py
 new file mode 100644
-index 00000000..41556851
+index 000000000..415568511
 --- /dev/null
 +++ b/cloudflare_worker/tests/test_static_route_canonicalization.py
 @@ -0,0 +1,212 @@
@@ -2355,7 +2355,7 @@ index 00000000..41556851
 +    test_worker_does_not_own_static_page_alias_routes()
 +    test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets()
 diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index 3d72dfa5..d56c6b5d 100644
+index 3d72dfa57..d56c6b5db 100644
 --- a/cloudflare_worker/wrangler.toml
 +++ b/cloudflare_worker/wrangler.toml
 @@ -24,7 +24,39 @@ html_handling = "none"
@@ -2399,1347 +2399,3 @@ index 3d72dfa5..d56c6b5d 100644
  
  [vars]
  NODE_NAME = "forkmesh-mainnode"
-diff --git a/pulls/1/changes.patch b/pulls/1/changes.patch
-deleted file mode 100644
-index 67d15b44..00000000
---- a/pulls/1/changes.patch
-+++ /dev/null
-@@ -1,267 +0,0 @@
--diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
--index c066b25f..9bff5702 100644
----- a/qt_client/src/MainWindow.h
--+++ b/qt_client/src/MainWindow.h
--@@ -291,6 +291,12 @@ public:
--                    ? QString()
--                    : repoAgentGitDir(m_repositories.at(index));
--     }
--+    void testSetActiveAccountSession(const QString &accountName)
--+    {
--+        m_accountName = accountName;
--+        m_accountAuthenticated = true;
--+        m_accountTier = QStringLiteral("active");
--+    }
--     void testPublishRepository(int index) { publishRepository(index, false); }
--     void testStartRepoHosts() { startRepoHosts(); }
--     void testStopRepoHosts() { stopRepoHosts(); }
--@@ -2543,6 +2549,8 @@ private:
--     void changeMirrorLocation();
--     void changePreviewCacheLocation();
--     void publishRepository(int index, bool showDialogOnError = true);
--+    void publishRepositoryWithRootCommit(int index, bool showDialogOnError,
--+                                         const QString &rootCommit);
--     void updateRepoActionMenus();
--     void deleteCurrentMirror();
--     void updateRepoDetailStatus();
--diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
--index f627f708..6988fb42 100644
----- a/qt_client/src/MainWindowRepos.cpp
--+++ b/qt_client/src/MainWindowRepos.cpp
--@@ -1864,6 +1864,51 @@ void MainWindow::saveRepoStats() const
--                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
-- }
-- 
--+namespace {
--+
--+QString resolvePublishRootCommit(const QString &gitDir)
--+{
--+    // Resolve the earliest root commit. Prefer HEAD; but a bare mirror cloned
--+    // from the relay can carry an unset/dangling HEAD (the relay serves
--+    // git-upload-pack without advertising a symref HEAD), so "rev-list ... HEAD"
--+    // fails and leaves rootCommit empty. A wrong/empty root drops that mirror
--+    // into a different group key (worker repo_mirror_group_key), so the owner's
--+    // mirror-nodes panel never lists it next to the source of truth — the node
--+    // shows up on the mirror but not on the source (issue #243, adhoc #134).
--+    auto firstRoot = [&](const QStringList &args) -> QString {
--+        QByteArray out;
--+        if (gitDir.trimmed().isEmpty() ||
--+            !runGitCapture(gitDir, args, &out, nullptr))
--+            return QString();
--+        const QStringList roots =
--+            QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
--+        return roots.isEmpty() ? QString() : roots.last().trimmed();
--+    };
--+
--+    QString rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
--+    if (rootCommit.isEmpty()) {
--+        // HEAD is unset. Compute the root of the branch this mirror actually
--+        // serves (mirrorHeadBranch: the same default branch the source's HEAD
--+        // points to), NOT a blind "--all" walk. This repo has several root
--+        // commits — one per independent history the mirror also holds (agent
--+        // branches, imported subtrees). "rev-list --max-parents=0 --all" returns
--+        // ALL of them and "roots.last()" would pick whichever an unrelated
--+        // history contributes, so the mirror published a different rootCommit
--+        // than the source and landed in its own group (adhoc #134). Resolving
--+        // the served branch yields the source's root regardless of HEAD's state.
--+        const QString branch = mirrorHeadBranch(gitDir);
--+        if (!branch.isEmpty())
--+            rootCommit = firstRoot({"rev-list", "--max-parents=0", branch});
--+    }
--+    // Last resort (no HEAD and no resolvable served branch, e.g. a truly empty
--+    // ref set): fall back to --all so a single-root mirror still groups.
--+    if (rootCommit.isEmpty())
--+        rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
--+    return rootCommit;
--+}
--+
--+} // namespace
--+
-- void MainWindow::publishRepository(int index, bool showDialogOnError)
-- {
--     if (index < 0 || index >= m_repositories.size())
--@@ -1890,59 +1935,60 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--         return;
--     }
-- 
---    const qint64 now = QDateTime::currentMSecsSinceEpoch();
--     // Always publish under the registered account name so the catalog dedups by
--     // account/name (one entry per fork) and the server can verify ownership.
--     // catalogOwner() is shared with the live host tunnel so the website browses
--     // the same owner the host registers under.
--     const QString owner = catalogOwner(repo);
--     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
---    const QString updatedAt = QString::number(now);
--     // A stable identity for the logical repo: its first (root) commit, shared by
--     // every node mirroring it. The network page groups mirrors by this so the same
--     // repo under different owners shows as one card. Not part of the signature.
---    QString rootCommit;
---    {
---        const QString gitDir =
---            (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
---                ? repo.localPath
---                : repo.mirrorPath;
---        // Resolve the earliest root commit. Prefer HEAD; but a bare mirror cloned
---        // from the relay can carry an unset/dangling HEAD (the relay serves
---        // git-upload-pack without advertising a symref HEAD), so "rev-list ... HEAD"
---        // fails and leaves rootCommit empty. A wrong/empty root drops that mirror
---        // into a different group key (worker repo_mirror_group_key), so the owner's
---        // mirror-nodes panel never lists it next to the source of truth — the node
---        // shows up on the mirror but not on the source (issue #243, adhoc #134).
---        auto firstRoot = [&](const QStringList &args) -> QString {
---            QByteArray out;
---            if (gitDir.trimmed().isEmpty() ||
---                !runGitCapture(gitDir, args, &out, nullptr))
---                return QString();
---            const QStringList roots =
---                QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
---            return roots.isEmpty() ? QString() : roots.last().trimmed();
---        };
---        rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
---        if (rootCommit.isEmpty()) {
---            // HEAD is unset. Compute the root of the branch this mirror actually
---            // serves (mirrorHeadBranch: the same default branch the source's HEAD
---            // points to), NOT a blind "--all" walk. This repo has several root
---            // commits — one per independent history the mirror also holds (agent
---            // branches, imported subtrees). "rev-list --max-parents=0 --all" returns
---            // ALL of them and "roots.last()" would pick whichever an unrelated
---            // history contributes, so the mirror published a different rootCommit
---            // than the source and landed in its own group (adhoc #134). Resolving
---            // the served branch yields the source's root regardless of HEAD's state.
---            const QString branch = mirrorHeadBranch(gitDir);
---            if (!branch.isEmpty())
---                rootCommit = firstRoot({"rev-list", "--max-parents=0", branch});
---        }
---        // Last resort (no HEAD and no resolvable served branch, e.g. a truly empty
---        // ref set): fall back to --all so a single-root mirror still groups.
---        if (rootCommit.isEmpty())
---            rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
--+    const QString gitDir =
--+        (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
--+            ? repo.localPath
--+            : repo.mirrorPath;
--+    const QString localPath = repo.localPath;
--+    const QString mirrorPath = repo.mirrorPath;
--+    auto rootCommit = std::make_shared<QString>();
--+    QThread *rootLookup = QThread::create([gitDir, rootCommit] {
--+        *rootCommit = resolvePublishRootCommit(gitDir);
--+    });
--+    connect(rootLookup, &QThread::finished, rootLookup, &QObject::deleteLater);
--+    connect(rootLookup, &QThread::finished, this,
--+            [this, index, showDialogOnError, owner, name, localPath, mirrorPath,
--+             rootCommit] {
--+                if (index < 0 || index >= m_repositories.size())
--+                    return;
--+                const RepositoryRecord &repo = m_repositories.at(index);
--+                if (catalogOwner(repo) != owner ||
--+                    repoSegment(repo.name, QStringLiteral("repository")) != name ||
--+                    repo.localPath != localPath || repo.mirrorPath != mirrorPath)
--+                    return;
--+                publishRepositoryWithRootCommit(index, showDialogOnError, *rootCommit);
--+            });
--+    rootLookup->start();
--+}
--+
--+void MainWindow::publishRepositoryWithRootCommit(int index, bool showDialogOnError,
--+                                                 const QString &rootCommit)
--+{
--+    if (index < 0 || index >= m_repositories.size())
--+        return;
--+    if (m_repositories.at(index).previewOnly)
--+        return;
--+    RepositoryRecord &repo = m_repositories[index];
--+    if (!hasActiveAccountSession())
--+        return;
--+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
--+        logSystem("Catalog: could not load identity for repository publishing.");
--+        return;
--     }
--+
--+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
--+    const QString owner = catalogOwner(repo);
--+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
--+    const QString updatedAt = QString::number(now);
--     // Owner-signed fingerprint of the refs this node serves (sha256 over the
--     // canonical heads+tags advertisement). The relay pins this and refuses to
--     // serve any mirror whose live advertisement doesn't hash to it, so a tampered
--@@ -3018,4 +3064,3 @@ void MainWindow::uninstallForkMesh()
-- 
--     QCoreApplication::exit(0);
-- }
---
--diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
--index 025d803a..74b038a8 100644
----- a/qt_client/tests/test_window_resize.cpp
--+++ b/qt_client/tests/test_window_resize.cpp
--@@ -17,6 +17,7 @@
-- #include <QPushButton>
-- #include <QSettings>
-- #include <QStandardPaths>
--+#include <QTextStream>
-- #include <QTemporaryDir>
-- #include <QWidget>
-- 
--@@ -177,6 +178,26 @@ bool initGitRepo(QTemporaryDir &repo)
--            runGitChecked(repo.path(), {"commit", "--allow-empty", "-m", "initial"});
-- }
-- 
--+bool writeSlowGitWrapper(const QString &dir, const QString &realGit)
--+{
--+    QDir().mkpath(dir);
--+    QFile file(QDir(dir).filePath(QStringLiteral("git")));
--+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
--+        return false;
--+    QTextStream stream(&file);
--+    stream << "#!/bin/sh\n"
--+           << "if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"rev-list\" ] && "
--+              "[ \"$4\" = \"--max-parents=0\" ]; then\n"
--+           << "  sleep 1\n"
--+           << "fi\n"
--+           << "exec \"" << realGit << "\" \"$@\"\n";
--+    file.close();
--+    return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner |
--+                               QFile::ExeOwner | QFile::ReadGroup |
--+                               QFile::ExeGroup | QFile::ReadOther |
--+                               QFile::ExeOther);
--+}
--+
-- MemberInfo testMember(const QString &id, const QString &name, bool self = false)
-- {
--     MemberInfo member;
--@@ -880,6 +901,36 @@ int main(int argc, char *argv[])
--         }
--     }
-- 
--+    // adhoc: publishing must not block the GUI thread while walking the repo's
--+    // root commit. Force `git rev-list --max-parents=0 HEAD` to sleep and assert
--+    // that the publish call returns before that subprocess can finish.
--+    {
--+        QTemporaryDir publishRepo;
--+        QTemporaryDir fakeBin;
--+        const QString realGit = QStandardPaths::findExecutable(QStringLiteral("git"));
--+        if (initGitRepo(publishRepo) && fakeBin.isValid() && !realGit.isEmpty() &&
--+            writeSlowGitWrapper(fakeBin.path(), realGit)) {
--+            window.testSetActiveAccountSession(QStringLiteral("me"));
--+            const int idx =
--+                window.testAddLocalRepository("me", "publishrepo", publishRepo.path());
--+            const QByteArray oldPath = qgetenv("PATH");
--+            qputenv("PATH",
--+                    (fakeBin.path() + QLatin1Char(':') +
--+                     QString::fromUtf8(oldPath))
--+                        .toUtf8());
--+
--+            QElapsedTimer timer;
--+            timer.start();
--+            window.testPublishRepository(idx);
--+            const qint64 elapsedMs = timer.elapsed();
--+            qputenv("PATH", oldPath);
--+
--+            check(elapsedMs < 500,
--+                  QStringLiteral("publishing returns without waiting for root "
--+                                 "commit git walk"));
--+        }
--+    }
--+
--     // issue #251: the Settings "Default agent" choice should seed the agent
--     // pickers. A window built while the default is Claude Code must start both
--     // the quick-add and issue-detail pickers there (not the OpenAI fallback),
-diff --git a/pulls/1/pull.md b/pulls/1/pull.md
-deleted file mode 100644
-index 3050bf3d..00000000
---- a/pulls/1/pull.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--schema: forkmesh-pull-v1
--number: 1
--title: Agent: ForkMesh's GUI thread stalled for ~4397 ms — the event loop was blocked, whic…
--base: main
--head: agent/adhoc-76-forkmesh-s-gui-thread-stalled-for-4397-ms-the-ev
--status: open
--ts: 1783156390360
--author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
--authorName: mdkaifansari04
--sig: UhOUl7wDd5EfEQ741WtA-8rpRAs7OopbEs87nHPrFNGX2v39ONv4mbsrlOYJZWpIq6EBtZkUPA99vPJmNIxZBg
-----
--
--Created from a OpenAI API agent session.
-diff --git a/pulls/2/changes.patch b/pulls/2/changes.patch
-deleted file mode 100644
-index 0e5d1867..00000000
---- a/pulls/2/changes.patch
-+++ /dev/null
-@@ -1,259 +0,0 @@
--diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
--index c066b25f..c8dc75c4 100644
----- a/qt_client/src/MainWindow.h
--+++ b/qt_client/src/MainWindow.h
--@@ -394,6 +394,13 @@ public:
--     }
--     QString testAgentStatusCellText(int sessionId) const;
--     bool testAgentSessionMerged(int sessionId) const;
--+    void testSetBackend(ChatBackend *backend)
--+    {
--+        m_backend = backend;
--+        m_mirrorAdvertSig.clear();
--+        m_mirrorAdvertBuildSig.clear();
--+    }
--+    void testRefreshRepositoryList() { refreshRepositoryList(); }
-- #endif
-- 
--     // --- Headless / CLI support (HeadlessConsole) ------------------------------
--@@ -4215,6 +4222,7 @@ private:
--     // onRequestServed (adhoc #83); skip the rebuild while the signature is
--     // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
--     QString m_mirrorAdvertSig;
--+    QString m_mirrorAdvertBuildSig;
--     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
--     // True while a user-driven repo load (a node switch or opening a repo) runs,
--     // so nodeSwitchStep narrates progress for both, not just node switches.
--diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
--index f627f708..16799b61 100644
----- a/qt_client/src/MainWindowRepos.cpp
--+++ b/qt_client/src/MainWindowRepos.cpp
--@@ -473,44 +473,76 @@ void MainWindow::refreshRepositoryList()
--                         .toMSecsSinceEpoch()) +
--                 QLatin1Char('\n');
--         }
---        if (advertSig != m_mirrorAdvertSig) {
---        GitKeepAlive keepAlive;
---        QList<MirrorAdvert> ours;
---        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
---            if (repo.previewOnly)
---                continue;
---            MirrorAdvert advert;
---            advert.ownerName = catalogOwner(repo) + "/" +
---                               repoSegment(repo.name, QStringLiteral("repository"));
---            // Shared upstream identity: every node mirroring the same source repo
---            // carries the same "<sourceOwner>/name", so the mirror-nodes view can
---            // group them even though each advertises its own clone (catalog) owner.
---            advert.source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
--+        if (advertSig != m_mirrorAdvertSig &&
--+            advertSig != m_mirrorAdvertBuildSig) {
--+            m_mirrorAdvertBuildSig = advertSig;
--+            const QList<RepositoryRecord> repos = m_repositories;
--+            const QString account = accountOwner();
--+            QPointer<ChatBackend> backend = m_backend;
--+            runOffThread<QList<MirrorAdvert>>(
--+                [repos, account] {
--+                    QList<MirrorAdvert> ours;
--+                    for (const RepositoryRecord &repo : repos) {
--+                        if (repo.previewOnly)
--+                            continue;
--+                        MirrorAdvert advert;
--+                        const QString owner = account.isEmpty()
--+                                                  ? repoSegment(
--+                                                        repo.owner,
--+                                                        QStringLiteral("owner"))
--+                                                  : account;
--+                        advert.ownerName =
--+                            owner + "/" +
--                             repoSegment(repo.name, QStringLiteral("repository"));
---            // Advertise the HEAD this node currently holds so peers can see how
---            // fresh our mirror is relative to theirs.
---            advert.branch = mirrorHeadBranch(repo.mirrorPath);
---            advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
---            advert.updatedMs = repo.lastSyncMs;
---            // On-disk mirror size so peers can show how much data we're holding.
---            advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
---            // Issues we're mirroring, so peers can show the count per node.
---            advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
---            // More tallies the Mirror nodes view shows per node: history depth,
---            // branch/PR/discussion counts, and our live worktree (agent task) count.
---            advert.commitCount = mirrorCommitCount(repo.mirrorPath, advert.branch);
---            advert.branchCount = mirrorBranchCount(repo.mirrorPath);
---            advert.pullCount = mirrorPullCount(repo.mirrorPath, advert.branch);
---            advert.discussionCount =
---                mirrorDiscussionCount(repo.mirrorPath, advert.branch);
---            advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
---            // Release artifacts we're actually hosting for download (issue #304 CAS
---            // blobs), so peers can see which nodes can serve a binary.
---            advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
---            ours.append(advert);
---        }
---        m_backend->setMirroredRepos(ours);
---        m_mirrorAdvertSig = advertSig;
--+                        // Shared upstream identity: every node mirroring the same
--+                        // source repo carries the same "<sourceOwner>/name", so
--+                        // the mirror-nodes view can group them even though each
--+                        // advertises its own clone (catalog) owner.
--+                        advert.source =
--+                            repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
--+                            repoSegment(repo.name, QStringLiteral("repository"));
--+                        // Advertise the HEAD this node currently holds so peers can
--+                        // see how fresh our mirror is relative to theirs.
--+                        advert.branch = mirrorHeadBranch(repo.mirrorPath);
--+                        advert.commit =
--+                            mirrorBranchCommit(repo.mirrorPath, advert.branch);
--+                        advert.updatedMs = repo.lastSyncMs;
--+                        // On-disk mirror size so peers can show how much data
--+                        // we're holding. This shells out to git count-objects and
--+                        // must stay off the GUI thread.
--+                        advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
--+                        // Issues we're mirroring, so peers can show the count per
--+                        // node.
--+                        advert.issueCount =
--+                            mirrorIssueCount(repo.mirrorPath, advert.branch);
--+                        // More tallies the Mirror nodes view shows per node:
--+                        // history depth, branch/PR/discussion counts, and our live
--+                        // worktree (agent task) count.
--+                        advert.commitCount =
--+                            mirrorCommitCount(repo.mirrorPath, advert.branch);
--+                        advert.branchCount = mirrorBranchCount(repo.mirrorPath);
--+                        advert.pullCount =
--+                            mirrorPullCount(repo.mirrorPath, advert.branch);
--+                        advert.discussionCount =
--+                            mirrorDiscussionCount(repo.mirrorPath, advert.branch);
--+                        advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
--+                        // Release artifacts we're actually hosting for download
--+                        // (issue #304 CAS blobs), so peers can see which nodes can
--+                        // serve a binary.
--+                        advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
--+                        ours.append(advert);
--+                    }
--+                    return ours;
--+                },
--+                [this, advertSig, backend](QList<MirrorAdvert> ours) {
--+                    if (m_mirrorAdvertBuildSig == advertSig)
--+                        m_mirrorAdvertBuildSig.clear();
--+                    if (!backend || backend != m_backend ||
--+                        m_mirrorAdvertSig == advertSig)
--+                        return;
--+                    m_backend->setMirroredRepos(ours);
--+                    m_mirrorAdvertSig = advertSig;
--+                });
--         }
--     }
-- }
--@@ -3018,4 +3050,3 @@ void MainWindow::uninstallForkMesh()
-- 
--     QCoreApplication::exit(0);
-- }
---
--diff --git a/qt_client/src/MainWindowSettings.cpp b/qt_client/src/MainWindowSettings.cpp
--index cce14f9a..2f5d3188 100644
----- a/qt_client/src/MainWindowSettings.cpp
--+++ b/qt_client/src/MainWindowSettings.cpp
--@@ -1815,6 +1815,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
--     // Force refreshRepositoryList to re-push the mirror adverts to this backend even
--     // if the repo signature hasn't changed since the last one (adhoc #83 skip cache).
--     m_mirrorAdvertSig.clear();
--+    m_mirrorAdvertBuildSig.clear();
-- 
--     connect(backend, &ChatBackend::messageArrived, this, &MainWindow::onMessage);
--     connect(backend, &ChatBackend::reactionChanged, this, &MainWindow::onReaction);
--@@ -3277,4 +3278,3 @@ void MainWindow::submitVulnerabilityReport()
--         }
--     });
-- }
---
--diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
--index 025d803a..30d66cff 100644
----- a/qt_client/tests/test_window_resize.cpp
--+++ b/qt_client/tests/test_window_resize.cpp
--@@ -198,6 +198,33 @@ void stopChildProcesses(QObject &root)
--     }
-- }
-- 
--+class FakeBackend : public ChatBackend
--+{
--+public:
--+    using ChatBackend::ChatBackend;
--+
--+    void sendChat(const QString &, const QString &) override {}
--+    void sendDirect(const QString &, const QString &) override {}
--+    void sendFile(const QString &, const QString &, const QString &,
--+                  const QByteArray &) override {}
--+    void sendReaction(const QString &, const QString &, const QString &) override {}
--+    void editMessage(const QString &, const QString &, const QString &) override {}
--+    void deleteMessage(const QString &, const QString &) override {}
--+    void setAvatar(const QByteArray &) override {}
--+    void sendTyping(const QString &, bool) override {}
--+    void addChannel(const QString &) override {}
--+    void setMirroredRepos(const QList<MirrorAdvert> &repos) override
--+    {
--+        adverts = repos;
--+        ++setCalls;
--+    }
--+    void shutdown() override {}
--+    QString modeName() const override { return QStringLiteral("fake"); }
--+
--+    QList<MirrorAdvert> adverts;
--+    int setCalls = 0;
--+};
--+
-- } // namespace
-- 
-- int main(int argc, char *argv[])
--@@ -308,6 +335,54 @@ int main(int argc, char *argv[])
--               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
--     }
-- 
--+    {
--+        QTemporaryDir mirrorDir;
--+        QTemporaryDir fakeBin;
--+        if (mirrorDir.isValid() && fakeBin.isValid()) {
--+            QFile git(fakeBin.path() + QStringLiteral("/git"));
--+            const bool scriptOk = git.open(QIODevice::WriteOnly);
--+            if (scriptOk) {
--+                git.write("#!/bin/sh\n"
--+                          "if [ \"$3\" = count-objects ]; then\n"
--+                          "  sleep 1\n"
--+                          "  printf 'size: 1\\nsize-pack: 2\\n'\n"
--+                          "  exit 0\n"
--+                          "fi\n"
--+                          "case \"$3\" in\n"
--+                          "  symbolic-ref) printf 'main\\n' ;;\n"
--+                          "  rev-parse) printf '0123456789abcdef0123456789abcdef01234567\\n' ;;\n"
--+                          "  rev-list) printf '1\\n' ;;\n"
--+                          "  for-each-ref) ;;\n"
--+                          "  *) ;;\n"
--+                          "esac\n"
--+                          "exit 0\n");
--+                git.close();
--+                QFile::setPermissions(git.fileName(),
--+                                      QFileDevice::ReadOwner |
--+                                          QFileDevice::WriteOwner |
--+                                          QFileDevice::ExeOwner);
--+            }
--+
--+            const QByteArray oldPath = qgetenv("PATH");
--+            qputenv("PATH", fakeBin.path().toUtf8() + ":" + oldPath);
--+            FakeBackend backend;
--+            MainWindow advertWindow;
--+            advertWindow.testSetBackend(&backend);
--+            advertWindow.testAddPublishedRepository(QStringLiteral("me"),
--+                                                    QStringLiteral("slowrepo"),
--+                                                    mirrorDir.path());
--+            QElapsedTimer timer;
--+            timer.start();
--+            advertWindow.testRefreshRepositoryList();
--+            const qint64 elapsedMs = timer.elapsed();
--+            qputenv("PATH", oldPath);
--+            advertWindow.testSetBackend(nullptr);
--+            check(elapsedMs < 500,
--+                  QStringLiteral("refreshRepositoryList does not wait for slow "
--+                                 "git count-objects"));
--+        }
--+    }
--+
--     // Issue #214: "Build & preview" checks the PR head out into a throwaway
--     // worktree, then CMake-configures and builds it. A fresh worktree is
--     // registered with `git worktree add`; a reused one is moved with a forced
-diff --git a/pulls/2/pull.md b/pulls/2/pull.md
-deleted file mode 100644
-index f0aa5217..00000000
---- a/pulls/2/pull.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--schema: forkmesh-pull-v1
--number: 2
--title: Agent: ForkMesh's GUI thread stalled for ~1686 ms — the event loop was blocked, whic…
--base: main
--head: agent/adhoc-78-forkmesh-s-gui-thread-stalled-for-1686-ms-the-ev
--status: open
--ts: 1783156425694
--author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
--authorName: mdkaifansari04
--sig: SsPjCLzyB8IiYH7tLMUvxcEcCkLL1WckCxRVyrS1yzhBWyX_K7OxuLJR0xZzPT_h7sJ6xreFgWZQSH0ZzpNMDA
-----
--
--Created from a OpenAI API agent session.
-diff --git a/pulls/3/changes.patch b/pulls/3/changes.patch
-deleted file mode 100644
-index f4f292f5..00000000
---- a/pulls/3/changes.patch
-+++ /dev/null
-@@ -1,280 +0,0 @@
--diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
--index f627f708..5d7c67ec 100644
----- a/qt_client/src/MainWindowRepos.cpp
--+++ b/qt_client/src/MainWindowRepos.cpp
--@@ -10,6 +10,116 @@
-- 
-- using namespace forkmesh::ui;
-- 
--+namespace {
--+
--+struct PublishRepositorySnapshot {
--+    QString rootCommit;
--+    QString stateHash;
--+    QString publishedWebsite;
--+    QString publishedDescription;
--+    QString headBranch;
--+    QString headCommit;
--+    int issueCount = -1;
--+    int commitCount = -1;
--+    int branchCount = -1;
--+    int pullCount = -1;
--+    int discussionCount = -1;
--+    int worktreeCount = -1;
--+    int artifactCount = -1;
--+    qint64 sizeBytes = 0;
--+};
--+
--+QString hashPublishedRefs(const QByteArray &out)
--+{
--+    QStringList lines;
--+    const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
--+    for (const QString &raw : rows) {
--+        const QString line = raw.trimmed();
--+        if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
--+            continue;
--+        lines.append(line);
--+    }
--+    lines.sort();
--+    return QString::fromUtf8(
--+        QCryptographicHash::hash(lines.join('\n').toUtf8(),
--+                                 QCryptographicHash::Sha256)
--+            .toHex());
--+}
--+
--+QString publishRootCommit(const RepositoryRecord &repo)
--+{
--+    const QString gitDir =
--+        (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
--+            ? repo.localPath
--+            : repo.mirrorPath;
--+    auto firstRoot = [&](const QStringList &args) -> QString {
--+        QByteArray out;
--+        if (gitDir.trimmed().isEmpty() || !runGitCapture(gitDir, args, &out, nullptr))
--+            return QString();
--+        const QStringList roots =
--+            QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
--+        return roots.isEmpty() ? QString() : roots.last().trimmed();
--+    };
--+    QString rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
--+    if (rootCommit.isEmpty()) {
--+        const QString branch = mirrorHeadBranch(gitDir);
--+        if (!branch.isEmpty())
--+            rootCommit = firstRoot({"rev-list", "--max-parents=0", branch});
--+    }
--+    if (rootCommit.isEmpty())
--+        rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
--+    return rootCommit;
--+}
--+
--+QString publishStateHash(const QString &mirrorPath)
--+{
--+    if (mirrorPath.trimmed().isEmpty())
--+        return QString();
--+    QByteArray out;
--+    if (!runGitCapture(mirrorPath,
--+                       {"for-each-ref", "--format=%(objectname) %(refname)",
--+                        "refs/heads/", "refs/tags/"},
--+                       &out, nullptr))
--+        return QString();
--+    return hashPublishedRefs(out);
--+}
--+
--+PublishRepositorySnapshot collectPublishRepositorySnapshot(
--+    const RepositoryRecord &repo)
--+{
--+    PublishRepositorySnapshot snapshot;
--+    snapshot.rootCommit = publishRootCommit(repo);
--+    snapshot.stateHash = publishStateHash(repo.mirrorPath);
--+    snapshot.publishedDescription = repo.description;
--+    if (!repo.localPath.trimmed().isEmpty()) {
--+        QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
--+        if (file.open(QIODevice::ReadOnly)) {
--+            const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
--+            snapshot.publishedWebsite =
--+                info.value(QStringLiteral("website")).toString();
--+            const QString about =
--+                info.value(QStringLiteral("about")).toString().trimmed();
--+            if (!about.isEmpty())
--+                snapshot.publishedDescription = about;
--+        }
--+    }
--+
--+    snapshot.headBranch = mirrorHeadBranch(repo.mirrorPath);
--+    snapshot.headCommit = mirrorBranchCommit(repo.mirrorPath, snapshot.headBranch);
--+    snapshot.issueCount = mirrorIssueCount(repo.mirrorPath, snapshot.headBranch);
--+    snapshot.commitCount = mirrorCommitCount(repo.mirrorPath, snapshot.headBranch);
--+    snapshot.branchCount = mirrorBranchCount(repo.mirrorPath);
--+    snapshot.pullCount = mirrorPullCount(repo.mirrorPath, snapshot.headBranch);
--+    snapshot.discussionCount =
--+        mirrorDiscussionCount(repo.mirrorPath, snapshot.headBranch);
--+    snapshot.worktreeCount = mirrorWorktreeCount(repo.localPath);
--+    snapshot.artifactCount = mirrorArtifactCount(repo.mirrorPath);
--+    snapshot.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
--+    return snapshot;
--+}
--+
--+} // namespace
--+
-- // ------------------------------------------------------------- repositories
-- 
-- QString MainWindow::repositoryMirrorRoot() const
--@@ -1898,76 +2008,20 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--     const QString owner = catalogOwner(repo);
--     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
--     const QString updatedAt = QString::number(now);
---    // A stable identity for the logical repo: its first (root) commit, shared by
---    // every node mirroring it. The network page groups mirrors by this so the same
---    // repo under different owners shows as one card. Not part of the signature.
---    QString rootCommit;
---    {
---        const QString gitDir =
---            (!repo.localPath.trimmed().isEmpty() && QDir(repo.localPath).exists(".git"))
---                ? repo.localPath
---                : repo.mirrorPath;
---        // Resolve the earliest root commit. Prefer HEAD; but a bare mirror cloned
---        // from the relay can carry an unset/dangling HEAD (the relay serves
---        // git-upload-pack without advertising a symref HEAD), so "rev-list ... HEAD"
---        // fails and leaves rootCommit empty. A wrong/empty root drops that mirror
---        // into a different group key (worker repo_mirror_group_key), so the owner's
---        // mirror-nodes panel never lists it next to the source of truth — the node
---        // shows up on the mirror but not on the source (issue #243, adhoc #134).
---        auto firstRoot = [&](const QStringList &args) -> QString {
---            QByteArray out;
---            if (gitDir.trimmed().isEmpty() ||
---                !runGitCapture(gitDir, args, &out, nullptr))
---                return QString();
---            const QStringList roots =
---                QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
---            return roots.isEmpty() ? QString() : roots.last().trimmed();
---        };
---        rootCommit = firstRoot({"rev-list", "--max-parents=0", "HEAD"});
---        if (rootCommit.isEmpty()) {
---            // HEAD is unset. Compute the root of the branch this mirror actually
---            // serves (mirrorHeadBranch: the same default branch the source's HEAD
---            // points to), NOT a blind "--all" walk. This repo has several root
---            // commits — one per independent history the mirror also holds (agent
---            // branches, imported subtrees). "rev-list --max-parents=0 --all" returns
---            // ALL of them and "roots.last()" would pick whichever an unrelated
---            // history contributes, so the mirror published a different rootCommit
---            // than the source and landed in its own group (adhoc #134). Resolving
---            // the served branch yields the source's root regardless of HEAD's state.
---            const QString branch = mirrorHeadBranch(gitDir);
---            if (!branch.isEmpty())
---                rootCommit = firstRoot({"rev-list", "--max-parents=0", branch});
---        }
---        // Last resort (no HEAD and no resolvable served branch, e.g. a truly empty
---        // ref set): fall back to --all so a single-root mirror still groups.
---        if (rootCommit.isEmpty())
---            rootCommit = firstRoot({"rev-list", "--max-parents=0", "--all"});
---    }
---    // Owner-signed fingerprint of the refs this node serves (sha256 over the
---    // canonical heads+tags advertisement). The relay pins this and refuses to
---    // serve any mirror whose live advertisement doesn't hash to it, so a tampered
---    // or rolled-back mirror can never be cloned. MUST match the worker's
---    // advertised_refs_canonical(): "<sha> <refname>" lines for refs/heads/* and
---    // refs/tags/* only, sorted, joined by '\n'.
---    const QString stateHash = mirrorStateHash(repo.mirrorPath);
---    // Repository details (about text + website) live in the committed
---    // .forkmesh/info.json, the single source of truth (issue #232). Prefer it over
---    // the locally-cached record fields so the website's About panel is filled from
---    // info.json even for a mirror that cloned the repo but never had its
---    // description typed in locally (adhoc #86).
---    QString publishedWebsite;
---    QString publishedDescription = repo.description;
---    if (!repo.localPath.trimmed().isEmpty()) {
---        QFile file(QDir(repo.localPath).filePath(kRepoInfoPath));
---        if (file.open(QIODevice::ReadOnly)) {
---            const QJsonObject info = QJsonDocument::fromJson(file.readAll()).object();
---            publishedWebsite = info.value(QStringLiteral("website")).toString();
---            const QString about =
---                info.value(QStringLiteral("about")).toString().trimmed();
---            if (!about.isEmpty())
---                publishedDescription = about;
---        }
---    }
--+    const RepositoryRecord repoSnapshot = repo;
--+    runOffThread<PublishRepositorySnapshot>(
--+        [repoSnapshot] { return collectPublishRepositorySnapshot(repoSnapshot); },
--+        [this, index, showDialogOnError, owner, name, updatedAt,
--+         repoSnapshot](PublishRepositorySnapshot snapshot) mutable {
--+    if (index < 0 || index >= m_repositories.size())
--+        return;
--+    RepositoryRecord &repo = m_repositories[index];
--+    if (repo.previewOnly || repo.owner != repoSnapshot.owner ||
--+        repo.name != repoSnapshot.name || repo.mirrorPath != repoSnapshot.mirrorPath)
--+        return;
--+
--+    QString publishedWebsite = snapshot.publishedWebsite;
--+    QString publishedDescription = snapshot.publishedDescription;
--     if (index == m_repoDetailIndex) {
--         if (publishedWebsite.isEmpty())
--             publishedWebsite = m_repoInfo.website;
--@@ -1982,15 +2036,15 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--     // everything but sync time and size (adhoc #56). The HEAD/issue figures mirror
--     // the live advert (setMirroredRepos); platform/version/id come from our own
--     // roster entry (the same values makeMessage broadcasts).
---    const QString headBranch = mirrorHeadBranch(repo.mirrorPath);
---    const QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
---    const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
---    const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
---    const int branchCount = mirrorBranchCount(repo.mirrorPath);
---    const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
---    const int discussionCount = mirrorDiscussionCount(repo.mirrorPath, headBranch);
---    const int worktreeCount = mirrorWorktreeCount(repo.localPath);
---    const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
--+    const QString &headBranch = snapshot.headBranch;
--+    const QString &headCommit = snapshot.headCommit;
--+    const int issueCount = snapshot.issueCount;
--+    const int commitCount = snapshot.commitCount;
--+    const int branchCount = snapshot.branchCount;
--+    const int pullCount = snapshot.pullCount;
--+    const int discussionCount = snapshot.discussionCount;
--+    const int worktreeCount = snapshot.worktreeCount;
--+    const int artifactCount = snapshot.artifactCount;
--     QString selfPlatform, selfVersion, selfNodeId;
--     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
--         if (member.self) {
--@@ -2033,11 +2087,10 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--                          {"hostedSince", QString::number(repo.hostedSinceMs)},
--                          {"lastSync", QString::number(repo.lastSyncMs)},
--                          {"updatedAt", updatedAt},
---                         {"rootCommit", rootCommit},
--+                         {"rootCommit", snapshot.rootCommit},
--                          // On-disk mirror size so the network page can show how
--                          // much data each owner/repo is hosting. Not signed.
---                         {"sizeBytes",
---                          QString::number(mirrorRepoSizeBytes(repo.mirrorPath))},
--+                         {"sizeBytes", QString::number(snapshot.sizeBytes)},
--                          {"visibility", repo.isPrivate
--                                             ? QStringLiteral("private")
--                                             : QStringLiteral("public")},
--@@ -2053,11 +2106,11 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--     metadata.insert("catalogSig", m_profileIdentity.signData(catalogCanonical));
--     // Attest the served refs so the relay can detect a tampered/stale mirror.
--     // Signed with the same account key the relay verifies for the catalog write.
---    if (!stateHash.isEmpty()) {
---        metadata.insert("stateHash", stateHash);
--+    if (!snapshot.stateHash.isEmpty()) {
--+        metadata.insert("stateHash", snapshot.stateHash);
--         const QByteArray stateCanonical =
---            ("forkmesh-repostate-v1\n" + owner + "\n" + name + "\n" + stateHash +
---             "\n" + updatedAt)
--+            ("forkmesh-repostate-v1\n" + owner + "\n" + name + "\n" +
--+             snapshot.stateHash + "\n" + updatedAt)
--                 .toUtf8();
--         metadata.insert("stateSig", m_profileIdentity.signData(stateCanonical));
--     }
--@@ -2119,6 +2172,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--                 if (showDialogOnError)
--                     flashMessage(message, /*error=*/true);
--             });
--+        });
-- }
-- 
-- namespace {
--@@ -3018,4 +3072,3 @@ void MainWindow::uninstallForkMesh()
-- 
--     QCoreApplication::exit(0);
-- }
---
-diff --git a/pulls/3/pull.md b/pulls/3/pull.md
-deleted file mode 100644
-index 4d949ccf..00000000
---- a/pulls/3/pull.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--schema: forkmesh-pull-v1
--number: 3
--title: Agent: ForkMesh's GUI thread stalled for ~1933 ms — the event loop was blocked, whic…
--base: main
--head: agent/adhoc-79-forkmesh-s-gui-thread-stalled-for-1933-ms-the-ev
--status: open
--ts: 1783156638154
--author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
--authorName: mdkaifansari04
--sig: LCNn3fEcM6VGe3RQe1c2fyq_SarPIKTYrNcVWCpmpSV34vpgertsrvIJ-WKPbsj8mjnF9tatqGr5zoZnMstXBA
-----
--
--Created from a OpenAI API agent session.
-diff --git a/pulls/4/changes.patch b/pulls/4/changes.patch
-deleted file mode 100644
-index e251e842..00000000
---- a/pulls/4/changes.patch
-+++ /dev/null
-@@ -1,239 +0,0 @@
--diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
--index c066b25f..065a4f9c 100644
----- a/qt_client/src/MainWindow.h
--+++ b/qt_client/src/MainWindow.h
--@@ -394,6 +394,10 @@ public:
--     }
--     QString testAgentStatusCellText(int sessionId) const;
--     bool testAgentSessionMerged(int sessionId) const;
--+    void testImportPatchAsPullFromPath(const QString &path)
--+    {
--+        importPatchAsPullFromPath(path);
--+    }
-- #endif
-- 
--     // --- Headless / CLI support (HeadlessConsole) ------------------------------
--@@ -1054,6 +1058,7 @@ private:
--     void submitPullReview(const QString &state);    // approve / request changes
--     void promptNewPull();
--     void importPatchAsPull(); // read a .patch/.diff file and open it as a PR
--+    void importPatchAsPullFromPath(const QString &path);
--     void promptNewPullFromDirectory();
--     void promptNewPullFromSource(const QString &sourceDir,
--                                  const QString &preferredBase = QString(),
--diff --git a/qt_client/src/MainWindowPulls.cpp b/qt_client/src/MainWindowPulls.cpp
--index 84425c8e..171332d1 100644
----- a/qt_client/src/MainWindowPulls.cpp
--+++ b/qt_client/src/MainWindowPulls.cpp
--@@ -3552,6 +3552,14 @@ void MainWindow::promptNewPull()
-- }
-- 
-- void MainWindow::importPatchAsPull()
--+{
--+    const QString path = QFileDialog::getOpenFileName(
--+        this, "Import patch as pull request", QDir::homePath(),
--+        "Patch files (*.patch *.diff);;All files (*)");
--+    importPatchAsPullFromPath(path);
--+}
--+
--+void MainWindow::importPatchAsPullFromPath(const QString &path)
-- {
--     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
--         return;
--@@ -3562,9 +3570,6 @@ void MainWindow::importPatchAsPull()
--             "Importing a patch needs a writable local checkout of this repo.", true);
--         return;
--     }
---    const QString path = QFileDialog::getOpenFileName(
---        this, "Import patch as pull request", QDir::homePath(),
---        "Patch files (*.patch *.diff);;All files (*)");
--     if (path.isEmpty())
--         return;
--     QFile file(path);
--@@ -3598,25 +3603,6 @@ void MainWindow::importPatchAsPull()
--     const QStringList branches = repoBranches();
--     const QString base = repoDefaultBranch(branches);
-- 
---    // Sanity-check that the patch applies to the base before opening the PR.
---    QString applyErr;
---    QProcess check;
---    check.setProgram("git");
---    check.setArguments({"-C", dir, "apply", "--check", "--3way", path});
---    check.start();
---    check.waitForFinished(8000);
---    if (check.exitStatus() != QProcess::NormalExit || check.exitCode() != 0) {
---        const QString detail =
---            QString::fromUtf8(check.readAllStandardError()).trimmed();
---        if (QMessageBox::warning(
---                this, "Import patch",
---                QStringLiteral("This patch does not apply cleanly onto %1:\n\n%2\n\n"
---                               "Open the pull request anyway?")
---                    .arg(base, detail.isEmpty() ? "(no details)" : detail),
---                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
---            return;
---    }
---
--     // Synthesize a head label from the title; the patch itself carries the change.
--     QString head = QStringLiteral("imported/") +
--                    title.toLower().replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
--@@ -3625,21 +3611,66 @@ void MainWindow::importPatchAsPull()
--     if (head.endsWith(QLatin1Char('-')))
--         head.chop(1);
-- 
---    QString error;
---    const int number = store.createPull(
---        title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
---        base, head, patch, QString(), /*branchBacked=*/false, &error);
---    if (number < 0) {
---        setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
--+    setRepoDetailNotice("Checking patch...");
--+    const int repoIndex = m_repoDetailIndex;
--+    auto applies = std::make_shared<bool>(false);
--+    auto detail = std::make_shared<QString>();
--+    QThread *worker = QThread::create([dir, path, applies, detail] {
--+        QProcess check;
--+        check.setProgram("git");
--+        check.setArguments({"-C", dir, "apply", "--check", "--3way", path});
--+        check.start();
--+        const bool finished = check.waitForFinished(8000);
--+        *applies = finished && check.exitStatus() == QProcess::NormalExit &&
--+                   check.exitCode() == 0;
--+        if (!*applies) {
--+            *detail = finished
--+                          ? QString::fromUtf8(check.readAllStandardError()).trimmed()
--+                          : QStringLiteral("git apply --check timed out");
--+        }
--+    });
--+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
--+    connect(worker, &QThread::finished, this,
--+            [this, repoIndex, store, path, title, base, head, patch, applies,
--+             detail]() mutable {
--+                if (m_repoDetailIndex != repoIndex)
--+                    return;
--+                if (!*applies) {
--+                    if (QMessageBox::warning(
--+                            this, "Import patch",
--+                            QStringLiteral("This patch does not apply cleanly onto %1:\n\n%2\n\n"
--+                                           "Open the pull request anyway?")
--+                                .arg(base, detail->isEmpty() ? "(no details)" : *detail),
--+                            QMessageBox::Yes | QMessageBox::No,
--+                            QMessageBox::No) != QMessageBox::Yes) {
--+                        setRepoDetailNotice("Patch import cancelled.", true);
--+                        return;
--+                    }
--+                }
--+
--+                QString error;
--+                const int number = store.createPull(
--+                    title,
--+                    QStringLiteral("Imported from patch file `%1`.")
--+                        .arg(QFileInfo(path).fileName()),
--+                    base, head, patch, QString(), /*branchBacked=*/false, &error);
--+                if (number < 0) {
--+                    setRepoDetailNotice(error.isEmpty()
--+                                            ? "Could not create the pull request."
--                                             : error,
---                            true);
---        return;
---    }
---    logSystem(QStringLiteral("Imported patch %1 as pull #%2.").arg(path).arg(number));
---    setRepoDetailNotice(QStringLiteral("Imported patch as pull #%1.").arg(number));
---    m_currentPullNumber = number;
---    switchToPullTab(number);
---    propagateRepoUpdate(m_repoDetailIndex);
--+                                        true);
--+                    return;
--+                }
--+                logSystem(QStringLiteral("Imported patch %1 as pull #%2.")
--+                              .arg(path)
--+                              .arg(number));
--+                setRepoDetailNotice(QStringLiteral("Imported patch as pull #%1.")
--+                                        .arg(number));
--+                m_currentPullNumber = number;
--+                switchToPullTab(number);
--+                propagateRepoUpdate(m_repoDetailIndex);
--+            });
--+    worker->start();
-- }
-- 
-- void MainWindow::promptNewPullFromDirectory()
--@@ -7100,4 +7131,3 @@ void MainWindow::pollOwnedInboxes()
--         drainCommitInboxFor(repo, /*interactive=*/false);
--     }
-- }
---
--diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
--index 025d803a..7df0a1d8 100644
----- a/qt_client/tests/test_window_resize.cpp
--+++ b/qt_client/tests/test_window_resize.cpp
--@@ -18,6 +18,7 @@
-- #include <QSettings>
-- #include <QStandardPaths>
-- #include <QTemporaryDir>
--+#include <QTextStream>
-- #include <QWidget>
-- 
-- #include <algorithm>
--@@ -983,6 +984,62 @@ int main(int argc, char *argv[])
--         }
--     }
-- 
--+    // Importing a patch must not synchronously wait on `git apply --check` on the
--+    // GUI thread. A fake git that sleeps before delegating makes the old blocking
--+    // path take >1s; the fixed path returns immediately and finishes later.
--+    {
--+        QTemporaryDir importRepo;
--+        QTemporaryDir fakeBin;
--+        QTemporaryDir patchDir;
--+        if (initGitRepo(importRepo) && fakeBin.isValid() && patchDir.isValid()) {
--+            QFile wrapper(fakeBin.path() + QStringLiteral("/git"));
--+            if (wrapper.open(QIODevice::WriteOnly | QIODevice::Text)) {
--+                QTextStream ts(&wrapper);
--+                ts << "#!/bin/sh\n"
--+                   << "if [ \"$3\" = apply ] && [ \"$4\" = --check ]; then sleep 1; fi\n"
--+                   << "exec /usr/bin/git \"$@\"\n";
--+                wrapper.close();
--+                wrapper.setPermissions(wrapper.permissions() | QFile::ExeOwner |
--+                                       QFile::ExeGroup | QFile::ExeOther);
--+            }
--+            QFile patch(patchDir.path() + QStringLiteral("/change.patch"));
--+            if (patch.open(QIODevice::WriteOnly | QIODevice::Text)) {
--+                QTextStream ts(&patch);
--+                ts << "diff --git a/new.txt b/new.txt\n"
--+                   << "new file mode 100644\n"
--+                   << "index 0000000..1269488\n"
--+                   << "--- /dev/null\n"
--+                   << "+++ b/new.txt\n"
--+                   << "@@ -0,0 +1 @@\n"
--+                   << "+hello\n";
--+                patch.close();
--+            }
--+
--+            MainWindow importWindow;
--+            importWindow.show();
--+            QApplication::processEvents();
--+            const int idx = importWindow.testAddLocalRepository(
--+                "me", "importrepo", importRepo.path());
--+            importWindow.testOpenRepository(idx);
--+            QApplication::processEvents();
--+
--+            const QByteArray oldPath = qgetenv("PATH");
--+            qputenv("PATH", (fakeBin.path() + QLatin1Char(':') +
--+                              QString::fromUtf8(oldPath)).toUtf8());
--+            QElapsedTimer timer;
--+            timer.start();
--+            importWindow.testImportPatchAsPullFromPath(patch.fileName());
--+            const qint64 elapsed = timer.elapsed();
--+            qputenv("PATH", oldPath);
--+
--+            check(elapsed < 500,
--+                  QString("import patch returns before slow apply check "
--+                          "(elapsed=%1ms)")
--+                      .arg(elapsed));
--+            stopChildProcesses(importWindow);
--+        }
--+    }
--+
--     // Issue #287: the headless "mirrors" view leads with this node's own CPU and
--     // memory so an operator watching a durable daemon can see its load, and the
--     // "status" view carries the same Load line.
-diff --git a/pulls/4/pull.md b/pulls/4/pull.md
-deleted file mode 100644
-index 317d44e1..00000000
---- a/pulls/4/pull.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--schema: forkmesh-pull-v1
--number: 4
--title: Agent: ForkMesh's GUI thread stalled for ~1511 ms — the event loop was blocked, whic…
--base: main
--head: agent/adhoc-80-forkmesh-s-gui-thread-stalled-for-1511-ms-the-ev
--status: open
--ts: 1783156792854
--author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
--authorName: mdkaifansari04
--sig: u3t807Vk545AEIsoDccwdLK-A-4Az0Nqmq2yokkhEtcCb7l8EPwZJJVrslcQzH5qRzkgzDiG-lXnvwiOpdsECQ
-----
--
--Created from a OpenAI API agent session.
-diff --git a/pulls/5/changes.patch b/pulls/5/changes.patch
-deleted file mode 100644
-index 6969e6ba..00000000
---- a/pulls/5/changes.patch
-+++ /dev/null
-@@ -1,169 +0,0 @@
--diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
--index c066b25f..27839bed 100644
----- a/qt_client/src/MainWindow.h
--+++ b/qt_client/src/MainWindow.h
--@@ -291,6 +291,14 @@ public:
--                    ? QString()
--                    : repoAgentGitDir(m_repositories.at(index));
--     }
--+    qint64 testCachedMirrorRepoSizeBytes(int index, bool refreshIfStale)
--+    {
--+        return (index < 0 || index >= m_repositories.size())
--+                   ? -1
--+                   : cachedMirrorRepoSizeBytes(m_repositories.at(index),
--+                                               refreshIfStale);
--+    }
--+    int testMirrorRepoSizeRefreshes() const { return m_testMirrorRepoSizeRefreshes; }
--     void testPublishRepository(int index) { publishRepository(index, false); }
--     void testStartRepoHosts() { startRepoHosts(); }
--     void testStopRepoHosts() { stopRepoHosts(); }
--@@ -1597,6 +1605,8 @@ private:
--     bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
--     void loadRepoInfo();
--     void loadBranchesAndTags();
--+    qint64 cachedMirrorRepoSizeBytes(const RepositoryRecord &repo,
--+                                     bool refreshIfStale = true);
--     QStringList repoBranches() const;
--     QString repoDefaultBranch(const QStringList &branches) const;
--     QWidget *buildBranchesTab();
--@@ -4215,6 +4225,16 @@ private:
--     // onRequestServed (adhoc #83); skip the rebuild while the signature is
--     // unchanged. Reset by attachBackend so a freshly attached backend is re-pushed.
--     QString m_mirrorAdvertSig;
--+    struct MirrorRepoSizeCacheEntry {
--+        qint64 syncMs = -1;
--+        qint64 bytes = 0;
--+        bool valid = false;
--+    };
--+    QHash<QString, MirrorRepoSizeCacheEntry> m_mirrorRepoSizeCache;
--+    QSet<QString> m_mirrorRepoSizeRefreshes;
--+#ifdef FORKMESH_WINDOW_TESTS
--+    int m_testMirrorRepoSizeRefreshes = 0;
--+#endif
--     int m_repoOpenPending = -1;        // repo index queued by openRepoDetailDeferred
--     // True while a user-driven repo load (a node switch or opening a repo) runs,
--     // so nodeSwitchStep narrates progress for both, not just node switches.
--diff --git a/qt_client/src/MainWindowReleases.cpp b/qt_client/src/MainWindowReleases.cpp
--index eaef6ac5..a37ab863 100644
----- a/qt_client/src/MainWindowReleases.cpp
--+++ b/qt_client/src/MainWindowReleases.cpp
--@@ -1004,7 +1004,7 @@ void MainWindow::loadMirrorNodesPanel()
--     selfAdvert.branch = mirrorHeadBranch(localMirror);
--     selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
--     selfAdvert.updatedMs = repo.lastSyncMs;
---    selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
--+    selfAdvert.sizeBytes = cachedMirrorRepoSizeBytes(repo);
--     selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
--     selfAdvert.commitCount = mirrorCommitCount(localMirror, selfAdvert.branch);
--     selfAdvert.branchCount = mirrorBranchCount(localMirror);
--diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
--index f627f708..8db26cf9 100644
----- a/qt_client/src/MainWindowRepos.cpp
--+++ b/qt_client/src/MainWindowRepos.cpp
--@@ -250,6 +250,50 @@ QStringList MainWindow::mentionCandidateNames() const
--     return names;
-- }
-- 
--+qint64 MainWindow::cachedMirrorRepoSizeBytes(const RepositoryRecord &repo,
--+                                             bool refreshIfStale)
--+{
--+    const QString mirrorPath = repo.mirrorPath.trimmed();
--+    if (mirrorPath.isEmpty() || !QDir(mirrorPath).exists()) {
--+        m_mirrorRepoSizeCache.remove(mirrorPath);
--+        m_mirrorRepoSizeRefreshes.remove(mirrorPath);
--+        return 0;
--+    }
--+
--+    const qint64 syncMs = repo.lastSyncMs;
--+    const auto cached = m_mirrorRepoSizeCache.constFind(mirrorPath);
--+    if (cached != m_mirrorRepoSizeCache.cend() && cached->valid &&
--+        cached->syncMs == syncMs)
--+        return cached->bytes;
--+
--+    const qint64 fallback =
--+        (cached != m_mirrorRepoSizeCache.cend() && cached->valid) ? cached->bytes : 0;
--+    if (!refreshIfStale || m_mirrorRepoSizeRefreshes.contains(mirrorPath))
--+        return fallback;
--+
--+    m_mirrorRepoSizeRefreshes.insert(mirrorPath);
--+#ifdef FORKMESH_WINDOW_TESTS
--+    ++m_testMirrorRepoSizeRefreshes;
--+#endif
--+    runGitDetached(mirrorPath, {"count-objects", "-v"},
--+                   [this, mirrorPath, syncMs](bool ok, const QByteArray &out) {
--+                       m_mirrorRepoSizeRefreshes.remove(mirrorPath);
--+                       const qint64 bytes =
--+                           ok ? parseCountObjectsSizeBytes(out) : 0;
--+                       m_mirrorRepoSizeCache.insert(
--+                           mirrorPath,
--+                           MirrorRepoSizeCacheEntry{syncMs, bytes, true});
--+                       m_mirrorAdvertSig.clear();
--+                       refreshRepositoryList();
--+                       if (m_repoDetailIndex >= 0 &&
--+                           m_repoDetailIndex < m_repositories.size() &&
--+                           m_repositories.at(m_repoDetailIndex).mirrorPath.trimmed() ==
--+                               mirrorPath)
--+                           loadMirrorNodesPanel();
--+                   });
--+    return fallback;
--+}
--+
-- void MainWindow::refreshRepositoryList()
-- {
--     // Re-entrancy guard (adhoc #247): the periodic m_homeStatsTimer fires this once
--@@ -493,7 +537,7 @@ void MainWindow::refreshRepositoryList()
--             advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
--             advert.updatedMs = repo.lastSyncMs;
--             // On-disk mirror size so peers can show how much data we're holding.
---            advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
--+            advert.sizeBytes = cachedMirrorRepoSizeBytes(repo);
--             // Issues we're mirroring, so peers can show the count per node.
--             advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
--             // More tallies the Mirror nodes view shows per node: history depth,
--@@ -2037,7 +2081,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
--                          // On-disk mirror size so the network page can show how
--                          // much data each owner/repo is hosting. Not signed.
--                          {"sizeBytes",
---                          QString::number(mirrorRepoSizeBytes(repo.mirrorPath))},
--+                          QString::number(cachedMirrorRepoSizeBytes(repo))},
--                          {"visibility", repo.isPrivate
--                                             ? QStringLiteral("private")
--                                             : QStringLiteral("public")},
--@@ -3018,4 +3062,3 @@ void MainWindow::uninstallForkMesh()
-- 
--     QCoreApplication::exit(0);
-- }
---
--diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
--index 025d803a..f41449d1 100644
----- a/qt_client/tests/test_window_resize.cpp
--+++ b/qt_client/tests/test_window_resize.cpp
--@@ -1113,6 +1113,28 @@ int main(int argc, char *argv[])
--                              "mirror has no agent/looper git dir"));
--     }
-- 
--+    // adhoc #77: the mirror-size badge/adverts must not synchronously run
--+    // `git count-objects -v` on every GUI refresh. The first call may kick an
--+    // async refresh, but unchanged repo state should be served from cache.
--+    {
--+        QTemporaryDir mirrorDir;
--+        const bool madeBare =
--+            mirrorDir.isValid() &&
--+            runGitChecked(mirrorDir.path(), {"init", "--bare", "-q"});
--+        const int mirrorIdx =
--+            window.testAddPublishedRepository("someone", "sizerepo", mirrorDir.path());
--+        const qint64 first =
--+            window.testCachedMirrorRepoSizeBytes(mirrorIdx, true);
--+        for (int i = 0; i < 20 && window.testMirrorRepoSizeRefreshes() == 0; ++i)
--+            QApplication::processEvents();
--+        const qint64 second =
--+            window.testCachedMirrorRepoSizeBytes(mirrorIdx, true);
--+        check(madeBare && first == 0 && second >= 0 &&
--+                  window.testMirrorRepoSizeRefreshes() == 1,
--+              QStringLiteral("mirror repo size uses an async cache instead of "
--+                             "rerunning count-objects on unchanged GUI refreshes"));
--+    }
--+
--     // adhoc #38: the issue looper skips issues that are already assigned (a
--     // looper on this or another mirror claimed them) so two loopers never work
--     // the same task, and otherwise picks the highest-priority open issue with no
-diff --git a/pulls/5/pull.md b/pulls/5/pull.md
-deleted file mode 100644
-index 2aeee013..00000000
---- a/pulls/5/pull.md
-+++ /dev/null
-@@ -1,14 +0,0 @@
-----
--schema: forkmesh-pull-v1
--number: 5
--title: Agent: ForkMesh's GUI thread stalled for ~3181 ms — the event loop was blocked, whic…
--base: main
--head: agent/adhoc-77-forkmesh-s-gui-thread-stalled-for-3181-ms-the-ev
--status: open
--ts: 1783156801388
--author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
--authorName: mdkaifansari04
--sig: _H_fPjgaIlRlCvLZNDh2V_pSkmUhFhA6cCTROi0_4qKAn1xZUa1TO39WNgOVg-WLxYvU4xFwIgS0yO3GXbA5AA
-----
--
--Created from a OpenAI API agent session.
