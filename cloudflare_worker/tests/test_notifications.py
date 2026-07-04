@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -45,6 +46,11 @@ def _load_notification_helpers():
 
 
 def _read(path: Path) -> str:
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py);
+    # assert on the composed script.
+    if path.name == "dashboard.js":
+        return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
 
 
