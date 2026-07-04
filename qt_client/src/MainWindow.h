@@ -3084,6 +3084,8 @@ private:
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
     QLabel *m_langLegend = nullptr;
+    QLabel *m_filesCountHeader = nullptr;
+    QLabel *m_filesCountRow = nullptr;
     QLabel *m_contributorsHeader = nullptr;
     QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;

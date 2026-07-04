@@ -685,6 +685,13 @@ QWidget *MainWindow::buildAboutSidebar()
     m_langLegend->setWordWrap(true);
     m_langLegend->setTextFormat(Qt::RichText);
 
+    m_filesCountHeader = new QLabel("FILES");
+    m_filesCountHeader->setObjectName("sectionLabel");
+    m_filesCountRow = new QLabel;
+    m_filesCountRow->setObjectName("statusLine");
+    m_filesCountRow->setWordWrap(true);
+    m_filesCountRow->setTextFormat(Qt::RichText);
+
     m_contributorsHeader = new QLabel("CONTRIBUTORS");
     m_contributorsHeader->setObjectName("sectionLabel");
     m_contributorsRow = new QLabel;
@@ -722,6 +729,11 @@ QWidget *MainWindow::buildAboutSidebar()
     layout->addWidget(langLabel);
     layout->addWidget(m_langBar);
     layout->addWidget(m_langLegend);
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(rule());
+    layout->addSpacing(kSectionGap);
+    layout->addWidget(m_filesCountHeader);
+    layout->addWidget(m_filesCountRow);
     layout->addSpacing(kSectionGap);
     layout->addWidget(rule());
     layout->addSpacing(kSectionGap);
@@ -7640,6 +7652,24 @@ void MainWindow::loadAboutSidebar()
         m_langLegend->setText(legend.isEmpty()
                                   ? "<span style='color:#8b949e'>No code yet.</span>"
                                   : legend);
+    }
+
+    // Total tracked file count for the current ref.
+    if (m_filesCountHeader && m_filesCountRow) {
+        int fileCount = 0;
+        QByteArray out;
+        if (!dir.isEmpty() &&
+            runGitCapture(dir, {"ls-tree", "-r", "--name-only", currentRef()}, &out,
+                          nullptr)) {
+            for (const QByteArray &line : out.split('\n')) {
+                if (!line.trimmed().isEmpty())
+                    ++fileCount;
+            }
+        }
+        m_filesCountRow->setText(
+            QStringLiteral("<span style='color:#c9d1d9'>%1</span> "
+                            "<span style='color:#8b949e'>%2</span>")
+                .arg(formatCount(fileCount), fileCount == 1 ? "file" : "files"));
     }
 
     // Contributors from git shortlog, each shown as a deterministic avatar
