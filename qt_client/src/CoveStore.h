@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 class ForkMeshIdentity;
 
@@ -42,6 +43,9 @@ struct Cove {
     QString slug;        // obscure file stem — reveals nothing about the cove
     QString relPath;     // .forkmesh/coves/<slug>.cove (repo-relative)
     QString creator;     // creator pubkey (base64url) — routes open-notifications
+    QString accessMode = "password"; // password | account
+    QString creatorAccount;          // account-scoped owner username
+    QStringList invitedAccounts;     // account-scoped viewers/editors
     qint64 createdAtMs = 0;
     bool notifyOnOpen = false;
     QByteArray salt;     // KDF salt (raw bytes)
@@ -54,6 +58,7 @@ struct Cove {
     QList<CoveAccessEntry> accessLog;
 
     bool createdByMe(const ForkMeshIdentity *identity) const;
+    bool accountScoped() const { return accessMode == QStringLiteral("account"); }
 };
 
 // Repo-scoped vault of encrypted coves backed by .forkmesh/coves/*.cove. For
@@ -76,14 +81,23 @@ public:
     // Decrypt a cove with a password. On success fills documents/accessLog and
     // sets unlocked. Returns false (cove untouched) when the password is wrong.
     static bool unlock(Cove &cove, const QString &password);
+    // Account-scoped coves are hidden from the Cove Explorer unless the current
+    // verified account is explicitly listed in the envelope ACL.
+    static bool accountCanAccess(const Cove &cove, const QString &accountName);
+    static bool unlockForAccount(Cove &cove, const QString &accountName);
 
     // Create a new cove, encrypt it, write the .cove file and commit it.
     bool createCove(const QString &name, const QString &password, bool notifyOnOpen,
                     const QList<CoveDocument> &documents, Cove *out,
                     QString *error = nullptr);
+    bool createAccountCove(const QString &name, const QString &creatorAccount,
+                           const QStringList &invitedAccounts, bool notifyOnOpen,
+                           const QList<CoveDocument> &documents, Cove *out,
+                           QString *error = nullptr);
     // Re-encrypt an unlocked cove's documents + access log under the password,
     // write the file and commit. The cove must already be unlocked.
     bool save(const Cove &cove, const QString &password, QString *error = nullptr);
+    bool saveAccountCove(const Cove &cove, QString *error = nullptr);
 
     // Append an access entry to an unlocked cove in memory (caller persists via
     // save() when it has write access; the local self-log is separate).

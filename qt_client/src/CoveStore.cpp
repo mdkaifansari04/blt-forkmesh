@@ -3,6 +3,7 @@
 #include "CoveCrypto.h"
 #include "ForkMeshIdentity.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -52,16 +53,101 @@ QString obscureSlug()
     return QUuid::createUuid().toString(QUuid::Id128);
 }
 
+QString normalizedAccount(QString account)
+{
+    return account.trimmed().toLower();
+}
+
+QStringList normalizedAccounts(const QStringList &accounts)
+{
+    QStringList out;
+    for (const QString &account : accounts) {
+        const QString normalized = normalizedAccount(account);
+        if (!normalized.isEmpty() && !out.contains(normalized))
+            out << normalized;
+    }
+    out.sort(Qt::CaseInsensitive);
+    return out;
+}
+
+QString accountCoveSecret(const Cove &cove)
+{
+    if (!cove.accountScoped())
+        return {};
+    QStringList invitees = normalizedAccounts(cove.invitedAccounts);
+    const QString creator = normalizedAccount(cove.creatorAccount);
+    if (!creator.isEmpty() && !invitees.contains(creator))
+        invitees << creator;
+    invitees.sort(Qt::CaseInsensitive);
+    const QByteArray material =
+        QStringLiteral("forkmesh-account-cove-v1\n%1\n%2\n%3\n%4")
+            .arg(cove.id, cove.creator, creator, invitees.join('\n'))
+            .toUtf8();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(material, QCryptographicHash::Sha256)
+            .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+
+bool decryptCoveWithSecret(Cove &cove, const QString &secret)
+{
+    CoveCrypto crypto(secret, cove.salt, cove.rounds);
+    if (!crypto.isValid())
+        return false;
+    const QByteArray plain = crypto.decrypt(cove.cipher);
+    if (plain.isEmpty())
+        return false; // wrong secret (GCM tag mismatch) or corrupt payload
+    const QJsonDocument doc = QJsonDocument::fromJson(plain);
+    if (!doc.isObject())
+        return false;
+    const QJsonObject payload = doc.object();
+    // The name lives in the encrypted payload (kept out of the repo). Fall back to
+    // any plaintext envelope name for coves written before this change.
+    cove.name = payload.value("name").toString(cove.name);
+    cove.documents.clear();
+    for (const QJsonValue &v : payload.value("documents").toArray())
+        cove.documents << CoveDocument::fromJson(v.toObject());
+    cove.accessLog.clear();
+    for (const QJsonValue &v : payload.value("accessLog").toArray())
+        cove.accessLog << CoveAccessEntry::fromJson(v.toObject());
+    cove.unlocked = true;
+    return true;
+}
+
+QByteArray covePayload(const Cove &cove)
+{
+    QJsonArray docs;
+    for (const CoveDocument &d : cove.documents)
+        docs.append(d.toJson());
+    QJsonArray log;
+    for (const CoveAccessEntry &e : cove.accessLog)
+        log.append(e.toJson());
+    // The name rides inside the ciphertext (not the envelope) so it never appears
+    // in the repo's tree, file contents or history.
+    return QJsonDocument(
+               QJsonObject{{"name", cove.name}, {"documents", docs}, {"accessLog", log}})
+        .toJson(QJsonDocument::Compact);
+}
+
 // Build the on-disk envelope JSON for a cove whose cipher is already computed.
 // The human-readable name is deliberately NOT stored here: it lives inside the
 // encrypted payload so the repo never reveals what a cove is about. The file is
 // identified on disk only by an obscure random slug.
 QJsonObject toEnvelope(const Cove &cove)
 {
+    QJsonArray invited;
+    for (const QString &account : normalizedAccounts(cove.invitedAccounts))
+        invited.append(account);
+    QJsonObject access{{"mode", cove.accessMode}};
+    if (cove.accountScoped()) {
+        access.insert(QStringLiteral("creatorAccount"),
+                      normalizedAccount(cove.creatorAccount));
+        access.insert(QStringLiteral("invitedAccounts"), invited);
+    }
     return {{"kind", "cove"},
             {"v", kCoveVersion},
             {"id", cove.id},
             {"creator", cove.creator},
+            {"access", access},
             {"createdAtMs", double(cove.createdAtMs)},
             {"notifyOnOpen", cove.notifyOnOpen},
             {"kdf", QJsonObject{{"algo", "pbkdf2-sha256"},
@@ -85,6 +171,15 @@ bool fromEnvelope(const QByteArray &bytes, Cove &out)
     // the encrypted payload (recovered by unlock()). Read it for back-compat.
     out.name = obj.value("name").toString();
     out.creator = obj.value("creator").toString();
+    const QJsonObject access = obj.value("access").toObject();
+    out.accessMode = access.value("mode").toString(QStringLiteral("password"));
+    out.creatorAccount = normalizedAccount(access.value("creatorAccount").toString());
+    out.invitedAccounts.clear();
+    for (const QJsonValue &v : access.value("invitedAccounts").toArray()) {
+        const QString account = normalizedAccount(v.toString());
+        if (!account.isEmpty() && !out.invitedAccounts.contains(account))
+            out.invitedAccounts << account;
+    }
     out.createdAtMs = qint64(obj.value("createdAtMs").toDouble());
     out.notifyOnOpen = obj.value("notifyOnOpen").toBool();
     const QJsonObject kdf = obj.value("kdf").toObject();
@@ -256,27 +351,26 @@ bool CoveStore::loadEnvelope(const QString &relPath, Cove &out, QString *error) 
 
 bool CoveStore::unlock(Cove &cove, const QString &password)
 {
-    CoveCrypto crypto(password, cove.salt, cove.rounds);
-    if (!crypto.isValid())
+    return decryptCoveWithSecret(cove, password);
+}
+
+bool CoveStore::accountCanAccess(const Cove &cove, const QString &accountName)
+{
+    if (!cove.accountScoped())
         return false;
-    const QByteArray plain = crypto.decrypt(cove.cipher);
-    if (plain.isEmpty())
-        return false; // wrong password (GCM tag mismatch) or corrupt payload
-    const QJsonDocument doc = QJsonDocument::fromJson(plain);
-    if (!doc.isObject())
+    const QString account = normalizedAccount(accountName);
+    if (account.isEmpty())
         return false;
-    const QJsonObject payload = doc.object();
-    // The name lives in the encrypted payload (kept out of the repo). Fall back to
-    // any plaintext envelope name for coves written before this change.
-    cove.name = payload.value("name").toString(cove.name);
-    cove.documents.clear();
-    for (const QJsonValue &v : payload.value("documents").toArray())
-        cove.documents << CoveDocument::fromJson(v.toObject());
-    cove.accessLog.clear();
-    for (const QJsonValue &v : payload.value("accessLog").toArray())
-        cove.accessLog << CoveAccessEntry::fromJson(v.toObject());
-    cove.unlocked = true;
-    return true;
+    if (normalizedAccount(cove.creatorAccount) == account)
+        return true;
+    return normalizedAccounts(cove.invitedAccounts).contains(account);
+}
+
+bool CoveStore::unlockForAccount(Cove &cove, const QString &accountName)
+{
+    if (!accountCanAccess(cove, accountName))
+        return false;
+    return decryptCoveWithSecret(cove, accountCoveSecret(cove));
 }
 
 void CoveStore::appendAccess(Cove &cove, const CoveAccessEntry &entry)
@@ -332,6 +426,52 @@ bool CoveStore::createCove(const QString &name, const QString &password,
     return true;
 }
 
+bool CoveStore::createAccountCove(const QString &name, const QString &creatorAccount,
+                                  const QStringList &invitedAccounts,
+                                  bool notifyOnOpen,
+                                  const QList<CoveDocument> &documents, Cove *out,
+                                  QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository has no local working tree to "
+                                    "store a cove in.");
+        return false;
+    }
+    const QString creatorAccountNorm = normalizedAccount(creatorAccount);
+    if (name.trimmed().isEmpty() || creatorAccountNorm.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("A cove needs a name and a verified creator "
+                                    "account.");
+        return false;
+    }
+
+    Cove cove;
+    cove.id = newId();
+    cove.name = name.trimmed();
+    cove.slug = uniqueSlug();
+    cove.relPath = covesDirRel() + "/" + cove.slug + ".cove";
+    cove.creator = m_identity ? m_identity->publicKey() : QString();
+    cove.accessMode = QStringLiteral("account");
+    cove.creatorAccount = creatorAccountNorm;
+    cove.invitedAccounts = normalizedAccounts(invitedAccounts);
+    if (!cove.invitedAccounts.contains(creatorAccountNorm))
+        cove.invitedAccounts << creatorAccountNorm;
+    cove.invitedAccounts.sort(Qt::CaseInsensitive);
+    cove.createdAtMs = QDateTime::currentMSecsSinceEpoch();
+    cove.notifyOnOpen = notifyOnOpen;
+    cove.salt = CoveCrypto::randomSalt();
+    cove.rounds = CoveCrypto::defaultRounds();
+    cove.documents = documents;
+    cove.unlocked = true;
+
+    if (!saveAccountCove(cove, error))
+        return false;
+    if (out)
+        *out = cove;
+    return true;
+}
+
 bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
 {
     if (!canWrite()) {
@@ -345,19 +485,6 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
         return false;
     }
 
-    QJsonArray docs;
-    for (const CoveDocument &d : cove.documents)
-        docs.append(d.toJson());
-    QJsonArray log;
-    for (const CoveAccessEntry &e : cove.accessLog)
-        log.append(e.toJson());
-    // The name rides inside the ciphertext (not the envelope) so it never appears
-    // in the repo's tree, file contents or history.
-    const QByteArray payload =
-        QJsonDocument(
-            QJsonObject{{"name", cove.name}, {"documents", docs}, {"accessLog", log}})
-            .toJson(QJsonDocument::Compact);
-
     CoveCrypto crypto(password, cove.salt, cove.rounds);
     if (!crypto.isValid()) {
         if (error)
@@ -365,7 +492,7 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
         return false;
     }
     Cove sealed = cove;
-    sealed.cipher = crypto.encrypt(payload);
+    sealed.cipher = crypto.encrypt(covePayload(cove));
     if (sealed.cipher.isEmpty()) {
         if (error)
             *error = QStringLiteral("Could not encrypt the cove.");
@@ -384,6 +511,59 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
     file.close();
 
     // Commit by slug, never the name, so git history stays free of cove names.
+    return commit(QStringLiteral("cove: %1").arg(sealed.slug), sealed.relPath, error);
+}
+
+bool CoveStore::saveAccountCove(const Cove &cove, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("No local working tree to save the cove to.");
+        return false;
+    }
+    if (!cove.accountScoped()) {
+        if (error)
+            *error = QStringLiteral("This cove is not account-scoped.");
+        return false;
+    }
+    if (!cove.unlocked) {
+        if (error)
+            *error = QStringLiteral("Unlock the cove before saving it.");
+        return false;
+    }
+    if (cove.relPath.isEmpty() || cove.salt.isEmpty() || cove.rounds <= 0) {
+        if (error)
+            *error = QStringLiteral("The cove is missing its encryption parameters.");
+        return false;
+    }
+    const QString secret = accountCoveSecret(cove);
+    CoveCrypto crypto(secret, cove.salt, cove.rounds);
+    if (!crypto.isValid()) {
+        if (error)
+            *error = crypto.errorString();
+        return false;
+    }
+    Cove sealed = cove;
+    sealed.invitedAccounts = normalizedAccounts(sealed.invitedAccounts);
+    sealed.creatorAccount = normalizedAccount(sealed.creatorAccount);
+    sealed.cipher = crypto.encrypt(covePayload(cove));
+    if (sealed.cipher.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not encrypt the cove.");
+        return false;
+    }
+
+    QDir().mkpath(covesDir());
+    const QString absPath = m_workTree + "/" + sealed.relPath;
+    QFile file(absPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error)
+            *error = QStringLiteral("Could not write %1").arg(absPath);
+        return false;
+    }
+    file.write(QJsonDocument(toEnvelope(sealed)).toJson(QJsonDocument::Indented));
+    file.close();
+
     return commit(QStringLiteral("cove: %1").arg(sealed.slug), sealed.relPath, error);
 }
 

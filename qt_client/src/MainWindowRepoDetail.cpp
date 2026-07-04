@@ -11,6 +11,8 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QSignalBlocker>
+
 using namespace forkmesh::ui;
 
 // ---- IDE extension integration --------------------------------------------
@@ -348,13 +350,12 @@ void MainWindow::applyIssueFilesCount(int issueNumber, int count,
 
 QWidget *MainWindow::buildRepoFilesPanel()
 {
-    // Two modes: a GitHub-style overview, and an explorer+editor view. A
-    // persistent segmented toggle sits above both so switching between
-    // "Code overview" and "Explorer" is always one click away, no matter
-    // which view is currently showing.
+    // Three modes: a GitHub-style overview, the repository explorer/editor, and
+    // an account-gated Cove Explorer rooted in .forkmesh/coves.
     m_filesStack = new QStackedWidget;
-    m_filesStack->addWidget(buildRepoOverviewPage()); // 0 overview
-    m_filesStack->addWidget(buildRepoEditorPage());   // 1 editor (explorer + tabs)
+    m_filesStack->addWidget(buildRepoOverviewPage());      // 0 overview
+    m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
+    m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
 
     m_filesModeOverviewButton = new QPushButton("Code overview");
     m_filesModeOverviewButton->setObjectName("repoTab");
@@ -377,6 +378,16 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoEditor(); });
 
+    m_filesModeCoveExplorerButton = new QPushButton("Cove Explorer");
+    m_filesModeCoveExplorerButton->setObjectName("repoTab");
+    m_filesModeCoveExplorerButton->setCheckable(true);
+    m_filesModeCoveExplorerButton->setCursor(Qt::PointingHandCursor);
+    m_filesModeCoveExplorerButton->setToolTip(
+        "Open account-invited secure cove files");
+    setOcticon(m_filesModeCoveExplorerButton, "shield-check", 16);
+    connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
+            [this] { showRepoCoveExplorer(); });
+
     // Git identity (name <email>) configured for the repo we're viewing, pinned
     // to the far right of this same row. Filled in by updateFooterGitIdentity()
     // each time a repo opens.
@@ -392,6 +403,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->setSpacing(2);
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
+    modeRow->addWidget(m_filesModeCoveExplorerButton);
     modeRow->addStretch();
     modeRow->addWidget(m_footerGitIdentity);
 
@@ -876,6 +888,184 @@ QWidget *MainWindow::buildRepoEditorPage()
     return page;
 }
 
+static bool coveDocPathIsSafe(const QString &path)
+{
+    const QString clean = QDir::cleanPath(path.trimmed());
+    return !clean.isEmpty() && clean != QLatin1String(".") &&
+           !QDir::isAbsolutePath(clean) && !clean.startsWith("../") &&
+           !clean.contains("/../") && clean != QLatin1String(".git") &&
+           !clean.startsWith(".git/");
+}
+
+static QString coveDocMimeForPath(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("md") || suffix == QLatin1String("markdown"))
+        return QStringLiteral("text/markdown");
+    if (suffix == QLatin1String("json") || suffix == QLatin1String("jsonc"))
+        return QStringLiteral("application/json");
+    if (suffix == QLatin1String("html") || suffix == QLatin1String("htm"))
+        return QStringLiteral("text/html");
+    return QStringLiteral("text/plain");
+}
+
+static QString coveDocTabKey(const QString &coveId, const QString &path)
+{
+    return coveId + QChar(0x1f) + path;
+}
+
+QWidget *MainWindow::buildRepoCoveExplorerPage()
+{
+    auto *page = new QWidget;
+
+    auto *toolbar = new QHBoxLayout;
+    toolbar->setContentsMargins(8, 4, 8, 4);
+    toolbar->setSpacing(6);
+
+    m_coveExplorerStatus = new QLabel;
+    m_coveExplorerStatus->setObjectName("statusLine");
+    m_coveExplorerStatus->setText(QStringLiteral("Cove Explorer"));
+    m_coveExplorerStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_coveExplorerSelector = new QComboBox;
+    m_coveExplorerSelector->setObjectName("repoPicker");
+    m_coveExplorerSelector->setMinimumWidth(220);
+    m_coveExplorerSelector->setToolTip(
+        QStringLiteral("Account-invited coves in this repository"));
+    connect(m_coveExplorerSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) {
+                m_coveExplorerCurrentId =
+                    m_coveExplorerSelector
+                        ? m_coveExplorerSelector->currentData().toString()
+                        : QString();
+                refreshCoveExplorerTree();
+            });
+
+    m_coveExplorerNewButton = new QPushButton("New cove");
+    m_coveExplorerNewButton->setObjectName("ghostButton");
+    m_coveExplorerNewButton->setCursor(Qt::PointingHandCursor);
+    m_coveExplorerNewButton->setToolTip(
+        QStringLiteral("Create an account-scoped cove in this repo"));
+    setOcticon(m_coveExplorerNewButton, "plus", 16);
+    connect(m_coveExplorerNewButton, &QPushButton::clicked, this,
+            &MainWindow::createCoveExplorerCove);
+
+    m_coveExplorerInviteButton = new QPushButton("Invite");
+    m_coveExplorerInviteButton->setObjectName("ghostButton");
+    m_coveExplorerInviteButton->setCursor(Qt::PointingHandCursor);
+    m_coveExplorerInviteButton->setToolTip(
+        QStringLiteral("Invite a verified ForkMesh account to this cove"));
+    setOcticon(m_coveExplorerInviteButton, "person", 16);
+    connect(m_coveExplorerInviteButton, &QPushButton::clicked, this,
+            &MainWindow::inviteUserToCurrentCove);
+
+    m_coveExplorerNewFileButton = new QPushButton("New file");
+    m_coveExplorerNewFileButton->setObjectName("ghostButton");
+    m_coveExplorerNewFileButton->setCursor(Qt::PointingHandCursor);
+    m_coveExplorerNewFileButton->setToolTip(
+        QStringLiteral("Add a document to the selected cove"));
+    setOcticon(m_coveExplorerNewFileButton, "file", 16);
+    connect(m_coveExplorerNewFileButton, &QPushButton::clicked, this,
+            &MainWindow::createCoveExplorerDocument);
+
+    m_coveExplorerDeleteButton = new QPushButton("Delete");
+    m_coveExplorerDeleteButton->setObjectName("ghostButton");
+    m_coveExplorerDeleteButton->setCursor(Qt::PointingHandCursor);
+    m_coveExplorerDeleteButton->setToolTip(
+        QStringLiteral("Delete the selected cove document"));
+    setOcticon(m_coveExplorerDeleteButton, "trash", 16);
+    connect(m_coveExplorerDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentCoveExplorerDocument);
+
+    m_coveExplorerSaveButton = new QPushButton("Save");
+    m_coveExplorerSaveButton->setObjectName("primaryButton");
+    m_coveExplorerSaveButton->setCursor(Qt::PointingHandCursor);
+    m_coveExplorerSaveButton->setToolTip(
+        QStringLiteral("Save the current cove document"));
+    setOcticon(m_coveExplorerSaveButton, "check-circle", 16);
+    connect(m_coveExplorerSaveButton, &QPushButton::clicked, this,
+            &MainWindow::saveCurrentCoveExplorerDocument);
+
+    toolbar->addWidget(m_coveExplorerSelector);
+    toolbar->addWidget(m_coveExplorerNewButton);
+    toolbar->addWidget(m_coveExplorerInviteButton);
+    toolbar->addWidget(m_coveExplorerNewFileButton);
+    toolbar->addWidget(m_coveExplorerDeleteButton);
+    toolbar->addWidget(m_coveExplorerSaveButton);
+    toolbar->addStretch();
+    toolbar->addWidget(m_coveExplorerStatus);
+
+    m_coveExplorerTree = new QTreeWidget;
+    m_coveExplorerTree->setObjectName("fileTree");
+    enableHoverRowHighlight(m_coveExplorerTree);
+    m_coveExplorerTree->setColumnCount(2);
+    m_coveExplorerTree->setHeaderHidden(true);
+    m_coveExplorerTree->header()->setStretchLastSection(false);
+    m_coveExplorerTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_coveExplorerTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_coveExplorerTree->setMinimumWidth(220);
+    m_coveExplorerTree->setIndentation(14);
+    connect(m_coveExplorerTree, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (!item)
+                    return;
+                if (item->data(0, Qt::UserRole + 1).toBool()) {
+                    item->setExpanded(!item->isExpanded());
+                    return;
+                }
+                openCoveExplorerDocument(item->data(0, Qt::UserRole).toString());
+            });
+    connect(m_coveExplorerTree, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (item && !item->data(0, Qt::UserRole + 1).toBool())
+                    openCoveExplorerDocument(item->data(0, Qt::UserRole).toString());
+            });
+    connect(m_coveExplorerTree, &QTreeWidget::itemExpanded, this,
+            [this](QTreeWidgetItem *item) {
+                if (item && item->data(0, Qt::UserRole + 1).toBool())
+                    item->setIcon(0, iconForDir(true));
+            });
+    connect(m_coveExplorerTree, &QTreeWidget::itemCollapsed, this,
+            [this](QTreeWidgetItem *item) {
+                if (item && item->data(0, Qt::UserRole + 1).toBool())
+                    item->setIcon(0, iconForDir(false));
+            });
+
+    m_coveExplorerTabs = new QTabWidget;
+    m_coveExplorerTabs->setObjectName("fileTabs");
+    m_coveExplorerTabs->setDocumentMode(true);
+    m_coveExplorerTabs->setMovable(true);
+    m_coveExplorerTabs->setTabsClosable(true);
+    connect(m_coveExplorerTabs, &QTabWidget::tabCloseRequested, this,
+            [this](int index) {
+                QWidget *w = m_coveExplorerTabs->widget(index);
+                m_openCoveExplorerTabs.remove(m_openCoveExplorerTabs.key(w));
+                m_coveExplorerTabs->removeTab(index);
+                if (w)
+                    w->deleteLater();
+                refreshCoveExplorerTree();
+            });
+    connect(m_coveExplorerTabs, &QTabWidget::currentChanged, this,
+            [this] { refreshCoveExplorerTree(); });
+
+    auto *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setObjectName("filesSplitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->addWidget(m_coveExplorerTree);
+    splitter->addWidget(m_coveExplorerTabs);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({260, 700});
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addLayout(toolbar);
+    layout->addWidget(splitter, 1);
+    return page;
+}
+
 QString MainWindow::iconsDir() const
 {
     static bool resolved = false;
@@ -1277,6 +1467,16 @@ void MainWindow::openRepoDetail(int repoIndex)
     }
     if (m_repoFileTree)
         m_repoFileTree->clear();
+    if (m_coveExplorerTabs) {
+        m_coveExplorerTabs->clear();
+        m_openCoveExplorerTabs.clear();
+    }
+    if (m_coveExplorerTree)
+        m_coveExplorerTree->clear();
+    if (m_coveExplorerSelector)
+        m_coveExplorerSelector->clear();
+    m_coveExplorerCoves.clear();
+    m_coveExplorerCurrentId.clear();
     m_treeLoadedForIndex = -1;
 
     // The file-search completer is only consulted once the user starts typing a
@@ -1954,6 +2154,522 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     updateRepoFileSaveActions();
 }
 
+QString MainWindow::verifiedCoveAccountName() const
+{
+    const QString account = settingsAccountName();
+    if (account.isEmpty() || !hasActiveAccountSession() ||
+        !accountEmailVerified(account))
+        return {};
+    return account;
+}
+
+bool MainWindow::coveInviteAccountVerified(const QString &accountName, QString *error)
+{
+    const QString account = accountName.trimmed().toLower();
+    if (account.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Enter a ForkMesh account name.");
+        return false;
+    }
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(account, &status);
+    if (status != 200 || !lookup.value("exists").toBool()) {
+        if (error)
+            *error = QStringLiteral("%1 is not a ForkMesh account.").arg(account);
+        return false;
+    }
+    if (lookup.value("status").toString() != QLatin1String("active")) {
+        if (error)
+            *error = QStringLiteral("%1 is not an active ForkMesh account.").arg(account);
+        return false;
+    }
+    if (!lookup.value("emailVerified").toBool()) {
+        if (error)
+            *error = QStringLiteral("%1 has not verified their email.").arg(account);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::loadCoveExplorer()
+{
+    if (!m_coveExplorerTree || !m_coveExplorerSelector)
+        return;
+
+    const QString keepId = m_coveExplorerCurrentId;
+    m_coveExplorerCoves.clear();
+    m_openCoveExplorerTabs.clear();
+    if (m_coveExplorerTabs)
+        m_coveExplorerTabs->clear();
+    m_coveExplorerTree->clear();
+
+    QSignalBlocker block(m_coveExplorerSelector);
+    m_coveExplorerSelector->clear();
+
+    CoveStore store = coveStoreForRepo(m_repoDetailIndex);
+    const bool canCreate = store.canWrite();
+    const QString account = verifiedCoveAccountName();
+    if (account.isEmpty()) {
+        if (m_coveExplorerStatus)
+            m_coveExplorerStatus->setText(
+                QStringLiteral("Sign in with a verified ForkMesh account."));
+        if (m_coveExplorerNewButton)
+            m_coveExplorerNewButton->setEnabled(false);
+        if (m_coveExplorerInviteButton)
+            m_coveExplorerInviteButton->setEnabled(false);
+        if (m_coveExplorerNewFileButton)
+            m_coveExplorerNewFileButton->setEnabled(false);
+        if (m_coveExplorerDeleteButton)
+            m_coveExplorerDeleteButton->setEnabled(false);
+        if (m_coveExplorerSaveButton)
+            m_coveExplorerSaveButton->setEnabled(false);
+        new QTreeWidgetItem(m_coveExplorerTree,
+                            {QStringLiteral("(verified account required)")});
+        return;
+    }
+
+    QString err;
+    const QList<Cove> envelopes = store.listCoves(&err);
+    for (Cove cove : envelopes) {
+        if (!cove.accountScoped() || !CoveStore::accountCanAccess(cove, account))
+            continue;
+        if (!CoveStore::unlockForAccount(cove, account))
+            continue;
+        if (cove.name.trimmed().isEmpty())
+            cove.name = QStringLiteral("Secure cove");
+        m_coveExplorerCoves << cove;
+    }
+
+    int selectIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        const Cove &cove = m_coveExplorerCoves.at(i);
+        m_coveExplorerSelector->addItem(cove.name, cove.id);
+        if (!keepId.isEmpty() && cove.id == keepId)
+            selectIndex = i;
+    }
+    if (selectIndex < 0 && !m_coveExplorerCoves.isEmpty())
+        selectIndex = 0;
+    if (selectIndex >= 0) {
+        m_coveExplorerSelector->setCurrentIndex(selectIndex);
+        m_coveExplorerCurrentId = m_coveExplorerCoves.at(selectIndex).id;
+    } else {
+        m_coveExplorerCurrentId.clear();
+    }
+
+    if (m_coveExplorerStatus) {
+        m_coveExplorerStatus->setText(
+            m_coveExplorerCoves.isEmpty()
+                ? QStringLiteral("No invited account coves in this repo.")
+                : QStringLiteral("%1 invited cove%2")
+                      .arg(m_coveExplorerCoves.size())
+                      .arg(m_coveExplorerCoves.size() == 1 ? QString() : QStringLiteral("s")));
+    }
+    if (m_coveExplorerNewButton)
+        m_coveExplorerNewButton->setEnabled(canCreate);
+    refreshCoveExplorerTree();
+}
+
+void MainWindow::refreshCoveExplorerTree()
+{
+    if (!m_coveExplorerTree)
+        return;
+    m_coveExplorerTree->clear();
+
+    int coveIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        if (m_coveExplorerCoves.at(i).id == m_coveExplorerCurrentId) {
+            coveIndex = i;
+            break;
+        }
+    }
+    const QString account = verifiedCoveAccountName();
+    const bool haveCove = coveIndex >= 0;
+    const bool canWrite = haveCove && coveStoreForRepo(m_repoDetailIndex).canWrite();
+    const bool isOwner =
+        haveCove &&
+        m_coveExplorerCoves.at(coveIndex).creatorAccount.compare(account, Qt::CaseInsensitive) == 0;
+    if (m_coveExplorerInviteButton)
+        m_coveExplorerInviteButton->setEnabled(canWrite && isOwner);
+    if (m_coveExplorerNewFileButton)
+        m_coveExplorerNewFileButton->setEnabled(canWrite && haveCove);
+    if (m_coveExplorerDeleteButton)
+        m_coveExplorerDeleteButton->setEnabled(canWrite && haveCove);
+
+    QWidget *currentTab =
+        m_coveExplorerTabs ? m_coveExplorerTabs->currentWidget() : nullptr;
+    auto *currentEditor = qobject_cast<QPlainTextEdit *>(currentTab);
+    const bool currentEditable = currentEditor && !currentEditor->isReadOnly() &&
+                                 !currentTab->property("coveDocPath").toString().isEmpty();
+    if (m_coveExplorerSaveButton)
+        m_coveExplorerSaveButton->setEnabled(currentEditable);
+
+    if (!haveCove) {
+        new QTreeWidgetItem(m_coveExplorerTree,
+                            {QStringLiteral("(no invited coves)")});
+        return;
+    }
+
+    const Cove &cove = m_coveExplorerCoves.at(coveIndex);
+    if (cove.documents.isEmpty()) {
+        new QTreeWidgetItem(m_coveExplorerTree,
+                            {QStringLiteral("(empty cove)")});
+        return;
+    }
+
+    QHash<QString, QTreeWidgetItem *> dirs;
+    QTreeWidgetItem *root = m_coveExplorerTree->invisibleRootItem();
+    for (const CoveDocument &doc : std::as_const(cove.documents)) {
+        QString path = QDir::cleanPath(doc.name.trimmed());
+        if (!coveDocPathIsSafe(path))
+            path = doc.id.isEmpty() ? QStringLiteral("untitled.txt")
+                                    : doc.id + QStringLiteral(".txt");
+        const QStringList parts = path.split('/', Qt::SkipEmptyParts);
+        if (parts.isEmpty())
+            continue;
+        QTreeWidgetItem *parent = root;
+        QString dirPath;
+        for (int i = 0; i < parts.size() - 1; ++i) {
+            dirPath = dirPath.isEmpty() ? parts.at(i) : dirPath + "/" + parts.at(i);
+            QTreeWidgetItem *folder = dirs.value(dirPath, nullptr);
+            if (!folder) {
+                folder = new QTreeWidgetItem(parent, {parts.at(i), QString()});
+                folder->setIcon(0, iconForDir(false));
+                folder->setData(0, Qt::UserRole, dirPath);
+                folder->setData(0, Qt::UserRole + 1, true);
+                dirs.insert(dirPath, folder);
+            }
+            parent = folder;
+        }
+        const QString leaf = parts.last();
+        const QString updated =
+            doc.updatedAtMs > 0
+                ? QDateTime::fromMSecsSinceEpoch(doc.updatedAtMs)
+                      .toString(QStringLiteral("yyyy-MM-dd"))
+                : QString();
+        auto *item = new QTreeWidgetItem(parent, {leaf, updated});
+        item->setIcon(0, iconForFile(leaf));
+        item->setData(0, Qt::UserRole, path);
+        item->setData(0, Qt::UserRole + 1, false);
+        item->setToolTip(0, path);
+    }
+    m_coveExplorerTree->sortItems(0, Qt::AscendingOrder);
+    m_coveExplorerTree->expandToDepth(0);
+}
+
+void MainWindow::openCoveExplorerDocument(const QString &path)
+{
+    if (path.isEmpty() || !m_coveExplorerTabs)
+        return;
+    int coveIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        if (m_coveExplorerCoves.at(i).id == m_coveExplorerCurrentId) {
+            coveIndex = i;
+            break;
+        }
+    }
+    if (coveIndex < 0)
+        return;
+    Cove &cove = m_coveExplorerCoves[coveIndex];
+    int docIndex = -1;
+    for (int i = 0; i < cove.documents.size(); ++i) {
+        if (QDir::cleanPath(cove.documents.at(i).name) == path) {
+            docIndex = i;
+            break;
+        }
+    }
+    if (docIndex < 0)
+        return;
+
+    const QString key = coveDocTabKey(cove.id, path);
+    if (m_openCoveExplorerTabs.contains(key)) {
+        m_coveExplorerTabs->setCurrentWidget(m_openCoveExplorerTabs.value(key));
+        return;
+    }
+
+    const CoveDocument &doc = cove.documents.at(docIndex);
+    auto *editor = new CodePreviewEditor(path);
+    editor->setProperty("coveId", cove.id);
+    editor->setProperty("coveDocPath", path);
+    editor->setReadOnly(!coveStoreForRepo(m_repoDetailIndex).canWrite());
+    editor->setPlainText(doc.body);
+    editor->document()->setModified(false);
+    new CodePreviewHighlighter(editor->document(), path);
+    connect(editor->document(), &QTextDocument::modificationChanged, this,
+            [this](bool) { refreshCoveExplorerTree(); });
+
+    const QString name = path.section('/', -1);
+    const int index = m_coveExplorerTabs->addTab(editor, iconForFile(name), name);
+    m_coveExplorerTabs->setTabToolTip(index, path);
+    m_coveExplorerTabs->setCurrentIndex(index);
+    m_openCoveExplorerTabs.insert(key, editor);
+    refreshCoveExplorerTree();
+}
+
+void MainWindow::saveCurrentCoveExplorerDocument()
+{
+    QWidget *w = m_coveExplorerTabs ? m_coveExplorerTabs->currentWidget() : nullptr;
+    auto *editor = qobject_cast<QPlainTextEdit *>(w);
+    if (!editor || editor->isReadOnly())
+        return;
+    const QString coveId = w->property("coveId").toString();
+    const QString path = w->property("coveDocPath").toString();
+    if (coveId.isEmpty() || path.isEmpty())
+        return;
+
+    for (Cove &cove : m_coveExplorerCoves) {
+        if (cove.id != coveId)
+            continue;
+        for (CoveDocument &doc : cove.documents) {
+            if (QDir::cleanPath(doc.name) != path)
+                continue;
+            doc.body = editor->toPlainText();
+            doc.updatedAtMs = QDateTime::currentMSecsSinceEpoch();
+            CoveAccessEntry entry;
+            entry.who = m_profileIdentity.publicKey();
+            entry.name = verifiedCoveAccountName();
+            entry.ts = doc.updatedAtMs;
+            entry.action = QStringLiteral("edit");
+            CoveStore::appendAccess(cove, entry);
+
+            QString err;
+            if (!coveStoreForRepo(m_repoDetailIndex).saveAccountCove(cove, &err)) {
+                QMessageBox::warning(this, QStringLiteral("Save cove file"),
+                                     QStringLiteral("Could not save: ") + err);
+                return;
+            }
+            editor->document()->setModified(false);
+            setRepoDetailNotice(QStringLiteral("Saved %1 in cove.").arg(path));
+            refreshCoveExplorerTree();
+            return;
+        }
+    }
+}
+
+void MainWindow::createCoveExplorerCove()
+{
+    const QString account = verifiedCoveAccountName();
+    if (account.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("New cove"),
+                             QStringLiteral("Sign in with a verified ForkMesh "
+                                            "account before creating a cove."));
+        return;
+    }
+    bool ok = false;
+    const QString name =
+        QInputDialog::getText(this, QStringLiteral("New cove"),
+                              QStringLiteral("Cove name:"), QLineEdit::Normal,
+                              QString(), &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    CoveStore store = coveStoreForRepo(m_repoDetailIndex);
+    Cove created;
+    QString err;
+    if (!store.createAccountCove(name, account, {account}, false, {}, &created, &err)) {
+        QMessageBox::warning(this, QStringLiteral("New cove"),
+                             QStringLiteral("Could not create cove: ") + err);
+        return;
+    }
+    m_coveExplorerCurrentId = created.id;
+    loadCoveExplorer();
+    setRepoDetailNotice(QStringLiteral("Created account cove."));
+}
+
+void MainWindow::inviteUserToCurrentCove()
+{
+    const QString account = verifiedCoveAccountName();
+    if (account.isEmpty())
+        return;
+    int coveIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        if (m_coveExplorerCoves.at(i).id == m_coveExplorerCurrentId) {
+            coveIndex = i;
+            break;
+        }
+    }
+    if (coveIndex < 0)
+        return;
+    Cove &cove = m_coveExplorerCoves[coveIndex];
+    if (cove.creatorAccount.compare(account, Qt::CaseInsensitive) != 0) {
+        QMessageBox::warning(this, QStringLiteral("Invite"),
+                             QStringLiteral("Only the cove creator can invite users."));
+        return;
+    }
+    QStringList candidates = mentionCandidateNames();
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        candidates << repo.owner;
+    for (const QString &invitee : std::as_const(cove.invitedAccounts))
+        candidates << invitee;
+    candidates << cove.creatorAccount << account;
+
+    QSet<QString> seenCandidates;
+    QStringList inviteCandidates;
+    for (const QString &raw : std::as_const(candidates)) {
+        const QString name = raw.trimmed().toLower();
+        if (name.isEmpty() || seenCandidates.contains(name))
+            continue;
+        seenCandidates.insert(name);
+        if (name == account || name == cove.creatorAccount ||
+            cove.invitedAccounts.contains(name))
+            continue;
+        inviteCandidates << name;
+    }
+    inviteCandidates.sort(Qt::CaseInsensitive);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Invite to cove"));
+    dialog.setModal(true);
+    auto *form = new QFormLayout(&dialog);
+    auto *edit = new QLineEdit;
+    edit->setPlaceholderText(QStringLiteral("account-name"));
+    edit->setClearButtonEnabled(true);
+    auto *model = new QStringListModel(inviteCandidates, &dialog);
+    auto *completer = new QCompleter(model, &dialog);
+    completer->setCaseSensitivity(Qt::CaseInsensitive);
+    completer->setCompletionMode(QCompleter::PopupCompletion);
+    completer->setFilterMode(Qt::MatchContains);
+    edit->setCompleter(completer);
+    form->addRow(QStringLiteral("ForkMesh account"), edit);
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Invite"));
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QTimer::singleShot(0, edit, [edit] {
+        edit->setFocus();
+        if (QCompleter *c = edit->completer())
+            c->complete();
+    });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString grantee = edit->text().trimmed().toLower();
+    if (grantee.isEmpty())
+        return;
+    if (grantee == account || cove.invitedAccounts.contains(grantee)) {
+        QMessageBox::information(this, QStringLiteral("Invite"),
+                                 QStringLiteral("%1 can already view this cove.")
+                                     .arg(grantee));
+        return;
+    }
+    QString err;
+    if (!coveInviteAccountVerified(grantee, &err)) {
+        QMessageBox::warning(this, QStringLiteral("Invite"), err);
+        return;
+    }
+    cove.invitedAccounts << grantee;
+    cove.invitedAccounts.removeDuplicates();
+    cove.invitedAccounts.sort(Qt::CaseInsensitive);
+
+    if (!coveStoreForRepo(m_repoDetailIndex).saveAccountCove(cove, &err)) {
+        QMessageBox::warning(this, QStringLiteral("Invite"),
+                             QStringLiteral("Could not save invitation: ") + err);
+        return;
+    }
+    m_coveExplorerCurrentId = cove.id;
+    loadCoveExplorer();
+    setRepoDetailNotice(QStringLiteral("Invited %1 to the cove.").arg(grantee));
+}
+
+void MainWindow::createCoveExplorerDocument()
+{
+    int coveIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        if (m_coveExplorerCoves.at(i).id == m_coveExplorerCurrentId) {
+            coveIndex = i;
+            break;
+        }
+    }
+    if (coveIndex < 0)
+        return;
+    bool ok = false;
+    const QString path =
+        QInputDialog::getText(this, QStringLiteral("New cove file"),
+                              QStringLiteral("File path:"), QLineEdit::Normal,
+                              QStringLiteral("notes.md"), &ok)
+            .trimmed();
+    if (!ok || path.isEmpty())
+        return;
+    const QString clean = QDir::cleanPath(path);
+    if (!coveDocPathIsSafe(clean)) {
+        QMessageBox::warning(this, QStringLiteral("New cove file"),
+                             QStringLiteral("Refusing to create that path."));
+        return;
+    }
+
+    Cove &cove = m_coveExplorerCoves[coveIndex];
+    for (const CoveDocument &doc : std::as_const(cove.documents)) {
+        if (QDir::cleanPath(doc.name) == clean) {
+            QMessageBox::warning(this, QStringLiteral("New cove file"),
+                                 QStringLiteral("%1 already exists.").arg(clean));
+            return;
+        }
+    }
+    CoveDocument doc;
+    doc.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    doc.name = clean;
+    doc.mime = coveDocMimeForPath(clean);
+    doc.updatedAtMs = QDateTime::currentMSecsSinceEpoch();
+    cove.documents << doc;
+
+    QString err;
+    if (!coveStoreForRepo(m_repoDetailIndex).saveAccountCove(cove, &err)) {
+        QMessageBox::warning(this, QStringLiteral("New cove file"),
+                             QStringLiteral("Could not save: ") + err);
+        return;
+    }
+    m_coveExplorerCurrentId = cove.id;
+    loadCoveExplorer();
+    openCoveExplorerDocument(clean);
+}
+
+void MainWindow::deleteCurrentCoveExplorerDocument()
+{
+    int coveIndex = -1;
+    for (int i = 0; i < m_coveExplorerCoves.size(); ++i) {
+        if (m_coveExplorerCoves.at(i).id == m_coveExplorerCurrentId) {
+            coveIndex = i;
+            break;
+        }
+    }
+    if (coveIndex < 0)
+        return;
+    Cove &cove = m_coveExplorerCoves[coveIndex];
+    QString path;
+    QWidget *w = m_coveExplorerTabs ? m_coveExplorerTabs->currentWidget() : nullptr;
+    if (w && w->property("coveId").toString() == cove.id)
+        path = w->property("coveDocPath").toString();
+    if (path.isEmpty() && m_coveExplorerTree && m_coveExplorerTree->currentItem()) {
+        QTreeWidgetItem *item = m_coveExplorerTree->currentItem();
+        if (!item->data(0, Qt::UserRole + 1).toBool())
+            path = item->data(0, Qt::UserRole).toString();
+    }
+    if (path.isEmpty())
+        return;
+
+    if (QMessageBox::question(this, QStringLiteral("Delete cove file"),
+                              QStringLiteral("Delete \"%1\" from this cove?")
+                                  .arg(path),
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+    for (int i = 0; i < cove.documents.size(); ++i) {
+        if (QDir::cleanPath(cove.documents.at(i).name) != path)
+            continue;
+        cove.documents.removeAt(i);
+        QString err;
+        if (!coveStoreForRepo(m_repoDetailIndex).saveAccountCove(cove, &err)) {
+            QMessageBox::warning(this, QStringLiteral("Delete cove file"),
+                                 QStringLiteral("Could not save: ") + err);
+            return;
+        }
+        loadCoveExplorer();
+        setRepoDetailNotice(QStringLiteral("Deleted %1 from cove.").arg(path));
+        return;
+    }
+}
+
 void MainWindow::toggleRepoFileMarkdownPreview()
 {
     QWidget *w = m_repoFileTabs ? m_repoFileTabs->currentWidget() : nullptr;
@@ -2463,6 +3179,8 @@ void MainWindow::showRepoOverview()
         m_filesModeOverviewButton->setChecked(true);
     if (m_filesModeExplorerButton)
         m_filesModeExplorerButton->setChecked(false);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(false);
     // "Code overview" always means the file list + README: if the commits
     // panel was left showing (via the commit strip's toggle), swap it back.
     showOverviewFiles();
@@ -2485,6 +3203,22 @@ void MainWindow::showRepoEditor()
         m_filesModeOverviewButton->setChecked(false);
     if (m_filesModeExplorerButton)
         m_filesModeExplorerButton->setChecked(true);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(false);
+}
+
+void MainWindow::showRepoCoveExplorer()
+{
+    if (!m_filesStack)
+        return;
+    loadCoveExplorer();
+    m_filesStack->setCurrentIndex(2);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(false);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(true);
 }
 
 // Show the commits panel in the Code overview, under the latest-commit bar,
@@ -2506,6 +3240,8 @@ void MainWindow::showOverviewCommits()
         m_filesModeOverviewButton->setChecked(true);
     if (m_filesModeExplorerButton)
         m_filesModeExplorerButton->setChecked(false);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(1);
     if (m_historyButton)
@@ -2538,6 +3274,8 @@ void MainWindow::showOverviewBranches()
         m_filesModeOverviewButton->setChecked(true);
     if (m_filesModeExplorerButton)
         m_filesModeExplorerButton->setChecked(false);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(2);
     // The commits toggle isn't lit when branches show.

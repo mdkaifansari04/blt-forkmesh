@@ -918,6 +918,7 @@ private:
     QWidget *buildRepoFilesPanel();
     QWidget *buildRepoOverviewPage();
     QWidget *buildRepoEditorPage();
+    QWidget *buildRepoCoveExplorerPage();
     QWidget *buildRepoCommitsTab();
     void showCommit(const QString &hash); // open the commit diff detail view
     // showCommit's synchronous tail: pure widget population once the async
@@ -1594,6 +1595,7 @@ private:
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
+    void showRepoCoveExplorer();
     // The commit history lives inside the Code overview (no top-bar tab): the
     // commit strip's "N Commits" button toggles the area under the latest-commit
     // bar between the file browser and the commits panel.
@@ -1601,6 +1603,16 @@ private:
     void showOverviewFiles();
     void showOverviewBranches();
     void loadRepoFileTree();
+    void loadCoveExplorer();
+    void refreshCoveExplorerTree();
+    void openCoveExplorerDocument(const QString &path);
+    void saveCurrentCoveExplorerDocument();
+    void createCoveExplorerCove();
+    void inviteUserToCurrentCove();
+    void createCoveExplorerDocument();
+    void deleteCurrentCoveExplorerDocument();
+    QString verifiedCoveAccountName() const;
+    bool coveInviteAccountVerified(const QString &accountName, QString *error);
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
     // branch and need a working tree we own; copy-path/reveal work on any local
@@ -3260,6 +3272,7 @@ private:
     // switches between the GitHub-style overview and the explorer/editor view.
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
     QPushButton *m_filesModeExplorerButton = nullptr; // -> explorer/editor
+    QPushButton *m_filesModeCoveExplorerButton = nullptr; // -> account cove explorer
     QLineEdit *m_fileSearch = nullptr;
     QCompleter *m_fileCompleter = nullptr;
     QLabel *m_securitySummary = nullptr;
@@ -3478,6 +3491,18 @@ private:
     QPushButton *m_repoFileHistoryButton = nullptr;
     QPushButton *m_repoFilePreviewButton = nullptr; // toggle markdown source/render
     QHash<QString, QWidget *> m_openFileTabs; // repo-relative path -> editor tab
+    QComboBox *m_coveExplorerSelector = nullptr;
+    QLabel *m_coveExplorerStatus = nullptr;
+    QTreeWidget *m_coveExplorerTree = nullptr;
+    QTabWidget *m_coveExplorerTabs = nullptr;
+    QPushButton *m_coveExplorerNewButton = nullptr;
+    QPushButton *m_coveExplorerInviteButton = nullptr;
+    QPushButton *m_coveExplorerNewFileButton = nullptr;
+    QPushButton *m_coveExplorerDeleteButton = nullptr;
+    QPushButton *m_coveExplorerSaveButton = nullptr;
+    QList<Cove> m_coveExplorerCoves;
+    QHash<QString, QWidget *> m_openCoveExplorerTabs; // coveId\x1fdocPath -> editor
+    QString m_coveExplorerCurrentId;
 
     // Discussions tab
     QTableWidget *m_discussionTable = nullptr;
