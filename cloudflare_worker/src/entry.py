@@ -179,6 +179,28 @@ from dashboard_bundle import (  # noqa: E402
     fragment_path,
 )
 
+# Release manifest + content-addressed blob helpers (tag/asset validation, the
+# CAS blob path layout, the canonical signable manifest body, semver ordering)
+# live in releases.py — another pure, js-free sibling module the runtime bundles
+# and the test suite imports directly. Only verify_release_manifest stays below,
+# since it reaches into this file's Ed25519/sha256 crypto.
+from releases import (  # noqa: E402
+    RELEASE_TAG_RE,
+    RELEASE_SEMVER_RE,
+    SHA256_HEX_RE,
+    valid_release_tag,
+    valid_asset_name,
+    valid_sha256_hex,
+    cas_blob_relpath,
+    release_asset_line,
+    release_manifest_content,
+    release_signing_message,
+    generate_shasums,
+    release_semver_key,
+    resolve_latest_release,
+    asset_upload_decision,
+)
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -569,94 +591,13 @@ async def verify_commit_comment_event(sha, c):
 #
 # Release METADATA is small, signed, and git-committed (synced across the mesh
 # like issues/PRs); release PAYLOADS (the binary bytes) live in a per-node
-# content-addressed blob store that is gitignored and NEVER committed. The
-# helpers below are the integrity spine shared by both sides: the canonical,
-# signable manifest (what the publisher signs and the worker verifies), the CAS
-# path layout, sha256sum-compatible checksum generation, semver `latest`
-# resolution, and the same-name re-upload decision. They are deliberately pure
-# (stdlib-only) so they can be pinned by tests and reused identically by the
-# client publisher without drifting from the server's verification.
+# content-addressed blob store that is gitignored and NEVER committed. The pure
+# integrity-spine helpers shared by both sides — the canonical signable manifest,
+# the CAS path layout, sha256sum-compatible checksum generation, semver `latest`
+# resolution, and the same-name re-upload decision — now live in releases.py
+# (imported above). Only the async signature check stays here, since it reaches
+# into this file's Ed25519/sha256 crypto.
 # ---------------------------------------------------------------------------
-
-# A release tag name: a single segment, no path traversal, no control bytes.
-RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
-# Lowercase hex sha256 — the content address of a blob and the integrity anchor.
-SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
-# Recognise vMAJOR.MINOR.PATCH[-prerelease] for `latest` ordering.
-RELEASE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$")
-
-
-def valid_release_tag(value):
-    value = (value or "").strip()
-    return (bool(value) and ".." not in value and
-            bool(RELEASE_TAG_RE.match(value)))
-
-
-def valid_asset_name(value):
-    # An asset's download filename. Must be one path segment with no traversal,
-    # separators, or control characters so it can never escape the release dir.
-    value = value or ""
-    if not (1 <= len(value) <= 255) or value in (".", ".."):
-        return False
-    if "/" in value or "\\" in value or "\x00" in value:
-        return False
-    return not any(ord(ch) < 0x20 for ch in value)
-
-
-def valid_sha256_hex(value):
-    return bool(SHA256_HEX_RE.match((value or "").strip().lower()))
-
-
-def cas_blob_relpath(sha256_hex):
-    # Where a blob's bytes live in the per-node content-addressed store, relative
-    # to .forkmesh/release-blobs/. Fan out by the first byte to keep directories
-    # shallow. Returns None for a non-sha256 input so callers reject it.
-    h = (sha256_hex or "").strip().lower()
-    if not SHA256_HEX_RE.match(h):
-        return None
-    return "sha256/%s/%s/data" % (h[:2], h)
-
-
-def release_asset_line(asset):
-    # One deterministic line per asset for the signable manifest. The fields are
-    # the asset's IMMUTABLE identity (name + the exact bytes it resolves to);
-    # mutable presentation (download_count) and release notes are intentionally
-    # absent so editing them never invalidates the signature.
-    return "\x00".join([
-        asset.get("name", "") or "",
-        (asset.get("blob_sha256", "") or "").lower(),
-        str(int(asset.get("size", 0) or 0)),
-        asset.get("content_type", "") or "",
-        asset.get("os", "") or "",
-        asset.get("arch", "") or "",
-        asset.get("label", "") or "",
-    ])
-
-
-def release_manifest_content(manifest):
-    # The canonical, signable body of a release. Binds the repo, the tag, the
-    # commit the tag pointed to at finalize (so a later force-push can't silently
-    # redefine the release), and the full asset set sorted by line for order
-    # independence. name/body/prerelease are NOT included: they are the editable
-    # metadata of an otherwise immutable release.
-    repo = manifest.get("repo", "") or ""
-    tag = manifest.get("tag", "") or ""
-    tag_commit = manifest.get("tag_commit", "") or ""
-    assets = manifest.get("assets") or []
-    asset_lines = sorted(release_asset_line(a) for a in assets)
-    header = "\x00".join([repo, tag, tag_commit, str(len(asset_lines))])
-    return "\n".join([header] + asset_lines)
-
-
-def release_signing_message(repo, tag, author, ts, content_hash):
-    # The exact bytes signed/verified for a release manifest, matching the
-    # "forkmesh-<thing>-v1\n…\n<sha256 of content>" form used by issue/PR events.
-    return (
-        "forkmesh-release-v1\n" + repo + "\n" + tag + "\n" + author + "\n" +
-        str(ts) + "\n" + content_hash
-    ).encode()
-
-
 async def verify_release_manifest(manifest):
     # Mirrors the client publisher: sign sha256(release_manifest_content) with the
     # creator's Ed25519 identity. One signature thus authenticates every asset's
@@ -674,66 +615,6 @@ async def verify_release_manifest(manifest):
     content_hash = await sha256_hex(release_manifest_content(manifest))
     canonical = release_signing_message(repo, tag, author, ts, content_hash)
     return await ed25519_verify(author, signature, canonical)
-
-
-def generate_shasums(assets):
-    # A `sha256sum -c`-compatible SHASUMS256.txt ("<hash>  <name>", two spaces =
-    # text mode), sorted by name. Derived from the asset content addresses, so it
-    # is covered by the manifest signature and can't be tampered independently.
-    lines = []
-    for asset in sorted(assets, key=lambda a: a.get("name", "") or ""):
-        digest = (asset.get("blob_sha256", "") or "").lower()
-        name = asset.get("name", "") or ""
-        if SHA256_HEX_RE.match(digest) and name:
-            lines.append("%s  %s" % (digest, name))
-    return "".join(line + "\n" for line in lines)
-
-
-def release_semver_key(tag):
-    # Orderable key for `latest` resolution. A final release sorts ABOVE any
-    # prerelease of the same x.y.z. Returns None for non-semver tags (skipped).
-    match = RELEASE_SEMVER_RE.match((tag or "").strip())
-    if not match:
-        return None
-    major, minor, patch = (
-        int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    pre = match.group(4)
-    pre_rank = (1,) if pre is None else (0, pre)
-    return (major, minor, patch, pre_rank)
-
-
-def resolve_latest_release(releases):
-    # The release the `…/releases/latest/<asset>` alias points to: the highest
-    # semver among published, non-draft, non-prerelease releases. Computed (never
-    # a committed pointer) so it can't drift from the actual release set.
-    best = None
-    best_key = None
-    for release in releases:
-        if release.get("draft"):
-            continue
-        if (release.get("state", "published") or "published") != "published":
-            continue
-        if release.get("prerelease"):
-            continue
-        key = release_semver_key(release.get("tag", ""))
-        if key is None:
-            continue
-        if best_key is None or key > best_key:
-            best_key, best = key, release
-    return best
-
-
-def asset_upload_decision(release_state, existing_asset, new_sha256):
-    # Resolve a same-name (re-)upload (issue #304 §7). On a draft, replacing an
-    # asset is allowed; on a published/yanked (immutable) release, only a
-    # byte-identical re-upload is a no-op — a different hash is a conflict.
-    new_sha = (new_sha256 or "").lower()
-    if existing_asset is None:
-        return "create"
-    existing_sha = (existing_asset.get("blob_sha256", "") or "").lower()
-    if release_state == "draft":
-        return "noop" if existing_sha == new_sha else "replace"
-    return "noop" if existing_sha == new_sha else "conflict"
 
 
 def pkt_line(payload):
@@ -2796,6 +2677,11 @@ SCHEMA_STATEMENTS = [
     # and payout state. bounty_bi = blind_index("<owner>/<repo>#<number>").
     """CREATE TABLE IF NOT EXISTS issue_bounty (
         bounty_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
+    # Inbuilt per-owner bounty wallet (issue #347): one row per owner. data is the
+    # encrypted custody deposit key the owner pre-funds; per-PR bounties in
+    # "wallet" mode are paid by debiting it. wallet_bi = blind_index("bounty-wallet:<owner>").
+    """CREATE TABLE IF NOT EXISTS bounty_wallet (
+        wallet_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
     # Server-side 5xx / error log surfaced on the admin dashboard.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
@@ -3937,7 +3823,8 @@ async def _move_bounties_namespace(env, old_owner, new_owner, repo,
             number = 0
         if number <= 0:
             continue
-        new_bi = await _bounty_bi(env, new_owner, repo, number)
+        new_bi = await _bounty_bi(env, new_owner, repo, number,
+                                  rec.get("kind", ""))
         old_bi = row.get("bounty_bi")
         if new_bi != old_bi:
             existing = await d1_first(
@@ -4441,6 +4328,66 @@ async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
         return ""
     tx = _shortvec(1) + sig + message
     return await _solana_send_transaction(env, tx)
+
+
+async def _solana_sign_transfers(env, from_addr, seed_b64url, transfers):
+    # Build and sign a transfer transaction WITHOUT broadcasting it, returning
+    # (signature_base58, tx_base64). The signature is fully determined by the
+    # (from, transfers, blockhash) tuple and computed locally, so it can be
+    # persisted BEFORE the transaction ever hits the network. That is the linchpin
+    # of an idempotent payout: a retry rebroadcasts these exact bytes (identical
+    # signature), which the cluster dedupes, rather than minting a second transfer.
+    transfers = [(to, int(lamports)) for to, lamports in transfers
+                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
+    if not transfers:
+        return "", ""
+    blockhash = await _solana_latest_blockhash(env)
+    if not blockhash:
+        return "", ""
+    message = _solana_transfer_message(from_addr, transfers, blockhash)
+    if not message:
+        return "", ""
+    sig = await _solana_sign_message(from_addr, seed_b64url, message)
+    if len(sig) != 64:
+        return "", ""
+    tx = _shortvec(1) + sig + message
+    return _base58_encode(sig), base64.b64encode(tx).decode()
+
+
+async def _solana_broadcast_raw(env, tx_b64):
+    # Broadcast an already-signed transaction (base64, from _solana_sign_transfers).
+    # Retry-safe: sending the same bytes twice yields the same signature, which the
+    # network dedupes, so this can never produce a second on-chain transfer.
+    if not tx_b64:
+        return ""
+    try:
+        tx = base64.b64decode(tx_b64)
+    except Exception:
+        return ""
+    return await _solana_send_transaction(env, tx)
+
+
+async def _solana_signature_landed(env, signature):
+    # True iff the cluster knows this signature AND it did not fail. Lets a payout
+    # that crashed mid-broadcast tell whether the recorded transfer already settled
+    # (must NOT re-pay) or never landed (safe to rebroadcast the same bytes).
+    if not signature:
+        return False
+    resp = await _solana_rpc(
+        env, "getSignatureStatuses",
+        [[signature], {"searchTransactionHistory": True}])
+    if not isinstance(resp, dict):
+        return False
+    try:
+        value = resp["result"]["value"][0]
+    except Exception:
+        return False
+    if not isinstance(value, dict):
+        return False
+    if value.get("err") is not None:
+        return False
+    return (value.get("confirmationStatus") in ("confirmed", "finalized") or
+            value.get("slot") is not None)
 
 
 # --- Per-node deposit keypair -----------------------------------------------
@@ -5857,8 +5804,37 @@ async def _usd_to_lamports(env, usd):
     return int(round((float(usd) / price) * LAMPORTS_PER_SOL))
 
 
-async def _bounty_bi(env, owner, repo, number):
-    return await blind_index(env, owner + "/" + repo + "#" + str(int(number)))
+async def _bounty_bi(env, owner, repo, number, kind=""):
+    # kind "" is an issue bounty (key "<owner>/<repo>#<number>", unchanged);
+    # kind "pr" is a per-pull-request bounty (key "…#pr-<number>"), so an issue
+    # and a pull request that happen to share a number never collide.
+    prefix = (kind + "-") if kind else ""
+    return await blind_index(
+        env, owner + "/" + repo + "#" + prefix + str(int(number)))
+
+
+async def _bounty_wallet_bi(env, owner):
+    # The owner's inbuilt bounty wallet — a single custody deposit key per owner,
+    # pre-funded by the owner and debited to auto-pay per-PR bounties.
+    return await blind_index(env, "bounty-wallet:" + owner)
+
+
+async def _load_bounty_wallet(env, wallet_bi):
+    row = await d1_first(
+        env, "SELECT data FROM bounty_wallet WHERE wallet_bi=?", wallet_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data", ""))
+
+
+async def _save_bounty_wallet(env, wallet_bi, rec):
+    enc = await encrypt_row(env, rec)
+    await d1_run(
+        env,
+        """INSERT INTO bounty_wallet (wallet_bi, data) VALUES (?,?)
+           ON CONFLICT(wallet_bi) DO UPDATE SET data=excluded.data""",
+        wallet_bi, enc,
+    )
 
 
 async def _load_bounty(env, bounty_bi):
@@ -5897,10 +5873,26 @@ def _bounty_public(rec):
     }
 
 
+async def _bounty_mark_paid(env, bounty_bi, rec):
+    # Terminal transition for a payout: flip the row to "paid", drop the retained
+    # raw transaction, and run the accounting/notification side effects exactly
+    # once. Only ever called after the transfer is known to have hit the chain.
+    rec["status"] = "paid"
+    rec["paid_at"] = int(Date.now())
+    rec.pop("payout_tx", None)
+    transfers = [(t.get("address", ""), int(t.get("lamports", 0)))
+                 for t in (rec.get("payout_transfers") or [])]
+    await _save_bounty(env, bounty_bi, rec)
+    await _record_bounty_payout(env, rec, transfers)
+    await notify_bounty_event(env, rec, "bounty_paid")
+    return rec
+
+
 async def _bounty_auto_payout(env, bounty_bi, rec):
     # Split a funded escrow to the resolved payee (the merged PR's author) and the
     # treasury, with no second manual step. Safe to call repeatedly: it no-ops
-    # unless the escrow has a balance, a payee, and hasn't already been paid.
+    # unless the escrow has a balance, a payee, and hasn't already been paid, and
+    # it never issues a second on-chain transfer for the same row.
     if not rec or rec.get("status") == "paid":
         return rec
     # Only ever auto-pay a payee the repo owner explicitly authorized (set via an
@@ -5918,11 +5910,31 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
     secret = rec.get("secret", "")
     if not SOLANA_RE.match(from_addr or "") or not secret:
         return rec
+
+    # Idempotent resume. A previous attempt may have signed + recorded a payout
+    # (status "paying") and then died around the broadcast. Before signing anything
+    # new we ask the chain what happened to that recorded signature: if it settled
+    # we finalize without paying again; if it never landed we rebroadcast the SAME
+    # bytes (which the cluster dedupes should it have landed in a race).
+    pending_sig = rec.get("payout_sig", "")
+    pending_tx = rec.get("payout_tx", "")
+    if pending_sig:
+        if await _solana_signature_landed(env, pending_sig):
+            return await _bounty_mark_paid(env, bounty_bi, rec)
+        if pending_tx and await _solana_broadcast_raw(env, pending_tx):
+            return await _bounty_mark_paid(env, bounty_bi, rec)
+        # Otherwise the recorded blockhash likely expired without the tx ever
+        # landing; fall through and sign a fresh transaction below.
+
     balance = await _solana_balance_lamports(env, from_addr)
     if balance is None:
         return rec
     transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
     if transferable <= 0:
+        # Nothing left to move. If we had a recorded signature the earlier transfer
+        # must have drained the escrow, so finalize instead of looping forever.
+        if pending_sig:
+            return await _bounty_mark_paid(env, bounty_bi, rec)
         return rec
     treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
     payee_lamports = transferable - treasury_lamports
@@ -5931,18 +5943,28 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
         transfers.append((payee, payee_lamports))
     if treasury_lamports > 0:
         transfers.append((treasury, treasury_lamports))
-    send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-    if not send_sig:
+
+    # Sign first, PERSIST the signature + raw bytes (status "paying"), THEN
+    # broadcast. If the worker dies between the save and a confirmed broadcast, the
+    # resume path above rebroadcasts these exact bytes — it can never sign a
+    # second, different transfer for this row, so a mid-payout RPC failure on
+    # retry cannot double-pay.
+    sig, tx_b64 = await _solana_sign_transfers(env, from_addr, secret, transfers)
+    if not sig or not tx_b64:
         return rec
-    rec["status"] = "paid"
-    rec["payout_sig"] = send_sig
-    rec["paid_at"] = int(Date.now())
+    rec["status"] = "paying"
+    rec["payout_sig"] = sig
+    rec["payout_tx"] = tx_b64
     rec["payout_transfers"] = [
         {"address": a, "lamports": l} for a, l in transfers]
     await _save_bounty(env, bounty_bi, rec)
-    await _record_bounty_payout(env, rec, transfers)
-    await notify_bounty_event(env, rec, "bounty_paid")
-    return rec
+
+    send_sig = await _solana_broadcast_raw(env, tx_b64)
+    if not send_sig:
+        # Broadcast failed outright. Leave the row "paying" so the next tick
+        # resumes it (rechecks the signature, rebroadcasts the same bytes).
+        return rec
+    return await _bounty_mark_paid(env, bounty_bi, rec)
 
 
 async def sweep_funded_bounties(env):
@@ -5977,17 +5999,61 @@ async def bounties_handler(env, request, owner, repo):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     action = (data.get("action") or "create").strip()
+
+    if action == "wallet":
+        # Mint (once) and report the owner's inbuilt bounty wallet: a custody
+        # deposit address the owner pre-funds and that per-PR bounties in "wallet"
+        # mode debit. Owner-signed so only the owner can learn/fund their wallet.
+        try:
+            ts = int(data.get("ts", 0))
+        except (TypeError, ValueError):
+            ts = 0
+        if not _ts_ok(ts):
+            return json_response({"error": "stale_request"}, status=401)
+        owner_pub = await _owner_pubkey(env, owner)
+        if not owner_pub:
+            return json_response({"error": "no_owner_key"}, status=403)
+        canonical = ("forkmesh-bounty-wallet-v1\n" + owner + "\n" +
+                     str(ts)).encode()
+        if not await ed25519_verify(owner_pub, data.get("sig", ""), canonical):
+            return json_response({"error": "bad_signature"}, status=401)
+        wallet_bi = await _bounty_wallet_bi(env, owner)
+        wrec = await _load_bounty_wallet(env, wallet_bi)
+        if not wrec or not wrec.get("address"):
+            addr, secret = await _new_solana_keypair()
+            if not addr:
+                return json_response({"error": "keypair_failed"}, status=500)
+            wrec = {"owner": owner, "address": addr, "secret": secret,
+                    "created_at": int(Date.now())}
+            await _save_bounty_wallet(env, wallet_bi, wrec)
+        balance = await _solana_balance_lamports(env, wrec["address"])
+        balance = int(balance) if balance is not None else 0
+        return json_response({
+            "address": wrec["address"],
+            "balanceLamports": balance,
+            "balanceSol": _amount_sol(balance),
+            "uri": _solana_pay_uri(wrec["address"], 0,
+                                   message="ForkMesh bounty wallet"),
+        })
+
     try:
         number = int(data.get("number", 0))
     except (TypeError, ValueError):
         number = 0
     if number <= 0:
         return json_response({"error": "number_required"}, status=400)
-    bounty_bi = await _bounty_bi(env, owner, repo, number)
+    # kind "" is an issue bounty; "pr" is a per-pull-request bounty (issue #347),
+    # keyed separately so an issue and a PR sharing a number never collide.
+    kind = clean_string(data.get("kind", ""), 8)
+    if kind not in ("", "pr"):
+        kind = ""
+    bounty_bi = await _bounty_bi(env, owner, repo, number, kind)
     rec = await _load_bounty(env, bounty_bi)
 
     if action == "create":
-        if rec and rec.get("status") == "paid":
+        # "paying" means a payout is mid-flight; treat it like "paid" so a re-create
+        # can't repoint the escrow or reset its amount out from under the transfer.
+        if rec and rec.get("status") in ("paid", "paying"):
             return json_response({"error": "already_paid"}, status=409)
         treasury = _treasury_address(env)
         if not treasury:
@@ -6035,9 +6101,58 @@ async def bounties_handler(env, request, owner, repo):
             cand = (author_rec or {}).get("solana", "")
             if cand and SOLANA_RE.match(cand):
                 payee = cand
+
+        # Wallet mode (issue #347): instead of minting an escrow for the owner to
+        # fund by hand, debit the owner's pre-funded inbuilt bounty wallet and pay
+        # the split directly — the bounty is settled in one step.
+        if data.get("fromWallet"):
+            if not payee:
+                return json_response({"error": "payee_unresolved"}, status=400)
+            wallet_bi = await _bounty_wallet_bi(env, owner)
+            wrec = await _load_bounty_wallet(env, wallet_bi)
+            if not wrec or not wrec.get("address") or not wrec.get("secret"):
+                return json_response({"error": "no_wallet"}, status=409)
+            balance = await _solana_balance_lamports(env, wrec["address"])
+            balance = int(balance) if balance is not None else 0
+            needed = required + SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+            if balance < needed:
+                return json_response(
+                    {"error": "insufficient_wallet_balance",
+                     "balanceLamports": balance,
+                     "requiredLamports": required}, status=402)
+            treasury_lamports = required * BOUNTY_TREASURY_BPS // 10000
+            payee_lamports = required - treasury_lamports
+            transfers = []
+            if payee_lamports > 0:
+                transfers.append((payee, payee_lamports))
+            if treasury_lamports > 0:
+                transfers.append((treasury, treasury_lamports))
+            send_sig = await _solana_send_transfers(
+                env, wrec["address"], wrec["secret"], transfers)
+            if not send_sig:
+                return json_response({"error": "wallet_transfer_failed"},
+                                     status=502)
+            rec = {
+                "owner": owner, "repo": repo, "number": number, "kind": kind,
+                "address": "", "secret": "",
+                "amount_usd": amount_usd, "required_lamports": required,
+                "received_lamports": required, "confirmed": True,
+                "status": "paid", "created_at": int(Date.now()),
+                "payee": payee, "payee_authorized": True,
+                "payout_sig": send_sig, "paid_at": int(Date.now()),
+                "paid_from_wallet": True,
+                "payout_transfers": [
+                    {"address": a, "lamports": l} for a, l in transfers],
+            }
+            await _save_bounty(env, bounty_bi, rec)
+            await _record_bounty_payout(env, rec, transfers)
+            await notify_bounty_event(env, rec, "bounty_paid")
+            return json_response(_bounty_public(rec))
+
         # Reuse an existing unpaid address (top-ups raise the target) so a repeat
         # call doesn't strand funds at a stale address.
-        if rec and rec.get("address") and rec.get("status") != "paid":
+        if (rec and rec.get("address") and
+                rec.get("status") not in ("paid", "paying")):
             rec["amount_usd"] = amount_usd
             rec["required_lamports"] = required
             if payee:
@@ -6048,7 +6163,7 @@ async def bounties_handler(env, request, owner, repo):
             if not addr:
                 return json_response({"error": "keypair_failed"}, status=500)
             rec = {
-                "owner": owner, "repo": repo, "number": number,
+                "owner": owner, "repo": repo, "number": number, "kind": kind,
                 "address": addr, "secret": secret,
                 "amount_usd": amount_usd, "required_lamports": required,
                 "received_lamports": 0, "confirmed": False, "status": "open",
@@ -6062,7 +6177,11 @@ async def bounties_handler(env, request, owner, repo):
         return json_response({"error": "no_bounty"}, status=404)
 
     if action == "status":
-        if rec.get("status") != "paid" and rec.get("address"):
+        # A "paying" row has a payout mid-flight; resume it (finalize if it settled,
+        # rebroadcast the recorded bytes otherwise) rather than re-polling balance.
+        if rec.get("status") == "paying":
+            rec = await _bounty_auto_payout(env, bounty_bi, rec)
+        elif rec.get("status") != "paid" and rec.get("address"):
             previous_status = rec.get("status", "open")
             balance = await _solana_balance_lamports(env, rec["address"])
             if balance is not None:
@@ -6110,32 +6229,15 @@ async def bounties_handler(env, request, owner, repo):
         secret = rec.get("secret", "")
         if not SOLANA_RE.match(from_addr or "") or not secret:
             return json_response({"error": "bounty_unfunded"}, status=409)
-        balance = await _solana_balance_lamports(env, from_addr)
-        if balance is None:
-            return json_response({"error": "balance_unavailable"}, status=503)
-        transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-        if transferable <= 0:
-            return json_response({"error": "bounty_unfunded"}, status=409)
-        treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
-        payee_lamports = transferable - treasury_lamports
-        transfers = []
-        if payee_lamports > 0:
-            transfers.append((payee, payee_lamports))
-        if treasury_lamports > 0:
-            transfers.append((treasury, treasury_lamports))
-        send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-        if not send_sig:
-            return json_response({"error": "send_transaction_failed"}, status=502)
-        rec["status"] = "paid"
+        # Authorize the signed payee, then run the SAME idempotent split the
+        # on-merge path uses (sign → record → broadcast, resume-safe). Keeping one
+        # payout implementation is what guarantees a retry here can't double-pay.
         rec["payee"] = payee
         rec["payee_authorized"] = True
-        rec["payout_sig"] = send_sig
-        rec["paid_at"] = int(Date.now())
-        rec["payout_transfers"] = [
-            {"address": a, "lamports": l} for a, l in transfers]
         await _save_bounty(env, bounty_bi, rec)
-        await _record_bounty_payout(env, rec, transfers)
-        await notify_bounty_event(env, rec, "bounty_paid")
+        rec = await _bounty_auto_payout(env, bounty_bi, rec)
+        if rec.get("status") != "paid":
+            return json_response({"error": "send_transaction_failed"}, status=502)
         return json_response(_bounty_public(rec))
 
     return json_response({"error": "bad_action"}, status=400)
@@ -7897,6 +7999,7 @@ async def issues_handler(env, request, owner, repo):
             # owner, or an admin acting on the owner's behalf (adhoc #225).
             wants_agent = False
             agent_model = ""
+            agent_provider = ""
             if meta_in.get("wantsAgent"):
                 ok, err = await _authorize_owner_account(env, owner, data)
                 if not ok:
@@ -7907,6 +8010,11 @@ async def issues_handler(env, request, owner, repo):
                 # issue; empty leaves the provider's own default. Only meaningful
                 # alongside wantsAgent, so it's not parsed otherwise.
                 agent_model = clean_string(meta_in.get("model", ""), 60)
+                # Optional agent-provider choice from the web dropdown (adhoc #234);
+                # only a known provider is honored, else the node picks its default.
+                provider_in = clean_string(meta_in.get("provider", ""), 40)
+                if provider_in in ("claude-code", "claude-api", "openai"):
+                    agent_provider = provider_in
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
@@ -7916,6 +8024,7 @@ async def issues_handler(env, request, owner, repo):
                 if isinstance(assignees, list) else [],
                 "wantsAgent": wants_agent,
                 "model": agent_model,
+                "provider": agent_provider,
             }
         item = {
             "number": number,

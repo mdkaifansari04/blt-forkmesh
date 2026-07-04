@@ -939,6 +939,16 @@
     { value: "fable", label: "Fable" },
   ];
 
+  // Agent-provider dropdown (adhoc #234): mirrors the desktop app's provider
+  // picker so the owner can choose which agent the node auto-starts. Empty
+  // value leaves the node's default provider in place.
+  const AGENT_PROVIDER_OPTIONS = [
+    { value: "", label: "Node default" },
+    { value: "claude-code", label: "Claude Code" },
+    { value: "claude-api", label: "Claude API" },
+    { value: "openai", label: "OpenAI API" },
+  ];
+
   function repoAgentsCanPrompt(status) {
     return !AGENT_TERMINAL_STATUSES.has(String(status || "").toLowerCase());
   }

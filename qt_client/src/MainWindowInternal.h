@@ -2030,10 +2030,19 @@ const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
 const QString kAvatarSetting = QStringLiteral("profile/avatarPng");
 const QString kServerUrlSetting = QStringLiteral("server/url");
+// The mainnode is ForkMesh's canonical coordination point: a well-known
+// owner/repo/room triple that every node's shared rooms and inbox routes
+// converge on. The *host* is fully configurable (the first-run Relay server
+// field; self-hosting one is a first-class target — see docs/protocol.md), but
+// this path shape is a network-wide protocol constant, so it lives in one place
+// instead of being spelled out at each call site.
+const QString kMainnodeDefaultHost = QStringLiteral("forkmesh.com");
+const QString kMainnodeRoomPath =
+    QStringLiteral("/api/repo/mainnode/forkmesh/rooms/general/ws");
 const QString kLocalServerUrl =
-    QStringLiteral("ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws");
+    QStringLiteral("ws://127.0.0.1:8787") + kMainnodeRoomPath;
 const QString kDefaultServerUrl =
-    QStringLiteral("wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws");
+    QStringLiteral("wss://") + kMainnodeDefaultHost + kMainnodeRoomPath;
 const QString kRoomNameSetting = QStringLiteral("server/room");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
@@ -2127,6 +2136,16 @@ inline bool notifyEnabled(const QString &key)
 {
     return QSettings().value(key, false).toBool();
 }
+// Per-PR bounty (issue #347): when enabled, every merged pull request rewards
+// its author with a fixed bounty. The amount is USD-priced (reusing the same
+// SOL pricing pipeline as issue bounties). Mode selects how it's funded:
+// "perPr" shows a funding QR at each merge; "wallet" auto-pays by debiting the
+// owner's pre-funded inbuilt bounty wallet (worker action "wallet").
+const QString kAutoPrBountyEnabledSetting =
+    QStringLiteral("bounty/autoPrEnabled");
+const QString kAutoPrBountyAmountSetting =
+    QStringLiteral("bounty/autoPrAmountUsd");
+const QString kAutoPrBountyModeSetting = QStringLiteral("bounty/autoPrMode");
 const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
 // Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
 // older boolean above (migrated on first read).
@@ -5482,8 +5501,9 @@ inline QString canonicalServerUrl(const QString &input)
         s = s.left(slash); // strip any accidental path, keep host[:port]
     const bool local = s.startsWith(QStringLiteral("127.0.0.1")) ||
                        s.startsWith(QStringLiteral("localhost"));
-    return QStringLiteral("%1://%2/api/repo/mainnode/forkmesh/rooms/general/ws")
-        .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s);
+    return QStringLiteral("%1://%2")
+               .arg(local ? QStringLiteral("ws") : QStringLiteral("wss"), s) +
+           kMainnodeRoomPath;
 }
 
 inline QString normalizedRepoWebsite(QString input, QString *error = nullptr)
