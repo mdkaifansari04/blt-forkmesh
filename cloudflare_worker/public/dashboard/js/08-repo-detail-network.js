@@ -5,9 +5,7 @@
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
     state.repoServedBy = null;
-    // The cached owner password is only good for this repo's page session —
-    // navigating to a (possibly different) repo re-prompts.
-    state.agentsView = { password: "", agents: [] };
+    state.agentsView = { agents: [] };
     stopRepoAgentsAutoRefresh();
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
