@@ -7,7 +7,7 @@ labels: [security, infra]
 milestone: Phase 2
 priority: 50
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818266
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
