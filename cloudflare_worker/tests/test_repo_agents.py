@@ -29,6 +29,7 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
+    "agents_transcript_handler",
     "_clean_agent_session", "_authorize_owner",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
@@ -117,6 +118,10 @@ def _harness(accounts):
         if "FROM login_attempts" in sql:
             row = login_attempts.get(args[0])
             return dict(row) if row else None
+        if "FROM repo_agents WHERE repo_bi=? AND agent_id=?" in sql:
+            repo_bi, agent_id = args
+            row = repo_agents.get((repo_bi, agent_id))
+            return {"data": row["data"]} if row else None
         if "SELECT COUNT(*) AS c FROM agent_prompts" in sql:
             repo_bi = args[0]
             c = sum(1 for r in agent_prompts if r["repo_bi"] == repo_bi)
@@ -198,6 +203,7 @@ def _harness(accounts):
         "MAX_AGENT_TITLE": 240,
         "MAX_AGENT_PROMPT_TEXT": 8000,
         "MAX_PENDING_AGENT_PROMPTS": 50,
+        "MAX_AGENT_TRANSCRIPT": 16000,
     })
     ns["_now"] = now
     return ns
@@ -444,6 +450,65 @@ def test_prompt_validates_text_and_queue_cap():
         "alice", "proj", "42",
     ))
     assert full == {"status": 429, "data": {"error": "prompt_queue_full"}}
+
+
+def test_transcript_pushed_stripped_from_list_but_served_by_detail_endpoint():
+    # adhoc #259: the desktop pushes a bounded run-log tail per session for the
+    # website's agent detail page. It must NOT bloat the list payload, but the
+    # per-agent transcript endpoint returns it in full for the owner.
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+
+    asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {
+            "sessions": [_session(transcript="line one\nline two\n")],
+        }),
+        "alice", "proj",
+    ))
+
+    listed = asyncio.run(ns["agents_list_handler"](
+        env, _Request("POST", body={"ownerAccount": "alice"}),
+        "alice", "proj",
+    ))
+    assert listed["status"] == 200
+    assert "transcript" not in listed["data"]["agents"][0]
+
+    transcript = asyncio.run(ns["agents_transcript_handler"](
+        env, _Request("POST", body={"ownerAccount": "alice"}),
+        "alice", "proj", "42",
+    ))
+    assert transcript["status"] == 200
+    assert transcript["data"]["transcript"] == "line one\nline two"
+    assert transcript["data"]["status"] == "running"
+
+
+def test_transcript_non_owner_403_and_missing_agent_404():
+    accounts = {
+        "alice": _owner_account(),
+        "mallory": {"pubkey": "PK-mallory", "status": "active",
+                    "pass_hash": "h", "pass_salt": "s", "is_admin": False},
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {"sessions": [_session(transcript="secret")]}),
+        "alice", "proj",
+    ))
+
+    forbidden = asyncio.run(ns["agents_transcript_handler"](
+        env, _Request("POST", body={"ownerAccount": "mallory"}),
+        "alice", "proj", "42",
+    ))
+    assert forbidden == {"status": 403, "data": {"error": "not_authorized"}}
+    assert "secret" not in str(forbidden["data"])
+
+    missing = asyncio.run(ns["agents_transcript_handler"](
+        env, _Request("POST", body={"ownerAccount": "alice"}),
+        "alice", "proj", "999",
+    ))
+    assert missing == {"status": 404, "data": {"error": "not_found"}}
 
 
 def test_worker_wires_up_all_three_agent_routes():
