@@ -5,9 +5,9 @@ title: Update qt app design
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 65
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783051676
 author: HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE
 authorName: jett
