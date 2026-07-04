@@ -580,23 +580,27 @@ void MainWindow::refreshChatMembers()
         delete item;
     }
 
-    // Show online nodes first, then ourselves if offline; sort by name so the
-    // column doesn't reshuffle on every roster tick.
-    QList<MemberInfo> members = m_homeRoster;
+    // This column is titled "ONLINE": only list nodes that are actually online
+    // right now (m_homeRoster also carries stale/offline entries so the Node
+    // dropdown keeps them selectable — see setRoster), never a "last seen
+    // recently" ghost. ServerNode::flushRosterAndStatus already drops peers
+    // that haven't sent a frame in kPeerStaleMs (3 minutes, comfortably inside
+    // the 5-minute freshness window this panel promises), so member.online
+    // here is never more than a few minutes stale.
+    QList<MemberInfo> members;
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        const bool online = member.self ? (m_backend != nullptr) : member.online;
+        if (online)
+            members.append(member);
+    }
     std::sort(members.begin(), members.end(),
               [](const MemberInfo &a, const MemberInfo &b) {
-                  const bool aOnline = a.self ? true : a.online;
-                  const bool bOnline = b.self ? true : b.online;
-                  if (aOnline != bOnline)
-                      return aOnline; // online before offline
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
 
     int onlineCount = 0;
     for (const MemberInfo &member : std::as_const(members)) {
-        const bool online = member.self ? (m_backend != nullptr) : member.online;
-        if (online)
-            ++onlineCount;
+        ++onlineCount;
 
         auto *card = new QWidget;
         auto *row = new QHBoxLayout(card);
@@ -612,16 +616,14 @@ void MainWindow::refreshChatMembers()
         icon->setFixedSize(28, 28);
         row->addWidget(icon, 0);
 
-        // Name prefixed with a status dot (green online, grey offline).
+        // Name prefixed with a green status dot; every card here is online.
         auto *nameLabel = new QLabel(
-            QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2%3")
-                .arg(online ? "#3fb950" : "#8b949e",
-                     member.name.toHtmlEscaped(),
+            QString::fromUtf8("<span style='color:#3fb950'>\xE2\x97\x8F</span> %1%2")
+                .arg(member.name.toHtmlEscaped(),
                      member.self ? " <span style='color:#8b949e'>(you)</span>"
                                  : QString()));
         nameLabel->setTextFormat(Qt::RichText);
-        nameLabel->setToolTip(online ? QStringLiteral("Online")
-                                     : QStringLiteral("Offline"));
+        nameLabel->setToolTip(QStringLiteral("Online"));
         row->addWidget(nameLabel, 1);
 
         m_chatMembersLayout->insertWidget(m_chatMembersLayout->count() - 1, card);
