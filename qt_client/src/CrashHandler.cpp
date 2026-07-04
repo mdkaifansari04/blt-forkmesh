@@ -1,6 +1,8 @@
 #include "CrashHandler.h"
 
 #include <QByteArray>
+#include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -208,6 +210,31 @@ void installCrashHandler(const QString &crashLogPath)
     std::set_terminate(terminateHandler);
 #else
     Q_UNUSED(crashLogPath);
+#endif
+}
+
+void logCaughtFault(const QString &context, const QString &what)
+{
+    const QString block =
+        QStringLiteral("\n===== ForkMesh caught fault =====\n")
+        + QStringLiteral("when (epoch): ")
+        + QString::number(QDateTime::currentSecsSinceEpoch()) + QLatin1Char('\n')
+        + QStringLiteral("context: ") + context + QLatin1Char('\n')
+        + QStringLiteral("what: ") + what + QLatin1Char('\n')
+        + QStringLiteral("=================================\n");
+
+    // Main application log (stderr). qCritical keeps it visible at default log
+    // levels and alongside the startup timing / node log.
+    qCritical().noquote() << block;
+
+#ifdef FORKMESH_CRASH_HANDLER
+    // Mirror into the durable crash log, when one was opened, so a caught fault
+    // is captured for the next-startup telemetry upload just like a real crash.
+    if (g_crashFd >= 0) {
+        const QByteArray utf8 = block.toUtf8();
+        ssize_t r = ::write(g_crashFd, utf8.constData(), size_t(utf8.size()));
+        (void)r;
+    }
 #endif
 }
 
