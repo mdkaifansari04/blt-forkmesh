@@ -5,7 +5,7 @@ title: when you click on an image in the agent prompt section show a preview of 
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 63
 progress: 0
 assignees: []
 createdAt: 1782920107708
