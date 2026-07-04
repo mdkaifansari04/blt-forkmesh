@@ -2597,7 +2597,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        dismissTopMessage();
+        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
     // A plain "x" to dismiss an error toast without copying it.
     m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
@@ -2606,7 +2606,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { dismissTopMessage(); });
+            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
