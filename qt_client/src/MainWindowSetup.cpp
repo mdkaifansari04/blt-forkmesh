@@ -1921,6 +1921,12 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     applyAccountEmailVerified(accountName, fresp.value("emailVerified").toBool());
     logSystem("Account: registered headless node \"" + accountName +
               "\" (free, key-bound); its mirrors will now publish and host.");
+    // Echo the owner the link code attached this node to (adhoc #258) so an SSH
+    // installer streaming this log can confirm the attachment landed under the
+    // right account rather than the node registering as an orphan.
+    if (!m_nodeOwnerUser.isEmpty())
+        logSystem("Account: node \"" + accountName + "\" attached to owner \"" +
+                  m_nodeOwnerUser + "\".");
     return true;
 }
 
