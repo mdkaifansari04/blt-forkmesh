@@ -10083,6 +10083,10 @@ class Default(WorkerEntrypoint):
                     # survives as a legacy pin: a URL that carries it skips the
                     # rotation (old redirected links keep working).
                     public_browse = True
+                    # A mirror that failed the first browse hop, so the failure
+                    # handler below skips it on retry instead of re-picking the
+                    # same flapping node and returning its error.
+                    failed_mirror = None
                     params = parse_qs(url.query)
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
@@ -10108,6 +10112,7 @@ class Default(WorkerEntrypoint):
                             if forwarded is not None and \
                                     fstatus not in (0, 502, 503, 504):
                                 return forwarded
+                            failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(request)
@@ -10128,7 +10133,7 @@ class Default(WorkerEntrypoint):
                     status = 0
                 if status in (502, 503, 504):
                     fallback = await self._select_browse_mirror(
-                        owner, repo, exclude=owner)
+                        owner, repo, exclude=[owner, failed_mirror])
                     if fallback and fallback.lower() != owner.lower():
                         try:
                             return await self._forward_to_node(
@@ -10216,7 +10221,10 @@ class Default(WorkerEntrypoint):
         # used on retry after that node's host DO failed to serve, since its
         # presence row may not have aged out yet. Best-effort: any failure
         # returns None so the request just falls through to the normal
-        # named-owner route.
+        # named-owner route. `exclude` may be a single node name or an iterable
+        # of names — every one is dropped, so a retry can skip BOTH the named
+        # source and a mirror that already failed this request instead of
+        # re-picking the flapping node and surfacing its error.
         try:
             await ensure_schema(self.env)
             now = int(Date.now())
@@ -10247,8 +10255,10 @@ class Default(WorkerEntrypoint):
             candidates = browse_mirror_candidates(
                 owner, repo, catalog_rows, presence, now, HOST_PRESENCE_STALE_MS)
             if exclude:
+                names = [exclude] if isinstance(exclude, str) else list(exclude)
+                excluded = {n.lower() for n in names if n}
                 candidates = [
-                    c for c in candidates if c.lower() != exclude.lower()]
+                    c for c in candidates if c.lower() not in excluded]
             if not candidates:
                 return None
             if len(candidates) == 1:
