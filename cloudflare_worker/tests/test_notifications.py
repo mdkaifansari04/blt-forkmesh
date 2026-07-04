@@ -128,7 +128,8 @@ def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
 def test_worker_exposes_signed_thread_subscription_route_and_schema():
     # Subscriptions (issue #361): a signed subscribe/unsubscribe endpoint plus the
     # table that backs it.
-    assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in ENTRY_TEXT
+    urls_text = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
+    assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in urls_text
     assert "async def subscribe_handler" in ENTRY_TEXT
     assert "REPO_SUBSCRIBE_RE.match(url.path)" in ENTRY_TEXT
     assert "await subscribe_handler(self.env, request, owner, repo)" in ENTRY_TEXT

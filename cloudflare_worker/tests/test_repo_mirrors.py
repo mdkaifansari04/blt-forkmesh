@@ -435,10 +435,13 @@ def test_repo_mirrors_handler_returns_404_for_private_or_unpublished_target():
 
 
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+URLS_TEXT = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
 
 
 def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
-    assert "REPO_MIRRORS_RE = re.compile" in ENTRY_TEXT
+    # The route pattern lives in urls.py now; entry.py imports and dispatches it.
+    assert "REPO_MIRRORS_RE = re.compile" in URLS_TEXT
+    assert "REPO_MIRRORS_RE" in ENTRY_TEXT
     assert "repo_mirrors_handler" in ENTRY_TEXT
     assert "build_repo_mirrors_payload(" in ENTRY_TEXT
     assert "host_presence" in ENTRY_TEXT
