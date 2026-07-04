@@ -7,13 +7,13 @@ labels: [infra]
 milestone: v1
 priority: 30
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818262
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-363
 ts: 1783116818262
