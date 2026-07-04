@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 329
 title: Fix the layout of the web so that it looks better on mobile and everything is accessible
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 61
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1782960503
 author: wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4
 authorName: jett
