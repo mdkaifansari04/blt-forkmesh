@@ -450,6 +450,9 @@ protected:
     // intercepts right-click context menus app-wide to offer "Send to
     // Prompt" on any selected text (adhoc #126).
     bool eventFilter(QObject *obj, QEvent *event) override;
+    Qt::Edges resizeEdgesAtGlobalPos(const QPoint &globalPos) const;
+    bool handleFramelessResizeEvent(QObject *obj, QEvent *event);
+    void updateFramelessResizeCursor(Qt::Edges edges);
     // Right-click on selected text anywhere (transcript, diff, README, logs):
     // shows the widget's normal context menu plus a "Send to Prompt" action.
     // Returns true (event consumed) only when it took over the menu.
@@ -472,6 +475,7 @@ private:
     void runDeferredStartup();
     bool m_deferredStartupStarted = false; // showEvent armed the triggers
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    bool m_framelessResizeCursorActive = false;
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
     bool m_headless = false;               // no-GUI node (offscreen); see setHeadlessMode
@@ -828,6 +832,22 @@ private:
     QWidget *buildLeaderboardsSection();
     void refreshLeaderboards();
     void populateLeaderboards(const QJsonObject &data);
+    // Network repository catalog: all repos known by the active relay, with local
+    // fork/mirror actions and the relay's mirror-node list per repo.
+    QWidget *buildNetworkReposSection();
+    void refreshNetworkReposPage();
+    void renderNetworkRepos(const QJsonArray &repos);
+    void fetchNetworkRepoMirrors(const QString &owner, const QString &name,
+                                 int row, int generation);
+    int findNetworkRepoIndex(const QString &owner, const QString &name,
+                             bool includePreview = true) const;
+    int findNetworkLocalForkIndex(const QString &owner, const QString &name) const;
+    void openNetworkRepo(const QString &owner, const QString &name,
+                         const QString &cloneUrl, bool isPrivate);
+    void forkNetworkRepo(const QString &owner, const QString &name,
+                         const QString &cloneUrl, bool isPrivate);
+    void mirrorNetworkRepo(const QString &owner, const QString &name,
+                           const QString &cloneUrl, bool isPrivate);
 
     // Hosts (adhoc #263): SSH into a remote machine and run the ForkMesh
     // installer over a plain shell (sshpass + ssh), streaming the live session
@@ -2749,6 +2769,7 @@ private:
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
+    QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
@@ -2761,6 +2782,10 @@ private:
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
+    QTableWidget *m_networkReposTable = nullptr;
+    QLabel *m_networkReposStatus = nullptr;
+    QPushButton *m_networkReposRefreshButton = nullptr;
+    int m_networkReposLoadGen = 0;
     // Hosts section widgets (adhoc #263): one-host install form + live log.
     QLineEdit *m_hostIpEdit = nullptr;
     QLineEdit *m_hostUserEdit = nullptr;

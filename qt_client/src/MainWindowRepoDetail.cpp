@@ -3623,7 +3623,9 @@ QWidget *MainWindow::createGlobalSearchBox()
     m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
     m_globalSearch->setMinimumWidth(220);
     m_globalSearch->setMaximumWidth(440);
-    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
+    m_globalSearch->setFixedHeight(30);
+    m_globalSearch->setTextMargins(2, 0, 0, 0);
+    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 13),
                               QLineEdit::LeadingPosition);
     m_globalSearch->setToolTip(QString::fromUtf8(
         "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "

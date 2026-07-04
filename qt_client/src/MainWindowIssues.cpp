@@ -4391,6 +4391,9 @@ void MainWindow::queueIssueAttachment(const QString &path)
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    if (handleFramelessResizeEvent(obj, event))
+        return true;
+
     // A Claude model combo's popup list view was shown: re-fetch the live model
     // list so the dropdown always reflects the provider's current line-up.
     if (event->type() == QEvent::Show) {
@@ -4556,6 +4559,118 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         }
     }
     return QMainWindow::eventFilter(obj, event);
+}
+
+Qt::Edges MainWindow::resizeEdgesAtGlobalPos(const QPoint &globalPos) const
+{
+    if (!isVisible() || isMaximized() || isFullScreen())
+        return {};
+
+    const QPoint pos = mapFromGlobal(globalPos);
+    const QRect r = rect();
+    if (!r.adjusted(-1, -1, 1, 1).contains(pos))
+        return {};
+
+    constexpr int kResizeBorder = 8;
+    Qt::Edges edges;
+    if (pos.x() <= r.left() + kResizeBorder)
+        edges |= Qt::LeftEdge;
+    if (pos.x() >= r.right() - kResizeBorder)
+        edges |= Qt::RightEdge;
+    if (pos.y() <= r.top() + kResizeBorder)
+        edges |= Qt::TopEdge;
+    if (pos.y() >= r.bottom() - kResizeBorder)
+        edges |= Qt::BottomEdge;
+    return edges;
+}
+
+void MainWindow::updateFramelessResizeCursor(Qt::Edges edges)
+{
+    if (edges == (Qt::LeftEdge | Qt::TopEdge) ||
+        edges == (Qt::RightEdge | Qt::BottomEdge)) {
+        if (m_framelessResizeCursorActive)
+            qApp->changeOverrideCursor(Qt::SizeFDiagCursor);
+        else
+            qApp->setOverrideCursor(Qt::SizeFDiagCursor);
+        m_framelessResizeCursorActive = true;
+        return;
+    }
+    if (edges == (Qt::RightEdge | Qt::TopEdge) ||
+        edges == (Qt::LeftEdge | Qt::BottomEdge)) {
+        if (m_framelessResizeCursorActive)
+            qApp->changeOverrideCursor(Qt::SizeBDiagCursor);
+        else
+            qApp->setOverrideCursor(Qt::SizeBDiagCursor);
+        m_framelessResizeCursorActive = true;
+        return;
+    }
+    if (edges & (Qt::LeftEdge | Qt::RightEdge)) {
+        if (m_framelessResizeCursorActive)
+            qApp->changeOverrideCursor(Qt::SizeHorCursor);
+        else
+            qApp->setOverrideCursor(Qt::SizeHorCursor);
+        m_framelessResizeCursorActive = true;
+        return;
+    }
+    if (edges & (Qt::TopEdge | Qt::BottomEdge)) {
+        if (m_framelessResizeCursorActive)
+            qApp->changeOverrideCursor(Qt::SizeVerCursor);
+        else
+            qApp->setOverrideCursor(Qt::SizeVerCursor);
+        m_framelessResizeCursorActive = true;
+        return;
+    }
+    if (m_framelessResizeCursorActive) {
+        qApp->restoreOverrideCursor();
+        m_framelessResizeCursorActive = false;
+    }
+}
+
+bool MainWindow::handleFramelessResizeEvent(QObject *obj, QEvent *event)
+{
+    if (!qApp || !testAttribute(Qt::WA_WState_Created))
+        return false;
+
+    switch (event->type()) {
+    case QEvent::MouseMove:
+    case QEvent::HoverMove: {
+        if (auto *mouse = dynamic_cast<QMouseEvent *>(event)) {
+            updateFramelessResizeCursor(
+                resizeEdgesAtGlobalPos(mouse->globalPosition().toPoint()));
+        } else if (auto *hover = dynamic_cast<QHoverEvent *>(event)) {
+            updateFramelessResizeCursor(
+                resizeEdgesAtGlobalPos(mapToGlobal(hover->position().toPoint())));
+        }
+        return false;
+    }
+    case QEvent::Leave:
+        if (!resizeEdgesAtGlobalPos(QCursor::pos()))
+            updateFramelessResizeCursor({});
+        return false;
+    case QEvent::MouseButtonPress: {
+        auto *mouse = dynamic_cast<QMouseEvent *>(event);
+        if (!mouse || mouse->button() != Qt::LeftButton)
+            return false;
+        const Qt::Edges edges =
+            resizeEdgesAtGlobalPos(mouse->globalPosition().toPoint());
+        if (!edges)
+            return false;
+        if (QWindow *handle = windowHandle()) {
+            mouse->accept();
+            handle->startSystemResize(edges);
+            return true;
+        }
+        return false;
+    }
+    case QEvent::MouseButtonRelease:
+        updateFramelessResizeCursor(resizeEdgesAtGlobalPos(QCursor::pos()));
+        return false;
+    case QEvent::WindowStateChange:
+        updateFramelessResizeCursor({});
+        return false;
+    default:
+        return false;
+    }
 }
 
 // Right-click on selected text anywhere in the app (a transcript reply, a

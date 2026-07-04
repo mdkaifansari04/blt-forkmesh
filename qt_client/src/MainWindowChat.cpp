@@ -13,9 +13,14 @@
 #include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
 
+#include <QBrush>
 #include <QNetworkInformation>
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
+
+constexpr int kNetworkReposSectionIndex = 11;
 
 // -------------------------------------------------------------- server rail
 
@@ -275,6 +280,8 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: firewall section built"));
     m_sectionStack->addWidget(buildNodeProfileSection()); // 10 Node profile (full page)
     logStartup(QStringLiteral("  buildChatPage: node profile section built"));
+    m_sectionStack->addWidget(buildNetworkReposSection()); // 11 Repos (network catalog)
+    logStartup(QStringLiteral("  buildChatPage: network repos section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -2603,6 +2610,18 @@ QWidget *MainWindow::buildBreadcrumb()
         }
     });
 
+    // Repos: network-wide catalog of repositories known by the active relay.
+    m_reposNavButton = new QPushButton(QStringLiteral("Repos"));
+    m_reposNavButton->setObjectName("topNavButton");
+    m_reposNavButton->setCheckable(true);
+    m_reposNavButton->setCursor(Qt::PointingHandCursor);
+    m_reposNavButton->setToolTip(QStringLiteral("Browse all repositories on the network"));
+    setOcticon(m_reposNavButton, "repo", 16);
+    m_navGroup->addButton(m_reposNavButton, kNetworkReposSectionIndex);
+    connect(m_reposNavButton, &QPushButton::clicked, this, [this] {
+        showSection(kNetworkReposSectionIndex);
+    });
+
     // m_repoPushButton ("Publish N") is created in buildRepoDetailSection where
     // its row lives, so it is parented before it can ever be shown. (Building it
     // in a section constructed later left it parentless and it popped up as its
@@ -2919,14 +2938,14 @@ QWidget *MainWindow::buildBreadcrumb()
         "hourly)");
     connect(donateButton, &QPushButton::clicked, this,
             &MainWindow::showTreasuryDonateDialog);
-    const int socialButtonSize = donateButton->sizeHint().height();
+    constexpr int kSocialButtonSize = 34;
 
     auto *redditButton = new QPushButton;
     redditButton->setObjectName("socialIconButton");
     redditButton->setCursor(Qt::PointingHandCursor);
     redditButton->setToolTip("ForkMesh on Reddit");
-    redditButton->setFixedSize(socialButtonSize, socialButtonSize);
-    setOcticon(redditButton, "reddit", 15);
+    redditButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
+    setOcticon(redditButton, "reddit", 16);
     connect(redditButton, &QPushButton::clicked, this, [] {
         QDesktopServices::openUrl(QUrl("https://www.reddit.com/user/forkmesh"));
     });
@@ -2935,8 +2954,8 @@ QWidget *MainWindow::buildBreadcrumb()
     twitterButton->setObjectName("socialIconButton");
     twitterButton->setCursor(Qt::PointingHandCursor);
     twitterButton->setToolTip("ForkMesh on X (Twitter)");
-    twitterButton->setFixedSize(socialButtonSize, socialButtonSize);
-    setOcticon(twitterButton, "twitter-bird", 14);
+    twitterButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
+    setOcticon(twitterButton, "twitter-bird", 16);
     connect(twitterButton, &QPushButton::clicked, this, [] {
         QDesktopServices::openUrl(QUrl("https://x.com/forkmesh"));
     });
@@ -2945,18 +2964,18 @@ QWidget *MainWindow::buildBreadcrumb()
     mastodonButton->setObjectName("socialIconButton");
     mastodonButton->setCursor(Qt::PointingHandCursor);
     mastodonButton->setToolTip("ForkMesh on Mastodon");
-    mastodonButton->setFixedSize(28, 22);
-    setOcticon(mastodonButton, "mastodon", 14);
+    mastodonButton->setFixedSize(kSocialButtonSize, kSocialButtonSize);
+    setOcticon(mastodonButton, "mastodon", 16);
     connect(mastodonButton, &QPushButton::clicked, this, [] {
         QDesktopServices::openUrl(QUrl("https://mastodon.social/@forkmesh"));
     });
 
-    auto *socialColumn = new QVBoxLayout;
-    socialColumn->setContentsMargins(0, 0, 0, 0);
-    socialColumn->setSpacing(3);
-    socialColumn->addWidget(redditButton);
-    socialColumn->addWidget(twitterButton);
-    socialColumn->addWidget(mastodonButton);
+    auto *socialRow = new QHBoxLayout;
+    socialRow->setContentsMargins(0, 0, 0, 0);
+    socialRow->setSpacing(4);
+    socialRow->addWidget(redditButton);
+    socialRow->addWidget(twitterButton);
+    socialRow->addWidget(mastodonButton);
 
     // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
     // of this process plus a count of detected UI stalls. Click to see the stall
@@ -2989,27 +3008,63 @@ QWidget *MainWindow::buildBreadcrumb()
     m_diskChart = diskChart;
 
     auto *layout = new QVBoxLayout(bar);
-    layout->setContentsMargins(16, 12, 16, 12);
+    layout->setContentsMargins(0, 0, 0, 12);
     layout->setSpacing(8);
 
     auto *appVersionLabel = new QLabel(QStringLiteral("ForkMesh v" FORKMESH_VERSION));
     appVersionLabel->setObjectName("appVersionLabel");
 
-    // First row: app identity, browser-style navigation + search, relay > node >
-    // repo navigation, breadcrumb, centered toast, and the right-aligned
-    // connection / balance / avatar cluster.
+    auto *chrome = new WindowChromeBar;
+    auto *chromeRow = new QHBoxLayout(chrome);
+    chromeRow->setContentsMargins(14, 0, 8, 0);
+    chromeRow->setSpacing(8);
+    chromeRow->addWidget(appVersionLabel);
+    chromeRow->addStretch();
+
+    auto *searchCluster = new QWidget;
+    auto *searchClusterRow = new QHBoxLayout(searchCluster);
+    searchClusterRow->setContentsMargins(0, 0, 0, 0);
+    searchClusterRow->setSpacing(8);
+    searchClusterRow->addWidget(createNavHistoryButtons());
+    searchClusterRow->addWidget(createGlobalSearchBox());
+    chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
+    chromeRow->addStretch();
+
+    auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
+        auto *button = new QPushButton;
+        button->setObjectName(QStringLiteral("windowChromeButton"));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFixedSize(32, 30);
+        button->setToolTip(tip);
+        button->setIcon(style()->standardIcon(icon));
+        button->setIconSize(QSize(14, 14));
+        return button;
+    };
+    auto *minimizeButton = makeWindowButton(QStyle::SP_TitleBarMinButton,
+                                            QStringLiteral("Minimize"));
+    connect(minimizeButton, &QPushButton::clicked, this, &MainWindow::showMinimized);
+    auto *maximizeButton = makeWindowButton(QStyle::SP_TitleBarMaxButton,
+                                            QStringLiteral("Maximize / restore"));
+    connect(maximizeButton, &QPushButton::clicked, this, [this] {
+        if (isMaximized())
+            showNormal();
+        else
+            showMaximized();
+    });
+    auto *closeButton = makeWindowButton(QStyle::SP_TitleBarCloseButton,
+                                         QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("windowChromeCloseButton"));
+    connect(closeButton, &QPushButton::clicked, this, &MainWindow::close);
+    chromeRow->addWidget(minimizeButton);
+    chromeRow->addWidget(maximizeButton);
+    chromeRow->addWidget(closeButton);
+    layout->addWidget(chrome);
+
+    // Main app navigation row: relay > node > repo navigation, breadcrumb,
+    // centered toast, and the right-aligned connection / balance / avatar cluster.
     auto *mainRow = new QHBoxLayout;
-    mainRow->setContentsMargins(0, 0, 0, 0);
+    mainRow->setContentsMargins(16, 0, 16, 0);
     mainRow->setSpacing(8);
-    mainRow->addWidget(appVersionLabel);
-    mainRow->addSpacing(4);
-    // Browser-style Back / Forward buttons, sat beside the app title in the top
-    // app bar.
-    mainRow->addWidget(createNavHistoryButtons());
-    // One box that searches everything (sections, relays, nodes, repos, and the
-    // open repo's issues/PRs/branches/files/commits) and jumps to the result.
-    mainRow->addWidget(createGlobalSearchBox());
-    mainRow->addSpacing(12);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
     mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
@@ -3040,7 +3095,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // (adhoc #117).
     mainRow->addWidget(donateButton);
     mainRow->addSpacing(4);
-    mainRow->addLayout(socialColumn);
+    mainRow->addLayout(socialRow);
     mainRow->addSpacing(10);
     // Stack the node name above the wallet balance — "this is your money". The
     // online/reward toggle that used to sit here now lives in the node profile
@@ -3072,9 +3127,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // put above whatever section they open — they don't disappear when you leave
     // the repo view, and the log is one click away next to Settings.
     auto *navRow = new QHBoxLayout;
-    navRow->setContentsMargins(0, 0, 0, 0);
+    navRow->setContentsMargins(16, 0, 16, 0);
     navRow->setSpacing(8);
     navRow->addWidget(m_repoViewButton);
+    navRow->addWidget(m_reposNavButton);
     navRow->addWidget(m_agentsNavButton);
     navRow->addWidget(m_chatButton);
     navRow->addWidget(m_notificationButton);
@@ -5482,7 +5538,519 @@ void MainWindow::showSection(int index)
         refreshRelaysTable();
     } else if (index == 9) {
         refreshFirewallTables();
+    } else if (index == kNetworkReposSectionIndex) {
+        refreshNetworkReposPage();
     }
+}
+
+// --- Network repositories ---------------------------------------------------
+
+QWidget *MainWindow::buildNetworkReposSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Repos"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    header->addWidget(title);
+    header->addStretch();
+
+    m_networkReposStatus = new QLabel(QStringLiteral("Not loaded"));
+    m_networkReposStatus->setObjectName("mutedLabel");
+    header->addWidget(m_networkReposStatus);
+
+    m_networkReposRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_networkReposRefreshButton->setObjectName("ghostButton");
+    m_networkReposRefreshButton->setCursor(Qt::PointingHandCursor);
+    m_networkReposRefreshButton->setToolTip(QStringLiteral("Refresh network repositories"));
+    setOcticon(m_networkReposRefreshButton, "sync", 14);
+    connect(m_networkReposRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshNetworkReposPage);
+    header->addWidget(m_networkReposRefreshButton);
+    outer->addLayout(header);
+
+    auto *subtitle = new QLabel(QStringLiteral(
+        "Source-of-truth repositories advertised by the active relay, with your "
+        "local fork, mirror nodes, and one-click fork/mirror actions."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    m_networkReposTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_networkReposTable);
+    m_networkReposTable->setObjectName("issueTable");
+    m_networkReposTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Repository"), QStringLiteral("Local fork"),
+         QStringLiteral("Mirror nodes"), QStringLiteral("Actions")});
+    m_networkReposTable->verticalHeader()->setVisible(false);
+    m_networkReposTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_networkReposTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkReposTable->setShowGrid(false);
+    m_networkReposTable->setSortingEnabled(false);
+    m_networkReposTable->horizontalHeader()->setStretchLastSection(false);
+    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::Stretch);
+    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+        3, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkReposTable);
+    connect(m_networkReposTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int column) {
+                if (column == 3 || !m_networkReposTable)
+                    return;
+                QTableWidgetItem *item = m_networkReposTable->item(row, 0);
+                if (!item)
+                    return;
+                const QString key = item->data(Qt::UserRole).toString();
+                const int slash = key.indexOf('/');
+                if (slash <= 0)
+                    return;
+                openNetworkRepo(key.left(slash), key.mid(slash + 1),
+                                item->data(Qt::UserRole + 1).toString(),
+                                item->data(Qt::UserRole + 2).toBool());
+            });
+    outer->addWidget(m_networkReposTable, 1);
+
+    return page;
+}
+
+void MainWindow::refreshNetworkReposPage()
+{
+    if (!m_networkReposTable || !m_networkReposStatus)
+        return;
+    if (!m_networkAccess) {
+        m_networkReposStatus->setText(QStringLiteral("Network is not connected."));
+        return;
+    }
+
+    const int generation = ++m_networkReposLoadGen;
+    m_networkReposTable->setRowCount(0);
+    m_networkReposStatus->setText(QStringLiteral("Loading repositories..."));
+    if (m_networkReposRefreshButton)
+        m_networkReposRefreshButton->setEnabled(false);
+
+    QNetworkRequest request(catalogListUrl());
+    request.setRawHeader("accept", "application/json");
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] {
+        const QByteArray body = reply->readAll();
+        const QNetworkReply::NetworkError error = reply->error();
+        const QString errorString = reply->errorString();
+        reply->deleteLater();
+        if (generation != m_networkReposLoadGen)
+            return;
+        if (m_networkReposRefreshButton)
+            m_networkReposRefreshButton->setEnabled(true);
+        if (error != QNetworkReply::NoError) {
+            if (m_networkReposStatus)
+                m_networkReposStatus->setText(
+                    QStringLiteral("Repositories unavailable: %1").arg(errorString));
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        renderNetworkRepos(obj.value("repositories").toArray());
+    });
+}
+
+int MainWindow::findNetworkRepoIndex(const QString &owner, const QString &name,
+                                     bool includePreview) const
+{
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.owner == owner && repo.name == name &&
+            (includePreview || !repo.previewOnly))
+            return i;
+    }
+    return -1;
+}
+
+int MainWindow::findNetworkLocalForkIndex(const QString &owner,
+                                          const QString &name) const
+{
+    const QString localOwner = accountOwner();
+    if (!localOwner.isEmpty()) {
+        const int forkIndex = findNetworkRepoIndex(localOwner, name, false);
+        if (forkIndex >= 0 && !m_repositories.at(forkIndex).localPath.isEmpty())
+            return forkIndex;
+    }
+
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (!repo.previewOnly && repo.owner == owner && repo.name == name &&
+            !repo.localPath.isEmpty())
+            return i;
+    }
+    return -1;
+}
+
+void MainWindow::renderNetworkRepos(const QJsonArray &repos)
+{
+    if (!m_networkReposTable || !m_networkReposStatus)
+        return;
+
+    QList<QJsonObject> rows;
+    QSet<QString> seen;
+    for (const QJsonValue &value : repos) {
+        QJsonObject repo = value.toObject();
+        const QString owner =
+            repo.value("owner").toString().trimmed();
+        const QString name =
+            repo.value("name").toString().trimmed();
+        if (owner.isEmpty() || name.isEmpty())
+            continue;
+        const QString key = owner + "/" + name;
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+        const QString source = repo.value("source").toString().trimmed();
+        if (!source.isEmpty() && source != QLatin1String("local-node"))
+            continue;
+        QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
+        if (cloneUrl.isEmpty())
+            cloneUrl = repo.value("clone_url").toString().trimmed();
+        if (cloneUrl.isEmpty())
+            cloneUrl = hostedCloneUrl(owner, name);
+        repo.insert("cloneUrl", cloneUrl);
+        rows.append(repo);
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const QJsonObject &a,
+                                           const QJsonObject &b) {
+        const QString ak = a.value("owner").toString() + "/" +
+                           a.value("name").toString();
+        const QString bk = b.value("owner").toString() + "/" +
+                           b.value("name").toString();
+        return ak.compare(bk, Qt::CaseInsensitive) < 0;
+    });
+
+    m_networkReposTable->setRowCount(rows.size());
+    const int generation = m_networkReposLoadGen;
+    for (int row = 0; row < rows.size(); ++row) {
+        const QJsonObject repo = rows.at(row);
+        const QString owner = repo.value("owner").toString().trimmed();
+        const QString name = repo.value("name").toString().trimmed();
+        const QString key = owner + "/" + name;
+        const QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
+        const bool isPrivate = repo.value("private").toBool(false) ||
+                               repo.value("isPrivate").toBool(false);
+        const bool liveHost = repo.value("liveHost").toBool(false);
+        const QString description = repo.value("description").toString().trimmed();
+        const QString commit = repo.value("commit").toString().trimmed();
+        const QString branch = repo.value("branch").toString().trimmed();
+
+        QStringList details;
+        if (!commit.isEmpty()) {
+            QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
+            if (!branch.isEmpty())
+                commitLine += QStringLiteral(" on %1").arg(branch);
+            details << commitLine;
+        }
+        if (isPrivate)
+            details << QStringLiteral("private");
+        if (liveHost)
+            details << QStringLiteral("live");
+        if (!description.isEmpty())
+            details << description.left(120);
+
+        auto *repoItem = new QTableWidgetItem(
+            details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
+        repoItem->setData(Qt::UserRole, key);
+        repoItem->setData(Qt::UserRole + 1, cloneUrl);
+        repoItem->setData(Qt::UserRole + 2, isPrivate);
+        QStringList repoToolTip;
+        repoToolTip << key;
+        if (!commit.isEmpty())
+            repoToolTip << QStringLiteral("Commit: %1").arg(commit);
+        if (!branch.isEmpty())
+            repoToolTip << QStringLiteral("Branch: %1").arg(branch);
+        if (!cloneUrl.isEmpty())
+            repoToolTip << cloneUrl;
+        repoItem->setToolTip(repoToolTip.join('\n'));
+        m_networkReposTable->setItem(row, 0, repoItem);
+
+        const int localFork = findNetworkLocalForkIndex(owner, name);
+        if (localFork >= 0) {
+            const RepositoryRecord &fork = m_repositories.at(localFork);
+            const QString path = fork.localPath.isEmpty()
+                                     ? QStringLiteral("No checkout path")
+                                     : QDir::toNativeSeparators(fork.localPath);
+            auto *forkItem = new QTableWidgetItem(
+                QStringLiteral("%1/%2\n%3").arg(fork.owner, fork.name, path));
+            forkItem->setToolTip(path);
+            m_networkReposTable->setItem(row, 1, forkItem);
+        } else {
+            auto *forkItem = new QTableWidgetItem(QStringLiteral("No local fork"));
+            forkItem->setForeground(QColor("#8b949e"));
+            m_networkReposTable->setItem(row, 1, forkItem);
+        }
+
+        auto *mirrorsItem = new QTableWidgetItem(QStringLiteral("Loading..."));
+        mirrorsItem->setForeground(QColor("#8b949e"));
+        m_networkReposTable->setItem(row, 2, mirrorsItem);
+
+        const int mirroredIndex = findNetworkRepoIndex(owner, name, false);
+        auto *actions = new QWidget;
+        auto *actionRow = new QHBoxLayout(actions);
+        actionRow->setContentsMargins(4, 2, 4, 2);
+        actionRow->setSpacing(6);
+
+        auto *openButton = new QPushButton(localFork >= 0
+                                               ? QStringLiteral("Open fork")
+                                               : QStringLiteral("Open"));
+        openButton->setObjectName("ghostButton");
+        openButton->setCursor(Qt::PointingHandCursor);
+        openButton->setToolTip(localFork >= 0 ? QStringLiteral("Open your local fork")
+                                              : QStringLiteral("Open this repository"));
+        setOcticon(openButton, localFork >= 0 ? "repo-forked" : "repo", 13);
+        connect(openButton, &QPushButton::clicked, this,
+                [this, owner, name, cloneUrl, isPrivate, localFork] {
+                    if (localFork >= 0)
+                        openRepoDetail(localFork);
+                    else
+                        openNetworkRepo(owner, name, cloneUrl, isPrivate);
+                });
+        actionRow->addWidget(openButton);
+
+        auto *forkButton = new QPushButton(localFork >= 0
+                                               ? QStringLiteral("Forked")
+                                               : QStringLiteral("Fork"));
+        forkButton->setCursor(Qt::PointingHandCursor);
+        forkButton->setToolTip(localFork >= 0 ? QStringLiteral("You already have a local fork")
+                                              : QStringLiteral("Fork into your own node"));
+        setOcticon(forkButton, "repo-forked", 13);
+        if (localFork >= 0) {
+            forkButton->setEnabled(false);
+        } else {
+            forkButton->setObjectName("primaryButton");
+            connect(forkButton, &QPushButton::clicked, this,
+                    [this, owner, name, cloneUrl, isPrivate] {
+                        forkNetworkRepo(owner, name, cloneUrl, isPrivate);
+                    });
+        }
+        actionRow->addWidget(forkButton);
+
+        auto *mirrorButton = new QPushButton(mirroredIndex >= 0
+                                                 ? QStringLiteral("Mirrored")
+                                                 : QStringLiteral("Mirror"));
+        mirrorButton->setObjectName("ghostButton");
+        mirrorButton->setCursor(Qt::PointingHandCursor);
+        mirrorButton->setToolTip(mirroredIndex >= 0
+                                     ? QStringLiteral("This node already mirrors it")
+                                     : QStringLiteral("Mirror this repository on this node"));
+        setOcticon(mirrorButton, "sync", 13);
+        if (mirroredIndex >= 0) {
+            mirrorButton->setEnabled(false);
+        } else {
+            connect(mirrorButton, &QPushButton::clicked, this,
+                    [this, owner, name, cloneUrl, isPrivate] {
+                        mirrorNetworkRepo(owner, name, cloneUrl, isPrivate);
+                    });
+        }
+        actionRow->addWidget(mirrorButton);
+        actionRow->addStretch();
+        m_networkReposTable->setCellWidget(row, 3, actions);
+
+        fetchNetworkRepoMirrors(owner, name, row, generation);
+    }
+
+    m_networkReposTable->resizeRowsToContents();
+    m_networkReposStatus->setText(
+        rows.isEmpty() ? QStringLiteral("No repositories advertised.")
+                       : QStringLiteral("%1 repositories").arg(formatCount(rows.size())));
+}
+
+void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &name,
+                                         int row, int generation)
+{
+    if (!m_networkAccess || !m_networkReposTable || owner.isEmpty() ||
+        name.isEmpty())
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(name))));
+    url.setQuery(QString());
+
+    QNetworkRequest request(url);
+    request.setRawHeader("accept", "application/json");
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, owner, name, row, generation] {
+                const QByteArray body = reply->readAll();
+                const QNetworkReply::NetworkError error = reply->error();
+                const QString errorString = reply->errorString();
+                reply->deleteLater();
+                if (generation != m_networkReposLoadGen || !m_networkReposTable ||
+                    row < 0 || row >= m_networkReposTable->rowCount())
+                    return;
+                QTableWidgetItem *repoItem = m_networkReposTable->item(row, 0);
+                if (!repoItem ||
+                    repoItem->data(Qt::UserRole).toString() != owner + "/" + name)
+                    return;
+
+                QTableWidgetItem *mirrorsItem = m_networkReposTable->item(row, 2);
+                if (!mirrorsItem)
+                    return;
+
+                if (error != QNetworkReply::NoError) {
+                    mirrorsItem->setText(QStringLiteral("Mirror list unavailable"));
+                    mirrorsItem->setToolTip(errorString);
+                    mirrorsItem->setForeground(QColor("#8b949e"));
+                    m_networkReposTable->resizeRowToContents(row);
+                    return;
+                }
+
+                const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                if (obj.contains("ok") && !obj.value("ok").toBool()) {
+                    mirrorsItem->setText(QStringLiteral("Mirror list unavailable"));
+                    mirrorsItem->setToolTip(QString());
+                    mirrorsItem->setForeground(QColor("#8b949e"));
+                    m_networkReposTable->resizeRowToContents(row);
+                    return;
+                }
+
+                const QJsonArray mirrors = obj.value("mirrors").toArray();
+                QStringList names;
+                QStringList mirrorToolTip;
+                for (const QJsonValue &value : mirrors) {
+                    const QJsonObject mirror = value.toObject();
+                    const QString mirrorSource =
+                        mirror.value("source").toString().trimmed();
+                    const QString mirrorRepo =
+                        mirror.value("repo").toString().trimmed();
+                    if (mirrorSource == QLatin1String("local-node") ||
+                        (mirror.value("owner").toString().compare(owner, Qt::CaseInsensitive) == 0 &&
+                         mirrorRepo.compare(name, Qt::CaseInsensitive) == 0))
+                        continue;
+                    QString node = mirror.value("node").toString().trimmed();
+                    if (node.isEmpty())
+                        node = mirror.value("owner").toString().trimmed();
+                    if (node.isEmpty())
+                        node = mirror.value("name").toString().trimmed();
+                    if (node.isEmpty())
+                        node = mirror.value("id").toString().trimmed();
+                    if (node.isEmpty())
+                        continue;
+                    const QString status =
+                        mirror.value("status").toString(
+                            mirror.value("cloneStatus").toString()).trimmed();
+                    const QString commit =
+                        mirror.value("commit").toString().trimmed();
+                    names << (status.isEmpty() ? node
+                                               : QStringLiteral("%1 (%2)").arg(node, status));
+                    QString tip = node;
+                    if (!status.isEmpty())
+                        tip += QStringLiteral(" - %1").arg(status);
+                    if (!commit.isEmpty())
+                        tip += QStringLiteral(" - commit %1").arg(commit);
+                    mirrorToolTip << tip;
+                }
+
+                if (names.isEmpty()) {
+                    mirrorsItem->setText(QStringLiteral("No mirror nodes yet"));
+                    mirrorsItem->setToolTip(QString());
+                    mirrorsItem->setForeground(QColor("#8b949e"));
+                } else {
+                    const QString text = names.join(QStringLiteral(", "));
+                    mirrorsItem->setText(text);
+                    mirrorsItem->setToolTip(mirrorToolTip.join('\n'));
+                    mirrorsItem->setForeground(QBrush());
+                }
+                m_networkReposTable->resizeRowToContents(row);
+            });
+}
+
+void MainWindow::openNetworkRepo(const QString &owner, const QString &name,
+                                 const QString &cloneUrl, bool isPrivate)
+{
+    if (owner.isEmpty() || name.isEmpty())
+        return;
+
+    int index = findNetworkRepoIndex(owner, name, true);
+    if (index >= 0) {
+        openRepoDetail(index);
+        const RepositoryRecord &repo = m_repositories.at(index);
+        if (repo.previewOnly && !m_syncingRepos.contains(index) &&
+            !QDir(repo.mirrorPath).exists())
+            syncRepository(index);
+        return;
+    }
+
+    RepositoryRecord repo;
+    repo.owner = owner;
+    repo.name = name;
+    repo.cloneUrl = cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl;
+    repo.isPrivate = isPrivate;
+    repo.previewOnly = true;
+    repo.actionsEnabled = false;
+    repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+    repo.mirrorPath = repositoryPreviewPath(owner, name);
+    m_repositories.append(repo);
+    index = m_repositories.size() - 1;
+    refreshRepositoryList();
+    logSystem("Preview: caching " + owner + "/" + name + " from " + repo.cloneUrl);
+    openRepoDetail(index);
+    syncRepository(index);
+}
+
+void MainWindow::forkNetworkRepo(const QString &owner, const QString &name,
+                                 const QString &cloneUrl, bool isPrivate)
+{
+    const int localFork = findNetworkLocalForkIndex(owner, name);
+    if (localFork >= 0) {
+        openRepoDetail(localFork);
+        return;
+    }
+    openNetworkRepo(owner, name, cloneUrl, isPrivate);
+    QTimer::singleShot(0, this, [this, owner, name] {
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+            return;
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        if (repo.owner != owner || repo.name != name) {
+            flashMessage(QStringLiteral("Open %1/%2 before forking it.")
+                             .arg(owner, name),
+                         true);
+            return;
+        }
+        forkCurrentRepo();
+    });
+}
+
+void MainWindow::mirrorNetworkRepo(const QString &owner, const QString &name,
+                                   const QString &cloneUrl, bool isPrivate)
+{
+    if (findNetworkRepoIndex(owner, name, false) >= 0) {
+        flashMessage(QStringLiteral("This node already mirrors %1/%2.")
+                         .arg(owner, name));
+        refreshNetworkReposPage();
+        return;
+    }
+
+    const QString source = cloneUrl.isEmpty() ? hostedCloneUrl(owner, name) : cloneUrl;
+    if (source.isEmpty()) {
+        flashMessage(QStringLiteral("No clone URL is available for %1/%2.")
+                         .arg(owner, name),
+                     true);
+        return;
+    }
+
+    mirrorCatalogRepo(owner, name, source, isPrivate);
+    flashMessage(QStringLiteral("Mirroring %1/%2.").arg(owner, name));
+    refreshNetworkReposPage();
 }
 
 // --- Leaderboards (issue #11) ----------------------------------------------

@@ -86,6 +86,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             &MainWindow::openGlobalSearch);
     setWindowTitle("ForkMesh v" FORKMESH_VERSION);
     setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
+    // The app owns its top chrome so navigation/search can live on the same row
+    // as the window controls instead of under the native title bar.
+    setWindowFlag(Qt::FramelessWindowHint, true);
     if (qApp && qApp->styleSheet().isEmpty())
         applyTheme();
     resize(1060, 700);
