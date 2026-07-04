@@ -4,6 +4,7 @@
 from pathlib import Path
 
 from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
@@ -14,6 +15,10 @@ AUTH_PAGES = (
 
 
 def _read(page: Path) -> str:
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py).
+    if page.name == "dashboard.js":
+        return assembled_dashboard_js()
     return page.read_text(encoding="utf-8")
 
 

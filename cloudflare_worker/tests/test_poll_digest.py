@@ -4,9 +4,13 @@ polls each tick instead of separately re-fetching the full profile and the
 full notification list, firing the heavier fetches only when a token moved."""
 from pathlib import Path
 
+from _dashboard_bundle import assembled_dashboard_js
+
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
-DASHBOARD_JS = (ROOT / "public" / "dashboard.js").read_text(encoding="utf-8")
+# dashboard.js is split into ordered public/dashboard/js/*.js fragments composed
+# into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
+DASHBOARD_JS = assembled_dashboard_js()
 
 
 def test_worker_registers_poll_route_and_handler():
