@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 #include <QVersionNumber>
 
@@ -122,6 +123,7 @@ QWidget *MainWindow::buildReleasesTab()
     layout->addLayout(headerRow);
 
     m_releasesTable = new QTableWidget(0, 10);
+    installColumnHeaderMenu(m_releasesTable); // 3-dots per-column menu (issue #318)
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels(
@@ -206,6 +208,7 @@ QWidget *MainWindow::buildArtifactsTab()
     layout->addWidget(hint);
 
     m_artifactsTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_artifactsTable); // 3-dots per-column menu (issue #318)
     m_artifactsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_artifactsTable);
     m_artifactsTable->setHorizontalHeaderLabels(
@@ -874,6 +877,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
     m_mirrorNodesTable = new QTableWidget(0, 19);
+    installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(

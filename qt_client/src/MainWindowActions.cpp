@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -863,6 +864,7 @@ QWidget *MainWindow::buildNotificationsSection()
 
     // GitHub-ish columns; the table is sortable by clicking a header section.
     m_notificationsTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_notificationsTable); // 3-dots per-column menu (issue #318)
     m_notificationsTable->setObjectName("issueTable"); // reuse the table styling
     m_notificationsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Type"), QStringLiteral("Title"),
@@ -2271,6 +2273,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     subtitle->setWordWrap(true);
 
     m_actionsTable = new QTableWidget(0, 3);
+    installColumnHeaderMenu(m_actionsTable); // 3-dots per-column menu (issue #318)
     m_actionsTable->setObjectName("issueTable");
     m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
