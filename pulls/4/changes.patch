@@ -1,5 +1,5 @@
 diff --git a/cloudflare_worker/public/_redirects b/cloudflare_worker/public/_redirects
-index 4df0c15c..50d38378 100644
+index 4df0c15c6..50d38378b 100644
 --- a/cloudflare_worker/public/_redirects
 +++ b/cloudflare_worker/public/_redirects
 @@ -19,6 +19,7 @@
@@ -12,7 +12,7 @@ index 4df0c15c..50d38378 100644
  /privacy /privacy.html 200
 diff --git a/cloudflare_worker/public/pricing.html b/cloudflare_worker/public/pricing.html
 new file mode 100644
-index 00000000..b1c2c54f
+index 000000000..b1c2c54ff
 --- /dev/null
 +++ b/cloudflare_worker/public/pricing.html
 @@ -0,0 +1,1024 @@
@@ -1041,7 +1041,7 @@ index 00000000..b1c2c54f
 +  </body>
 +</html>
 diff --git a/cloudflare_worker/src/static_routes.py b/cloudflare_worker/src/static_routes.py
-index 1f503834..621e3925 100644
+index 1f503834d..621e39250 100644
 --- a/cloudflare_worker/src/static_routes.py
 +++ b/cloudflare_worker/src/static_routes.py
 @@ -39,6 +39,7 @@ RESERVED_ROUTE_PREFIXES = frozenset({
@@ -1062,7 +1062,7 @@ index 1f503834..621e3925 100644
      "/privacy.html",
 diff --git a/cloudflare_worker/tests/test_pricing_page_frontend.py b/cloudflare_worker/tests/test_pricing_page_frontend.py
 new file mode 100644
-index 00000000..fbbd9b5e
+index 000000000..fbbd9b5ec
 --- /dev/null
 +++ b/cloudflare_worker/tests/test_pricing_page_frontend.py
 @@ -0,0 +1,221 @@
@@ -1288,7 +1288,7 @@ index 00000000..fbbd9b5e
 +    test_pricing_main_section_heading_uses_favorit_display_font()
 +    test_pricing_cards_use_reference_dark_surface_colors()
 diff --git a/cloudflare_worker/tests/test_static_route_canonicalization.py b/cloudflare_worker/tests/test_static_route_canonicalization.py
-index 41556851..f18c9134 100644
+index 62c2be90c..c8a5d8b5a 100644
 --- a/cloudflare_worker/tests/test_static_route_canonicalization.py
 +++ b/cloudflare_worker/tests/test_static_route_canonicalization.py
 @@ -34,6 +34,7 @@ CANONICAL_PAGE_ROUTES = {
@@ -1307,16 +1307,16 @@ index 41556851..f18c9134 100644
      "/careers.html",
      "/changelog.html",
      "/privacy.html",
-@@ -144,6 +146,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
-         "features.html",
+@@ -145,6 +147,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
          "forgot-password.html",
          "login.html",
+         "network.html",
 +        "pricing.html",
          "privacy.html",
          "reset-password.html",
          "status.html",
 diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index d56c6b5d..b6a594f0 100644
+index d56c6b5db..b6a594f0c 100644
 --- a/cloudflare_worker/wrangler.toml
 +++ b/cloudflare_worker/wrangler.toml
 @@ -46,6 +46,7 @@ run_worker_first = [
