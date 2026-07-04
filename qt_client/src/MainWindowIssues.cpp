@@ -3779,15 +3779,25 @@ void MainWindow::rebuildQuickAddAttachChips()
 
         // Preview thumbnail (issue #348): kept shorter than the surrounding
         // bottom bar so an attached image doesn't make the chip taller than
-        // the icons beside it.
-        auto *thumb = new QLabel(chip);
+        // the icons beside it. Clicking it opens the original full-size in a
+        // lightbox (issue #319).
         QPixmap pm(path);
-        if (!pm.isNull())
-            thumb->setPixmap(pm.scaled(18, 18, Qt::KeepAspectRatio,
-                                       Qt::SmoothTransformation));
-        else
-            thumb->setText(QFileInfo(path).fileName());
-        chipRow->addWidget(thumb);
+        if (!pm.isNull()) {
+            auto *thumb = new QToolButton(chip);
+            thumb->setIcon(QIcon(pm));
+            thumb->setIconSize(QSize(18, 18));
+            thumb->setAutoRaise(true);
+            thumb->setCursor(Qt::PointingHandCursor);
+            thumb->setToolTip(QStringLiteral("Click to view full size"));
+            thumb->setStyleSheet(
+                "QToolButton{border:none;background:transparent;padding:0;}");
+            connect(thumb, &QToolButton::clicked, this,
+                    [this, path]() { showQuickAddImageDetail(path); });
+            chipRow->addWidget(thumb);
+        } else {
+            auto *thumb = new QLabel(QFileInfo(path).fileName(), chip);
+            chipRow->addWidget(thumb);
+        }
 
         // The little "x": removes only this attachment.
         auto *remove = new QPushButton(QString::fromUtf8("\xC3\x97"), chip);
@@ -3806,6 +3816,65 @@ void MainWindow::rebuildQuickAddAttachChips()
         row->addWidget(chip);
     }
     m_quickAddAttachStrip->setVisible(!m_quickAddImages.isEmpty());
+}
+
+// Open a queued quick-add attachment full-size in a lightbox dialog (issue
+// #319). Mirrors showChatImageDetail, but reads the original file straight off
+// disk rather than from in-memory message bytes.
+void MainWindow::showQuickAddImageDetail(const QString &path)
+{
+    QPixmap pixmap(path);
+    if (pixmap.isNull())
+        return;
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("imageDetailDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QFileInfo(path).fileName());
+
+    // Cap the displayed size to most of the available screen so huge images
+    // don't open larger than the monitor; smaller images show at native size.
+    QSize maxSize(1200, 800);
+    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QSize avail = screen->availableSize();
+        maxSize = QSize(avail.width() * 9 / 10, avail.height() * 9 / 10);
+    }
+    QPixmap shown = pixmap;
+    if (pixmap.width() > maxSize.width() || pixmap.height() > maxSize.height())
+        shown = pixmap.scaled(maxSize, Qt::KeepAspectRatio,
+                              Qt::SmoothTransformation);
+
+    auto *imageLabel = new QLabel;
+    imageLabel->setAlignment(Qt::AlignCenter);
+    imageLabel->setPixmap(shown);
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("messageView");
+    scroll->setWidgetResizable(true);
+    scroll->setAlignment(Qt::AlignCenter);
+    scroll->setWidget(imageLabel);
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName("primaryButton");
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addWidget(new QLabel(
+        QStringLiteral("%1 \xC3\x97 %2").arg(pixmap.width()).arg(pixmap.height())));
+    buttonRow->addStretch();
+    buttonRow->addWidget(closeButton);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+    layout->addWidget(scroll, 1);
+    layout->addLayout(buttonRow);
+
+    dialog->resize(qMin(shown.width() + 48, maxSize.width()),
+                   qMin(shown.height() + 96, maxSize.height()));
+    dialog->show();
 }
 
 void MainWindow::copyIssueToClipboard()

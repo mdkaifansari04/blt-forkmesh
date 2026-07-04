@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
 #include "ScreenDrawOverlay.h"
@@ -927,6 +928,11 @@ void MainWindow::populateSlashActionsList()
         {QStringLiteral("Mention file from this project\xE2\x80\xA6"), QStringLiteral("mentionFile")},
         {QStringLiteral("Clear conversation"), QStringLiteral("clearConversation")},
         {QStringLiteral("Rewind"), QStringLiteral("rewind")},
+        // adhoc #256: resend the full issue (title + description + every
+        // comment) to the agent open above, in case it didn't get the whole
+        // thing the first time (e.g. a resumed session only replays a bare
+        // "Continue").
+        {QStringLiteral("Send issue context to agent"), QStringLiteral("sendIssueContext")},
     };
     bool anyContext = false;
     for (const ContextAction &a : contextActions)
@@ -1073,6 +1079,9 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         // sent prompt into the composer (same as Up in the quick-add history).
         navigateQuickAddHistory(-1);
         closePopup();
+    } else if (kind == QLatin1String("sendIssueContext")) {
+        closePopup();
+        sendIssueContextToSelectedAgent();
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
         if (m_quickAddAgentProvider) {
@@ -5798,6 +5807,7 @@ QWidget *MainWindow::buildHostsSection()
     bodyCol->addWidget(hostsHint);
 
     m_hostsTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
     m_hostsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node name"), QStringLiteral("Address"),
@@ -5957,6 +5967,7 @@ QWidget *MainWindow::buildRelaysSection()
     outer->addLayout(controls);
 
     m_relaysTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_relaysTable); // 3-dots per-column menu (issue #318)
     m_relaysTable->setObjectName("issueTable");
     m_relaysTable->setHorizontalHeaderLabels(
         {QStringLiteral("Relay"), QStringLiteral("Status"),
