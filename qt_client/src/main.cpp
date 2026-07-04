@@ -9,6 +9,8 @@
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
+#include <QEvent>
+#include <QMetaObject>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QFontDatabase>
@@ -48,6 +50,49 @@ bool detectHeadless(const QStringList &args)
 #endif
     return false;
 }
+
+// QApplication whose notify() wraps every event delivery in a try/catch. A C++
+// exception thrown out of a slot invoked by the event loop — e.g. a handler for
+// a tab click / currentChanged — is undefined behaviour in Qt6 and typically
+// takes the whole app down with nothing logged ("it crashes when I click a
+// tab"). Catching it here turns that silent crash into a logged fault (main log
+// + durable crash log via forkmesh::logCaughtFault) and keeps the app running
+// instead of dying. Signals (SIGSEGV etc.) still go through the CrashHandler.
+class ForkMeshApplication : public QApplication
+{
+public:
+    using QApplication::QApplication;
+
+    bool notify(QObject *receiver, QEvent *event) override
+    {
+        try {
+            return QApplication::notify(receiver, event);
+        } catch (const std::exception &e) {
+            forkmesh::logCaughtFault(describe(receiver, event),
+                                     QString::fromUtf8(e.what()));
+        } catch (...) {
+            forkmesh::logCaughtFault(describe(receiver, event),
+                                     QStringLiteral("(non-std exception)"));
+        }
+        // Swallow the fault: returning to the event loop keeps the window alive
+        // rather than letting the exception unwind through Qt's C event loop.
+        return false;
+    }
+
+private:
+    static QString describe(QObject *receiver, QEvent *event)
+    {
+        const QString cls = receiver && receiver->metaObject()
+                                ? QString::fromLatin1(receiver->metaObject()->className())
+                                : QStringLiteral("(null)");
+        const QString name = receiver ? receiver->objectName() : QString();
+        const int type = event ? int(event->type()) : -1;
+        return QStringLiteral("event delivery to %1%2 (event type %3)")
+            .arg(cls,
+                 name.isEmpty() ? QString() : QStringLiteral(" \"%1\"").arg(name))
+            .arg(type);
+    }
+};
 
 } // namespace
 
@@ -91,7 +136,7 @@ int main(int argc, char *argv[])
     // XWayland, which maps a black frame before the first paint (a jarring black
     // screen on launch). Letting Qt pick the native platform shows the themed
     // window immediately.
-    QApplication app(argc, argv);
+    ForkMeshApplication app(argc, argv);
     app.setApplicationName("ForkMesh");
     app.setOrganizationName("ForkMesh");
     // App icon: the cube cropped out of the ForkMesh logo.
