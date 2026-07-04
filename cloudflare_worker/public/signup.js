@@ -57,6 +57,7 @@
         pubkey: body.pubkey,
         emailVerified: Boolean(body.emailVerified),
         isAdmin: Boolean(body.isAdmin),
+        adminUrl: body.adminUrl || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
         at: Date.now(),
       }));

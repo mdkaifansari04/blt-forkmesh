@@ -2,18 +2,18 @@
 schema: forkmesh-issue-v1
 number: 360
 title: Search across issues, PRs, and repo code
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 22
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783116818259
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
 bountyUsd: 0.00
-bountyAddress:
-bountyStatus:
+bountyAddress: 
+bountyStatus: 
 type: open
 id: open-360
 ts: 1783116818259
