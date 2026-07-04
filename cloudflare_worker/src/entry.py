@@ -206,6 +206,34 @@ from releases import (  # noqa: E402
     asset_upload_decision,
 )
 
+# Git smart-HTTP wire helpers (pkt-line, ref-advertisement canonicalization,
+# request-body decoding) and the repo-blob content-type/filename mapping live
+# in their own stdlib-only module — see git_http.py.
+from git_http import (  # noqa: E402
+    REPO_BLOB_CONTENT_TYPES,
+    advertised_refs_canonical,
+    decode_git_request_body,
+    pkt_line,
+    repo_blob_content_type,
+    repo_blob_filename,
+)
+
+# Mirror grouping, clone-fallback selection, and state-pin helpers are a
+# self-contained, builtin-only cluster — see mirrors.py.
+from mirrors import (  # noqa: E402
+    STATE_PIN_HISTORY,
+    _mirror_ms,
+    browse_mirror_candidates,
+    build_repo_mirrors_payload,
+    clone_state_pins,
+    mirroring_owner_set,
+    repo_clone_online,
+    repo_mirror_group_key,
+    repo_mirror_same_group,
+    select_clone_fallback,
+    served_mirror_groups,
+)
+
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
 # the relay's ~1 MiB message cap.
@@ -622,83 +650,6 @@ async def verify_release_manifest(manifest):
     return await ed25519_verify(author, signature, canonical)
 
 
-def pkt_line(payload):
-    return ("%04x" % (len(payload) + 4)).encode() + payload
-
-
-def advertised_refs_canonical(data):
-    # Canonical, hashable fingerprint of the served branches + tags, derived from
-    # a `git upload-pack --advertise-refs` body (the bytes a host streams back for
-    # info/refs, WITHOUT the "# service=" header the worker prepends). Output is
-    # "<sha> <refname>" lines for refs/heads/* and refs/tags/* only, sorted, joined
-    # by "\n" — byte-for-byte identical to the desktop node's mirrorStateHash()
-    # input (git for-each-ref over the same namespaces). HEAD, peeled tags
-    # ("...^{}"), and per-line capabilities (after the first NUL) are dropped.
-    # Assumes the traditional (protocol v0) advertisement; the host never sets
-    # GIT_PROTOCOL=version=2, so refs are always listed inline.
-    data = bytes(data or b"")
-    refs = []
-    i = 0
-    n = len(data)
-    while i + 4 <= n:
-        try:
-            length = int(data[i:i + 4], 16)
-        except ValueError:
-            break
-        if length == 0:        # flush-pkt ("0000") — section/stream boundary
-            i += 4
-            continue
-        if length < 4 or i + length > n:
-            break              # malformed; stop rather than misread
-        line = data[i + 4:i + length].rstrip(b"\n")
-        i += length
-        nul = line.find(b"\x00")
-        if nul != -1:          # strip capabilities advertised on the first ref
-            line = line[:nul]
-        parts = line.split(b" ", 1)
-        if len(parts) != 2:
-            continue
-        sha = parts[0].decode("ascii", "ignore")
-        name = parts[1].decode("utf-8", "ignore")
-        if name == "HEAD" or name.endswith("^{}"):
-            continue
-        if not (name.startswith("refs/heads/") or name.startswith("refs/tags/")):
-            continue
-        refs.append(sha + " " + name)
-    refs.sort()
-    return "\n".join(refs)
-
-
-def decode_git_request_body(data, content_encoding, max_bytes=8 * 1024 * 1024):
-    """Return the Git smart-HTTP body after decoding HTTP content encodings."""
-    data = bytes(data or b"")
-    if len(data) > max_bytes:
-        raise ValueError("git request body is too large")
-
-    encodings = [
-        item.strip().lower()
-        for item in (content_encoding or "").split(",")
-        if item.strip()
-    ]
-    # Content encodings are decoded in reverse application order. Git uses gzip
-    # once its upload-pack request crosses http.postBuffer; forwarding those raw
-    # bytes makes upload-pack parse the gzip header as a pkt-line and fail with
-    # "bad line length character".
-    for encoding in reversed(encodings):
-        if encoding == "identity":
-            continue
-        if encoding != "gzip":
-            raise ValueError("unsupported git content encoding: " + encoding)
-        try:
-            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
-                data = stream.read(max_bytes + 1)
-        except (EOFError, OSError) as error:
-            raise ValueError("invalid gzip git request body") from error
-        if len(data) > max_bytes:
-            raise ValueError("git request body is too large")
-    return data
-
-
 def git_bytes_response(data, content_type):
     return JsResponse.new(
         _to_js(bytes(data)),
@@ -712,64 +663,6 @@ def git_bytes_response(data, content_type):
             }
         ),
     )
-
-
-REPO_BLOB_CONTENT_TYPES = {
-    "3g2": "video/3gpp2",
-    "3gp": "video/3gpp",
-    "aac": "audio/aac",
-    "apng": "image/png",
-    "avi": "video/x-msvideo",
-    "avif": "image/avif",
-    "bmp": "image/bmp",
-    "csv": "text/csv; charset=utf-8",
-    "flac": "audio/flac",
-    "gif": "image/gif",
-    "ico": "image/x-icon",
-    "jfif": "image/jpeg",
-    "jpe": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "jpg": "image/jpeg",
-    "m4a": "audio/mp4",
-    "m4v": "video/mp4",
-    "mid": "audio/midi",
-    "midi": "audio/midi",
-    "mkv": "video/x-matroska",
-    "mov": "video/quicktime",
-    "mp3": "audio/mpeg",
-    "mp4": "video/mp4",
-    "mpeg": "video/mpeg",
-    "mpg": "video/mpeg",
-    "oga": "audio/ogg",
-    "ogg": "audio/ogg",
-    "ogv": "video/ogg",
-    "opus": "audio/ogg",
-    "pdf": "application/pdf",
-    "png": "image/png",
-    "svg": "image/svg+xml",
-    "tab": "text/tab-separated-values; charset=utf-8",
-    "tif": "image/tiff",
-    "tiff": "image/tiff",
-    "tsv": "text/tab-separated-values; charset=utf-8",
-    "wav": "audio/wav",
-    "weba": "audio/webm",
-    "webm": "video/webm",
-    "webp": "image/webp",
-}
-
-
-def repo_blob_content_type(path):
-    name = str(path or "").rsplit("/", 1)[-1].lower()
-    if "." not in name:
-        return "application/octet-stream"
-    return REPO_BLOB_CONTENT_TYPES.get(
-        name.rsplit(".", 1)[-1], "application/octet-stream")
-
-
-def repo_blob_filename(path):
-    name = str(path or "").rsplit("/", 1)[-1].strip() or "file"
-    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .")
-    return (cleaned or "file")[:180]
 
 
 def to_js(value):
@@ -844,426 +737,6 @@ CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
-
-
-def _mirror_ms(value):
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
-
-
-def repo_mirror_group_key(record):
-    root = str((record or {}).get("rootCommit") or "").strip().lower()
-    if root:
-        return "root:" + root
-    name = str((record or {}).get("name") or "").strip().lower()
-    return "name:" + name
-
-
-def repo_mirror_same_group(target, record):
-    # Whether `record` mirrors the same logical repo as `target`. They match when
-    # they share a root (first) commit. A mirror cloned from the relay can have an
-    # unset HEAD and so publish an empty rootCommit (issue #243); when either side
-    # lacks a root, fall back to matching the repo name so such a mirror still
-    # groups with its source of truth instead of vanishing from the owner's
-    # mirror-nodes list. Two differing non-empty roots mean a genuine fork with
-    # rewritten history, which stays in its own group.
-    troot = str((target or {}).get("rootCommit") or "").strip().lower()
-    rroot = str((record or {}).get("rootCommit") or "").strip().lower()
-    if troot and rroot:
-        return troot == rroot
-    tname = str((target or {}).get("name") or "").strip().lower()
-    rname = str((record or {}).get("name") or "").strip().lower()
-    return bool(tname) and tname == rname
-
-
-def mirroring_owner_set(records):
-    # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
-    # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one
-    # owner hosts (a single repo with no mirror elsewhere) don't qualify their
-    # owner. Grouping reuses repo_mirror_group_key (root commit, name fallback)
-    # so two nodes serving the same logical repo land in one group. Used to keep
-    # nodes that mirror nothing for anyone out of the donation split (issue #94).
-    groups = {}
-    for rec in records or []:
-        owner = str((rec or {}).get("owner") or "").strip()
-        if not owner:
-            continue
-        groups.setdefault(repo_mirror_group_key(rec), set()).add(owner.lower())
-    owners = set()
-    for members in groups.values():
-        if len(members) > 1:
-            owners |= members
-    return owners
-
-
-def served_mirror_groups(records):
-    # Mirror groups (root-commit / name keyed) that have at least one online,
-    # PUBLIC host right now. `records` are catalog records already annotated with
-    # rec["liveHost"] (the named node's own host presence). A group lands here as
-    # soon as ANY node mirroring that logical repo is live, which is what lets a
-    # repo stay cloneable/browsable in place through its own URL while its named
-    # source of truth is down (adhoc #61). Private rows never serve a public
-    # group, matching the clone fallback in select_clone_fallback.
-    groups = set()
-    for rec in records or []:
-        if (rec or {}).get("liveHost") and (rec or {}).get("visibility") != "private":
-            groups.add(repo_mirror_group_key(rec))
-    return groups
-
-
-def repo_clone_online(rec, served_groups):
-    # Whether a repo is actually reachable for clone/browse right now: its own
-    # named host is live, OR — for a public repo — a peer mirroring the same
-    # logical repo is online and the relay will serve it in place (adhoc #61).
-    # Private repos get no mirror fallback, so they depend on their own host.
-    if (rec or {}).get("liveHost"):
-        return True
-    if (rec or {}).get("visibility") == "private":
-        return False
-    return repo_mirror_group_key(rec) in (served_groups or set())
-
-
-def build_repo_mirrors_payload(
-    owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None,
-):
-    owner_l = (owner or "").strip().lower()
-    repo_l = (repo or "").strip().lower()
-    public_rows = []
-    target = None
-    for row in rows or []:
-        rec = row.get("data") or {}
-        if row.get("is_private") or rec.get("visibility") == "private":
-            continue
-        rec_owner = str(rec.get("owner") or "").strip()
-        rec_name = str(rec.get("name") or "").strip()
-        if not rec_owner or not rec_name:
-            continue
-        item = {"key_bi": row.get("key_bi"), "data": rec}
-        public_rows.append(item)
-        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
-            target = item
-    if not target:
-        return None
-
-    group_key = repo_mirror_group_key(target["data"])
-    members = [
-        r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
-    ]
-    freshest_sync = 0
-    for row in members:
-        freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
-
-    # Is the logical repo's source of truth (a working-copy holder — "local-node")
-    # online right now? While it is, a clone of a mirror whose refs fail the
-    # integrity pin is transparently served from the source instead of the mirror
-    # (see Default._online_source_of_truth), so that mirror is auto-healing, not
-    # blocking — reported as "healing" rather than "rejected". The hard reject (and
-    # its tamper protection) still applies when the source is offline.
-    source_online = False
-    for row in members:
-        rec = row["data"]
-        if str(rec.get("source") or "local-node") != "local-node":
-            continue
-        seen = _mirror_ms((presence or {}).get(row.get("key_bi")))
-        if seen and now - seen <= stale_ms:
-            source_online = True
-            break
-
-    def _int_field(rec, name):
-        try:
-            return int(rec.get(name))
-        except (TypeError, ValueError):
-            return -1
-
-    mirrors = []
-    for row in members:
-        rec = row["data"]
-        key = row.get("key_bi")
-        seen = _mirror_ms((presence or {}).get(key))
-        online = bool(seen and now - seen <= stale_ms)
-        hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
-        last_sync = _mirror_ms(rec.get("lastSync"))
-        try:
-            size_bytes = max(0, int(rec.get("sizeBytes") or 0))
-        except (TypeError, ValueError):
-            size_bytes = 0
-        behind = bool(
-            last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
-        )
-        issue_count = _int_field(rec, "issueCount")
-        # Clones / website serves this node has provided; -1 == not advertised
-        # (older peer or a record predating the counters), shown as an em-dash.
-        clones_served = _int_field(rec, "clonesServed")
-        website_served = _int_field(rec, "websiteServed")
-        # Would the clone integrity gate serve this node right now? Its published
-        # refs fingerprint (stateHash, the same one it signs on publish) must be
-        # a state some working-copy holder in the group attested — current pin or
-        # recent history — or every clone it serves is rejected with "repository
-        # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
-        # a pin, or nothing is pinned and the gate fails open), "rejected" (its
-        # fingerprint matches no attested state AND the source is offline, so the
-        # tamper gate is actively blocking its clones), "healing" (fingerprint
-        # matches nothing yet, but the source of truth is online, so clones are
-        # served from the source and the mirror clears once it re-syncs — not a
-        # failure), "unknown" (legacy record with no fingerprint; the gate checks
-        # its live refs, which we can't see here).
-        state_hash = str(rec.get("stateHash") or "").strip().lower()
-        pins = clone_state_pins(rec, key, public_rows, history)
-        if not pins or state_hash in pins:
-            integrity = "ok"
-        elif not state_hash:
-            integrity = "unknown"
-        elif source_online:
-            integrity = "healing"
-        else:
-            integrity = "rejected"
-        mirrors.append({
-            "node": str(rec.get("owner") or "").strip(),
-            "owner": str(rec.get("owner") or "").strip(),
-            "repo": str(rec.get("name") or "").strip(),
-            "status": "online" if online else "offline",
-            "lastSeen": seen if online else None,
-            "hostedSince": hosted,
-            "syncAgeMs": max(0, now - last_sync) if last_sync else None,
-            "lastSync": last_sync,
-            "behind": behind,
-            "cloneAvailable": online,
-            "sizeBytes": size_bytes,
-            "source": str(rec.get("source") or "").strip(),
-            # Node facts the publishing node mirrored into its catalog record, so the
-            # Mirror nodes view fills these columns even for an offline node (adhoc #56).
-            "commit": str(rec.get("commit") or "").strip(),
-            "branch": str(rec.get("branch") or "").strip(),
-            "issueCount": issue_count,
-            "commitCount": _int_field(rec, "commitCount"),
-            "branchCount": _int_field(rec, "branchCount"),
-            "pullCount": _int_field(rec, "pullCount"),
-            "discussionCount": _int_field(rec, "discussionCount"),
-            "worktreeCount": _int_field(rec, "worktreeCount"),
-            "artifactCount": _int_field(rec, "artifactCount"),
-            "platform": str(rec.get("platform") or "").strip(),
-            "version": str(rec.get("version") or "").strip(),
-            "id": str(rec.get("nodeId") or "").strip(),
-            "clonesServed": clones_served,
-            "websiteServed": website_served,
-            "integrity": integrity,
-        })
-
-    mirrors.sort(
-        key=lambda m: (
-            0 if m["status"] == "online" else 1,
-            -(m["lastSync"] or 0),
-            m["node"].lower(),
-        )
-    )
-    hosted_values = [m["hostedSince"] for m in mirrors if m["hostedSince"]]
-    return {
-        "ok": True,
-        "owner": target["data"].get("owner"),
-        "repo": target["data"].get("name"),
-        "groupKey": group_key,
-        "generatedAt": now,
-        "summary": {
-            "mirrors": len(mirrors),
-            "online": sum(1 for m in mirrors if m["status"] == "online"),
-            "cloneAvailable": sum(1 for m in mirrors if m["cloneAvailable"]),
-            "dataHostedBytes": sum(m["sizeBytes"] for m in mirrors),
-            "longestHostedSince": min(hosted_values) if hosted_values else None,
-            "freshestSync": freshest_sync or None,
-        },
-        "mirrors": mirrors,
-    }
-
-
-def select_clone_fallback(owner, repo, rows, presence, now, stale_ms, source_online,
-                          rotate=0):
-    # Pick a healthy, online mirror to serve a clone of owner/repo from when the
-    # named owner's own host is offline. This is what keeps a repo cloneable when
-    # the source of truth goes down: a clone of /owner/repo is redirected to a peer
-    # that mirrors the SAME logical repo (grouped by root commit, name fallback) and
-    # is online right now. Returns the fallback owner's name, or None to fall
-    # through to the normal named-owner host route.
-    #
-    # When several mirrors qualify, `rotate` (a per-repo counter the caller bumps
-    # on every fallback) spreads clone traffic across them round-robin instead of
-    # always hammering the single freshest mirror. rotate=0 keeps the
-    # freshest-first pick.
-    #
-    # Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload; the
-    # caller gathers the catalog rows + host_presence map and whether the named
-    # owner is currently online. We never redirect away from an online source.
-    owner_l = (owner or "").strip().lower()
-    repo_l = (repo or "").strip().lower()
-    if not owner_l or not repo_l or source_online:
-        return None
-    public = []
-    target = None
-    for row in rows or []:
-        rec = row.get("data") or {}
-        if row.get("is_private") or rec.get("visibility") == "private":
-            continue
-        rec_owner = str(rec.get("owner") or "").strip()
-        rec_name = str(rec.get("name") or "").strip()
-        if not rec_owner or not rec_name:
-            continue
-        item = {"key_bi": row.get("key_bi"), "data": rec}
-        public.append(item)
-        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
-            target = item
-    # When the source itself never published a record we can still group by name so
-    # an offline-but-unpublished source can fall back to a name-matching mirror.
-    target_data = target["data"] if target else {
-        "owner": owner, "name": repo, "rootCommit": ""}
-    candidates = []
-    for item in public:
-        rec = item["data"]
-        rec_owner = str(rec.get("owner") or "").strip()
-        if not rec_owner or rec_owner.lower() == owner_l:
-            continue  # never redirect to the (offline) source owner itself
-        if not repo_mirror_same_group(target_data, rec):
-            continue
-        seen = _mirror_ms(presence.get(item.get("key_bi")))
-        if not (seen and now - seen <= stale_ms):
-            continue  # only redirect to a mirror that is actually online
-        sync = _mirror_ms(rec.get("lastSync")) or 0
-        candidates.append((sync, seen, rec_owner))
-    if not candidates:
-        return None
-    # Freshest-synced first, then most-recently-seen, then name for a stable order.
-    candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
-    # Round-robin across the eligible online mirrors so the load of serving a
-    # downed repo is spread over all of them rather than landing on one mirror.
-    return candidates[rotate % len(candidates)][2]
-
-
-def browse_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
-    # Ordered list of node owners that can serve a website browse of owner/repo
-    # right now: every ONLINE mirror of the same logical repo, INCLUDING the named
-    # source itself. Freshest-synced first, then most-recently-seen, then name, so
-    # the round-robin order is stable. Unlike select_clone_fallback (which only
-    # diverts when the named host is offline and never lists the source), this
-    # spreads normal page loads across all live mirrors so the website can rotate
-    # over them and show which node served each request. Returns [] when nothing is
-    # online. Pure (no I/O) so it is unit-testable like build_repo_mirrors_payload.
-    owner_l = (owner or "").strip().lower()
-    repo_l = (repo or "").strip().lower()
-    if not owner_l or not repo_l:
-        return []
-    public = []
-    target = None
-    for row in rows or []:
-        rec = row.get("data") or {}
-        if row.get("is_private") or rec.get("visibility") == "private":
-            continue
-        rec_owner = str(rec.get("owner") or "").strip()
-        rec_name = str(rec.get("name") or "").strip()
-        if not rec_owner or not rec_name:
-            continue
-        item = {"key_bi": row.get("key_bi"), "data": rec}
-        public.append(item)
-        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
-            target = item
-    # When the source itself never published a record we can still group by name.
-    target_data = target["data"] if target else {
-        "owner": owner, "name": repo, "rootCommit": ""}
-    candidates = []
-    for item in public:
-        rec = item["data"]
-        rec_owner = str(rec.get("owner") or "").strip()
-        if not rec_owner:
-            continue
-        if not repo_mirror_same_group(target_data, rec):
-            continue
-        seen = _mirror_ms(presence.get(item.get("key_bi")))
-        if not (seen and now - seen <= stale_ms):
-            continue  # only serve from a mirror that is actually online
-        sync = _mirror_ms(rec.get("lastSync")) or 0
-        candidates.append((sync, seen, rec_owner))
-    candidates.sort(key=lambda c: (-c[0], -c[1], c[2].lower()))
-    ordered = []
-    seen_owners = set()
-    for _sync, _seen, name in candidates:
-        low = name.lower()
-        if low in seen_owners:
-            continue  # one live node serves a logical repo once
-        seen_owners.add(low)
-        ordered.append(name)
-    return ordered
-
-
-# How many recent owner-attested state pins are kept (and accepted) per repo.
-# The window is the availability/rollback trade: a mirror may lag the source by
-# up to this many publishes and still clone, while a rollback older than the
-# window is rejected.
-STATE_PIN_HISTORY = 10
-
-
-def clone_state_pins(target, target_key, rows, history=None):
-    # The set of repo-state hashes (sha256 over the canonical heads+tags
-    # advertisement) the relay accepts from the node serving a clone of the
-    # `target` catalog record, or None when the repo is unpinned (fail-open, e.g.
-    # a never-attested legacy repo). `rows` are decrypted catalog records
-    # [{"key_bi", "data"}]; `history` maps key_bi -> recent attested hashes from
-    # repo_state_history.
-    #
-    # A working-copy holder ("local-node" — the source of truth for its
-    # namespace) is validated against ITS OWN attestations: current pin plus
-    # recent history. Self-attestation is fine there — the node holds the signing
-    # key either way, so the pin is a consistency check, and the history absorbs
-    # the push-to-republish lag.
-    #
-    # A MIRROR ("remote-clone") must serve a state some working-copy holder in
-    # its logical-repo group (root commit, name fallback — see
-    # repo_mirror_same_group) actually attested. Its own self-signed pin proves
-    # nothing: a tampered mirror can always republish a hash matching its forged
-    # refs. Mirrors sync with `fetch --prune refs/heads/* refs/tags/*`, so a
-    # faithful mirror's full ref set — and therefore its hash — equals the
-    # source's. Only when NO group source has ever attested (legacy clients)
-    # does the mirror's own pin still apply, preserving the old behaviour.
-    #
-    # Residual limits, by design: a registered account that publishes a
-    # local-node record grouped with the repo can inject acceptable pins (raising
-    # the bar from "compromise one mirror" to "register a visible fake source"),
-    # and a mirror-run agent's local branches make its ref set diverge from the
-    # source until the next pruning sync (~5 min) — clones of that mirror fail
-    # the check for that window.
-    if not isinstance(target, dict) or not target:
-        return None
-
-    def _clean(value):
-        return str(value or "").strip().lower()
-
-    hist = history or {}
-
-    def _pins_for(key, rec):
-        pins = set()
-        if cur := _clean(rec.get("stateHash")):
-            pins.add(cur)
-        for h in hist.get(str(key or ""), []) or []:
-            if h := _clean(h):
-                pins.add(h)
-        return pins
-
-    # Records published before the field existed default to "local-node" (the
-    # same default safe_catalog_record applies on write).
-    if _clean(target.get("source") or "local-node") == "local-node":
-        return _pins_for(target_key, target) or None
-
-    source_pins = set()
-    for row in rows or []:
-        rec = (row or {}).get("data") or {}
-        if _clean(rec.get("source") or "local-node") != "local-node":
-            continue
-        if not repo_mirror_same_group(target, rec):
-            continue
-        source_pins |= _pins_for(row.get("key_bi"), rec)
-    if source_pins:
-        return source_pins
-    return _pins_for(target_key, target) or None
 
 
 async def touch_host_presence(env, repo_bi):
@@ -4276,55 +3749,6 @@ async def _account_reserve(env, request):
     await _save_account(env, name_bi, rec)
     return json_response(
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
-
-
-# Identity key rotation (issue #368). The account's currently-bound Ed25519 key
-# signs a successor public key; on a valid signature the account rebinds to the
-# new key, so a user who backed up their identity and moved to a fresh key keeps
-# their name, linked nodes and bounty bindings. Without this, a pubkey bound
-# elsewhere is a hard failure and a lost machine means a lost identity.
-async def _account_rotate(env, request):
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-    old_pub = clean_string(data.get("oldPubkey", ""), 120)
-    new_pub = clean_string(data.get("newPubkey", ""), 120)
-    ts = clean_string(data.get("ts", ""), 20)
-    sig = clean_string(data.get("sig", ""), 200)
-    if not valid_node_name(name):
-        return json_response({"error": "invalid_node_name"}, status=400)
-    if not valid_node_pubkey(new_pub):
-        return json_response({"error": "invalid_pubkey"}, status=400)
-    if not _ts_ok(ts):
-        return json_response({"error": "stale_request"}, status=401)
-
-    name_bi, rec = await _account_row(env, name)
-    if not rec:
-        return json_response({"error": "no_account"}, status=404)
-    bound = rec.get("pubkey", "")
-    # Idempotent retry: the successor is already the bound key. Report success so
-    # a client that lost the first response can safely re-send.
-    if bound and bound == new_pub:
-        return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
-    # Only the key the account is *currently* bound to may authorize a rotation.
-    if not bound or bound != old_pub:
-        return json_response({"error": "not_bound"}, status=403)
-    canonical = ("forkmesh-rotate-v1\n" + old_pub + "\n" + new_pub + "\n" +
-                 ts).encode()
-    if not await ed25519_verify(old_pub, sig, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
-
-    prev = rec.get("prev_pubkeys")
-    prev = list(prev) if isinstance(prev, list) else []
-    if bound and bound not in prev:
-        prev.append(bound)
-    rec["pubkey"] = new_pub
-    rec["prev_pubkeys"] = prev
-    rec["rotated_at"] = int(Date.now())
-    await _save_account(env, name_bi, rec)
-    return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
 
 
 # Step 2 (the "Join" step): create a Solana payment request for this signup.
@@ -7360,8 +6784,6 @@ async def accounts_handler(env, request):
         return await _account_signup(env, request)
     if url.path == "/api/accounts/reserve" and method == "POST":
         return await _account_reserve(env, request)
-    if url.path == "/api/accounts/rotate" and method == "POST":
-        return await _account_rotate(env, request)
     if url.path == "/api/accounts/profile" and method == "POST":
         return await _account_profile(env, request)
     if url.path == "/api/accounts/donation-address" and method == "POST":
@@ -7964,20 +7386,6 @@ def _build_rev(env):
     except (AttributeError, TypeError):
         pass
     return "dev"
-
-
-def _app_version(env):
-    # The human-readable release version shown in the website header. deploy.sh
-    # reads it from qt_client/CMakeLists.txt's project() version and stamps it as
-    # the APP_VERSION Worker var, so it matches the desktop app and updates
-    # automatically whenever a release bumps that version and redeploys.
-    try:
-        val = env.APP_VERSION
-        if val:
-            return str(val)
-    except (AttributeError, TypeError):
-        pass
-    return ""
 
 
 async def poll_handler(env, request):
@@ -9029,29 +8437,14 @@ async def telemetry_summary(env):
     }
 
 
-# Admin access is gated by a real forkmesh login (node name / email + password
-# + optional TOTP) whose account carries the accounts.is_admin flag — the legacy
-# ADMIN_USER/ADMIN_PASS HTTP Basic credentials are gone. A successful admin login
-# mints a short-lived signed session token stored in an HttpOnly, SameSite=Strict
-# cookie; every admin request re-verifies the signature AND that the account
-# still has is_admin, so a revoked admin loses access on their next request.
-ADMIN_SESSION_COOKIE = "fm_admin"
-ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000  # 12 hours
-
-
-def _admin_session_secret(env):
-    # Keyed on the at-rest data key so the token can be verified statelessly (no
-    # server-side session store) yet cannot be forged without the Worker secret.
-    return (str(getattr(env, "DATA_KEY", "") or "") + "|forkmesh-admin-session").encode()
-
-
 def _admin_csrf_token(env):
-    # A deterministic CSRF token derived from the admin session secret. It is only
-    # ever rendered inside the (login-gated) admin HTML, so a cross-site forged
-    # POST cannot include it. Combined with the SameSite=Strict session cookie
-    # this needs no server-side session store to verify.
-    return hmac.new(
-        _admin_session_secret(env), b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
+    # A deterministic CSRF token derived from admin/at-rest secrets. It is only
+    # ever rendered inside the (Basic-auth-protected) admin HTML, so a cross-site
+    # forged POST — which still carries the browser's cached Basic-auth creds —
+    # cannot include it. No server-side session store is needed to verify it.
+    secret = (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
+              str(getattr(env, "DATA_KEY", "") or "")).encode()
+    return hmac.new(secret, b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
 
 
 def _admin_csrf_ok(env, form):
@@ -9060,125 +8453,24 @@ def _admin_csrf_ok(env, form):
         submitted, _admin_csrf_token(env))
 
 
-def _make_admin_session(env, name, now=None):
-    # Signed, self-describing token: "<name>|<expires_ms>|<hmac>". Base64url so it
-    # is a safe cookie value.
-    now = int(now if now is not None else Date.now())
-    body = "%s|%d" % (name, now + ADMIN_SESSION_TTL_MS)
-    sig = hmac.new(_admin_session_secret(env), body.encode(), "sha256").hexdigest()
-    return base64.urlsafe_b64encode((body + "|" + sig).encode()).decode()
-
-
-def _verify_admin_session(env, token):
-    # Returns the admin's node name if the token's signature is valid and it has
-    # not expired, else "". Does NOT check is_admin — the caller re-checks that so
-    # a revoked admin is locked out even while holding a still-valid token.
-    if not token:
-        return ""
+def _check_basic_auth(env, request):
+    user = str(getattr(env, "ADMIN_USER", "") or "")
+    password = str(getattr(env, "ADMIN_PASS", "") or "")
+    if not user or not password:
+        return False  # fail closed until creds are configured
+    header = request.headers.get("authorization") or ""
+    if not header.startswith("Basic "):
+        return False
     try:
-        raw = base64.urlsafe_b64decode(token.encode()).decode("utf-8")
+        decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
     except Exception:
-        return ""
-    body, sep, sig = raw.rpartition("|")
-    if not sep:
-        return ""
-    expected = hmac.new(
-        _admin_session_secret(env), body.encode(), "sha256").hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return ""
-    name, esep, expires = body.partition("|")
-    if not esep:
-        return ""
-    try:
-        if int(expires) < int(Date.now()):
-            return ""
-    except (TypeError, ValueError):
-        return ""
-    return name
-
-
-def _admin_cookie_token(request):
-    header = request.headers.get("cookie") or ""
-    prefix = ADMIN_SESSION_COOKIE + "="
-    for part in header.split(";"):
-        part = part.strip()
-        if part.startswith(prefix):
-            return unquote(part[len(prefix):])
-    return ""
-
-
-def _admin_set_cookie(env, token):
-    # Scoped to the (secret) admin path so it is never sent to any other route.
-    path = "/" + _admin_path(env)
-    max_age = ADMIN_SESSION_TTL_MS // 1000
-    return ("%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=Strict"
-            % (ADMIN_SESSION_COOKIE, quote(token), path, max_age))
-
-
-async def _admin_login_check(env, identifier, password, totp):
-    # Returns the admin's node name when the credentials authenticate an active
-    # account that (a) verifies the password, (b) passes TOTP when enrolled, and
-    # (c) carries the is_admin flag. Otherwise "". Shares the login throttle so
-    # the admin login can't be brute-forced.
-    identifier = (identifier or "").strip().lower()
-    if not identifier or not password:
-        return ""
-    id_bi = await blind_index(env, identifier)
-    if not id_bi or await _login_locked_until(env, id_bi):
-        return ""
-    rec = None
-    if "@" in identifier:
-        email_bi = await blind_index(env, identifier)
-        row = await d1_first(
-            env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
-        if row:
-            rec = await decrypt_row(env, row["data"])
-    elif valid_node_name(identifier):
-        _, rec = await _account_row(env, identifier)
-    ok = (rec is not None and rec.get("status") == "active" and
-          rec.get("pass_hash") and
-          await verify_password(password, rec.get("pass_salt", ""),
-                                rec.get("pass_hash", "")))
-    if ok and rec.get("totp_enrolled"):
-        ok = await totp_verify(rec.get("totp_secret", ""), totp)
-    if ok and not await _is_admin(env, rec.get("name", "")):
-        ok = False
-    if not ok:
-        await _login_record_fail(env, id_bi)
-        return ""
-    await _login_clear(env, id_bi)
-    return rec.get("name", "")
-
-
-def _admin_login_html(env, error=""):
-    err = ('<p class="err">%s</p>' % _html_escape(error)) if error else ""
-    return (
-        "<!doctype html><html lang=en><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>forkmesh · admin login</title><style>" + ADMIN_STYLE +
-        " .login{max-width:340px;margin:12vh auto;padding:28px 24px;"
-        "border:1px solid #21262d;border-radius:12px;background:#161b22}"
-        " .login h1{margin:0 0 4px;font-size:18px}"
-        " .login p.sub{margin:0 0 12px;color:#8b949e;font-size:12px}"
-        " .login label{display:block;margin:12px 0 4px;font-size:12px;color:#8b949e}"
-        " .login input{width:100%;padding:9px 10px;border-radius:6px;"
-        "border:1px solid #30363d;background:#0d1117;color:#c9d1d9}"
-        " .login button{margin-top:20px;width:100%;padding:10px;border:0;"
-        "border-radius:6px;background:#238636;color:#fff;font-weight:600;cursor:pointer}"
-        " .login .err{color:#f85149;font-size:13px;margin:0 0 8px}"
-        "</style></head><body>"
-        "<form class=login method=post autocomplete=off>"
-        "<h1>ForkMesh Admin</h1>"
-        "<p class=sub>Sign in with an administrator account.</p>" + err +
-        "<label>Node name or email</label>"
-        "<input name=identifier autofocus autocomplete=username>"
-        "<label>Password</label>"
-        "<input name=password type=password autocomplete=current-password>"
-        "<label>2FA code (if enabled)</label>"
-        "<input name=totp inputmode=numeric autocomplete=one-time-code>"
-        "<button type=submit>Sign in</button>"
-        "</form></body></html>"
-    )
+        return False
+    sep = decoded.find(":")
+    if sep < 0:
+        return False
+    ok_user = hmac.compare_digest(decoded[:sep], user)
+    ok_pass = hmac.compare_digest(decoded[sep + 1:], password)
+    return ok_user and ok_pass
 
 
 ADMIN_STYLE = """
@@ -9874,43 +9166,11 @@ class Default(WorkerEntrypoint):
         return response
 
     async def _admin(self, request):
-        # Gated by a forkmesh login with the is_admin flag (no more HTTP Basic).
-        # A valid signed session cookie whose account still has is_admin admits
-        # the request; otherwise we serve / process the login form.
-        session_name = _verify_admin_session(
-            self.env, _admin_cookie_token(request))
-        authed = bool(session_name) and await _is_admin(self.env, session_name)
-        if not authed:
-            if method_name(request) == "POST":
-                try:
-                    login_form = parse_qs(
-                        await request.text(), keep_blank_values=True)
-                except Exception:
-                    login_form = {}
-                name = await _admin_login_check(
-                    self.env,
-                    login_form.get("identifier", [""])[0],
-                    login_form.get("password", [""])[0],
-                    login_form.get("totp", [""])[0],
-                )
-                if name:
-                    # Post/redirect/get so a refresh doesn't repost credentials.
-                    return Response("", status=303, headers={
-                        "location": "/" + _admin_path(self.env),
-                        "set-cookie": _admin_set_cookie(
-                            self.env, _make_admin_session(self.env, name)),
-                    })
-                return Response(
-                    _admin_login_html(
-                        self.env,
-                        "Invalid credentials or not an administrator."),
-                    status=401,
-                    headers={"content-type": "text/html; charset=utf-8"},
-                )
+        if not _check_basic_auth(self.env, request):
             return Response(
-                _admin_login_html(self.env),
+                "Authentication required.",
                 status=401,
-                headers={"content-type": "text/html; charset=utf-8"},
+                headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
             )
         await ensure_schema(self.env)
         params = parse_qs(urlparse(request.url).query)
@@ -9918,8 +9178,8 @@ class Default(WorkerEntrypoint):
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
         # state-changing POST must carry a CSRF token (rendered only into this
-        # login-gated page) so a cross-site form — which would still send the
-        # browser's admin session cookie — can't trigger these actions.
+        # Basic-auth-gated page) so a cross-site form — which would still send the
+        # browser's cached admin credentials — can't trigger these actions.
         banner = ""
         action = params.get("action", [""])[0]
         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
@@ -10090,7 +9350,6 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
-                    "version": _app_version(self.env),
                     "now": Date.now(),
                 }
             )

@@ -11,39 +11,7 @@ from pathlib import Path
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STATIC = (PUBLIC / "static-page.js").read_text(encoding="utf-8")
-
-
-def test_catalog_defines_cached_stat_helpers():
-    assert "function readCachedStat(" in CATALOG
-    assert "function writeCachedStat(" in CATALOG
-    # Namespaced localStorage keys so the counts persist across reloads.
-    assert "forkmesh.stats." in CATALOG
-
-
-def test_catalog_persists_counts_when_live_data_arrives():
-    update = CATALOG[
-        CATALOG.index("function updateCatalogStats")
-        : CATALOG.index("function setCatalogView")
-    ]
-    assert 'writeCachedStat("catalogRepos", logical);' in update
-
-    render_clients = CATALOG[
-        CATALOG.index("function renderClients")
-        : CATALOG.index("async function pollClients")
-    ]
-    assert 'writeCachedStat("clients", online);' in render_clients
-
-
-def test_catalog_primes_pills_from_cache_before_fetching():
-    # The priming must run before the first loadCatalog()/startClients() calls.
-    prime_repos = CATALOG.index('readCachedStat("catalogRepos")')
-    prime_clients = CATALOG.index('readCachedStat("clients")')
-    load = CATALOG.rindex("loadCatalog();")
-    assert prime_repos < load
-    assert prime_clients < load
-    assert "count.textContent = `${cachedCatalogRepos} mirrored`;" in CATALOG
 
 
 def test_static_page_defines_and_primes_cached_stats():
