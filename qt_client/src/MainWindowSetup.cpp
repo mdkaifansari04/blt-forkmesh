@@ -417,6 +417,45 @@ QWidget *MainWindow::buildSetupPage()
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto *chrome = new WindowChromeBar;
+    auto *chromeRow = new QHBoxLayout(chrome);
+    chromeRow->setContentsMargins(14, 0, 8, 0);
+    chromeRow->setSpacing(8);
+    auto *chromeTitle = new QLabel(QStringLiteral("ForkMesh v" FORKMESH_VERSION));
+    chromeTitle->setObjectName("appVersionLabel");
+    chromeRow->addWidget(chromeTitle);
+    chromeRow->addStretch();
+    auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
+        auto *button = new QPushButton;
+        button->setObjectName(QStringLiteral("windowChromeButton"));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFixedSize(32, 30);
+        button->setToolTip(tip);
+        button->setIcon(style()->standardIcon(icon));
+        button->setIconSize(QSize(14, 14));
+        return button;
+    };
+    auto *minimizeButton = makeWindowButton(QStyle::SP_TitleBarMinButton,
+                                            QStringLiteral("Minimize"));
+    connect(minimizeButton, &QPushButton::clicked, this, &MainWindow::showMinimized);
+    auto *maximizeButton = makeWindowButton(QStyle::SP_TitleBarMaxButton,
+                                            QStringLiteral("Maximize / restore"));
+    connect(maximizeButton, &QPushButton::clicked, this, [this] {
+        if (isMaximized())
+            showNormal();
+        else
+            showMaximized();
+    });
+    auto *closeButton = makeWindowButton(QStyle::SP_TitleBarCloseButton,
+                                         QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("windowChromeCloseButton"));
+    connect(closeButton, &QPushButton::clicked, this, &MainWindow::close);
+    chromeRow->addWidget(minimizeButton);
+    chromeRow->addWidget(maximizeButton);
+    chromeRow->addWidget(closeButton);
+    layout->addWidget(chrome);
     layout->addWidget(setupScroll);
 
     connect(startButton, &QPushButton::clicked, this, &MainWindow::startSession);

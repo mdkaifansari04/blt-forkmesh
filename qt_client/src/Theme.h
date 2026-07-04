@@ -323,6 +323,9 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
+#windowChromeBar {
+    background-color: #0d1117; border-bottom: 1px solid #21262d;
+}
 #appVersionLabel {
     background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
 }
@@ -354,6 +357,16 @@ QPushButton#topNavButton:checked {
 QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
+}
+QPushButton#windowChromeButton, QPushButton#windowChromeCloseButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #8b949e; padding: 0;
+}
+QPushButton#windowChromeButton:hover {
+    background-color: #161b22; color: #e6edf3; border-color: #30363d;
+}
+QPushButton#windowChromeCloseButton:hover {
+    background-color: #da3633; color: #ffffff; border-color: #da3633;
 }
 /* Top-row switchers (relay / node / repo): favicon + dropdown + open-in-browser */
 QPushButton#relayIconButton, QPushButton#relayOpenButton {
@@ -493,7 +506,7 @@ QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,
 #issueSearch:focus { border-color: #58a6ff; }
 #globalSearch {
     background-color: #010409; border: 1px solid #30363d;
-    border-radius: 6px; padding: 5px 8px; color: #e6edf3;
+    border-radius: 6px; padding: 4px 8px; color: #e6edf3;
 }
 #globalSearch:focus { border-color: #58a6ff; }
 #globalSearchPopup {
@@ -1439,12 +1452,15 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
+#windowChromeBar {
+    background-color: #ffffff; border-bottom: 1px solid #d8dee4;
+}
 #appVersionLabel {
     background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
 }
 #globalSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
-    border-radius: 6px; padding: 5px 8px; color: #1f2328;
+    border-radius: 6px; padding: 4px 8px; color: #1f2328;
 }
 #globalSearch:focus { border-color: #0969da; }
 #globalSearchPopup {
@@ -1453,6 +1469,16 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 }
 #globalSearchPopup::item { color: #1f2328; padding: 6px 8px; border-radius: 6px; }
 #globalSearchPopup::item:selected { background-color: #0969da; color: #ffffff; }
+QPushButton#windowChromeButton, QPushButton#windowChromeCloseButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: #656d76; padding: 0;
+}
+QPushButton#windowChromeButton:hover {
+    background-color: #f6f8fa; color: #1f2328; border-color: #d0d7de;
+}
+QPushButton#windowChromeCloseButton:hover {
+    background-color: #cf222e; color: #ffffff; border-color: #cf222e;
+}
 #searchResultsTitle { font-size: 18px; color: #1f2328; }
 #searchResultsTree {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;

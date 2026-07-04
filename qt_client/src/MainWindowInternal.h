@@ -182,6 +182,42 @@
 
 namespace forkmesh::ui {
 
+class WindowChromeBar : public QWidget
+{
+public:
+    explicit WindowChromeBar(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("windowChromeBar"));
+        setFixedHeight(42);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            if (QWindow *handle = window()->windowHandle())
+                handle->startSystemMove();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            QWidget *top = window();
+            if (top->isMaximized())
+                top->showNormal();
+            else
+                top->showMaximized();
+            event->accept();
+            return;
+        }
+        QWidget::mouseDoubleClickEvent(event);
+    }
+};
+
 // Cross-region free helpers shared by several MainWindow feature .cpp files.
 // Defined in MainWindowShared.cpp.
 QString openAiAuthHeader(const QString &apiKey);
