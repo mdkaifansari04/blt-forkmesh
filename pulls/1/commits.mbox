@@ -1,4 +1,4 @@
-From 41340dd5ed2defed0ae643c5ee403367c5856d43 Mon Sep 17 00:00:00 2001
+From 943892369702ca50d0256afe72670708963f893f Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Sat, 4 Jul 2026 19:16:03 +0530
 Subject: [PATCH] fix(worker): canonicalize public routes and shared chrome
@@ -55,7 +55,7 @@ Test plan:
  create mode 100644 cloudflare_worker/tests/test_static_route_canonicalization.py
 
 diff --git a/cloudflare_worker/public/404.html b/cloudflare_worker/public/404.html
-index 69cd4421..48240e92 100644
+index 69cd44217..48240e922 100644
 --- a/cloudflare_worker/public/404.html
 +++ b/cloudflare_worker/public/404.html
 @@ -4,40 +4,6 @@
@@ -100,7 +100,7 @@ index 69cd4421..48240e92 100644
      <meta
        name="description"
 diff --git a/cloudflare_worker/public/_redirects b/cloudflare_worker/public/_redirects
-index b24003e8..4df0c15c 100644
+index b24003e8c..4df0c15c6 100644
 --- a/cloudflare_worker/public/_redirects
 +++ b/cloudflare_worker/public/_redirects
 @@ -1,23 +1,20 @@
@@ -151,7 +151,7 @@ index b24003e8..4df0c15c 100644
 +# /favicon/site.webmanifest because Cloudflare applies _redirects before serving
 +# matching static files.
 diff --git a/cloudflare_worker/public/blog/index.html b/cloudflare_worker/public/blog/index.html
-index 06ea1490..dfe8a11a 100644
+index 06ea14903..dfe8a11a2 100644
 --- a/cloudflare_worker/public/blog/index.html
 +++ b/cloudflare_worker/public/blog/index.html
 @@ -48,11 +48,11 @@
@@ -169,7 +169,7 @@ index 06ea1490..dfe8a11a 100644
            <a class="nav-cta" href="/signup">Sign Up / Log In</a>
          </nav>
 diff --git a/cloudflare_worker/public/blog/introducing-forkmesh/index.html b/cloudflare_worker/public/blog/introducing-forkmesh/index.html
-index 7c049dec..d025fadf 100644
+index 7c049dec7..d025fadf5 100644
 --- a/cloudflare_worker/public/blog/introducing-forkmesh/index.html
 +++ b/cloudflare_worker/public/blog/introducing-forkmesh/index.html
 @@ -72,11 +72,11 @@
@@ -187,7 +187,7 @@ index 7c049dec..d025fadf 100644
            <a class="nav-cta" href="/signup">Sign Up / Log In</a>
          </nav>
 diff --git a/cloudflare_worker/public/careers.html b/cloudflare_worker/public/careers.html
-index 59f70c9a..1cf5a1ca 100644
+index 59f70c9af..1cf5a1ca2 100644
 --- a/cloudflare_worker/public/careers.html
 +++ b/cloudflare_worker/public/careers.html
 @@ -48,38 +48,13 @@
@@ -288,7 +288,7 @@ index 59f70c9a..1cf5a1ca 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/changelog.html b/cloudflare_worker/public/changelog.html
-index 603abc91..72dc8160 100644
+index 603abc91d..72dc81603 100644
 --- a/cloudflare_worker/public/changelog.html
 +++ b/cloudflare_worker/public/changelog.html
 @@ -55,38 +55,13 @@
@@ -384,7 +384,7 @@ index 603abc91..72dc8160 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/desktop.html b/cloudflare_worker/public/desktop.html
-index e8bab40f..042e11d4 100644
+index e8bab40f0..042e11d45 100644
 --- a/cloudflare_worker/public/desktop.html
 +++ b/cloudflare_worker/public/desktop.html
 @@ -94,38 +94,13 @@
@@ -481,7 +481,7 @@ index e8bab40f..042e11d4 100644
      <script>
        // Copy buttons for the per-OS command blocks. The site-wide static-page.js
 diff --git a/cloudflare_worker/public/docs.html b/cloudflare_worker/public/docs.html
-index d7e936ec..0e6cfcb2 100644
+index d7e936ec3..0e6cfcb2e 100644
 --- a/cloudflare_worker/public/docs.html
 +++ b/cloudflare_worker/public/docs.html
 @@ -376,13 +376,13 @@
@@ -510,7 +510,7 @@ index d7e936ec..0e6cfcb2 100644
                >
                  <svg viewBox="0 0 24 24" aria-hidden="true">
 diff --git a/cloudflare_worker/public/docs/index.html b/cloudflare_worker/public/docs/index.html
-index d7e936ec..0e6cfcb2 100644
+index d7e936ec3..0e6cfcb2e 100644
 --- a/cloudflare_worker/public/docs/index.html
 +++ b/cloudflare_worker/public/docs/index.html
 @@ -376,13 +376,13 @@
@@ -539,7 +539,7 @@ index d7e936ec..0e6cfcb2 100644
                >
                  <svg viewBox="0 0 24 24" aria-hidden="true">
 diff --git a/cloudflare_worker/public/features.html b/cloudflare_worker/public/features.html
-index 280a2a33..28d0f958 100644
+index 280a2a33b..28d0f9580 100644
 --- a/cloudflare_worker/public/features.html
 +++ b/cloudflare_worker/public/features.html
 @@ -118,41 +118,15 @@
@@ -655,7 +655,7 @@ index 280a2a33..28d0f958 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/forgot-password.html b/cloudflare_worker/public/forgot-password.html
-index a2349ad3..51459061 100644
+index a2349ad3b..51459061e 100644
 --- a/cloudflare_worker/public/forgot-password.html
 +++ b/cloudflare_worker/public/forgot-password.html
 @@ -147,7 +147,7 @@
@@ -668,7 +668,7 @@ index a2349ad3..51459061 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/login.html b/cloudflare_worker/public/login.html
-index d6448785..bee85656 100644
+index d6448785a..bee856567 100644
 --- a/cloudflare_worker/public/login.html
 +++ b/cloudflare_worker/public/login.html
 @@ -189,8 +189,8 @@
@@ -683,7 +683,7 @@ index d6448785..bee85656 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/privacy.html b/cloudflare_worker/public/privacy.html
-index e7e49b85..ceabd74f 100644
+index e7e49b859..ceabd74fb 100644
 --- a/cloudflare_worker/public/privacy.html
 +++ b/cloudflare_worker/public/privacy.html
 @@ -93,6 +93,10 @@
@@ -787,7 +787,7 @@ index e7e49b85..ceabd74f 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/public/reset-password.html b/cloudflare_worker/public/reset-password.html
-index ad7c4366..6f057f55 100644
+index ad7c43660..6f057f557 100644
 --- a/cloudflare_worker/public/reset-password.html
 +++ b/cloudflare_worker/public/reset-password.html
 @@ -151,7 +151,7 @@
@@ -800,7 +800,7 @@ index ad7c4366..6f057f55 100644
      </main>
    </body>
 diff --git a/cloudflare_worker/public/reset-password.js b/cloudflare_worker/public/reset-password.js
-index a5a1914a..b8073fbc 100644
+index a5a1914a7..b8073fbc2 100644
 --- a/cloudflare_worker/public/reset-password.js
 +++ b/cloudflare_worker/public/reset-password.js
 @@ -54,7 +54,7 @@
@@ -814,7 +814,7 @@ index a5a1914a..b8073fbc 100644
      btn.disabled = false;
 diff --git a/cloudflare_worker/public/site-footer.css b/cloudflare_worker/public/site-footer.css
 new file mode 100644
-index 00000000..38ea2a36
+index 000000000..38ea2a366
 --- /dev/null
 +++ b/cloudflare_worker/public/site-footer.css
 @@ -0,0 +1,244 @@
@@ -1064,7 +1064,7 @@ index 00000000..38ea2a36
 +}
 diff --git a/cloudflare_worker/public/site-footer.js b/cloudflare_worker/public/site-footer.js
 new file mode 100644
-index 00000000..52c3d155
+index 000000000..52c3d1556
 --- /dev/null
 +++ b/cloudflare_worker/public/site-footer.js
 @@ -0,0 +1,199 @@
@@ -1269,7 +1269,7 @@ index 00000000..52c3d155
 +})();
 diff --git a/cloudflare_worker/public/site-header.css b/cloudflare_worker/public/site-header.css
 new file mode 100644
-index 00000000..afbcbdf5
+index 000000000..afbcbdf5f
 --- /dev/null
 +++ b/cloudflare_worker/public/site-header.css
 @@ -0,0 +1,63 @@
@@ -1338,7 +1338,7 @@ index 00000000..afbcbdf5
 +}
 diff --git a/cloudflare_worker/public/site-header.js b/cloudflare_worker/public/site-header.js
 new file mode 100644
-index 00000000..7265b60a
+index 000000000..7265b60ae
 --- /dev/null
 +++ b/cloudflare_worker/public/site-header.js
 @@ -0,0 +1,19 @@
@@ -1362,7 +1362,7 @@ index 00000000..7265b60a
 +  });
 +})();
 diff --git a/cloudflare_worker/public/static-page.js b/cloudflare_worker/public/static-page.js
-index 9a84919a..abd4e960 100644
+index 9a84919ab..abd4e9608 100644
 --- a/cloudflare_worker/public/static-page.js
 +++ b/cloudflare_worker/public/static-page.js
 @@ -27,8 +27,9 @@
@@ -1425,7 +1425,7 @@ index 9a84919a..abd4e960 100644
  
    // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.
 diff --git a/cloudflare_worker/public/status.html b/cloudflare_worker/public/status.html
-index ab2ca837..679b72ec 100644
+index ab2ca837c..679b72ec1 100644
 --- a/cloudflare_worker/public/status.html
 +++ b/cloudflare_worker/public/status.html
 @@ -20,38 +20,13 @@
@@ -1521,7 +1521,7 @@ index ab2ca837..679b72ec 100644
      <script>
        (() => {
 diff --git a/cloudflare_worker/public/terms.html b/cloudflare_worker/public/terms.html
-index b63da85c..159f0654 100644
+index b63da85c9..159f06541 100644
 --- a/cloudflare_worker/public/terms.html
 +++ b/cloudflare_worker/public/terms.html
 @@ -93,6 +93,10 @@
@@ -1625,7 +1625,7 @@ index b63da85c..159f0654 100644
    </body>
  </html>
 diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index d08c0b3e..8ae64a51 100644
+index d08c0b3ea..8ae64a51d 100644
 --- a/cloudflare_worker/src/entry.py
 +++ b/cloudflare_worker/src/entry.py
 @@ -183,6 +183,14 @@ from dashboard_bundle import (  # noqa: E402
@@ -1710,7 +1710,7 @@ index d08c0b3e..8ae64a51 100644
          # dashboard_bundle.py). Each fragment is a real static asset, so
 diff --git a/cloudflare_worker/src/static_routes.py b/cloudflare_worker/src/static_routes.py
 new file mode 100644
-index 00000000..1f503834
+index 000000000..1f503834d
 --- /dev/null
 +++ b/cloudflare_worker/src/static_routes.py
 @@ -0,0 +1,91 @@
@@ -1806,7 +1806,7 @@ index 00000000..1f503834
 +    kind = unquote(parts[2])
 +    return kind in ("tree", "blob") or kind in REPO_TAB_ROUTES
 diff --git a/cloudflare_worker/tests/test_account_profile_endpoints.py b/cloudflare_worker/tests/test_account_profile_endpoints.py
-index 4d2735c2..020f6e06 100644
+index 4d2735c23..020f6e062 100644
 --- a/cloudflare_worker/tests/test_account_profile_endpoints.py
 +++ b/cloudflare_worker/tests/test_account_profile_endpoints.py
 @@ -273,7 +273,8 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
@@ -1836,7 +1836,7 @@ index 4d2735c2..020f6e06 100644
 +    assert "/forgot-password" in login_html
 +    assert "/forgot-password.html" not in login_html
 diff --git a/cloudflare_worker/tests/test_auth_pages_frontend.py b/cloudflare_worker/tests/test_auth_pages_frontend.py
-index 37a40aed..7d2c7db6 100644
+index 37a40aed3..7d2c7db60 100644
 --- a/cloudflare_worker/tests/test_auth_pages_frontend.py
 +++ b/cloudflare_worker/tests/test_auth_pages_frontend.py
 @@ -81,8 +81,10 @@ def test_login_and_signup_cross_links_remain():
@@ -1889,7 +1889,7 @@ index 37a40aed..7d2c7db6 100644
  
  def test_worker_handles_forgot_and_reset_password_routes():
 diff --git a/cloudflare_worker/tests/test_blog_frontend.py b/cloudflare_worker/tests/test_blog_frontend.py
-index 4b3b9083..a80eca72 100644
+index 4b3b9083a..a80eca72d 100644
 --- a/cloudflare_worker/tests/test_blog_frontend.py
 +++ b/cloudflare_worker/tests/test_blog_frontend.py
 @@ -223,26 +223,25 @@ def test_blog_page_uses_blog_banner_assets():
@@ -1932,7 +1932,7 @@ index 4b3b9083..a80eca72 100644
 -    test_blog_paths_are_owned_by_python_worker()
 +    test_blog_paths_are_owned_by_redirects_not_python_worker()
 diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-index 2774f283..c335b6db 100644
+index 2774f283b..c335b6dbd 100644
 --- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
 +++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
 @@ -1086,26 +1086,29 @@ def test_dashboard_deep_link_assets_binding_is_wired_up():
@@ -1999,7 +1999,7 @@ index 2774f283..c335b6db 100644
  
  def test_dashboard_restores_feature_tab_on_hard_refresh():
 diff --git a/cloudflare_worker/tests/test_legal_pages_frontend.py b/cloudflare_worker/tests/test_legal_pages_frontend.py
-index 3e33f978..3b8a5f6f 100644
+index 3e33f9782..3b8a5f6f4 100644
 --- a/cloudflare_worker/tests/test_legal_pages_frontend.py
 +++ b/cloudflare_worker/tests/test_legal_pages_frontend.py
 @@ -1,7 +1,6 @@
@@ -2105,7 +2105,7 @@ index 3e33f978..3b8a5f6f 100644
 +    test_legal_pages_include_standard_footer_mount()
      test_legal_pages_preserve_core_content_and_cross_links()
 diff --git a/cloudflare_worker/tests/test_public_logo.py b/cloudflare_worker/tests/test_public_logo.py
-index 9e34c067..b6d26283 100644
+index 9e34c0677..b6d262837 100644
 --- a/cloudflare_worker/tests/test_public_logo.py
 +++ b/cloudflare_worker/tests/test_public_logo.py
 @@ -67,6 +67,15 @@ def test_all_public_html_pages_use_logo_in_brand_link():
@@ -2126,7 +2126,7 @@ index 9e34c067..b6d26283 100644
  
 diff --git a/cloudflare_worker/tests/test_shared_header_frontend.py b/cloudflare_worker/tests/test_shared_header_frontend.py
 new file mode 100644
-index 00000000..3ab11876
+index 000000000..3ab118769
 --- /dev/null
 +++ b/cloudflare_worker/tests/test_shared_header_frontend.py
 @@ -0,0 +1,62 @@
@@ -2194,7 +2194,7 @@ index 00000000..3ab11876
 +        assert marker in css
 diff --git a/cloudflare_worker/tests/test_static_route_canonicalization.py b/cloudflare_worker/tests/test_static_route_canonicalization.py
 new file mode 100644
-index 00000000..41556851
+index 000000000..415568511
 --- /dev/null
 +++ b/cloudflare_worker/tests/test_static_route_canonicalization.py
 @@ -0,0 +1,212 @@
@@ -2411,7 +2411,7 @@ index 00000000..41556851
 +    test_worker_does_not_own_static_page_alias_routes()
 +    test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets()
 diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index 3d72dfa5..d56c6b5d 100644
+index 3d72dfa57..d56c6b5db 100644
 --- a/cloudflare_worker/wrangler.toml
 +++ b/cloudflare_worker/wrangler.toml
 @@ -24,7 +24,39 @@ html_handling = "none"
@@ -2456,5 +2456,5 @@ index 3d72dfa5..d56c6b5d 100644
  [vars]
  NODE_NAME = "forkmesh-mainnode"
 -- 
-2.50.1 (Apple Git-155)
+2.47.3
 
