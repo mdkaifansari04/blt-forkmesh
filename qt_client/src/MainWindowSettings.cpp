@@ -831,6 +831,21 @@ QWidget *MainWindow::buildSettingsSection()
     m_agentLimitsLabel->setWordWrap(true);
     m_agentLimitsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     usageText->addWidget(m_agentLimitsLabel);
+
+    // Issue #346: a headless node has no one watching its screen, so the only
+    // way to know Claude Code can resume after running out is to be told.
+    auto *emailOnRefillCheck =
+        new QCheckBox("Email me when Claude Code credits refill after running out");
+    emailOnRefillCheck->setChecked(
+        QSettings().value(kEmailOnCreditsRefillSetting, false).toBool());
+    emailOnRefillCheck->setToolTip(
+        "When this node's 5-hour or weekly Claude Code usage window was maxed "
+        "out and then resets, email the account on file (requires a verified "
+        "email — see the profile section above).");
+    connect(emailOnRefillCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
+    });
+    usageText->addWidget(emailOnRefillCheck);
     // Issue #115: restore the last-known spend figures immediately so they are
     // visible on restart before any network refresh completes.
     applyCachedSpendLabels();

@@ -1325,6 +1325,11 @@ private:
     // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
     // Xh / Xd" countdown, and cache it so the figure survives a restart.
     void applyClaudeReset(bool weekly, qint64 resetMs);
+    // Issue #346: when a Claude Code usage window that was previously maxed out
+    // (>=99%) drops back down, optionally tell the node's owner by email — the
+    // only useful signal for a headless node that has no one watching its
+    // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
+    void maybeEmailCreditsRefilled(bool weekly);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -3355,6 +3360,11 @@ private:
     // that is offline or rate-limiting (HTTP 429) stops getting hammered on
     // every timer tick. Keyed per endpoint/channel; see NetworkBackoff.h.
     NetworkBackoff m_pollBackoff;
+    // Issue #346: a refill notification waiting to ride the next signed
+    // heartbeat (kept as flags, not fired directly, so it retries on the
+    // periodic heartbeat timer if the immediate send fails).
+    bool m_pendingCreditsRefilled5h = false;
+    bool m_pendingCreditsRefilledWeekly = false;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
