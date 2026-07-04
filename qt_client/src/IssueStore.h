@@ -79,6 +79,10 @@ struct RemoteIssueMeta {
     // request that this new issue be auto-assigned to a coding agent as soon as
     // it's merged in from the inbox.
     bool wantsAgent = false;
+    // Model the web submitter picked for that auto-assigned agent (e.g. "opus",
+    // "sonnet"); empty leaves the provider's own default. Only meaningful
+    // alongside wantsAgent.
+    QString wantsAgentModel;
 };
 
 struct IssueLabel {
