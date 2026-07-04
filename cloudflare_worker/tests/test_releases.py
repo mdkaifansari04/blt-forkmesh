@@ -21,14 +21,17 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+# Route regexes (RELEASE_BLOB_RE, REPO_RELEASE_DOWNLOADS_RE) live in urls.py now.
+URLS = Path(__file__).resolve().parents[1] / "src" / "urls.py"
 
 
 def _load(*names):
     """Load named module-level functions and Assign(constants) from entry.py."""
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    urls_tree = ast.parse(URLS.read_text(encoding="utf-8"), filename=str(URLS))
     wanted = set(names)
     body = []
-    for node in tree.body:
+    for node in list(urls_tree.body) + list(tree.body):
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             body.append(node)
         elif isinstance(node, ast.Assign):
