@@ -37,10 +37,9 @@
     linkGrant: null,
     repoMirrors: [],
     repoServedBy: null,
-    // Owner-only "Agents" tab (adhoc #182): the owner password is re-entered
-    // once per page load and kept ONLY in memory (never localStorage) so the
-    // list/refresh/prompt calls don't re-prompt on every action.
-    agentsView: { password: "", agents: [] },
+    // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
+    // no password required.
+    agentsView: { agents: [] },
   };
 
   // Auto-refresh timer for the Agents tab (adhoc #182): polls the session list
@@ -559,7 +558,7 @@
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.
-  async function submitWebIssue(repo, title, body, assignAgent = false, ownerPassword = "") {
+  async function submitWebIssue(repo, title, body, assignAgent = false) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
@@ -588,14 +587,9 @@
       event,
       meta: { labels: [], milestone: "", priority: 0, assignees: [], wantsAgent: Boolean(assignAgent) },
     };
-    // The worker only honors wantsAgent when this re-proves account ownership
-    // (password check) — a raw client-side checkbox isn't enough, since it
-    // makes the owner's node start a coding agent unattended (adhoc #105).
-    // ownerAccount names which account is re-proving itself: the repo owner, or
-    // an admin acting on the owner's behalf (adhoc #141). The worker verifies
-    // that account's password and that it's the owner or an admin.
+    // When assignAgent is true, include ownerAccount so the server verifies
+    // it's the repo owner or an admin (adhoc #225).
     if (assignAgent) {
-      payload.ownerPassword = ownerPassword;
       payload.ownerAccount = state.session?.nodeName || "";
     }
     const response = await fetch(`${repoApiBase(repo)}/issues`, {
@@ -1730,9 +1724,8 @@
       // Re-selecting the tab should return to the issues list even if the
       // new-issue compose form was left open.
       renderRepoIssues();
-    } else if (tab === "agents" && state.agentsView.password) {
-      // Already unlocked and loaded on an earlier visit this page load —
-      // just resume polling instead of re-fetching immediately.
+    } else if (tab === "agents") {
+      // Resume polling instead of re-fetching immediately if already loaded.
       startRepoAgentsAutoRefresh(state.selectedRepo);
     }
   }
@@ -3473,19 +3466,6 @@
     return "text-yellow-500";
   }
 
-  function renderRepoAgentsPasswordPrompt(hintText = "") {
-    return `
-      <form data-repo-agents-password-form class="grid gap-2 p-4">
-        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you to view agent sessions
-          <input data-repo-agents-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
-        </label>
-        <div class="flex items-center justify-between gap-3">
-          <span data-repo-agents-hint class="text-[11px] text-muted-foreground">${escapeHtml(hintText)}</span>
-          <button type="submit" class="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"><i data-lucide="unlock" class="h-3.5 w-3.5"></i>Unlock</button>
-        </div>
-      </form>`;
-  }
-
   function renderRepoAgentRow(agent) {
     const promptable = repoAgentsCanPrompt(agent.status);
     const issueLabel = agent.issueNumber
@@ -3524,13 +3504,12 @@
     window.lucide?.createIcons();
   }
 
-  async function requestRepoAgentsList(repo, password) {
+  async function requestRepoAgentsList(repo) {
     const response = await fetch(`${repoApiBase(repo)}/agents/list`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({
         ownerAccount: state.session?.nodeName || "",
-        ownerPassword: password,
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -3548,15 +3527,14 @@
   }
 
   // Re-arms a fresh ~10s interval after every successful load, and self-stops
-  // the moment it's no longer applicable (repo switched, tab left, or the
-  // cached password was dropped) rather than trusting whoever started it to
-  // remember to clean up on every possible exit path.
+  // the moment it's no longer applicable (repo switched, tab left) rather than
+  // trusting whoever started it to remember to clean up on every possible exit path.
   function startRepoAgentsAutoRefresh(repo) {
     stopRepoAgentsAutoRefresh();
-    if (!repo || !state.agentsView.password) return;
+    if (!repo) return;
     repoAgentsRefreshTimer = window.setInterval(() => {
       if (!state.selectedRepo || repoKey(state.selectedRepo) !== repoKey(repo) ||
-          state.activeRepoTab !== "agents" || !state.agentsView.password) {
+          state.activeRepoTab !== "agents") {
         stopRepoAgentsAutoRefresh();
         return;
       }
@@ -3567,41 +3545,22 @@
   async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    if (!state.agentsView.password) {
-      stopRepoAgentsAutoRefresh();
-      container.innerHTML = renderRepoAgentsPasswordPrompt();
-      window.lucide?.createIcons();
-      return;
-    }
     container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
     try {
-      const agents = await requestRepoAgentsList(repo, state.agentsView.password);
+      const agents = await requestRepoAgentsList(repo);
       state.agentsView.agents = agents;
       renderRepoAgentsList(agents);
       startRepoAgentsAutoRefresh(repo);
     } catch (error) {
       const code = String(error?.message || "");
-      // The cached password didn't work (wrong, expired lockout, or the
-      // account lost owner/admin standing) — drop it and re-prompt rather
-      // than silently retrying with a password we know is bad.
-      state.agentsView.password = "";
       stopRepoAgentsAutoRefresh();
-      container.innerHTML = renderRepoAgentsPasswordPrompt(
-        code === "too_many_attempts" ? "Too many attempts. Try again later."
-          : code === "not_authorized" ? "This account can't view agents for this repository."
-          : code === "bad_owner_password" ? "Incorrect password."
-          : "Could not load agent sessions. Please try again.");
+      container.innerHTML = `<div class="px-4 py-3 text-sm text-destructive">${
+        code === "not_authorized" ? "You don't have permission to view agents for this repository."
+          : "Could not load agent sessions. Please try again."}</div>`;
       window.lucide?.createIcons();
     }
   }
 
-  async function handleRepoAgentsPasswordSubmit(repo, form) {
-    const input = form.querySelector("[data-repo-agents-password]");
-    const password = String(input?.value || "");
-    if (!password) return;
-    state.agentsView.password = password;
-    await loadRepoAgents(repo);
-  }
 
   async function handleRepoAgentPromptSubmit(repo, form) {
     const row = form.closest("[data-repo-agent-row]");
@@ -3620,10 +3579,6 @@
       setHint("Write a message before sending.", "bad");
       return;
     }
-    if (!state.agentsView.password) {
-      setHint("Unlock the agents list first.", "bad");
-      return;
-    }
     if (submit) submit.disabled = true;
     setHint("Sending...");
     try {
@@ -3632,7 +3587,6 @@
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           ownerAccount: state.session?.nodeName || "",
-          ownerPassword: state.agentsView.password,
           text,
         }),
       });
@@ -3648,8 +3602,7 @@
         code === "text_required" ? "Write a message before sending."
           : code === "text_too_long" ? "Message is too long."
           : code === "prompt_queue_full" ? "Too many pending messages for this repository — try again shortly."
-          : (code === "bad_owner_password" || code === "not_authorized" || code === "too_many_attempts")
-            ? "Your session password expired — refresh the list and unlock again."
+          : code === "not_authorized" ? "You don't have permission to send messages."
             : "Could not send the message. Please try again.",
         "bad");
     } finally {
@@ -3688,9 +3641,6 @@
             <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
             <span>Assign to agent — once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
           </label>
-          <label data-repo-issue-agent-password-row class="hidden grid gap-1 text-xs font-medium text-muted-foreground">Confirm it's you
-            <input data-repo-issue-agent-password type="password" autocomplete="current-password" placeholder="Account password" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
-          </label>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
@@ -3706,10 +3656,6 @@
     const attachHint = container.querySelector("[data-repo-issue-attach-hint]");
     const attachmentsList = container.querySelector("[data-repo-issue-attachments]");
     const assignAgentInput = container.querySelector("[data-repo-issue-assign-agent]");
-    const agentPasswordRow = container.querySelector("[data-repo-issue-agent-password-row]");
-    assignAgentInput?.addEventListener("change", () => {
-      agentPasswordRow?.classList.toggle("hidden", !assignAgentInput.checked);
-    });
     // Queued images: a short placeholder (not the data URL) is inserted into
     // the body textarea so it stays readable/editable; the real data: URL is
     // swapped in right before signing (handleIssueComposeSubmit).
@@ -3810,7 +3756,6 @@
     const bodyInput = form.querySelector("[data-repo-issue-body]");
     const submit = form.querySelector("[data-repo-issue-submit]");
     const assignAgentInput = form.querySelector("[data-repo-issue-assign-agent]");
-    const agentPasswordInput = form.querySelector("[data-repo-issue-agent-password]");
     const hint = form.querySelector("[data-repo-issue-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -3823,12 +3768,6 @@
       return;
     }
     const assignAgent = Boolean(assignAgentInput?.checked);
-    const ownerPassword = String(agentPasswordInput?.value || "");
-    if (assignAgent && !ownerPassword) {
-      setHint("Enter your account password to confirm assigning this to an agent.", "bad");
-      agentPasswordInput?.focus();
-      return;
-    }
     // Swap each attached image's short placeholder back out for its real
     // data: URL now, right before signing — the signed content hash has to
     // cover exactly what gets sent.
@@ -3838,7 +3777,7 @@
     if (submit) submit.disabled = true;
     setHint("Signing and sending…");
     try {
-      await submitWebIssue(repo, title, body, assignAgent, ownerPassword);
+      await submitWebIssue(repo, title, body, assignAgent);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it — but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
@@ -3857,7 +3796,6 @@
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
-      if (agentPasswordInput) agentPasswordInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
@@ -5390,12 +5328,6 @@
     if (discussionReplyForm && state.selectedRepo) {
       event.preventDefault();
       handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
-      return;
-    }
-    const agentsPasswordForm = event.target.closest("[data-repo-agents-password-form]");
-    if (agentsPasswordForm && state.selectedRepo) {
-      event.preventDefault();
-      handleRepoAgentsPasswordSubmit(state.selectedRepo, agentsPasswordForm);
       return;
     }
     const agentPromptForm = event.target.closest("[data-repo-agent-prompt-form]");
