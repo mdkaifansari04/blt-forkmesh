@@ -3888,22 +3888,14 @@ private:
     void killExternalSessionPids(const QList<qint64> &pids); // SIGTERM, then SIGKILL fallback
     QSet<QString> m_externalStopped;         // uuids we've stopped — keep them idle
     QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
-    QPlainTextEdit *m_agentPromptEdit = nullptr;
-    QPushButton *m_agentAddFilesButton = nullptr; // composer "+" : attach files
-    QPushButton *m_agentSlashButton = nullptr;    // composer "/" : slash commands
-    QPushButton *m_agentVoiceButton = nullptr;    // composer mic : voice dictation (adhoc #29)
-    QComboBox *m_agentAutoModeCombo = nullptr;    // composer Auto-mode selector
-    QComboBox *m_agentModelCombo = nullptr;       // composer model selector (Claude Code)
     // Epoch-ms of the last live provider model-list fetch (see
     // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
     // hit /v1/models on every click while still keeping the list current.
     qint64 m_claudeModelsFetchedMs = 0;
     // The `data` array from the last successful /v1/models fetch, cached so a
-    // model combo built after the fetch (the composer vs the quick-add bar) still
-    // gets the live line-up merged in even while the re-fetch throttle is armed.
+    // model combo built after the fetch still gets the live line-up merged in
+    // even while the re-fetch throttle is armed.
     QJsonArray m_liveClaudeModels;
-    void addFilesToAgentPrompt();
-    void showAgentSlashMenu();
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
     // (>0) or 0 if it could not start.
@@ -3939,7 +3931,6 @@ private:
     // Time left in the rolling 5-hour and weekly usage windows per provider.
     QLabel *m_agentLimitsLabel = nullptr;
     QTimer *m_agentLimitsTimer = nullptr;
-    QPushButton *m_agentSendPromptButton = nullptr;
     // Spinning refresh (rebuild) button in the nav rail.
     QPushButton *m_refreshButton = nullptr;
     QTimer *m_refreshSpinTimer = nullptr;
