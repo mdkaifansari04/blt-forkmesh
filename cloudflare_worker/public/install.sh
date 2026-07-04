@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.12 (2026-07-04)"
+INSTALLER_VERSION="0.12.13 (2026-07-04)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -545,6 +545,42 @@ have_compiler() {
     || command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1
 }
 
+# Prebuilt/uploaded binaries skip the source-build pipeline (and thus its Qt 6
+# dependency install), but the binary is dynamically linked against the Qt 6
+# runtime libraries (libQt6Widgets/Gui/Core/Network/Svg) and will not even start
+# without them — it dies at exec with "error while loading shared libraries:
+# libQt6Widgets.so.6: cannot open shared object file". This bit fresh headless
+# servers that had never had Qt installed: the node "installed" but the daemon
+# never launched, so it never registered, connected, or served the repo. Ensure
+# the Qt 6 runtime is present after a prebuilt install so the node actually comes
+# up. The qt6 dev metapackages depend on the runtime libs (and the offscreen QPA
+# plugin the headless daemon needs) and resolve on both pre- and post-t64 Debian,
+# so we reuse them rather than chase the version-specific runtime package names.
+# macOS prebuilds bundle their frameworks, so this only applies to Linux with a
+# package manager.
+ensure_qt_runtime() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+  # Already have the Qt runtime libraries? Nothing to do.
+  if command -v ldconfig >/dev/null 2>&1 \
+     && ldconfig -p 2>/dev/null | grep -q 'libQt6Widgets\.so\.6'; then
+    say "  Qt 6 runtime: already present"
+    return 0
+  fi
+  if [ "${FORKMESH_NO_INSTALL_DEPS:-0}" = "1" ]; then
+    warn "Qt 6 runtime libraries appear to be missing and auto-install is disabled (FORKMESH_NO_INSTALL_DEPS); the prebuilt binary may fail to start until they are installed (e.g. apt install qt6-base-dev qt6-svg-dev)."
+    return 0
+  fi
+  if [ -z "$PM" ]; then
+    warn "Qt 6 runtime libraries appear to be missing and no supported package manager was found to install them; the prebuilt binary may fail to start (install Qt 6 base + svg runtime, then re-run: $BIN)."
+    return 0
+  fi
+  local qt_pkgs; qt_pkgs="$(pkg_for qt)"
+  [ -n "$qt_pkgs" ] || { warn "No Qt 6 runtime package candidate is known for '$PM'."; return 0; }
+  say "Installing Qt 6 runtime libraries ($qt_pkgs) for the prebuilt binary"
+  # shellcheck disable=SC2086
+  pm_install $qt_pkgs || die "Failed to install the Qt 6 runtime ($qt_pkgs) via $PM; the prebuilt binary cannot start without it."
+}
+
 if detect_pm; then
   say "Detected package manager: $PM (${PM_INSTALL[*]})"
 else
@@ -731,9 +767,11 @@ if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
   CURRENT_STEP="prebuilt"
   if install_local_binary; then
     INSTALLED_PREBUILT=1
+    ensure_qt_runtime
     diag prebuilt 1 "uploaded"
   elif install_prebuilt_release; then
     INSTALLED_PREBUILT=1
+    ensure_qt_runtime
     diag prebuilt 1 "$ASSET_NAME"
   elif [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
     diag prebuilt 0 "$ASSET_NAME"
