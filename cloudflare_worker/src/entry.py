@@ -7037,6 +7037,33 @@ async def _admin_relay_approve(env, request):
 # confirm/deny prompt, and only a signature from the node's own key — i.e. the
 # node the current owner is actually logged into — can approve or deny it.
 
+async def _park_ownership_transfer(env, target, new_owner):
+    # Shared core of every ownership-takeover trigger (signed node request or
+    # the operator console): validate the target is a claimable node and park
+    # the pending marker. Returns (ok, message_or_result_dict).
+    if not valid_node_name(target):
+        return False, "invalid_node_id"
+    if target == new_owner:
+        return False, "cannot_request_self"
+    target_bi, target_rec = await _account_row(env, target)
+    if not target_rec or target_rec.get("status") != "active":
+        return False, "no_such_node"
+    if _account_kind(target_rec) != "node":
+        # An account that can log in is a user in its own right, not takeable.
+        return False, "not_a_node"
+    if target_rec.get("owner") == new_owner:
+        return True, {"alreadyOwned": True, "nodeId": target}
+    now = int(Date.now())
+    target_rec["ownership_transfer_pending"] = {
+        "admin": new_owner,
+        "requestedAt": now,
+        "expires": now + OWNERSHIP_TRANSFER_TTL_MS,
+    }
+    await _save_account(env, target_bi, target_rec)
+    return True, {"pending": True, "nodeId": target,
+                 "expiresAt": now + OWNERSHIP_TRANSFER_TTL_MS}
+
+
 async def _admin_request_ownership(env, request):
     try:
         data = await request.json()
@@ -7051,28 +7078,14 @@ async def _admin_request_ownership(env, request):
     admin_rec = await _admin_authorized(env, node, ts, sig, canonical)
     if not admin_rec:
         return json_response({"error": "unauthorized"}, status=401)
-    if not valid_node_name(target):
-        return json_response({"error": "invalid_node_id"}, status=400)
     admin_name = admin_rec.get("name", node)
-    if target == admin_name:
-        return json_response({"error": "cannot_request_self"}, status=400)
-    target_bi, target_rec = await _account_row(env, target)
-    if not target_rec or target_rec.get("status") != "active":
-        return json_response({"error": "no_such_node"}, status=404)
-    if _account_kind(target_rec) != "node":
-        # An account that can log in is a user in its own right, not takeable.
-        return json_response({"error": "not_a_node"}, status=403)
-    if target_rec.get("owner") == admin_name:
-        return json_response({"ok": True, "alreadyOwned": True, "nodeId": target})
-    now = int(Date.now())
-    target_rec["ownership_transfer_pending"] = {
-        "admin": admin_name,
-        "requestedAt": now,
-        "expires": now + OWNERSHIP_TRANSFER_TTL_MS,
-    }
-    await _save_account(env, target_bi, target_rec)
-    return json_response({"ok": True, "pending": True, "nodeId": target,
-                          "expiresAt": now + OWNERSHIP_TRANSFER_TTL_MS}, status=201)
+    ok, result = await _park_ownership_transfer(env, target, admin_name)
+    if not ok:
+        status = 404 if result == "no_such_node" else (
+            403 if result == "not_a_node" else 400)
+        return json_response({"error": result}, status=status)
+    return json_response(dict({"ok": True}, **result),
+                         status=201 if result.get("pending") else 200)
 
 
 async def _account_ownership_transfer_confirm(env, request):
@@ -8887,6 +8900,17 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
           '<span class="meta">Automated sweeping is enabled: confirmed join '
           'deposits sweep to the treasury and online node payout addresses; '
           'this retries any pending sweep.</span></div>'
+        + '<div class="tools"><form method="post" action="?action=request_ownership" '
+          'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
+          + csrf_field +
+          '<input type="text" name="target" placeholder="node to take (name)" '
+          'autocomplete="off" required>'
+          '<input type="text" name="owner" placeholder="new owner (account name)" '
+          'autocomplete="off" required>'
+          '<button type="submit">Request ownership transfer</button></form>'
+          '<span class="meta">Parks a pending transfer on the node\'s own '
+          'account record — it only completes once that node\'s current '
+          'owner approves the confirmation prompt on its own client.</span></div>'
         + banner_html
         + '<div class="layout">'
         + _render_admin_nav(tables, active_table, counts)
@@ -8918,6 +8942,30 @@ async def _admin_set_password(env, name, password):
     rec.setdefault("status", "active")
     await _save_account(env, name_bi, rec)
     return "Password updated for '%s'. The user can log in with it now." % name
+
+
+async def _admin_console_request_ownership(env, target, owner):
+    # Operator-console counterpart to _admin_request_ownership: the operator is
+    # already authenticated via Basic Auth + CSRF for this whole page, so no
+    # node-key signature is needed here. Still only PARKS a pending marker —
+    # the transfer completes only once the target node's own signed heartbeat
+    # decision (approve/deny) comes back, same as the signed API path.
+    target = clean_string(target or "", MAX_NODE_NAME).strip().lower()
+    owner = clean_string(owner or "", MAX_NODE_NAME).strip().lower()
+    if not target or not owner:
+        return "Ownership request failed: both a node and a new owner are required."
+    if not valid_node_name(owner):
+        return "Ownership request failed: '%s' is not a valid account name." % owner
+    owner_bi, owner_rec = await _account_row(env, owner)
+    if not owner_rec or owner_rec.get("status") != "active":
+        return "Ownership request failed: no active account named '%s'." % owner
+    ok, result = await _park_ownership_transfer(env, target, owner)
+    if not ok:
+        return "Ownership request failed for '%s': %s." % (target, result)
+    if result.get("alreadyOwned"):
+        return "'%s' is already owned by '%s'." % (target, owner)
+    return ("Ownership transfer requested: '%s' now needs to approve/deny from "
+            "its own client before '%s' takes ownership." % (target, owner))
 
 
 async def _admin_disburse(env):
@@ -9090,6 +9138,15 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Set password failed: " + repr(error)
+            elif action == "request_ownership":
+                try:
+                    banner = await _admin_console_request_ownership(
+                        self.env,
+                        form.get("target", [""])[0],
+                        form.get("owner", [""])[0],
+                    )
+                except Exception as error:
+                    banner = "Ownership request failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
