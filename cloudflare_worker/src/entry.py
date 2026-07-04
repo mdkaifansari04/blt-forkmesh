@@ -7299,6 +7299,19 @@ async def _verify_owner_password(env, owner, data):
     return True, None
 
 
+async def _authorize_owner_account(env, owner, data):
+    # Checks if the named account is the repo owner or a network admin, without
+    # requiring password verification. Used for agents tab on website (adhoc #225).
+    # Returns (True, None) on success, or (False, error_json_response) on failure.
+    actor = clean_string(data.get("ownerAccount", "") or owner, 120)
+    if not actor:
+        return False, json_response({"error": "not_authorized"}, status=403)
+    if actor.lower() != str(owner or "").lower() \
+            and not await _is_admin(env, actor):
+        return False, json_response({"error": "not_authorized"}, status=403)
+    return True, None
+
+
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
     # in this repo's inbox (table is a fixed literal, safe to interpolate).
@@ -7866,14 +7879,11 @@ async def issues_handler(env, request, owner, repo):
             # "wantsAgent" makes the owner's node start a coding agent on this
             # issue automatically once merged — unlike the other meta fields
             # above, that's an immediate, unreviewed side effect, so it's only
-            # honored when the request re-proves a privileged account: the repo
-            # owner, or an admin acting on the owner's behalf (admin node-
-            # ownership, adhoc #141). The password re-check proves ownership of
-            # whichever account "ownerAccount" names, so it can't be spoofed by a
-            # client-side checkbox on a raw submission.
+            # honored when the request comes from a privileged account: the repo
+            # owner, or an admin acting on the owner's behalf (adhoc #225).
             wants_agent = False
             if meta_in.get("wantsAgent"):
-                ok, err = await _verify_owner_password(env, owner, data)
+                ok, err = await _authorize_owner_account(env, owner, data)
                 if not ok:
                     return err
                 wants_agent = True
@@ -8282,7 +8292,7 @@ async def agents_list_handler(env, request, owner, repo):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _verify_owner_password(env, owner, data)
+    ok, err = await _authorize_owner_account(env, owner, data)
     if not ok:
         return err
     repo_bi = await blind_index(env, owner + "/" + repo)
@@ -8303,7 +8313,7 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _verify_owner_password(env, owner, data)
+    ok, err = await _authorize_owner_account(env, owner, data)
     if not ok:
         return err
     text = str(data.get("text", "") or "").strip()
