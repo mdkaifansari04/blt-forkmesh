@@ -10,6 +10,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -125,6 +126,7 @@ QWidget *MainWindow::buildDataSection()
     storageHint->setWordWrap(true);
 
     m_dataDirTable = new QTableWidget(0, 6);
+    installColumnHeaderMenu(m_dataDirTable); // 3-dots per-column menu (issue #318)
     m_dataDirTable->setHorizontalHeaderLabels(
         {"Location", "Path", "Folders", "Files", "Size", ""});
     m_dataDirTable->verticalHeader()->setVisible(false);
