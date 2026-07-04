@@ -413,6 +413,35 @@ def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
     assert "status=302" not in src  # same-URL serving, no redirects
 
 
+def test_clone_falls_back_when_a_live_source_stalls_info_refs():
+    # A connected-but-stalled host answers info/refs with a 504 (GIT_TIMEOUT_MS
+    # elapses in its host DO). The upfront liveness check sees the live socket
+    # and never fails over, so without a post-fetch retry the clone dead-ends on
+    # exactly the reported "504 on /owner/repo/info/refs". _git_host must inspect
+    # the response status and, on 503/504 for the (idempotent, bodyless) info/refs
+    # GET, serve the advertisement from a live mirror and pin it so the paired
+    # upload-pack POST follows the same node.
+    src = _worker_method_source("_git_host")
+    assert "response = await host_object.fetch(request)" in src
+    assert "response.status" in src
+    assert "(503, 504)" in src
+    assert "is_info" in src
+    assert "_fresh_clone_pin" in src  # POST follows the mirror info/refs pinned
+    assert "return response" in src   # normal path still returns the source's reply
+
+
+def test_fresh_clone_pin_is_read_only_and_live_checked():
+    # The upload-pack POST follows whatever info/refs pinned even when the named
+    # source's tunnel is back up. The lookup must never select/rotate/write a pin
+    # (that's info/refs' job) — a plain fresh, non-owner, still-live pin or None.
+    src = _worker_method_source("_fresh_clone_pin")
+    assert "clone_sticky" in src
+    assert "CLONE_STICKY_MS" in src
+    assert "_source_has_live_host(pick, repo)" in src
+    assert "ON CONFLICT" not in src and "INSERT" not in src  # read-only
+    assert "!= owner.lower()" in src or "!= owner" in src
+
+
 def test_sticky_clone_pick_is_pinned_and_live_checked():
     # The sticky pick: reuse a stored mirror while it's fresh (or on the POST leg
     # regardless of age), verify it still has a live host before trusting it, and
