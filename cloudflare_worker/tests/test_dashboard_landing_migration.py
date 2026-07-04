@@ -4,6 +4,8 @@
 from pathlib import Path
 import tomllib
 
+from _dashboard_shell import assembled_dashboard
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
@@ -13,7 +15,37 @@ REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
 
 
 def _read(path: Path) -> str:
+    # dashboard/index.html and its dashboard.html duplicate are now shell
+    # scaffolds full of <!--#include partial="name"--> placeholders; the Worker
+    # composes them from public/dashboard/partials/*.html at request time (see
+    # src/dashboard_shell.py). Frontend contracts here assert on the composed
+    # document a browser actually receives. test_dashboard_shell_is_split_into_
+    # composable_partials pins the two raw shell files byte-identical.
+    if path.name == "dashboard.html" or (
+            path.name == "index.html" and path.parent.name == "dashboard"):
+        return assembled_dashboard()
     return path.read_text(encoding="utf-8")
+
+
+def test_dashboard_shell_is_split_into_composable_partials():
+    raw_index = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
+    raw_dupe = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+
+    # The served shell and its 308-redirect duplicate must stay byte-identical.
+    assert raw_index == raw_dupe
+    # The shell is genuinely split — it references partials rather than inlining
+    # the chrome.
+    assert "<!--#include" in raw_index
+    for name in ("header", "sidebar", "main", "network-rail", "modals"):
+        assert (PUBLIC / "dashboard" / "partials" / (name + ".html")).is_file()
+        assert ('<!--#include partial="%s"-->' % name) in raw_index
+
+    # Composition leaves no placeholder behind and the Worker uses ASSETS to
+    # fetch each partial before stitching them together.
+    composed = assembled_dashboard()
+    assert "<!--#include" not in composed
+    assert "self.env.ASSETS.fetch(" in ENTRY_TEXT
+    assert "assemble_shell(" in ENTRY_TEXT
 
 
 def test_feature_landing_is_promoted_to_index_with_signed_in_redirect():

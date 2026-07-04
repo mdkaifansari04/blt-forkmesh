@@ -8,9 +8,13 @@ opt-in, and the tab badge counts open issues.
 
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-DASHBOARD = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+# The dashboard shell is split into HTML partials the Worker composes at request
+# time; assert against the assembled document a browser actually receives.
+DASHBOARD = assembled_dashboard()
 DASHBOARD_JS = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
 CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
