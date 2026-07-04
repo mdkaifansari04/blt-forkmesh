@@ -2597,7 +2597,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        dismissTopMessage();
+        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
     // A plain "x" to dismiss an error toast without copying it.
     m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
@@ -2606,7 +2606,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { dismissTopMessage(); });
+            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
@@ -4614,6 +4614,135 @@ void MainWindow::refreshRepoPinBanner()
     git->start("git", QStringList{"-C", mirrorPath, "for-each-ref",
                                   "--format=%(objectname) %(refname)",
                                   "refs/heads/", "refs/tags/"});
+}
+
+// Auto-heal the integrity pin across ALL of this node's source-of-truth repos,
+// not just the one whose detail is open (refreshRepoPinBanner) or reset by hand
+// (resetRepoPin). Only the node holding the working copy can re-sign the pin, so
+// when a source repo's served refs drift past its published pin — a direct git
+// op on the mirror, a sync that landed without a re-publish, a dropped publish —
+// every clone of it is rejected until the owner happens to open that repo and
+// click "Reset integrity pin". This closes that gap: while the source is online,
+// it keeps its own pins in step automatically. Security is unchanged — we only
+// re-attest OUR OWN authentic served refs (the same signing every publish does),
+// so mirrors are still validated against a pin the source signed; when the source
+// is offline this never runs, the pin freezes, and the relay's tamper gate keeps
+// protecting clones against a stale or forged mirror exactly as before.
+void MainWindow::reattestStalePins()
+{
+    if (!m_networkAccess || !hasActiveAccountSession())
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
+        return;
+
+    // The repos we are the source of truth for: a published, served mirror we own
+    // AND hold the working copy for. Same gate as refreshRepoPinBanner, applied to
+    // every repo rather than the open one. A pure mirror never attests — keeping
+    // its pin in step is its own source's job, and it lacks the owner key anyway.
+    struct SourceRepo {
+        int index;
+        QString cowner;
+        QString name;
+        QString mirrorPath;
+    };
+    QVector<SourceRepo> candidates;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (repo.previewOnly || !repo.publishToNetwork ||
+            repo.mirrorPath.trimmed().isEmpty())
+            continue;
+        if (repo.localPath.trimmed().isEmpty() ||
+            !QDir(repo.localPath).exists(QStringLiteral(".git")))
+            continue;
+        if (catalogOwner(repo) != accountOwner())
+            continue;
+        candidates.append({i, catalogOwner(repo),
+                           repoSegment(repo.name, QStringLiteral("repository")),
+                           repo.mirrorPath});
+    }
+    if (candidates.isEmpty())
+        return;
+
+    // Hash each served ref set off the GUI thread (git for-each-ref shells out per
+    // repo — mirrorStateHash notes it must not run synchronously on the UI thread),
+    // then compare against the relay's published pins with a single catalog fetch
+    // and re-attest only the drifted ones.
+    runOffThread<QHash<int, QString>>(
+        [candidates] {
+            QHash<int, QString> hashes;
+            for (const SourceRepo &c : candidates) {
+                QByteArray out;
+                if (runGitCapture(c.mirrorPath,
+                                  {QStringLiteral("for-each-ref"),
+                                   QStringLiteral("--format=%(objectname) %(refname)"),
+                                   QStringLiteral("refs/heads/"),
+                                   QStringLiteral("refs/tags/")},
+                                  &out, nullptr))
+                    hashes.insert(c.index, hashForEachRefOutput(out));
+            }
+            return hashes;
+        },
+        [this, candidates](QHash<int, QString> hashes) {
+            QNetworkReply *reply =
+                m_networkAccess->get(QNetworkRequest(catalogListUrl()));
+            connect(reply, &QNetworkReply::finished, this,
+                    [this, reply, candidates, hashes] {
+                        reply->deleteLater();
+                        const QJsonArray repos =
+                            QJsonDocument::fromJson(reply->readAll())
+                                .object()
+                                .value(QStringLiteral("repositories"))
+                                .toArray();
+                        bool touchedOpen = false;
+                        for (const SourceRepo &c : candidates) {
+                            const QString localHash = hashes.value(c.index);
+                            if (localHash.isEmpty())
+                                continue; // for-each-ref failed; nothing to compare
+                            // The list order can shift between the async hops, so
+                            // confirm this index still points at the same repo.
+                            if (c.index < 0 || c.index >= m_repositories.size())
+                                continue;
+                            const RepositoryRecord &repo = m_repositories.at(c.index);
+                            if (repo.previewOnly ||
+                                catalogOwner(repo) != c.cowner ||
+                                repoSegment(repo.name,
+                                            QStringLiteral("repository")) != c.name)
+                                continue;
+                            QString pinned;
+                            bool found = false;
+                            for (const QJsonValue &v : repos) {
+                                const QJsonObject o = v.toObject();
+                                if (o.value(QStringLiteral("owner")).toString() ==
+                                        c.cowner &&
+                                    o.value(QStringLiteral("name")).toString() ==
+                                        c.name) {
+                                    pinned = o.value(QStringLiteral("stateHash"))
+                                                 .toString();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            // Only a non-empty pin that disagrees with our live refs
+                            // blocks clones; an absent pin fails open on the relay.
+                            if (!found || pinned.isEmpty() || pinned == localHash)
+                                continue;
+                            logSystem(
+                                QStringLiteral("Integrity pin: served refs of %1/%2 "
+                                               "drifted past the relay's pin; "
+                                               "re-attesting automatically.")
+                                    .arg(c.cowner, c.name));
+                            publishRepository(c.index, false);
+                            if (c.index == m_repoDetailIndex)
+                                touchedOpen = true;
+                        }
+                        // A re-attest of the open repo makes its warning toast stale;
+                        // re-check once the signed write has had a moment to land.
+                        if (touchedOpen)
+                            QTimer::singleShot(1500, this, [this] {
+                                refreshRepoPinBanner();
+                            });
+                    });
+        });
 }
 
 // Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error

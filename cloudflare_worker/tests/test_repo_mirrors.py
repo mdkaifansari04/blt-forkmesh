@@ -204,6 +204,45 @@ def test_payload_marks_mirrors_the_integrity_gate_rejects():
     }
 
 
+def test_payload_downgrades_rejected_to_healing_when_source_online():
+    # Same mirrors as above, but the source of truth (mainnode) has a live host
+    # right now. Clones of a failing mirror are then served from the source (see
+    # Default._online_source_of_truth), so the failing node auto-heals instead of
+    # blocking: its verdict is "healing", not the alarming "rejected".
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
+             state_hash="AAA"),
+        _row("b", "in-sync", "forkmesh", root="abc", synced="980000",
+             state_hash="aaa", source="remote-clone"),
+        _row("c", "lagging", "forkmesh", root="abc", synced="970000",
+             state_hash="old", source="remote-clone"),
+        _row("d", "tampered", "forkmesh", root="abc", synced="960000",
+             state_hash="bbb", source="remote-clone"),
+        _row("e", "legacy", "forkmesh", root="abc", synced="950000",
+             source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {"a": now - 1_000}, {}, now, 600_000, 5_000,
+        history={"a": ["old"]},
+    )
+    verdicts = {m["node"]: m["integrity"] for m in payload["mirrors"]}
+    assert verdicts == {
+        "mainnode": "ok",       # the source matches its own attestation
+        "in-sync": "ok",        # matches the source's current pin
+        "lagging": "ok",        # matches a recent pin from the history window
+        "tampered": "healing",  # would be rejected, but the source is online
+        "legacy": "unknown",    # no fingerprint published
+    }
+    # With the source OFFLINE the tamper gate is back in force: hard "rejected".
+    offline = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        history={"a": ["old"]},
+    )
+    assert {m["node"]: m["integrity"] for m in offline["mirrors"]}["tampered"] \
+        == "rejected"
+
+
 def test_payload_integrity_fails_open_without_source_attestation():
     # When no working-copy holder in the group ever attested a state, the gate
     # falls back to the mirror's own pins (legacy behaviour): nothing to compare
