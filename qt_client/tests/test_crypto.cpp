@@ -172,6 +172,58 @@ int main(int argc, char *argv[])
               "welcome-announced flag survives a fresh identity load");
     }
 
+    // --- Identity key backup, export & rotation (issue #368) -------------
+    // Losing the machine must not mean losing the identity: the private key can
+    // be exported to a passphrase-encrypted keyfile and imported on a new node,
+    // reproducing the exact same public key (hence every signature binding).
+    {
+        const QString keyfile = identity.exportEncryptedKeyfile("correct horse");
+        check(!keyfile.isEmpty(), "identity exports to an encrypted keyfile");
+        check(keyfile.contains("forkmesh.identity.keyfile"),
+              "keyfile carries the age-style envelope kind");
+        check(ForkMeshIdentity::keyfilePublicKey(keyfile) == identity.publicKey(),
+              "keyfilePublicKey reads the pubkey without the passphrase");
+
+        // Wrong passphrase must fail (GCM tag mismatch), never yield a key.
+        ForkMeshIdentity wrongPass;
+        check(!wrongPass.importEncryptedKeyfile(keyfile, "WRONG passphrase"),
+              "importing with the wrong passphrase fails");
+
+        // Correct passphrase restores the same key: identical public key and a
+        // signature that verifies against the original identity's public key.
+        ForkMeshIdentity restored;
+        check(restored.importEncryptedKeyfile(keyfile, "correct horse"),
+              "importing with the correct passphrase restores the identity");
+        check(restored.publicKey() == identity.publicKey(),
+              "restored identity reproduces the original public key");
+        const QByteArray probe = QByteArrayLiteral("forkmesh-backup-probe");
+        const QString probeSig = restored.signData(probe);
+        check(ForkMeshIdentity::verifySignature(identity.publicKey(), probeSig, probe),
+              "the restored key produces signatures valid under the original pubkey");
+        check(restored.hasBackedUp(),
+              "a restored key is marked as already backed up");
+
+        check(ForkMeshIdentity::keyfilePublicKey("not a keyfile").isEmpty(),
+              "keyfilePublicKey rejects non-keyfile text");
+
+        // Rotation: the old key signs a successor pubkey. The record verifies
+        // against the old key and is bound to that exact successor.
+        const QString successor =
+            QStringLiteral("Zm9ya21lc2gtc3VjY2Vzc29yLWtleS0zMi1ieXRlcw");
+        const QJsonObject rotate = identity.signRotation(successor);
+        check(rotate.value("kind").toString() == "forkmesh.rotate",
+              "rotation record has the expected kind");
+        check(rotate.value("oldPubkey").toString() == identity.publicKey() &&
+                  rotate.value("newPubkey").toString() == successor,
+              "rotation record binds the old and successor keys");
+        check(ForkMeshIdentity::verifyRotation(rotate),
+              "a well-formed rotation record verifies against the old key");
+        QJsonObject tampered = rotate;
+        tampered["newPubkey"] = QStringLiteral("attacker-key");
+        check(!ForkMeshIdentity::verifyRotation(tampered),
+              "a rotation record retargeted to a different successor is rejected");
+    }
+
     RoomCrypto crypto("repo:mainnode/forkmesh:room:general",
                       "correct horse battery staple");
     check(crypto.isValid(), "mainnode room crypto key derives");

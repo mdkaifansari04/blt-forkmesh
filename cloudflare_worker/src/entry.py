@@ -4150,6 +4150,55 @@ async def _account_reserve(env, request):
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
 
+# Identity key rotation (issue #368). The account's currently-bound Ed25519 key
+# signs a successor public key; on a valid signature the account rebinds to the
+# new key, so a user who backed up their identity and moved to a fresh key keeps
+# their name, linked nodes and bounty bindings. Without this, a pubkey bound
+# elsewhere is a hard failure and a lost machine means a lost identity.
+async def _account_rotate(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    old_pub = clean_string(data.get("oldPubkey", ""), 120)
+    new_pub = clean_string(data.get("newPubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_name"}, status=400)
+    if not valid_node_pubkey(new_pub):
+        return json_response({"error": "invalid_pubkey"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_account"}, status=404)
+    bound = rec.get("pubkey", "")
+    # Idempotent retry: the successor is already the bound key. Report success so
+    # a client that lost the first response can safely re-send.
+    if bound and bound == new_pub:
+        return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
+    # Only the key the account is *currently* bound to may authorize a rotation.
+    if not bound or bound != old_pub:
+        return json_response({"error": "not_bound"}, status=403)
+    canonical = ("forkmesh-rotate-v1\n" + old_pub + "\n" + new_pub + "\n" +
+                 ts).encode()
+    if not await ed25519_verify(old_pub, sig, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    prev = rec.get("prev_pubkeys")
+    prev = list(prev) if isinstance(prev, list) else []
+    if bound and bound not in prev:
+        prev.append(bound)
+    rec["pubkey"] = new_pub
+    rec["prev_pubkeys"] = prev
+    rec["rotated_at"] = int(Date.now())
+    await _save_account(env, name_bi, rec)
+    return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
+
+
 # Step 2 (the "Join" step): create a Solana payment request for this signup.
 # Signup payments land in unique per-account deposit wallets; the worker sweeps
 # confirmed deposits to the treasury and currently-online node payout addresses.
@@ -7183,6 +7232,8 @@ async def accounts_handler(env, request):
         return await _account_signup(env, request)
     if url.path == "/api/accounts/reserve" and method == "POST":
         return await _account_reserve(env, request)
+    if url.path == "/api/accounts/rotate" and method == "POST":
+        return await _account_rotate(env, request)
     if url.path == "/api/accounts/profile" and method == "POST":
         return await _account_profile(env, request)
     if url.path == "/api/accounts/donation-address" and method == "POST":
@@ -7785,6 +7836,20 @@ def _build_rev(env):
     except (AttributeError, TypeError):
         pass
     return "dev"
+
+
+def _app_version(env):
+    # The human-readable release version shown in the website header. deploy.sh
+    # reads it from qt_client/CMakeLists.txt's project() version and stamps it as
+    # the APP_VERSION Worker var, so it matches the desktop app and updates
+    # automatically whenever a release bumps that version and redeploys.
+    try:
+        val = env.APP_VERSION
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return ""
 
 
 async def poll_handler(env, request):
@@ -8803,14 +8868,29 @@ async def telemetry_summary(env):
     }
 
 
+# Admin access is gated by a real forkmesh login (node name / email + password
+# + optional TOTP) whose account carries the accounts.is_admin flag — the legacy
+# ADMIN_USER/ADMIN_PASS HTTP Basic credentials are gone. A successful admin login
+# mints a short-lived signed session token stored in an HttpOnly, SameSite=Strict
+# cookie; every admin request re-verifies the signature AND that the account
+# still has is_admin, so a revoked admin loses access on their next request.
+ADMIN_SESSION_COOKIE = "fm_admin"
+ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000  # 12 hours
+
+
+def _admin_session_secret(env):
+    # Keyed on the at-rest data key so the token can be verified statelessly (no
+    # server-side session store) yet cannot be forged without the Worker secret.
+    return (str(getattr(env, "DATA_KEY", "") or "") + "|forkmesh-admin-session").encode()
+
+
 def _admin_csrf_token(env):
-    # A deterministic CSRF token derived from admin/at-rest secrets. It is only
-    # ever rendered inside the (Basic-auth-protected) admin HTML, so a cross-site
-    # forged POST — which still carries the browser's cached Basic-auth creds —
-    # cannot include it. No server-side session store is needed to verify it.
-    secret = (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
-              str(getattr(env, "DATA_KEY", "") or "")).encode()
-    return hmac.new(secret, b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
+    # A deterministic CSRF token derived from the admin session secret. It is only
+    # ever rendered inside the (login-gated) admin HTML, so a cross-site forged
+    # POST cannot include it. Combined with the SameSite=Strict session cookie
+    # this needs no server-side session store to verify.
+    return hmac.new(
+        _admin_session_secret(env), b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
 
 
 def _admin_csrf_ok(env, form):
@@ -8819,24 +8899,125 @@ def _admin_csrf_ok(env, form):
         submitted, _admin_csrf_token(env))
 
 
-def _check_basic_auth(env, request):
-    user = str(getattr(env, "ADMIN_USER", "") or "")
-    password = str(getattr(env, "ADMIN_PASS", "") or "")
-    if not user or not password:
-        return False  # fail closed until creds are configured
-    header = request.headers.get("authorization") or ""
-    if not header.startswith("Basic "):
-        return False
+def _make_admin_session(env, name, now=None):
+    # Signed, self-describing token: "<name>|<expires_ms>|<hmac>". Base64url so it
+    # is a safe cookie value.
+    now = int(now if now is not None else Date.now())
+    body = "%s|%d" % (name, now + ADMIN_SESSION_TTL_MS)
+    sig = hmac.new(_admin_session_secret(env), body.encode(), "sha256").hexdigest()
+    return base64.urlsafe_b64encode((body + "|" + sig).encode()).decode()
+
+
+def _verify_admin_session(env, token):
+    # Returns the admin's node name if the token's signature is valid and it has
+    # not expired, else "". Does NOT check is_admin — the caller re-checks that so
+    # a revoked admin is locked out even while holding a still-valid token.
+    if not token:
+        return ""
     try:
-        decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
+        raw = base64.urlsafe_b64decode(token.encode()).decode("utf-8")
     except Exception:
-        return False
-    sep = decoded.find(":")
-    if sep < 0:
-        return False
-    ok_user = hmac.compare_digest(decoded[:sep], user)
-    ok_pass = hmac.compare_digest(decoded[sep + 1:], password)
-    return ok_user and ok_pass
+        return ""
+    body, sep, sig = raw.rpartition("|")
+    if not sep:
+        return ""
+    expected = hmac.new(
+        _admin_session_secret(env), body.encode(), "sha256").hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return ""
+    name, esep, expires = body.partition("|")
+    if not esep:
+        return ""
+    try:
+        if int(expires) < int(Date.now()):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return name
+
+
+def _admin_cookie_token(request):
+    header = request.headers.get("cookie") or ""
+    prefix = ADMIN_SESSION_COOKIE + "="
+    for part in header.split(";"):
+        part = part.strip()
+        if part.startswith(prefix):
+            return unquote(part[len(prefix):])
+    return ""
+
+
+def _admin_set_cookie(env, token):
+    # Scoped to the (secret) admin path so it is never sent to any other route.
+    path = "/" + _admin_path(env)
+    max_age = ADMIN_SESSION_TTL_MS // 1000
+    return ("%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=Strict"
+            % (ADMIN_SESSION_COOKIE, quote(token), path, max_age))
+
+
+async def _admin_login_check(env, identifier, password, totp):
+    # Returns the admin's node name when the credentials authenticate an active
+    # account that (a) verifies the password, (b) passes TOTP when enrolled, and
+    # (c) carries the is_admin flag. Otherwise "". Shares the login throttle so
+    # the admin login can't be brute-forced.
+    identifier = (identifier or "").strip().lower()
+    if not identifier or not password:
+        return ""
+    id_bi = await blind_index(env, identifier)
+    if not id_bi or await _login_locked_until(env, id_bi):
+        return ""
+    rec = None
+    if "@" in identifier:
+        email_bi = await blind_index(env, identifier)
+        row = await d1_first(
+            env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+        if row:
+            rec = await decrypt_row(env, row["data"])
+    elif valid_node_name(identifier):
+        _, rec = await _account_row(env, identifier)
+    ok = (rec is not None and rec.get("status") == "active" and
+          rec.get("pass_hash") and
+          await verify_password(password, rec.get("pass_salt", ""),
+                                rec.get("pass_hash", "")))
+    if ok and rec.get("totp_enrolled"):
+        ok = await totp_verify(rec.get("totp_secret", ""), totp)
+    if ok and not await _is_admin(env, rec.get("name", "")):
+        ok = False
+    if not ok:
+        await _login_record_fail(env, id_bi)
+        return ""
+    await _login_clear(env, id_bi)
+    return rec.get("name", "")
+
+
+def _admin_login_html(env, error=""):
+    err = ('<p class="err">%s</p>' % _html_escape(error)) if error else ""
+    return (
+        "<!doctype html><html lang=en><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>forkmesh · admin login</title><style>" + ADMIN_STYLE +
+        " .login{max-width:340px;margin:12vh auto;padding:28px 24px;"
+        "border:1px solid #21262d;border-radius:12px;background:#161b22}"
+        " .login h1{margin:0 0 4px;font-size:18px}"
+        " .login p.sub{margin:0 0 12px;color:#8b949e;font-size:12px}"
+        " .login label{display:block;margin:12px 0 4px;font-size:12px;color:#8b949e}"
+        " .login input{width:100%;padding:9px 10px;border-radius:6px;"
+        "border:1px solid #30363d;background:#0d1117;color:#c9d1d9}"
+        " .login button{margin-top:20px;width:100%;padding:10px;border:0;"
+        "border-radius:6px;background:#238636;color:#fff;font-weight:600;cursor:pointer}"
+        " .login .err{color:#f85149;font-size:13px;margin:0 0 8px}"
+        "</style></head><body>"
+        "<form class=login method=post autocomplete=off>"
+        "<h1>ForkMesh Admin</h1>"
+        "<p class=sub>Sign in with an administrator account.</p>" + err +
+        "<label>Node name or email</label>"
+        "<input name=identifier autofocus autocomplete=username>"
+        "<label>Password</label>"
+        "<input name=password type=password autocomplete=current-password>"
+        "<label>2FA code (if enabled)</label>"
+        "<input name=totp inputmode=numeric autocomplete=one-time-code>"
+        "<button type=submit>Sign in</button>"
+        "</form></body></html>"
+    )
 
 
 ADMIN_STYLE = """
@@ -9532,11 +9713,43 @@ class Default(WorkerEntrypoint):
         return response
 
     async def _admin(self, request):
-        if not _check_basic_auth(self.env, request):
+        # Gated by a forkmesh login with the is_admin flag (no more HTTP Basic).
+        # A valid signed session cookie whose account still has is_admin admits
+        # the request; otherwise we serve / process the login form.
+        session_name = _verify_admin_session(
+            self.env, _admin_cookie_token(request))
+        authed = bool(session_name) and await _is_admin(self.env, session_name)
+        if not authed:
+            if method_name(request) == "POST":
+                try:
+                    login_form = parse_qs(
+                        await request.text(), keep_blank_values=True)
+                except Exception:
+                    login_form = {}
+                name = await _admin_login_check(
+                    self.env,
+                    login_form.get("identifier", [""])[0],
+                    login_form.get("password", [""])[0],
+                    login_form.get("totp", [""])[0],
+                )
+                if name:
+                    # Post/redirect/get so a refresh doesn't repost credentials.
+                    return Response("", status=303, headers={
+                        "location": "/" + _admin_path(self.env),
+                        "set-cookie": _admin_set_cookie(
+                            self.env, _make_admin_session(self.env, name)),
+                    })
+                return Response(
+                    _admin_login_html(
+                        self.env,
+                        "Invalid credentials or not an administrator."),
+                    status=401,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                )
             return Response(
-                "Authentication required.",
+                _admin_login_html(self.env),
                 status=401,
-                headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
+                headers={"content-type": "text/html; charset=utf-8"},
             )
         await ensure_schema(self.env)
         params = parse_qs(urlparse(request.url).query)
@@ -9544,8 +9757,8 @@ class Default(WorkerEntrypoint):
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
         # state-changing POST must carry a CSRF token (rendered only into this
-        # Basic-auth-gated page) so a cross-site form — which would still send the
-        # browser's cached admin credentials — can't trigger these actions.
+        # login-gated page) so a cross-site form — which would still send the
+        # browser's admin session cookie — can't trigger these actions.
         banner = ""
         action = params.get("action", [""])[0]
         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
@@ -9716,6 +9929,7 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    "version": _app_version(self.env),
                     "now": Date.now(),
                 }
             )
