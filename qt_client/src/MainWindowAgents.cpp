@@ -1109,171 +1109,22 @@ QWidget *MainWindow::buildAgentsTab()
     // chart to check the current numbers (see the TokenUsageMiniChart::onHover
     // wiring in buildBreadcrumb).
 
-    m_agentPromptEdit = new QPlainTextEdit;
-    m_agentPromptEdit->setPlaceholderText(
-        QString::fromUtf8("Queue another message\xE2\x80\xA6"));
-    m_agentPromptEdit->setMaximumHeight(92);
-    m_agentPromptEdit->setFrameShape(QFrame::NoFrame);
-    m_agentPromptEdit->setObjectName("agentComposerEdit");
-    // Wrap long messages instead of growing sideways — no horizontal scrollbar,
-    // and the colours come from the themed stylesheet so the composer follows the
-    // light/dark theme (adhoc #177).
-    m_agentPromptEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-    m_agentPromptEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Enter sends the message, Shift+Enter inserts a newline (see eventFilter),
-    // matching the Claude Code conversation input.
-    m_agentPromptEdit->installEventFilter(this);
-    m_agentSendPromptButton = new QPushButton("Send");
-    m_agentSendPromptButton->setObjectName("primaryButton");
-    m_agentSendPromptButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentSendPromptButton, "comment", 16);
-    connect(m_agentSendPromptButton, &QPushButton::clicked, this, [this] {
-        if (!m_agentPromptEdit)
-            return;
-        const QString prompt = m_agentPromptEdit->toPlainText().trimmed();
-        if (prompt.isEmpty()) {
-            // Nothing typed: Send doubles as Continue (adhoc #142). Sync the
-            // session's stored model from the composer dropdown first — the
-            // combo can be showing a fallback display model (showAgentSession)
-            // that was never written back to the session, so without this the
-            // continued run could silently use a different model than shown.
-            if (m_agentModelCombo && m_agentModelCombo->isEnabled() &&
-                m_selectedAgentSessionId > 0 && m_agentStore) {
-                if (AgentSession *s = findAgentSession(m_selectedAgentSessionId)) {
-                    const QString picked = m_agentModelCombo->currentData().toString();
-                    if (s->model != picked) {
-                        s->model = picked;
-                        m_agentStore->saveSession(*s);
-                    }
-                }
-            }
-            continueSelectedAgentSession();
-            return;
-        }
-        // Clear the composer up front, before dispatching: the send paths below
-        // can pump the event loop (transcript repaint, session restart), and
-        // clearing only afterwards sometimes left the just-sent prompt stuck in
-        // the input box (adhoc #29). Empty it now so it's added and gone at once.
-        m_agentPromptEdit->clear();
-        sendPromptToSelectedAgent(prompt);
-    });
-
-    // Composer accessory controls: add-files (+), a slash-command menu, and the
-    // Auto-mode selector — mirroring the Claude Code conversation input bar.
-    m_agentAddFilesButton = new QPushButton("+");
-    m_agentAddFilesButton->setObjectName("ghostButton");
-    m_agentAddFilesButton->setCursor(Qt::PointingHandCursor);
-    m_agentAddFilesButton->setFixedWidth(32);
-    m_agentAddFilesButton->setToolTip("Add files to the message (inserts @path references)");
-    connect(m_agentAddFilesButton, &QPushButton::clicked, this,
-            &MainWindow::addFilesToAgentPrompt);
-
-    m_agentSlashButton = new QPushButton("/");
-    m_agentSlashButton->setObjectName("ghostButton");
-    m_agentSlashButton->setCursor(Qt::PointingHandCursor);
-    m_agentSlashButton->setFixedWidth(32);
-    m_agentSlashButton->setToolTip("Insert a slash command");
-    connect(m_agentSlashButton, &QPushButton::clicked, this,
-            &MainWindow::showAgentSlashMenu);
-
-    // Voice dictation mic (adhoc #29): hold to record, release to transcribe into
-    // the message box. Reuses the footer's whisper.cpp pipeline — including the
-    // circle spinner (RingSpinner) that rings the mic while the clip transcribes
-    // and the live input-level meter — so the composer dictates just like the
-    // footer prompt and comment composers. Shown only once a voice engine is
-    // installed; m_voiceButtons keeps its visibility in sync (updateVoiceInputButton).
-    m_agentVoiceButton = new QPushButton;
-    m_agentVoiceButton->setObjectName("ghostButton");
-    m_agentVoiceButton->setCursor(Qt::PointingHandCursor);
-    m_agentVoiceButton->setFixedWidth(32);
-    setOcticon(m_agentVoiceButton, "mic", 16);
-    m_agentVoiceButton->setToolTip(
-        QString::fromUtf8("Speak your message \xE2\x80\x94 hold to record, "
-                          "release to transcribe.\nVoice model: %1")
-            .arg(voiceModelLabel()));
-    m_agentVoiceButton->setVisible(voiceInputReady());
-    connect(m_agentVoiceButton, &QPushButton::pressed, this,
-            [this] { startVoiceCaptureFor(m_agentPromptEdit, m_agentVoiceButton); });
-    connect(m_agentVoiceButton, &QPushButton::released, this,
-            &MainWindow::stopVoiceCapture);
-    m_voiceButtons.append(m_agentVoiceButton);
-
-    m_agentAutoModeCombo = new QComboBox;
-    m_agentAutoModeCombo->setObjectName("agentAutoMode");
-    m_agentAutoModeCombo->setCursor(Qt::PointingHandCursor);
-    m_agentAutoModeCombo->addItem(QString::fromUtf8("\xE2\x9A\xA1 Auto mode"), true);
-    m_agentAutoModeCombo->addItem(QStringLiteral("Manual approve"), false);
-    m_agentAutoModeCombo->setToolTip(
-        "Auto mode runs the agent unattended (skips permission prompts). Manual "
-        "approve makes new sessions pause for approval.");
-    m_agentAutoModeCombo->setCurrentIndex(
-        QSettings().value(kClaudeAutoModeSetting, true).toBool() ? 0 : 1);
-    connect(m_agentAutoModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                QSettings().setValue(kClaudeAutoModeSetting,
-                                     m_agentAutoModeCombo->currentData().toBool());
-            });
-
-    // Per-session model selector (issue #32): pick which Claude model drives the
-    // selected session. The choice is stored on the session and takes effect on
-    // its next launch/continuation; it's also shown in the agent header. Values
-    // are `claude` CLI aliases; empty leaves the CLI's default model in place.
-    m_agentModelCombo = new QComboBox;
-    m_agentModelCombo->setObjectName("agentModel");
-    m_agentModelCombo->setCursor(Qt::PointingHandCursor);
-    m_agentModelCombo->setProperty("claudeModelCombo", true);
-    m_agentModelCombo->view()->installEventFilter(this);
-    populateClaudeModelCombo(m_agentModelCombo);
-    refreshClaudeModelCombo();
-    m_agentModelCombo->setToolTip(
-        "Model for this session. Applies the next time it runs; shown in the header.");
-    connect(m_agentModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                if (!m_agentModelCombo || m_selectedAgentSessionId <= 0 || !m_agentStore)
-                    return;
-                AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-                if (!s)
-                    return;
-                const QString picked = m_agentModelCombo->currentData().toString();
-                if (s->model == picked)
-                    return;
-                s->model = picked;
-                m_agentStore->saveSession(*s);
-                showAgentSession(s->id); // refresh the header's model note
-            });
-
-    // Composer styled like the Claude Code conversation input: a rounded panel
-    // with the message field above an accessory + send button row.
+    // Composer: just the Continue button now (adhoc #139 removed the "Queue
+    // another message" input and its accessory row — the footer prompt bar's
+    // "send to agent" control already covers sending follow-up messages to
+    // whichever session is open, see buildNetworkLogDock in MainWindowChat.cpp).
     auto *composer = new QFrame;
     composer->setObjectName("agentComposer");
     // Styled from the themed stylesheet (Theme.h) so it matches the light theme.
     auto *composerCol = new QVBoxLayout(composer);
     composerCol->setContentsMargins(12, 10, 10, 8);
     composerCol->setSpacing(6);
-    // Continue sits right on top of the "Queue another message" box so the
-    // conversation can be resumed at any time without hunting for it in the
-    // header button row (adhoc #105). It stays enabled whenever a session is
-    // selected; continueSelectedAgentSession() itself no-ops if the session is
-    // already running or queued. Fix-conflicts moved to a small icon button in
-    // the footer's "Agents:" strip (adhoc #139) rather than living here.
     auto *continueRow = new QHBoxLayout;
     continueRow->setContentsMargins(0, 0, 0, 0);
     continueRow->setSpacing(6);
     continueRow->addWidget(m_agentContinueButton);
     continueRow->addStretch(1);
     composerCol->addLayout(continueRow);
-    composerCol->addWidget(m_agentPromptEdit);
-    auto *composerBtns = new QHBoxLayout;
-    composerBtns->setContentsMargins(0, 0, 0, 0);
-    composerBtns->setSpacing(6);
-    composerBtns->addWidget(m_agentAddFilesButton);
-    composerBtns->addWidget(m_agentSlashButton);
-    composerBtns->addWidget(m_agentVoiceButton);
-    composerBtns->addWidget(m_agentAutoModeCombo);
-    composerBtns->addWidget(m_agentModelCombo);
-    composerBtns->addStretch(1);
-    composerBtns->addWidget(m_agentSendPromptButton);
-    composerCol->addLayout(composerBtns);
 
     m_agentNetPanel = new QLabel;
     m_agentNetPanel->setObjectName("agentNetPanel");
@@ -1874,7 +1725,6 @@ void MainWindow::refreshClaudeCodeUsage()
 void MainWindow::refreshClaudeModelCombo()
 {
     auto applyToAllCombos = [this](const QJsonArray &models) {
-        mergeLiveClaudeModels(m_agentModelCombo, models);
         mergeLiveClaudeModels(m_quickAddClaudeModel, models);
         // Restore saved quick-add model after replacing the list.
         if (m_quickAddClaudeModel) {
@@ -2838,22 +2688,6 @@ void MainWindow::showAgentSession(int sessionId)
     // its contents below still update for when the user reopens it.
     if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
-    // Reflect this session's chosen model in the composer's model selector. Block
-    // signals so syncing the UI doesn't re-trigger the change handler (which would
-    // re-enter showAgentSession). The selector is meaningful only for Claude Code
-    // sessions; disable it for the others (and watch-only externals).
-    if (m_agentModelCombo) {
-        QSignalBlocker block(m_agentModelCombo);
-        int idx = m_agentModelCombo->findData(session->model);
-        // Sessions without an explicit model show the first concrete model,
-        // not the synthetic "Auto" row (adhoc #91) — auto routing is opt-in.
-        if (idx < 0)
-            idx = m_agentModelCombo->count() > 1 ? 1 : 0;
-        m_agentModelCombo->setCurrentIndex(idx);
-        m_agentModelCombo->setEnabled(!isExternalSession(sessionId) &&
-                                      session->provider ==
-                                          QLatin1String("claude-code"));
-    }
     // Keep the model line-up fresh as the user browses sessions (throttled inside
     // refreshClaudeModelCombo() so this doesn't hit the provider on every click).
     refreshClaudeModelCombo();
@@ -3764,60 +3598,6 @@ QString MainWindow::saveNewAgentPromptImage(const QImage &image)
         return QString();
     }
     return path;
-}
-
-// Composer "+" : pick files and insert them as @path references (resolved
-// relative to the session's working directory, which Claude Code understands).
-void MainWindow::addFilesToAgentPrompt()
-{
-    if (!m_agentPromptEdit)
-        return;
-    QString dir = sessionWorkdir(m_selectedAgentSessionId);
-    if (dir.isEmpty())
-        dir = QDir::homePath();
-    const QStringList files = QFileDialog::getOpenFileNames(
-        this, QStringLiteral("Add files to the message"), dir);
-    if (files.isEmpty())
-        return;
-    QString ins;
-    for (const QString &f : files) {
-        QString ref = f;
-        if (f.startsWith(dir + QLatin1Char('/')))
-            ref = f.mid(dir.size() + 1);
-        ins += QLatin1Char('@') + ref + QLatin1Char(' ');
-    }
-    m_agentPromptEdit->insertPlainText(ins);
-    m_agentPromptEdit->setFocus();
-}
-
-// Composer "/" : a menu of slash commands; the chosen one is dropped into the
-// message field ready to send.
-void MainWindow::showAgentSlashMenu()
-{
-    if (!m_agentSlashButton || !m_agentPromptEdit)
-        return;
-    static const QList<QPair<QString, QString>> kCommands = {
-        {QStringLiteral("/clear"), QStringLiteral("Clear the conversation history")},
-        {QStringLiteral("/compact"), QStringLiteral("Summarise and compact the context")},
-        {QStringLiteral("/context"), QStringLiteral("Show context-window usage")},
-        {QStringLiteral("/review"), QStringLiteral("Review the current changes")},
-        {QStringLiteral("/cost"), QStringLiteral("Show token and cost usage")},
-        {QStringLiteral("/help"), QStringLiteral("List available commands")},
-    };
-    QMenu menu(this);
-    for (const auto &c : kCommands) {
-        QAction *a = menu.addAction(QStringLiteral("%1  —  %2").arg(c.first, c.second));
-        a->setData(c.first);
-    }
-    QAction *chosen =
-        menu.exec(m_agentSlashButton->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
-    if (!chosen)
-        return;
-    m_agentPromptEdit->setPlainText(chosen->data().toString() + QLatin1Char(' '));
-    QTextCursor cur = m_agentPromptEdit->textCursor();
-    cur.movePosition(QTextCursor::End);
-    m_agentPromptEdit->setTextCursor(cur);
-    m_agentPromptEdit->setFocus();
 }
 
 void MainWindow::continueSelectedAgentSession()
@@ -6789,12 +6569,5 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
-    // The composer is always live whenever a session is selected: typing + Send
-    // steers a running agent, or restarts a stopped/waiting one with the message
-    // folded in (adhoc #177). It no longer greys out for PR-scoped sessions.
-    if (m_agentSendPromptButton)
-        m_agentSendPromptButton->setEnabled(selected);
-    if (m_agentPromptEdit)
-        m_agentPromptEdit->setEnabled(selected);
 }
 
