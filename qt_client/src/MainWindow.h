@@ -678,6 +678,11 @@ private:
                                   RepoPushState *st);
     void applyRepoPushButtonState(int index, const RepoPushState &state);
     void pushCurrentRepoUpstream();
+    // Launch the async `git push` for a repo whose secret scan has completed and
+    // been approved (see pushCurrentRepoUpstream). The repo must already be marked
+    // in m_pushingRepos.
+    void startRepoPush(int index, const RepositoryRecord &repo,
+                       const QString &upstream, int ahead);
     // Integrity pin: sha256 over the canonical heads+tags advertisement of a bare
     // mirror, byte-for-byte identical to the worker's advertised_refs_canonical().
     // The owner signs this on publish and the relay pins it. Empty when the mirror
@@ -738,6 +743,12 @@ private:
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
     void showDiagnosticsDialog();
+    // Opt-in crash/stall telemetry upload (issue #354). No-op unless the user
+    // enabled kUploadTelemetrySetting. On startup, reads the not-yet-uploaded
+    // tail of ~/.forkmesh/diagnostics/crashes.log and stalls.log, scrubs repo
+    // names / filesystem paths out, and POSTs a size-capped, anonymized payload
+    // (app version, OS, node hash) to /api/telemetry. Best-effort and silent.
+    void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
 
@@ -2922,6 +2933,20 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Bumped each time a branch is selected / a scope diff is requested so the
+    // off-thread git reads that build the scope list and render the diff can drop
+    // their result if the user has since switched branch or scope (issue #353 —
+    // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
+    int m_branchScopeLoadGen = 0;
+    int m_branchScopeDiffGen = 0;
+    // The last patch rendered into the branch-diff pane (with its empty-state
+    // message), cached so the per-file "Viewed" toggle can re-render synchronously
+    // — the toggle changes only the viewed set, not the patch, so it must not pay
+    // for (nor race) the now-async git read in renderBranchScopeDiff. Invalidated
+    // when a new branch is selected.
+    QByteArray m_branchDiffLastPatch;
+    QString m_branchDiffLastEmpty;
+    bool m_branchDiffLastValid = false;
     // "viewed" key for whatever scope the diff pane currently shows (whole branch,
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".

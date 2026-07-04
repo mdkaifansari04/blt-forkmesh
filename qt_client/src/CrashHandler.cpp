@@ -1,6 +1,9 @@
 #include "CrashHandler.h"
 
 #include <QByteArray>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 
 #include <cstdlib>
 #include <atomic>
@@ -10,6 +13,7 @@
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -32,6 +36,12 @@ char g_buildInfo[512] = {0};
 // array — 64 KiB comfortably exceeds the classic 8 KiB MINSIGSTKSZ.
 char g_altStack[64 * 1024];
 
+// Durable crash-log file descriptor, opened ahead of any fault in
+// installCrashHandler() so the handler only ever does signal-safe writes to it.
+// -1 = no durable log (write to stderr only). The opt-in telemetry upload reads
+// this file on the next startup (issue #354).
+int g_crashFd = -1;
+
 // Guard against a fault while we're already handling one (a bug in the handler,
 // or a second thread crashing) turning into an infinite loop.
 std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
@@ -52,20 +62,38 @@ int safeUtoa(unsigned long v, char *buf)
     return n;
 }
 
-void safeWrite(int fd, const char *s)
+// Write to stderr and, when open, mirror the same bytes into the durable crash
+// log so the record survives the process for the next-startup telemetry upload.
+void safeWrite(const char *s)
 {
     if (s && *s) {
-        ssize_t r = ::write(fd, s, ::strlen(s));
+        const size_t len = ::strlen(s);
+        ssize_t r = ::write(2, s, len);
+        (void)r;
+        if (g_crashFd >= 0)
+            r = ::write(g_crashFd, s, len);
         (void)r;
     }
 }
 
-void safeWriteNum(int fd, unsigned long v)
+void safeWriteNum(unsigned long v)
 {
     char buf[24];
     int n = safeUtoa(v, buf);
-    ssize_t r = ::write(fd, buf, size_t(n));
+    ssize_t r = ::write(2, buf, size_t(n));
     (void)r;
+    if (g_crashFd >= 0)
+        r = ::write(g_crashFd, buf, size_t(n));
+    (void)r;
+}
+
+// backtrace_symbols_fd targets one fd, so emit the frames to stderr and the
+// durable log separately.
+void safeBacktrace(void *const *frames, int n)
+{
+    backtrace_symbols_fd(frames, n, 2);
+    if (g_crashFd >= 0)
+        backtrace_symbols_fd(frames, n, g_crashFd);
 }
 
 const char *signalName(int sig)
@@ -91,19 +119,18 @@ void crashHandler(int sig)
         return;
     }
 
-    const int fd = 2;  // stderr
-    safeWrite(fd, "\n===== ForkMesh crash =====\n");
-    safeWrite(fd, "when (epoch): ");
-    safeWriteNum(fd, (unsigned long)::time(nullptr));
-    safeWrite(fd, "\nsignal: ");
-    safeWrite(fd, signalName(sig));
-    safeWrite(fd, "\nbuild: ");
-    safeWrite(fd, g_buildInfo);
-    safeWrite(fd, "\nbacktrace:\n");
+    safeWrite("\n===== ForkMesh crash =====\n");
+    safeWrite("when (epoch): ");
+    safeWriteNum((unsigned long)::time(nullptr));
+    safeWrite("\nsignal: ");
+    safeWrite(signalName(sig));
+    safeWrite("\nbuild: ");
+    safeWrite(g_buildInfo);
+    safeWrite("\nbacktrace:\n");
     void *frames[64];
     int n = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, n, fd);
-    safeWrite(fd, "==========================\n");
+    safeBacktrace(frames, n);
+    safeWrite("==========================\n");
 
     // Chain to the default handler so the OS still terminates the process (and
     // writes a core dump if enabled) exactly as it would have without us.
@@ -126,11 +153,10 @@ void terminateHandler()
             what = "(non-std exception)";
         }
     }
-    const int fd = 2;  // stderr
-    safeWrite(fd, "\n===== ForkMesh unhandled exception =====\n");
-    safeWrite(fd, "what: ");
-    safeWrite(fd, what ? what : "(unknown / no active exception)");
-    safeWrite(fd, "\n");
+    safeWrite("\n===== ForkMesh unhandled exception =====\n");
+    safeWrite("what: ");
+    safeWrite(what ? what : "(unknown / no active exception)");
+    safeWrite("\n");
     std::abort(); // -> SIGABRT -> crashHandler() logs the backtrace
 }
 
@@ -156,12 +182,22 @@ void installSignalHandlers()
 } // namespace
 #endif // FORKMESH_CRASH_HANDLER
 
-void installCrashHandler()
+void installCrashHandler(const QString &crashLogPath)
 {
 #ifdef FORKMESH_CRASH_HANDLER
     const QByteArray build =
         QByteArrayLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
     qstrncpy(g_buildInfo, build.constData(), sizeof(g_buildInfo));
+
+    // Open the durable crash log now, in normal context, so the signal handler
+    // only writes to an already-open fd. Best-effort: on any failure we simply
+    // fall back to stderr-only logging (g_crashFd stays -1).
+    if (!crashLogPath.isEmpty()) {
+        QDir().mkpath(QFileInfo(crashLogPath).absolutePath());
+        const QByteArray path = QFile::encodeName(crashLogPath);
+        g_crashFd = ::open(path.constData(),
+                           O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    }
 
     // Warm up backtrace() so the first (in-handler) call can't try to dlopen
     // libgcc's unwinder — that would malloc, which isn't signal-safe.
@@ -170,6 +206,8 @@ void installCrashHandler()
 
     installSignalHandlers();
     std::set_terminate(terminateHandler);
+#else
+    Q_UNUSED(crashLogPath);
 #endif
 }
 

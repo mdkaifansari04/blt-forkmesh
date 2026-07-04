@@ -590,12 +590,7 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
-      // adminPath is only ever sent back on the account's own authenticated
-      // responses (login/signup/profile-save), never the public-by-name
-      // lookup used for periodic refresh, so preserve it across those.
-      adminPath: Object.prototype.hasOwnProperty.call(body, "adminPath")
-        ? String(body.adminPath || "")
-        : String(base.adminPath || ""),
+      adminUrl: body.adminUrl || base.adminUrl || "",
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -759,7 +754,7 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
-    const adminLink = $("[data-admin-header-link]");
+    const adminButton = $("[data-admin-button]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
@@ -767,18 +762,13 @@
         ? "Email verified"
         : "Verify email in profile";
     }
-    if (adminLink) {
-      const adminPath = session?.isAdmin ? String(session.adminPath || "") : "";
-      if (adminPath) {
-        adminLink.href = "/" + adminPath.replace(/^\/+/, "");
-        adminLink.classList.remove("hidden");
-        adminLink.classList.add("inline-flex");
-      } else {
-        adminLink.classList.add("hidden");
-        adminLink.classList.remove("inline-flex");
+    applyAvatar(avatar, session);
+    if (adminButton) {
+      adminButton.classList.toggle("hidden", !session?.isAdmin);
+      if (session?.isAdmin && session?.adminUrl) {
+        adminButton.href = session.adminUrl;
       }
     }
-    applyAvatar(avatar, session);
     renderProfileModal(session);
     renderProfilePage(session);
   }
