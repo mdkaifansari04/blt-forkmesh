@@ -7961,6 +7961,20 @@ def _build_rev(env):
     return "dev"
 
 
+def _app_version(env):
+    # The human-readable release version shown in the website header. deploy.sh
+    # reads it from qt_client/CMakeLists.txt's project() version and stamps it as
+    # the APP_VERSION Worker var, so it matches the desktop app and updates
+    # automatically whenever a release bumps that version and redeploys.
+    try:
+        val = env.APP_VERSION
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return ""
+
+
 async def poll_handler(env, request):
     # One lightweight digest the client polls on its regular tick INSTEAD of
     # separately re-fetching the full profile (/api/accounts/<name> — avatar and
@@ -10038,6 +10052,7 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    "version": _app_version(self.env),
                     "now": Date.now(),
                 }
             )
