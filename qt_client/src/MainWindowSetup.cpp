@@ -925,12 +925,16 @@ void MainWindow::startSession()
                     !r.mirrorPath.isEmpty() && QDir(r.mirrorPath).exists())
                     publishRepository(i, false);
             }
-        } else if (m_headless) {
-            // A headless VM has no GUI and nothing else ever calls
+        } else if (m_headless || publishesMirror) {
+            // Nothing else in an unattended run ever calls
             // registerNodeAccountSilently() again — so a transient failure here
             // (relay unreachable right at boot is the common case on a fresh
             // VPS) would otherwise strand the node unregistered forever, even
-            // though it keeps mirroring/chatting fine. Retry with backoff.
+            // though it keeps mirroring/chatting fine: no account means no host
+            // token, so it never marks host_presence and never appears on the
+            // website. This covers both a headless VM and a node that only
+            // qualified via publishesMirror — the same set registered above.
+            // Retry with backoff.
             scheduleHeadlessRegisterRetry(name);
         }
     }
@@ -1949,6 +1953,17 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
+                        // Bring the live /host tunnels up now. startSession() ran
+                        // startRepoHosts() back when this node had no session — a
+                        // no-op then (hasActiveAccountSession() was false) — and
+                        // nothing else in a headless run retries it. So a node that
+                        // only registered on this retry would publish its catalog
+                        // record (below) yet never open a host tunnel: it marks no
+                        // host_presence and so shows offline ("not ready to serve")
+                        // on the website even though it is fully mirroring. Honour a
+                        // node the user parked offline, matching startSession's guard.
+                        if (!m_nodeOffline)
+                            startRepoHosts();
                         for (int i = 0; i < m_repositories.size(); ++i) {
                             const RepositoryRecord &r = m_repositories.at(i);
                             if (!r.previewOnly && r.publishToNetwork &&
