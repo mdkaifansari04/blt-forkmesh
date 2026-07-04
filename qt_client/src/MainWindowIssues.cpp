@@ -6993,10 +6993,20 @@ QWidget *MainWindow::buildChatSection()
     m_encryptionLabel->setPixmap(
         tintedOcticonPixmap("lock", QColor("#8b949e"), 16));
     m_encryptionLabel->setToolTip("Fully end-to-end encrypted");
+    // Invite people into the current private room. Hidden for public channels
+    // and DMs (there's no one to "invite" to those); toggled in switchConversation.
+    m_inviteButton = new QPushButton(QStringLiteral("Invite"));
+    m_inviteButton->setObjectName("ghostButton");
+    m_inviteButton->setCursor(Qt::PointingHandCursor);
+    m_inviteButton->setToolTip(QStringLiteral("Invite a member to this private room"));
+    m_inviteButton->hide();
+    connect(m_inviteButton, &QPushButton::clicked, this,
+            &MainWindow::promptInviteToPrivateChannel);
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 12, 18, 12);
     headerLayout->addWidget(m_channelTitle);
     headerLayout->addStretch();
+    headerLayout->addWidget(m_inviteButton);
     headerLayout->addWidget(m_encryptionLabel);
 
     // Firewall banner: hidden until the backend reports the host firewall is
@@ -7151,7 +7161,17 @@ QWidget *MainWindow::buildChatSection()
                 if (item)
                     switchConversation(item->data(Qt::UserRole).toString());
             });
-    connect(addChannelButton, &QPushButton::clicked, this, &MainWindow::promptAddChannel);
+    // "+ Add chat" offers a public channel (visible to the whole network) or an
+    // invite-only private room. A plain channel is the common case, so it's first.
+    connect(addChannelButton, &QPushButton::clicked, this, [this, addChannelButton] {
+        QMenu menu(this);
+        connect(menu.addAction(QStringLiteral("New channel (public)")),
+                &QAction::triggered, this, &MainWindow::promptAddChannel);
+        connect(menu.addAction(QStringLiteral("New private room\xE2\x80\xA6")),
+                &QAction::triggered, this, &MainWindow::promptAddPrivateChannel);
+        menu.exec(addChannelButton->mapToGlobal(
+            QPoint(0, addChannelButton->height())));
+    });
     connect(m_messageInput, &QLineEdit::textEdited, this, &MainWindow::onComposerEdited);
     // Re-evaluate the @-mention popup when the caret moves (arrow keys, a click)
     // so it follows the token or dismisses when the caret leaves it.

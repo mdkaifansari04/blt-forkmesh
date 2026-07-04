@@ -693,7 +693,8 @@ void ServerNode::sendHello()
     sampleSystemStats();
     QJsonArray channels;
     for (const QString &channel : std::as_const(m_channels))
-        channels.append(channel);
+        if (!m_privateChannels.contains(channel))
+            channels.append(channel);
     QJsonObject hello = makeMessage("hello");
     hello.insert("channels", channels);
     writeMirrors(hello, m_mirroredRepos);
@@ -767,6 +768,8 @@ void ServerNode::sendChat(const QString &channel, const QString &text)
     QJsonObject message = makeMessage("chat");
     message.insert("channel", channel);
     message.insert("text", text.left(kMaxTextChars));
+    if (m_privateChannels.contains(channel))
+        message.insert("private", true);
     markSeen(message.value("id").toString());
     storeHistory(message);
     sendEncrypted(message, true);
@@ -805,6 +808,8 @@ void ServerNode::sendFile(const QString &conversation, const QString &fileName,
         message.insert("fileName", safeFileName(fileName));
         message.insert("fileMime", mimeType.left(kMaxMimeChars));
         message.insert("file", QString::fromLatin1(data.toBase64()));
+        if (m_privateChannels.contains(conversation))
+            message.insert("private", true);
         markSeen(message.value("id").toString());
         storeHistory(message);
         sendEncrypted(message, true);
@@ -938,6 +943,44 @@ void ServerNode::addChannel(const QString &channel)
     sendEncrypted(message, true);
 }
 
+void ServerNode::createPrivateChannel(const QString &channel)
+{
+    QString name = channel.trimmed();
+    if (name.isEmpty())
+        return;
+    if (!name.startsWith('#'))
+        name.prepend('#');
+    m_privateChannels.insert(name);
+    if (!m_channels.contains(name)) {
+        m_channels.append(name);
+        emit channelsChanged(m_channels);
+    }
+    emit privateChannelJoined(name);
+    // Deliberately NOT broadcast: a private room only reaches peers we invite.
+}
+
+void ServerNode::inviteToChannel(const QString &peerId, const QString &channel)
+{
+    QString name = channel.trimmed();
+    if (peerId.isEmpty() || name.isEmpty())
+        return;
+    if (!name.startsWith('#'))
+        name.prepend('#');
+    // Only private rooms are invite-based; a public channel is already visible
+    // to everyone, so an "invite" to one is meaningless.
+    if (!m_privateChannels.contains(name))
+        return;
+    QJsonObject message = makeMessage("invite");
+    message.insert("to", peerId);
+    message.insert("channel", name);
+    markSeen(message.value("id").toString());
+    // Persist so an invitee who is offline right now still receives it when they
+    // reconnect (non-target members ignore it via the "to" check).
+    sendEncrypted(message, true);
+    // Bring the invitee up to speed with the room's existing history.
+    sendChannelHistoryTo(peerId, name);
+}
+
 void ServerNode::shutdown()
 {
     m_userStopped = true; // intentional leave: stop the auto-reconnect loop
@@ -1021,7 +1064,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
             sendHistoryTo(senderId);
             QJsonArray channels;
             for (const QString &channel : std::as_const(m_channels))
-                channels.append(channel);
+                if (!m_privateChannels.contains(channel))
+                    channels.append(channel);
             QJsonObject reply = makeMessage("hello");
             reply.insert("channels", channels);
             writeMirrors(reply, m_mirroredRepos); // so the newcomer sees our mirrors too
@@ -1029,10 +1073,33 @@ void ServerNode::handlePlain(const QJsonObject &message)
             sendEncrypted(reply, false);
         }
     } else if (type == "chat") {
-        if (!m_channels.contains(message.value("channel").toString()))
-            m_channels.append(message.value("channel").toString());
+        const QString channel = message.value("channel").toString();
+        // A private-room message from a room we weren't invited to is ignored,
+        // the same honour-model as a direct message addressed to someone else.
+        if (message.value("private").toBool() && !m_channels.contains(channel))
+            return;
+        if (!m_channels.contains(channel))
+            m_channels.append(channel);
         storeHistory(message);
         emitChat(message);
+    } else if (type == "invite") {
+        // Someone added us to a private room. Join it locally (invite-only, so
+        // we keep it out of our own hello/channel broadcasts too) and surface it.
+        if (message.value("to").toString() == m_nodeId) {
+            QString channel = message.value("channel").toString().left(120);
+            if (!channel.isEmpty()) {
+                if (!channel.startsWith('#'))
+                    channel.prepend('#');
+                m_privateChannels.insert(channel);
+                if (!m_channels.contains(channel)) {
+                    m_channels.append(channel);
+                    emit channelsChanged(m_channels);
+                }
+                emit privateChannelJoined(channel);
+                emit systemMessage(sender + " invited you to private room " +
+                                   channel + ".");
+            }
+        }
     } else if (type == "dm") {
         const QString to = message.value("to").toString();
         if (to == m_nodeId)
@@ -1103,6 +1170,11 @@ void ServerNode::handlePlain(const QJsonObject &message)
             const QJsonObject entry = value.toObject();
             if (!messageHasSafePayload(entry))
                 continue;
+            // Never surface replayed private-room history for a room we aren't a
+            // member of (mirrors the live "chat" guard above).
+            if (entry.value("private").toBool() &&
+                !m_channels.contains(entry.value("channel").toString()))
+                continue;
             if (markSeen(entry.value("id").toString())) {
                 storeHistory(entry);
                 emitChat(entry);
@@ -1122,10 +1194,30 @@ void ServerNode::sendHistoryTo(const QString &peerId)
     if (peerId.isEmpty() || m_channelHistory.isEmpty())
         return;
     QJsonArray entries;
-    for (const QList<QJsonObject> &history : std::as_const(m_channelHistory)) {
-        for (const QJsonObject &entry : history)
+    for (auto it = m_channelHistory.constBegin(); it != m_channelHistory.constEnd();
+         ++it) {
+        // A blanket hello-reply must not leak private rooms: only the members
+        // we've explicitly invited (via inviteToChannel) receive their history.
+        if (m_privateChannels.contains(it.key()))
+            continue;
+        for (const QJsonObject &entry : it.value())
             entries.append(entry);
     }
+    QJsonObject message = makeMessage("history");
+    message.insert("to", peerId);
+    message.insert("entries", entries);
+    sendEncrypted(message, false);
+}
+
+void ServerNode::sendChannelHistoryTo(const QString &peerId, const QString &channel)
+{
+    if (peerId.isEmpty() || !m_channelHistory.contains(channel))
+        return;
+    QJsonArray entries;
+    for (const QJsonObject &entry : std::as_const(m_channelHistory[channel]))
+        entries.append(entry);
+    if (entries.isEmpty())
+        return;
     QJsonObject message = makeMessage("history");
     message.insert("to", peerId);
     message.insert("entries", entries);
