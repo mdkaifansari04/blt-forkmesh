@@ -2,12 +2,12 @@
 schema: forkmesh-issue-v1
 number: 345
 title: on code overview show the number of files in each folder in the list please next to LoC
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 62
 progress: 0
-assignees: []
+assignees: [Claude Code]
 createdAt: 1783093988722
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
