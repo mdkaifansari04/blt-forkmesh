@@ -835,8 +835,11 @@ private:
     // are always direct-upload regardless of the form's checkbox state).
     // onFinished, if given, is called once with whether the install succeeded
     // — used to chain installs when running against every saved host.
+    // reinstall passes FORKMESH_REINSTALL=1 to the hosted installer so it wipes
+    // the host's existing install + data before installing fresh (adhoc #258).
     void runHostInstall(bool forceUploadBinary = false,
-                        std::function<void(bool)> onFinished = {});
+                        std::function<void(bool)> onFinished = {},
+                        bool reinstall = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -845,6 +848,12 @@ private:
     // chaining to the next host once the previous one finishes.
     void runHostInstallAllFromBinary();
     void installNextHostFromBinary(QList<int> remainingRows);
+    // Uninstall + reinstall from binary (adhoc #258) against every saved host,
+    // one at a time: each host wipes its existing install + data and then
+    // installs a fresh copy from this app's binary, re-minting a link code so it
+    // re-attaches to this account.
+    void runHostReinstallAllFromBinary();
+    void reinstallNextHostFromBinary(QList<int> remainingRows);
     void appendHostInstallLog(const QString &text);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
@@ -2345,6 +2354,9 @@ private:
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
+    // #368: identity key backup/export/import UI + first-run "back up" nag.
+    void backUpIdentityKey();
+    void refreshIdentityBackupNag();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
@@ -2726,6 +2738,8 @@ private:
     // Bulk direct-upload install (adhoc #257): runs the upload-binary install
     // against every saved host, one after another.
     QPushButton *m_hostInstallAllButton = nullptr;
+    // Bulk uninstall + reinstall from binary (adhoc #258).
+    QPushButton *m_hostReinstallAllButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     // ANSI parser state for the live install log: a carry buffer holding an
@@ -2788,6 +2802,7 @@ private:
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
+    QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QPlainTextEdit *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
