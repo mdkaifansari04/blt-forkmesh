@@ -114,6 +114,59 @@
 
   applyTheme();
 
+  // Reveal the header "Admin" link for a signed-in admin. The adminUrl is
+  // derived from the Worker's ADMIN_PATH env and carried in the session that
+  // login/dashboard persist to localStorage, so static pages can surface the
+  // same shortcut the dashboard header shows without a fresh round-trip.
+  function readStoredSession() {
+    try {
+      return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function applyAdminLink(session) {
+    const link = document.querySelector("[data-admin-link]");
+    if (!link) return;
+    const adminUrl = session && session.isAdmin ? (session.adminUrl || "") : "";
+    if (adminUrl) {
+      link.href = adminUrl;
+      link.removeAttribute("hidden");
+    } else {
+      link.href = "#";
+      link.setAttribute("hidden", "");
+    }
+    return adminUrl;
+  }
+
+  async function hydrateAdminLink() {
+    const session = readStoredSession();
+    const adminUrl = applyAdminLink(session);
+    // An older session may be flagged admin but predate adminUrl being carried
+    // through — backfill it from the account endpoint so the shortcut appears.
+    if (session && session.isAdmin && !adminUrl && session.nodeName &&
+        location.protocol !== "file:") {
+      try {
+        const response = await fetch(
+          `/api/accounts/${encodeURIComponent(session.nodeName)}`,
+          { headers: { accept: "application/json" } },
+        );
+        if (!response.ok) return;
+        const body = await response.json();
+        if (body && body.adminUrl) {
+          const next = { ...session, isAdmin: Boolean(body.isAdmin), adminUrl: body.adminUrl };
+          try { localStorage.setItem("forkmesh.session", JSON.stringify(next)); } catch (error) {}
+          applyAdminLink(next);
+        }
+      } catch (error) {
+        /* offline or logged out — leave the link hidden */
+      }
+    }
+  }
+
+  hydrateAdminLink();
+
   const themeToggle = document.querySelector("#theme-toggle");
   if (themeToggle) {
     themeToggle.addEventListener("click", () => {
