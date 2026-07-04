@@ -2479,6 +2479,15 @@ CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
 
+# Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
+# constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
+# two async WebCrypto round trips each) on every blind_index / encrypt_row /
+# decrypt_row call was the dominant per-request CPU cost on hot polled endpoints
+# (/api/notifications, /api/accounts/<name>). Cache the imported CryptoKeys,
+# keyed by the current secret so a secret rotation still takes effect.
+_data_key_cache = {"secret": None, "key": None}
+_hmac_key_cache = {"secret": None, "key": None}
+
 SCHEMA_STATEMENTS = [
     # email_bi (blind index of the email) lets users log in by email, not just
     # node name (migration 0003). is_admin is an operator-settable flag and name
@@ -2838,11 +2847,16 @@ def _require_data_secret(env):
 
 async def _data_key(env):
     secret = _require_data_secret(env)
+    if _data_key_cache["secret"] == secret and _data_key_cache["key"] is not None:
+        return _data_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "AES-GCM"}), False,
         _to_js(["encrypt", "decrypt"])
     )
+    _data_key_cache["secret"] = secret
+    _data_key_cache["key"] = key
+    return key
 
 
 async def encrypt_row(env, obj):
@@ -2874,11 +2888,16 @@ async def decrypt_row(env, stored, key=None):
 async def _hmac_key(env):
     # A distinct key context so the blind-index HMAC key isn't the AES key.
     secret = _require_data_secret(env) + ":blind-index"
+    if _hmac_key_cache["secret"] == secret and _hmac_key_cache["key"] is not None:
+        return _hmac_key_cache["key"]
     digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
-    return await js_crypto.subtle.importKey(
+    key = await js_crypto.subtle.importKey(
         "raw", digest, to_js({"name": "HMAC", "hash": "SHA-256"}), False,
         _to_js(["sign"])
     )
+    _hmac_key_cache["secret"] = secret
+    _hmac_key_cache["key"] = key
+    return key
 
 
 async def blind_index(env, value):
@@ -7428,6 +7447,59 @@ async def notifications_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+def _build_rev(env):
+    # The git rev deploy.sh stamps as a Worker var on every production deploy.
+    try:
+        val = env.BUILD_REV
+        if val:
+            return str(val)
+    except (AttributeError, TypeError):
+        pass
+    return "dev"
+
+
+async def poll_handler(env, request):
+    # One lightweight digest the client polls on its regular tick INSTEAD of
+    # separately re-fetching the full profile (/api/accounts/<name> — avatar and
+    # all) and the full notification list every time. It returns only cheap
+    # change tokens (a couple of indexed reads, no avatar blob, no per-row
+    # notification decrypt); the client fires those heavier fetches only when a
+    # token here actually moves. Rolling three per-minute polls into one keeps
+    # the hot dashboard path off the Worker CPU limit.
+    await ensure_schema(env)
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    out = {"ok": True, "rev": _build_rev(env)}
+    if not valid_node_name(node):
+        return json_response(out)
+    name_bi, rec = await _account_row(env, node)
+    if rec:
+        # Token folds the profile fields the dashboard actually re-renders, so a
+        # change to any of them (verification, avatar, admin grant, ownership)
+        # invalidates it and triggers the full /api/accounts/<name> fetch.
+        out["profile"] = {"token": ":".join(str(x) for x in (
+            rec.get("status", ""),
+            1 if rec.get("email_verified") else 0,
+            rec.get("avatar_updated_at", 0) or 0,
+            1 if await _is_admin(env, node) else 0,
+            rec.get("owner", "") or "",
+        ))}
+        # Unread count is returned outright so the bell badge updates from the
+        # poll alone; token (latest ts + row total) moves on any add/remove so
+        # the full list is re-pulled only when it changed.
+        notif = await d1_first(
+            env,
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN read_at=0 THEN 1 ELSE 0 END) AS unread, "
+            "MAX(ts) AS latest FROM notifications WHERE recipient_bi=?",
+            name_bi)
+        total = int((notif or {}).get("total") or 0)
+        unread = int((notif or {}).get("unread") or 0)
+        latest = int((notif or {}).get("latest") or 0)
+        out["notif"] = {"unread": unread, "token": str(latest) + ":" + str(total)}
+    return json_response(out)
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -8887,17 +8959,10 @@ class Default(WorkerEntrypoint):
         # serving while the deploy reported success), and the script aborts loudly
         # instead of reporting a phantom success.
         if url.path in ("/api/version", "/api/version/"):
-            build_rev = "dev"
-            try:
-                val = self.env.BUILD_REV
-                if val:
-                    build_rev = str(val)
-            except (AttributeError, TypeError):
-                pass
             return json_response(
                 {
                     "ok": True,
-                    "rev": build_rev,
+                    "rev": _build_rev(self.env),
                     "now": Date.now(),
                 }
             )
@@ -8940,6 +9005,12 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
+
+        # Consolidated lightweight status digest (version + profile/notification
+        # change tokens) so the client polls once instead of re-fetching the
+        # full profile and notification list every tick.
+        if url.path in ("/api/poll", "/api/poll/"):
+            return await poll_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so
