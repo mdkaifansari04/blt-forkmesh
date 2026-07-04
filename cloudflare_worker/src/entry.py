@@ -183,6 +183,14 @@ from dashboard_bundle import (  # noqa: E402
     fragment_path,
 )
 
+# Static route ownership rules: repo shortcuts are Python-owned so hard refresh
+# on /owner/repo serves the dashboard shell; direct implementation-file URLs
+# such as /login.html stay non-public.
+from static_routes import (  # noqa: E402
+    BLOCKED_STATIC_HTML_PATHS,
+    looks_like_repo_route,
+)
+
 # Release manifest + content-addressed blob helpers (tag/asset validation, the
 # CAS blob path layout, the canonical signable manifest body, semver ordering)
 # live in releases.py — another pure, js-free sibling module the runtime bundles
@@ -5363,7 +5371,7 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
     expires = int(Date.now()) + PASSWORD_RESET_TTL_MS
     token = await _password_reset_token(env, name, email, pass_hash, expires)
     link = (_public_base_url(env, request) +
-            "/reset-password.html?node=" + quote(name) +
+            "/reset-password?node=" + quote(name) +
             "&exp=" + str(expires) + "&token=" + token)
     subject = "Reset your ForkMesh password"
     text = ("A password reset was requested for your ForkMesh node \"" + name +
@@ -5478,7 +5486,7 @@ async def _verify_email(env, request):
                     env, "DELETE FROM pending_verifications WHERE name_bi=?", name_bi)
             return _verify_email_page(
                 "<h1>Email confirmed</h1><p>Your ForkMesh email is verified. "
-                "You can close this tab and <a href=\"/login.html\">log in</a>.</p>",
+                "You can close this tab and <a href=\"/login\">log in</a>.</p>",
                 200)
     return _verify_email_page(
         "<h1>Verification link invalid</h1><p>This confirmation link is invalid "
@@ -8679,16 +8687,8 @@ class Default(WorkerEntrypoint):
         if git_recv and method_name(request) == "POST":
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
-        # Static docs/network directories are canonical with a trailing slash.
-        # Keep this as routing support only; all persistent v0.3.0 APIs stay below.
-        if url.path == "/network":
-            return Response("", status=308, headers={"location": "/network/"})
-        if url.path == "/docs":
-            return Response("", status=308, headers={"location": "/docs/"})
-        if url.path == "/blog":
-            return Response("", status=308, headers={"location": "/blogs"})
-        if url.path == "/blog.html":
-            return Response("", status=308, headers={"location": "/blogs"})
+        if url.path in BLOCKED_STATIC_HTML_PATHS:
+            return await self._serve_not_found_page(url)
 
         if url.path in ("/health", "/api/mainnode"):
             return json_response(
@@ -9033,10 +9033,26 @@ class Default(WorkerEntrypoint):
         if url.path == "/dashboard.js":
             return await self._serve_dashboard_bundle(url)
 
+        if looks_like_repo_route(url.path):
+            return await self._serve_dashboard_shell(url)
+
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
             return await self._serve_dashboard_shell(url)
 
         return json_response({"error": "not_found"}, status=404)
+
+    async def _serve_not_found_page(self, url):
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + "404.html")
+            body = await resp.text()
+        except Exception:
+            body = "not found"
+        return Response(
+            body,
+            status=404,
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
 
     async def _serve_dashboard_bundle(self, url):
         # Concatenate /dashboard.js from its ordered fragments (see

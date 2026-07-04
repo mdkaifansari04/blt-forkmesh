@@ -24,7 +24,39 @@ html_handling = "none"
 not_found_handling = "404-page"
 # /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
 # handled in code rather than served as a static asset.
-run_worker_first = ["/api/*", "/health", "/network", "/docs", "/docs.html", "/blog", "/blog.html", "/*/info/refs", "/*/git-upload-pack", "/admin-*", "/dashboard", "/dashboard.js", "/dashboard/*"]
+run_worker_first = [
+  "/api/*",
+  "/health",
+  "/admin-*",
+  "/dashboard",
+  "/dashboard.js",
+  "/dashboard/*",
+  "/index.html",
+  "/dashboard.html",
+  "/blog.html",
+  "/login.html",
+  "/signup.html",
+  "/forgot-password.html",
+  "/reset-password.html",
+  "/mirror-payouts.html",
+  "/security-report.html",
+  "/docs.html",
+  "/network.html",
+  "/chat.html",
+  "/desktop.html",
+  "/about.html",
+  "/features.html",
+  "/careers.html",
+  "/changelog.html",
+  "/privacy.html",
+  "/terms.html",
+  "/status.html",
+  "/*/*",
+  "!/assets/*",
+  "!/favicon/*",
+  "!/blog/*",
+  "!/docs/*",
+]
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"

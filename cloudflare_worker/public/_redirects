@@ -1,23 +1,20 @@
 / /index.html 200
 /dashboard /dashboard/index.html 200
-# /dashboard/:owner/:repo (and deeper tree|blob paths) are client-side routes
-# handled in the Worker (run_worker_first = /dashboard/*) to avoid the
-# Cloudflare loop-detection false-positive on /dashboard/* → /dashboard/index.html.
-/dashboard.html /dashboard 308
-/noisy-background.avif /noisy-background.avif 200
-/dashboard.js /dashboard.js 200
-/dashboard-chat.js /dashboard-chat.js 200
+# /dashboard/:owner/:repo and clean repo shortcuts (/owner/repo, /owner/repo/tree,
+# /owner/repo/blob, and feature tabs) are handled in the Worker. Static asset
+# prefixes stay asset-first through run_worker_first exceptions in wrangler.toml.
 /blogs /blog.html 200
 /login /login.html 200
 /signup /signup.html 200
+/forgot-password /forgot-password.html 200
+/reset-password /reset-password.html 200
 /mirror-payouts /mirror-payouts.html 200
+/security-report /security-report.html 200
 /docs /docs/index.html 200
-/docs/ /docs/index.html 200
-/docs.html /docs/ 308
+/docs/ /docs 308
 /blog /blogs 308
-/blog.html /blogs 308
-/network /network/index.html 200
-/network/ /network/index.html 200
+/network /network.html 200
+/network/ /network 308
 /chat /chat.html 200
 /desktop /desktop.html 200
 /about /about.html 200
@@ -27,9 +24,7 @@
 /privacy /privacy.html 200
 /terms /terms.html 200
 /status /status.html 200
-# Repo shortcut URLs (/owner/repo and /owner/repo/tree|blob/...) are deliberately
-# NOT redirected here. A /:owner/:repo rule also matches real two-segment static
-# assets like /assets/logo.png and /favicon/site.webmanifest, and Cloudflare
-# always applies _redirects BEFORE serving a matching static file, so those
-# assets would 308 instead of loading. The shortcut is handled client-side in
-# public/404.html, which only runs after asset resolution (a genuine 404).
+# Repo shortcut URLs are deliberately NOT redirected here. A /:owner/:repo rule
+# also matches real two-segment static assets like /assets/logo.png and
+# /favicon/site.webmanifest because Cloudflare applies _redirects before serving
+# matching static files.

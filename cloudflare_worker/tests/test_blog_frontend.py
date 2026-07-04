@@ -223,26 +223,25 @@ def test_blog_page_uses_blog_banner_assets():
         assert marker in html
 
 
-def test_blog_paths_are_owned_by_python_worker():
-    assert 'if url.path == "/blog":' in ENTRY_TEXT
-    assert 'if url.path == "/blog.html":' in ENTRY_TEXT
-    assert 'headers={"location": "/blogs"}' in ENTRY_TEXT
+def test_blog_paths_are_owned_by_redirects_not_python_worker():
+    assert 'if url.path == "/blog":' not in ENTRY_TEXT
+    assert 'if url.path == "/blog.html":' not in ENTRY_TEXT
     assert REDIRECTS.exists()
     redirects = _read(REDIRECTS)
     assert "/blogs /blog.html 200" in redirects
     assert "/blog /blogs 308" in redirects
-    assert "/blog.html /blogs 308" in redirects
+    assert "/blog.html /blogs 308" not in redirects
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
     assert WRANGLER["assets"]["html_handling"] == "none"
-    assert "/blog" in run_worker_first
+    assert "/blog" not in run_worker_first
     assert "/blog.html" in run_worker_first
     assert "/blogs" not in run_worker_first
 
 
 if __name__ == "__main__":
     test_blog_page_uses_screenshot_editorial_shell()
-    test_blog_page_nav_only_links_login()
+    test_blog_page_nav_only_links_auth()
     test_blog_page_uses_homepage_logo_markup()
     test_blog_page_footer_keeps_only_twitter_social_link()
     test_blog_page_articles_open_in_page_detail_view()
@@ -253,4 +252,4 @@ if __name__ == "__main__":
     test_blog_interaction_states_use_neutral_dark_not_green()
     test_blog_search_result_copy_is_compact()
     test_blog_page_uses_blog_banner_assets()
-    test_blog_paths_are_owned_by_python_worker()
+    test_blog_paths_are_owned_by_redirects_not_python_worker()

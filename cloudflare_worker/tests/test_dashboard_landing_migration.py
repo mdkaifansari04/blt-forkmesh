@@ -1086,26 +1086,29 @@ def test_dashboard_deep_link_assets_binding_is_wired_up():
 def test_clean_marketing_routes_target_static_pages():
     for redirect in (
         "/dashboard /dashboard/index.html 200",
-        "/dashboard.html /dashboard 308",
         "/desktop /desktop.html 200",
         "/docs /docs/index.html 200",
+        "/docs/ /docs 308",
+        "/network /network.html 200",
+        "/network/ /network 308",
         "/blog /blogs 308",
     ):
         assert redirect in REDIRECTS
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
-    for route in ("/blog", "/docs"):
-        assert route in run_worker_first
-    for route in ("/desktop", "/blogs"):
+    for route in ("/blog", "/docs", "/network", "/desktop", "/blogs"):
         assert route not in run_worker_first
+    for route in ("/dashboard.html", "/docs.html", "/network.html"):
+        assert route in run_worker_first
 
 
 def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
     # A /:owner/:repo rule in _redirects matches real two-segment static assets
     # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
     # applies _redirects before serving a matching static file — that 308'd those
-    # assets and broke the deploy's public-asset check. The shortcut must live in
-    # 404.html (post-asset-resolution) instead, so guard against the rule's return.
+    # assets and broke the deploy's public-asset check. The shortcut must be
+    # Worker-owned with explicit asset-prefix exceptions, so guard against the
+    # redirect rule's return.
     rules = [
         line for line in REDIRECTS.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
@@ -1120,20 +1123,14 @@ def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
         assert not rule.startswith("/favicon/*")
 
 
-def test_repo_shortcut_urls_redirect_to_dashboard_from_404_page():
+def test_repo_shortcut_urls_are_worker_owned_not_404_page_scripted():
     html = _read(PUBLIC / "404.html")
 
-    # The 404 page bounces /owner/repo (and tree/blob deep links) to the dashboard.
-    # Feature tabs (/issues, /pulls, etc.) are preserved in the bounce.
-    assert '"/dashboard/"' in html
-    assert 'var dashboardPath = "/dashboard/' in html
-    assert "window.location.pathname.split" in html
-    assert 'parts[2] === "tree" || parts[2] === "blob"' in html
-    assert 'featureTabs' in html
-    assert '["commits", "releases", "issues", "pulls", "discussions", "mirrors"]' in html
-    # Real site sections must not be treated as repo owners.
-    for reserved in ("assets", "favicon", "dashboard", "docs", "blogs"):
-        assert '"%s"' % reserved in html
+    assert "window.location.replace" not in html
+    assert "window.location.pathname.split" not in html
+    assert 'var dashboardPath = "/dashboard/' not in html
+    assert "looks_like_repo_route" in ENTRY_TEXT
+    assert 'if looks_like_repo_route(url.path):' in ENTRY_TEXT
 
 
 def test_dashboard_restores_feature_tab_on_hard_refresh():
