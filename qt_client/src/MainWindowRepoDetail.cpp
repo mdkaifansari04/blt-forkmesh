@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
 
@@ -6974,6 +6975,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *listPage = new QWidget;
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
+    installColumnHeaderMenu(m_commitsTable); // 3-dots per-column menu (issue #318)
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->setHorizontalHeaderLabels(
         {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
