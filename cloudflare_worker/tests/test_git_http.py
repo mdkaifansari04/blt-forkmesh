@@ -179,7 +179,8 @@ def test_blobs_batch_endpoint_reads_many_files_in_one_request():
     # When nothing can be served it surfaces 503/504 so the router's mirror
     # fallback re-routes instead of caching a 200 full of nulls.
     entry = ENTRY.read_text(encoding="utf-8")
-    assert "blobs|blob" in entry  # routed + gated like the other browse ops
+    urls = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
+    assert "blobs|blob" in urls  # routed (REPO_HOST_RE) + gated like other ops
     assert 'if action == "blobs":' in entry
     assert "MAX_BLOB_BATCH" in entry
     assert "asyncio.gather" in entry
