@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 319
 title: when you click on an image in the agent prompt section show a preview of the image full sized
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 63
