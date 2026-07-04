@@ -20,6 +20,9 @@ namespace {
 constexpr int kCommitShaRole = Qt::UserRole;
 constexpr int kCommitMessageRole = Qt::UserRole + 1;
 constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
+// File-list item role (issue #365): true when an agent-stamped commit touched the
+// file, so the authorship filter can hide/show it without re-reading the mbox.
+constexpr int kPullFileAgentRole = Qt::UserRole + 1;
 
 // Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
 // QTextDocument::find only searches visible text, and an anchor carries none,
@@ -465,11 +468,24 @@ QWidget *MainWindow::buildPullsTab()
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
+    // Authorship filter (issue #365): narrow the file list to agent- or
+    // human-authored files. Only shown for PRs whose commits mix the two.
+    m_pullFileAuthorFilter = new QComboBox;
+    m_pullFileAuthorFilter->addItem(QStringLiteral("All authors"));
+    m_pullFileAuthorFilter->addItem(QStringLiteral("Agent-authored"));
+    m_pullFileAuthorFilter->addItem(QStringLiteral("Human-authored"));
+    m_pullFileAuthorFilter->setToolTip(
+        QStringLiteral("Filter changed files by whether an agent authored them"));
+    m_pullFileAuthorFilter->hide();
+    connect(m_pullFileAuthorFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { applyPullFileAuthorFilter(); });
+
     auto *filesPane = new QWidget;
     auto *filesPaneLayout = new QVBoxLayout(filesPane);
     filesPaneLayout->setContentsMargins(0, 0, 0, 0);
     filesPaneLayout->setSpacing(6);
     filesPaneLayout->addLayout(filesHeader);
+    filesPaneLayout->addWidget(m_pullFileAuthorFilter);
     filesPaneLayout->addWidget(m_pullFiles, 1);
 
     m_pullDiff = new QTextBrowser;
@@ -1166,6 +1182,14 @@ void MainWindow::refreshPullList()
                     agent->prNumber == pr.number
                         ? QStringLiteral("this PR")
                         : QStringLiteral("branch %1").arg(pr.head)));
+        } else if (const PullAgentProvenance prov = pullAgentProvenance(pr);
+                   prov.isAgent) {
+            // No local session (e.g. an agent PR from another node), but the signed
+            // commit trailer still attributes authorship (issue #365).
+            titleItem->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
+            titleItem->setToolTip(
+                QStringLiteral("Agent-authored \xE2\x80\x94 %1")
+                    .arg(agentProviderName(prov.tool)));
         }
         auto *costItem = new QTableWidgetItem;
         if (agent) {
@@ -1334,6 +1358,9 @@ void MainWindow::showPull(int number)
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
     togglePullDiffSearch(false); // opening a different PR clears any find-in-diff state
+    m_pullFileAuthorship.clear();
+    if (m_pullFileAuthorFilter)
+        m_pullFileAuthorFilter->hide();
 
     if (!found) {
         m_pullTitle->setText("Select a pull request");
@@ -1448,6 +1475,10 @@ void MainWindow::showPull(int number)
     }
     flush();
 
+    // Per-file authorship from the signed commit trailers, so the file list can be
+    // filtered by whether an agent touched each file (issue #365).
+    m_pullFileAuthorship = pullFileAuthorship(*found);
+
     for (auto it = m_pullFileDiffs.constBegin(); it != m_pullFileDiffs.constEnd(); ++it) {
         const QString name = it.key().section('/', -1);
         QString label = it.key();
@@ -1459,6 +1490,8 @@ void MainWindow::showPull(int number)
         }
         auto *item = new QListWidgetItem(iconForFile(name), label);
         item->setData(Qt::UserRole, it.key());
+        item->setData(kPullFileAgentRole,
+                      m_pullFileAuthorship.value(it.key(), false));
         if (summaryIt != reviewSnapshot.files.constEnd()) {
             item->setToolTip(QStringLiteral("%1 thread(s), %2 unresolved, %3 resolved, %4 suggestion(s)")
                                  .arg(summaryIt->totalThreads)
@@ -1469,6 +1502,17 @@ void MainWindow::showPull(int number)
         m_pullFiles->addItem(item);
     }
     m_pullFiles->sortItems();
+    // Offer the authorship filter only when the PR actually mixes agent and human
+    // authorship — otherwise there is nothing to narrow.
+    if (m_pullFileAuthorFilter) {
+        bool anyAgent = false, anyHuman = false;
+        for (auto it = m_pullFileAuthorship.constBegin();
+             it != m_pullFileAuthorship.constEnd(); ++it)
+            (it.value() ? anyAgent : anyHuman) = true;
+        const QSignalBlocker block(m_pullFileAuthorFilter);
+        m_pullFileAuthorFilter->setCurrentIndex(0);
+        m_pullFileAuthorFilter->setVisible(anyAgent && anyHuman);
+    }
     fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
     if (m_pullFiles->count() > 0) {
         // Render every file into the one scrollable view, then select the first
@@ -1491,6 +1535,30 @@ void MainWindow::showPull(int number)
     renderPullReviewSummary(*found);
     updatePullSubTabCounts(*found);
     updatePullActionState();
+}
+
+// Show only files matching the selected authorship (issue #365): index 1 keeps
+// agent-authored files, 2 keeps human-authored, 0 shows everything.
+void MainWindow::applyPullFileAuthorFilter()
+{
+    if (!m_pullFiles || !m_pullFileAuthorFilter)
+        return;
+    const int mode = m_pullFileAuthorFilter->currentIndex();
+    for (int row = 0; row < m_pullFiles->count(); ++row) {
+        QListWidgetItem *item = m_pullFiles->item(row);
+        const bool agent = item->data(kPullFileAgentRole).toBool();
+        const bool show = mode == 0 || (mode == 1 && agent) || (mode == 2 && !agent);
+        item->setHidden(!show);
+    }
+    // Keep a visible row selected so the diff view follows the filter.
+    if (QListWidgetItem *cur = m_pullFiles->currentItem();
+        !cur || cur->isHidden()) {
+        for (int row = 0; row < m_pullFiles->count(); ++row)
+            if (!m_pullFiles->item(row)->isHidden()) {
+                m_pullFiles->setCurrentRow(row);
+                break;
+            }
+    }
 }
 
 void MainWindow::switchToPullTab(int pullNumber)
@@ -2528,7 +2596,8 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
         QByteArray out;
         if (runGitCapture(dir,
                           {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
-                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad\x1f%ct",
+                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad\x1f%ct\x1f"
+                           "%(trailers:key=ForkMesh-Agent,valueonly,separator=%x2C)",
                            pr.base + ".." + pr.head},
                           &out, nullptr) &&
             !out.trimmed().isEmpty()) {
@@ -2557,6 +2626,12 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                     tip += QString::fromUtf8(" (%1 ago)").arg(rel);
                 if (!status.isEmpty())
                     tip += QString::fromUtf8("\nChecks: %1").arg(actionStatusText(status));
+                // Agent-authored commit: the ForkMesh-Agent trailer (issue #365).
+                const QString agentTrailer = f.size() > 6 ? f.at(6).trimmed() : QString();
+                if (!agentTrailer.isEmpty()) {
+                    item->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
+                    tip += QString::fromUtf8("\nAgent-authored: %1").arg(agentTrailer);
+                }
                 item->setToolTip(tip);
                 m_pullCommitsList->addItem(item);
                 listed = true;
@@ -2571,7 +2646,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
             QStringLiteral("^From ([0-9a-f]{7,40}) "));
         static const QRegularExpression patchTag(
             QStringLiteral("^\\[PATCH[^\\]]*\\]\\s*"));
-        QString author, subject, date, sha;
+        QString author, subject, date, sha, agentTrailer;
         bool inHeaders = false;
         const auto flush = [&] {
             if (subject.isEmpty() && author.isEmpty())
@@ -2611,6 +2686,10 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 tip += QString::fromUtf8(" (%1 ago)").arg(rel);
             if (!status.isEmpty())
                 tip += QString::fromUtf8("\nChecks: %1").arg(actionStatusText(status));
+            if (!agentTrailer.isEmpty()) {
+                item->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
+                tip += QString::fromUtf8("\nAgent-authored: %1").arg(agentTrailer);
+            }
             item->setToolTip(tip);
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             m_pullCommitsList->addItem(item);
@@ -2619,6 +2698,7 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
             subject.clear();
             date.clear();
             sha.clear();
+            agentTrailer.clear();
         };
         for (const QString &line : pr.commits.split('\n')) {
             if (const QRegularExpressionMatch m = boundary.match(line);
@@ -2628,8 +2708,12 @@ void MainWindow::renderPullCommits(const PullRequest &pr)
                 inHeaders = true;
                 continue;
             }
-            if (!inHeaders)
+            if (!inHeaders) {
+                // Commit-message body: catch the provenance trailer (issue #365).
+                if (line.startsWith(QLatin1String("ForkMesh-Agent:")))
+                    agentTrailer = line.mid(15).trimmed();
                 continue;
+            }
             if (line.isEmpty()) { // blank line ends the header block
                 inHeaders = false;
             } else if (line.startsWith(QLatin1String("From: "))) {
@@ -3825,6 +3909,7 @@ void MainWindow::mergeCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
+    autoBountyForMergedPull(current);
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
@@ -6131,11 +6216,127 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
     }
 }
 
+void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
+{
+    // Issue #347: reward every merged PR's author with the configured fixed
+    // bounty, independent of any issue bounty. Only the repo owner can create a
+    // bounty (the worker requires an owner signature), so this is a no-op on a
+    // node that doesn't own the repo.
+    if (!QSettings().value(kAutoPrBountyEnabledSetting, false).toBool())
+        return;
+    if (!m_networkAccess || !m_profileIdentity.isValid())
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.owner.isEmpty() || repo.owner != accountOwner())
+        return;
+    const QString payeeNode = pr.authorName.trimmed().toLower();
+    if (payeeNode.isEmpty())
+        return;
+    // The bounty amount reuses the USD-priced issue-bounty pipeline (min $1).
+    const double amount = QSettings().value(kAutoPrBountyAmountSetting, 1.0).toDouble();
+    if (amount < 1.0)
+        return;
+    const bool walletMode =
+        QSettings().value(kAutoPrBountyModeSetting).toString() ==
+        QLatin1String("wallet");
+    const int number = pr.number;
+
+    // Owner-signed create, keyed to the PR (kind "pr"). The canonical matches the
+    // issue-bounty flow (it binds owner/repo/number/payee); "pr" only affects the
+    // worker's storage key so an issue and a PR sharing a number don't collide.
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-bounty-create-v1\n" + repo.owner + "\n" + repo.name + "\n" +
+         QString::number(number) + "\n" + payeeNode + "\n" + ts).toUtf8();
+    const QJsonObject payload{{"action", "create"},
+                              {"owner", repo.owner},
+                              {"repo", repo.name},
+                              {"number", number},
+                              {"kind", QStringLiteral("pr")},
+                              {"amountUsd", amount},
+                              {"payeeNode", payeeNode},
+                              {"fromWallet", walletMode},
+                              {"ts", ts},
+                              {"sig", m_profileIdentity.signData(canonical)}};
+    QNetworkRequest request(bountyApiUrl(repo));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repo, number, amount, walletMode] {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString err = obj.value("error").toString(reply->errorString());
+            if (err == QLatin1String("insufficient_wallet_balance"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but the inbuilt bounty wallet "
+                                   "is low on SOL — top it up in Settings to pay "
+                                   "its $%2 reward.")
+                        .arg(number)
+                        .arg(QString::number(amount, 'f', 2)),
+                    true);
+            else if (err == QLatin1String("no_wallet"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but no inbuilt bounty wallet is "
+                                   "funded yet — set one up in Settings.")
+                        .arg(number),
+                    true);
+            else if (err == QLatin1String("payee_unresolved"))
+                flashMessage(
+                    QStringLiteral("Pull #%1 merged, but its author has no Solana "
+                                   "payout address, so no bounty was paid.")
+                        .arg(number),
+                    true);
+            else
+                flashMessage(
+                    QStringLiteral("Could not reward pull #%1: %2").arg(number).arg(err),
+                    true);
+            return;
+        }
+        if (walletMode) {
+            // The worker debits the inbuilt wallet and pays out in one step.
+            logSystem(QStringLiteral("Rewarded pull #%1's author with a $%2 bounty "
+                                     "from the inbuilt wallet (tx %3).")
+                          .arg(number)
+                          .arg(QString::number(amount, 'f', 2))
+                          .arg(obj.value("payoutSig").toString().left(12)));
+            flashMessage(QStringLiteral("Paid pull #%1's author a $%2 bounty from the "
+                                        "inbuilt wallet.")
+                             .arg(number)
+                             .arg(QString::number(amount, 'f', 2)));
+            return;
+        }
+        // Pay-per-PR: mint the escrow and show the funding QR for this merge.
+        const QString address = obj.value("address").toString();
+        if (address.isEmpty()) {
+            flashMessage(QStringLiteral("Could not create the reward deposit for "
+                                        "pull #%1.").arg(number),
+                         true);
+            return;
+        }
+        const QString uri = obj.value("uri").toString(
+            QStringLiteral("solana:%1").arg(address));
+        const QString amountSol = obj.value("amountSol").toString();
+        logSystem(QString::fromUtf8("Reward escrow for pull #%1 ready to fund "
+                                    "($%2 \xE2\x89\x88 %3 SOL).")
+                      .arg(number)
+                      .arg(QString::number(amount, 'f', 2))
+                      .arg(amountSol));
+        showBountyQrDialog(repo, number, uri, address, amount, amountSol,
+                           QStringLiteral("pr"));
+    });
+}
+
 void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
-                                  double amount)
+                                  double amount, const QString &kind)
 {
     if (!m_networkAccess)
         return;
+    const bool isPr = kind == QLatin1String("pr");
     // Poll the escrow status; the worker auto-splits a funded escrow to the
     // author + treasury when status is checked. Stop once paid (or give up after
     // a generous window — the cron backstop still pays it out either way).
@@ -6143,23 +6344,25 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
     auto *timer = new QTimer(this);
     timer->setInterval(8000);
     connect(timer, &QTimer::timeout, this,
-            [this, repo, number, amount, attempts, timer] {
+            [this, repo, number, amount, isPr, attempts, timer] {
         if (!m_networkAccess || ++(*attempts) > 75) { // ~10 minutes
             timer->stop();
             timer->deleteLater();
             delete attempts;
             return;
         }
-        const QJsonObject payload{{"action", "status"},
-                                  {"owner", repo.owner},
-                                  {"repo", repo.name},
-                                  {"number", number}};
+        QJsonObject payload{{"action", "status"},
+                            {"owner", repo.owner},
+                            {"repo", repo.name},
+                            {"number", number}};
+        if (isPr)
+            payload.insert("kind", QStringLiteral("pr"));
         QNetworkRequest request(bountyApiUrl(repo));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount, attempts, timer] {
+                [this, reply, repo, number, amount, isPr, attempts, timer] {
             const QByteArray body = reply->readAll();
             reply->deleteLater();
             const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6168,19 +6371,24 @@ void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
             timer->stop();
             timer->deleteLater();
             delete attempts;
-            IssueStore writeStore = issueStoreForCurrentRepo();
-            QString error;
-            writeStore.setBounty(number, amount, obj.value("payee").toString(),
-                                 QStringLiteral("paid"), &error);
-            logSystem(QStringLiteral("Bounty for issue #%1 funded and split to the "
+            const QString subject = isPr ? QStringLiteral("pull request #%1")
+                                         : QStringLiteral("issue #%1");
+            if (!isPr) {
+                IssueStore writeStore = issueStoreForCurrentRepo();
+                QString error;
+                writeStore.setBounty(number, amount,
+                                     obj.value("payee").toString(),
+                                     QStringLiteral("paid"), &error);
+                if (m_repoDetailIndex == issuesRepoIndex())
+                    reloadIssues();
+            }
+            logSystem(QStringLiteral("Bounty for %1 funded and split to the "
                                      "author + treasury (tx %2).")
-                          .arg(number)
+                          .arg(subject.arg(number))
                           .arg(obj.value("payoutSig").toString().left(12)));
-            flashMessage(QStringLiteral("Bounty for issue #%1 paid out to the author "
+            flashMessage(QStringLiteral("Bounty for %1 paid out to the author "
                                         "+ treasury.")
-                             .arg(number));
-            if (m_repoDetailIndex == issuesRepoIndex())
-                reloadIssues();
+                             .arg(subject.arg(number)));
         });
     });
     timer->start();
@@ -6457,6 +6665,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     logSystem(QStringLiteral("Merged pull request #%1.").arg(m_currentPullNumber));
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
+    autoBountyForMergedPull(current);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
     markAgentSessionsMerged(m_currentPullNumber, head);

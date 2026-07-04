@@ -976,6 +976,9 @@ private:
     void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
+    // Files-changed authorship filter: show only agent- or human-authored files
+    // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
+    void applyPullFileAuthorFilter();
     void renderPullReviewSummary(const PullRequest &pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
@@ -1081,9 +1084,16 @@ private:
     // any (pledged-but-unpaid) bounty on the issues this PR closes. Bounties are
     // added to issues without paying up front; merge is when they get funded.
     void fundBountiesForMergedPull(const PullRequest &pr);
+    // Issue #347: when the per-PR bounty setting is on, reward every merged pull
+    // request's author with the configured fixed bounty — either by showing a
+    // funding QR (perPr mode) or auto-paying from the inbuilt wallet (wallet
+    // mode). Independent of whether the PR closes a bountied issue.
+    void autoBountyForMergedPull(const PullRequest &pr);
     // Poll a bounty escrow after merge; once funded the worker splits it to the
-    // author + treasury, and this records the paid state on the issue.
-    void pollBountyPayout(const RepositoryRecord &repo, int number, double amount);
+    // author + treasury, and this records the paid state on the issue. kind ""
+    // is an issue bounty; "pr" is a per-pull-request bounty (issue #347).
+    void pollBountyPayout(const RepositoryRecord &repo, int number, double amount,
+                          const QString &kind = QString());
     QList<int> issuesLinkedFromPull(const PullRequest &pr) const;
     // Pull requests linked to an issue: PRs whose references (closes/fixes/issue
     // #N, agent-created, or an explicit "Linked issue #N" note) point at this
@@ -2294,7 +2304,11 @@ private:
     // treasury; the dialog records the paid state on the issue.
     void showBountyQrDialog(const RepositoryRecord &repo, int number,
                             const QString &uri, const QString &address,
-                            double amountUsd, const QString &amountSol);
+                            double amountUsd, const QString &amountSol,
+                            const QString &kind = QString());
+    // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
+    // deposit address, QR and live balance so the owner can pre-fund it.
+    void showBountyWalletDialog();
     void submitIssueCommentToInbox(const QString &body);
     // Mirror node path: file a signed "assignees" event to the source of truth's
     // inbox so the looper's claim on an issue reaches the owner and syncs back to
@@ -3465,6 +3479,12 @@ private:
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
+    // Files-changed authorship filter (issue #365): All / Agent-authored /
+    // Human-authored, driven by m_pullFileAuthorship. Hidden unless the PR mixes
+    // agent and human commits.
+    QComboBox *m_pullFileAuthorFilter = nullptr;
+    // current PR: file path -> true when an agent-stamped commit touched it.
+    QHash<QString, bool> m_pullFileAuthorship;
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
@@ -3757,6 +3777,14 @@ private:
     // Free-text filter over the session list: matches issue number/title,
     // provider, status and PR. Empty shows everything (issue #82).
     QLineEdit *m_agentSearch = nullptr;
+    // Compose row at the top of the session list (adhoc #234): type a prompt,
+    // pick a repo and an agent provider, and start an ad-hoc agent right there
+    // without going through the footer quick-add bar.
+    QComboBox *m_agentComposeRepo = nullptr;
+    QLineEdit *m_agentComposePrompt = nullptr;
+    QComboBox *m_agentComposeProvider = nullptr;
+    QPushButton *m_agentComposeButton = nullptr;
+    void startAgentFromComposer();
     QWidget *m_agentDetail = nullptr; // collapsible detail panel (hidden until a row is picked)
     // "Hide detail" toggle: when checked the detail panel stays hidden even with a
     // row selected, so the session list spans the full tab width (issue #54).

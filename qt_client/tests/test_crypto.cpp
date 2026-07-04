@@ -9,6 +9,7 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/MirrorCrypto.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/PullAiReview.h"
 #include "../src/PullReviewModel.h"
@@ -23,6 +24,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -227,6 +229,87 @@ int main(int argc, char *argv[])
                                  CoveCrypto::defaultRounds());
         check(coveOtherSalt.decrypt(sealed).isEmpty(),
               "the same password with a different salt cannot decrypt the cove");
+    }
+
+    // --- Private-mirror crypto (hybrid X25519 + ML-KEM-768) --------------
+    // Issue #362: a private repo is mirrored as one opaque encrypted archive.
+    // The owner encrypts the archive under a random content key and wraps that
+    // key to each collaborator's hybrid identity. Only a wrapped recipient can
+    // recover the archive; a non-recipient, a tampered ciphertext, or one KEM
+    // half swapped between wraps must all fail closed.
+    {
+        MirrorCrypto::Identity owner = MirrorCrypto::generateIdentity();
+        MirrorCrypto::Identity alice = MirrorCrypto::generateIdentity();
+        MirrorCrypto::Identity mallory = MirrorCrypto::generateIdentity();
+        check(owner.isValid() && alice.isValid() && mallory.isValid(),
+              "hybrid identities generate with X25519 + ML-KEM-768 keypairs");
+        check(owner.x25519Pub.size() == 32 && owner.mlkemPub.size() == 1184 &&
+                  owner.mlkemPriv.size() == 2400,
+              "identity key sizes match X25519 and ML-KEM-768");
+        check(MirrorCrypto::publicKeyId(owner.publicBundle()) == owner.keyId() &&
+                  owner.keyId() != alice.keyId(),
+              "public bundle yields a stable, identity-specific key id");
+
+        const QByteArray archive =
+            QByteArrayLiteral("PACK\x00\x02") + QByteArray(50000, '\x7f') +
+            QByteArrayLiteral("private repo pack bytes");
+        QString sealErr;
+        const QJsonObject envelope = MirrorCrypto::sealArchive(
+            archive, {owner.publicBundle(), alice.publicBundle()}, &sealErr);
+        check(!envelope.isEmpty() && sealErr.isEmpty() &&
+                  envelope.value("alg").toString() == "x25519+mlkem768/aes256gcm",
+              "sealArchive produces a hybrid-KEM envelope for two recipients");
+        check(envelope.value("recipients").toArray().size() == 2,
+              "the envelope wraps the content key once per recipient");
+        check(!envelope.value("body").toString().toUtf8().contains(
+                  QByteArrayLiteral("private repo pack bytes").toBase64()),
+              "the archive body is ciphertext, not the plaintext pack");
+
+        QString openErr;
+        check(MirrorCrypto::openArchive(envelope, owner, &openErr) == archive &&
+                  openErr.isEmpty(),
+              "the owner decrypts the whole-mirror archive from its wrap");
+        check(MirrorCrypto::openArchive(envelope, alice) == archive,
+              "a wrapped collaborator decrypts the same archive");
+        check(MirrorCrypto::openArchive(envelope, mallory, &openErr).isEmpty() &&
+                  !openErr.isEmpty(),
+              "a non-recipient identity cannot recover the archive");
+
+        // Flip one byte of the archive ciphertext: GCM must reject it.
+        QJsonObject tamperedBody = envelope;
+        QByteArray body = QByteArray::fromBase64(
+            envelope.value("body").toString().toLatin1());
+        body[10] = char(body.at(10) ^ 0x01);
+        tamperedBody["body"] = QString::fromLatin1(body.toBase64());
+        check(MirrorCrypto::openArchive(tamperedBody, alice).isEmpty(),
+              "a tampered archive body fails the GCM tag");
+
+        // Swap the ML-KEM ciphertext of alice's wrap for mallory's: the HKDF
+        // info binds both KEM outputs, so the mismatched KEK must fail closed.
+        const QJsonObject solo = MirrorCrypto::sealArchive(
+            archive, {mallory.publicBundle()}, nullptr);
+        QJsonArray recips = envelope.value("recipients").toArray();
+        QJsonObject aliceWrap;
+        for (const QJsonValue &rv : recips)
+            if (rv.toObject().value("kid").toString() == alice.keyId())
+                aliceWrap = rv.toObject();
+        aliceWrap["mlkem768"] = solo.value("recipients").toArray()
+                                    .at(0).toObject().value("mlkem768");
+        QJsonArray swapped;
+        for (const QJsonValue &rv : recips) {
+            if (rv.toObject().value("kid").toString() == alice.keyId())
+                swapped.append(aliceWrap);
+            else
+                swapped.append(rv);
+        }
+        QJsonObject swappedEnv = envelope;
+        swappedEnv["recipients"] = swapped;
+        check(MirrorCrypto::openArchive(swappedEnv, alice).isEmpty(),
+              "swapping one hybrid-KEM half between wraps fails to decrypt");
+
+        check(MirrorCrypto::sealArchive(archive, {}, &sealErr).isEmpty() &&
+                  !sealErr.isEmpty(),
+              "sealing to zero recipients is rejected");
     }
 
     // --- Host-auth token canonical (must match the worker's verify_host_token).
@@ -968,6 +1051,54 @@ int main(int argc, char *argv[])
         check(snapshot.files.value("src/b.cpp").totalThreads == 1 &&
                   snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
               "review model treats legacy line-comments as unresolved threads");
+
+        // --- Agent provenance from signed commit trailers (issue #365) --------
+        // A PR whose commit series carries the ForkMesh-Agent trailer is
+        // attributable to a tool/model without any local AgentSession; the
+        // per-file map lets the review UI filter by authorship.
+        {
+            const QString agentMbox =
+                "From 1111111 Mon Sep 17 00:00:00 2001\n"
+                "From: Bot <bot@example.com>\n"
+                "Subject: [PATCH 1/2] agent change\n\n"
+                "Body line.\n\n"
+                "ForkMesh-Agent: claude-code/claude-opus-4-8\n"
+                "---\n"
+                "diff --git a/src/agent.cpp b/src/agent.cpp\n"
+                "index 000..111 100644\n"
+                "--- a/src/agent.cpp\n+++ b/src/agent.cpp\n"
+                "@@ -0,0 +1 @@\n+agent\n"
+                "From 2222222 Mon Sep 17 00:00:00 2001\n"
+                "From: Human <dev@example.com>\n"
+                "Subject: [PATCH 2/2] human change\n\n"
+                "Hand-written.\n"
+                "---\n"
+                "diff --git a/src/human.cpp b/src/human.cpp\n"
+                "index 000..222 100644\n"
+                "--- a/src/human.cpp\n+++ b/src/human.cpp\n"
+                "@@ -0,0 +1 @@\n+human\n";
+            PullRequest agentPr;
+            agentPr.commits = agentMbox;
+            const PullAgentProvenance prov = pullAgentProvenance(agentPr);
+            check(prov.isAgent && prov.tool == "claude-code" &&
+                      prov.model == "claude-opus-4-8",
+                  "pullAgentProvenance reads the ForkMesh-Agent trailer");
+            const QHash<QString, bool> authorship = pullFileAuthorship(agentPr);
+            check(authorship.value("src/agent.cpp") == true &&
+                      authorship.value("src/human.cpp") == false,
+                  "pullFileAuthorship maps each file to its commit's authorship");
+
+            PullRequest humanPr;
+            humanPr.commits =
+                "From 3333333 Mon Sep 17 00:00:00 2001\n"
+                "From: Human <dev@example.com>\n"
+                "Subject: [PATCH] plain change\n\n"
+                "No trailer here.\n"
+                "---\n"
+                "diff --git a/src/x.cpp b/src/x.cpp\n";
+            check(!pullAgentProvenance(humanPr).isAgent,
+                  "pullAgentProvenance treats an un-trailered PR as human-authored");
+        }
 
         // --- PullStore deletePullFile excises one file, keeps the rest -------
         // Regression for issue #258: deleting a file used to rebuild the PR by

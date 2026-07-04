@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.5.52 LANGUAGES CXX)
+project(ForkMesh VERSION 0.5.53 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -62,6 +62,8 @@ set(FORKMESH_APP_SOURCES
     src/RoomCrypto.cpp
     src/CoveCrypto.h
     src/CoveCrypto.cpp
+    src/MirrorCrypto.h
+    src/MirrorCrypto.cpp
     src/CoveStore.h
     src/CoveStore.cpp
     src/ServerNode.h
@@ -294,6 +296,8 @@ if(FORKMESH_BUILD_TESTS)
         src/CoveCrypto.cpp
         src/CoveStore.h
         src/CoveStore.cpp
+        src/MirrorCrypto.h
+        src/MirrorCrypto.cpp
         src/IssueStore.h
         src/IssueStore.cpp
         src/IssueBurnup.h
@@ -360,6 +364,8 @@ if(FORKMESH_BUILD_TESTS)
         src/CoveCrypto.cpp
         src/CoveStore.h
         src/CoveStore.cpp
+        src/MirrorCrypto.h
+        src/MirrorCrypto.cpp
         src/RepoHost.h
         src/RepoHost.cpp
         src/IssueStore.h

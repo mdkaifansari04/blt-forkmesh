@@ -35,6 +35,15 @@ public:
 
     bool start();
 
+    // Set the ordered list of mainnodes to try, most preferred first (issue
+    // #364). Any endpoint that isn't a valid ws://\/wss:// URL is dropped; the
+    // first surviving entry becomes the active endpoint. The reconnect loop
+    // rotates through the list on each failed attempt so a dead or
+    // quota-limited mainnode no longer strands the node — a client heartbeats
+    // to whichever mainnode answers. No-op (keeps the constructor URL) if the
+    // filtered list is empty. Call before start().
+    void setEndpoints(const QList<QUrl> &endpoints);
+
     void sendChat(const QString &channel, const QString &text) override;
     void sendDirect(const QString &targetId, const QString &text) override;
     void sendFile(const QString &conversation, const QString &fileName,
@@ -83,6 +92,7 @@ private:
 
     void openConnection();      // (re)create the socket and start connecting
     void scheduleReconnect();   // progressive backoff after a drop/failure
+    void advanceEndpoint();     // rotate m_url to the next configured mainnode
     void connectSocketSignals();
     void sendHandshake();
     void onSocketReadyRead();
@@ -128,7 +138,11 @@ private:
     QJsonObject makeMessage(const QString &type) const;
 
     QString m_userName;
-    QUrl m_url;
+    QUrl m_url; // the mainnode we're currently pointed at (m_endpoints[m_endpointIndex])
+    // All mainnodes to try, in preference order (issue #364). Seeded to just the
+    // constructor URL; setEndpoints() replaces it with the full failover list.
+    QList<QUrl> m_endpoints;
+    int m_endpointIndex = 0; // which endpoint m_url currently points at
     QString m_roomName;
     QString m_solanaAddress;
     QString m_platform;

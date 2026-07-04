@@ -11,6 +11,12 @@ const ROOM_NAME = "general";
 const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
 const CHANNEL = "#general";
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+// Mainnode base host for the room WebSocket. Defaults to the origin that served
+// this page, so a self-hosted mainnode's own site talks to itself with zero
+// config. A separately-hosted static site can point at a different relay by
+// setting window.FORKMESH_RELAY_HOST (e.g. "relay.example.com") before this
+// script loads. See docs/protocol.md ("Self-hosting a mainnode").
+const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
 
@@ -342,7 +348,7 @@ async function connect() {
     return;
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(`${scheme}//${location.host}${CHAT_WS_PATH}`);
+  socket = new WebSocket(`${scheme}//${RELAY_HOST}${CHAT_WS_PATH}`);
 
   socket.addEventListener("open", () => {
     connecting = false;
