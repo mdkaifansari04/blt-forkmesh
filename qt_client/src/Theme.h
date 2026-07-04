@@ -171,7 +171,7 @@ QPushButton#socialButton {
     font-weight: 600; padding: 8px 12px;
 }
 QPushButton#socialButton:hover { color: #e6edf3; border-color: #6e7681; }
-/* Compact icon-only social buttons, stacked beside the donate button (adhoc #117). */
+/* Compact icon-only social buttons, laid out beside the donate button (adhoc #117). */
 QPushButton#socialIconButton {
     background: transparent; border: 1px solid #30363d; color: #8b949e;
     border-radius: 6px; padding: 0;
