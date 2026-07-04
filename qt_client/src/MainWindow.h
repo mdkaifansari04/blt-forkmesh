@@ -2347,6 +2347,9 @@ private:
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
+    // #368: identity key backup/export/import UI + first-run "back up" nag.
+    void backUpIdentityKey();
+    void refreshIdentityBackupNag();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
@@ -2792,6 +2795,7 @@ private:
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
+    QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QPlainTextEdit *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
