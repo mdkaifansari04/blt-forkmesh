@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 364
 title: Second mainnode with catalog convergence
-status: open
+status: closed
 labels: [feature, infra]
 milestone: v1
 priority: 31
