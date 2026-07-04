@@ -5,9 +5,7 @@
     state.repoCollectionPages = { issues: 1, pulls: 1 };
     state.repoMirrors = [];
     state.repoServedBy = null;
-    // The cached owner password is only good for this repo's page session —
-    // navigating to a (possibly different) repo re-prompts.
-    state.agentsView = { password: "", agents: [] };
+    state.agentsView = { agents: [] };
     stopRepoAgentsAutoRefresh();
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
@@ -295,6 +293,7 @@
           <div class="flex items-center gap-2">
             <i data-lucide="circle" class="${nodeDotClass(row, "w-1.5 h-1.5")}"></i>
             <span class="text-xs ${row.online ? "text-foreground" : "text-muted-foreground"} truncate flex-1 font-mono">${escapeHtml(row.name || "node")}</span>
+            ${row.version ? `<span class="text-[10px] text-muted-foreground/70 font-mono">v${escapeHtml(row.version)}</span>` : ""}
             <span class="text-[10px] text-muted-foreground font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
           </div>
         `).join("")

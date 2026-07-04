@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 #include "PullAiReview.h"
 
 using namespace forkmesh::ui;
@@ -115,6 +116,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullTable = new QTableWidget(0, 10);
     m_pullTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_pullTable); // 3-dots per-column menu (issue #318)
     enableHoverRowHighlight(m_pullTable);
     m_pullTable->setHorizontalHeaderLabels(
         {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
@@ -583,6 +585,7 @@ QWidget *MainWindow::buildPullsTab()
     checksToolbar->addStretch();
     m_pullChecksTable = new QTableWidget(0, 4);
     m_pullChecksTable->setObjectName("issueTable");
+    installColumnHeaderMenu(m_pullChecksTable); // 3-dots per-column menu (issue #318)
     enableHoverRowHighlight(m_pullChecksTable);
     m_pullChecksTable->setHorizontalHeaderLabels(
         {"Status", "Workflow", "Commit", "Duration"});
