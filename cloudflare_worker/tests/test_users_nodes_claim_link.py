@@ -27,7 +27,7 @@ FUNCS = {
     "_account_link_self", "_account_link_grant", "_account_heartbeat",
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
     "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
-    "_account_ownership_transfer_confirm",
+    "_account_ownership_transfer_confirm", "_park_ownership_transfer",
 }
 
 
