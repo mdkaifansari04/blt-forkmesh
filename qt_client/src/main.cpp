@@ -127,6 +127,31 @@ int main(int argc, char *argv[])
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
     {
         QFont base = app.font();
+
+        // Prefer a modern, consistent UI family over the raw platform default
+        // (which on many Linux boxes is a dated bitmap-ish sans). We don't bundle
+        // a font — that would bloat the binary — so we just pick the first family
+        // from a prioritised list that the system actually has installed, and fall
+        // back to whatever Qt chose otherwise. This is a no-op on systems that ship
+        // none of them, so nothing regresses; where one is present (Segoe UI on
+        // Windows, SF Pro on macOS, Inter/Roboto/Noto on Linux) the whole app gets
+        // a cleaner, more uniform look.
+        const QStringList installed = QFontDatabase::families();
+        for (const QString &preferred : {QStringLiteral("Inter"),
+                                         QStringLiteral("SF Pro Text"),
+                                         QStringLiteral("Segoe UI"),
+                                         QStringLiteral("Roboto"),
+                                         QStringLiteral("Noto Sans"),
+                                         QStringLiteral("Ubuntu"),
+                                         QStringLiteral("Cantarell")}) {
+            if (installed.contains(preferred)) {
+                base.setFamily(preferred);
+                break;
+            }
+        }
+
+        // Keep the chosen UI family first, then append colour-emoji fallbacks so
+        // any codepoint the primary family is missing still paints in full colour.
         QStringList families{base.family()};
         for (const QString &emoji : {QStringLiteral("Noto Color Emoji"),
                                      QStringLiteral("Apple Color Emoji"),
