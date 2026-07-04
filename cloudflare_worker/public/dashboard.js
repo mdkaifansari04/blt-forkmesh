@@ -4190,14 +4190,24 @@
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
     // Show the clean, shareable /owner/name URL in the address bar instead of
-    // the /dashboard?repo=... target that 404.html bounces repo links to (and
-    // instead of a bare /dashboard when the repo is opened from the list). Leave
-    // a URL that already points inside this repo (e.g. an /owner/name/tree/...
-    // deep link) untouched so the tree/blob restore below still sees its path.
-    const detailPath = repoPathUrl(repo);
-    if (!location.pathname.startsWith(detailPath)) {
-      navigateHistory(detailPath);
-    }
+    // the /dashboard/owner/name... path that 404.html bounces refreshed repo
+    // links (including /owner/name/issues etc.) to. Carry over whatever tab or
+    // tree/blob suffix the incoming URL already pointed at instead of
+    // collapsing it to the bare repo root — otherwise a refresh on the Issues
+    // tab would lose its place and land back on Code. Only trust that suffix
+    // when the URL is actually addressing THIS repo already (a fresh open from
+    // the repo list/sidebar while some other repo's tab URL is showing should
+    // still land on Code, not inherit the other repo's tab).
+    const routeParts = repoRouteParts();
+    const routeMatchesRepo = routeParts.length >= 2
+      && decodeURIComponent(routeParts[0]) === (repo.owner || "")
+      && decodeURIComponent(routeParts[1]) === (repo.name || "");
+    const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
+    const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
+    const detailPath = REPO_TAB_ROUTES.includes(routeKind)
+      ? `${repoPathUrl(repo)}/${routeKind}`
+      : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
+    navigateHistory(detailPath);
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
@@ -4363,14 +4373,11 @@
       </div>`;
     setSection("explore");
     window.lucide?.createIcons();
-    const parts = repoRouteParts();
-    const kind = parts[2];
-    const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
     // Restore whichever tab the URL points at (e.g. a refresh on
     // /owner/repo/issues) instead of always defaulting back to Code.
-    setRepoTab(REPO_TAB_ROUTES.includes(kind) ? kind : "code");
-    loadRepositoryTree(repo, kind === "tree" ? path : "");
-    if (kind === "blob" && path) loadRepositoryBlob(repo, path);
+    setRepoTab(REPO_TAB_ROUTES.includes(routeKind) ? routeKind : "code");
+    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
   }
 
