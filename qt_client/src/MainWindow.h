@@ -2343,6 +2343,7 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
+    void advanceTopMessageQueue(); // show the next queued error, or dismiss if none left
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
@@ -2575,6 +2576,11 @@ private:
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
+    // Pending error messages that arrived while another error toast was already
+    // counting down. A burst of quick failures (e.g. retries) would otherwise
+    // stomp each other before any could be read; queuing gives each its own
+    // full countdown once the current one finishes (see advanceTopMessageQueue).
+    QStringList m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
