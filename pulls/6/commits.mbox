@@ -1,3 +1,19 @@
+From 55a3016bb2505ebc9098fc9a7b99318361b86fc4 Mon Sep 17 00:00:00 2001
+From: newnewnode <7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4@forkmesh>
+Date: Sat, 4 Jul 2026 17:02:37 -0400
+Subject: [PATCH] =?UTF-8?q?Agent:=20move=20the=203=20social=20icons=20on?=
+ =?UTF-8?q?=20top=20to=20be=20aligned=20horizontal=20instead=20of=20vertic?=
+ =?UTF-8?q?al=20p=E2=80=A6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Created from a Codex agent session.
+---
+ qt_client/src/MainWindowChat.cpp | 17 +++++++++--------
+ qt_client/src/Theme.h            |  2 +-
+ 2 files changed, 10 insertions(+), 9 deletions(-)
+
 diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
 index 0d0b56811..27067a035 100644
 --- a/qt_client/src/MainWindowChat.cpp
@@ -67,3 +83,6 @@ index e1176161f..0a243f29c 100644
  QPushButton#socialIconButton {
      background: transparent; border: 1px solid #30363d; color: #8b949e;
      border-radius: 6px; padding: 0;
+-- 
+2.47.3
+
