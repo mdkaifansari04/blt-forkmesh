@@ -829,10 +829,21 @@ private:
     // output. Once the install finishes the new node joins the network and shows
     // up in the per-repo Mirror nodes list on its own.
     QWidget *buildHostsSection();
-    void runHostInstall();
+    // forceUploadBinary bypasses the "Upload the release from this app"
+    // checkbox (used by the per-row / install-all-from-binary buttons, which
+    // are always direct-upload regardless of the form's checkbox state).
+    // onFinished, if given, is called once with whether the install succeeded
+    // — used to chain installs when running against every saved host.
+    void runHostInstall(bool forceUploadBinary = false,
+                        std::function<void(bool)> onFinished = {});
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
+    // Direct-upload install (adhoc #257) against every saved host, one at a
+    // time: loads each row into the form and runs runHostInstall(true, ...),
+    // chaining to the next host once the previous one finishes.
+    void runHostInstallAllFromBinary();
+    void installNextHostFromBinary(QList<int> remainingRows);
     void appendHostInstallLog(const QString &text);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
@@ -2686,6 +2697,9 @@ private:
     QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
+    // Bulk direct-upload install (adhoc #257): runs the upload-binary install
+    // against every saved host, one after another.
+    QPushButton *m_hostInstallAllButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     // ANSI parser state for the live install log: a carry buffer holding an
