@@ -7892,11 +7892,17 @@ async def issues_handler(env, request, owner, repo):
             # honored when the request comes from a privileged account: the repo
             # owner, or an admin acting on the owner's behalf (adhoc #225).
             wants_agent = False
+            agent_model = ""
             if meta_in.get("wantsAgent"):
                 ok, err = await _authorize_owner_account(env, owner, data)
                 if not ok:
                     return err
                 wants_agent = True
+                # Optional model choice (e.g. "opus"/"sonnet"/"haiku"/"fable" or a
+                # full model id) for the agent the desktop node auto-starts on this
+                # issue; empty leaves the provider's own default. Only meaningful
+                # alongside wantsAgent, so it's not parsed otherwise.
+                agent_model = clean_string(meta_in.get("model", ""), 60)
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
@@ -7905,6 +7911,7 @@ async def issues_handler(env, request, owner, repo):
                 "assignees": [clean_string(x, 60) for x in (assignees or [])][:20]
                 if isinstance(assignees, list) else [],
                 "wantsAgent": wants_agent,
+                "model": agent_model,
             }
         item = {
             "number": number,
