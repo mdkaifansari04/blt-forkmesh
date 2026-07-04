@@ -59,13 +59,14 @@ NODE_SOLANA_ADDRESS = ""
 # decrypt every custody key. It lives in .env.production (gitignored) and is
 # pushed as a Worker *secret* by deploy.sh. The code fails closed if it is unset
 # or left at a known dev placeholder.
-# Admin error dashboard creds (ADMIN_PATH / ADMIN_USER / ADMIN_PASS) are kept out
-# of this committed file. They live in .env.production (gitignored) and are pushed
-# as Worker *secrets* by deploy.sh (`pywrangler secret put`) — NOT plaintext vars,
-# which get wiped on any deploy that doesn't re-declare them. Secrets persist
-# across deploys. See .env.production.example. ADMIN_PATH must start with "admin-"
-# so it is routed to the worker (see run_worker_first above); the dashboard is
-# then served at https://<host>/<ADMIN_PATH> behind HTTP Basic auth.
+# The secret admin dashboard path (ADMIN_PATH) is kept out of this committed
+# file. It lives in .env.production (gitignored) and is pushed as a Worker
+# *secret* by deploy.sh (`pywrangler secret put`) — NOT a plaintext var, which
+# gets wiped on any deploy that doesn't re-declare it. Secrets persist across
+# deploys. See .env.production.example. ADMIN_PATH must start with "admin-" so it
+# is routed to the worker (see run_worker_first above); the dashboard is then
+# served at https://<host>/<ADMIN_PATH>, gated by a forkmesh login whose account
+# carries the is_admin flag (no static HTTP Basic credentials).
 
 # Durable Objects are used only for transient relaying now: the encrypted chat
 # rooms and the live file/git tunnel. All persistent data lives in D1 below.
