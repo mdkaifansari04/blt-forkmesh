@@ -1235,6 +1235,11 @@ private:
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
     void sendPromptToSelectedAgent(const QString &prompt);
+    // Send the footer quick-add box's text to the agent session open above
+    // instead of the quick-add issue/new-agent flow. Shared by the up-arrow
+    // send-to-agent button and Enter in the box while the Agents tab is open
+    // on a selected session (adhoc #185).
+    void sendQuickAddToSelectedAgent();
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).

@@ -1218,6 +1218,31 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
     }
 }
 
+// Shared by the footer quick-add's up-arrow send-to-agent button and Enter in
+// the box while the Agents tab is open on a selected session (adhoc #185):
+// steers the open session instead of running the quick-add issue/new-agent
+// flow that a bare Enter would otherwise trigger.
+void MainWindow::sendQuickAddToSelectedAgent()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+    if (m_selectedAgentSessionId < 0) {
+        logSystem(QStringLiteral(
+            "No agent open above to send that to \xE2\x80\x94 open one first."));
+        return;
+    }
+    if (prompt.isEmpty()) {
+        // No text typed: just resume the open session with the same agent,
+        // the same thing the old per-session Continue button did (adhoc #178).
+        continueSelectedAgentSession();
+        return;
+    }
+    recordQuickAddHistory(prompt);
+    m_issueQuickAdd->clear();
+    sendPromptToSelectedAgent(prompt);
+}
+
 void MainWindow::testOpenAiAgentKey()
 {
     QSettings settings;
