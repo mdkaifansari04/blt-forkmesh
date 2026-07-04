@@ -5,7 +5,7 @@ title: Update readme to reflect recent changes
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 67
 progress: 0
 assignees: []
 createdAt: 1783052674
