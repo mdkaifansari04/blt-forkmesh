@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 360
 title: Search across issues, PRs, and repo code
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 22
