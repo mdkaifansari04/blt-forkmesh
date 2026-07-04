@@ -331,6 +331,10 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
     background-color: #da3633; color: #ffffff; border: 1px solid #0d1117;
     border-radius: 7px; font-size: 9px; font-weight: 700;
 }
+/* Count label on the agents button (no red styling). */
+#agentsNavBadge {
+    color: #656d76; font-size: 13px; font-weight: 600;
+}
 /* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
    always visible, with a clear selected state. */
 #topNavBar { background: transparent; }
@@ -1455,6 +1459,10 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 #chatUnreadBadge {
     background-color: #cf222e; color: #ffffff; border: 1px solid #ffffff;
     border-radius: 7px; font-size: 9px; font-weight: 700;
+}
+/* Count label on the agents button (no red styling). */
+#agentsNavBadge {
+    color: #8b949e; font-size: 13px; font-weight: 600;
 }
 /* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
    always visible, with a clear selected state. */
