@@ -305,6 +305,70 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-ide-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # Nightly end-to-end mesh-loop test (issue #352): drives the real client
+    # tunnel/host + signed-issue code against an in-process relay stub through
+    # the full publish -> browse -> clone -> issue -> agent PR -> merge loop.
+    # A deterministic stub agent stands in for the model so the run never needs
+    # an API quota or the network.
+    qt_add_executable(forkmesh-e2e-stub-agent
+        tests/e2e_stub_agent.cpp
+    )
+    target_link_libraries(forkmesh-e2e-stub-agent PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-e2e-stub-agent PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    qt_add_executable(forkmesh-e2e
+        tests/test_mesh_e2e.cpp
+        src/BackoffNetworkAccessManager.h
+        src/BackoffNetworkAccessManager.cpp
+        src/ActionFile.h
+        src/ActionFile.cpp
+        src/ForkMeshIdentity.h
+        src/ForkMeshIdentity.cpp
+        src/RoomCrypto.h
+        src/RoomCrypto.cpp
+        src/CoveCrypto.h
+        src/CoveCrypto.cpp
+        src/CoveStore.h
+        src/CoveStore.cpp
+        src/RepoHost.h
+        src/RepoHost.cpp
+        src/IssueStore.h
+        src/IssueStore.cpp
+        src/IssueBurnup.h
+        src/IssueBurnup.cpp
+        src/DiscussionStore.h
+        src/DiscussionStore.cpp
+        src/PullStore.h
+        src/PullStore.cpp
+        src/PullReviewModel.h
+        src/PullReviewModel.cpp
+        src/PullAiReview.h
+        src/PullAiReview.cpp
+        src/CommitCommentStore.h
+        src/CommitCommentStore.cpp
+        src/AgentStore.h
+        src/AgentStore.cpp
+        src/ActionStore.h
+        src/ActionStore.cpp
+        src/RepoSecurity.h
+        src/RepoSecurity.cpp
+        src/ReferenceLinks.h
+    )
+    target_link_libraries(forkmesh-e2e PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+    # Feeding RepoHost.h to qt_wrap_cpp for the `forkmesh` target above marks it
+    # SKIP_AUTOMOC (a directory-scoped source property), which would otherwise
+    # stop AUTOMOC from generating RepoHost's moc for the AUTOMOC-driven test
+    # targets — leaving its vtable/signals unresolved at link time. Clear the
+    # skip so the test targets moc it normally (the app itself has AUTOMOC OFF
+    # and moc's it explicitly, so it is unaffected).
+    set_source_files_properties(src/RepoHost.h PROPERTIES
+        SKIP_AUTOMOC OFF SKIP_AUTOGEN OFF)
+    if(APPLE)
+        set_target_properties(forkmesh-e2e PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
     # A second suite that drives the real MainWindow (needs the full app sources).
     qt_add_executable(forkmesh-window-tests
         tests/test_window_resize.cpp
@@ -328,11 +392,16 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
     set_tests_properties(forkmesh-tests forkmesh-window-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # The e2e loop drives real git subprocesses and needs the stub agent's path.
+    set_tests_properties(forkmesh-e2e PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests)
+    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests
+        forkmesh-e2e forkmesh-e2e-stub-agent)
 endif()
