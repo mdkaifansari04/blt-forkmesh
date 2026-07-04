@@ -399,6 +399,15 @@ void RepoHost::stop()
     m_stopping = true;
     m_reconnect->stop();
     m_pingTimer->stop();
+    // Tear down any in-flight receive-pack pushes: kill the process (its
+    // deleteLater still fires) and free the tracking struct so nothing leaks
+    // when hosting stops mid-push.
+    for (ReceiveJob *job : std::as_const(m_receiveJobs)) {
+        if (job->process)
+            job->process->kill();
+        delete job;
+    }
+    m_receiveJobs.clear();
     if (m_socket) {
         m_socket->disconnect(this);
         m_socket->abort();
@@ -591,8 +600,24 @@ void RepoHost::sendControlFrame(int opcode, const QByteArray &payload)
 void RepoHost::handleFrame(const QByteArray &payload)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(payload);
-    if (doc.isObject())
-        handleRequest(doc.object());
+    if (!doc.isObject())
+        return;
+    const QJsonObject obj = doc.object();
+    // git push (issue #358): the pushed pack streams to us as git-req-chunk
+    // messages that follow the initial "request", then git-req-end. These are
+    // relayed to the running receive-pack's stdin (never buffered whole).
+    const QString type = obj.value("type").toString();
+    if (type == "git-req-chunk") {
+        feedReceivePack(
+            obj.value("reqId").toString(),
+            QByteArray::fromBase64(obj.value("data").toString().toLatin1()));
+        return;
+    }
+    if (type == "git-req-end") {
+        finishReceiveInput(obj.value("reqId").toString());
+        return;
+    }
+    handleRequest(obj);
 }
 
 void RepoHost::handleRequest(const QJsonObject &request)
@@ -617,6 +642,10 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = QStringLiteral("clone/fetch (upload-pack)");
     else if (op == "git-info-refs")
         action = QStringLiteral("clone handshake (ref advertisement)");
+    else if (op == "git-receive-info-refs")
+        action = QStringLiteral("push handshake (ref advertisement)");
+    else if (op == "git-receive-pack")
+        action = QStringLiteral("push (receive-pack)");
     else if (op == "tree")
         action = path.isEmpty() ? QStringLiteral("browse tree (root)")
                                 : QStringLiteral("browse tree '%1'").arg(path);
@@ -651,6 +680,21 @@ void RepoHost::handleRequest(const QJsonObject &request)
         const QByteArray body =
             QByteArray::fromBase64(request.value("body").toString().toLatin1());
         runGitStream(reqId, {"upload-pack", "--stateless-rpc", m_mirrorPath}, body);
+        return;
+    }
+    // git push (issue #358): advertise refs for receive-pack, then accept the
+    // streamed pack. A successful receive-pack fires the mirror's post-receive
+    // hook, which spools a .push event; MainWindow::scanActionSpool then
+    // re-attests the integrity pin so the refs we now serve stay verifiable.
+    if (op == "git-receive-info-refs") {
+        runGitStream(reqId,
+                     {"receive-pack", "--stateless-rpc", "--advertise-refs",
+                      m_mirrorPath},
+                     QByteArray());
+        return;
+    }
+    if (op == "git-receive-pack") {
+        startReceivePack(reqId);
         return;
     }
     // Release asset download: stream the bytes of a content-addressed blob from
@@ -782,6 +826,87 @@ void RepoHost::runGitStream(const QString &reqId, const QStringList &args,
         process->closeWriteChannel();
     });
     process->start();
+}
+
+void RepoHost::startReceivePack(const QString &reqId)
+{
+    // Spawn receive-pack for a push whose stdin (the pack) is streamed in
+    // separately via git-req-chunk. stdout (the small report-status reply)
+    // streams back over the same git-chunk/git-end path a clone uses. Unlike
+    // runGitStream we do NOT close stdin here — finishReceiveInput does that
+    // once git-req-end arrives, so the pack can be arbitrarily large without
+    // ever being buffered whole on either side.
+    auto *job = new ReceiveJob;
+    auto *process = new QProcess(this);
+    job->process = process;
+    m_receiveJobs.insert(reqId, job);
+    process->setProgram("git");
+    process->setArguments({"receive-pack", "--stateless-rpc", m_mirrorPath});
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [this, process, reqId] {
+                sendGitChunk(reqId, process->readAllStandardOutput());
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, reqId](int exitCode, QProcess::ExitStatus status) {
+                sendGitChunk(reqId, process->readAllStandardOutput());
+                const bool ok =
+                    exitCode == 0 && status == QProcess::NormalExit;
+                QString error;
+                if (!ok) {
+                    error = QString::fromUtf8(
+                                process->readAllStandardError()).trimmed();
+                    if (error.isEmpty())
+                        error = QStringLiteral("git_failed");
+                }
+                sendGitEnd(reqId, ok, error);
+                delete m_receiveJobs.take(reqId);
+                process->deleteLater();
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, reqId] {
+                sendGitEnd(reqId, false,
+                           QStringLiteral("git_error: ") + process->errorString());
+                delete m_receiveJobs.take(reqId);
+                process->deleteLater();
+            });
+    // Flush any stdin buffered before the process was running (see runGitStream
+    // for why writing while Starting is unsafe), then close it if git-req-end
+    // already arrived.
+    connect(process, &QProcess::started, this, [this, reqId] {
+        ReceiveJob *j = m_receiveJobs.value(reqId);
+        if (!j)
+            return;
+        j->started = true;
+        if (!j->pendingInput.isEmpty()) {
+            j->process->write(j->pendingInput);
+            j->pendingInput.clear();
+        }
+        if (j->endReceived)
+            j->process->closeWriteChannel();
+    });
+    process->start();
+}
+
+void RepoHost::feedReceivePack(const QString &reqId, const QByteArray &data)
+{
+    ReceiveJob *job = m_receiveJobs.value(reqId);
+    if (!job || data.isEmpty())
+        return;
+    if (job->started)
+        job->process->write(data);
+    else
+        job->pendingInput.append(data);
+}
+
+void RepoHost::finishReceiveInput(const QString &reqId)
+{
+    ReceiveJob *job = m_receiveJobs.value(reqId);
+    if (!job)
+        return;
+    if (job->started)
+        job->process->closeWriteChannel();
+    else
+        job->endReceived = true;
 }
 
 void RepoHost::streamReleaseBlob(const QString &reqId, const QString &sha256)
