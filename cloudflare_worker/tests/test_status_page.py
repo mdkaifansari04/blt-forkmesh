@@ -16,19 +16,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# Route regexes now live in the extracted urls.py module (imported by entry.py);
+# parse it alongside entry.py so the assign nodes below still resolve.
+URLS = ROOT / "src" / "urls.py"
+URLS_TEXT = URLS.read_text(encoding="utf-8")
 
 DAY_MS = 86400000
 
 
 def _load(*names, extra_globals=None):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    urls_tree = ast.parse(URLS_TEXT, filename=str(URLS))
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
     }
     selected = []
-    for node in tree.body:
+    for node in list(urls_tree.body) + list(tree.body):
         if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
             alias.name == "re" for alias in node.names
         ):
