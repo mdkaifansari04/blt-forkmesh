@@ -568,17 +568,8 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
-    m_agentContinueButton = new QPushButton("Continue");
-    m_agentContinueButton->setObjectName("primaryButton");
-    m_agentContinueButton->setCursor(Qt::PointingHandCursor);
-    m_agentContinueButton->setToolTip("Continue this session with the same agent");
-    setOcticon(m_agentContinueButton, "terminal", 16);
-    connect(m_agentContinueButton, &QPushButton::clicked, this,
-            &MainWindow::continueSelectedAgentSession);
-
     // Small icon-only button (adhoc #139): lives in the footer's "Agents:"
-    // status strip (see buildNetworkLogDock in MainWindowChat.cpp) rather than
-    // as a full-width label next to Continue, so it doesn't crowd the composer.
+    // status strip (see buildNetworkLogDock in MainWindowChat.cpp).
     m_agentFixConflictsButton = new QPushButton;
     m_agentFixConflictsButton->setObjectName("agentStatusFixButton");
     m_agentFixConflictsButton->setFlat(true);
@@ -1129,22 +1120,10 @@ QWidget *MainWindow::buildAgentsTab()
     // chart to check the current numbers (see the TokenUsageMiniChart::onHover
     // wiring in buildBreadcrumb).
 
-    // Composer: just the Continue button now (adhoc #139 removed the "Queue
-    // another message" input and its accessory row — the footer prompt bar's
-    // "send to agent" control already covers sending follow-up messages to
-    // whichever session is open, see buildNetworkLogDock in MainWindowChat.cpp).
-    auto *composer = new QFrame;
-    composer->setObjectName("agentComposer");
-    // Styled from the themed stylesheet (Theme.h) so it matches the light theme.
-    auto *composerCol = new QVBoxLayout(composer);
-    composerCol->setContentsMargins(12, 10, 10, 8);
-    composerCol->setSpacing(6);
-    auto *continueRow = new QHBoxLayout;
-    continueRow->setContentsMargins(0, 0, 0, 0);
-    continueRow->setSpacing(6);
-    continueRow->addWidget(m_agentContinueButton);
-    continueRow->addStretch(1);
-    composerCol->addLayout(continueRow);
+    // adhoc #178 removed the composer frame that used to hold just the
+    // Continue button (adhoc #139 had already stripped it down to that) — the
+    // footer prompt bar's "send to agent" control already covers resuming
+    // whichever session is open (see buildNetworkLogDock in MainWindowChat.cpp).
 
     m_agentNetPanel = new QLabel;
     m_agentNetPanel->setObjectName("agentNetPanel");
@@ -1159,7 +1138,6 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(outputContainer, 1); // the Agent | Files changed tabs
-    detailLayout->addWidget(composer);
 
     m_agentDetail = detailPane;
     // Open full width: the table fills the page until a session is selected, at
@@ -6861,12 +6839,6 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    // Continue is always active whenever a session is selected so the
-    // conversation can be resumed at any time (adhoc #105). Clicking it while the
-    // session is already running or queued is a no-op — continueSelectedAgentSession()
-    // guards against that internally — so there's no need to grey it out.
-    if (m_agentContinueButton)
-        m_agentContinueButton->setEnabled(selected);
     if (m_agentDeleteButton)
         m_agentDeleteButton->setEnabled((selected || externalSelected) && !aiFixBusy);
     // "Delete all" also nukes the worktree + branch, so it only applies to a real
