@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark h-full scroll-smooth">
   <head>
     <meta charset="utf-8" />
     <script src="/posthog.js"></script>
@@ -7,7 +7,7 @@
     <title>About ForkMesh</title>
     <meta
       name="description"
-      content="Why ForkMesh exists — and the day a deleted GitHub account inspired Md Kaif Ansari to build code hosting that can't be taken away."
+      content="Why ForkMesh exists - and the day a deleted GitHub account inspired Md Kaif Ansari to build code hosting that can't be taken away."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -18,232 +18,632 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
-    <link rel="stylesheet" href="styles.css" />
-    <script src="static-page.js" defer></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              background: "var(--background)",
+              foreground: "var(--foreground)",
+              border: "var(--border)",
+              "muted-foreground": "var(--muted-foreground)",
+              primary: "var(--primary)",
+              "primary-foreground": "var(--primary-foreground)",
+              green: "#28c878",
+            },
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+              domine: ["Domine", "Georgia", "serif"],
+              "favorit-mono": [
+                "ABCFavoritMono",
+                "ui-monospace",
+                "SFMono-Regular",
+                "Menlo",
+                "monospace",
+              ],
+            },
+          },
+        },
+      };
+    </script>
     <style>
-      .about-wrap { max-width: 760px; margin: 0 auto; padding: 42px 20px 80px; }
-      .about-wrap h1 { font-size: clamp(34px, 6vw, 56px); margin: 0 0 16px; line-height: 1.05; }
-      .about-lede { font-size: 19px; color: var(--muted); max-width: 60ch; }
-      .about-wrap h2 { font-size: 22px; margin: 40px 0 10px; }
-      .about-wrap p { color: var(--muted); line-height: 1.65; margin: 0 0 16px; }
-      .pullquote {
-        border-left: 3px solid var(--accent, #7c5cff);
-        margin: 28px 0;
-        padding: 6px 0 6px 20px;
-        font-size: 22px;
-        line-height: 1.4;
-        color: var(--foreground);
-        font-weight: 500;
+      @font-face {
+        font-family: "Domine";
+        src: url("/assets/fonts/Lato-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
       }
+
+      @font-face {
+        font-family: "ABCFavoritMono";
+        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ABCFavoritMono";
+        src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root {
+        color-scheme: dark;
+        --background: #090909;
+        --foreground: #f5f5f5;
+        --muted-foreground: #a3a3a3;
+        --border: #313131;
+        --primary: #e8e8e8;
+        --primary-foreground: #1f1f1f;
+        --green: #28c878;
+        --violet: #9672ee;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100%;
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: none;
+      }
+
+      svg {
+        display: block;
+      }
+
+      .about-shell {
+        position: relative;
+        min-height: 100svh;
+        isolation: isolate;
+        overflow: hidden;
+        background: #090909;
+      }
+
+      .mesh-bg {
+        position: absolute;
+        inset: 0;
+        z-index: -3;
+        background:
+          radial-gradient(circle at 18% 10%, rgba(150, 114, 238, 0.2), transparent 28rem),
+          radial-gradient(circle at 84% 8%, rgba(63, 185, 80, 0.14), transparent 30rem),
+          radial-gradient(circle at 50% 56%, rgba(255, 255, 255, 0.055), transparent 36rem),
+          #090909;
+      }
+
+      .mesh-grid {
+        position: absolute;
+        inset: -1px;
+        z-index: -2;
+        opacity: 0.24;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.065) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.065) 1px, transparent 1px);
+        background-size: 72px 72px;
+        mask-image: linear-gradient(to bottom, black 0%, black 35%, transparent 72%);
+        -webkit-mask-image: linear-gradient(to bottom, black 0%, black 35%, transparent 72%);
+      }
+
+      .mesh-vignette {
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background: linear-gradient(to bottom, rgba(9, 9, 9, 0.92), rgba(9, 9, 9, 0.56) 34%, #090909 78%);
+      }
+
+      .brand-mark {
+        filter: drop-shadow(0 0 22px rgba(63, 185, 80, 0.16));
+      }
+
+      .about-intro {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        max-width: 52rem;
+        margin: 0 auto;
+        padding: 4.5rem 1.25rem 1rem;
+      }
+
+      .about-intro-eyebrow {
+        margin: 0;
+        color: var(--muted-foreground);
+        font-family: ABCFavoritMono, ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.78rem;
+        letter-spacing: 0.34em;
+        line-height: 1.4;
+        text-transform: uppercase;
+      }
+
+      .about-intro h1 {
+        max-width: 46rem;
+        margin: 1rem 0 0;
+        color: var(--foreground);
+        font-family: Domine, Georgia, serif;
+        font-size: clamp(2.1rem, 4vw, 3.1rem);
+        font-synthesis: none;
+        font-weight: 700;
+        letter-spacing: 0;
+        line-height: 1.05;
+      }
+
+      .about-intro p:not(.about-intro-eyebrow) {
+        max-width: 42rem;
+        margin: 1rem 0 0;
+        color: var(--muted-foreground);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      .about-story {
+        width: 100%;
+        max-width: 52rem;
+        margin: 0 auto;
+        padding: 0.5rem 1.25rem 6rem;
+      }
+
+      .about-story h2 {
+        margin: 3rem 0 0.75rem;
+        color: #fff;
+        font-size: clamp(1.45rem, 2.4vw, 2rem);
+        line-height: 1.18;
+      }
+
+      .about-story p {
+        margin: 0 0 1rem;
+        color: var(--muted-foreground);
+        font-size: 1rem;
+        line-height: 1.75;
+      }
+
+      .about-story strong,
+      .about-story a {
+        color: var(--foreground);
+      }
+
+      .about-story a {
+        text-decoration: underline;
+        text-decoration-color: rgba(255, 255, 255, 0.25);
+        text-underline-offset: 0.25rem;
+      }
+
+      .about-story a:hover {
+        text-decoration-color: rgba(255, 255, 255, 0.75);
+      }
+
+      .pullquote {
+        margin: 2rem 0;
+        padding: 0.5rem 0 0.5rem 1.25rem;
+        border-left: 3px solid var(--foreground);
+        color: var(--foreground);
+        font-size: clamp(1.25rem, 2.4vw, 1.75rem);
+        font-weight: 600;
+        line-height: 1.42;
+      }
+
       .team {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: 20px; margin: 22px 0 8px;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+        gap: 1rem;
+        margin: 1.5rem 0 0.5rem;
       }
+
       .member {
-        border: 1px solid var(--border); background: var(--card);
-        border-radius: 16px; padding: 22px;
+        min-width: 0;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 1.25rem;
+        background: rgba(255, 255, 255, 0.04);
+        padding: 1.25rem;
       }
-      .member-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+
+      .member-head {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 0.875rem;
+        margin-bottom: 1rem;
+      }
+
       .member-photo {
-        width: 76px; height: 76px; border-radius: 16px;
-        object-fit: cover; flex: none;
-        border: 2px solid var(--border);
-        background: var(--card-soft, var(--border));
+        width: 4.75rem;
+        height: 4.75rem;
+        flex: 0 0 auto;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 1rem;
+        background: rgba(255, 255, 255, 0.06);
+        object-fit: cover;
       }
-      .member-name { font-weight: 700; font-size: 18px; color: var(--foreground); }
-      .member-role { color: var(--muted); font-size: 14px; }
-      .member-bio { color: var(--muted); line-height: 1.62; font-size: 15px; margin: 0; }
-      .member-bio + .member-bio { margin-top: 12px; }
-      .about-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 32px; }
+
+      .member-name {
+        color: var(--foreground);
+        font-size: 1.05rem;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+
+      .member-role {
+        margin-top: 0.25rem;
+        color: var(--muted-foreground);
+        font-size: 0.9rem;
+        line-height: 1.35;
+      }
+
+      .member-bio {
+        font-size: 0.95rem;
+      }
+
+      .member-bio + .member-bio {
+        margin-top: 0.875rem;
+      }
+
+      .site-footer-word-wrap {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        height: clamp(6rem, 23vw, 22rem);
+        margin-bottom: -7.5rem;
+        overflow: hidden;
+        user-select: none;
+      }
+
+      .site-footer-glow {
+        position: relative;
+        display: inline-block;
+      }
+
+      .site-footer-word {
+        display: block;
+        font-size: 23vw;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .footer-glow-base {
+        color: #0d0d0d;
+      }
+
+      .footer-glow-text {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        color: rgba(232, 232, 232, 0.74);
+        filter: drop-shadow(0 0 24px rgba(255, 255, 255, 0.18));
+        mask-image: radial-gradient(
+          7.5rem 7.5rem at var(--footer-glow-x, 50%) var(--footer-glow-y, 50%),
+          black 0%,
+          black 34%,
+          rgba(0, 0, 0, 0.7) 62%,
+          transparent 100%
+        );
+        -webkit-mask-image: radial-gradient(
+          7.5rem 7.5rem at var(--footer-glow-x, 50%) var(--footer-glow-y, 50%),
+          black 0%,
+          black 34%,
+          rgba(0, 0, 0, 0.7) 62%,
+          transparent 100%
+        );
+        opacity: var(--footer-glow-opacity, 0);
+      }
+
+      .site-footer-logo {
+        height: 2.5rem;
+        width: auto;
+      }
+
+      .site-footer-panel {
+        position: relative;
+        z-index: 10;
+        min-height: clamp(34rem, 47vw, 42rem);
+        border-color: #242424;
+        background: #000;
+      }
+
+      .site-footer-links-grid {
+        display: grid;
+        width: 100%;
+        max-width: 80rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 2.5rem;
+        row-gap: 3rem;
+        align-items: start;
+        margin-inline: auto;
+        padding-inline: 1.25rem;
+        padding-top: clamp(5.75rem, 8vw, 8rem);
+        padding-bottom: clamp(5.75rem, 8vw, 8rem);
+      }
+
+      .site-footer-brand {
+        grid-column: 1 / -1;
+      }
+
+      .site-footer-brand-copy {
+        max-width: 12.75rem;
+        color: #8c8c8c;
+        font-size: 1rem;
+        line-height: 1.58;
+      }
+
+      .site-footer-link-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin: 1rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .site-footer-column-title {
+        color: #e5e5e5;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+
+      .site-footer-column-link {
+        color: #888;
+        font-size: 0.95rem;
+        transition: color 180ms ease;
+      }
+
+      .site-footer-column-link:hover {
+        color: #e8e8e8;
+      }
+
+      .site-footer-socials {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+      }
+
+      .site-footer-social-link {
+        display: flex;
+        width: 2.25rem;
+        height: 2.25rem;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #2f2f2f;
+        border-radius: 0.5rem;
+        color: #8e8e8e;
+        transition:
+          border-color 180ms ease,
+          color 180ms ease;
+      }
+
+      .site-footer-social-link:hover {
+        border-color: rgba(232, 232, 232, 0.3);
+        color: #e8e8e8;
+      }
+
+      .site-footer-social-link svg {
+        width: 1rem;
+        height: 1rem;
+      }
+
+      .site-footer-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+        padding: 0.375rem 0.75rem;
+        border-width: 1px;
+        border-style: solid;
+        border-color: #2f2f2f;
+        border-radius: 0.5rem;
+        color: #8e8e8e;
+        font-size: 0.95rem;
+        line-height: 1.25;
+      }
+
+      .site-footer-status-dot {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 9999px;
+        background: var(--green);
+      }
+
+      .site-footer-copyright {
+        max-width: 80rem;
+        border-color: #242424;
+        color: #858585;
+        margin-inline: auto;
+        padding-inline: 1.25rem;
+        padding-top: 1.65rem;
+        padding-bottom: 1.65rem;
+      }
+
+      .about-card{
+        position: relative;
+        min-height: 31.15rem;
+        overflow: hidden;
+        border-radius: 1.45rem;
+        border: 1px solid rgba(255, 255, 255, 0.025);
+        background:
+          radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.024), transparent 28%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.014) 0%, rgba(255, 255, 255, 0.005) 18%, transparent 34%),
+          linear-gradient(180deg, #131313 0%, #050505 43%, #0d0d0d 100%);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.035),
+          0 1rem 2.8rem rgba(0, 0, 0, 0.72);
+      }
+
+      @media (max-width: 768px) {
+        .about-story {
+          padding-bottom: 4rem;
+        }
+
+        .site-footer-word-wrap {
+          margin-bottom: -3rem;
+        }
+      }
+
+      @media (min-width: 768px) {
+        .site-footer-links-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1024px) {
+        .site-footer-links-grid {
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          padding-inline: 2rem;
+        }
+
+        .site-footer-brand {
+          grid-column: auto;
+        }
+
+        .site-footer-copyright {
+          padding-inline: 2rem;
+        }
+      }
     </style>
+      <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
-  <body>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="brand" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-          <span>ForkMesh</span>
-        </a>
-        <nav class="global-nav" aria-label="Global">
-          <a href="/dashboard">Repositories</a>
-          <a href="/network/">Network</a>
-          <a href="/docs/">Docs</a>
-          <a href="/status">Status</a>
-          <a href="/blogs">Blog</a>
-          <a href="/changelog.html">Changelog</a>
-          <a href="/chat">Chat</a>
-          <a class="nav-cta" href="/signup">Sign Up / Log In</a>
-        </nav>
-        <div class="header-actions">
-          <div class="clients-pill" aria-live="polite">
-            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
-            <span id="clients-count">Checking…</span>
-          </div>
-          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
-          </button>
-          <a class="nav-admin" data-admin-link href="#" hidden>Admin</a>
-          <a class="install-link" href="/#install-banner">Install</a>
+  <body class="h-full">
+    <main class="about-shell flex min-h-screen flex-col">
+      <div class="mesh-bg" aria-hidden="true"></div>
+      <div class="mesh-grid" aria-hidden="true"></div>
+      <div class="mesh-vignette" aria-hidden="true"></div>
+
+      <div data-forkmesh-header="simple"></div>
+
+      <section class="about-intro">
+        <p class="about-intro-eyebrow">Our story</p>
+        <h1>Code hosting that can't be taken away.</h1>
+        <p>
+          ForkMesh began with a loss - and a refusal to let it happen again.
+        </p>
+      </section>
+
+      <section class="about-story">
+        <h2>The day the code disappeared</h2>
+        <p>
+          One ordinary morning, <strong>Md Kaif Ansari</strong> opened GitHub to
+          find his repositories gone. No warning he could act on, no second copy to
+          fall back on. Years of work - side projects, experiments, the small tools
+          he'd quietly built for himself and others - vanished behind someone
+          else's policy and someone else's servers.
+        </p>
+        <p>
+          The code wasn't deleted because it was wrong. It was deleted because it
+          lived in exactly one place, and that place answered to no one but itself.
+        </p>
+
+        <blockquote class="pullquote">
+          "If a single account can erase years of work overnight, then we never
+          really owned our code - we were only borrowing it."
+        </blockquote>
+
+        <h2>So he built the antidote</h2>
+        <p>
+          ForkMesh is what Kaif wished he'd had that morning: a network where your
+          code doesn't sit on one company's servers, waiting to be locked out. Every
+          repository lives on real machines run by real people - mirrored, signed,
+          and streamed peer-to-peer. No central forge holds your objects hostage.
+          Take one node offline and the mesh carries on.
+        </p>
+        <p>
+          Around that foundation grew everything a modern project needs: issues and
+          milestones, pull requests and releases, encrypted chat, real CI, and AI
+          agents that can pick up an issue and ship a fix - all without surrendering
+          your work to a single point of failure. And because the people who keep
+          the network alive deserve to be paid, ForkMesh has rewards and bounties
+          built right in.
+        </p>
+
+        <h2>Meet the founders</h2>
+        <div class="team">
+          <article class="about-card member">
+            <div class="member-head">
+              <img class="member-photo" src="/assets/kaif.webp" alt="Md Kaif Ansari" width="76" height="76" />
+              <div>
+                <div class="member-name">Md Kaif Ansari</div>
+                <div class="member-role">Founder &amp; Full-Stack Developer</div>
+              </div>
+            </div>
+            <p class="member-bio">
+              Md Kaif Ansari is a full-stack developer from India with a passion for
+              building resilient, well-crafted software - and for taking things
+              apart to understand how to make them better. He works primarily across
+              the MERN stack and currently builds full-stack products for an
+              Australian startup.
+            </p>
+            <p class="member-bio">
+              Beyond his day-to-day work, Kaif is an active open-source contributor
+              drawn to projects with real-world impact, and a dedicated Python and
+              AI enthusiast who treats every hard problem as a puzzle worth solving.
+              A regular on the hackathon circuit, he thrives in fast-paced
+              environments where ambitious ideas become working products - and he
+              approaches every day as a chance to learn and push his craft further.
+            </p>
+          </article>
+
+          <article class="about-card member">
+            <div class="member-head">
+              <img class="member-photo" src="/assets/jett.webp" alt="Jett Vale" width="76" height="76" />
+              <div>
+                <div class="member-name">Jett Vale</div>
+                <div class="member-role">Co-Founder &amp; Systems Engineer</div>
+              </div>
+            </div>
+            <p class="member-bio">
+              Jett Vale is a developer and Kaif's partner in building ForkMesh, with
+              a deep love for the layer most people never see - distributed systems,
+              peer-to-peer networking, and the quiet infrastructure that keeps data
+              alive. He cut his teeth writing performance-critical backends in Rust
+              and Go, and is happiest tracing a packet through a mesh until it does
+              exactly what it should.
+            </p>
+            <p class="member-bio">
+              When a deleted repository turned into a mission, Jett was the one
+              mapping out how code could live everywhere at once instead of nowhere.
+              He's a tinkerer and an open-source believer who cares as much about
+              clean protocols as he does about the people relying on them - and he's
+              convinced the best software is the kind that simply refuses to
+              disappear.
+            </p>
+          </article>
         </div>
-      </div>
-    </header>
 
-    <main class="about-wrap">
-      <p class="eyebrow">Our story</p>
-      <h1>Code hosting that can't be taken away.</h1>
-      <p class="about-lede">
-        ForkMesh began with a loss — and a refusal to let it happen again.
-      </p>
+        <h2>Where we're headed</h2>
+        <p>
+          Source code is infrastructure. It shouldn't depend on the goodwill of a
+          single host. ForkMesh exists so that the next developer who opens their
+          account to find it empty has somewhere else their work already lives.
+        </p>
+        <p>
+          We're just getting started - and we'd love to hear from you. Reach the
+          founders directly at
+          <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
+        </p>
+      </section>
 
-      <h2>The day the code disappeared</h2>
-      <p>
-        One ordinary morning, <strong>Md Kaif Ansari</strong> opened GitHub to
-        find his repositories gone. No warning he could act on, no second copy to
-        fall back on. Years of work — side projects, experiments, the small tools
-        he'd quietly built for himself and others — vanished behind someone
-        else's policy and someone else's servers.
-      </p>
-      <p>
-        The code wasn't deleted because it was wrong. It was deleted because it
-        lived in exactly one place, and that place answered to no one but itself.
-      </p>
-
-      <blockquote class="pullquote">
-        “If a single account can erase years of work overnight, then we never
-        really owned our code — we were only borrowing it.”
-      </blockquote>
-
-      <h2>So he built the antidote</h2>
-      <p>
-        ForkMesh is what Kaif wished he'd had that morning: a network where your
-        code doesn't sit on one company's servers, waiting to be locked out. Every
-        repository lives on real machines run by real people — mirrored, signed,
-        and streamed peer-to-peer. No central forge holds your objects hostage.
-        Take one node offline and the mesh carries on.
-      </p>
-      <p>
-        Around that foundation grew everything a modern project needs: issues and
-        milestones, pull requests and releases, encrypted chat, real CI, and AI
-        agents that can pick up an issue and ship a fix — all without surrendering
-        your work to a single point of failure. And because the people who keep
-        the network alive deserve to be paid, ForkMesh has rewards and bounties
-        built right in.
-      </p>
-
-      <h2>Meet the founders</h2>
-      <div class="team">
-        <article class="member">
-          <div class="member-head">
-            <img class="member-photo" src="/assets/kaif.webp" alt="Md Kaif Ansari" width="76" height="76" />
-            <div>
-              <div class="member-name">Md Kaif Ansari</div>
-              <div class="member-role">Founder &amp; Full-Stack Developer</div>
-            </div>
-          </div>
-          <p class="member-bio">
-            Md Kaif Ansari is a full-stack developer from India with a passion for
-            building resilient, well-crafted software — and for taking things
-            apart to understand how to make them better. He works primarily across
-            the MERN stack and currently builds full-stack products for an
-            Australian startup.
-          </p>
-          <p class="member-bio">
-            Beyond his day-to-day work, Kaif is an active open-source contributor
-            drawn to projects with real-world impact, and a dedicated Python and
-            AI enthusiast who treats every hard problem as a puzzle worth solving.
-            A regular on the hackathon circuit, he thrives in fast-paced
-            environments where ambitious ideas become working products — and he
-            approaches every day as a chance to learn and push his craft further.
-          </p>
-        </article>
-
-        <article class="member">
-          <div class="member-head">
-            <img class="member-photo" src="/assets/jett.webp" alt="Jett Vale" width="76" height="76" />
-            <div>
-              <div class="member-name">Jett Vale</div>
-              <div class="member-role">Co-Founder &amp; Systems Engineer</div>
-            </div>
-          </div>
-          <p class="member-bio">
-            Jett Vale is a developer and Kaif's partner in building ForkMesh, with
-            a deep love for the layer most people never see — distributed systems,
-            peer-to-peer networking, and the quiet infrastructure that keeps data
-            alive. He cut his teeth writing performance-critical backends in Rust
-            and Go, and is happiest tracing a packet through a mesh until it does
-            exactly what it should.
-          </p>
-          <p class="member-bio">
-            When a deleted repository turned into a mission, Jett was the one
-            mapping out how code could live everywhere at once instead of nowhere.
-            He's a tinkerer and an open-source believer who cares as much about
-            clean protocols as he does about the people relying on them — and he's
-            convinced the best software is the kind that simply refuses to
-            disappear.
-          </p>
-        </article>
-      </div>
-
-      <h2>Where we're headed</h2>
-      <p>
-        Source code is infrastructure. It shouldn't depend on the goodwill of a
-        single host. ForkMesh exists so that the next developer who opens their
-        account to find it empty has somewhere else their work already lives.
-      </p>
-      <p>
-        We're just getting started — and we'd love to hear from you. Reach the
-        founders directly at
-        <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
-      </p>
-
-      <div class="about-cta">
-        <a class="primary-button" href="/signup.html">Join the mesh</a>
-        <a class="secondary-button" href="/changelog.html">See the changelog</a>
-      </div>
+      <div data-forkmesh-footer="standard"></div>
     </main>
 
-    <footer class="site-footer">
-      <div class="footer-inner">
-        <div>
-          <div class="footer-brand">
-            <img src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span>ForkMesh</span>
-          </div>
-          <p class="footer-tagline">
-            Code hosting that lives on the network — distributed, signed, and
-            impossible to quietly take away.
-          </p>
-        </div>
-        <nav class="footer-links" aria-label="Footer">
-          <div class="footer-col">
-            <h3>Product</h3>
-            <a href="/dashboard">Repositories</a>
-            <a href="/network/">Network</a>
-            <a href="/docs/">Docs</a>
-            <a href="/status">Status</a>
-            <a href="/changelog.html">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <h3>Company</h3>
-            <a href="/about.html">About</a>
-            <a href="/careers.html">Careers</a>
-            <a href="/blogs">Blog</a>
-            <a href="/signup">Sign Up / Log In</a>
-          </div>
-          <div class="footer-col">
-            <h3>Get in touch</h3>
-            <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>
-            <a href="/privacy.html">Privacy</a>
-            <a href="/terms.html">Terms</a>
-          </div>
-        </nav>
-      </div>
-      <div class="footer-bottom">
-        Questions or feedback? Email the founders at
-        <a href="mailto:founders@forkmesh.com">founders@forkmesh.com</a>.
-      </div>
-    </footer>
+    <script>
+    </script>
   </body>
 </html>
