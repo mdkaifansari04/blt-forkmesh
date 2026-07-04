@@ -3040,7 +3040,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // (adhoc #117).
     mainRow->addWidget(donateButton);
     mainRow->addSpacing(4);
-    mainRow->addLayout(socialRow);
+    mainRow->addLayout(socialColumn);
     mainRow->addSpacing(10);
     // Stack the node name above the wallet balance — "this is your money". The
     // online/reward toggle that used to sit here now lives in the node profile
