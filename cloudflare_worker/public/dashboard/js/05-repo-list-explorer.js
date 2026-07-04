@@ -1,38 +1,3 @@
-  function renderSidebarRepositories(session) {
-    const list = $("[data-sidebar-repo-list]");
-    const count = $("[data-sidebar-repo-count]");
-    if (!list) return;
-
-    const owner = String(session?.nodeName || "").toLowerCase();
-    const ownRepos = owner
-      ? state.repositories.filter((repo) => String(repo.owner || "").toLowerCase() === owner)
-      : [];
-    const repos = ownRepos.slice(0, 8);
-
-    if (count) {
-      count.textContent = ownRepos.length
-        ? `${ownRepos.length} active`
-        : "0 active";
-    }
-    if (!repos.length) {
-      list.innerHTML = `
-        <button data-section="repos" class="nav-jump w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
-          <i data-lucide="git-branch" class="w-3 h-3 shrink-0"></i>
-          <span class="truncate">No owned repos yet</span>
-        </button>
-      `;
-      return;
-    }
-
-    list.innerHTML = repos.map((repo) => `
-      <button data-dashboard-open-repo="${escapeHtml(repoKey(repo))}" class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
-        <i data-lucide="git-branch" class="w-3 h-3 shrink-0"></i>
-        <span class="truncate">${escapeHtml(repo.name || "repository")}</span>
-        <i data-lucide="circle" class="w-1.5 h-1.5 ml-auto fill-current shrink-0 ${repoIsLive(repo) ? "text-primary" : "text-muted-foreground"}"></i>
-      </button>
-    `).join("");
-  }
-
   function repositoryMatchesQuery(repo, query) {
     if (!query) return true;
     const haystack = [
@@ -178,7 +143,6 @@
     const count = $("[data-repo-count]");
     if (count) count.textContent = `${formatCount(state.filteredGroups.length)} mirrored`;
 
-    renderSidebarRepositories(session);
     applyRepositoryFilter();
   }
 
