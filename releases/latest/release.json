@@ -1,9 +1,9 @@
 {
   "schema": "forkmesh-release-v1",
   "repo": "newnewnode/forkmesh",
-  "tag": "v0.5.51",
-  "tag_commit": "60c9c2a0a12fb5bc32cd4426975bfe77c6b1295b",
+  "tag": "v0.5.52",
+  "tag_commit": "4a24779b664e7fc3aea04570312eeb8367f8137d",
   "channel": "latest",
-  "created_at": 1783140042000,
-  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"1e71e4900701fee96f75ef6b011382b7bd4a7937c1838c18dbce1debf39c1db9","size":14715024,"os":"linux","arch":"x86_64"}]
+  "created_at": 1783141092000,
+  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"225eb2a3ae2947d77ac56d98e9cc2583585c0abfa7e8b3ba624971e6ef944dae","size":14719120,"os":"linux","arch":"x86_64"}]
 }
