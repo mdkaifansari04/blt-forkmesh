@@ -119,9 +119,8 @@ public:
         m_bodyLayout->setContentsMargins(0, 2, 0, 0);
         m_bodyLayout->setSpacing(6);
         v->addWidget(m_bodyWidget);
-        QObject::connect(m_btn, &QPushButton::clicked, m_btn,
-                         [this] { setExpanded(!m_open); });
-        m_bodyWidget->setVisible(m_open); // initial state: no animation
+        // Sections no longer collapse/expand
+        m_bodyWidget->setVisible(m_open);
         updateHeaderText();
     }
     QVBoxLayout *body() { return m_bodyLayout; }
@@ -166,7 +165,7 @@ public:
 private:
     void updateHeaderText()
     {
-        m_btn->setText((m_open ? QStringLiteral("▾  ") : QStringLiteral("▸  ")) + m_label);
+        m_btn->setText(m_label);
     }
     void animateBody()
     {
@@ -338,8 +337,8 @@ private:
             return;
         const QString unit = m_hidden == 1 ? QStringLiteral("line")
                                            : QStringLiteral("lines");
-        m_toggle->setText((m_open ? QStringLiteral("▾  hide %1 %2")
-                                  : QStringLiteral("▸  ⋯ %1 %2"))
+        m_toggle->setText((m_open ? QStringLiteral("hide %1 %2")
+                                  : QStringLiteral("⋯ %1 %2"))
                               .arg(m_hidden)
                               .arg(unit));
     }
@@ -728,7 +727,7 @@ void ClaudeTranscriptView::addSkippedNotice(int count)
     }
     m_skippedCount = count;
     auto *btn = new QPushButton(
-        QStringLiteral("▸  Load %1 earlier event%2")
+        QStringLiteral("Load %1 earlier event%2")
             .arg(count)
             .arg(count == 1 ? QString() : QStringLiteral("s")));
     btn->setCursor(Qt::PointingHandCursor);
@@ -879,7 +878,7 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
     if (type == QLatin1String("system")) {
         const QString sub = ev.value(QStringLiteral("subtype")).toString();
         if (sub == QLatin1String("init")) {
-            auto *l = new QLabel(QStringLiteral("● session started · %1 · %2")
+            auto *l = new QLabel(QStringLiteral("session started %1 %2")
                                      .arg(esc(ev.value(QStringLiteral("model")).toString()),
                                           esc(ev.value(QStringLiteral("cwd")).toString())));
             l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
