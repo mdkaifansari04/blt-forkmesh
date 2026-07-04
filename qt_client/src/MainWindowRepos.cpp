@@ -2229,6 +2229,13 @@ void MainWindow::autoSyncMirrors()
             !repositorySource(m_repositories.at(i)).isEmpty())
             syncRepository(i, /*quiet=*/true);
     }
+
+    // While we're online, keep every repo we're the source of truth for pinned to
+    // the refs it actually serves. Runs on the same cadence as the mirror sync so
+    // a source repo whose pin drifted (and whose detail the owner never opened)
+    // heals on its own instead of leaving clones rejected with a failing integrity
+    // pin until a manual reset.
+    reattestStalePins();
 }
 
 void MainWindow::syncMirrorsBehindRoster()
