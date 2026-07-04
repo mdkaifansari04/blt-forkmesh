@@ -90,6 +90,61 @@ def test_installer_falls_back_to_single_node_field():
     assert "CANDIDATES=https://forkmesh.com/solo/forkmesh" in result.stdout
 
 
+def _run_prefix(response, extra_env):
+    # Like _run_with_response but sandboxes HOME/XDG so uninstall_forkmesh can be
+    # exercised (it rm's under $HOME) without touching the real machine, and lets
+    # a test set extra env (FORKMESH_REINSTALL, FORKMESH_OWNER, ...).
+    with tempfile.TemporaryDirectory() as tmp:
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir()
+        curl = bindir / "curl"
+        curl.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$FORKMESH_TEST_RESPONSE\"\n",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        home = Path(tmp) / "home"
+        home.mkdir()
+        env = os.environ.copy()
+        env["FORKMESH_TEST_RESPONSE"] = response
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        env["HOME"] = str(home)
+        env["XDG_DATA_HOME"] = str(home / ".local/share")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
+        env["XDG_CACHE_HOME"] = str(home / ".cache")
+        env.update(extra_env)
+        return subprocess.run(
+            ["bash", "-c", _selection_prefix()], env=env,
+            text=True, capture_output=True, check=False,
+        )
+
+
+def test_installer_reinstall_wipes_then_continues():
+    # --reinstall / FORKMESH_REINSTALL=1 runs the uninstall wipe first, then falls
+    # through to the normal install (the source resolution still happens), rather
+    # than exiting after the uninstall (adhoc #258).
+    result = _run_prefix(
+        '{"ok":true,"node":"newnewnode","repo":"forkmesh","totalMinutes":9}',
+        {"FORKMESH_REINSTALL": "1", "FORKMESH_NO_LAUNCH": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Reinstall requested" in result.stdout
+    # It carried on into the install (resolved a source) instead of exiting.
+    assert "REPO=https://forkmesh.com/newnewnode/forkmesh" in result.stdout
+
+
+def test_installer_echoes_owner_when_attached():
+    # The Hosts panel passes FORKMESH_OWNER so the operator can confirm which
+    # account the fresh node is attached to (adhoc #258); the installer echoes it.
+    result = _run_prefix(
+        '{"ok":true,"node":"newnewnode","repo":"forkmesh","totalMinutes":9}',
+        {"FORKMESH_OWNER": "alice", "FORKMESH_NODE_NAME": "vps-1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Owner:  alice" in result.stdout
+    assert "Node:   vps-1" in result.stdout
+
+
 def test_installer_stops_when_no_mirror_is_online():
     result = _run_with_response(
         '{"ok":false,"error":"no_online_install_source"}'

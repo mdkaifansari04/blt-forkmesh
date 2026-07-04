@@ -4278,6 +4278,55 @@ async def _account_reserve(env, request):
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
 
+# Identity key rotation (issue #368). The account's currently-bound Ed25519 key
+# signs a successor public key; on a valid signature the account rebinds to the
+# new key, so a user who backed up their identity and moved to a fresh key keeps
+# their name, linked nodes and bounty bindings. Without this, a pubkey bound
+# elsewhere is a hard failure and a lost machine means a lost identity.
+async def _account_rotate(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    old_pub = clean_string(data.get("oldPubkey", ""), 120)
+    new_pub = clean_string(data.get("newPubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_name"}, status=400)
+    if not valid_node_pubkey(new_pub):
+        return json_response({"error": "invalid_pubkey"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return json_response({"error": "no_account"}, status=404)
+    bound = rec.get("pubkey", "")
+    # Idempotent retry: the successor is already the bound key. Report success so
+    # a client that lost the first response can safely re-send.
+    if bound and bound == new_pub:
+        return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
+    # Only the key the account is *currently* bound to may authorize a rotation.
+    if not bound or bound != old_pub:
+        return json_response({"error": "not_bound"}, status=403)
+    canonical = ("forkmesh-rotate-v1\n" + old_pub + "\n" + new_pub + "\n" +
+                 ts).encode()
+    if not await ed25519_verify(old_pub, sig, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    prev = rec.get("prev_pubkeys")
+    prev = list(prev) if isinstance(prev, list) else []
+    if bound and bound not in prev:
+        prev.append(bound)
+    rec["pubkey"] = new_pub
+    rec["prev_pubkeys"] = prev
+    rec["rotated_at"] = int(Date.now())
+    await _save_account(env, name_bi, rec)
+    return json_response({"ok": True, "nodeName": name, "pubkey": new_pub})
+
+
 # Step 2 (the "Join" step): create a Solana payment request for this signup.
 # Signup payments land in unique per-account deposit wallets; the worker sweeps
 # confirmed deposits to the treasury and currently-online node payout addresses.
@@ -7311,6 +7360,8 @@ async def accounts_handler(env, request):
         return await _account_signup(env, request)
     if url.path == "/api/accounts/reserve" and method == "POST":
         return await _account_reserve(env, request)
+    if url.path == "/api/accounts/rotate" and method == "POST":
+        return await _account_rotate(env, request)
     if url.path == "/api/accounts/profile" and method == "POST":
         return await _account_profile(env, request)
     if url.path == "/api/accounts/donation-address" and method == "POST":
