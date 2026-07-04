@@ -4,7 +4,7 @@ number: 3
 title: feat(public): refresh about and network pages
 base: kaif/public-landing-refresh
 head: kaif/public-about-network-refresh
-status: open
+status: merged
 ts: 1783173747679
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
