@@ -1025,31 +1025,27 @@
       </div>`;
   }
 
-  // Composer pinned to the top of the agents list (adhoc #266): type a prompt
-  // and send it to a brand-new agent on the owner's node. The node's prompt
+  // Composer pinned above the tab bar on every repo tab, not just Agents
+  // (adhoc #278): type a prompt and send it to a brand-new agent on the
+  // owner's node from wherever they're browsing the repo. The node's prompt
   // drain recognises the "new" sentinel agent id and spins up an ad-hoc run.
   function renderRepoAgentNewComposer() {
     return `
-      <form data-repo-agent-new-form class="flex items-center gap-2 border-b border-border bg-secondary/30 px-4 py-3">
-        <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
-        <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
-          ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-        </select>
-        <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
-        <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
-      </form>`;
+      <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
+        <form data-repo-agent-new-form class="flex items-center gap-2 bg-secondary/30 px-4 py-3">
+          <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+          <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
+            ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+          </select>
+          <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
+          <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
+        </form>
+      </div>`;
   }
 
   function renderRepoAgentsList(agents) {
     const container = $("[data-repo-agents]");
     if (!container) return;
-    // Preserve whatever the user has half-typed into the top composer across the
-    // frequent re-renders a running agent triggers (turns/cost/status all move),
-    // so a background poll never eats their caret mid-sentence.
-    const priorComposer = container.querySelector("[data-repo-agent-new-input]");
-    const priorComposerValue = priorComposer ? priorComposer.value : "";
-    const priorProvider = container.querySelector("[data-repo-agent-new-provider]");
-    const priorProviderValue = priorProvider ? priorProvider.value : "";
     // When a detail page is open for a still-present agent, render that instead
     // of the list (adhoc #259). If the selected agent has vanished from a fresh
     // fetch, fall back to the list so we never strand the user on a dead page.
@@ -1063,14 +1059,11 @@
       return;
     }
     if (selectedId != null) state.agentsView.selectedAgentId = null;
-    const listBody = agents.length
+    // The "start a new agent" composer now lives above the tab bar on every
+    // tab (adhoc #278), not just here, so this list is just the sessions.
+    container.innerHTML = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
       : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one above, or from the desktop app.</div>';
-    container.innerHTML = renderRepoAgentNewComposer() + listBody;
-    const composer = container.querySelector("[data-repo-agent-new-input]");
-    if (composer && priorComposerValue) composer.value = priorComposerValue;
-    const provider = container.querySelector("[data-repo-agent-new-provider]");
-    if (provider && priorProviderValue) provider.value = priorProviderValue;
     window.lucide?.createIcons();
   }
 
