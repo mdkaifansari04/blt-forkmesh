@@ -25,4 +25,13 @@ namespace forkmesh {
 // is created if needed.
 void installCrashHandler(const QString &crashLogPath = QString());
 
+// Record a non-fatal fault that was caught rather than allowed to abort the
+// process — e.g. a C++ exception thrown out of a slot during Qt event delivery
+// (the classic "app vanishes when I click a tab"). Writes a timestamped block to
+// stderr (the main application log) and, when a durable crash-log path was given
+// to installCrashHandler(), appends it there too so it rides along with real
+// crashes for the telemetry upload. Unlike the signal handlers this runs in
+// normal context, so it may use Qt/allocation freely.
+void logCaughtFault(const QString &context, const QString &what);
+
 } // namespace forkmesh
