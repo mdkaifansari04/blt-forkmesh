@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 337
 title: Update qt app design
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 65
