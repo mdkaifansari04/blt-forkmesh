@@ -1032,6 +1032,9 @@
     return `
       <form data-repo-agent-new-form class="flex items-center gap-2 border-b border-border bg-secondary/30 px-4 py-3">
         <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+        <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
+          ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
+        </select>
         <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
         <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
       </form>`;
@@ -1045,6 +1048,8 @@
     // so a background poll never eats their caret mid-sentence.
     const priorComposer = container.querySelector("[data-repo-agent-new-input]");
     const priorComposerValue = priorComposer ? priorComposer.value : "";
+    const priorProvider = container.querySelector("[data-repo-agent-new-provider]");
+    const priorProviderValue = priorProvider ? priorProvider.value : "";
     // When a detail page is open for a still-present agent, render that instead
     // of the list (adhoc #259). If the selected agent has vanished from a fresh
     // fetch, fall back to the list so we never strand the user on a dead page.
@@ -1064,6 +1069,8 @@
     container.innerHTML = renderRepoAgentNewComposer() + listBody;
     const composer = container.querySelector("[data-repo-agent-new-input]");
     if (composer && priorComposerValue) composer.value = priorComposerValue;
+    const provider = container.querySelector("[data-repo-agent-new-provider]");
+    if (provider && priorProviderValue) provider.value = priorProviderValue;
     window.lucide?.createIcons();
   }
 
@@ -1272,6 +1279,7 @@
   // the owner's node turns into a fresh ad-hoc agent run on drain.
   async function handleRepoAgentNewSubmit(repo, form) {
     const input = form.querySelector("[data-repo-agent-new-input]");
+    const providerSelect = form.querySelector("[data-repo-agent-new-provider]");
     const submit = form.querySelector("[data-repo-agent-new-submit]");
     const hint = form.querySelector("[data-repo-agent-new-hint]");
     const setHint = (text, tone) => {
@@ -1293,6 +1301,7 @@
         body: JSON.stringify({
           ownerAccount: state.session?.nodeName || "",
           text,
+          provider: String(providerSelect?.value || ""),
         }),
       });
       const data = await response.json().catch(() => ({}));

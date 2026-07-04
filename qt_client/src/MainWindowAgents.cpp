@@ -460,44 +460,10 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->setSpacing(8);
     listLayout->addLayout(headingRow);
 
-    // Compose row (adhoc #234): a prompt input at the very top of the session
-    // list so a new ad-hoc agent can be started from here, without dropping down
-    // to the footer quick-add bar. Repo picker + agent-provider dropdown + Start.
-    m_agentComposeRepo = new QComboBox;
-    m_agentComposeRepo->setToolTip("Repository the new agent runs in");
-    m_agentComposeRepo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    m_agentComposeProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
-    m_agentComposeProvider->addItem(QStringLiteral("OpenAI API"),
-                                    QStringLiteral("openai"));
-    m_agentComposeProvider->addItem(QStringLiteral("Claude API"),
-                                    QStringLiteral("claude-api"));
-    m_agentComposeProvider->addItem(QStringLiteral("Claude Code"),
-                                    QStringLiteral("claude-code"));
-    m_agentComposeProvider->setMaxVisibleItems(30);
-    m_agentComposeProvider->setToolTip("Agent provider for the new agent");
-    selectDefaultAgentProvider(m_agentComposeProvider);
-    m_agentComposePrompt = new QLineEdit;
-    m_agentComposePrompt->setObjectName("issueSearch");
-    m_agentComposePrompt->setClearButtonEnabled(true);
-    m_agentComposePrompt->setPlaceholderText(QString::fromUtf8(
-        "Describe a task to start a new agent\xE2\x80\xA6"));
-    connect(m_agentComposePrompt, &QLineEdit::returnPressed, this,
-            &MainWindow::startAgentFromComposer);
-    m_agentComposeButton = new QPushButton("Start agent");
-    m_agentComposeButton->setObjectName("primaryButton");
-    m_agentComposeButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentComposeButton, "rocket", 16);
-    connect(m_agentComposeButton, &QPushButton::clicked, this,
-            &MainWindow::startAgentFromComposer);
-
-    auto *agentComposeRow = new QHBoxLayout;
-    agentComposeRow->setContentsMargins(0, 0, 0, 0);
-    agentComposeRow->setSpacing(8);
-    agentComposeRow->addWidget(m_agentComposeRepo, 0);
-    agentComposeRow->addWidget(m_agentComposePrompt, 1);
-    agentComposeRow->addWidget(m_agentComposeProvider, 0);
-    agentComposeRow->addWidget(m_agentComposeButton, 0);
-    listLayout->addLayout(agentComposeRow);
+    // The top-of-list "Start agent" compose row (adhoc #234) was removed from
+    // the desktop app (adhoc #271) — starting a new ad-hoc agent now happens
+    // from the footer quick-add bar in-app and from the website's Agents view.
+    // The m_agentCompose* members stay nullptr; every reader is null-guarded.
 
     // Free-text filter over the session list (issue #82): type to narrow the
     // table to sessions whose issue number/title, agent, status or PR match.
@@ -1547,7 +1513,10 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
             // to spin up a brand-new ad-hoc agent for this repo from the prompt,
             // rather than steer an existing session.
             if (agentId == QLatin1String("new")) {
-                startWebNewAgentForRepo(repo, text);
+                // Optional provider chosen in the website composer's dropdown
+                // (adhoc #271); empty leaves the node's default in place.
+                startWebNewAgentForRepo(repo, text,
+                                        item.value("provider").toString());
                 continue;
             }
             bool ok = false;
@@ -1587,7 +1556,8 @@ void MainWindow::deliverQueuedAgentPrompt(int sessionId, const QString &text)
 // m_repositories, then hands off to the same startAdHocAgentForRepo the in-app
 // compose row uses, honouring the node's default provider/model choice.
 void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
-                                         const QString &task)
+                                         const QString &task,
+                                         const QString &providerOverride)
 {
     int repoIndex = -1;
     for (int i = 0; i < m_repositories.size(); ++i) {
@@ -1605,7 +1575,14 @@ void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
                       .arg(repo.owner, repo.name));
         return;
     }
-    const QString provider = defaultAgentProvider();
+    // Honour the provider the website composer chose (adhoc #271) when it names a
+    // known one; otherwise fall back to the node's default provider.
+    const QString provider =
+        (providerOverride == QLatin1String("claude-code")
+         || providerOverride == QLatin1String("claude-api")
+         || providerOverride == QLatin1String("openai"))
+            ? providerOverride
+            : defaultAgentProvider();
     const QString model = provider == QLatin1String("claude-code")
                               ? QSettings().value(kClaudeCodeModelSetting).toString()
                               : QString();
