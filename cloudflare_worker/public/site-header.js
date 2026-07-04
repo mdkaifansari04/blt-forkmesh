@@ -6,7 +6,7 @@
       </a>
       <nav class="forkmesh-simple-header-nav hidden items-center gap-6 text-sm text-muted-foreground md:flex" aria-label="Primary">
         <a class="transition-colors hover:text-foreground" href="/docs">Docs</a>
-        <a class="transition-colors hover:text-foreground" href="/blogs">Blog</a>
+        <a class="transition-colors hover:text-foreground" href="/blog">Blog</a>
         <a class="transition-colors hover:text-foreground" href="/login">Login</a>
       </nav>
     </header>

@@ -37,12 +37,12 @@
       .blog-back:hover { color: var(--accent-bright); }
       .blog-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--muted); font-size: 14px; margin: 14px 0 22px; }
       .blog-meta .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--border); }
-      .blog-tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--accent-bright); }
-      .blog-title { font-size: clamp(30px, 5vw, 46px); line-height: 1.1; letter-spacing: -1px; margin: 8px 0 0; }
+      .blog-tag { font-size: 12px; font-weight: 700; letter-spacing:0; text-transform: uppercase; color: var(--accent-bright); }
+      .blog-title { font-size:44px; line-height: 1.1; letter-spacing:0; margin: 8px 0 0; }
       .blog-hero-img { width: 100%; height: auto; border-radius: 16px; border: 1px solid var(--border); margin: 26px 0 8px; display: block; }
       .blog-lede { font-size: 20px; line-height: 1.55; color: var(--muted); margin: 28px 0; }
       .blog-body { font-size: 17px; line-height: 1.75; }
-      .blog-body h2 { font-size: 26px; letter-spacing: -0.5px; margin: 48px 0 6px; }
+      .blog-body h2 { font-size: 26px; letter-spacing:0; margin: 48px 0 6px; }
       .blog-body h2 .num { color: var(--accent-bright); font-variant-numeric: tabular-nums; margin-right: 10px; }
       .blog-body h3 { font-size: 18px; margin: 28px 0 4px; }
       .blog-body p { margin: 14px 0; color: var(--foreground); }
@@ -75,7 +75,7 @@
           <a href="/network">Network</a>
           <a href="/docs/">Docs</a>
           <a href="/status">Status</a>
-          <a href="/blogs">Blog</a>
+          <a href="/blog">Blog</a>
           <a href="/changelog">Changelog</a>
           <a href="/chat">Chat</a>
           <a class="nav-cta" href="/signup">Sign Up / Log In</a>
@@ -96,7 +96,7 @@
     </header>
 
     <main class="blog-shell">
-      <a class="blog-back" href="/blogs">&larr; All posts</a>
+      <a class="blog-back" href="/blog">&larr; All posts</a>
 
       <span class="blog-tag">Announcing</span>
       <h1 class="blog-title">Introducing ForkMesh: code that can't be taken down</h1>

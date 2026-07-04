@@ -21,7 +21,7 @@ import static_routes  # noqa: E402
 CANONICAL_PAGE_ROUTES = {
     "/": "/index.html",
     "/dashboard": "/dashboard/index.html",
-    "/blogs": "/blog.html",
+    "/blog": "/blog.html",
     "/login": "/login.html",
     "/signup": "/signup.html",
     "/forgot-password": "/forgot-password.html",
@@ -73,9 +73,11 @@ NON_ROUTED_HTML_ASSETS = {
     # public routes are canonicalized to the index-backed routes above.
     "dashboard.html",
     "docs.html",
-    # Legacy blog pages are superseded by /blogs.
-    "blog/index.html",
-    "blog/introducing-forkmesh/index.html",
+} | {
+    # Blog posts live under /blog/<slug>/ and are served as static
+    # directory indexes, while /blog itself is the canonical listing route.
+    path.relative_to(PUBLIC).as_posix()
+    for path in (PUBLIC / "blog").glob("*/index.html")
 }
 
 
@@ -136,8 +138,6 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
         "404.html",
         "about.html",
         "blog.html",
-        "blog/index.html",
-        "blog/introducing-forkmesh/index.html",
         "careers.html",
         "changelog.html",
         "desktop.html",
@@ -172,7 +172,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
 def test_worker_does_not_own_static_page_alias_routes():
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
 
-    for route in ("/blog", "/blog.html", "/docs", "/docs.html", "/network", "/network.html"):
+    for route in ("/blog", "/blogs", "/blog.html", "/docs", "/docs.html", "/network", "/network.html"):
         if route.endswith(".html"):
             assert route in run_worker_first
         else:

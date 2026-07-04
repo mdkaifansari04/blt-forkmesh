@@ -31,7 +31,7 @@
       title: "Learn",
       links: [
         { href: "/#faq", label: "FAQ" },
-        { href: "/blogs", label: "Blogs" },
+        { href: "/blog", label: "Blog" },
         { href: "/docs", label: "Documentation" },
         { href: "/security-report", label: "Security report" },
       ],
