@@ -85,6 +85,7 @@
             }).join("")}
           </div>
         </div>
+        ${canSeeAgentsTab ? renderRepoAgentNewComposer() : ""}
 	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
