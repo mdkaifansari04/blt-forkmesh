@@ -213,15 +213,42 @@ foreach(_moc ${FORKMESH_MOC_SOURCES})
     list(APPEND FORKMESH_MOC_DIRS "${_moc_dir}")
 endforeach()
 list(REMOVE_DUPLICATES FORKMESH_MOC_DIRS)
-# qt_wrap_cpp() above marks each header it moc's with the source property
-# SKIP_AUTOMOC ON (see Qt6CoreMacros.cmake). Source file properties are
-# directory-scoped, not target-scoped, so that also suppresses AUTOMOC for
-# src/BackoffNetworkAccessManager.h when the test targets below list it as a
-# plain source: its Q_OBJECT vtable never got moc'd there, leaving the
-# forkmesh-tests link with an undefined vtable reference. The forkmesh target
+# qt_wrap_cpp() above marks each INPUT header it moc's with the source
+# property SKIP_AUTOMOC ON (see Qt6CoreMacros.cmake) -- note FORKMESH_MOC_SOURCES
+# itself now holds the *generated* moc_*.cpp outputs, not these headers. Source
+# file properties are directory-scoped, not target-scoped, so that also
+# suppresses AUTOMOC for every one of these headers when an AUTOMOC-enabled
+# test target below lists it as a plain source (every one of them is also
+# part of FORKMESH_APP_SOURCES) -- their Q_OBJECT vtables/staticMetaObjects
+# never get moc'd there, leaving forkmesh-tests/forkmesh-window-tests/
+# forkmesh-perf-tests with undefined references at link time (caught building
+# forkmesh-perf-tests for issue #357 from a clean configure --
+# forkmesh-window-tests has the exact same latent bug). The forkmesh target
 # doesn't need SKIP_AUTOMOC (its whole-target AUTOMOC is already OFF), so it's
 # safe to reset it here for the still-AUTOMOC-enabled test targets.
-set_source_files_properties(src/BackoffNetworkAccessManager.h PROPERTIES SKIP_AUTOMOC OFF)
+set_source_files_properties(
+    src/ActionRunner.h
+    src/AgentRunner.h
+    src/BackoffNetworkAccessManager.h
+    src/ChatBackend.h
+    src/ClaudeIdeBridge.h
+    src/ClaudeStreamSession.h
+    src/ClaudeTranscriptView.h
+    src/HeadlessConsole.h
+    src/KebabHeaderView.h
+    src/MainWindow.h
+    src/MarkupCanvas.h
+    src/MessageRow.h
+    src/RepoHost.h
+    src/ScreenCaptureOverlay.h
+    src/ScreenDrawOverlay.h
+    src/ScreenshotMarkupWindow.h
+    src/ScrollJumpButtons.h
+    src/ServerNode.h
+    src/StallWatchdog.h
+    src/TerminalWidget.h
+    PROPERTIES SKIP_AUTOMOC OFF SKIP_AUTOGEN OFF
+)
 target_include_directories(forkmesh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
@@ -357,14 +384,9 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
     )
     target_link_libraries(forkmesh-e2e PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
-    # Feeding RepoHost.h to qt_wrap_cpp for the `forkmesh` target above marks it
-    # SKIP_AUTOMOC (a directory-scoped source property), which would otherwise
-    # stop AUTOMOC from generating RepoHost's moc for the AUTOMOC-driven test
-    # targets — leaving its vtable/signals unresolved at link time. Clear the
-    # skip so the test targets moc it normally (the app itself has AUTOMOC OFF
-    # and moc's it explicitly, so it is unaffected).
-    set_source_files_properties(src/RepoHost.h PROPERTIES
-        SKIP_AUTOMOC OFF SKIP_AUTOGEN OFF)
+    # RepoHost.h's SKIP_AUTOMOC is already cleared for every AUTOMOC-enabled
+    # test target above (it's one of the qt_wrap_cpp() inputs reset alongside
+    # MainWindow.h/ChatBackend.h/etc.).
     if(APPLE)
         set_target_properties(forkmesh-e2e PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -384,7 +406,27 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
-    # Register both suites with CTest so they run independently of the app:
+    # A third suite (issue #357): performance budgets for startup and
+    # repo-detail tab switches. Kept in its own binary rather than folded into
+    # forkmesh-window-tests, which is known-flaky in some sandboxed
+    # environments — a perf gate must be individually skippable
+    # (FORKMESH_SKIP_PERF_TESTS=1) without disabling window-tests' functional
+    # coverage.
+    qt_add_executable(forkmesh-perf-tests
+        tests/test_perf_budgets.cpp
+        ${FORKMESH_APP_SOURCES}
+    )
+    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(forkmesh-perf-tests PRIVATE util Qt6::DBus)
+        target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
+    endif()
+    target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    if(APPLE)
+        set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # Register all suites with CTest so they run independently of the app:
     #   ctest --test-dir build            (runs the already-built binaries)
     #   cmake --build build --target check (builds the tests, then runs them)
     # The headless smoke tests need an offscreen Qt platform.
@@ -392,8 +434,9 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
+    add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
-    set_tests_properties(forkmesh-tests forkmesh-window-tests PROPERTIES
+    set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
@@ -403,5 +446,5 @@ if(FORKMESH_BUILD_TESTS)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests
-        forkmesh-e2e forkmesh-e2e-stub-agent)
+        forkmesh-perf-tests forkmesh-e2e forkmesh-e2e-stub-agent)
 endif()

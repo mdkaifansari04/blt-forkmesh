@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 358
 title: git push: receive-pack over the relay tunnel with signed-identity auth
-status: open
+status: closed
 labels: [feature, security]
 milestone: v1
 priority: 20

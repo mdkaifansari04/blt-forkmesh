@@ -76,7 +76,7 @@ def test_upload_pack_reply_streams_instead_of_buffering():
     # info/refs advertisement may still buffer: the integrity gate has to
     # hash it whole before releasing it.
     src = _method_source("ForkMeshHost", "_git")
-    assert "!= 'git-info-refs'" in src
+    assert "op == 'git-upload-pack'" in src
     assert "_stream_request" in src
     # The buffered leg is unreachable for upload-pack: it's the info-refs tail.
     assert "advertised_refs_canonical" in src
@@ -108,6 +108,68 @@ def test_host_disconnect_aborts_inflight_streams():
     src = _method_source("ForkMeshHost", "_host_disconnected")
     assert "git_streams" in src
     assert "abort" in src
+
+
+def test_push_route_is_owner_key_gated_and_never_hits_a_mirror():
+    # git push (issue #358): the router gates receive-pack on an owner-key-signed
+    # HTTP Basic token and dispatches straight to the OWNER's host DO — never the
+    # clone mirror fallback (a mirror is read-only; a push must reach the working
+    # copy holder). Both the info/refs advertisement and the POST route here.
+    entry = ENTRY.read_text(encoding="utf-8")
+    assert "GIT_RECEIVE_RE" in entry
+    push = _method_source("Default", "_git_push")
+    assert "_basic_auth_push_ok" in push
+    assert "_basic_auth_challenge" in push
+    assert "idFromName(f'host:{owner}/{repo}')" in push
+    # No mirror fallback in the push path.
+    assert "_sticky_clone_fallback" not in push
+    assert "_forward_to_node" not in push
+
+
+def test_push_token_binds_owner_repo_with_a_distinct_prefix():
+    # verify_push_token mirrors the host/view tokens (fresh ts + ed25519 over an
+    # explicit canonical), but a distinct prefix so a host or view token can't be
+    # replayed as a push token. Only the owner account's key may push for now.
+    entry = ENTRY.read_text(encoding="utf-8")
+    assert '"forkmesh-push-v1\\n"' in entry or "'forkmesh-push-v1\\n'" in entry
+    tree = ast.parse(entry, filename=str(ENTRY))
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "verify_push_token")
+    body = ast.unparse(fn)
+    assert "ed25519_verify" in body
+    assert "_ts_ok" in body
+    assert "_owner_pubkey" in body
+
+
+def test_receive_pack_request_body_streams_and_is_never_buffered():
+    # The pushed pack (client->host, potentially hundreds of MB) must stream
+    # straight through the tunnel to the host's receive-pack stdin. Buffering a
+    # pack in the isolate is what OOM'd the DO once — so the push POST path must
+    # NOT read request.bytes()/decode_git_request_body, and must pump the body
+    # via a reader as git-req-chunk messages.
+    recv = _method_source("ForkMeshHost", "_stream_receive")
+    assert "_pump_request_body" in recv
+    assert "TransformStream.new()" in recv
+    assert "_stream_watchdog" in recv
+    pump = _method_source("ForkMeshHost", "_pump_request_body")
+    assert "getReader()" in pump
+    assert "git-req-chunk" in pump
+    assert "git-req-end" in pump
+    assert "GIT_REQ_CHUNK" in pump
+    # The DO's receive-pack POST leg forwards to _git without buffering the body.
+    fetch = _method_source("ForkMeshHost", "fetch")
+    assert "'/git-receive-pack'" in fetch
+    assert "self._git(request, 'git-receive-pack')" in fetch
+
+
+def test_git_advertises_receive_pack_without_the_clone_integrity_gate():
+    # The receive-pack ref advertisement uses its own service string and content
+    # type, and skips the clone integrity pin (a push targets the owner's source,
+    # not a mirror — the pin is re-attested AFTER the push lands).
+    src = _method_source("ForkMeshHost", "_git")
+    assert "git-receive-info-refs" in src
+    assert "x-%s-advertisement" in src
+    assert "if op == 'git-info-refs':" in src  # pin gate scoped to upload-pack
 
 
 def test_blobs_batch_endpoint_reads_many_files_in_one_request():
