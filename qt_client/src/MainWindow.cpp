@@ -383,9 +383,6 @@ void MainWindow::applyTheme()
     for (QWidget *widget : QApplication::topLevelWidgets()) {
         if (auto *window = qobject_cast<MainWindow *>(widget)) {
             window->refreshThemedIcons();
-            // The floating agent strip carries its own inline stylesheet (not the
-            // global sheet), so re-point it at the new theme's opaque surface.
-            window->styleAgentSpinnerOverlay();
             // The always-on footer log line is inline-styled too — repaint it for
             // the new theme so its text/border/canvas track the switch.
             window->styleFooterUpdateLog();
