@@ -409,8 +409,9 @@ public:
     // Flags this process as a no-GUI (headless / offscreen) node. main() sets it
     // right after construction so startSession can auto-register a fresh mirror's
     // account — the desktop opens a "Join ForkMesh" dialog for that, which a
-    // headless VM has no way to click.
-    void setHeadlessMode(bool headless) { m_headless = headless; }
+    // headless VM has no way to click. Also clears any persisted parked-offline
+    // state, since a headless node has no GUI toggle to bring itself back online.
+    void setHeadlessMode(bool headless);
     // Kick the periodic mirror sync + owned-inbox poll right now.
     void headlessSyncNow();
     // Pull the latest version from the live install mirror, rebuild and relaunch
@@ -469,6 +470,15 @@ private:
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
     bool m_headless = false;               // no-GUI node (offscreen); see setHeadlessMode
+    // A headless node has no GUI and no other periodic hook that retries
+    // registerNodeAccountSilently() — startSession() only calls it once, at
+    // first boot. If the relay is briefly unreachable right then (common on a
+    // fresh VPS: DNS/network still settling), the node was previously stranded
+    // unregistered forever, mirroring + chatting but never appearing on the
+    // website (adhoc #219). This timer retries with backoff until it succeeds.
+    QTimer *m_headlessRegisterRetryTimer = nullptr;
+    int m_headlessRegisterAttempt = 0;
+    void scheduleHeadlessRegisterRetry(const QString &accountName);
     // True first run only (no saved node name yet). Gates the "we're syncing" toast
     // + auto-open in ensureFlagshipRepo() so a fresh install lands on real content
     // without manual setup, without re-interrupting an existing user (adhoc #113).
@@ -1244,6 +1254,17 @@ private:
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
+    // Ask the given session's agent to merge base and resolve conflicts, then
+    // resume it — the action behind the "Fix conflicts with agent" button.
+    // Shared by that button (selected session) and the auto-fix setting below
+    // (any idle session, not necessarily the selected one).
+    void fixAgentConflictsWithAgent(int sessionId);
+    // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
+    // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
+    // De-duped per session so a conflict that persists across a failed retry
+    // isn't retried forever; the guard clears once the conflict is gone.
+    void maybeAutoFixAgentConflict(const AgentSession &session,
+                                   const AgentDiffStat &stat);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
@@ -2560,7 +2581,6 @@ private:
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
-    QLabel *m_agentsNavBadge = nullptr; // count badge over the agents nav button
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
@@ -2603,10 +2623,11 @@ private:
     // git/cmake output, and phase headers so the user sees exactly what's running.
     QDialog *m_updateLogDialog = nullptr;
     QPlainTextEdit *m_updateLog = nullptr;
-    // Single-line live restart/update log pinned to the bottom of the window. Shows
-    // the newest log line while an update runs; click it to open the full window.
-    QPushButton *m_footerUpdateLog = nullptr;
-    QString m_footerUpdateLineRaw; // full text behind the elided footer line
+    // Scrollable live log pinned to the bottom of the window: shows as many recent
+    // lines as fit tall, with a scrollbar so earlier history can be scrolled back
+    // to. Streams every logSystem()/appendUpdateLog() line, including the
+    // session-start/session-end/rebuild markers.
+    QPlainTextEdit *m_footerUpdateLog = nullptr;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
     QString m_updateAsUser;
@@ -3292,6 +3313,7 @@ private:
         bool isDir = false;
         qint64 size = 0;     // blob bytes (recursive sum for directories)
         qint64 loc = 0;      // lines of code (recursive sum for directories)
+        qint64 fileCount = 0; // number of files (recursive) — shown for directories
         qint64 commitTs = 0; // last commit unix time that touched this entry
         QString subject;     // last commit subject
         QString whenText;    // relative "x ago"
@@ -3799,6 +3821,10 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
+    // Prevents an unresolved conflict from re-queuing the agent on every refresh;
+    // cleared once the session's AgentDiffStat stops reporting conflicted.
+    QSet<int> m_agentAutoFixAttempted;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.

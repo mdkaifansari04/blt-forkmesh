@@ -3,6 +3,9 @@
 
 from pathlib import Path
 
+from _dashboard_shell import assembled_dashboard
+from _dashboard_bundle import assembled_dashboard_js
+
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 AUTH_PAGES = (
@@ -12,6 +15,10 @@ AUTH_PAGES = (
 
 
 def _read(page: Path) -> str:
+    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
+    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py).
+    if page.name == "dashboard.js":
+        return assembled_dashboard_js()
     return page.read_text(encoding="utf-8")
 
 
@@ -118,7 +125,8 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
 
 
 def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
-    dashboard = _read(PUBLIC / "dashboard.html")
+    # Assert against the composed dashboard shell (see _dashboard_shell).
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "data-profile-settings-button" in dashboard
@@ -132,7 +140,7 @@ def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
 
 
 def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
-    dashboard = _read(PUBLIC / "dashboard.html")
+    dashboard = assembled_dashboard()
 
     assert 'data-view="profile"' in dashboard
     assert "data-profile-page-avatar" in dashboard
