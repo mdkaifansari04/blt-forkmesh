@@ -120,7 +120,9 @@ def test_multiple_working_copy_holders_union_their_pins():
 
 
 def _entry_text():
-    return ENTRY.read_text(encoding="utf-8")
+    # schema DDL now lives in schema.py; concatenate it for the source checks.
+    return (ENTRY.read_text(encoding="utf-8") + "\n"
+            + (ENTRY.parent / "schema.py").read_text(encoding="utf-8"))
 
 
 def _method_source(class_name, method_name):

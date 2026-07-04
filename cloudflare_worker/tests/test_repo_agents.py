@@ -25,7 +25,13 @@ from urllib.parse import parse_qs, urlparse
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# clean_string was extracted from entry.py into catalog.py; parse both sources
+# so the AST loader below still finds it.
+CATALOG = ENTRY.parent / "catalog.py"
+SCHEMA = ENTRY.parent / "schema.py"
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encoding="utf-8")
+    + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
