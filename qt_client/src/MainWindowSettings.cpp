@@ -601,6 +601,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoAgentOnStallSetting, enabled);
     });
 
+    // When an idle agent's branch would conflict with base — the same check
+    // that shows the "Fix conflicts with agent" button — automatically ask the
+    // agent to merge and resolve it instead of waiting for a manual click.
+    // On by default.
+    auto *autoFixConflictsCheck =
+        new QCheckBox("Auto-fix agent branch conflicts");
+    autoFixConflictsCheck->setChecked(
+        QSettings().value(kAutoFixAgentConflictsSetting, true).toBool());
+    autoFixConflictsCheck->setToolTip(
+        "When an idle agent's branch conflicts with the base branch, "
+        "automatically ask the agent to merge and resolve the conflicts "
+        "(the same action as the \"Fix conflicts with agent\" button). "
+        "On by default; only attempted once per detected conflict.");
+    connect(autoFixConflictsCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -1206,6 +1223,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
+    agentsCol->addWidget(autoFixConflictsCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(usageLabel);
     agentsCol->addWidget(usageHint);
@@ -2267,10 +2285,13 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         const char *badge;
     };
     static const Rule rules[] = {
-        // App start/stop markers — keep above "fork" so "ForkMesh" in the
-        // start line doesn't get tagged FORK.
+        // App start/stop/rebuild-restart markers — keep above "fork" so
+        // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
         {"session ended", "#f2cc60", "SESSION"},
+        {"quick update started", "#f2cc60", "SESSION"},
+        {"rebuild & restart started", "#f2cc60", "SESSION"},
+        {"restarting now", "#f2cc60", "SESSION"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -2541,6 +2562,11 @@ static constexpr int kToastMaxChars = 100;
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
 
+// Cap on how many error toasts can back up in m_topMessageQueue; a runaway
+// retry loop firing errors faster than they can be read shouldn't grow this
+// without bound. The oldest queued message is dropped once the cap is hit.
+static constexpr int kToastQueueLimit = 20;
+
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
 // A long message shows as an elided one-liner so it can never widen the window;
 // expanding it wraps the full text so the toast grows in place (no modal).
@@ -2625,10 +2651,6 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
-    // Re-elide the footer restart-log line for the new width.
-    if (m_footerUpdateLog && m_footerUpdateLog->isVisible() &&
-        !m_footerUpdateLineRaw.isEmpty())
-        setFooterUpdateLine(m_footerUpdateLineRaw);
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
@@ -2648,6 +2670,18 @@ void MainWindow::flashMessage(const QString &text, bool error,
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty()) {
         dismissTopMessage();
+        return;
+    }
+    // A second error arriving while one is already counting down would otherwise
+    // instantly replace it, so a burst of quick failures (retries, batched
+    // errors) could flash by unread. Queue it instead; advanceTopMessageQueue
+    // shows it with its own full countdown once the current toast finishes.
+    if (error && m_topMessage->isVisible() && m_topMessageError &&
+        m_topMessageTimer && m_topMessageTimer->isActive()) {
+        m_topMessageQueue.append(trimmed);
+        while (m_topMessageQueue.size() > kToastQueueLimit)
+            m_topMessageQueue.removeFirst();
+        renderTopMessageCountdown(); // repaint the "(+N more)" suffix
         return;
     }
     // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
@@ -2673,7 +2707,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
             if (!m_topMessage)
                 return;
             if (--m_topMessageSecondsLeft <= 0) {
-                dismissTopMessage();
+                advanceTopMessageQueue();
                 return;
             }
             renderTopMessageCountdown();
@@ -2716,16 +2750,25 @@ void MainWindow::renderTopMessageCountdown()
     const QString suffix =
         QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
             .arg(m_topMessageSecondsLeft);
-    m_topMessage->setText(m_topMessageBaseHtml + suffix);
+    // Tell the user more errors are waiting behind this one, so a fading toast
+    // doesn't feel like it silently dropped the rest of a quick burst.
+    QString queuedSuffix;
+    if (m_topMessageError && !m_topMessageQueue.isEmpty())
+        queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
+                           .arg(m_topMessageQueue.size());
+    m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
 }
 
-// Hide the top toast and its error affordances (Expand / Copy / dismiss).
+// Hide the top toast and its error affordances (Expand / Copy / dismiss). This
+// is a hard reset: any errors still waiting behind the current one are dropped
+// too (their full text remains in the network log regardless).
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
     m_pinWarningActive = false;
     m_topMessageExpanded = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
+    m_topMessageQueue.clear();
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessage) {
@@ -2740,6 +2783,19 @@ void MainWindow::dismissTopMessage()
         m_topMessageCopy->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
+}
+
+// Show the next queued error (its own full countdown, per flashMessage), or
+// fully dismiss the toast if nothing is waiting. Called when the current
+// toast's countdown runs out or the user dismisses it early.
+void MainWindow::advanceTopMessageQueue()
+{
+    if (m_topMessageQueue.isEmpty()) {
+        dismissTopMessage();
+        return;
+    }
+    const QString next = m_topMessageQueue.takeFirst();
+    flashMessage(next, /*error=*/true);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

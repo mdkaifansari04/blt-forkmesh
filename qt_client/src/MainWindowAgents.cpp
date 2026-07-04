@@ -582,22 +582,7 @@ QWidget *MainWindow::buildAgentsTab()
     setOcticon(m_agentFixConflictsButton, "git-merge", 14);
     m_agentFixConflictsButton->hide();
     connect(m_agentFixConflictsButton, &QPushButton::clicked, this, [this] {
-        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (!s)
-            return;
-        const QString base = agentMergeBase(*s);
-        const QString prompt =
-            QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
-                           "Make sure the build and tests still pass, then commit.")
-                .arg(base);
-        const int sid = s->id;
-        m_pendingSteerMessage.insert(sid, prompt);
-        if (s->provider == QLatin1String("claude-code"))
-            applyTranscriptEvent(
-                sid,
-                QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
-                            {QStringLiteral("text"), prompt}});
-        continueSelectedAgentSession();
+        fixAgentConflictsWithAgent(m_selectedAgentSessionId);
     });
 
     m_agentDeleteButton = new QPushButton("Delete");
@@ -2397,6 +2382,15 @@ void MainWindow::refreshAgentTable()
         if (passesFilter(session))
             agentDiffStat(session, agentGitDir, agentBase);
 
+    // adhoc #210: auto-fix runs over every session in this repo, not just the
+    // ones the search box currently shows, so a query in the search field can't
+    // hide a conflict from the auto-fix setting. Cache-hot for rows the warm-up
+    // above already covered; only a search-filtered-out row costs an extra shell.
+    for (const AgentSession &session : sessions)
+        if (session.owner == owner && session.name == name)
+            maybeAutoFixAgentConflict(
+                session, agentDiffStat(session, agentGitDir, agentBase));
+
     // The rows this repo + search filter will show, in session order (the table's
     // own sort reorders them afterwards). Also count how many merged sessions the
     // "Delete all merged" batch could act on — across the whole repo, before the
@@ -3918,6 +3912,56 @@ void MainWindow::continueAgentSession(int sessionId)
     processAgentQueue();
 }
 
+// Ask sessionId's agent to merge base and resolve conflicts, then resume it.
+// Used both by the "Fix conflicts with agent" button (selected session) and by
+// maybeAutoFixAgentConflict() (any idle session whose branch conflicts with
+// base, when the auto-fix setting is on).
+void MainWindow::fixAgentConflictsWithAgent(int sessionId)
+{
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s)
+        return;
+    const QString base = agentMergeBase(*s);
+    const QString prompt =
+        QStringLiteral("Merge `%1` into your branch and resolve all merge conflicts. "
+                       "Make sure the build and tests still pass, then commit.")
+            .arg(base);
+    const int sid = s->id;
+    m_pendingSteerMessage.insert(sid, prompt);
+    if (s->provider == QLatin1String("claude-code"))
+        applyTranscriptEvent(
+            sid,
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
+                        {QStringLiteral("text"), prompt}});
+    continueAgentSession(sid);
+}
+
+// adhoc #210: with kAutoFixAgentConflictsSetting on (the default), an idle
+// session whose branch would conflict with base gets the same treatment as a
+// manual click on "Fix conflicts with agent" — no need to notice and click it
+// by hand. m_agentAutoFixAttempted stops a conflict that survives a retry (or
+// a session sitting Failed/Stopped) from re-queuing the agent on every
+// refreshAgentTable(); it's cleared below once the conflict is actually gone,
+// so a later, genuinely new conflict on the same session can auto-fix again.
+void MainWindow::maybeAutoFixAgentConflict(const AgentSession &session,
+                                           const AgentDiffStat &stat)
+{
+    if (!stat.conflicted) {
+        m_agentAutoFixAttempted.remove(session.id);
+        return;
+    }
+    if (session.status == AgentStatus::Running ||
+        session.status == AgentStatus::Queued ||
+        session.status == AgentStatus::Waiting)
+        return; // already active; conflict will be re-checked once it finishes
+    if (m_agentAutoFixAttempted.contains(session.id))
+        return;
+    if (!QSettings().value(kAutoFixAgentConflictsSetting, true).toBool())
+        return;
+    m_agentAutoFixAttempted.insert(session.id);
+    fixAgentConflictsWithAgent(session.id);
+}
+
 void MainWindow::deleteSelectedAgentSession()
 {
     // External (watch-only) rows aren't in the store — Delete kills the real CLI
@@ -4063,6 +4107,9 @@ void MainWindow::switchToAgentsTab(int sessionId)
         m_repoDetailTabs->button(3)->setChecked(true);
     if (m_repoDetailStack)
         m_repoDetailStack->setCurrentIndex(3);
+    // Mark the Agents nav button as selected (adhoc #201).
+    if (m_agentsNavButton)
+        m_agentsNavButton->setChecked(true);
     reloadAgents();
     showAgentSession(sessionId);
 }
@@ -4848,13 +4895,25 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             appendAgentRawLog(line + QStringLiteral("\n\n"));
     });
     connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
+        // The CLI process is meant to stay alive across turns — a genuinely
+        // finished turn is what the `result` event handler above marks Success
+        // (or Failed on an error result). Landing here with the session still
+        // Running/Waiting means the process died without ever sending one (a
+        // crash, or an app-restart resume whose `--resume` id no longer lined
+        // up), not that the task completed. Stamping Success on that was
+        // reported as "an agent I restarted mid-task shows as done" — re-queue
+        // it instead so it stays active and gets another resume attempt,
+        // mirroring initAgents()'s restart recovery (issue #242) rather than
+        // abandoning it with a false result.
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                as->status = AgentStatus::Success;
-                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                as->status = AgentStatus::Queued;
+                as->lastError.clear();
                 m_agentStore->saveSession(*as);
                 scheduleAgentSessionsPush(); // adhoc #182
+                if (!m_agentQueue.contains(sid))
+                    m_agentQueue.append(sid);
             }
         }
         maybeCreatePullForStreamSession(sid);
@@ -4867,6 +4926,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
+        processAgentQueue(); // pick the re-queued session back up
     });
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()
@@ -6797,7 +6857,8 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
     // the run progresses — but only while that tab is on screen, since rebuilding
     // it probes git for every branch (ahead/behind + conflicts).
     if (m_branchesTable && m_repoDetailStack &&
-        m_repoDetailStack->currentIndex() == m_branchesTabIndex)
+        m_repoDetailStack->currentIndex() == 0 && m_overviewBodyStack &&
+        m_overviewBodyStack->currentIndex() == 2)
         loadBranchesPanel();
 }
 
