@@ -1391,6 +1391,12 @@ private:
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
+    // A freshly created run makes any earlier not-yet-finished run of the same
+    // workflow (same owner/name/workflowPath) moot: it was going to build an
+    // older commit anyway. Aborts those (Running via the runner, Queued/
+    // AwaitingApproval by dropping them) and logs why, so the queue never
+    // wastes time on superseded work.
+    void cancelSupersededRuns(const ActionRun &newRun);
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
                            bool warning); // tray alert gated by the run-alert setting

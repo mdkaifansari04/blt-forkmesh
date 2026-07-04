@@ -384,6 +384,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 
         const ActionRun created = m_actionStore->createRun(run);
         m_actionRuns.prepend(created);
+        cancelSupersededRuns(created);
         if (approved)
             m_actionQueue.append(created.id);
         else
@@ -503,6 +504,39 @@ void MainWindow::processActionQueue()
         m_actionRunner->start(snapshot, wf, mirror, workTree,
                               ActionStore::variables());
         return; // one run at a time; finished() drives the next
+    }
+}
+
+void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
+{
+    for (ActionRun &run : m_actionRuns) {
+        if (run.id == newRun.id || run.owner != newRun.owner ||
+            run.name != newRun.name || run.workflowPath != newRun.workflowPath)
+            continue;
+        if (run.status == ActionStatus::Running) {
+            if (m_actionRunner && m_actionRunner->currentRunId() == run.id) {
+                logSystem(QStringLiteral(
+                              "Actions: aborting \"%1\" for %2/%3 @ %4 \xE2\x80\x94 "
+                              "superseded by a newer run of the same workflow.")
+                              .arg(run.workflowName, run.owner, run.name,
+                                   run.commit.left(8)));
+                m_actionRunner->stop(); // records Cancelled once torn down
+            }
+        } else if (run.status == ActionStatus::Queued ||
+                   run.status == ActionStatus::AwaitingApproval) {
+            const bool wasPending = run.status == ActionStatus::AwaitingApproval;
+            m_actionQueue.removeAll(run.id);
+            run.status = ActionStatus::Cancelled;
+            run.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_actionStore->saveRun(run);
+            logSystem(QStringLiteral(
+                          "Actions: cancelled %1 \"%2\" for %3/%4 @ %5 \xE2\x80\x94 "
+                          "superseded by a newer run of the same workflow.")
+                          .arg(wasPending ? QStringLiteral("pending")
+                                          : QStringLiteral("queued"),
+                               run.workflowName, run.owner, run.name,
+                               run.commit.left(8)));
+        }
     }
 }
 
@@ -1984,6 +2018,7 @@ void MainWindow::runSelectedWorkflowManually()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
     logSystem(QStringLiteral("Actions: manual %1 \"%2\" for %3/%4 on %5 @ %6")
@@ -2188,6 +2223,7 @@ void MainWindow::rerunSelectedRun()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
     logSystem(QStringLiteral("Actions: rerun %1 \"%2\" for %3/%4 @ %5")
