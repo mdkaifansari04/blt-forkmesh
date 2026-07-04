@@ -43,6 +43,9 @@ private:
     void detachStdin();          // stop reading stdin but keep the node running
     void shutdown(const QString &reason); // explicit stop: close + quit the loop
     void installSignalHandlers();
+    // Run the nightly end-to-end mesh-loop self-test (issue #352): the sibling
+    // `forkmesh-e2e` binary, streamed to this console. Used by the `e2e` command.
+    void runMeshLoopSelfTest();
 
     MainWindow *m_window;
     QCoreApplication *m_app;

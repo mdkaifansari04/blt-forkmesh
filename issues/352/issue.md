@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 352
 title: Nightly end-to-end mesh loop test: publish -> browse -> clone -> issue -> agent PR -> merge
-status: open
+status: closed
 labels: [infra]
 milestone: MVP launch
 priority: 3
