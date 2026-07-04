@@ -42,6 +42,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QCursor>
 #include <QCloseEvent>
 #include <QCryptographicHash>
 #include <QComboBox>

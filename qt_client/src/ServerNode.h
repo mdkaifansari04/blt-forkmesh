@@ -62,6 +62,8 @@ public:
     void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
+    void createPrivateChannel(const QString &channel) override;
+    void inviteToChannel(const QString &peerId, const QString &channel) override;
     void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
     void notifyMirrorUpdated(const QString &ownerName) override;
     void notifyCoveOpened(const QString &creatorKey, const QString &coveId,
@@ -111,6 +113,9 @@ private:
     // activity (every frame with a senderId refreshes the peer's last-seen time).
     void sendPresence();
     void sendHistoryTo(const QString &peerId);
+    // Replay just one channel's history to a peer (used when inviting them into a
+    // private room, whose history the general hello-reply deliberately withholds).
+    void sendChannelHistoryTo(const QString &peerId, const QString &channel);
     void loadKnownPeers();
     void persistKnownPeers() const;
     void handlePlain(const QJsonObject &message);
@@ -178,6 +183,10 @@ private:
     // #welcome is the shared greeting room every node joins; a brand-new node
     // posts a one-time hello there so the network sees who joined (issue #192).
     QStringList m_channels{"#general", "#welcome", "#random"};
+    // Invite-only channels (subset of m_channels). Never advertised in hello or
+    // "channel" broadcasts, and messages in them carry "private":true so a peer
+    // who wasn't invited drops them instead of auto-joining. See createPrivateChannel.
+    QSet<QString> m_privateChannels;
     QHash<QString, Peer> m_peers;
     QHash<QString, QList<QJsonObject>> m_channelHistory;
     QHash<QString, QString> m_messageConversation;

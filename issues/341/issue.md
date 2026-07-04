@@ -2,10 +2,10 @@
 schema: forkmesh-issue-v1
 number: 341
 title: setup posthog proxy
-status: open
+status: closed
 labels: []
 milestone: 
-priority: 0
+priority: 11
 progress: 0
 assignees: [newnewnode]
 createdAt: 1783089834
