@@ -1214,6 +1214,26 @@ void MainWindow::refreshIssuesRepoCombo()
             m_issuesRepoCombo->setCurrentIndex(restore);
     }
     blocker.unblock();
+    // Keep the agent-list compose row's repo picker (adhoc #234) in sync with
+    // the same repository list.
+    if (m_agentComposeRepo) {
+        const QVariant prev = m_agentComposeRepo->count()
+                                  ? m_agentComposeRepo->currentData()
+                                  : QVariant();
+        QSignalBlocker agentBlocker(m_agentComposeRepo);
+        m_agentComposeRepo->clear();
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const RepositoryRecord &repo = m_repositories.at(i);
+            if (repo.localPath.trimmed().isEmpty())
+                continue; // no checkout to run an agent in
+            m_agentComposeRepo->addItem(repo.owner + "/" + repo.name, i);
+        }
+        if (prev.isValid()) {
+            const int restore = m_agentComposeRepo->findData(prev);
+            if (restore >= 0)
+                m_agentComposeRepo->setCurrentIndex(restore);
+        }
+    }
     reloadIssues();
 }
 
@@ -6745,7 +6765,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         // the merged store below by open-event identity, since a freshly merged
         // web submission's real issue number isn't known until after the merge
         // (proposed number 0 gets reassigned inside applyRemoteEvent).
-        QList<QPair<IssueEvent, QString>> agentRequests;
+        struct AgentRequest {
+            IssueEvent event;
+            QString model;
+            QString provider; // empty = node default (adhoc #234)
+        };
+        QList<AgentRequest> agentRequests;
         for (const QJsonValue &value : pending) {
             const QJsonObject item = value.toObject();
             const int number = item.value("number").toInt();
@@ -6763,6 +6788,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                 meta.assignees << a.toString();
             meta.wantsAgent = metaObj.value("wantsAgent").toBool();
             meta.wantsAgentModel = metaObj.value("model").toString();
+            meta.wantsAgentProvider = metaObj.value("provider").toString();
             if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
                 ++merged;
                 const QString who =
@@ -6778,7 +6804,8 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                     lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
                     lastIssueNumber = number;
                     if (meta.wantsAgent)
-                        agentRequests << qMakePair(ev, meta.wantsAgentModel);
+                        agentRequests << AgentRequest{ev, meta.wantsAgentModel,
+                                                      meta.wantsAgentProvider};
                 }
             }
         }
@@ -6798,8 +6825,13 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (!agentRequests.isEmpty()) {
             const QList<Issue> mergedIssues = store.loadAll();
             for (const auto &request : std::as_const(agentRequests)) {
-                const IssueEvent &wanted = request.first;
-                const QString &wantedModel = request.second;
+                const IssueEvent &wanted = request.event;
+                const QString &wantedModel = request.model;
+                // The web submitter's provider choice (adhoc #234), falling back
+                // to this node's default when they left it unset.
+                const QString wantedProvider = request.provider.trimmed().isEmpty()
+                                                   ? defaultAgentProvider()
+                                                   : request.provider.trimmed();
                 for (const Issue &candidate : mergedIssues) {
                     if (candidate.isDeleted())
                         continue;
@@ -6830,7 +6862,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
                             }
                         }
                         if (!alreadyAssigned)
-                            startAgentForIssue(candidate, defaultAgentProvider(),
+                            startAgentForIssue(candidate, wantedProvider,
                                                /*createPr=*/true, /*quiet=*/true,
                                                wantedModel, &repo);
                         break;

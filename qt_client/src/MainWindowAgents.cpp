@@ -460,6 +460,45 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->setSpacing(8);
     listLayout->addLayout(headingRow);
 
+    // Compose row (adhoc #234): a prompt input at the very top of the session
+    // list so a new ad-hoc agent can be started from here, without dropping down
+    // to the footer quick-add bar. Repo picker + agent-provider dropdown + Start.
+    m_agentComposeRepo = new QComboBox;
+    m_agentComposeRepo->setToolTip("Repository the new agent runs in");
+    m_agentComposeRepo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_agentComposeProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_agentComposeProvider->addItem(QStringLiteral("OpenAI API"),
+                                    QStringLiteral("openai"));
+    m_agentComposeProvider->addItem(QStringLiteral("Claude API"),
+                                    QStringLiteral("claude-api"));
+    m_agentComposeProvider->addItem(QStringLiteral("Claude Code"),
+                                    QStringLiteral("claude-code"));
+    m_agentComposeProvider->setMaxVisibleItems(30);
+    m_agentComposeProvider->setToolTip("Agent provider for the new agent");
+    selectDefaultAgentProvider(m_agentComposeProvider);
+    m_agentComposePrompt = new QLineEdit;
+    m_agentComposePrompt->setObjectName("issueSearch");
+    m_agentComposePrompt->setClearButtonEnabled(true);
+    m_agentComposePrompt->setPlaceholderText(QString::fromUtf8(
+        "Describe a task to start a new agent\xE2\x80\xA6"));
+    connect(m_agentComposePrompt, &QLineEdit::returnPressed, this,
+            &MainWindow::startAgentFromComposer);
+    m_agentComposeButton = new QPushButton("Start agent");
+    m_agentComposeButton->setObjectName("primaryButton");
+    m_agentComposeButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_agentComposeButton, "rocket", 16);
+    connect(m_agentComposeButton, &QPushButton::clicked, this,
+            &MainWindow::startAgentFromComposer);
+
+    auto *agentComposeRow = new QHBoxLayout;
+    agentComposeRow->setContentsMargins(0, 0, 0, 0);
+    agentComposeRow->setSpacing(8);
+    agentComposeRow->addWidget(m_agentComposeRepo, 0);
+    agentComposeRow->addWidget(m_agentComposePrompt, 1);
+    agentComposeRow->addWidget(m_agentComposeProvider, 0);
+    agentComposeRow->addWidget(m_agentComposeButton, 0);
+    listLayout->addLayout(agentComposeRow);
+
     // Free-text filter over the session list (issue #82): type to narrow the
     // table to sessions whose issue number/title, agent, status or PR match.
     m_agentSearch = new QLineEdit;
@@ -3910,6 +3949,37 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         switchToAgentsTab(session.id);
     }
     return session.id;
+}
+
+// Compose row at the top of the session list (adhoc #234): start an ad-hoc
+// agent from the typed prompt in the picked repo with the chosen provider.
+void MainWindow::startAgentFromComposer()
+{
+    if (!m_agentComposePrompt || !m_agentComposeRepo || !m_agentComposeProvider)
+        return;
+    const QString prompt = m_agentComposePrompt->text().trimmed();
+    if (prompt.isEmpty()) {
+        flashMessage("Type a task first to start an agent.", true);
+        m_agentComposePrompt->setFocus();
+        return;
+    }
+    if (m_agentComposeRepo->currentIndex() < 0) {
+        flashMessage("Open a repository with a local checkout first.", true);
+        return;
+    }
+    bool ok = false;
+    const int repoIndex = m_agentComposeRepo->currentData().toInt(&ok);
+    if (!ok || repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
+    const QString provider = m_agentComposeProvider->currentData().toString();
+    // Claude Code honours the model saved by the footer/model chooser; the API
+    // providers fall back to their own default (empty).
+    const QString model = provider == QLatin1String("claude-code")
+                              ? QSettings().value(kClaudeCodeModelSetting).toString()
+                              : QString();
+    if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
+                               model) > 0)
+        m_agentComposePrompt->clear();
 }
 
 // Save a pasted image to a stable temp file (not auto-removed: it must outlive
