@@ -1231,10 +1231,17 @@ private:
     void persistLooperState();
     void maybeRestoreIssueLooper();
     void continueSelectedAgentSession();
+    // Same as continueSelectedAgentSession, but for an arbitrary session id —
+    // used to resume a session steered from the website (adhoc #182) without
+    // disturbing whatever session is currently selected in the UI.
+    void continueAgentSession(int sessionId);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
     void sendPromptToSelectedAgent(const QString &prompt);
+    // Same as sendPromptToSelectedAgent, but for an arbitrary session id
+    // (adhoc #182: the website can steer any of this node's agent sessions).
+    void sendPromptToAgentSession(int sessionId, const QString &prompt);
     void deleteSelectedAgentSession();
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
@@ -2188,6 +2195,25 @@ private:
     void updateIssueActionState();
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
+    // Website agent view (adhoc #182): the repo owner watches this node's
+    // Claude Code agent sessions and can steer a running one from the browser.
+    QUrl agentsApiUrl(const RepositoryRecord &repo) const;
+    // Push a full-replace snapshot of every owned/hosted repo's local agent
+    // sessions to the website. Called on a periodic timer and, debounced, right
+    // after a session's status changes.
+    void pushAgentSessionsSnapshot();
+    void pushAgentSessionsForRepo(RepositoryRecord repo, QList<AgentSession> sessions);
+    // Arms/re-arms a short debounce timer that calls pushAgentSessionsSnapshot()
+    // once it fires, so a burst of status flips coalesces into one request.
+    void scheduleAgentSessionsPush();
+    // Periodic drain of prompts the website owner queued for this node's agent
+    // sessions (steering a running one from the browser).
+    void drainAgentPrompts();
+    void drainAgentPromptsFor(RepositoryRecord repo);
+    // Deliver one queued website prompt to the matching session via
+    // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
+    // log + drop it if no local session with that id exists.
+    void deliverQueuedAgentPrompt(int sessionId, const QString &text);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
@@ -3707,6 +3733,12 @@ private:
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
     QPushButton *m_agentWtDeleteButton = nullptr; // worktree: delete worktree+branch
     QTimer *m_agentHourlyTimer = nullptr;        // refreshes spend + files hourly
+    // adhoc #182: push this node's agent sessions to the website + drain any
+    // steering prompts queued there. m_agentSyncDebounceTimer is a singleShot
+    // re-armed after a status flip so a burst of updates coalesces into one push.
+    QTimer *m_agentSyncPushTimer = nullptr;
+    QTimer *m_agentSyncDebounceTimer = nullptr;
+    QTimer *m_agentPromptDrainTimer = nullptr;
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.
