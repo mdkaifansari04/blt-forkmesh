@@ -5,7 +5,7 @@ title: move the issues into .forkmesh/issues/ and have that be the new locationn
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 27
 progress: 0
 assignees: []
 createdAt: 1782922688061
