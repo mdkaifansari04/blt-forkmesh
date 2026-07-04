@@ -3897,14 +3897,15 @@ async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
-    return {
+    is_admin = await _is_admin(env, name)
+    payload = {
         "ok": True,
         "nodeName": name,
         "email": rec.get("email", ""),
         "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
         "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, name),
+        "isAdmin": is_admin,
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),
@@ -3913,6 +3914,11 @@ async def _account_public_payload(env, rec):
         "owner": rec.get("owner", ""),
         "nodes": _owned_nodes(rec),
     }
+    if is_admin:
+        admin_path = _admin_path(env)
+        if admin_path:
+            payload["adminUrl"] = "/" + admin_path
+    return payload
 
 
 def _donation_expiry_fields(rec, now):
