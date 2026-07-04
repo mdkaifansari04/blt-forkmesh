@@ -996,6 +996,17 @@ void MainWindow::startSession()
     auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
+    // Fail over across every configured mainnode (issue #364): the active server
+    // is tried first, then the rest in order, so a dead or quota-limited mainnode
+    // no longer strands the client. ServerNode rotates through the list on each
+    // failed reconnect and heartbeats to whichever mainnode answers.
+    QList<QUrl> endpoints{url};
+    for (const ServerConfig &cfg : std::as_const(m_servers)) {
+        const QUrl endpoint(canonicalServerUrl(cfg.url));
+        if (endpoint.isValid() && !endpoints.contains(endpoint))
+            endpoints.append(endpoint);
+    }
+    server->setEndpoints(endpoints);
     attachBackend(server);
     if (!server->start())
         return;
