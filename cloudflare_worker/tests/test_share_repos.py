@@ -22,7 +22,11 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_HDR = QT_SRC / "MainWindow.h"
 
-ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
+# concatenate it so the schema source-contract assertions below still resolve.
+SCHEMA = ENTRY.parent / "schema.py"
+ENTRY_TEXT = (
+    ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
 QT_TEXT = "\n".join(
     p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
 )
