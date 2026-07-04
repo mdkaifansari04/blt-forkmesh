@@ -7613,6 +7613,13 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
     provider_in = clean_string(data.get("provider", ""), 40)
     if provider_in in ("claude-code", "claude-api", "openai"):
         item["provider"] = provider_in
+    # Optional agent-model choice (adhoc #276): lets the owner choose which
+    # Claude model the agent uses (e.g. "claude-opus-4-8", "claude-sonnet-4-6",
+    # "claude-haiku-4-5", "fable-5"). Only meaningful when starting a brand-new
+    # agent, and empty leaves the provider's own default in place.
+    model_in = clean_string(data.get("model", ""), 60)
+    if model_in:
+        item["model"] = model_in
     await d1_run(
         env,
         "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
