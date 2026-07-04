@@ -323,6 +323,9 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
+#appVersionLabel {
+    background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
+}
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
@@ -1436,6 +1439,9 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 
 /* --- Breadcrumb bar --- */
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
+#appVersionLabel {
+    background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
+}
 #globalSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 5px 8px; color: #1f2328;

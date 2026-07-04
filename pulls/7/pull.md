@@ -4,7 +4,7 @@ number: 7
 title: Agent: move the back and forward and search bar into the top top section of the app …
 base: main
 head: agent/adhoc-295-move-the-back-and-forward-and-search-bar-into-th
-status: open
+status: merged
 ts: 1783199561786
 author: 7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4
 authorName: newnewnode
