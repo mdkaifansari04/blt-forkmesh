@@ -2020,6 +2020,30 @@ async def status_history(env):
             env, "SELECT ts FROM host_presence WHERE repo_bi = ?", mainnode_bi,
         )
         last_ts = int(host_row["ts"]) if host_row else None
+
+        # Regression (adhoc #189): there is no reserved "mainnode" owner
+        # account — "mainnode/forkmesh" is just the fixed path the flagship
+        # chat room happens to use (FLAGSHIP_ROOM_KEY), not a real repo
+        # identity any desktop host ever registers under, so the check above
+        # never sees a heartbeat even with a live self-hosted instance. Fold
+        # in the real signal too: repositories.key_bi is computed the same
+        # way as host_presence.repo_bi (blind_index of "owner/name"), so join
+        # the two directly to find whichever real owner is actually hosting a
+        # repo named "forkmesh".
+        repo_rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
+        presence_rows = await d1_all(
+            env, "SELECT repo_bi, ts FROM host_presence")
+        presence = {r["repo_bi"]: int(r["ts"]) for r in presence_rows}
+        for row in repo_rows:
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
+                continue
+            if _is_blocked_catalog_identity(
+                    env, rec.get("owner"), rec.get("name")):
+                continue
+            ts = presence.get(row.get("key_bi"))
+            if ts is not None and (last_ts is None or ts > last_ts):
+                last_ts = ts
         current["mainnodeLastSeenTs"] = last_ts
         current["mainnodeOnline"] = (
             last_ts is not None and now - last_ts < HOST_PRESENCE_STALE_MS
