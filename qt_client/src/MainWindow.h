@@ -975,6 +975,9 @@ private:
     void setPullConflictBadge(int number, bool conflict);
     void refreshPullList();
     void showPull(int number);
+    // Files-changed authorship filter: show only agent- or human-authored files
+    // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
+    void applyPullFileAuthorFilter();
     void renderPullReviewSummary(const PullRequest &pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
@@ -3458,6 +3461,12 @@ private:
     bool m_pullDeleteConfirmPending = false;
     bool m_pullDeleteInProgress = false; // a deletePull worker thread is running
     QListWidget *m_pullFiles = nullptr;
+    // Files-changed authorship filter (issue #365): All / Agent-authored /
+    // Human-authored, driven by m_pullFileAuthorship. Hidden unless the PR mixes
+    // agent and human commits.
+    QComboBox *m_pullFileAuthorFilter = nullptr;
+    // current PR: file path -> true when an agent-stamped commit touched it.
+    QHash<QString, bool> m_pullFileAuthorship;
     QPushButton *m_pullPrevButton = nullptr; // jump to previous change in the PR
     QPushButton *m_pullNextButton = nullptr; // jump to next change in the PR
     QTextBrowser *m_pullDiff = nullptr;
