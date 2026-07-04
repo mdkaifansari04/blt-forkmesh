@@ -757,6 +757,13 @@ QWidget *MainWindow::buildAgentsTab()
                     updateAgentStatusCell(sid);
                 }
             });
+    // The user clicked an option on a heuristically-detected inline clarifying
+    // question (plain prose, not the AskUserQuestion tool — issue #212). There's
+    // no tool_use_id to satisfy here, so just send it like any other typed
+    // follow-up; that already records the turn, resumes the CLI, and clears
+    // "Waiting" back to Running.
+    connect(m_agentTranscript, &ClaudeTranscriptView::inlineChoiceAnswered, this,
+            [this](const QString &answer) { sendPromptToSelectedAgent(answer); });
     // Issue #84: the live token/cost counter (statsChanged) is now folded into
     // the top-bar chart's hover tooltip via setAgentUsageLabel(), which carries
     // the same totals plus the budget breakdown, so there's no separate label.
@@ -5531,9 +5538,19 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
-        // A clarifying question (AskUserQuestion) stops the turn on the tool call
-        // with no `result` event — the agent is waiting on the user's answer, so
-        // flag it "Waiting" and notify just as an ended turn would.
+        // Some clarifying questions never call the AskUserQuestion tool at all —
+        // the CLI just lays out a numbered list of options in plain prose (e.g.
+        // "do you want me to: 1. ... or 2. ...?"). Detect that the same way the
+        // transcript view renders its clickable card for it (issue #212), so
+        // the agent still needs to show the hand icon here too.
+        if (!askedQuestion) {
+            QStringList inlineOptions;
+            askedQuestion = ClaudeTranscriptView::parseInlineChoices(assistantText, inlineOptions);
+        }
+        // A clarifying question (AskUserQuestion, or the plain-prose case above)
+        // stops the turn with no `result` event — the agent is waiting on the
+        // user's answer, so flag it "Waiting" and notify just as an ended turn
+        // would.
         if (askedQuestion)
             notifyAgentWaiting(sessionId, false);
     }
