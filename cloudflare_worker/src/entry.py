@@ -7607,6 +7607,12 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         return json_response({"error": "prompt_queue_full"}, status=429)
     now = int(Date.now())
     item = {"agentId": agent_id, "text": text, "queuedAt": now}
+    # Optional agent-provider choice from the website's top-of-list composer
+    # (adhoc #271): only meaningful when starting a brand-new agent, and only a
+    # known provider is honored — else the node falls back to its own default.
+    provider_in = clean_string(data.get("provider", ""), 40)
+    if provider_in in ("claude-code", "claude-api", "openai"):
+        item["provider"] = provider_in
     await d1_run(
         env,
         "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
