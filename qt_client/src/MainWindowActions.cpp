@@ -510,10 +510,30 @@ void MainWindow::processActionQueue()
 
 void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
 {
-    for (ActionRun &run : m_actionRuns) {
+    // Snapshot the matching run ids before acting on any of them. Cancelling a
+    // Running run calls ActionRunner::stop(), which spins a nested event loop
+    // (QProcess::waitForFinished) that can synchronously deliver the process's
+    // finished() signal → onRunStatusChanged/onRunFinished, both of which do
+    // `m_actionRuns = m_actionStore->loadAllRuns()`. Reassigning the vector
+    // mid-iteration would invalidate a range-for reference into it and crash on
+    // the next comparison, so we re-find each run by id instead of holding a
+    // reference across that reentrancy.
+    QList<int> supersededIds;
+    for (const ActionRun &run : m_actionRuns) {
         if (run.id == newRun.id || run.owner != newRun.owner ||
             run.name != newRun.name || run.workflowPath != newRun.workflowPath)
             continue;
+        if (run.status == ActionStatus::Running ||
+            run.status == ActionStatus::Queued ||
+            run.status == ActionStatus::AwaitingApproval)
+            supersededIds.append(run.id);
+    }
+
+    for (int runId : supersededIds) {
+        const ActionRun *found = findRun(runId);
+        if (!found)
+            continue; // reloaded away underneath us
+        const ActionRun run = *found; // copy: acting below may reload m_actionRuns
         if (run.status == ActionStatus::Running) {
             if (m_actionRunner && m_actionRunner->currentRunId() == run.id) {
                 logSystem(QStringLiteral(
@@ -527,9 +547,11 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
                    run.status == ActionStatus::AwaitingApproval) {
             const bool wasPending = run.status == ActionStatus::AwaitingApproval;
             m_actionQueue.removeAll(run.id);
-            run.status = ActionStatus::Cancelled;
-            run.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-            m_actionStore->saveRun(run);
+            if (ActionRun *live = findRun(runId)) {
+                live->status = ActionStatus::Cancelled;
+                live->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                m_actionStore->saveRun(*live);
+            }
             logSystem(QStringLiteral(
                           "Actions: cancelled %1 \"%2\" for %3/%4 @ %5 \xE2\x80\x94 "
                           "superseded by a newer run of the same workflow.")
