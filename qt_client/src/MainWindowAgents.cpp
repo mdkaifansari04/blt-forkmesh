@@ -1893,9 +1893,35 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     // gauges were retired in issue #84 in favour of this single chart.
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
-    QSettings().setValue(weekly ? kClaudeUsageWeekPctSetting
-                                : kClaudeUsage5hPctSetting,
-                         pct);
+    QSettings settings;
+    settings.setValue(weekly ? kClaudeUsageWeekPctSetting
+                             : kClaudeUsage5hPctSetting,
+                      pct);
+    // Issue #346: track "ran out" (>=99%) so a later drop can be recognised as
+    // a refill rather than just another low-usage poll, and fire the opt-in
+    // email once when that happens.
+    const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
+                                        : kClaudeUsage5hExhaustedSetting;
+    if (pct >= 99) {
+        settings.setValue(exhaustedKey, true);
+    } else if (pct < 90 && settings.value(exhaustedKey, false).toBool()) {
+        settings.setValue(exhaustedKey, false);
+        maybeEmailCreditsRefilled(weekly);
+    }
+}
+
+void MainWindow::maybeEmailCreditsRefilled(bool weekly)
+{
+    if (!QSettings().value(kEmailOnCreditsRefillSetting, false).toBool())
+        return;
+    // Rides the existing signed heartbeat channel (accounts/heartbeat) rather
+    // than a dedicated endpoint; the worker turns the flag into an in-app
+    // notification that the email digest cron mails out (issue #361's rail).
+    if (weekly)
+        m_pendingCreditsRefilledWeekly = true;
+    else
+        m_pendingCreditsRefilled5h = true;
+    sendNodeHeartbeat();
 }
 
 void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
