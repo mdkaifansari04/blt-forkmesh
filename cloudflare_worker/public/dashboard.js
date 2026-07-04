@@ -803,10 +803,12 @@
     }
     applyAvatar(avatar, session);
     if (adminButton) {
-      adminButton.classList.toggle("hidden", !session?.isAdmin);
-      if (session?.isAdmin && session?.adminUrl) {
-        adminButton.href = session.adminUrl;
-      }
+      const adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
+      // Only show the button once we actually have somewhere to send it —
+      // an admin session without adminUrl (ADMIN_PATH not picked up from the
+      // Worker env yet) would otherwise show a button that links to "#".
+      adminButton.classList.toggle("hidden", !adminUrl);
+      adminButton.href = adminUrl || "#";
     }
     renderProfileModal(session);
     renderProfilePage(session);
