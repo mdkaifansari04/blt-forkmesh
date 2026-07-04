@@ -1244,6 +1244,17 @@ private:
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
     void continueAgentSession(int sessionId);
+    // Ask the given session's agent to merge base and resolve conflicts, then
+    // resume it — the action behind the "Fix conflicts with agent" button.
+    // Shared by that button (selected session) and the auto-fix setting below
+    // (any idle session, not necessarily the selected one).
+    void fixAgentConflictsWithAgent(int sessionId);
+    // If kAutoFixAgentConflictsSetting is on and `stat` says session's branch
+    // conflicts with base, automatically triggers fixAgentConflictsWithAgent().
+    // De-duped per session so a conflict that persists across a failed retry
+    // isn't retried forever; the guard clears once the conflict is gone.
+    void maybeAutoFixAgentConflict(const AgentSession &session,
+                                   const AgentDiffStat &stat);
     // Steer m_selectedAgentSessionId with a follow-up message. Shared by the
     // agent detail composer's Send button and the footer quick-add's up-arrow
     // ("send to the visible agent") button.
@@ -3800,6 +3811,10 @@ private:
     // entries whose fingerprint changed (issue #289).
     QHash<int, QString> m_agentDiffSig;
     bool m_agentDiffRefreshPending = false;
+    // Sessions maybeAutoFixAgentConflict() has already auto-triggered a fix for.
+    // Prevents an unresolved conflict from re-queuing the agent on every refresh;
+    // cleared once the session's AgentDiffStat stops reporting conflicted.
+    QSet<int> m_agentAutoFixAttempted;
     // Re-entrancy guard for refreshAgentTable(): its cold-cache Diff cells shell
     // git and pump the event loop (GitKeepAlive), so a queued slot can re-enter
     // and corrupt the half-built table unless we skip the nested rebuild.
