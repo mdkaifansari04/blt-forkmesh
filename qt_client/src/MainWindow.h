@@ -1314,6 +1314,9 @@ private:
     // jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
+    // Refreshes the count badge on the top-bar Agents nav button from
+    // m_agentSessions.size().
+    void updateAgentsNavBadge();
     void processAgentQueue();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
@@ -2545,6 +2548,8 @@ private:
     QHash<QString, QPair<double, qint64>> m_navFiatRates; // cur -> {rate, fetchedMs}
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
+    QPushButton *m_agentsNavButton = nullptr; // top-bar shortcut to the Agents tab, between Repo and Chat
+    QLabel *m_agentsNavBadge = nullptr; // count badge over the agents nav button
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
