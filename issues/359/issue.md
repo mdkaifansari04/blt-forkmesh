@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 359
 title: Inline PR review comments and review states (human review that holds up)
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 21
