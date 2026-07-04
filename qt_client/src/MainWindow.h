@@ -867,6 +867,20 @@ private:
     void openPullReference(int number);
     void openCommitHashReference(const QString &hash);
     void openReferenceLink(const QString &href);
+    // Global search (Ctrl+K, issue #360). A repo-scoped overlay that searches the
+    // open repo's issues and pull requests (titles, bodies and comments — parsed
+    // from the stores) plus its code (`git grep` on the working tree/mirror, run
+    // off the GUI thread). Results are clickable and jump to the matching issue,
+    // PR, or file+line. Repo-scoped only for v1; full-mesh code search is out.
+    void openGlobalSearch();
+    void runGlobalSearch(const QString &query);
+    QDialog *m_searchDialog = nullptr;
+    QLineEdit *m_searchInput = nullptr;
+    QListWidget *m_searchList = nullptr;
+    QLabel *m_searchStatus = nullptr;
+    // Bumped on every keystroke so a stale off-thread `git grep` result is dropped
+    // when the query has moved on (mirrors the m_worktreeStatusGen pattern).
+    int m_searchGen = 0;
     // Resolve a reference link clicked inside an issue/PR comment body. Handles
     // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
