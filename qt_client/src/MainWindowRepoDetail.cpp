@@ -6837,6 +6837,9 @@ QWidget *MainWindow::buildRepoDetailSection()
             [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
+        // Update the Agents nav button state to show when the Agents tab is active (adhoc #201).
+        if (m_agentsNavButton)
+            m_agentsNavButton->setChecked(id == 3);
         if (id == 0) {
             // A Code click always lands on the file browser: if the overview
             // body was left on the commits panel, swap it back (and dim the
