@@ -927,6 +927,11 @@ void MainWindow::populateSlashActionsList()
         {QStringLiteral("Mention file from this project\xE2\x80\xA6"), QStringLiteral("mentionFile")},
         {QStringLiteral("Clear conversation"), QStringLiteral("clearConversation")},
         {QStringLiteral("Rewind"), QStringLiteral("rewind")},
+        // adhoc #256: resend the full issue (title + description + every
+        // comment) to the agent open above, in case it didn't get the whole
+        // thing the first time (e.g. a resumed session only replays a bare
+        // "Continue").
+        {QStringLiteral("Send issue context to agent"), QStringLiteral("sendIssueContext")},
     };
     bool anyContext = false;
     for (const ContextAction &a : contextActions)
@@ -1073,6 +1078,9 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         // sent prompt into the composer (same as Up in the quick-add history).
         navigateQuickAddHistory(-1);
         closePopup();
+    } else if (kind == QLatin1String("sendIssueContext")) {
+        closePopup();
+        sendIssueContextToSelectedAgent();
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
         if (m_quickAddAgentProvider) {
