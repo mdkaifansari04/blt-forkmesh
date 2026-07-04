@@ -92,9 +92,14 @@ def _has_link(parser, expected):
 def test_public_pages_use_shared_favicon_metadata():
     missing = []
     for page in sorted(PUBLIC_DIR.rglob("*.html")):
+        rel_path = page.relative_to(PUBLIC_DIR).as_posix()
+        # dashboard/partials/*.html are shell fragments composed into
+        # dashboard/index.html by the Worker — they have no <head>, so the shared
+        # favicon-metadata contract doesn't apply to them.
+        if "partials" in page.relative_to(PUBLIC_DIR).parts:
+            continue
         parser = HeadMetadataParser()
         parser.feed(page.read_text(encoding="utf-8"))
-        rel_path = page.relative_to(PUBLIC_DIR).as_posix()
 
         for expected in REQUIRED_HEAD_LINKS:
             if not _has_link(parser, expected):
