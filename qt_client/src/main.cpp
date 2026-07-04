@@ -214,8 +214,15 @@ int main(int argc, char *argv[])
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
     // A later launch attempt bounces off acquireSingleInstance() above and
-    // pings us instead; raise and focus our window in response.
-    forkmesh::onSingleInstanceActivation([&window] {
+    // pings us instead; raise and focus our window in response. Under headless
+    // (offscreen platform) there is no window to focus — raise()/activateWindow()
+    // are no-ops there anyway, but the offscreen plugin logs "This plugin does
+    // not support raise()" on every call, which makes a successful re-run of a
+    // headless install (bouncing off an already-running node) look like an
+    // error in the SSH install log. Skip the no-op calls entirely headless.
+    forkmesh::onSingleInstanceActivation([&window, headless] {
+        if (headless)
+            return;
         window.setWindowState((window.windowState() & ~Qt::WindowMinimized) |
                               Qt::WindowActive);
         window.show();
