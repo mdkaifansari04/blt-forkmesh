@@ -2299,6 +2299,9 @@ private:
     // sendPromptToAgentSession (steers it live, or resumes it if stopped), or
     // log + drop it if no local session with that id exists.
     void deliverQueuedAgentPrompt(int sessionId, const QString &text);
+    // Start a new ad-hoc agent for a repo from a website "new agent" prompt
+    // (adhoc #266): the top-of-list web composer queues these with agentId "new".
+    void startWebNewAgentForRepo(const RepositoryRecord &repo, const QString &task);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
