@@ -2081,6 +2081,9 @@ private:
     // Rebuilds the row of attachment chips (thumbnail + an "x" to remove each)
     // shown next to the paperclip once images are queued.
     void rebuildQuickAddAttachChips();
+    // Clicking a chip's thumbnail (issue #319) opens the original image full-size
+    // in a lightbox dialog.
+    void showQuickAddImageDetail(const QString &path);
     // Screenshot button (next to the rebuild/restart button): drops a full-screen
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
