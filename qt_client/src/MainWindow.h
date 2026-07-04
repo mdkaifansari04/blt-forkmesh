@@ -696,6 +696,15 @@ private:
     // warning surfaces as the top-bar notification toast (with Reset / Why links),
     // not an in-page banner.
     void refreshRepoPinBanner();
+    // Periodic auto-heal: for EVERY repo this node is the source of truth for (not
+    // just the open one), re-attest the relay's integrity pin when the refs we
+    // serve have drifted past it. The automatic form of the manual "Reset
+    // integrity pin" — a source repo the owner isn't currently viewing would
+    // otherwise sit with every clone rejected until they happened to open it and
+    // click reset. Only re-signs our own authentic served refs (identical to any
+    // publish), and when the source is offline it simply never runs, so the pin
+    // freezes and keeps protecting clones against a tampered mirror as before.
+    void reattestStalePins();
     // Show the integrity-pin warning in the top-bar toast, persistent (like an error
     // toast) with clickable "Reset integrity pin" and "Why?" links.
     void showPinWarning();
