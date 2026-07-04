@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 #include "ScreenAlignmentTarget.h"
 
 using namespace forkmesh::ui;
@@ -1019,6 +1020,7 @@ QWidget *MainWindow::buildSettingsSection()
     varsHint->setWordWrap(true);
 
     m_varsTable = new QTableWidget(0, 2);
+    installColumnHeaderMenu(m_varsTable); // 3-dots per-column menu (issue #318)
     m_varsTable->setHorizontalHeaderLabels({"Name", "Value"});
     m_varsTable->horizontalHeader()->setStretchLastSection(true);
     m_varsTable->verticalHeader()->setVisible(false);

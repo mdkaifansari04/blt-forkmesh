@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 345
 title: on code overview show the number of files in each folder in the list please next to LoC
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 62

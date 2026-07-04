@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 366
 title: Expose the mesh as an MCP server (repos, issues, PRs as tools)
-status: open
+status: closed
 labels: [feature]
 milestone: v1
 priority: 41
