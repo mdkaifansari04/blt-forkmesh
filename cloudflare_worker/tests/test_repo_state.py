@@ -13,21 +13,34 @@ import hashlib
 from pathlib import Path
 
 
-ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+SRC = Path(__file__).resolve().parents[1] / "src"
+ENTRY = SRC / "entry.py"
+_SOURCES = (ENTRY, SRC / "git_http.py")
 
 
 def _load(name):
-    """Load a single stdlib-only helper from entry.py without the JS modules."""
-    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == name
-    )
-    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-    namespace = {}
-    exec(compile(module, str(ENTRY), "exec"), namespace)
-    return namespace[name]
+    """Load a single stdlib-only helper from the worker without the JS modules.
+
+    The helper may live in entry.py or one of its extracted sibling modules
+    (e.g. git_http.py); search each in turn for the named FunctionDef.
+    """
+    for source in _SOURCES:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        function = next(
+            (
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == name
+            ),
+            None,
+        )
+        if function is not None:
+            module = ast.fix_missing_locations(
+                ast.Module(body=[function], type_ignores=[]))
+            namespace = {}
+            exec(compile(module, str(source), "exec"), namespace)
+            return namespace[name]
+    raise AssertionError("function not found: %s" % name)
 
 
 advertised_refs_canonical = _load("advertised_refs_canonical")

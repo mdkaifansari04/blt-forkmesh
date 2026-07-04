@@ -19,7 +19,6 @@ DASHBOARD = assembled_dashboard()
 # dashboard.js is likewise split into ordered public/dashboard/js/*.js fragments
 # composed into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
 DASHBOARD_JS = assembled_dashboard_js()
-CATALOG = (PUBLIC / "catalog.js").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")
 
@@ -34,34 +33,6 @@ def test_dashboard_has_open_closed_all_filter_defaulting_to_open():
     ]
     assert "is-active" in open_btn
     assert 'aria-pressed="true"' in open_btn
-
-
-def test_catalog_defaults_issue_filter_to_open():
-    assert 'let issueFilter = "open";' in CATALOG
-
-
-def test_catalog_render_issue_list_filters_by_state():
-    render = CATALOG[
-        CATALOG.index("function renderIssueList")
-        : CATALOG.index("async function loadIssues")
-    ]
-    # Open view shows only open; closed view shows everything that isn't open.
-    assert 'if (issueFilter === "all") return true;' in render
-    assert 'if (issueFilter === "open") return i.status === "open";' in render
-    assert 'return i.status !== "open";' in render
-
-
-def test_catalog_load_issues_renders_through_filter_and_counts_open():
-    load = CATALOG[
-        CATALOG.index("async function loadIssues")
-        : CATALOG.index("function pullRow")
-    ]
-    assert "loadedIssues = issues;" in load
-    assert 'const openCount = issues.filter((i) => i.status === "open").length;' in load
-    assert "tabIssuesCountEl.textContent = String(openCount);" in load
-    assert "renderIssueList();" in load
-    # The unfiltered render of every issue is gone.
-    assert "...issues.map((i) => issueRow" not in load
 
 
 def test_styles_define_issue_filter_control():
@@ -154,6 +125,6 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
         : DASHBOARD_JS.index("function updateRepoLiveCounts")
     ]
     assert "state.loadedRepoTabs = {};" in panels
-    assert '["issues", "pulls", "discussions"].includes(tab)' in DASHBOARD_JS
+    assert '["issues", "pulls", "discussions", "releases", "agents"].includes(tab)' in DASHBOARD_JS
     # The tab badge still fills immediately from the root tree's bundled counts.
     assert 'setRepoTabCount("issues", Number(counts.issues));' in DASHBOARD_JS
