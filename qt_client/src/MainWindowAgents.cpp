@@ -2094,7 +2094,7 @@ void MainWindow::refreshClaudeCodeUsage()
             return qRound(root.value(key)
                               .toObject()
                               .value(QStringLiteral("utilization"))
-                              .toDouble());
+                              .toDouble() * 100.0);
         };
         // resets_at is the wall-clock instant the window clears. Accept either an
         // ISO 8601 string or a numeric Unix timestamp (seconds), and tolerate the
