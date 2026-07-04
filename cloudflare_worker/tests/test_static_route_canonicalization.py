@@ -74,7 +74,6 @@ NON_ROUTED_HTML_ASSETS = {
     # Legacy blog pages are superseded by /blogs.
     "blog/index.html",
     "blog/introducing-forkmesh/index.html",
-    "network/index.html",
 }
 
 
@@ -133,6 +132,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
 
     migrated_pages = {
         "404.html",
+        "about.html",
         "blog.html",
         "blog/index.html",
         "blog/introducing-forkmesh/index.html",
@@ -144,6 +144,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
         "features.html",
         "forgot-password.html",
         "login.html",
+        "network.html",
         "privacy.html",
         "reset-password.html",
         "status.html",
