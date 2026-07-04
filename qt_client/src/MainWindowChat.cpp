@@ -592,11 +592,15 @@ QWidget *MainWindow::buildNetworkLogDock()
         if (!m_issueQuickAdd)
             return;
         const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
-        if (prompt.isEmpty())
-            return;
         if (m_selectedAgentSessionId < 0) {
             logSystem(QStringLiteral(
                 "No agent open above to send that to \xE2\x80\x94 open one first."));
+            return;
+        }
+        if (prompt.isEmpty()) {
+            // No text typed: just resume the open session with the same agent,
+            // the same thing the old per-session Continue button did (adhoc #178).
+            continueSelectedAgentSession();
             return;
         }
         recordQuickAddHistory(prompt);
