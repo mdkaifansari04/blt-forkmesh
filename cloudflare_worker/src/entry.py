@@ -4443,6 +4443,66 @@ async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
     return await _solana_send_transaction(env, tx)
 
 
+async def _solana_sign_transfers(env, from_addr, seed_b64url, transfers):
+    # Build and sign a transfer transaction WITHOUT broadcasting it, returning
+    # (signature_base58, tx_base64). The signature is fully determined by the
+    # (from, transfers, blockhash) tuple and computed locally, so it can be
+    # persisted BEFORE the transaction ever hits the network. That is the linchpin
+    # of an idempotent payout: a retry rebroadcasts these exact bytes (identical
+    # signature), which the cluster dedupes, rather than minting a second transfer.
+    transfers = [(to, int(lamports)) for to, lamports in transfers
+                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
+    if not transfers:
+        return "", ""
+    blockhash = await _solana_latest_blockhash(env)
+    if not blockhash:
+        return "", ""
+    message = _solana_transfer_message(from_addr, transfers, blockhash)
+    if not message:
+        return "", ""
+    sig = await _solana_sign_message(from_addr, seed_b64url, message)
+    if len(sig) != 64:
+        return "", ""
+    tx = _shortvec(1) + sig + message
+    return _base58_encode(sig), base64.b64encode(tx).decode()
+
+
+async def _solana_broadcast_raw(env, tx_b64):
+    # Broadcast an already-signed transaction (base64, from _solana_sign_transfers).
+    # Retry-safe: sending the same bytes twice yields the same signature, which the
+    # network dedupes, so this can never produce a second on-chain transfer.
+    if not tx_b64:
+        return ""
+    try:
+        tx = base64.b64decode(tx_b64)
+    except Exception:
+        return ""
+    return await _solana_send_transaction(env, tx)
+
+
+async def _solana_signature_landed(env, signature):
+    # True iff the cluster knows this signature AND it did not fail. Lets a payout
+    # that crashed mid-broadcast tell whether the recorded transfer already settled
+    # (must NOT re-pay) or never landed (safe to rebroadcast the same bytes).
+    if not signature:
+        return False
+    resp = await _solana_rpc(
+        env, "getSignatureStatuses",
+        [[signature], {"searchTransactionHistory": True}])
+    if not isinstance(resp, dict):
+        return False
+    try:
+        value = resp["result"]["value"][0]
+    except Exception:
+        return False
+    if not isinstance(value, dict):
+        return False
+    if value.get("err") is not None:
+        return False
+    return (value.get("confirmationStatus") in ("confirmed", "finalized") or
+            value.get("slot") is not None)
+
+
 # --- Per-node deposit keypair -----------------------------------------------
 # A Solana address is an Ed25519 public key. We generate a fresh keypair per
 # signup with the runtime's WebCrypto so each node gets a unique deposit
@@ -5897,10 +5957,26 @@ def _bounty_public(rec):
     }
 
 
+async def _bounty_mark_paid(env, bounty_bi, rec):
+    # Terminal transition for a payout: flip the row to "paid", drop the retained
+    # raw transaction, and run the accounting/notification side effects exactly
+    # once. Only ever called after the transfer is known to have hit the chain.
+    rec["status"] = "paid"
+    rec["paid_at"] = int(Date.now())
+    rec.pop("payout_tx", None)
+    transfers = [(t.get("address", ""), int(t.get("lamports", 0)))
+                 for t in (rec.get("payout_transfers") or [])]
+    await _save_bounty(env, bounty_bi, rec)
+    await _record_bounty_payout(env, rec, transfers)
+    await notify_bounty_event(env, rec, "bounty_paid")
+    return rec
+
+
 async def _bounty_auto_payout(env, bounty_bi, rec):
     # Split a funded escrow to the resolved payee (the merged PR's author) and the
     # treasury, with no second manual step. Safe to call repeatedly: it no-ops
-    # unless the escrow has a balance, a payee, and hasn't already been paid.
+    # unless the escrow has a balance, a payee, and hasn't already been paid, and
+    # it never issues a second on-chain transfer for the same row.
     if not rec or rec.get("status") == "paid":
         return rec
     # Only ever auto-pay a payee the repo owner explicitly authorized (set via an
@@ -5918,11 +5994,31 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
     secret = rec.get("secret", "")
     if not SOLANA_RE.match(from_addr or "") or not secret:
         return rec
+
+    # Idempotent resume. A previous attempt may have signed + recorded a payout
+    # (status "paying") and then died around the broadcast. Before signing anything
+    # new we ask the chain what happened to that recorded signature: if it settled
+    # we finalize without paying again; if it never landed we rebroadcast the SAME
+    # bytes (which the cluster dedupes should it have landed in a race).
+    pending_sig = rec.get("payout_sig", "")
+    pending_tx = rec.get("payout_tx", "")
+    if pending_sig:
+        if await _solana_signature_landed(env, pending_sig):
+            return await _bounty_mark_paid(env, bounty_bi, rec)
+        if pending_tx and await _solana_broadcast_raw(env, pending_tx):
+            return await _bounty_mark_paid(env, bounty_bi, rec)
+        # Otherwise the recorded blockhash likely expired without the tx ever
+        # landing; fall through and sign a fresh transaction below.
+
     balance = await _solana_balance_lamports(env, from_addr)
     if balance is None:
         return rec
     transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
     if transferable <= 0:
+        # Nothing left to move. If we had a recorded signature the earlier transfer
+        # must have drained the escrow, so finalize instead of looping forever.
+        if pending_sig:
+            return await _bounty_mark_paid(env, bounty_bi, rec)
         return rec
     treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
     payee_lamports = transferable - treasury_lamports
@@ -5931,18 +6027,28 @@ async def _bounty_auto_payout(env, bounty_bi, rec):
         transfers.append((payee, payee_lamports))
     if treasury_lamports > 0:
         transfers.append((treasury, treasury_lamports))
-    send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-    if not send_sig:
+
+    # Sign first, PERSIST the signature + raw bytes (status "paying"), THEN
+    # broadcast. If the worker dies between the save and a confirmed broadcast, the
+    # resume path above rebroadcasts these exact bytes — it can never sign a
+    # second, different transfer for this row, so a mid-payout RPC failure on
+    # retry cannot double-pay.
+    sig, tx_b64 = await _solana_sign_transfers(env, from_addr, secret, transfers)
+    if not sig or not tx_b64:
         return rec
-    rec["status"] = "paid"
-    rec["payout_sig"] = send_sig
-    rec["paid_at"] = int(Date.now())
+    rec["status"] = "paying"
+    rec["payout_sig"] = sig
+    rec["payout_tx"] = tx_b64
     rec["payout_transfers"] = [
         {"address": a, "lamports": l} for a, l in transfers]
     await _save_bounty(env, bounty_bi, rec)
-    await _record_bounty_payout(env, rec, transfers)
-    await notify_bounty_event(env, rec, "bounty_paid")
-    return rec
+
+    send_sig = await _solana_broadcast_raw(env, tx_b64)
+    if not send_sig:
+        # Broadcast failed outright. Leave the row "paying" so the next tick
+        # resumes it (rechecks the signature, rebroadcasts the same bytes).
+        return rec
+    return await _bounty_mark_paid(env, bounty_bi, rec)
 
 
 async def sweep_funded_bounties(env):
@@ -5987,7 +6093,9 @@ async def bounties_handler(env, request, owner, repo):
     rec = await _load_bounty(env, bounty_bi)
 
     if action == "create":
-        if rec and rec.get("status") == "paid":
+        # "paying" means a payout is mid-flight; treat it like "paid" so a re-create
+        # can't repoint the escrow or reset its amount out from under the transfer.
+        if rec and rec.get("status") in ("paid", "paying"):
             return json_response({"error": "already_paid"}, status=409)
         treasury = _treasury_address(env)
         if not treasury:
@@ -6037,7 +6145,8 @@ async def bounties_handler(env, request, owner, repo):
                 payee = cand
         # Reuse an existing unpaid address (top-ups raise the target) so a repeat
         # call doesn't strand funds at a stale address.
-        if rec and rec.get("address") and rec.get("status") != "paid":
+        if (rec and rec.get("address") and
+                rec.get("status") not in ("paid", "paying")):
             rec["amount_usd"] = amount_usd
             rec["required_lamports"] = required
             if payee:
@@ -6062,7 +6171,11 @@ async def bounties_handler(env, request, owner, repo):
         return json_response({"error": "no_bounty"}, status=404)
 
     if action == "status":
-        if rec.get("status") != "paid" and rec.get("address"):
+        # A "paying" row has a payout mid-flight; resume it (finalize if it settled,
+        # rebroadcast the recorded bytes otherwise) rather than re-polling balance.
+        if rec.get("status") == "paying":
+            rec = await _bounty_auto_payout(env, bounty_bi, rec)
+        elif rec.get("status") != "paid" and rec.get("address"):
             previous_status = rec.get("status", "open")
             balance = await _solana_balance_lamports(env, rec["address"])
             if balance is not None:
@@ -6110,32 +6223,15 @@ async def bounties_handler(env, request, owner, repo):
         secret = rec.get("secret", "")
         if not SOLANA_RE.match(from_addr or "") or not secret:
             return json_response({"error": "bounty_unfunded"}, status=409)
-        balance = await _solana_balance_lamports(env, from_addr)
-        if balance is None:
-            return json_response({"error": "balance_unavailable"}, status=503)
-        transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
-        if transferable <= 0:
-            return json_response({"error": "bounty_unfunded"}, status=409)
-        treasury_lamports = transferable * BOUNTY_TREASURY_BPS // 10000
-        payee_lamports = transferable - treasury_lamports
-        transfers = []
-        if payee_lamports > 0:
-            transfers.append((payee, payee_lamports))
-        if treasury_lamports > 0:
-            transfers.append((treasury, treasury_lamports))
-        send_sig = await _solana_send_transfers(env, from_addr, secret, transfers)
-        if not send_sig:
-            return json_response({"error": "send_transaction_failed"}, status=502)
-        rec["status"] = "paid"
+        # Authorize the signed payee, then run the SAME idempotent split the
+        # on-merge path uses (sign → record → broadcast, resume-safe). Keeping one
+        # payout implementation is what guarantees a retry here can't double-pay.
         rec["payee"] = payee
         rec["payee_authorized"] = True
-        rec["payout_sig"] = send_sig
-        rec["paid_at"] = int(Date.now())
-        rec["payout_transfers"] = [
-            {"address": a, "lamports": l} for a, l in transfers]
         await _save_bounty(env, bounty_bi, rec)
-        await _record_bounty_payout(env, rec, transfers)
-        await notify_bounty_event(env, rec, "bounty_paid")
+        rec = await _bounty_auto_payout(env, bounty_bi, rec)
+        if rec.get("status") != "paid":
+            return json_response({"error": "send_transaction_failed"}, status=502)
         return json_response(_bounty_public(rec))
 
     return json_response({"error": "bad_action"}, status=400)
