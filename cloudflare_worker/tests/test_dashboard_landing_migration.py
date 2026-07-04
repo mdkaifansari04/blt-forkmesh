@@ -1114,7 +1114,11 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
     assert "const routeParts = repoRouteParts();" in render_body
-    assert 'setRepoTab(REPO_TAB_ROUTES.includes(routeKind) ? routeKind : "code");' in render_body
+    # adhoc #182: the owner-only Agents tab is only ever a recognized route for
+    # the account that can see it, so tab-route membership goes through
+    # repoTabRoutesFor(repo) (REPO_TAB_ROUTES + "agents" when owner/admin)
+    # instead of the bare REPO_TAB_ROUTES constant.
+    assert 'setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");' in render_body
 
 
 def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
@@ -1131,7 +1135,7 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
 
     assert "routeMatchesRepo" in render_body
-    assert 'REPO_TAB_ROUTES.includes(routeKind)\n      ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
+    assert 'repoTabRoutesFor(repo).includes(routeKind)\n      ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
     assert "navigateHistory(detailPath);" in render_body
     # The old bare-collapse call must be gone.
     assert "const detailPath = repoPathUrl(repo);" not in render_body
