@@ -7914,25 +7914,33 @@ async def issues_handler(env, request, owner, repo):
             # "wantsAgent" makes the owner's node start a coding agent on this
             # issue automatically once merged — unlike the other meta fields
             # above, that's an immediate, unreviewed side effect, so it's only
-            # honored when the request proves it's the repo owner's own account
-            # (password re-check, same as other sensitive account actions), not
-            # just a client-side checkbox anyone could set on a raw submission.
+            # honored when the request re-proves a privileged account: the repo
+            # owner, or an admin acting on the owner's behalf (admin node-
+            # ownership, adhoc #141). The password re-check proves ownership of
+            # whichever account "ownerAccount" names, so it can't be spoofed by a
+            # client-side checkbox on a raw submission.
             wants_agent = False
             if meta_in.get("wantsAgent"):
-                owner_bi, owner_rec = await _account_row(env, owner)
-                if await _login_locked_until(env, owner_bi):
+                actor = clean_string(data.get("ownerAccount", "") or owner, 120)
+                actor_bi, actor_rec = await _account_row(env, actor)
+                if await _login_locked_until(env, actor_bi):
                     return json_response({"error": "too_many_attempts"}, status=429)
                 owner_password = str(data.get("ownerPassword", "") or "")[:256]
                 verified = bool(
-                    owner_rec and owner_rec.get("status") == "active" and
-                    owner_rec.get("pass_hash") and owner_password and
+                    actor_rec and actor_rec.get("status") == "active" and
+                    actor_rec.get("pass_hash") and owner_password and
                     await verify_password(owner_password,
-                                          owner_rec.get("pass_salt", ""),
-                                          owner_rec.get("pass_hash", "")))
+                                          actor_rec.get("pass_salt", ""),
+                                          actor_rec.get("pass_hash", "")))
                 if not verified:
-                    await _login_record_fail(env, owner_bi)
+                    await _login_record_fail(env, actor_bi)
                     return json_response({"error": "bad_owner_password"}, status=401)
-                await _login_clear(env, owner_bi)
+                # The proven account must actually be entitled to command the
+                # node: the repo owner itself, or a network admin.
+                if actor.lower() != str(owner or "").lower() \
+                        and not await _is_admin(env, actor):
+                    return json_response({"error": "not_authorized"}, status=403)
+                await _login_clear(env, actor_bi)
                 wants_agent = True
             meta = {
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
