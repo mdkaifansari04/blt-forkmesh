@@ -3958,7 +3958,6 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
-    QPushButton *m_agentContinueButton = nullptr;
     QPushButton *m_agentFixConflictsButton = nullptr;
     QPushButton *m_agentDeleteButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch

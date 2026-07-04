@@ -6657,8 +6657,11 @@ QWidget *MainWindow::buildRepoDetailSection()
     for (int i = 0; i < tabs.size(); ++i) {
         // Commits (id 1) no longer gets a top-bar tab: its panel lives inside
         // the Code overview, toggled by the commit strip's "N Commits" button.
-        // The entry stays in the list so every later tab keeps its positional id.
-        if (i == 1)
+        // Agents (id 3) also no longer gets a top-bar tab (adhoc #178) — it's
+        // reached via the footer status strip, spinner overlays and issue/PR
+        // links instead. Both entries stay in the list so every later tab
+        // keeps its positional id.
+        if (i == 1 || i == 3)
             continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
@@ -6674,9 +6677,6 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoIssuesTab = b; // keep a handle for the Issues (N) badge; the
                                  // looper toggle floats just above this tab
                                  // (adhoc #130, created below).
-        if (i == 3) {
-            m_repoAgentsTab = b; // handle for the Agents (N) badge + spinner strip
-        }
         if (i == 4)
             m_repoPullsTab = b;
         if (i == 5)
