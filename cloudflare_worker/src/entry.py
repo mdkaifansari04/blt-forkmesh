@@ -3897,6 +3897,7 @@ async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
     has_payout = bool(solana and SOLANA_RE.match(solana))
+    is_admin = await _is_admin(env, name)
     return {
         "ok": True,
         "nodeName": name,
@@ -3904,7 +3905,12 @@ async def _account_public_payload(env, rec):
         "status": rec.get("status", "active"),
         "pubkey": rec.get("pubkey", ""),
         "emailVerified": bool(rec.get("email_verified")),
-        "isAdmin": await _is_admin(env, name),
+        "isAdmin": is_admin,
+        # Only ever handed back to the account's own authenticated
+        # request (this payload, unlike the public-by-name lookup, is never
+        # served for someone else's account) so the secret ADMIN_PATH segment
+        # doesn't leak to non-admins.
+        "adminPath": _admin_path(env) if is_admin else "",
         "solana": solana if has_payout else "",
         "hasPayoutAddress": has_payout,
         "avatarPng": rec.get("avatar_png", ""),

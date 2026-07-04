@@ -590,6 +590,12 @@
       isAdmin: Object.prototype.hasOwnProperty.call(body, "isAdmin")
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
+      // adminPath is only ever sent back on the account's own authenticated
+      // responses (login/signup/profile-save), never the public-by-name
+      // lookup used for periodic refresh, so preserve it across those.
+      adminPath: Object.prototype.hasOwnProperty.call(body, "adminPath")
+        ? String(body.adminPath || "")
+        : String(base.adminPath || ""),
       solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
@@ -753,12 +759,24 @@
     const nameEl = $("[data-dashboard-profile-name]");
     const statusEl = $("[data-dashboard-profile-status]");
     const avatar = $("[data-dashboard-profile-avatar]");
+    const adminLink = $("[data-admin-header-link]");
 
     if (nameEl) nameEl.textContent = name;
     if (statusEl) {
       statusEl.textContent = session?.emailVerified
         ? "Email verified"
         : "Verify email in profile";
+    }
+    if (adminLink) {
+      const adminPath = session?.isAdmin ? String(session.adminPath || "") : "";
+      if (adminPath) {
+        adminLink.href = "/" + adminPath.replace(/^\/+/, "");
+        adminLink.classList.remove("hidden");
+        adminLink.classList.add("inline-flex");
+      } else {
+        adminLink.classList.add("hidden");
+        adminLink.classList.remove("inline-flex");
+      }
     }
     applyAvatar(avatar, session);
     renderProfileModal(session);
@@ -847,6 +865,7 @@
     const emailEl = $("[data-profile-page-email]");
     const accountStatus = $("[data-profile-page-account-status]");
     const payoutStatus = $("[data-profile-page-payout-status]");
+    const adminStatus = $("[data-profile-page-admin-status]");
     const emailStatus = $("[data-profile-page-email-status]");
     const verifyButton = $("[data-profile-page-verify-email]");
     const solanaInput = $("[data-profile-page-solana]");
@@ -857,6 +876,7 @@
     if (emailEl) emailEl.textContent = email;
     if (accountStatus) accountStatus.textContent = session?.status || "active";
     if (payoutStatus) payoutStatus.textContent = session?.hasPayoutAddress ? "Configured" : "Not configured";
+    if (adminStatus) adminStatus.textContent = session?.isAdmin ? "Yes" : "No";
     if (emailStatus) {
       emailStatus.textContent = session?.emailVerified
         ? `${email} is verified.`
