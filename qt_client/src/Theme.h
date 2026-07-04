@@ -986,12 +986,6 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #58a6ff; }
 #issueComposeSidebar { background: transparent; }
-/* Agent detail composer frame, now just holding Continue (adhoc #177, #139). */
-#agentComposer {
-    background-color: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 12px;
-}
 QPushButton#markdownTab {
     background-color: #161b22;
     border: 1px solid #30363d;
@@ -2094,12 +2088,6 @@ QPlainTextEdit#issueComposerSm {
 }
 QPlainTextEdit#issueComposerSm:focus { border: 1px solid #0969da; }
 #issueComposeSidebar { background: transparent; }
-/* Agent detail composer frame, now just holding Continue (adhoc #177, #139). */
-#agentComposer {
-    background-color: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 12px;
-}
 QPushButton#markdownTab {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
