@@ -19,7 +19,7 @@ def _read(path: Path) -> str:
 def test_feature_landing_is_promoted_to_index_with_signed_in_redirect():
     index = _read(PUBLIC / "index.html")
 
-    assert "Keep source code alive across the mesh" in index
+    assert "Never lose the code that matters" in index
     assert "forkmesh.session" in index
     assert 'location.replace("/dashboard")' in index
     assert 'location.replace("/dashboard.html")' not in index
