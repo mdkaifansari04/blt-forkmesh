@@ -2857,6 +2857,9 @@ void MainWindow::showBranchDiff(const QString &branch)
     updateBranchDetailActions(branch);
     m_branchDiffFileSpans.clear();
     m_branchDiffViewedContext.clear();
+    // A new branch's diff hasn't been fetched yet; drop the cached patch so the
+    // "Viewed" toggle can't re-render a stale one before the async read lands.
+    m_branchDiffLastValid = false;
     // Reset the scope + changed-files lists; the success path below repopulates.
     if (m_branchScopeList) {
         QSignalBlocker block(m_branchScopeList);
@@ -2886,58 +2889,82 @@ void MainWindow::showBranchDiff(const QString &branch)
     // Build the scope selector: the whole branch, its uncommitted working-tree
     // changes (when its checkout is dirty), then one row per commit it adds over
     // base. UserRole carries the scope key consumed by renderBranchScopeDiff().
-    if (m_branchScopeList) {
+    // The "All changes" row is added synchronously so the list is never empty;
+    // the dirty-count and per-commit rows come from git reads (a `status` and a
+    // `log`) that used to freeze the GUI thread here — gather them off-thread and
+    // append the rows when they arrive (issue #353).
+    if (!m_branchScopeList) {
+        renderBranchScopeDiff();
+        return;
+    }
+    {
         QSignalBlocker block(m_branchScopeList);
         auto *all = new QListWidgetItem(QStringLiteral("All changes"));
         all->setIcon(themedOcticon("git-compare", QColor("#58a6ff"), 14));
         all->setData(Qt::UserRole, QStringLiteral("all"));
         all->setToolTip(QStringLiteral("Every change %1 adds over %2").arg(branch, base));
         m_branchScopeList->addItem(all);
-
-        const QString work = branchWorkDir(branch);
-        if (!work.isEmpty()) {
-            QByteArray status;
-            runGitCapture(work, {"status", "--porcelain"}, &status, nullptr);
-            const int dirty = QString::fromUtf8(status)
-                                  .split('\n', Qt::SkipEmptyParts)
-                                  .size();
-            if (dirty > 0) {
-                auto *wt = new QListWidgetItem(
-                    QStringLiteral("Uncommitted changes  (%1)").arg(dirty));
-                wt->setIcon(themedOcticon("pencil", QColor("#d29922"), 14));
-                wt->setData(Qt::UserRole, QStringLiteral("wt"));
-                wt->setToolTip(
-                    QStringLiteral("%1 uncommitted file(s) in %2").arg(dirty).arg(work));
-                m_branchScopeList->addItem(wt);
-            }
-        }
-
-        QByteArray log;
-        runGitCapture(dir,
-                      {"log", "--format=%H%x1f%h%x1f%s%x1f%cr", base + ".." + branch},
-                      &log, nullptr);
-        for (const QString &line :
-             QString::fromUtf8(log).split('\n', Qt::SkipEmptyParts)) {
-            const QStringList f = line.split(QLatin1Char('\x1f'));
-            if (f.size() < 4)
-                continue;
-            auto *item =
-                new QListWidgetItem(QString::fromUtf8("%1   \xC2\xB7 %2").arg(f.at(2), f.at(3)));
-            item->setIcon(themedOcticon("git-commit", QColor("#8b949e"), 14));
-            item->setData(Qt::UserRole, QStringLiteral("commit:") + f.at(0));
-            item->setToolTip(QStringLiteral("%1  %2").arg(f.at(1), f.at(2)));
-            m_branchScopeList->addItem(item);
-        }
+        m_branchScopeList->setCurrentRow(0);
     }
     if (m_branchScopeLabel)
         m_branchScopeLabel->setText(QStringLiteral("Scope"));
-
-    // Default to the whole-branch diff; selecting it (re)renders the diff pane.
-    if (m_branchScopeList && m_branchScopeList->count() > 0) {
-        QSignalBlocker block(m_branchScopeList);
-        m_branchScopeList->setCurrentRow(0);
-    }
+    // Render the whole-branch diff right away (also async — see below); the extra
+    // scope rows only add selectable entries, they don't change the default view.
     renderBranchScopeDiff();
+
+    const QString work = branchWorkDir(branch);
+    const int gen = ++m_branchScopeLoadGen;
+    struct BranchScope {
+        int dirty = 0;
+        QList<QStringList> commits; // {fullHash, shortHash, subject, relTime}
+    };
+    runOffThread<BranchScope>(
+        [dir, base, branch, work]() {
+            BranchScope s;
+            if (!work.isEmpty()) {
+                QByteArray status;
+                runGitCapture(work, {"status", "--porcelain"}, &status, nullptr);
+                s.dirty = QString::fromUtf8(status)
+                              .split('\n', Qt::SkipEmptyParts)
+                              .size();
+            }
+            QByteArray log;
+            runGitCapture(dir,
+                          {"log", "--format=%H%x1f%h%x1f%s%x1f%cr", base + ".." + branch},
+                          &log, nullptr);
+            for (const QString &line :
+                 QString::fromUtf8(log).split('\n', Qt::SkipEmptyParts)) {
+                const QStringList f = line.split(QLatin1Char('\x1f'));
+                if (f.size() >= 4)
+                    s.commits.append(f);
+            }
+            return s;
+        },
+        [this, gen, branch, work](BranchScope s) {
+            // Dropped if the user switched branch (or reselected, bumping the gen)
+            // while the reads were in flight.
+            if (gen != m_branchScopeLoadGen || !m_branchScopeList ||
+                m_branchDiffBranch != branch)
+                return;
+            QSignalBlocker block(m_branchScopeList);
+            if (s.dirty > 0) {
+                auto *wt = new QListWidgetItem(
+                    QStringLiteral("Uncommitted changes  (%1)").arg(s.dirty));
+                wt->setIcon(themedOcticon("pencil", QColor("#d29922"), 14));
+                wt->setData(Qt::UserRole, QStringLiteral("wt"));
+                wt->setToolTip(
+                    QStringLiteral("%1 uncommitted file(s) in %2").arg(s.dirty).arg(work));
+                m_branchScopeList->addItem(wt);
+            }
+            for (const QStringList &f : s.commits) {
+                auto *item = new QListWidgetItem(
+                    QString::fromUtf8("%1   \xC2\xB7 %2").arg(f.at(2), f.at(3)));
+                item->setIcon(themedOcticon("git-commit", QColor("#8b949e"), 14));
+                item->setData(Qt::UserRole, QStringLiteral("commit:") + f.at(0));
+                item->setToolTip(QStringLiteral("%1  %2").arg(f.at(1), f.at(2)));
+                m_branchScopeList->addItem(item);
+            }
+        });
 }
 
 void MainWindow::renderBranchScopeDiff()
@@ -2954,55 +2981,92 @@ void MainWindow::renderBranchScopeDiff()
     if (m_branchScopeList && m_branchScopeList->currentItem())
         scope = m_branchScopeList->currentItem()->data(Qt::UserRole).toString();
 
-    QByteArray out;
-    QString err;
-    QString emptyMessage;
-    QString viewedContext;
-    if (scope == QLatin1String("wt")) {
-        // The branch's uncommitted changes (working tree vs HEAD), with untracked
-        // files appended as /dev/null diffs so new files show too.
-        const QString work = branchWorkDir(branch);
-        viewedContext = QStringLiteral("branch/") + branch + QStringLiteral("/wt");
-        emptyMessage = QStringLiteral("No uncommitted changes.");
-        if (work.isEmpty() || !runGitCapture(work, {"diff", "HEAD"}, &out, &err)) {
-            setDiffHtml(m_branchDiffView,
-                QStringLiteral("<p style='color:#8b949e'>No uncommitted changes.</p>"));
-            return;
-        }
-        QByteArray others;
-        runGitCapture(work, {"ls-files", "--others", "--exclude-standard", "-z"},
-                      &others, nullptr);
-        for (const QByteArray &p : others.split('\0')) {
-            if (p.isEmpty())
-                continue;
-            out += gitCaptureStdout(
-                work, {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)});
-        }
-    } else if (scope.startsWith(QLatin1String("commit:"))) {
-        // A single commit's diff (against its parent); --format= drops the commit
-        // message so the patch starts straight at the first file header.
-        const QString hash = scope.mid(7);
-        viewedContext =
-            QStringLiteral("branch/") + branch + QStringLiteral("/commit/") + hash;
-        emptyMessage = QStringLiteral("This commit has no file changes.");
-        if (!runGitCapture(dir, {"show", "--format=", hash}, &out, &err)) {
-            setDiffHtml(m_branchDiffView,
-                QStringLiteral("<p style='color:#f85149'>Could not show %1: %2</p>")
-                    .arg(hash.left(8).toHtmlEscaped(), err.toHtmlEscaped()));
-            return;
-        }
-    } else {
-        viewedContext = QStringLiteral("branch/") + branch;
-        emptyMessage = QStringLiteral("No changes between %1 and %2.")
-                           .arg(branch, base);
-        if (!runGitCapture(dir, {"diff", base + ".." + branch}, &out, &err)) {
-            setDiffHtml(m_branchDiffView,
-                QStringLiteral("<p style='color:#f85149'>Could not diff %1: %2</p>")
-                    .arg(branch.toHtmlEscaped(), err.toHtmlEscaped()));
-            return;
-        }
-    }
-    renderBranchDiffPatch(QString::fromUtf8(out), emptyMessage, viewedContext);
+    // The diff/show reads below can take seconds on a large branch — they were a
+    // recurring StallWatchdog offender freezing the GUI thread (issue #353). Run
+    // them off-thread and render the patch on the GUI thread once ready, dropping
+    // the result if the user has since switched branch or scope. `work` (which
+    // reads GUI state via branchWorkDir) is resolved here on the GUI thread.
+    const QString work =
+        scope == QLatin1String("wt") ? branchWorkDir(branch) : QString();
+    const int gen = ++m_branchScopeDiffGen;
+    struct ScopeDiff {
+        bool ok = true;
+        QByteArray out;
+        QString err;
+        QString emptyMessage;
+        QString viewedContext;
+    };
+    runOffThread<ScopeDiff>(
+        [dir, base, branch, scope, work]() {
+            ScopeDiff r;
+            if (scope == QLatin1String("wt")) {
+                // The branch's uncommitted changes (working tree vs HEAD), with
+                // untracked files appended as /dev/null diffs so new files show.
+                r.viewedContext =
+                    QStringLiteral("branch/") + branch + QStringLiteral("/wt");
+                r.emptyMessage = QStringLiteral("No uncommitted changes.");
+                if (work.isEmpty() ||
+                    !runGitCapture(work, {"diff", "HEAD"}, &r.out, &r.err)) {
+                    r.ok = false;
+                    return r;
+                }
+                QByteArray others;
+                runGitCapture(work, {"ls-files", "--others", "--exclude-standard", "-z"},
+                              &others, nullptr);
+                for (const QByteArray &p : others.split('\0')) {
+                    if (p.isEmpty())
+                        continue;
+                    r.out += gitCaptureStdout(
+                        work,
+                        {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)});
+                }
+            } else if (scope.startsWith(QLatin1String("commit:"))) {
+                // A single commit's diff (against its parent); --format= drops the
+                // commit message so the patch starts at the first file header.
+                const QString hash = scope.mid(7);
+                r.viewedContext = QStringLiteral("branch/") + branch +
+                                  QStringLiteral("/commit/") + hash;
+                r.emptyMessage = QStringLiteral("This commit has no file changes.");
+                if (!runGitCapture(dir, {"show", "--format=", hash}, &r.out, &r.err))
+                    r.ok = false;
+            } else {
+                r.viewedContext = QStringLiteral("branch/") + branch;
+                r.emptyMessage =
+                    QStringLiteral("No changes between %1 and %2.").arg(branch, base);
+                if (!runGitCapture(dir, {"diff", base + ".." + branch}, &r.out, &r.err))
+                    r.ok = false;
+            }
+            return r;
+        },
+        [this, gen, branch, scope](ScopeDiff r) {
+            // Dropped if the branch or scope changed while the read was in flight.
+            if (gen != m_branchScopeDiffGen || !m_branchDiffView ||
+                m_branchDiffBranch != branch)
+                return;
+            if (!r.ok) {
+                if (scope == QLatin1String("wt"))
+                    setDiffHtml(m_branchDiffView,
+                        QStringLiteral(
+                            "<p style='color:#8b949e'>No uncommitted changes.</p>"));
+                else if (scope.startsWith(QLatin1String("commit:")))
+                    setDiffHtml(m_branchDiffView,
+                        QStringLiteral(
+                            "<p style='color:#f85149'>Could not show %1: %2</p>")
+                            .arg(scope.mid(7).left(8).toHtmlEscaped(),
+                                 r.err.toHtmlEscaped()));
+                else
+                    setDiffHtml(m_branchDiffView,
+                        QStringLiteral(
+                            "<p style='color:#f85149'>Could not diff %1: %2</p>")
+                            .arg(branch.toHtmlEscaped(), r.err.toHtmlEscaped()));
+                return;
+            }
+            m_branchDiffLastPatch = r.out;
+            m_branchDiffLastEmpty = r.emptyMessage;
+            m_branchDiffLastValid = true;
+            renderBranchDiffPatch(QString::fromUtf8(r.out), r.emptyMessage,
+                                  r.viewedContext);
+        });
 }
 
 void MainWindow::renderBranchDiffPatch(const QString &patch,
@@ -3853,8 +3917,16 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
     setDiffViewed(context, path, !cur.contains(path));
     const int scroll =
         m_branchDiffView ? m_branchDiffView->verticalScrollBar()->value() : 0;
-    // Re-render only the current scope so the scope selection isn't reset.
-    renderBranchScopeDiff();
+    // Re-render only the current scope so the scope selection isn't reset. The
+    // toggle changes only the viewed set, not the patch, so re-render from the
+    // cached patch synchronously — this both avoids a redundant git read and keeps
+    // the scroll-position restore below correct (renderBranchScopeDiff is async
+    // now, so its render would land after the restore — issue #353).
+    if (m_branchDiffLastValid)
+        renderBranchDiffPatch(QString::fromUtf8(m_branchDiffLastPatch),
+                              m_branchDiffLastEmpty, context);
+    else
+        renderBranchScopeDiff();
     if (m_branchDiffView)
         m_branchDiffView->verticalScrollBar()->setValue(scroll);
 }
