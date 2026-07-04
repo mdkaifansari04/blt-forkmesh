@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.11 (2026-07-04)"
+INSTALLER_VERSION="0.12.12 (2026-07-04)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -32,6 +32,22 @@ FORKMESH_NODE="${FORKMESH_NODE:-}"
 # verbatim FORKMESH_NODE (older deploy UI) so naming still works across skew.
 # Empty unless the operator set one of them explicitly.
 FORKMESH_NODE_NAME="${FORKMESH_NODE_NAME:-${FORKMESH_NODE:-}}"
+# The account/owner this node is being attached to (adhoc #258). The desktop
+# Hosts panel that drives the install passes the operator's own account name
+# here so the installer can ECHO it back — that way the operator can see, right
+# in the install stream, which account the fresh node is meant to end up under
+# and confirm it attached correctly rather than silently registering as an
+# orphan. Purely informational: the actual attachment is done by the link code
+# below (the relay pairs it with the desktop's key-signed half). Empty on a
+# plain `curl | bash` install where no driving account is known.
+FORKMESH_OWNER="${FORKMESH_OWNER:-}"
+# Reinstall (adhoc #258): wipe any existing ForkMesh install AND its data on this
+# machine, then continue straight into a fresh install below (from the uploaded
+# or freshly-downloaded prebuilt binary). Driven by the Hosts panel's
+# "Uninstall + reinstall (all hosts)" action via FORKMESH_REINSTALL=1, or by
+# --reinstall on the command line. Non-interactive by nature, so it assumes the
+# destructive confirmation (the Qt-side dialog is the real gate).
+FORKMESH_REINSTALL="${FORKMESH_REINSTALL:-0}"
 # Link code for attaching this fresh node to the installing user's account
 # (adhoc #53). A headless launch mints one (or honours a pre-set 6-digit value),
 # prints it as "FORKMESH LINK CODE: NNNNNN", and hands it to the daemon, which
@@ -235,7 +251,12 @@ ensure_mirror_candidates() {
 # history). A plain delete of the binary leaves this data behind — which is why
 # a reinstall used to show an old node name and stale chat. Run with:
 #   curl -fsSL https://forkmesh.com/install.sh | bash -s -- --uninstall
+# Mode: "full" (the --uninstall entry point, exits when done) or "reinstall"
+# (called inline before a fresh install — skips the interactive confirmation,
+# since a reinstall is already gated by its own Qt-side dialog / explicit flag,
+# and returns instead of exiting so the caller can carry on installing).
 uninstall_forkmesh() {
+  local mode="${1:-full}"; shift || true
   local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
   local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
   local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -258,15 +279,22 @@ uninstall_forkmesh() {
     "$data_home/icons/forkmesh.png"
   )
 
-  printf '\033[31mThis removes ForkMesh and ALL of its data from this computer:\033[0m\n'
+  if [ "$mode" = "reinstall" ]; then
+    printf '\033[31mReinstall: removing the existing ForkMesh install and ALL of its data first:\033[0m\n'
+  else
+    printf '\033[31mThis removes ForkMesh and ALL of its data from this computer:\033[0m\n'
+  fi
   printf '  • the forkmesh binary and installed source\n'
   printf '  • settings, the node identity key (the account cannot be recovered)\n'
   printf '  • every mirrored repository, and all chat history\n'
   printf '  • the desktop launcher, icons, and login-autostart entry\n\n'
 
   # Honour a non-interactive confirm so `curl | bash` works: pass --yes (or set
-  # FORKMESH_ASSUME_YES=1). Otherwise prompt when a terminal is attached.
-  if [ "${FORKMESH_ASSUME_YES:-0}" != "1" ] && [ "${1:-}" != "--yes" ]; then
+  # FORKMESH_ASSUME_YES=1). Otherwise prompt when a terminal is attached. A
+  # reinstall skips this gate entirely — it is already an explicit, pre-confirmed
+  # action (the Qt-side dialog / the --reinstall flag).
+  if [ "$mode" != "reinstall" ] \
+     && [ "${FORKMESH_ASSUME_YES:-0}" != "1" ] && [ "${1:-}" != "--yes" ]; then
     if [ -t 0 ]; then
       printf 'Type DELETE to continue: '
       local answer=""; read -r answer || answer=""
@@ -306,18 +334,29 @@ uninstall_forkmesh() {
     && update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
   command -v gtk-update-icon-cache >/dev/null 2>&1 \
     && gtk-update-icon-cache -f -t "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+  if [ "$mode" = "reinstall" ]; then
+    say "Previous ForkMesh install removed; installing a fresh copy now."
+    return 0
+  fi
   say "ForkMesh has been completely removed."
   exit 0
 }
 
 # Dispatch uninstall before any install work (and before the diag EXIT trap can
-# misreport a clean uninstall as a failed install step).
+# misreport a clean uninstall as a failed install step). --reinstall wipes the
+# old install then falls through into the normal install below (adhoc #258).
 for arg in "$@"; do
   case "$arg" in
     --uninstall|--remove|-u) CURRENT_STEP="uninstall"; trap - EXIT; shift || true
-      uninstall_forkmesh "$@" ;;
+      uninstall_forkmesh full "$@" ;;
+    --reinstall) FORKMESH_REINSTALL=1; shift || true ;;
   esac
 done
+if [ "$FORKMESH_REINSTALL" = "1" ]; then
+  CURRENT_STEP="reinstall"
+  say "Reinstall requested — clearing the existing install before reinstalling."
+  uninstall_forkmesh reinstall
+fi
 
 # Plain ASCII box (not Unicode box-drawing): the box-drawing characters are
 # "ambiguous width" in Unicode, so non-UTF-8 terminals/consoles (and some
@@ -329,6 +368,11 @@ printf '\033[32m+-----------------------------------------------+\033[0m\n'
 say "Host:   $FORKMESH_HOST"
 say "Source: ${SRC}"
 say "Target: ${BIN}"
+[ -n "$FORKMESH_NODE_NAME" ] && say "Node:   $FORKMESH_NODE_NAME"
+# Echo the account this node is being attached to (adhoc #258) so the operator
+# can confirm, right here in the install output, that it will end up under the
+# right owner rather than registering as an orphan node.
+[ -n "$FORKMESH_OWNER" ] && say "Owner:  $FORKMESH_OWNER  (this node will be attached to this account)"
 if [ "$(id -u)" -eq 0 ]; then
   say "Privileges: running as root (no sudo needed)"
 else
@@ -1108,6 +1152,9 @@ elif launch_forkmesh; then
     # line and pops up a link dialog prefilled with the code (adhoc #53).
     say ""
     say "FORKMESH LINK CODE: $FORKMESH_LINK_CODE"
+    if [ -n "$FORKMESH_OWNER" ]; then
+      say "  This links the new node to owner \"$FORKMESH_OWNER\"."
+    fi
     say "  Enter this code in your ForkMesh desktop app to link the new node"
     say "  to your account (a popup opens during a Hosts-panel install; the"
     say "  code expires 30 minutes after the node registers)."
