@@ -140,6 +140,11 @@ def _harness(accounts):
             return
         if sql.startswith("INSERT INTO repo_agents"):
             repo_bi, agent_id, data, updated_at = args
+            # Mirrors the real repo_agents PRIMARY KEY (repo_bi, agent_id): a
+            # duplicate insert must raise, the same as D1's UNIQUE constraint.
+            if (repo_bi, agent_id) in repo_agents:
+                raise AssertionError(
+                    "UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id")
             repo_agents[(repo_bi, agent_id)] = {"data": data, "updated_at": updated_at}
             return
         if sql.startswith("DELETE FROM agent_prompts"):
@@ -245,6 +250,33 @@ def test_post_agents_valid_signature_stores_sessions_visible_via_list():
     assert agents[0]["status"] == "running"
     assert agents[0]["issueTitle"] == "Fix the thing"
     assert agents[0]["costUsd"] == 0.42
+
+
+def test_post_agents_duplicate_ids_in_one_push_deduped_not_500():
+    # Regression: a push containing two sessions with the same id used to hit
+    # the repo_agents PRIMARY KEY (repo_bi, agent_id) on the second INSERT
+    # (DELETE only runs once before the loop), producing a 500 D1_ERROR.
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+
+    push = asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {
+            "sessions": [_session(status="running"), _session(status="completed")],
+        }),
+        "alice", "proj",
+    ))
+    assert push == {"status": 200, "data": {"ok": True}}
+
+    listed = asyncio.run(ns["agents_list_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+        }),
+        "alice", "proj",
+    ))
+    agents = listed["data"]["agents"]
+    assert len(agents) == 1
+    assert agents[0]["status"] == "completed"
 
 
 def test_post_agents_bad_or_missing_signature_rejected():
