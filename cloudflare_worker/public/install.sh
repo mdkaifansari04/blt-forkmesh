@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.10 (2026-07-04)"
+INSTALLER_VERSION="0.12.11 (2026-07-04)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -1126,8 +1126,11 @@ elif launch_forkmesh; then
       tail -n +1 -f "$LOG_PATH" 2>/dev/null &
       _tail_pid=$!
       sleep 15
-      kill "$_tail_pid" 2>/dev/null
-      wait "$_tail_pid" 2>/dev/null
+      # kill+wait deliberately end the tail early; under `set -e` the SIGTERM
+      # exit status (143) would otherwise trip errexit and make the whole
+      # install report failure despite the daemon having started fine.
+      kill "$_tail_pid" 2>/dev/null || true
+      wait "$_tail_pid" 2>/dev/null || true
       say "--- (live output continues in $LOG_PATH) ---"
     fi
   else
