@@ -2268,6 +2268,14 @@ const QString kClaudeUsage5hResetSetting = QStringLiteral("agents/claudeUsage5hR
 const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageWeekReset");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
+// Issue #346: whether either window has been seen maxed out (>=99%) since it
+// last refilled, so the drop back down can be told apart from "just polled
+// while still low". Cleared the moment the refill notification fires.
+const QString kClaudeUsage5hExhaustedSetting = QStringLiteral("agents/claudeUsage5hExhausted");
+const QString kClaudeUsageWeekExhaustedSetting = QStringLiteral("agents/claudeUsageWeekExhausted");
+// Opt-in: email the node's account when a previously-maxed-out usage window
+// refills. Off by default — most nodes are watched interactively.
+const QString kEmailOnCreditsRefillSetting = QStringLiteral("agents/emailOnCreditsRefill");
 
 // Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
 // up to the minute. Shared by the agent-limits label and the top-bar usage
