@@ -10,13 +10,12 @@ entry.py via ast, and stub the handful of I/O primitives they call
 
 Covered:
  - POST /agents (desktop push, ts+sig signed) stores sessions; a follow-up
-   POST /agents/list (owner password) returns them.
+   POST /agents/list (owner account, adhoc #225: no password) returns them.
  - POST /agents with a bad/missing signature -> 401.
- - POST /agents/list with the wrong password -> 401, no data leaked.
- - POST /agents/<id>/prompt (owner password) enqueues a prompt; a subsequent
+ - POST /agents/list from a non-owner account -> 403, no data leaked.
+ - POST /agents/<id>/prompt (owner account) enqueues a prompt; a subsequent
    GET /agents (desktop drain, ts+sig) returns and clears it.
- - A non-owner account's own (correct) password still fails list/prompt with
-   403 not_authorized.
+ - A non-owner account still fails list/prompt with 403 not_authorized.
 """
 
 import ast
@@ -30,7 +29,7 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
-    "_clean_agent_session", "_verify_owner_password", "_authorize_owner",
+    "_clean_agent_session", "_authorize_owner",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
 }
@@ -270,7 +269,7 @@ def test_post_agents_duplicate_ids_in_one_push_deduped_not_500():
 
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "ownerPassword": CORRECT_PASSWORD,
+            "ownerAccount": "alice",
         }),
         "alice", "proj",
     ))
