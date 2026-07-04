@@ -469,6 +469,8 @@ void MainWindow::refreshOpenRepoDetail()
     updateRepoPushButton();
     refreshRepoPinBanner(); // a sync may have advanced refs past the pinned hash
     m_treeLoadedForIndex = -1; // force the explorer tree to rebuild on next use
+    if (m_filesStack && m_filesStack->currentIndex() == 2)
+        loadCoveExplorer();
     loadRepoOverview(m_overviewPath);
     // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge
     // stays current even when that tab isn't the one on screen.
@@ -2673,4 +2675,3 @@ void MainWindow::persistVariablesFromTable()
 {
     // Variables are written directly in add/edit/delete; nothing to flush here.
 }
-

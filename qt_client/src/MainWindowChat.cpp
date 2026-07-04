@@ -9375,6 +9375,16 @@ void MainWindow::clearRepoDetail()
     updateRepoPullCount();
     loadCommits();
     loadRepoOverview(QString());
+    if (m_coveExplorerTabs) {
+        m_coveExplorerTabs->clear();
+        m_openCoveExplorerTabs.clear();
+    }
+    if (m_coveExplorerTree)
+        m_coveExplorerTree->clear();
+    if (m_coveExplorerSelector)
+        m_coveExplorerSelector->clear();
+    m_coveExplorerCoves.clear();
+    m_coveExplorerCurrentId.clear();
     if (m_commitBar)
         m_commitBar->setText(
             "<span style='color:#8b949e'>This node has no repositories.</span>");
