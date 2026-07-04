@@ -1,11 +1,11 @@
 ---
 schema: forkmesh-issue-v1
 number: 318
-title: Show that three dots on all tables so that they can all be sorted and configured like the issues table.
+title: Show that three dots on all tables headers so that they can all be sorted and configured like the issues table.
 status: open
 labels: []
 milestone: 
-priority: 0
+priority: 64
 progress: 0
 assignees: []
 createdAt: 1782919997330
