@@ -1909,18 +1909,32 @@ async def status_history(env):
                 "uptimePct": uptime, "hours": hours,
                 "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent day with any data, not the
-        # 30-day aggregate — a resolved incident from weeks ago shouldn't keep
-        # today's badge red.
-        latest = next((d for d in reversed(days) if d["checks"]), None)
-        if latest is None:
-            status = "unknown"
-        elif latest["failures"] == 0:
-            status = "operational"
-        elif latest["failures"] >= latest["checks"]:
-            status = "down"
+        # Current status comes from the most recent HOUR with any data, not
+        # the whole current day's aggregate — otherwise an incident that was
+        # resolved an hour ago keeps the badge red/yellow for the rest of the
+        # day even once every recent check has gone back to green.
+        latest_hour = None
+        for d in reversed(days):
+            for h in reversed(d["hours"]):
+                if h["checks"]:
+                    latest_hour = h
+                    break
+            if latest_hour:
+                break
+        if latest_hour is not None:
+            status = latest_hour["status"]
         else:
-            status = "degraded"
+            # No hourly rows at all (e.g. pre-migration data) — fall back to
+            # the most recent day's aggregate so the badge isn't stuck unknown.
+            latest_day = next((d for d in reversed(days) if d["checks"]), None)
+            if latest_day is None:
+                status = "unknown"
+            elif latest_day["failures"] == 0:
+                status = "operational"
+            elif latest_day["failures"] >= latest_day["checks"]:
+                status = "down"
+            else:
+                status = "degraded"
         overall_uptime = (
             round(((total_checks - total_failures) / total_checks) * 100, 2)
             if total_checks else None
