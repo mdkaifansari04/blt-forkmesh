@@ -479,7 +479,8 @@ def test_clone_falls_back_when_a_live_source_stalls_info_refs():
     # GET, serve the advertisement from a live mirror and pin it so the paired
     # upload-pack POST follows the same node.
     src = _worker_method_source("_git_host")
-    assert "response = await host_object.fetch(request)" in src
+    assert "response = await host_object.fetch(" in src
+    assert "durable_object_request(request, include_body=not is_info)" in src
     assert "response.status" in src
     assert "(503, 504)" in src
     assert "is_info" in src
