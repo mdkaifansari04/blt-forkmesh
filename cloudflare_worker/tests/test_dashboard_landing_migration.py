@@ -333,6 +333,27 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         assert marker in dashboard_js
 
 
+def test_dashboard_repository_cards_are_clickable_metric_summaries():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    card = dashboard_js[
+        dashboard_js.index("function repositoryCard")
+        : dashboard_js.index("function updateRepositoryPagination")
+    ]
+
+    for marker in (
+        'data-dashboard-open-repo="${escapeHtml(key)}"',
+        'role="link"',
+        "repoActivitySparkline(activityWeeks)",
+        "groupRepoMetric(group, [\"issueCount\"",
+        "groupRepoMetric(group, [\"commitCount\"",
+        "groupRepoMetric(group, [\"pullCount\"",
+        "groupRepoMetric(group, [\"discussionCount\"",
+    ):
+        assert marker in card
+    assert "data-dashboard-copy" not in card
+    assert "Copy clone" not in card
+
+
 def test_dashboard_repository_detail_uses_github_like_inner_layout():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
@@ -590,7 +611,8 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert "rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground" not in records
     assert 'number === page ? "bg-secondary text-foreground border-border"' in pagination
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
-    assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" in dashboard_js
+    assert 'data-dashboard-open-repo="${escapeHtml(key)}" role="link"' in dashboard_js
+    assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
     # The Clone availability chip keys off the group-liveness verdict (`live`,
     # which folds in an online mirror serving in place — adhoc #61) but keeps the
     # neutral GitHub-like foreground/muted colors, never the accent primary.

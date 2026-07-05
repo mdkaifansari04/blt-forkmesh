@@ -2511,10 +2511,12 @@ private:
     void scrollToBottom();
     void setChannels(const QStringList &channels);
     void setRoster(const QList<MemberInfo> &members);
-    // Post this node's one-time "just joined" greeting to the shared #welcome
+    // Route this node's one-time "just joined" greeting to its identity-specific
+    // welcome room.
     // room. Only a brand-new identity announces (gated by a sentinel file next
     // to the identity key), so the network sees a single join line with no
     // per-peer duplicates, and no re-announce on a settings-only reset (#192).
+    QString welcomeChannelForIdentity() const;
     void maybeAnnounceWelcome();
     void removeChatMember(const QString &id, const QString &name);
     // A conversation key is either a channel ("#general") or a direct chat
@@ -4551,7 +4553,7 @@ private:
     QList<MemberInfo> m_homeRoster;
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time
-    // #welcome greeting this run, so the per-roster check stays cheap (issue #192).
+    // welcome greeting this run, so the per-roster check stays cheap (issue #192).
     bool m_welcomeAnnounced = false;
     // Catalog-backed mirror list (issue #223): the worker's /mirrors payload for
     // the repo group currently shown in the mirror-nodes panel, merged in so a

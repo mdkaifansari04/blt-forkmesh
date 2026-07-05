@@ -21,7 +21,8 @@ CATALOG = ENTRY.parent / "catalog.py"
 
 # Names pulled verbatim from entry.py; the rest of the module (JS imports, async
 # crypto) is never executed.
-_WANT_FUNCS = ("clean_string", "safe_segment", "safe_catalog_record")
+_WANT_FUNCS = (
+    "clean_string", "clean_int_series", "safe_segment", "safe_catalog_record")
 
 
 def _load_record_builder():
@@ -75,6 +76,12 @@ def test_only_literal_private_hides_a_repo():
 def test_missing_required_fields_still_rejected():
     assert safe_catalog_record({"owner": "", "name": "x", "maintainer": "k"}) is None
     assert safe_catalog_record("not a dict") is None
+
+
+def test_activity_weeks_are_clamped_and_padded():
+    rec = safe_catalog_record(_base(activityWeeks=[1, "2", -5, "bad", 2_000_000]))
+    assert rec["activityWeeks"][-5:] == [1, 2, 0, 0, 1_000_000]
+    assert len(rec["activityWeeks"]) == 52
 
 
 # --- Logged-in viewer: catalog listing token contract -----------------------

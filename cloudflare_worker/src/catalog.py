@@ -30,6 +30,19 @@ def clean_string(value, max_length=240):
     return value.strip()[:max_length]
 
 
+def clean_int_series(value, length=52, max_value=1000000):
+    if not isinstance(value, list):
+        return [0] * length
+    series = []
+    for item in value[-length:]:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            number = 0
+        series.append(max(0, min(number, max_value)))
+    return ([0] * max(0, length - len(series))) + series
+
+
 def safe_catalog_record(data):
     if not isinstance(data, dict):
         return None
@@ -78,6 +91,7 @@ def safe_catalog_record(data):
         "branchCount": clean_string(data.get("branchCount", ""), 12),
         "pullCount": clean_string(data.get("pullCount", ""), 12),
         "discussionCount": clean_string(data.get("discussionCount", ""), 12),
+        "activityWeeks": clean_int_series(data.get("activityWeeks"), 52),
         "worktreeCount": clean_string(data.get("worktreeCount", ""), 12),
         "artifactCount": clean_string(data.get("artifactCount", ""), 12),
         "platform": clean_string(data.get("platform", ""), 16),

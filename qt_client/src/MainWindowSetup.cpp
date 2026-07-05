@@ -1097,10 +1097,10 @@ void MainWindow::startSession()
         // peers always see a unique, identifiable face for this node.
         m_backend->setAvatar(effectiveAvatar());
         // Fixed shared channels for the whole network — no per-repo rooms. Every
-        // node joins the same #general, #welcome and #random over the one
-        // encrypted room (#welcome carries new-node join greetings, issue #192).
+        // node joins #general, both split welcome rooms, and #random.
         m_backend->addChannel(QStringLiteral("general"));
-        m_backend->addChannel(QStringLiteral("welcome"));
+        m_backend->addChannel(kWelcomeNodesChannel);
+        m_backend->addChannel(kWelcomeUsersChannel);
         m_backend->addChannel(QStringLiteral("random"));
         // Re-create any invite-only rooms this node owned or was invited to; the
         // backend clears its channel set each session, so they'd vanish otherwise.
