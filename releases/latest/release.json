@@ -1,9 +1,9 @@
 {
   "schema": "forkmesh-release-v1",
   "repo": "forkmesh/forkmesh",
-  "tag": "v0.5.60",
-  "tag_commit": "af27c03397f425db906dee9787755a0bae068f13",
+  "tag": "v0.5.61",
+  "tag_commit": "124392de93239203d71c9685ab1b74b26fd7d760",
   "channel": "latest",
-  "created_at": 1783230447000,
-  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"717e9367ef749dac8ec0f924a15a9c2cd6b240ecea4f5047547c429281d1150c","size":15452448,"os":"linux","arch":"x86_64"},{"name":"forkmesh-linux-x86_64.AppDir.tar.gz","blob_sha256":"8d85365a5ab1b14a846d459a1313eb0d5369f3a38a50d948860b03250e3c2496","size":8918369,"os":"linux","arch":"x86_64.AppDir.tar.gz"}]
+  "created_at": 1783234913000,
+  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"c3f8f355528c84a464313d30a2e4f6927b07bd68e228bcaabfe4a0dcd12f8082","size":15479840,"os":"linux","arch":"x86_64"},{"name":"forkmesh-linux-x86_64.AppDir.tar.gz","blob_sha256":"4cde8741dba2840efdd2bddfdea8ccaef4ea7ea6b3b4dd0fb3bda1a36be1b3b4","size":8932769,"os":"linux","arch":"x86_64.AppDir.tar.gz"}]
 }
