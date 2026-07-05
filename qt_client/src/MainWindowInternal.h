@@ -6574,7 +6574,8 @@ inline int mirrorCommitCount(const QString &mirrorPath, const QString &branch)
 
 // Commit activity histogram for the website repository list: 52 weekly buckets,
 // oldest to newest, across every served ref in the bare mirror.
-inline QJsonArray mirrorCommitActivityWeeks(const QString &mirrorPath)
+inline QJsonArray mirrorCommitActivityWeeks(const QString &mirrorPath,
+                                            const QString &branch)
 {
     constexpr int kWeeks = 52;
     constexpr qint64 kWeekSeconds = 7LL * 24LL * 60LL * 60LL;
@@ -6586,11 +6587,12 @@ inline QJsonArray mirrorCommitActivityWeeks(const QString &mirrorPath)
         return arr;
     };
 
-    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+    if (mirrorPath.trimmed().isEmpty() || branch.trimmed().isEmpty() ||
+        !QDir(mirrorPath).exists())
         return toArray();
     QByteArray out;
     if (!runGitCapture(mirrorPath,
-                       {"log", "--all", "--since=52 weeks ago", "--format=%ct"},
+                       {"log", "--since=52 weeks ago", "--format=%ct", branch},
                        &out, nullptr))
         return toArray();
 

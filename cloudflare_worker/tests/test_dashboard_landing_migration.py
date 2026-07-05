@@ -343,13 +343,19 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
     for marker in (
         'data-dashboard-open-repo="${escapeHtml(key)}"',
         'role="link"',
-        "repoActivitySparkline(activityWeeks)",
+        "repoActivitySparkline(activityWeeks,",
         "groupRepoMetric(group, [\"issueCount\"",
         "groupRepoMetric(group, [\"commitCount\"",
         "groupRepoMetric(group, [\"pullCount\"",
         "groupRepoMetric(group, [\"discussionCount\"",
     ):
         assert marker in card
+    for marker in (
+        "backfillVisibleRepoActivity(visible)",
+        "fetchJson(repoLiveUrl(origin, \"history\"))",
+        "activityWeeksFromCommits(data.commits)",
+    ):
+        assert marker in dashboard_js
     assert "data-dashboard-copy" not in card
     assert "Copy clone" not in card
 
