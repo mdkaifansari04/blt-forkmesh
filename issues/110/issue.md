@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 110
 title: move the adminSweepDeposits funtion and code into the website admin please
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

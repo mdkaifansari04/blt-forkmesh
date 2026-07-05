@@ -1839,6 +1839,11 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
+    connect(backend, &ChatBackend::networkDiagnosticsChanged, this, [this] {
+        if (m_sectionStack &&
+            m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
+            refreshNetworkDiagnostics();
+    });
     connect(backend, &ChatBackend::statusChanged, this, [this](const QString &status) {
         const QString summary = status.section(" · ", 0, 0);
         m_statusLine->setText(summary);

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 85
 title: move the .0000 SOL to the right of the top bar so its next to the node avatar icon please
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 102
 title: on the agents sessions page remove refresh openai usage and have it refresh after any openai session and add the same for claude spend have them both there
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

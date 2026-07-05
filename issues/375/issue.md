@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 375
 title: when I click on agents on the website make it go back to the list please
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

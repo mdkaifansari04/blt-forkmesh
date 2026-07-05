@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 178
 title: make the comment appear faster instead of waiting for the commit to push
 status: closed
-labels: []
+labels: [infra]
 milestone: MVP launch
 priority: 21
 progress: 0

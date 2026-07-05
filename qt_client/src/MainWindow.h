@@ -465,6 +465,9 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
+    static constexpr int kNetworkReposSectionIndex = 11;
+    static constexpr int kNetworkDiagnosticsSectionIndex = 12;
+
     // Setup page
     QWidget *buildSetupPage();
     void startSession();
@@ -912,6 +915,10 @@ private:
     bool authorizeFirewallConnection(const QString &method, const QUrl &url);
     void recordFirewallRequest(const QString &method, const QUrl &url,
                                const QString &rule, bool allowed);
+    // Network diagnostics: live websocket / Durable Object details.
+    QWidget *buildNetworkDiagnosticsSection();
+    void refreshNetworkDiagnostics();
+    void showEndpointRequestDetails(int row, int column);
 
     // Repo detail view (files + issues tabs), opened by clicking a repository.
     QWidget *buildRepoDetailSection();
@@ -1464,17 +1471,10 @@ private:
     void refreshIssueFilesPanel(const Issue &issue);
     void renderIssueDiff(int issueNumber, const QByteArray &patch,
                          const QString &dir, const QString &base);
-    // adhoc #151: stamp the issue list's "Files" column for issues whose work
-    // lives in a linked agent worktree branch or pull request. Mirrors
-    // refreshIssueFilesPanel's source preference. The worktree count is computed
-    // async (git diff --name-only against the session base) and cached per issue,
-    // so a re-sort/rebuild can show it immediately; applyIssueFilesCount relocates
-    // the row by issue number when the async result lands.
+    // Stamp the issue list's "Files" column with one small icon per attached
+    // issue file. Filenames live in the tooltip; sorting uses the attachment
+    // count.
     void populateIssueFilesCell(int row, const Issue &issue);
-    void setIssueFilesCell(QTableWidgetItem *item, int count,
-                           const QString &source);
-    void applyIssueFilesCount(int issueNumber, int count, const QString &source);
-    QHash<int, int> m_issueFilesChangedCounts; // issue number -> files changed
     // Small rounded avatar for an issue assignee (or assigned agent), shown to
     // the left of the title in the issue list. Deterministic per name (a
     // procedural face, matching the contributor avatars) and cached so a full
@@ -2787,7 +2787,7 @@ private:
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
-    QPushButton *m_firewallNavButton = nullptr; // "Firewall" top-nav button
+    QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
@@ -2852,6 +2852,11 @@ private:
     QTableWidget *m_requestFirewallHistoryTable = nullptr;
     QPushButton *m_requestFirewallRemoveButton = nullptr;
     QList<FirewallHistoryEntry> m_requestFirewallHistory;
+    QLabel *m_networkDiagnosticsStatus = nullptr;
+    QTableWidget *m_networkEndpointsTable = nullptr;
+    QTableWidget *m_networkDiagnosticsTable = nullptr;
+    QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
+    bool m_networkEndpointFadeScheduled = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel

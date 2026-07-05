@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 177
 title: BUG: even after login i can see the login screen again after three time putting the right credentials
 status: closed
-labels: []
+labels: [bug]
 milestone: MVP launch
 priority: 3
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 187
 title: have a quick button to lower priority lower it by 25% of what the current priority span is anso similar to increase priority in issue detail right column
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

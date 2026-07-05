@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 267
 title: the deploy to cloudflare didnt work when we merged to main please mkae sure we're triggering correctly
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 1
 progress: 0

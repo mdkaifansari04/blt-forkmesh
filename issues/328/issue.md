@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 328
 title: Make it so that when I submit an issue from the website, it goes to the list of issues
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 9
 progress: 0

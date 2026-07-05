@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 31
 title: when I click on a commit open it up as a diff please
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

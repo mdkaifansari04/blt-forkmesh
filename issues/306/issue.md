@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 306
 title: UI: bad ui in the mirror tab
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 2
 progress: 0

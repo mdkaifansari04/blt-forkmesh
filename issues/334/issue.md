@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 334
 title: when we do Continue where you left off. make sure to use the model that it had already started using from here Agent: Claude Code
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 42
 progress: 0

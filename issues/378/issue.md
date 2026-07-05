@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 378
 title: Remove the admin basic auth
 status: open
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 0

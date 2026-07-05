@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 172
 title: when clicking on open or closed in the milestone page go to the issues filtered by that
 status: closed
-labels: []
+labels: [enhancement]
 milestone: MVP launch
 priority: 31
 progress: 100

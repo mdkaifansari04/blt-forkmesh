@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 134
 title: issue from peer 2
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

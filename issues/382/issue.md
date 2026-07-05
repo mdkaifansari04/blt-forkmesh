@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 382
 title: the top usage doesn't seem to be lining up this first image is actual  and this is what we show  please fix it
 status: open
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 0

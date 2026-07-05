@@ -76,6 +76,31 @@ QString wsPath(const QUrl &url)
     return path;
 }
 
+QString endpointDisplay(const QUrl &url)
+{
+    return url.toString(QUrl::RemoveUserInfo);
+}
+
+bool isDurableMainnodeType(const QString &type)
+{
+    static const QSet<QString> kDurableTypes = {
+        QStringLiteral("chat"), QStringLiteral("edit"),
+        QStringLiteral("delete"), QStringLiteral("reaction"),
+        QStringLiteral("admin-delete")};
+    return kDurableTypes.contains(type);
+}
+
+QString mainnodeScopeFor(const QJsonObject &plain, bool durable)
+{
+    if (durable)
+        return QStringLiteral("durable");
+    const QString type = plain.value("type").toString();
+    if (type == QLatin1String("dm") || plain.contains(QStringLiteral("to")) ||
+        plain.value("private").toBool())
+        return QStringLiteral("targeted");
+    return QStringLiteral("ephemeral");
+}
+
 QString boundedText(const QJsonObject &object, const char *key, int maxChars)
 {
     QString value = object.value(key).toString();
@@ -313,7 +338,9 @@ void ServerNode::openConnection()
         m_socket = nullptr;
     }
     m_wsReady = false;
+    m_wsConnectedAtMs = 0;
     m_readBuffer.clear();
+    emit networkDiagnosticsChanged();
 
     if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
         emit systemMessage(QStringLiteral("Firewall blocked mainnode socket to %1.")
@@ -399,7 +426,9 @@ void ServerNode::connectSocketSignals()
         if (m_presenceTimer)
             m_presenceTimer->stop();
         m_wsReady = false;
+        m_wsConnectedAtMs = 0;
         m_peers.clear();
+        emit networkDiagnosticsChanged();
         updateRosterAndStatus();
         scheduleReconnect();
     });
@@ -463,6 +492,7 @@ void ServerNode::onSocketReadyRead()
             return;
         }
         m_wsReady = true;
+        m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
         if (m_pingTimer)
             m_pingTimer->start();
@@ -471,6 +501,7 @@ void ServerNode::onSocketReadyRead()
         emit channelsChanged(m_channels);
         updateRosterAndStatus();
         emit statusChanged("Connected to encrypted mainnode room " + m_roomName);
+        emit networkDiagnosticsChanged();
         sendHello();
         if (!m_avatarPng.isEmpty())
             setAvatar(m_avatarPng);
@@ -517,17 +548,35 @@ void ServerNode::onSocketReadyRead()
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
         if (opcode == 0x9) { // ping from server -> reply with pong
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             sendControlFrame(0xA, payload);
             continue;
         }
-        if (opcode == 0xA) // pong: keepalive acknowledged, nothing to do
+        if (opcode == 0xA) { // pong: keepalive acknowledged, nothing to do
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             continue;
+        }
         if (opcode == 0x8) {
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             m_socket->disconnectFromHost();
             return;
         }
-        if (opcode == 0x1)
+        if (opcode == 0x1) {
+            ++m_rxFrames;
+            m_rxBytes += payload.size();
+            m_lastRxBytes = payload.size();
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            m_lastRxType = QStringLiteral("text");
+            m_lastRxScope.clear();
             processFrame(payload);
+            emit networkDiagnosticsChanged();
+        }
     }
 }
 
@@ -538,13 +587,22 @@ void ServerNode::processFrame(const QByteArray &payload)
     const QJsonDocument doc = QJsonDocument::fromJson(payload);
     if (!doc.isObject())
         return;
-    const QJsonObject plain = m_crypto.decryptObject(doc.object());
-    if (plain.isEmpty() || plain.value("senderId").toString() == m_nodeId)
+    const QJsonObject envelope = doc.object();
+    const QJsonObject plain = m_crypto.decryptObject(envelope);
+    if (plain.isEmpty())
+        return;
+    const QString type = plain.value("type").toString();
+    if (!type.isEmpty()) {
+        m_lastRxType = type;
+        m_lastRxScope = mainnodeScopeFor(plain, envelope.value("persist").toBool());
+    }
+    if (plain.value("senderId").toString() == m_nodeId)
         return;
     handlePlain(plain);
 }
 
-void ServerNode::sendTextFrame(const QByteArray &payload)
+void ServerNode::sendTextFrame(const QByteArray &payload, const QString &type,
+                               const QString &scope)
 {
     if (!m_wsReady || !m_socket)
         return;
@@ -575,6 +633,13 @@ void ServerNode::sendTextFrame(const QByteArray &payload)
         masked[i] = masked.at(i) ^ mask.at(i % 4);
     frame.append(masked);
     m_socket->write(frame);
+    ++m_txFrames;
+    m_txBytes += payload.size();
+    m_lastTxBytes = payload.size();
+    m_lastTxMs = QDateTime::currentMSecsSinceEpoch();
+    m_lastTxType = type.isEmpty() ? QStringLiteral("text") : type;
+    m_lastTxScope = scope;
+    emit networkDiagnosticsChanged();
 }
 
 void ServerNode::sendControlFrame(int opcode, const QByteArray &payload)
@@ -594,6 +659,48 @@ void ServerNode::sendControlFrame(int opcode, const QByteArray &payload)
         masked[i] = masked.at(i) ^ mask.at(i % 4);
     frame.append(masked);
     m_socket->write(frame);
+    ++m_txControlFrames;
+    m_lastTxMs = QDateTime::currentMSecsSinceEpoch();
+    emit networkDiagnosticsChanged();
+}
+
+QList<QJsonObject> ServerNode::networkDiagnostics() const
+{
+    QJsonObject row;
+    row.insert(QStringLiteral("connection"), QStringLiteral("Mainnode room"));
+    row.insert(QStringLiteral("kind"), QStringLiteral("mainnode"));
+    row.insert(QStringLiteral("durableObject"),
+               QStringLiteral("Room DO: %1").arg(m_roomName));
+    row.insert(QStringLiteral("endpoint"), endpointDisplay(m_url));
+    row.insert(QStringLiteral("state"),
+               m_wsReady ? QStringLiteral("Connected")
+                         : (m_socket ? QStringLiteral("Connecting")
+                                     : QStringLiteral("Disconnected")));
+    row.insert(QStringLiteral("connected"), m_wsReady);
+    row.insert(QStringLiteral("connectedAtMs"), double(m_wsConnectedAtMs));
+    row.insert(QStringLiteral("lastRxMs"), double(m_lastRxMs));
+    row.insert(QStringLiteral("lastTxMs"), double(m_lastTxMs));
+    row.insert(QStringLiteral("rxFrames"), double(m_rxFrames));
+    row.insert(QStringLiteral("txFrames"), double(m_txFrames));
+    row.insert(QStringLiteral("rxBytes"), double(m_rxBytes));
+    row.insert(QStringLiteral("txBytes"), double(m_txBytes));
+    row.insert(QStringLiteral("rxControlFrames"), double(m_rxControlFrames));
+    row.insert(QStringLiteral("txControlFrames"), double(m_txControlFrames));
+    row.insert(QStringLiteral("lastRxBytes"), m_lastRxBytes);
+    row.insert(QStringLiteral("lastTxBytes"), m_lastTxBytes);
+    row.insert(QStringLiteral("lastRxType"), m_lastRxType);
+    row.insert(QStringLiteral("lastRxScope"), m_lastRxScope);
+    row.insert(QStringLiteral("lastTxType"), m_lastTxType);
+    row.insert(QStringLiteral("lastTxScope"), m_lastTxScope);
+    row.insert(QStringLiteral("peers"), m_peers.size());
+    row.insert(QStringLiteral("channels"), m_channels.size());
+    row.insert(QStringLiteral("mirrors"), m_mirroredRepos.size());
+    row.insert(QStringLiteral("data"),
+               QStringLiteral("Encrypted room frames: chat/edit/delete/reaction/admin-delete "
+                              "are durable history; hello/presence/typing/avatar/history/"
+                              "mirror/cove frames are ephemeral; direct/private frames are "
+                              "targeted."));
+    return {row};
 }
 
 QJsonObject ServerNode::makeMessage(const QString &type) const
@@ -640,15 +747,14 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
     // encrypted) and replay them to nodes that join later — giving new users
     // some recent history even when no other node is online. Ephemeral frames
     // (typing/presence/hello/history/avatar) and private DMs are never retained.
-    static const QSet<QString> kDurableTypes = {
-        QStringLiteral("chat"), QStringLiteral("edit"),
-        QStringLiteral("delete"), QStringLiteral("reaction"),
-        QStringLiteral("admin-delete")};
-    if (kDurableTypes.contains(plain.value("type").toString()))
+    const QString type = plain.value("type").toString();
+    const bool durable = isDurableMainnodeType(type);
+    if (durable)
         envelope.insert("persist", true);
-    sendTextFrame(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
+    sendTextFrame(QJsonDocument(envelope).toJson(QJsonDocument::Compact),
+                  type, mainnodeScopeFor(plain, durable));
     if (showActivity)
-        emit systemMessage("Network: sent encrypted " + plain.value("type").toString() +
+        emit systemMessage("Network: sent encrypted " + type +
                            " through mainnode room " + m_roomName + ".");
 }
 
@@ -1011,6 +1117,9 @@ void ServerNode::shutdown()
         m_socket->deleteLater();
         m_socket = nullptr;
     }
+    m_wsReady = false;
+    m_wsConnectedAtMs = 0;
+    emit networkDiagnosticsChanged();
 }
 
 void ServerNode::handlePlain(const QJsonObject &message)

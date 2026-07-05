@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 22
 title: make it so that the only users can join is if they get an invite code they choose a permanent username
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

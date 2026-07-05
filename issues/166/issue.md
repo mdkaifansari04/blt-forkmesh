@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 166
 title: new issue test
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

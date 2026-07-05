@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 159
 title: : fixing an issue with claude code gets stuck here - please fix it so we see what is going on ==> Using the Claude Code login (ignoring any API key).
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

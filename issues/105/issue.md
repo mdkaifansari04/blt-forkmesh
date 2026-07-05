@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 105
 title: enable automated sweeper to treasury and nodes when someone joins
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

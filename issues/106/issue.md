@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 106
 title: on the top top bar swap the word relay with the icon of the relay so the icon is first - also lets put the login into a favicon for the worker
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

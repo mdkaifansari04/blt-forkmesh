@@ -73,6 +73,7 @@ public:
                           const QString &coveName, const QString &openerKey,
                           const QString &openerName, qint64 ts,
                           const QString &signature) override;
+    QList<QJsonObject> networkDiagnostics() const override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
 
@@ -103,7 +104,8 @@ private:
     void onSocketReadyRead();
     void onConnectedTransport();
     void processFrame(const QByteArray &payload);
-    void sendTextFrame(const QByteArray &payload);
+    void sendTextFrame(const QByteArray &payload, const QString &type = QString(),
+                       const QString &scope = QString());
     void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void sendEncrypted(const QJsonObject &plain, bool showActivity = false);
     void sendHello();
@@ -183,6 +185,21 @@ private:
     int m_reconnectAttempts = 0; // consecutive failures since the last upgrade
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
+    qint64 m_wsConnectedAtMs = 0;
+    qint64 m_lastRxMs = 0;
+    qint64 m_lastTxMs = 0;
+    qint64 m_rxFrames = 0;
+    qint64 m_txFrames = 0;
+    qint64 m_rxBytes = 0;
+    qint64 m_txBytes = 0;
+    qint64 m_rxControlFrames = 0;
+    qint64 m_txControlFrames = 0;
+    int m_lastRxBytes = 0;
+    int m_lastTxBytes = 0;
+    QString m_lastRxType;
+    QString m_lastRxScope;
+    QString m_lastTxType;
+    QString m_lastTxScope;
 
     // #welcome is the shared greeting room every node joins; a brand-new node
     // posts a one-time hello there so the network sees who joined (issue #192).

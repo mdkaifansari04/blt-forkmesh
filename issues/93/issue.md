@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 93
 title: if there is a sync waiting like push 1 comits to origin/main show a button in the top to do this sync please
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

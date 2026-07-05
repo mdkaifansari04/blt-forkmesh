@@ -1761,6 +1761,7 @@ void MainWindow::stopRepoHosts()
         host->deleteLater();
     }
     m_repoHosts.clear();
+    refreshNetworkDiagnostics();
 }
 
 void MainWindow::startRepoHosts()
@@ -1795,9 +1796,15 @@ void MainWindow::startRepoHosts()
         });
         connect(host, &RepoHost::log, this, &MainWindow::logSystem);
         connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
+        connect(host, &RepoHost::networkDiagnosticsChanged, this, [this] {
+            if (m_sectionStack &&
+                m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
+                refreshNetworkDiagnostics();
+        });
         host->start();
         m_repoHosts.append(host);
     }
+    refreshNetworkDiagnostics();
 }
 
 void MainWindow::onRequestServed(const QString &owner, const QString &name, bool clone)

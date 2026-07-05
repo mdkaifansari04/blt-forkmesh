@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 80
 title: make it so that when you click on an issue's description and it's empty it goes to edit mode also move th e edit function to a small button next to the 3 dots
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

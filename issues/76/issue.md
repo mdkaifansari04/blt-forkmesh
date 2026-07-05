@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 76
 title: on the node profile show what version they are running please
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

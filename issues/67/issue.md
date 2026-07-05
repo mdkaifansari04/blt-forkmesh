@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 67
 title: make it so that when the mirrors update from the source of truth they get an alert
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 332
 title: When I click on browse network, it sends me back to the homepage. It should show the network of Notes instead.
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

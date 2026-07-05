@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 49
 title: alow users to vote more than once with their credits
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

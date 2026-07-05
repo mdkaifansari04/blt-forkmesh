@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 180
 title: if there is a conflict on a pr have a conflict editor that lets us edit the files and click accept incoming etc...
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 48
 title: move the node / user avatar to above the refresh button and let the user change it in their profile edit view from a right panel profile / node view
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

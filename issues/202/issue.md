@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 202
 title: delete pr and branch makes the app freeze
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 4
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 79
 title: when restarting always pick up with the last repository the user was viewing - also make assign agent and create pr auto checked in the quick task
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

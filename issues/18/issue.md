@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 18
 title: show the open / closed status in the issue list
 status: closed
-labels: []
+labels: [enhancement]
 milestone: v1
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 376
 title: make these show real commit messages
 status: open
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

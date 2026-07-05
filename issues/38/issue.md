@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 38
 title: do not allow it to run as root
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

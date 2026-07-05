@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 326
 title: issue to the mirror hopefully it syncs to SOT
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

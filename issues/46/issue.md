@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 46
 title: have the abilityh to click on a 3 dot next to the node name in node / repo  / member list and remove it - we have some phantom nodes with early testing
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

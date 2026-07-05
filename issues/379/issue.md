@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 379
 title: If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online
 status: open
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 70
 title: allow for agents to run in paralell so no queue
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

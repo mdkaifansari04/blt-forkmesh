@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 225
 title: the pin check is blocking make it run in the background please
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 7
 progress: 0

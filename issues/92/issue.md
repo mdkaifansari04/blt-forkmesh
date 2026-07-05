@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 92
 title: fix the ai spend it says unavailable for open ai
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

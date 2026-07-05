@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 215
 title: even if the pr says merged have a reopen button please on the qt app
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 247
 title: make sure when we restart forkmesh the agents keep running and default quick issue agent to claude code
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 18
 progress: 0

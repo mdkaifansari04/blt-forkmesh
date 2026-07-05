@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 183
 title: please add color output / emojis to the workflow detail terminal
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

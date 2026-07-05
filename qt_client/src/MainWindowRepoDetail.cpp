@@ -246,106 +246,126 @@ void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
             QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
 }
 
-// Defined further down (used by the status/agent code); declared here so the
-// "Files" cell can gate its background refresh on whether the session is live.
-// agentSessionActive() is a shared helper declared in MainWindowInternal.h.
+namespace {
+constexpr int kIssueFilesColumn = 15;
+constexpr int kAttachmentIconSize = 14;
+constexpr int kAttachmentIconGap = 2;
+constexpr int kMaxIssueListAttachmentIcons = 8;
 
-// adhoc #151: fill the issue list's "Files" cell. Mirrors refreshIssueFilesPanel's
-// source preference — a linked agent session's live worktree diff (counted async
-// against the session base, cached per issue so a re-sort/rebuild shows it at
-// once), else the newest linked PR's stored file count. No source -> a blank cell.
-void MainWindow::populateIssueFilesCell(int row, const Issue &issue)
+QStringList visibleIssueAttachments(const Issue &issue)
 {
-    auto *item = new SortTableWidgetItem(QString());
-    item->setTextAlignment(Qt::AlignCenter);
-    item->setData(kTableSortRole, -1); // no changes sorts before any real count
-    m_issueTable->setItem(row, 15, item);
+    QHash<QString, IssueEvent> edits;
+    QSet<QString> deleted;
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type == QLatin1String("edit") && !ev.target.isEmpty())
+            edits.insert(ev.target, ev);
+        else if (ev.type == QLatin1String("delete") && !ev.target.isEmpty() &&
+                 ev.target != QLatin1String("self"))
+            deleted.insert(ev.target);
+    }
 
-    // A linked agent session's worktree gives a live count (committed +
-    // uncommitted) against the same base its PR is built from.
-    if (const AgentSession *s = latestAgentSessionForIssue(issue.number)) {
-        const QString dir = sessionWorkdir(s->id);
-        if (!dir.isEmpty()) {
-            // Show any cached count immediately so a rebuild/re-sort doesn't blank
-            // the cell; refresh it in the background.
-            const bool cached = m_issueFilesChangedCounts.contains(issue.number);
-            if (cached)
-                setIssueFilesCell(item, m_issueFilesChangedCounts.value(issue.number),
-                                  QStringLiteral("worktree branch"));
-            // Re-run only while the agent is active (the tree is changing) or when
-            // the count isn't cached yet, to avoid spawning git on every rebuild.
-            if (agentSessionActive(s) || !cached) {
-                const QString base = sessionBaseRef(s->id);
-                QStringList args{QStringLiteral("diff"), QStringLiteral("--name-only")};
-                if (!base.isEmpty())
-                    args << base;
-                const int issueNo = issue.number;
-                runGitDetached(dir, args,
-                               [this, issueNo](bool ok, const QByteArray &out) {
-                                   if (!ok)
-                                       return;
-                                   const QByteArray trimmed = out.trimmed();
-                                   const int n =
-                                       trimmed.isEmpty() ? 0 : trimmed.count('\n') + 1;
-                                   m_issueFilesChangedCounts.insert(issueNo, n);
-                                   applyIssueFilesCount(
-                                       issueNo, n, QStringLiteral("worktree branch"));
-                               });
-            }
+    QStringList files;
+    QSet<QString> seen;
+    auto append = [&](const QString &rel) {
+        const QString clean = rel.trimmed();
+        if (clean.isEmpty() || seen.contains(clean))
             return;
-        }
-    }
+        seen.insert(clean);
+        files << clean;
+    };
 
-    // Otherwise fall back to the newest linked PR's stored file count.
-    const QList<int> pulls = pullsLinkedToIssue(issue.number);
-    for (auto it = pulls.crbegin(); it != pulls.crend(); ++it) {
-        for (const PullRequest &pr : m_currentPulls) {
-            if (pr.number == *it && pr.filesChanged > 0) {
-                setIssueFilesCell(
-                    item, pr.filesChanged,
-                    QStringLiteral("pull request #%1").arg(pr.number));
-                return;
-            }
-        }
+    for (const IssueEvent &ev : issue.events) {
+        if (ev.type != QLatin1String("open") && ev.type != QLatin1String("comment"))
+            continue;
+        if (ev.type == QLatin1String("comment") && deleted.contains(ev.id))
+            continue;
+        const IssueEvent shown = edits.value(ev.id, ev);
+        for (const QString &rel : shown.attachments)
+            append(rel);
     }
+    return files;
 }
 
-// Stamp a files-changed count onto an existing "Files" cell: an octicon + count
-// when there are changes, a blank cell otherwise. Numeric sort via kTableSortRole.
-void MainWindow::setIssueFilesCell(QTableWidgetItem *item, int count,
-                                   const QString &source)
+QString issueAttachmentToolTip(const QStringList &attachments)
 {
-    if (!item)
-        return;
-    if (count > 0) {
-        item->setText(QString::number(count));
-        item->setIcon(themedOcticon("file-diff", QColor("#d29922"), 14));
-        item->setToolTip(QStringLiteral("%1 file%2 changed via %3")
-                             .arg(count)
-                             .arg(count == 1 ? "" : "s", source));
-    } else {
-        item->setText(QString());
-        item->setIcon(QIcon());
-        item->setToolTip(QString());
-    }
-    item->setData(kTableSortRole, count);
+    if (attachments.isEmpty())
+        return QString();
+    QStringList lines;
+    lines << QStringLiteral("Attached files:");
+    const int shown = qMin(attachments.size(), 20);
+    for (int i = 0; i < shown; ++i)
+        lines << QStringLiteral("- %1").arg(attachments.at(i));
+    if (attachments.size() > shown)
+        lines << QStringLiteral("- ... and %1 more").arg(attachments.size() - shown);
+    return lines.join(QLatin1Char('\n'));
 }
 
-// Apply an async files-changed count to whatever row currently holds the issue:
-// the table may have re-sorted/rebuilt since the git diff was kicked off, so look
-// the row up by issue number rather than trusting a stale row index.
-void MainWindow::applyIssueFilesCount(int issueNumber, int count,
-                                      const QString &source)
+QWidget *makeIssueAttachmentStrip(const QStringList &attachments, QWidget *parent)
+{
+    auto *strip = new QWidget(parent);
+    strip->setAttribute(Qt::WA_TransparentForMouseEvents);
+    strip->setToolTip(issueAttachmentToolTip(attachments));
+    strip->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    auto *layout = new QHBoxLayout(strip);
+    layout->setContentsMargins(4, 0, 4, 0);
+    layout->setSpacing(kAttachmentIconGap);
+    layout->setAlignment(Qt::AlignCenter);
+
+    const QPixmap icon =
+        tintedOcticonPixmap(QStringLiteral("file"), QColor("#58a6ff"),
+                            kAttachmentIconSize);
+    const int shown = qMin(attachments.size(), kMaxIssueListAttachmentIcons);
+    for (int i = 0; i < shown; ++i) {
+        auto *label = new QLabel(strip);
+        label->setFixedSize(kAttachmentIconSize, kAttachmentIconSize);
+        label->setPixmap(icon);
+        label->setToolTip(attachments.at(i));
+        label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        layout->addWidget(label);
+    }
+    if (attachments.size() > shown) {
+        auto *more =
+            new QLabel(QStringLiteral("+%1").arg(attachments.size() - shown), strip);
+        more->setStyleSheet(QStringLiteral(
+            "color:#8b949e; background:transparent; font-size:11px;"));
+        more->setAttribute(Qt::WA_TransparentForMouseEvents);
+        layout->addWidget(more);
+    }
+    return strip;
+}
+
+int issueAttachmentCellWidth(int count)
+{
+    if (count <= 0)
+        return 24;
+    const int shown = qMin(count, kMaxIssueListAttachmentIcons);
+    int width = 8 + shown * kAttachmentIconSize +
+                qMax(0, shown - 1) * kAttachmentIconGap;
+    if (count > shown)
+        width += 28;
+    return width;
+}
+} // namespace
+
+void MainWindow::populateIssueFilesCell(int row, const Issue &issue)
 {
     if (!m_issueTable)
         return;
-    for (int r = 0; r < m_issueTable->rowCount(); ++r) {
-        QTableWidgetItem *numItem = m_issueTable->item(r, 0);
-        if (numItem && numItem->data(Qt::UserRole).toInt() == issueNumber) {
-            setIssueFilesCell(m_issueTable->item(r, 15), count, source);
-            return;
-        }
-    }
+
+    const QStringList attachments = visibleIssueAttachments(issue);
+    const int count = attachments.size();
+    auto *item = new SortTableWidgetItem(count > 0 ? QString::number(count)
+                                                   : QString());
+    item->setTextAlignment(Qt::AlignCenter);
+    item->setData(kTableSortRole, count);
+    item->setToolTip(issueAttachmentToolTip(attachments));
+    item->setSizeHint(QSize(issueAttachmentCellWidth(count), 20));
+    m_issueTable->setItem(row, kIssueFilesColumn, item);
+    if (count > 0)
+        m_issueTable->setCellWidget(
+            row, kIssueFilesColumn,
+            makeIssueAttachmentStrip(attachments, m_issueTable));
 }
 
 QWidget *MainWindow::buildRepoFilesPanel()
@@ -4461,7 +4481,7 @@ void MainWindow::rebuildGlobalSearchResults()
         {"Leaderboards", "graph", 5},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
-        {"Firewall", "shield-check", 9},
+        {"Network", "workflow", kNetworkDiagnosticsSectionIndex},
         {"Settings", "gear", 1},
     };
     bool header = false;

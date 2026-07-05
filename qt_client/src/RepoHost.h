@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -29,6 +30,7 @@ public:
 
     void start();
     void stop();
+    QJsonObject networkDiagnostics() const;
 
     // Supplies a freshly-signed "ts=…&sig=…" query string appended to the /host
     // upgrade so the relay can verify this node may host owner/repo. Called on
@@ -41,6 +43,7 @@ signals:
     // Emitted whenever a web request is served for this repo; clone=true for a
     // git clone (upload-pack) so the client can count relays and clones.
     void requestServed(const QString &owner, const QString &name, bool clone);
+    void networkDiagnosticsChanged();
 
 private:
     void connectSocket();
@@ -50,6 +53,8 @@ private:
     void sendText(const QByteArray &payload);
     void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void handleFrame(const QByteArray &payload);
+    void noteIncomingPayload(const QJsonObject &payload);
+    void noteOutgoingPayload(const QByteArray &payload);
     void handleRequest(const QJsonObject &request);
     QString baseRef() const;
     QStringList branchRefCandidates(const QString &branch) const;
@@ -96,6 +101,21 @@ private:
     bool m_wsReady = false;
     bool m_stopping = false;
     qint64 m_lastRx = 0; // ms epoch of the last bytes received; detects a half-open socket
+    qint64 m_wsConnectedAtMs = 0;
+    qint64 m_lastRxMs = 0;
+    qint64 m_lastTxMs = 0;
+    qint64 m_rxFrames = 0;
+    qint64 m_txFrames = 0;
+    qint64 m_rxBytes = 0;
+    qint64 m_txBytes = 0;
+    qint64 m_rxControlFrames = 0;
+    qint64 m_txControlFrames = 0;
+    int m_lastRxBytes = 0;
+    int m_lastTxBytes = 0;
+    QString m_lastRxType;
+    QString m_lastRxOp;
+    QString m_lastTxType;
+    QString m_lastTxOp;
     QTimer *m_reconnect = nullptr;
     QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
     std::function<QString()> m_tokenProvider; // fresh /host auth token per connect

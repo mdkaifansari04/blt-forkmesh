@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 125
 title: Uncaught ReferenceError: Cannot access 'downloadProgress' before initialization
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

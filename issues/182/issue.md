@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 182
 title: show updated as a sortable folumn on issues table too
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

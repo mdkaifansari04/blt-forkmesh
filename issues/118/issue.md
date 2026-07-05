@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 118
 title: update the repo that is used from the install to be the currently online node with most uptime instad of from node-7zmh_2s_
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

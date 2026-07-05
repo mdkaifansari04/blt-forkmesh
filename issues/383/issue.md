@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 383
 title: log clearly in the log with a big line across when the app starts and stops -…
 status: open
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

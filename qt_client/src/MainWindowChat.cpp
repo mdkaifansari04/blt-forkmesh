@@ -15,12 +15,11 @@
 
 #include <QBrush>
 #include <QNetworkInformation>
+#include <QTabWidget>
 
 #include <algorithm>
 
 using namespace forkmesh::ui;
-
-constexpr int kNetworkReposSectionIndex = 11;
 
 // -------------------------------------------------------------- server rail
 
@@ -276,12 +275,14 @@ QWidget *MainWindow::buildChatPage()
     logStartup(QStringLiteral("  buildChatPage: hosts section built"));
     m_sectionStack->addWidget(buildRelaysSection());     // 8 Relays
     logStartup(QStringLiteral("  buildChatPage: relays section built"));
-    m_sectionStack->addWidget(buildFirewallSection());   // 9 Firewall
-    logStartup(QStringLiteral("  buildChatPage: firewall section built"));
+    m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
+    logStartup(QStringLiteral("  buildChatPage: firewall redirect section built"));
     m_sectionStack->addWidget(buildNodeProfileSection()); // 10 Node profile (full page)
     logStartup(QStringLiteral("  buildChatPage: node profile section built"));
     m_sectionStack->addWidget(buildNetworkReposSection()); // 11 Repos (network catalog)
     logStartup(QStringLiteral("  buildChatPage: network repos section built"));
+    m_sectionStack->addWidget(buildNetworkDiagnosticsSection()); // 12 Network diagnostics
+    logStartup(QStringLiteral("  buildChatPage: network diagnostics section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
     // section fills the whole width.
@@ -2877,17 +2878,17 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relaysNavButton, &QPushButton::clicked, this,
             [this] { showSection(8); });
 
-    // Firewall: whitelist-only outbound request gate, beside Relays as section 9.
-    m_firewallNavButton = new QPushButton(QStringLiteral("Firewall"));
-    m_firewallNavButton->setObjectName("topNavButton");
-    m_firewallNavButton->setCheckable(true);
-    m_firewallNavButton->setCursor(Qt::PointingHandCursor);
-    m_firewallNavButton->setToolTip(
-        QString::fromUtf8("Firewall \xE2\x80\x94 outbound request whitelist"));
-    setOcticon(m_firewallNavButton, "shield-check", 16);
-    m_navGroup->addButton(m_firewallNavButton, 9); // section 9: Firewall
-    connect(m_firewallNavButton, &QPushButton::clicked, this,
-            [this] { showSection(9); });
+    // Network: websocket / Durable Object diagnostics plus outbound firewall.
+    m_networkNavButton = new QPushButton(QStringLiteral("Network"));
+    m_networkNavButton->setObjectName("topNavButton");
+    m_networkNavButton->setCheckable(true);
+    m_networkNavButton->setCursor(Qt::PointingHandCursor);
+    m_networkNavButton->setToolTip(
+        QStringLiteral("Network - websocket and Durable Object diagnostics"));
+    setOcticon(m_networkNavButton, "workflow", 16);
+    m_navGroup->addButton(m_networkNavButton, kNetworkDiagnosticsSectionIndex);
+    connect(m_networkNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kNetworkDiagnosticsSectionIndex); });
 
     // Small, icon-only rebuild+restart button, right-aligned under the avatar on
     // the section-nav row. Hidden unless opted in via Settings (off by default);
@@ -3139,7 +3140,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_relaysNavButton);
-    navRow->addWidget(m_firewallNavButton);
+    navRow->addWidget(m_networkNavButton);
     navRow->addSpacing(16);
     // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
     navRow->addWidget(m_footerDiagnostics);
@@ -5487,6 +5488,8 @@ void MainWindow::enablePaidMirroring()
 
 void MainWindow::showSection(int index)
 {
+    if (index == 9)
+        index = kNetworkDiagnosticsSectionIndex;
     // Leaving Settings (index 1) while the mic test is recording would otherwise
     // leave the recorder holding the microphone open in the background; stop it.
     if (index != 1 && m_voiceTestRecording)
@@ -5536,10 +5539,11 @@ void MainWindow::showSection(int index)
     } else if (index == 8) {
         // Re-list and re-probe the relays each time the Relays section opens.
         refreshRelaysTable();
-    } else if (index == 9) {
-        refreshFirewallTables();
     } else if (index == kNetworkReposSectionIndex) {
         refreshNetworkReposPage();
+    } else if (index == kNetworkDiagnosticsSectionIndex) {
+        refreshFirewallTables();
+        refreshNetworkDiagnostics();
     }
 }
 
@@ -7014,6 +7018,8 @@ void MainWindow::refreshFirewallTables()
             m_requestFirewallRulesTable->setItem(row, 0, label);
             m_requestFirewallRulesTable->setItem(row, 1, raw);
         }
+        m_requestFirewallRulesTable->resizeColumnsToContents();
+        m_requestFirewallRulesTable->resizeRowsToContents();
     }
 
     if (m_requestFirewallHistoryTable) {
@@ -7045,7 +7051,726 @@ void MainWindow::refreshFirewallTables()
         }
         m_requestFirewallHistoryTable->setSortingEnabled(true);
         m_requestFirewallHistoryTable->sortItems(4, Qt::DescendingOrder);
+        m_requestFirewallHistoryTable->resizeColumnsToContents();
+        m_requestFirewallHistoryTable->resizeRowsToContents();
     }
+}
+
+// --- Network diagnostics ----------------------------------------------------
+
+namespace {
+
+constexpr int kNetworkEndpointKindRole = Qt::UserRole + 100;
+constexpr int kNetworkEndpointMethodRole = Qt::UserRole + 101;
+constexpr int kNetworkEndpointUrlRole = Qt::UserRole + 102;
+
+QString networkDiagText(const QJsonObject &object, const char *key,
+                        const QString &fallback = QString())
+{
+    const QJsonValue value = object.value(QString::fromLatin1(key));
+    const QString text = value.toString();
+    return text.isEmpty() ? fallback : text;
+}
+
+qint64 networkDiagInt(const QJsonObject &object, const char *key)
+{
+    return qRound64(object.value(QString::fromLatin1(key)).toDouble());
+}
+
+QString networkDiagBytes(qint64 bytes)
+{
+    if (bytes <= 0)
+        return QStringLiteral("0 B");
+    static const char *const units[] = {"B", "KB", "MB", "GB", "TB"};
+    double value = double(bytes);
+    int unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+    if (unit == 0)
+        return QStringLiteral("%1 B").arg(bytes);
+    return QStringLiteral("%1 %2")
+        .arg(QString::number(value, 'f', value >= 10.0 ? 1 : 2),
+             QString::fromLatin1(units[unit]));
+}
+
+QString networkDiagTraffic(const QJsonObject &row, const char *framesKey,
+                           const char *bytesKey, const char *controlKey)
+{
+    const qint64 frames = networkDiagInt(row, framesKey);
+    const qint64 bytes = networkDiagInt(row, bytesKey);
+    const qint64 control = networkDiagInt(row, controlKey);
+    QString text = QStringLiteral("%1 frame(s), %2")
+                       .arg(frames)
+                       .arg(networkDiagBytes(bytes));
+    if (control > 0)
+        text += QStringLiteral(" + %1 control").arg(control);
+    return text;
+}
+
+QString networkDiagLast(const QJsonObject &row, bool outgoing)
+{
+    const QString type = networkDiagText(row, outgoing ? "lastTxType" : "lastRxType");
+    const QString op = networkDiagText(row, outgoing ? "lastTxOp" : "lastRxOp");
+    const QString scope =
+        networkDiagText(row, outgoing ? "lastTxScope" : "lastRxScope");
+    const qint64 bytes =
+        networkDiagInt(row, outgoing ? "lastTxBytes" : "lastRxBytes");
+    const qint64 when = networkDiagInt(row, outgoing ? "lastTxMs" : "lastRxMs");
+
+    QStringList parts;
+    QString label = type;
+    if (!op.isEmpty())
+        label += QStringLiteral("/") + op;
+    if (!label.isEmpty())
+        parts << label;
+    if (!scope.isEmpty())
+        parts << scope;
+    if (bytes > 0)
+        parts << networkDiagBytes(bytes);
+    if (when > 0)
+        parts << formatRepoDate(when);
+    return parts.isEmpty() ? QStringLiteral("-") : parts.join(QStringLiteral(" - "));
+}
+
+QTableWidgetItem *networkDiagItem(const QString &text,
+                                  const QString &tooltip = QString())
+{
+    auto *item = new QTableWidgetItem(text);
+    if (!tooltip.isEmpty())
+        item->setToolTip(tooltip);
+    return item;
+}
+
+QTableWidgetItem *networkDiagNumberItem(qint64 value, const QString &suffix = QString())
+{
+    auto *item = new QTableWidgetItem(
+        suffix.isEmpty() ? QString::number(value)
+                         : QStringLiteral("%1 %2").arg(value).arg(suffix));
+    item->setData(Qt::UserRole, static_cast<qlonglong>(value));
+    return item;
+}
+
+QString networkEndpointStatus(const BackoffNetworkAccessManager::EndpointStats &stats)
+{
+    if (!stats.lastError.isEmpty())
+        return stats.lastStatus > 0
+                   ? QStringLiteral("ERR %1").arg(stats.lastStatus)
+                   : stats.lastError;
+    if (stats.lastStatus > 0)
+        return QString::number(stats.lastStatus);
+    return QStringLiteral("Called");
+}
+
+QString networkEndpointFirewall(const BackoffNetworkAccessManager::EndpointStats &stats)
+{
+    if (stats.blocked > 0)
+        return QStringLiteral("%1 allowed / %2 blocked")
+            .arg(stats.allowed)
+            .arg(stats.blocked);
+    if (stats.allowed > 0)
+        return QStringLiteral("Allowed");
+    return stats.firewallDecision.isEmpty() ? QStringLiteral("-")
+                                            : stats.firewallDecision;
+}
+
+QString networkRequestStatus(
+    const BackoffNetworkAccessManager::RequestRecord &record)
+{
+    if (record.blocked)
+        return QStringLiteral("Blocked");
+    if (!record.error.isEmpty())
+        return record.status > 0 ? QStringLiteral("ERR %1").arg(record.status)
+                                 : record.error;
+    if (record.status > 0)
+        return QString::number(record.status);
+    return record.finishedMs > 0 ? QStringLiteral("Done")
+                                 : QStringLiteral("Pending");
+}
+
+constexpr qint64 kNetworkEndpointFlashMs = 2200;
+
+QColor networkEndpointFlashColor(qint64 lastMs, qint64 nowMs)
+{
+    if (lastMs <= 0 || nowMs < lastMs)
+        return QColor();
+    const qint64 age = nowMs - lastMs;
+    if (age >= kNetworkEndpointFlashMs)
+        return QColor();
+    const double t = 1.0 - double(age) / double(kNetworkEndpointFlashMs);
+    QColor color(QStringLiteral("#238636"));
+    color.setAlpha(qBound(0, int(92.0 * t), 92));
+    return color;
+}
+
+bool networkApplyEndpointFlash(QTableWidget *table, int row, qint64 lastMs,
+                               qint64 nowMs)
+{
+    const QColor color = networkEndpointFlashColor(lastMs, nowMs);
+    if (!color.isValid())
+        return false;
+    for (int col = 0; col < table->columnCount(); ++col) {
+        if (auto *item = table->item(row, col))
+            item->setBackground(QBrush(color));
+    }
+    return true;
+}
+
+void networkPrepareFullTable(QTableWidget *table)
+{
+    table->setTextElideMode(Qt::ElideNone);
+    table->setWordWrap(false);
+    table->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    table->verticalHeader()->setDefaultSectionSize(28);
+}
+
+QWidget *networkTabPage()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+    return page;
+}
+
+} // namespace
+
+QWidget *MainWindow::buildNetworkDiagnosticsSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *header = new QHBoxLayout;
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("Network"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    header->addWidget(title);
+
+    m_networkDiagnosticsStatus = new QLabel;
+    m_networkDiagnosticsStatus->setObjectName("mutedLabel");
+    header->addWidget(m_networkDiagnosticsStatus, 1);
+
+    m_networkDiagnosticsRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_networkDiagnosticsRefreshButton->setObjectName("repoAction");
+    m_networkDiagnosticsRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_networkDiagnosticsRefreshButton, "sync", 14);
+    connect(m_networkDiagnosticsRefreshButton, &QPushButton::clicked, this,
+            [this] {
+                refreshFirewallTables();
+                refreshNetworkDiagnostics();
+            });
+    header->addWidget(m_networkDiagnosticsRefreshButton);
+    outer->addLayout(header);
+
+    auto *summary = new QLabel(QStringLiteral(
+        "Live endpoint usage, websocket Durable Object details and the outbound "
+        "request firewall in one place."));
+    summary->setObjectName("mutedLabel");
+    summary->setWordWrap(true);
+    outer->addWidget(summary);
+
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName(QStringLiteral("settingsTabs"));
+    tabs->setDocumentMode(true);
+    tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    outer->addWidget(tabs, 1);
+
+    auto *endpointsPage = networkTabPage();
+    auto *endpointsLayout = qobject_cast<QVBoxLayout *>(endpointsPage->layout());
+    m_networkEndpointsTable = new QTableWidget(0, 10);
+    installColumnHeaderMenu(m_networkEndpointsTable);
+    m_networkEndpointsTable->setObjectName("issueTable");
+    m_networkEndpointsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Endpoint"), QStringLiteral("Kind"),
+         QStringLiteral("Calls"), QStringLiteral("Status"),
+         QStringLiteral("Sent"), QStringLiteral("Received"),
+         QStringLiteral("Last"), QStringLiteral("Request data"),
+         QStringLiteral("Response data"), QStringLiteral("Firewall")});
+    m_networkEndpointsTable->verticalHeader()->setVisible(false);
+    m_networkEndpointsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_networkEndpointsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkEndpointsTable->setShowGrid(false);
+    m_networkEndpointsTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_networkEndpointsTable);
+    for (int c = 0; c < m_networkEndpointsTable->columnCount(); ++c)
+        m_networkEndpointsTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkEndpointsTable);
+    connect(m_networkEndpointsTable, &QTableWidget::cellClicked, this,
+            &MainWindow::showEndpointRequestDetails);
+    endpointsLayout->addWidget(m_networkEndpointsTable, 1);
+    tabs->addTab(endpointsPage, QStringLiteral("Endpoints"));
+
+    auto *socketsPage = networkTabPage();
+    auto *socketsLayout = qobject_cast<QVBoxLayout *>(socketsPage->layout());
+    m_networkDiagnosticsTable = new QTableWidget(0, 9);
+    installColumnHeaderMenu(m_networkDiagnosticsTable);
+    m_networkDiagnosticsTable->setObjectName("issueTable");
+    m_networkDiagnosticsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Connection"), QStringLiteral("Durable object"),
+         QStringLiteral("Endpoint"), QStringLiteral("State"),
+         QStringLiteral("Sent"), QStringLiteral("Received"),
+         QStringLiteral("Last sent"), QStringLiteral("Last received"),
+         QStringLiteral("Data carried")});
+    m_networkDiagnosticsTable->verticalHeader()->setVisible(false);
+    m_networkDiagnosticsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_networkDiagnosticsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkDiagnosticsTable->setShowGrid(false);
+    m_networkDiagnosticsTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_networkDiagnosticsTable);
+    for (int c = 0; c < m_networkDiagnosticsTable->columnCount(); ++c)
+        m_networkDiagnosticsTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_networkDiagnosticsTable);
+    socketsLayout->addWidget(m_networkDiagnosticsTable, 1);
+    tabs->addTab(socketsPage, QStringLiteral("WebSocket Durable Objects"));
+
+    auto *whitelistPage = networkTabPage();
+    auto *whitelistLayout = qobject_cast<QVBoxLayout *>(whitelistPage->layout());
+    auto *firewallRow = new QHBoxLayout;
+    firewallRow->setContentsMargins(0, 0, 0, 0);
+    firewallRow->setSpacing(8);
+    m_requestFirewallEnabledCheck = new QCheckBox(QStringLiteral("Whitelist only"));
+    m_requestFirewallEnabledCheck->setCursor(Qt::PointingHandCursor);
+    m_requestFirewallEnabledCheck->setChecked(
+        QSettings().value(kRequestFirewallEnabledSetting, true).toBool());
+    connect(m_requestFirewallEnabledCheck, &QCheckBox::toggled, this,
+            [this](bool on) {
+                QSettings().setValue(kRequestFirewallEnabledSetting, on);
+                if (auto *manager = requestFirewallManager(m_networkAccess))
+                    manager->setFirewallEnabled(on);
+                logSystem(on ? QStringLiteral("Firewall: whitelist-only mode enabled.")
+                             : QStringLiteral("Firewall: whitelist-only mode disabled."));
+                refreshFirewallTables();
+                refreshNetworkDiagnostics();
+            });
+    firewallRow->addWidget(m_requestFirewallEnabledCheck);
+
+    m_requestFirewallStatus = new QLabel;
+    m_requestFirewallStatus->setObjectName("mutedLabel");
+    firewallRow->addWidget(m_requestFirewallStatus, 1);
+    whitelistLayout->addLayout(firewallRow);
+
+    auto *ruleRow = new QHBoxLayout;
+    ruleRow->setContentsMargins(0, 0, 0, 0);
+    ruleRow->setSpacing(8);
+    m_requestFirewallRuleEdit = new QLineEdit;
+    m_requestFirewallRuleEdit->setPlaceholderText(
+        QStringLiteral("Add firewall rule: host, host:port, *.domain, https://host/path, scheme:https, *"));
+    ruleRow->addWidget(m_requestFirewallRuleEdit, 1);
+    auto *addRule = new QPushButton(QStringLiteral("Add rule"));
+    addRule->setObjectName("repoAction");
+    addRule->setCursor(Qt::PointingHandCursor);
+    setOcticon(addRule, "plus", 14);
+    connect(addRule, &QPushButton::clicked, this,
+            &MainWindow::addFirewallRuleFromEdit);
+    connect(m_requestFirewallRuleEdit, &QLineEdit::returnPressed, this,
+            &MainWindow::addFirewallRuleFromEdit);
+    ruleRow->addWidget(addRule);
+    m_requestFirewallRemoveButton = new QPushButton(QStringLiteral("Remove rule"));
+    m_requestFirewallRemoveButton->setObjectName("repoAction");
+    m_requestFirewallRemoveButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_requestFirewallRemoveButton, "trash", 14);
+    connect(m_requestFirewallRemoveButton, &QPushButton::clicked, this,
+            &MainWindow::removeSelectedFirewallRules);
+    ruleRow->addWidget(m_requestFirewallRemoveButton);
+    whitelistLayout->addLayout(ruleRow);
+
+    m_requestFirewallRulesTable = new QTableWidget(0, 2);
+    installColumnHeaderMenu(m_requestFirewallRulesTable);
+    m_requestFirewallRulesTable->setObjectName("issueTable");
+    m_requestFirewallRulesTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Rule"), QStringLiteral("Stored as")});
+    m_requestFirewallRulesTable->verticalHeader()->setVisible(false);
+    m_requestFirewallRulesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_requestFirewallRulesTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_requestFirewallRulesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_requestFirewallRulesTable->setShowGrid(false);
+    networkPrepareFullTable(m_requestFirewallRulesTable);
+    for (int c = 0; c < m_requestFirewallRulesTable->columnCount(); ++c)
+        m_requestFirewallRulesTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_requestFirewallRulesTable);
+    whitelistLayout->addWidget(m_requestFirewallRulesTable, 1);
+    tabs->addTab(whitelistPage, QStringLiteral("Firewall Whitelist"));
+
+    auto *decisionsPage = networkTabPage();
+    auto *decisionsLayout = qobject_cast<QVBoxLayout *>(decisionsPage->layout());
+    auto *decisionsRow = new QHBoxLayout;
+    decisionsRow->setContentsMargins(0, 0, 0, 0);
+    decisionsRow->setSpacing(8);
+    decisionsRow->addStretch();
+    auto *clearHistory = new QPushButton(QStringLiteral("Clear decisions"));
+    clearHistory->setObjectName("repoAction");
+    clearHistory->setCursor(Qt::PointingHandCursor);
+    setOcticon(clearHistory, "trash", 14);
+    connect(clearHistory, &QPushButton::clicked, this,
+            &MainWindow::clearFirewallHistory);
+    decisionsRow->addWidget(clearHistory);
+    decisionsLayout->addLayout(decisionsRow);
+
+    m_requestFirewallHistoryTable = new QTableWidget(0, 5);
+    installColumnHeaderMenu(m_requestFirewallHistoryTable);
+    m_requestFirewallHistoryTable->setObjectName("issueTable");
+    m_requestFirewallHistoryTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Decision"), QStringLiteral("Method"),
+         QStringLiteral("Destination"), QStringLiteral("Rule"),
+         QStringLiteral("When")});
+    m_requestFirewallHistoryTable->verticalHeader()->setVisible(false);
+    m_requestFirewallHistoryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_requestFirewallHistoryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_requestFirewallHistoryTable->setShowGrid(false);
+    m_requestFirewallHistoryTable->setSortingEnabled(true);
+    networkPrepareFullTable(m_requestFirewallHistoryTable);
+    for (int c = 0; c < m_requestFirewallHistoryTable->columnCount(); ++c)
+        m_requestFirewallHistoryTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_requestFirewallHistoryTable);
+    decisionsLayout->addWidget(m_requestFirewallHistoryTable, 1);
+    tabs->addTab(decisionsPage, QStringLiteral("Recent Firewall Decisions"));
+
+    refreshFirewallTables();
+    refreshNetworkDiagnostics();
+    return page;
+}
+
+void MainWindow::refreshNetworkDiagnostics()
+{
+    if (!m_networkDiagnosticsTable)
+        return;
+
+    QList<QJsonObject> rows;
+    if (m_backend)
+        rows += m_backend->networkDiagnostics();
+    for (RepoHost *host : std::as_const(m_repoHosts)) {
+        if (host)
+            rows.append(host->networkDiagnostics());
+    }
+    QList<BackoffNetworkAccessManager::EndpointStats> endpointStats;
+    if (auto *manager = requestFirewallManager(m_networkAccess))
+        endpointStats = manager->endpointStats();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    bool endpointFadeActive = false;
+
+    int connected = 0;
+    qint64 txBytes = 0;
+    qint64 rxBytes = 0;
+    qint64 txFrames = 0;
+    qint64 rxFrames = 0;
+    for (const QJsonObject &row : std::as_const(rows)) {
+        if (row.value(QStringLiteral("connected")).toBool())
+            ++connected;
+        txBytes += networkDiagInt(row, "txBytes");
+        rxBytes += networkDiagInt(row, "rxBytes");
+        txFrames += networkDiagInt(row, "txFrames");
+        rxFrames += networkDiagInt(row, "rxFrames");
+    }
+    if (m_networkDiagnosticsStatus) {
+        m_networkDiagnosticsStatus->setText(
+            QStringLiteral("%1 endpoint(s) - %2/%3 websocket(s) connected - "
+                           "%4 sent in %5 frame(s), %6 received in %7 frame(s)")
+                .arg(endpointStats.size() + rows.size())
+                .arg(connected)
+                .arg(rows.size())
+                .arg(networkDiagBytes(txBytes))
+                .arg(txFrames)
+                .arg(networkDiagBytes(rxBytes))
+                .arg(rxFrames));
+    }
+
+    if (m_networkEndpointsTable) {
+        TableRepaintGuard repaintGuard(m_networkEndpointsTable);
+        m_networkEndpointsTable->setSortingEnabled(false);
+        m_networkEndpointsTable->setRowCount(0);
+
+        for (const BackoffNetworkAccessManager::EndpointStats &stats :
+             std::as_const(endpointStats)) {
+            const int row = m_networkEndpointsTable->rowCount();
+            m_networkEndpointsTable->insertRow(row);
+            auto *endpoint = networkDiagItem(stats.endpoint, stats.endpoint);
+            endpoint->setIcon(themedOcticon(QStringLiteral("link"),
+                                            QColor(QStringLiteral("#8b949e")), 15));
+            endpoint->setData(kNetworkEndpointKindRole, QStringLiteral("http"));
+            endpoint->setData(kNetworkEndpointMethodRole, stats.method);
+            endpoint->setData(kNetworkEndpointUrlRole, stats.endpoint);
+            m_networkEndpointsTable->setItem(row, 0, endpoint);
+            m_networkEndpointsTable->setItem(row, 1,
+                                             networkDiagItem(stats.method));
+            m_networkEndpointsTable->setItem(row, 2,
+                                             networkDiagNumberItem(stats.calls));
+            auto *status = networkDiagItem(networkEndpointStatus(stats),
+                                           stats.lastError);
+            if (stats.blocked > 0)
+                status->setForeground(QColor(QStringLiteral("#f85149")));
+            else if (stats.failures > 0)
+                status->setForeground(QColor(QStringLiteral("#d29922")));
+            else
+                status->setForeground(QColor(QStringLiteral("#3fb950")));
+            m_networkEndpointsTable->setItem(row, 3, status);
+            m_networkEndpointsTable->setItem(
+                row, 4, networkDiagItem(networkDiagBytes(stats.uploadBytes)));
+            m_networkEndpointsTable->setItem(
+                row, 5, networkDiagItem(networkDiagBytes(stats.downloadBytes)));
+            auto *last = networkDiagItem(formatRepoDate(stats.lastCalledMs));
+            last->setData(Qt::UserRole, static_cast<qlonglong>(stats.lastCalledMs));
+            m_networkEndpointsTable->setItem(row, 6, last);
+            m_networkEndpointsTable->setItem(
+                row, 7,
+                networkDiagItem(stats.lastRequestData, stats.lastFullUrl));
+            m_networkEndpointsTable->setItem(
+                row, 8,
+                networkDiagItem(stats.lastResponseData, stats.lastResponseData));
+            m_networkEndpointsTable->setItem(
+                row, 9, networkDiagItem(networkEndpointFirewall(stats)));
+            endpointFadeActive |= networkApplyEndpointFlash(
+                m_networkEndpointsTable, row, stats.lastCalledMs, nowMs);
+        }
+
+        for (const QJsonObject &rowObject : std::as_const(rows)) {
+            const int row = m_networkEndpointsTable->rowCount();
+            m_networkEndpointsTable->insertRow(row);
+            const QString endpointText =
+                networkDiagText(rowObject, "endpoint", QStringLiteral("-"));
+            const QString kind = networkDiagText(rowObject, "kind",
+                                                 QStringLiteral("websocket"));
+            auto *endpoint = networkDiagItem(endpointText, endpointText);
+            endpoint->setIcon(themedOcticon(
+                kind == QLatin1String("repo-host") ? QStringLiteral("repo")
+                                                   : QStringLiteral("broadcast"),
+                QColor(QStringLiteral("#8b949e")), 15));
+            endpoint->setData(kNetworkEndpointKindRole, QStringLiteral("websocket"));
+            m_networkEndpointsTable->setItem(row, 0, endpoint);
+            m_networkEndpointsTable->setItem(
+                row, 1,
+                networkDiagItem(kind == QLatin1String("repo-host")
+                                    ? QStringLiteral("WS repo")
+                                    : QStringLiteral("WS mainnode")));
+            const qint64 frameCalls = networkDiagInt(rowObject, "txFrames") +
+                                      networkDiagInt(rowObject, "rxFrames") +
+                                      networkDiagInt(rowObject, "txControlFrames") +
+                                      networkDiagInt(rowObject, "rxControlFrames");
+            m_networkEndpointsTable->setItem(row, 2,
+                                             networkDiagNumberItem(frameCalls));
+            auto *state = networkDiagItem(
+                networkDiagText(rowObject, "state", QStringLiteral("Unknown")));
+            if (rowObject.value(QStringLiteral("connected")).toBool())
+                state->setForeground(QColor(QStringLiteral("#3fb950")));
+            else
+                state->setForeground(QColor(QStringLiteral("#8b949e")));
+            m_networkEndpointsTable->setItem(row, 3, state);
+            m_networkEndpointsTable->setItem(
+                row, 4,
+                networkDiagItem(networkDiagBytes(networkDiagInt(rowObject, "txBytes"))));
+            m_networkEndpointsTable->setItem(
+                row, 5,
+                networkDiagItem(networkDiagBytes(networkDiagInt(rowObject, "rxBytes"))));
+            const qint64 lastMs = qMax(networkDiagInt(rowObject, "lastTxMs"),
+                                      networkDiagInt(rowObject, "lastRxMs"));
+            auto *last = networkDiagItem(formatRepoDate(lastMs));
+            last->setData(Qt::UserRole, static_cast<qlonglong>(lastMs));
+            m_networkEndpointsTable->setItem(row, 6, last);
+            m_networkEndpointsTable->setItem(row, 7,
+                                             networkDiagItem(networkDiagLast(
+                                                 rowObject, true)));
+            m_networkEndpointsTable->setItem(row, 8,
+                                             networkDiagItem(networkDiagLast(
+                                                 rowObject, false)));
+            m_networkEndpointsTable->setItem(row, 9,
+                                             networkDiagItem(QStringLiteral("Allowed")));
+            endpointFadeActive |= networkApplyEndpointFlash(
+                m_networkEndpointsTable, row, lastMs, nowMs);
+        }
+        m_networkEndpointsTable->setSortingEnabled(true);
+        m_networkEndpointsTable->sortItems(6, Qt::DescendingOrder);
+        m_networkEndpointsTable->resizeColumnsToContents();
+        m_networkEndpointsTable->resizeRowsToContents();
+    }
+    if (endpointFadeActive && !m_networkEndpointFadeScheduled) {
+        m_networkEndpointFadeScheduled = true;
+        QTimer::singleShot(120, this, [this] {
+            m_networkEndpointFadeScheduled = false;
+            if (m_sectionStack &&
+                m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
+                refreshNetworkDiagnostics();
+        });
+    }
+
+    TableRepaintGuard repaintGuard(m_networkDiagnosticsTable);
+    m_networkDiagnosticsTable->setSortingEnabled(false);
+    m_networkDiagnosticsTable->setRowCount(0);
+    for (const QJsonObject &rowObject : std::as_const(rows)) {
+        const int row = m_networkDiagnosticsTable->rowCount();
+        m_networkDiagnosticsTable->insertRow(row);
+
+        const QString data = networkDiagText(rowObject, "data");
+        auto *connection = networkDiagItem(
+            networkDiagText(rowObject, "connection", QStringLiteral("WebSocket")),
+            data);
+        const QString kind = networkDiagText(rowObject, "kind");
+        connection->setIcon(themedOcticon(
+            kind == QLatin1String("repo-host") ? QStringLiteral("repo")
+                                               : QStringLiteral("broadcast"),
+            QColor(QStringLiteral("#8b949e")), 15));
+        m_networkDiagnosticsTable->setItem(row, 0, connection);
+
+        m_networkDiagnosticsTable->setItem(
+            row, 1, networkDiagItem(networkDiagText(rowObject, "durableObject",
+                                                    QStringLiteral("-"))));
+        m_networkDiagnosticsTable->setItem(
+            row, 2, networkDiagItem(networkDiagText(rowObject, "endpoint",
+                                                    QStringLiteral("-"))));
+
+        const QString stateText = networkDiagText(rowObject, "state",
+                                                  QStringLiteral("Unknown"));
+        auto *state = networkDiagItem(
+            stateText,
+            QStringLiteral("Connected since %1")
+                .arg(formatRepoDate(networkDiagInt(rowObject, "connectedAtMs"))));
+        if (rowObject.value(QStringLiteral("connected")).toBool())
+            state->setForeground(QColor(QStringLiteral("#3fb950")));
+        else if (stateText == QLatin1String("Connecting"))
+            state->setForeground(QColor(QStringLiteral("#d29922")));
+        else
+            state->setForeground(QColor(QStringLiteral("#8b949e")));
+        m_networkDiagnosticsTable->setItem(row, 3, state);
+
+        m_networkDiagnosticsTable->setItem(
+            row, 4,
+            networkDiagItem(networkDiagTraffic(rowObject, "txFrames", "txBytes",
+                                               "txControlFrames")));
+        m_networkDiagnosticsTable->setItem(
+            row, 5,
+            networkDiagItem(networkDiagTraffic(rowObject, "rxFrames", "rxBytes",
+                                               "rxControlFrames")));
+        m_networkDiagnosticsTable->setItem(
+            row, 6, networkDiagItem(networkDiagLast(rowObject, true)));
+        m_networkDiagnosticsTable->setItem(
+            row, 7, networkDiagItem(networkDiagLast(rowObject, false)));
+        m_networkDiagnosticsTable->setItem(row, 8, networkDiagItem(data, data));
+    }
+    m_networkDiagnosticsTable->setSortingEnabled(true);
+    m_networkDiagnosticsTable->resizeColumnsToContents();
+    m_networkDiagnosticsTable->resizeRowsToContents();
+}
+
+void MainWindow::showEndpointRequestDetails(int row, int column)
+{
+    Q_UNUSED(column);
+    if (!m_networkEndpointsTable)
+        return;
+
+    QTableWidgetItem *endpointItem = m_networkEndpointsTable->item(row, 0);
+    if (!endpointItem ||
+        endpointItem->data(kNetworkEndpointKindRole).toString() !=
+            QLatin1String("http"))
+        return;
+
+    const QString method =
+        endpointItem->data(kNetworkEndpointMethodRole).toString();
+    const QString endpoint =
+        endpointItem->data(kNetworkEndpointUrlRole).toString();
+    if (method.isEmpty() || endpoint.isEmpty())
+        return;
+
+    auto *manager = requestFirewallManager(m_networkAccess);
+    if (!manager)
+        return;
+    const QList<BackoffNetworkAccessManager::RequestRecord> requests =
+        manager->endpointRequests(method, endpoint);
+    if (requests.isEmpty())
+        return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Endpoint requests"));
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
+
+    auto *summary = new QLabel(
+        QStringLiteral("%1 request(s) for %2 %3")
+            .arg(requests.size())
+            .arg(method, endpoint));
+    summary->setObjectName("mutedLabel");
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(0, 8, &dialog);
+    installColumnHeaderMenu(table);
+    table->setObjectName("issueTable");
+    table->setHorizontalHeaderLabels(
+        {QStringLiteral("When"), QStringLiteral("Method"),
+         QStringLiteral("Status"), QStringLiteral("Sent"),
+         QStringLiteral("Received"), QStringLiteral("Full URL"),
+         QStringLiteral("Request data"), QStringLiteral("Response data")});
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setShowGrid(false);
+    networkPrepareFullTable(table);
+    table->setSortingEnabled(false);
+
+    for (const BackoffNetworkAccessManager::RequestRecord &record :
+         std::as_const(requests)) {
+        const int detailRow = table->rowCount();
+        table->insertRow(detailRow);
+
+        const qint64 whenMs = qMax(record.finishedMs, record.startedMs);
+        auto *when = networkDiagItem(formatRepoDate(whenMs));
+        when->setData(Qt::UserRole, static_cast<qlonglong>(whenMs));
+        table->setItem(detailRow, 0, when);
+        table->setItem(detailRow, 1, networkDiagItem(record.method));
+
+        auto *status = networkDiagItem(networkRequestStatus(record),
+                                       record.error);
+        if (record.blocked || !record.error.isEmpty())
+            status->setForeground(QColor(QStringLiteral("#f85149")));
+        else if (record.status >= 400)
+            status->setForeground(QColor(QStringLiteral("#d29922")));
+        else if (record.finishedMs <= 0)
+            status->setForeground(QColor(QStringLiteral("#8b949e")));
+        else
+            status->setForeground(QColor(QStringLiteral("#3fb950")));
+        table->setItem(detailRow, 2, status);
+
+        auto *sent = networkDiagItem(networkDiagBytes(record.uploadBytes));
+        sent->setData(Qt::UserRole, static_cast<qlonglong>(record.uploadBytes));
+        table->setItem(detailRow, 3, sent);
+        auto *received = networkDiagItem(networkDiagBytes(record.downloadBytes));
+        received->setData(Qt::UserRole,
+                          static_cast<qlonglong>(record.downloadBytes));
+        table->setItem(detailRow, 4, received);
+        table->setItem(detailRow, 5,
+                       networkDiagItem(record.url, record.url));
+        table->setItem(detailRow, 6,
+                       networkDiagItem(record.requestData, record.requestData));
+        table->setItem(detailRow, 7,
+                       networkDiagItem(record.responseData,
+                                       record.responseData));
+    }
+
+    table->setSortingEnabled(true);
+    table->sortItems(0, Qt::DescendingOrder);
+    table->resizeColumnsToContents();
+    table->resizeRowsToContents();
+    layout->addWidget(table, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog.resize(1200, 720);
+    dialog.exec();
 }
 
 void MainWindow::addFirewallRuleFromEdit()
@@ -7255,6 +7980,9 @@ void MainWindow::recordFirewallRequest(const QString &method, const QUrl &url,
     if (!allowed)
         addNotification(QStringLiteral("Firewall blocked"), message, true);
     refreshFirewallTables();
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
+        refreshNetworkDiagnostics();
 }
 
 void MainWindow::loadHostIntoForm(int row, int /*column*/)

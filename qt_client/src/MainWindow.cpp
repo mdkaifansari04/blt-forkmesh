@@ -131,6 +131,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                                          network->firewallRules());
                 recordFirewallRequest(method, url, rule, allowed);
             });
+    connect(network, &BackoffNetworkAccessManager::endpointStatsChanged, this, [this] {
+        if (m_sectionStack &&
+            m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
+            refreshNetworkDiagnostics();
+    });
     m_networkAccess = network;
     // Opt-in full request logging (Settings → "Log every network request").
     // When on, every HTTP request that completes through the shared manager is

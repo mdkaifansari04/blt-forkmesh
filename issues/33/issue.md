@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 33
 title: when nodes connect show a system notification have this setting able to e turned off
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

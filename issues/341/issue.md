@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 341
 title: setup posthog proxy
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 11
 progress: 0

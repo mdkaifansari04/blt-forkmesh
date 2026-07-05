@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 19
 title: make the website show the issues in a list
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

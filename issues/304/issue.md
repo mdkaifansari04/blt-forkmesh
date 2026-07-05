@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 304
 title: Design a release-binary publishing system
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

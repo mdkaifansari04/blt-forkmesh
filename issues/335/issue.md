@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 335
 title: Show pr conversations on the web
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0
