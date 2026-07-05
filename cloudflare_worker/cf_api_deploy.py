@@ -310,9 +310,6 @@ def module_parts() -> list[tuple[str, str, bytes]]:
     for path in sorted((ROOT / "src").glob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
         parts.append((rel, "text/x-python", path.read_bytes()))
-    pylock = ROOT / "pylock.toml"
-    if pylock.exists():
-        parts.append(("pylock.toml", "text/x-python-requirement", pylock.read_bytes()))
     return parts
 
 
