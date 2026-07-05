@@ -2567,9 +2567,15 @@ async def _account_row(env, name):
         return name_bi, None
     rec = await decrypt_row(env, row["data"])
     if rec:
-        await _mirror_account_identity_tables(
-            env, name_bi, rec, email_bi=row.get("email_bi"),
-            ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
+        try:
+            await _mirror_account_identity_tables(
+                env, name_bi, rec, email_bi=row.get("email_bi"),
+                ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
+        except Exception:
+            # Public account reads must not fail just because the derived
+            # users/nodes mirror table needs repair; the encrypted accounts row
+            # remains the source of truth and write paths will try again later.
+            pass
     return name_bi, rec
 
 

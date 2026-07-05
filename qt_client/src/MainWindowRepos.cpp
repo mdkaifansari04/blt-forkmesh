@@ -554,6 +554,9 @@ void MainWindow::refreshRepositoryList()
                                            ? QString()
                                            : worktreeHeadCommit(repo.localPath);
             advertSig +=
+                repo.owner + QLatin1Char('|') + repo.name + QLatin1Char('|') +
+                repo.cloneUrl + QLatin1Char('|') +
+                QString::number(repo.publishToNetwork ? 1 : 0) + QLatin1Char('|') +
                 repo.mirrorPath + QLatin1Char('|') +
                 QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
                 QLatin1Char('|') + sourceHead + QLatin1Char('|') +

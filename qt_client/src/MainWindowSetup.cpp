@@ -1793,14 +1793,22 @@ void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
         return;
+    const QString canonicalOwner = QStringLiteral("forkmesh");
+    const QString canonicalName = QStringLiteral("forkmesh");
+    const QString canonicalClone = hostedCloneUrl(canonicalOwner, canonicalName);
+    const QString canonicalMirrorPath =
+        repositoryMirrorRoot() + "/" +
+        repoSegment(canonicalOwner, QStringLiteral("owner")) + "-" +
+        repoSegment(canonicalName, QStringLiteral("repository")) + ".git";
     // Already mirroring the ForkMesh project repo. Normalize old installs that
     // learned the flagship from the former newnewnode/forkmesh namespace or from
-    // a transient mirror owner; otherwise they can keep fetching a stale source
-    // forever after a Hosts install that did not wipe data.
+    // a transient mirror owner. Headless installer nodes are always service
+    // mirrors, so a local/owner-scoped repo named "forkmesh" should be repaired
+    // into the canonical network mirror instead of blocking bootstrap.
     for (int i = 0; i < m_repositories.size(); ++i) {
         RepositoryRecord &repo = m_repositories[i];
         if (repo.previewOnly ||
-            repo.name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) != 0)
+            repo.name.compare(canonicalName, Qt::CaseInsensitive) != 0)
             continue;
         const QUrl clone(repo.cloneUrl.trimmed());
         const QString relayHost = catalogApiUrl().host();
@@ -1808,13 +1816,11 @@ void MainWindow::ensureFlagshipRepo()
             !clone.host().isEmpty() &&
             clone.host().compare(relayHost, Qt::CaseInsensitive) == 0;
         const bool managedFlagship =
+            m_headless ||
             relayClone ||
-            repo.owner.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0 ||
+            repo.owner.compare(canonicalOwner, Qt::CaseInsensitive) == 0 ||
             repo.owner.compare(QStringLiteral("newnewnode"), Qt::CaseInsensitive) == 0;
         if (managedFlagship) {
-            const QString canonicalOwner = QStringLiteral("forkmesh");
-            const QString canonicalClone =
-                hostedCloneUrl(canonicalOwner, QStringLiteral("forkmesh"));
             bool changed = false;
             if (repo.owner.compare(canonicalOwner, Qt::CaseInsensitive) != 0) {
                 repo.owner = canonicalOwner;
@@ -1825,12 +1831,39 @@ void MainWindow::ensureFlagshipRepo()
                 repo.cloneUrl = canonicalClone;
                 changed = true;
             }
+            if (m_headless && !repo.localPath.trimmed().isEmpty()) {
+                repo.localPath.clear();
+                changed = true;
+            }
+            if (repo.mirrorPath.trimmed().isEmpty()) {
+                repo.mirrorPath = canonicalMirrorPath;
+                changed = true;
+            }
+            if (!repo.publishToNetwork) {
+                repo.publishToNetwork = true;
+                changed = true;
+            }
+            if (repo.hostedSinceMs <= 0) {
+                repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+                changed = true;
+            }
+            const bool hasMirror =
+                !repo.mirrorPath.trimmed().isEmpty() &&
+                QDir(repo.mirrorPath).exists();
+            const QString servedBranch =
+                hasMirror ? mirrorHeadBranch(repo.mirrorPath) : QString();
+            const bool needsSync =
+                !hasMirror || servedBranch.isEmpty() || repo.lastSyncMs <= 0;
             if (changed) {
                 saveRepositories();
                 refreshRepositoryList();
+            }
+            if ((changed || needsSync) && !m_syncingRepos.contains(i)) {
                 logSystem("Mirroring forkmesh/forkmesh from " + repo.cloneUrl);
-                if (!m_syncingRepos.contains(i))
-                    syncRepository(i, /*quiet=*/true);
+                syncRepository(i, /*quiet=*/true);
+            } else if (repo.publishToNetwork && hasMirror) {
+                publishRepository(i, false);
+                startRepoHosts();
             }
         }
         // A user-managed repo named forkmesh still counts as "already present";
