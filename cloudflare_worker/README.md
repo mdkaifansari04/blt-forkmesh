@@ -61,8 +61,10 @@ one deploy:
 ./deploy.sh dry-run    # validate without uploading
 ```
 
-This wraps `uvx --from workers-py pywrangler deploy`. Run it directly if you
-prefer.
+This uses `uvx --from workers-py pywrangler deploy` when uv is installed
+(`uv tool run` also works). If neither uv nor `pywrangler` is on PATH, the
+script installs `workers-py` into a local `.pywrangler/` venv and runs that copy
+automatically.
 
 Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.
