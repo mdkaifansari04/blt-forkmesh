@@ -3766,8 +3766,9 @@ async def _account_finalize(env, request):
     # node is linked to that user right now; otherwise the node's half is
     # parked until the offer lands (see _redeem_or_park_link_code).
     link_code = clean_string(data.get("linkCode", ""), 16).strip()
-    if key_bound and LINK_CODE_RE.match(link_code) and not rec.get("owner"):
-        result = await _redeem_or_park_link_code(env, link_code, node=name)
+    if key_bound and LINK_CODE_RE.match(link_code):
+        result = await _redeem_or_park_link_code(
+            env, link_code, node=name, pubkey=rec.get("pubkey", ""))
         if result.get("linked"):
             rec["owner"] = result.get("user", "")
     return json_response(await _account_public_payload(env, rec), status=201)
@@ -4054,7 +4055,7 @@ async def _account_claim_confirm(env, request):
                           "nodes": _owned_nodes(fresh_user or user_rec)})
 
 
-async def _redeem_or_park_link_code(env, code, node=None, user=None):
+async def _redeem_or_park_link_code(env, code, node=None, user=None, pubkey=None):
     # Order-independent rendezvous for installer link codes: called with node=
     # from the fresh node's registration and with user= from the installing
     # desktop's signed offer. When the opposite half is already parked (and
@@ -4074,25 +4075,74 @@ async def _redeem_or_park_link_code(env, code, node=None, user=None):
         other = await decrypt_row(env, row.get("data")) if fresh else None
     if node and other and other.get("user"):
         node_bi, node_rec = await _account_row(env, node)
-        if node_rec is not None and not node_rec.get("owner"):
+        if node_rec is not None and _account_kind(node_rec) == "node":
+            if pubkey and valid_node_pubkey(pubkey):
+                node_rec["pubkey"] = pubkey
             await _link_node_to_user(env, node, node_bi, node_rec,
                                      other["user"])
         await d1_run(env, "DELETE FROM link_codes WHERE code_bi=?", code_bi)
         return {"linked": True, "node": node, "user": other["user"]}
     if user and other and other.get("node"):
         node_name = other["node"]
+        other_pubkey = other.get("pubkey", "")
         node_bi, node_rec = await _account_row(env, node_name)
-        if node_rec is not None and not node_rec.get("owner"):
+        if node_rec is not None and _account_kind(node_rec) == "node":
+            if other_pubkey and valid_node_pubkey(other_pubkey):
+                node_rec["pubkey"] = other_pubkey
             await _link_node_to_user(env, node_name, node_bi, node_rec, user)
         await d1_run(env, "DELETE FROM link_codes WHERE code_bi=?", code_bi)
         return {"linked": True, "node": node_name, "user": user}
-    encrypted = await encrypt_row(env, {"node": node} if node else {"user": user})
+    parked = {"node": node} if node else {"user": user}
+    if node and pubkey and valid_node_pubkey(pubkey):
+        parked["pubkey"] = pubkey
+    encrypted = await encrypt_row(env, parked)
     await d1_run(
         env,
         "INSERT INTO link_codes (code_bi, data, ts) VALUES (?,?,?) "
         "ON CONFLICT(code_bi) DO UPDATE SET data=excluded.data, ts=excluded.ts",
         code_bi, encrypted, now)
     return {"linked": False}
+
+
+async def _account_reclaim_node(env, request):
+    # Fresh host reinstall with a reused node name: the account may already be
+    # active and bound to the previous local Ed25519 key, so reserve/finalize
+    # cannot run. Pair the installer link code with a signature from the new key;
+    # once the installing user's signed offer is present, re-home this node to
+    # that user and rotate the node account's hosting key.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    pubkey = clean_string(data.get("pubkey", ""), 120)
+    code = clean_string(data.get("linkCode", "") or data.get("code", ""), 16).strip()
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if (not valid_node_name(name) or not valid_node_pubkey(pubkey) or
+            not LINK_CODE_RE.match(code)):
+        return json_response({"error": "invalid_request"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+    canonical = ("forkmesh-reclaim-node-v1\n" + name + "\n" + pubkey + "\n" +
+                 code + "\n" + ts).encode()
+    if not await ed25519_verify(pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    _, node_rec = await _account_row(env, name)
+    if not node_rec or node_rec.get("status") != "active":
+        return json_response({"error": "no_such_node"}, status=404)
+    if _account_kind(node_rec) != "node":
+        return json_response({"error": "not_a_node"}, status=403)
+
+    result = await _redeem_or_park_link_code(
+        env, code, node=name, pubkey=pubkey)
+    if result.get("linked"):
+        return json_response({"ok": True, "linked": True,
+                              "node": result.get("node", name),
+                              "user": result.get("user", "")})
+    return json_response({"ok": True, "linked": False, "pending": True,
+                          "node": name}, status=202)
 
 
 async def _account_link_node(env, request):
@@ -6409,6 +6459,8 @@ async def accounts_handler(env, request):
         return await _account_claim_node(env, request)
     if url.path == "/api/accounts/claim-confirm" and method == "POST":
         return await _account_claim_confirm(env, request)
+    if url.path == "/api/accounts/reclaim-node" and method == "POST":
+        return await _account_reclaim_node(env, request)
     if url.path == "/api/accounts/link-node" and method == "POST":
         return await _account_link_node(env, request)
     if url.path == "/api/accounts/link-self" and method == "POST":
