@@ -269,11 +269,17 @@ def upload_assets(account_id: str, script_name: str, token: str) -> str:
         if not payload:
             continue
         print(f"cf_api_deploy: uploading asset bucket {index}/{len(buckets)}")
-        result = api_json(
+        fields = [
+            (digest, "text/plain", encoded.encode("ascii"), None)
+            for digest, encoded in payload.items()
+        ]
+        body, content_type = multipart_body(fields)
+        result = api_request(
             "POST",
             f"/accounts/{account_id}/workers/assets/upload?base64=true",
             upload_jwt,
-            payload,
+            body=body,
+            content_type=content_type,
         ).get("result") or {}
         completion_jwt = result.get("jwt") or completion_jwt
     print(f"cf_api_deploy: assets ready ({len(manifest)} file(s)).")
