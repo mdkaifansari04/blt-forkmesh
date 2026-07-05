@@ -31,6 +31,9 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // of leaving them shown as online indefinitely.
 constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
 constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
+constexpr qint64 kHelloAdvertiseMinIntervalMs = 30000;
+constexpr qint64 kHelloReplyMinIntervalMs = 120000;
+constexpr qint64 kStatusRepeatMinIntervalMs = 60000;
 constexpr quint64 kMaxWsPayload = 96ull * 1024 * 1024;
 constexpr int kMaxDisplayNameChars = 32;
 constexpr int kMaxSolanaAddressChars = 64;
@@ -425,9 +428,12 @@ void ServerNode::connectSocketSignals()
             m_pingTimer->stop();
         if (m_presenceTimer)
             m_presenceTimer->stop();
+        if (m_helloAdvertiseTimer)
+            m_helloAdvertiseTimer->stop();
         m_wsReady = false;
         m_wsConnectedAtMs = 0;
         m_peers.clear();
+        m_lastHelloReplyMs.clear();
         emit networkDiagnosticsChanged();
         updateRosterAndStatus();
         scheduleReconnect();
@@ -502,7 +508,7 @@ void ServerNode::onSocketReadyRead()
         updateRosterAndStatus();
         emit statusChanged("Connected to encrypted mainnode room " + m_roomName);
         emit networkDiagnosticsChanged();
-        sendHello();
+        sendHello(true, true);
         if (!m_avatarPng.isEmpty())
             setAvatar(m_avatarPng);
     }
@@ -808,8 +814,28 @@ void ServerNode::sampleSystemStats()
     m_cpuPercent = showCpu ? SystemStats::hostCpuPercent() : -1.0;
 }
 
-void ServerNode::sendHello()
+void ServerNode::sendHello(bool force, bool showActivity)
 {
+    if (!m_wsReady)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!force && m_lastHelloSentMs > 0) {
+        const qint64 remaining =
+            kHelloAdvertiseMinIntervalMs - (now - m_lastHelloSentMs);
+        if (remaining > 0) {
+            if (!m_helloAdvertiseTimer) {
+                m_helloAdvertiseTimer = new QTimer(this);
+                m_helloAdvertiseTimer->setSingleShot(true);
+                connect(m_helloAdvertiseTimer, &QTimer::timeout, this,
+                        [this] { sendHello(true, false); });
+            }
+            if (!m_helloAdvertiseTimer->isActive())
+                m_helloAdvertiseTimer->start(int(qMin<qint64>(
+                    remaining, kHelloAdvertiseMinIntervalMs)));
+            return;
+        }
+    }
+    m_lastHelloSentMs = now;
     sampleSystemStats();
     QJsonArray channels;
     for (const QString &channel : std::as_const(m_channels))
@@ -818,7 +844,7 @@ void ServerNode::sendHello()
     QJsonObject hello = makeMessage("hello");
     hello.insert("channels", channels);
     writeMirrors(hello, m_mirroredRepos);
-    sendEncrypted(hello, true);
+    sendEncrypted(hello, showActivity);
 }
 
 void ServerNode::sendPresence()
@@ -1189,16 +1215,24 @@ void ServerNode::handlePlain(const QJsonObject &message)
         // directed at the newcomer and carries "to"; directed hellos are not
         // answered again, so two peers can't ping-pong hellos forever.
         if (message.value("to").toString().isEmpty()) {
-            sendHistoryTo(senderId);
-            QJsonArray channels;
-            for (const QString &channel : std::as_const(m_channels))
-                if (!m_privateChannels.contains(channel))
-                    channels.append(channel);
-            QJsonObject reply = makeMessage("hello");
-            reply.insert("channels", channels);
-            writeMirrors(reply, m_mirroredRepos); // so the newcomer sees our mirrors too
-            reply.insert("to", senderId);
-            sendEncrypted(reply, false);
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 last = m_lastHelloReplyMs.value(senderId, 0);
+            if (last <= 0 || now - last >= kHelloReplyMinIntervalMs) {
+                m_lastHelloReplyMs.insert(senderId, now);
+                sendHistoryTo(senderId);
+                QJsonArray channels;
+                for (const QString &channel : std::as_const(m_channels))
+                    if (!m_privateChannels.contains(channel))
+                        channels.append(channel);
+                QJsonObject reply = makeMessage("hello");
+                reply.insert("channels", channels);
+                // So the newcomer sees our mirrors too. Repeated reconnects from
+                // the same peer are rate-limited above; otherwise a flapping node
+                // makes every existing member send a full hello burst.
+                writeMirrors(reply, m_mirroredRepos);
+                reply.insert("to", senderId);
+                sendEncrypted(reply, false);
+            }
         }
     } else if (type == "chat") {
         const QString channel = message.value("channel").toString();
@@ -1482,8 +1516,14 @@ void ServerNode::flushRosterAndStatus()
         ++onlineCount;
     }
     emit rosterChanged(members);
-    emit statusChanged(QString::number(onlineCount) +
-                       " peer(s) online · encrypted room " + m_roomName);
+    const QString status = QString::number(onlineCount) +
+                           " peer(s) online · encrypted room " + m_roomName;
+    if (status != m_lastStatusText ||
+        now - m_lastStatusEmitMs >= kStatusRepeatMinIntervalMs) {
+        m_lastStatusText = status;
+        m_lastStatusEmitMs = now;
+        emit statusChanged(status);
+    }
 }
 
 void ServerNode::loadKnownPeers()
