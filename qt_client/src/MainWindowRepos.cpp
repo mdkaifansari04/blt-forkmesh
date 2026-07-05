@@ -3055,8 +3055,9 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
 {
     // Only surface it if we keep a real mirror of this repo (browse-only
     // previews don't count) — otherwise the peer's update isn't relevant here.
-    // Match on the canonical advertised owner/name (the same string peers send)
-    // so a repo we host under catalogOwner still lines up with the notification.
+    // Match on both the local clone identity and the shared source identity. A
+    // mirror installed under this node's account advertises "<this-node>/repo",
+    // while the source-of-truth peer announces "<source-owner>/repo".
     int matchIndex = -1;
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
@@ -3065,7 +3066,11 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
         const QString canonical =
             catalogOwner(repo) + "/" +
             repoSegment(repo.name, QStringLiteral("repository"));
-        if (canonical == ownerName || (repo.owner + "/" + repo.name) == ownerName) {
+        const QString source =
+            repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (canonical == ownerName || source == ownerName ||
+            (repo.owner + "/" + repo.name) == ownerName) {
             matchIndex = i;
             break;
         }
