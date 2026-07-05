@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 111
 title: fix ths in the admin Automated sweeping is not enabled yet  so automated sweeping is working and enabled please
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

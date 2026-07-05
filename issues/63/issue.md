@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 63
 title: always show the latest run live log output when we click on actions
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

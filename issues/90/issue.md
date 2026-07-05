@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 90
 title: allow adding an open ai admin key in settings so we can see the usage correctly
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 83
 title: finish the things in the todo.md and then delete it please
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

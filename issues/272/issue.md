@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 272
 title: when I click update from main on the worktree it goes blank, make sure it stays on the one I'm updating
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 21
 progress: 0

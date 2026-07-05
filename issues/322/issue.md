@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 322
 title: show an icon on the failed status in the agent list
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

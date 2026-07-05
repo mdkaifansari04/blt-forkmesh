@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 230
 title: fix the log to show black text and remove the grey background
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 12
 progress: 0

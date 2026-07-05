@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 318
 title: Show that three dots on all tables headers so that they can all be sorted and configured like the issues table.
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 64
 progress: 0

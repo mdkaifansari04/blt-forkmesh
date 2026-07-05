@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 381
 title: allow pasting in images from the prompt
 status: open
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

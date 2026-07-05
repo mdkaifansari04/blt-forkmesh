@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 344
 title: we should let a node join the network even though it has not verified its solana address nodes shoudl be free to mirror repos the only think having the solana address verfied would do would let them participate in the payouts, otherwise they can get skipped if they don't have the address verified
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 1
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 312
 title: have another tab for artifactso ws e can see them andd their info and thn ede…
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 97
 title: only show the open count of issues in the top tabs please - also move open / closed dropdown to be a toggle switch next to the burn up chart link
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

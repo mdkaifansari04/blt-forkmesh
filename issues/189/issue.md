@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 189
 title: add color to the agent activity indicator when an agent it working show a little activer agent head above the agents tab and show their status when active / don
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

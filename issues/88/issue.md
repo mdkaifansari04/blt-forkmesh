@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 88
 title: the choose directory to create a pr does not get all of the files that have changed it only got one, please make it so that it compares all files
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

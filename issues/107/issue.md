@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 107
 title: add the ability to delete a pr
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

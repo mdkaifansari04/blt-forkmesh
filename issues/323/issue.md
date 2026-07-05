@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 323
 title: move the issues into .forkmesh/issues/ and have that be the new locationn they are stored - use one issue-##.json file and have all of the data stored in there instead of separate md files so no more md files only the json file and any images / videos stored in the issue oolder
 status: open
-labels: []
+labels: [feature]
 milestone: 
 priority: 27
 progress: 0

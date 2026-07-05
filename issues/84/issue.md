@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 84
 title: have the ability to do a pull request from one node to another on the same repo please
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

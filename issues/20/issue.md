@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 20
 title: make the plus button for the server look better
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

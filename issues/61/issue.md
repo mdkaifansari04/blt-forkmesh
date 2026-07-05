@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 61
 title: the qr code is not scanable on the website
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

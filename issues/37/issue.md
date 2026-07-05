@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 37
 title: Make it so you start with a BCH address username and password also 2fa (Authenticator)
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

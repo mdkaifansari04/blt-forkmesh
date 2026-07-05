@@ -51,6 +51,11 @@ QString wsPath(const QUrl &url)
     return path;
 }
 
+QString endpointDisplay(const QUrl &url)
+{
+    return url.toString(QUrl::RemoveUserInfo);
+}
+
 // Reject paths that try to escape the repository tree.
 bool isSafeRepoPath(const QString &path)
 {
@@ -422,6 +427,8 @@ void RepoHost::stop()
         m_socket = nullptr;
     }
     m_wsReady = false;
+    m_wsConnectedAtMs = 0;
+    emit networkDiagnosticsChanged();
 }
 
 void RepoHost::connectSocket()
@@ -434,8 +441,10 @@ void RepoHost::connectSocket()
         m_socket = nullptr;
     }
     m_wsReady = false;
+    m_wsConnectedAtMs = 0;
     m_readBuffer.clear();
     m_lastRx = QDateTime::currentMSecsSinceEpoch();
+    emit networkDiagnosticsChanged();
 
     if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
         emit log(QStringLiteral("Firewall blocked host tunnel for %1/%2 to %3.")
@@ -453,8 +462,18 @@ void RepoHost::connectSocket()
     });
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &RepoHost::onTransportReady);
-    connect(m_socket, &QTcpSocket::disconnected, this, [this] { scheduleReconnect(); });
-    connect(m_socket, &QTcpSocket::errorOccurred, this, [this] { scheduleReconnect(); });
+    connect(m_socket, &QTcpSocket::disconnected, this, [this] {
+        m_wsReady = false;
+        m_wsConnectedAtMs = 0;
+        emit networkDiagnosticsChanged();
+        scheduleReconnect();
+    });
+    connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
+        m_wsReady = false;
+        m_wsConnectedAtMs = 0;
+        emit networkDiagnosticsChanged();
+        scheduleReconnect();
+    });
 
     const int port = m_url.port(secure ? 443 : 80);
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
@@ -506,8 +525,10 @@ void RepoHost::onReadyRead()
             return;
         }
         m_wsReady = true;
+        m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_pingTimer->start();
         emit log("Host: serving " + m_owner + "/" + m_name + " live to the web.");
+        emit networkDiagnosticsChanged();
     }
 
     while (m_readBuffer.size() >= 2) {
@@ -550,17 +571,35 @@ void RepoHost::onReadyRead()
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
         if (opcode == 0x9) { // ping -> pong
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             sendControlFrame(0xA, payload);
             continue;
         }
-        if (opcode == 0xA) // pong
+        if (opcode == 0xA) { // pong
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             continue;
+        }
         if (opcode == 0x8) {
+            ++m_rxControlFrames;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            emit networkDiagnosticsChanged();
             m_socket->disconnectFromHost();
             return;
         }
-        if (opcode == 0x1)
+        if (opcode == 0x1) {
+            ++m_rxFrames;
+            m_rxBytes += payload.size();
+            m_lastRxBytes = payload.size();
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            m_lastRxType = QStringLiteral("text");
+            m_lastRxOp.clear();
             handleFrame(payload);
+            emit networkDiagnosticsChanged();
+        }
     }
 }
 
@@ -591,6 +630,12 @@ void RepoHost::sendText(const QByteArray &payload)
         masked[i] = masked.at(i) ^ mask.at(i % 4);
     frame.append(masked);
     m_socket->write(frame);
+    ++m_txFrames;
+    m_txBytes += payload.size();
+    m_lastTxBytes = payload.size();
+    m_lastTxMs = QDateTime::currentMSecsSinceEpoch();
+    noteOutgoingPayload(payload);
+    emit networkDiagnosticsChanged();
 }
 
 void RepoHost::sendControlFrame(int opcode, const QByteArray &payload)
@@ -609,6 +654,67 @@ void RepoHost::sendControlFrame(int opcode, const QByteArray &payload)
         masked[i] = masked.at(i) ^ mask.at(i % 4);
     frame.append(masked);
     m_socket->write(frame);
+    ++m_txControlFrames;
+    m_lastTxMs = QDateTime::currentMSecsSinceEpoch();
+    emit networkDiagnosticsChanged();
+}
+
+void RepoHost::noteIncomingPayload(const QJsonObject &payload)
+{
+    const QString type = payload.value(QStringLiteral("type")).toString();
+    m_lastRxType = type.isEmpty() ? QStringLiteral("request") : type;
+    m_lastRxOp = payload.value(QStringLiteral("op")).toString();
+}
+
+void RepoHost::noteOutgoingPayload(const QByteArray &payload)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(payload);
+    if (!doc.isObject()) {
+        m_lastTxType = QStringLiteral("text");
+        m_lastTxOp.clear();
+        return;
+    }
+    const QJsonObject object = doc.object();
+    const QString type = object.value(QStringLiteral("type")).toString();
+    m_lastTxType = type.isEmpty() ? QStringLiteral("response") : type;
+    m_lastTxOp = object.value(QStringLiteral("op")).toString();
+}
+
+QJsonObject RepoHost::networkDiagnostics() const
+{
+    QJsonObject row;
+    const QString repo = m_owner + QStringLiteral("/") + m_name;
+    row.insert(QStringLiteral("connection"), QStringLiteral("Repo host %1").arg(repo));
+    row.insert(QStringLiteral("kind"), QStringLiteral("repo-host"));
+    row.insert(QStringLiteral("durableObject"),
+               QStringLiteral("RepoHost DO: %1").arg(repo));
+    row.insert(QStringLiteral("endpoint"), endpointDisplay(m_url));
+    row.insert(QStringLiteral("state"),
+               m_wsReady ? QStringLiteral("Connected")
+                         : (m_socket ? QStringLiteral("Connecting")
+                                     : QStringLiteral("Disconnected")));
+    row.insert(QStringLiteral("connected"), m_wsReady);
+    row.insert(QStringLiteral("connectedAtMs"), double(m_wsConnectedAtMs));
+    row.insert(QStringLiteral("lastRxMs"), double(m_lastRxMs));
+    row.insert(QStringLiteral("lastTxMs"), double(m_lastTxMs));
+    row.insert(QStringLiteral("rxFrames"), double(m_rxFrames));
+    row.insert(QStringLiteral("txFrames"), double(m_txFrames));
+    row.insert(QStringLiteral("rxBytes"), double(m_rxBytes));
+    row.insert(QStringLiteral("txBytes"), double(m_txBytes));
+    row.insert(QStringLiteral("rxControlFrames"), double(m_rxControlFrames));
+    row.insert(QStringLiteral("txControlFrames"), double(m_txControlFrames));
+    row.insert(QStringLiteral("lastRxBytes"), m_lastRxBytes);
+    row.insert(QStringLiteral("lastTxBytes"), m_lastTxBytes);
+    row.insert(QStringLiteral("lastRxType"), m_lastRxType);
+    row.insert(QStringLiteral("lastRxOp"), m_lastRxOp);
+    row.insert(QStringLiteral("lastTxType"), m_lastTxType);
+    row.insert(QStringLiteral("lastTxOp"), m_lastTxOp);
+    row.insert(QStringLiteral("data"),
+               QStringLiteral("Live repo tunnel: tree/blob/search/commit browsing, "
+                              "git clone/fetch upload-pack, git push receive-pack, "
+                              "raw files and release asset streams. Source data stays "
+                              "on this node; the relay forwards requests/responses."));
+    return row;
 }
 
 void RepoHost::handleFrame(const QByteArray &payload)
@@ -617,6 +723,7 @@ void RepoHost::handleFrame(const QByteArray &payload)
     if (!doc.isObject())
         return;
     const QJsonObject obj = doc.object();
+    noteIncomingPayload(obj);
     // git push (issue #358): the pushed pack streams to us as git-req-chunk
     // messages that follow the initial "request", then git-req-end. These are
     // relayed to the running receive-pack's stdin (never buffered whole).
@@ -1283,6 +1390,8 @@ void RepoHost::scheduleReconnect()
     if (m_stopping)
         return;
     m_wsReady = false;
+    m_wsConnectedAtMs = 0;
+    emit networkDiagnosticsChanged();
     if (!m_reconnect->isActive())
         m_reconnect->start(5000);
 }

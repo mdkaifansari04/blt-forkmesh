@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 212
 title: add a reopen pr button for the qt app on the detail page next to the merge button so the merge button won't be grey anymore when we reopen
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

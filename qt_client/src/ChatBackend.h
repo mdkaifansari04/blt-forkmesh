@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -166,6 +167,9 @@ public:
         Q_UNUSED(ts);
         Q_UNUSED(signature);
     }
+    // Live WebSocket / Durable Object diagnostics for the Network tab. Backends
+    // without a socket return an empty list.
+    virtual QList<QJsonObject> networkDiagnostics() const { return {}; }
     virtual void shutdown() = 0;
     virtual QString modeName() const = 0;
 
@@ -210,6 +214,7 @@ signals:
     void coveOpened(const QString &creatorKey, const QString &coveId,
                     const QString &coveName, const QString &openerKey,
                     const QString &openerName, qint64 ts, const QString &signature);
+    void networkDiagnosticsChanged();
     // Short status line for the UI.
     void statusChanged(const QString &status);
     // Unrecoverable failure; the UI returns to the setup screen.

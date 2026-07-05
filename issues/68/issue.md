@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 68
 title: show count of PRs in the tab and remove the wiki tab
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

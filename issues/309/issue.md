@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 309
 title: if claude code returns an error plesae show it in the status
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 0

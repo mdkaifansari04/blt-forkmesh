@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 198
 title: have a button and comment field on the pr to send back to the agent (in case we have revisions)
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 149
 title: when the app starts up print out everything it's doing to the terminal
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 253
 title: make sure the claude code agent creates a pr from the worktree when its done
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 19
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 114
 title: make sure the node sends a desktop alert when a new disbursement is sent to it and update it's balance show more precision in the balance too please
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 100

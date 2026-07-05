@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 384
 title: add projects and allow linking issues to projects
 status: open
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

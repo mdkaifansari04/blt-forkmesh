@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 71
 title: don't show these in a chat, instead show them in the network log please Mirror synced by newnewnode at 2026-06-21 12:06
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

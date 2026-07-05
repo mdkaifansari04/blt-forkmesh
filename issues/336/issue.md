@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 336
 title: Fix open closed count on web
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 7
 progress: 0

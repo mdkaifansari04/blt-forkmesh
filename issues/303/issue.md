@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 303
 title: add a review agent that revies the code optionally after the agent is done si…
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

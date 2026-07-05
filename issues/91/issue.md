@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 91
 title: the open ai spend is not working correctly it says  spend, last 24h: $0.0000 USD Last 24h OpenAI usage: 294 requests, 15734683 total tokens (15621840 inp fix it
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

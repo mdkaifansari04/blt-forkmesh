@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 210
 title: delete pr also freezinjg
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 5
 progress: 0

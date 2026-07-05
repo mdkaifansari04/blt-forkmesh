@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 81
 title: show the solana balance of the node in the top nav next to the icon please
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 78
 title: if a pr is merged that is connected to an issue please close that related issue when the pr is merged
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

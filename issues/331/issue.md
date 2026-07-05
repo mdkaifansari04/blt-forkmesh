@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 331
 title: When I click on the issues tab on the website, it should go to the issues list. Currently it stays on the issue creation form if I’m on there.
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 55
 title: migrate to hd bch address if it makes sense
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

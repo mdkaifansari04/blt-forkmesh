@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 380
 title: Have a built in firewall / whitelist network tab to see and manage all connections
 status: open
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 0

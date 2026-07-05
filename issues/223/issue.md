@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 223
 title: a new node joined but I don't see it on the source of truth only see source of truth on it maybe from recent login change
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 10
 progress: 0

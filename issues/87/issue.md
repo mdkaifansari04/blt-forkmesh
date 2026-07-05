@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 87
 title: move the quick issue add input to be more available across the repo, add it right above the network log so it shows on all repo tabs please
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 0
 progress: 100

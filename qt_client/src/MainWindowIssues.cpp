@@ -1933,8 +1933,8 @@ void MainWindow::refreshIssueList()
         commentsItem->setTextAlignment(Qt::AlignCenter);
         m_issueTable->setItem(row, 14, commentsItem);
 
-        // Files: an indicator + changed-file count for issues whose work lives in
-        // a linked agent worktree branch or pull request (adhoc #151).
+        // Files: one compact icon per issue attachment, with filenames in the
+        // tooltip and numeric sorting by attachment count.
         populateIssueFilesCell(row, issue);
 
         // Assignee(s): who has claimed the work (em dash when unassigned).

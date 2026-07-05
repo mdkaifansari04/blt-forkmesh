@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 171
 title: if the payout wallet has not been verified show a big banner that the user must make a small deposit to verify it and then it can start receiving payouts
 status: closed
-labels: []
+labels: [security]
 milestone: MVP launch
 priority: 9
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 57
 title: support USDT
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

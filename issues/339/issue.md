@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 339
 title: Make it so that new issues show up on the website, even if they haven’t been synchronized to the repository yet when a user has a new issue, show it in the issue list on top
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 10
 progress: 0

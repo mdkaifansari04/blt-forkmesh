@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 338
 title: Update readme to reflect recent changes
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 67
 progress: 0

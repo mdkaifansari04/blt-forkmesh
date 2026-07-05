@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 213
 title: if I click the generate drop down to be all day or past hour and x post then make the generate button active so we can generate it on commits
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

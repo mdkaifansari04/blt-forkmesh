@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 305
 title: BUG: in verify wallter option whenever i click on very wallet button a pop up opens for email and password for verification i have entered the right credentials but even tho is open up and ask again and if i close that i ask again and everytime i close it just opens up, that needs to be fix
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 1
 progress: 0

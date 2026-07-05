@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 108
 title: add a funtion in the admin to perform the sweep to treasury and nodes and remove this " Automated sweeping is not enabled yet"
 status: closed
-labels: []
+labels: [security]
 milestone: 
 priority: 0
 progress: 100

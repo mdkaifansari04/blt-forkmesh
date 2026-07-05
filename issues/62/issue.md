@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 62
 title: the network chart is not working not seeing any data on it
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 100

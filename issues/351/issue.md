@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 351
 title: this is a valid node id - please mkae this work
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 0

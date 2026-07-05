@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 377
 title: 500 on /api/repo/newnewnode/forkmesh/agents: Error: D1_ERROR: UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id: SQLITE_CONSTRAINT (extended: SQLIT (44m ago)
 status: open
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 218
 title: on the website show the counts of things faster currently the fist time you load they are blank they shoud all show right away
 status: closed
-labels: []
+labels: [enhancement]
 milestone: 
 priority: 8
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 64
 title: make it so we can delete agent sessions please and it cleares it from the issue too
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 0
 progress: 100

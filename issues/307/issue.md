@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 307
 title: feature request: when write a new issue, it should get saved/created on the shorcut of cmd+enter
 status: closed
-labels: []
+labels: [feature]
 milestone: 
 priority: 8
 progress: 0

@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 211
 title: add a reopen pr button
 status: closed
-labels: []
+labels: [infra]
 milestone: 
 priority: 19
 progress: 0

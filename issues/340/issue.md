@@ -3,7 +3,7 @@ schema: forkmesh-issue-v1
 number: 340
 title: Fix the menu opacity website mobile
 status: closed
-labels: []
+labels: [bug]
 milestone: 
 priority: 0
 progress: 0
