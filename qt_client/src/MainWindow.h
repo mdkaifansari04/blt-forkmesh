@@ -292,7 +292,7 @@ public:
                    ? QString()
                    : repoAgentGitDir(m_repositories.at(index));
     }
-    void testPublishRepository(int index) { publishRepository(index, false); }
+    void testPublishRepository(int index) { publishRepositoryNow(index, false); }
     void testStartRepoHosts() { startRepoHosts(); }
     void testStopRepoHosts() { stopRepoHosts(); }
     void testShowPublishBar(bool on);
@@ -2617,6 +2617,11 @@ private:
     void changeMirrorLocation();
     void changePreviewCacheLocation();
     void publishRepository(int index, bool showDialogOnError = true);
+    void scheduleCatalogPublish(const QString &key, bool showDialogOnError,
+                                qint64 minDelayMs = 0);
+    void publishRepositoryNow(int index, bool showDialogOnError);
+    int repositoryIndexForCatalogPublishKey(const QString &key) const;
+    QString catalogPublishKey(const RepositoryRecord &repo) const;
     void updateRepoActionMenus();
     void deleteCurrentMirror();
     void updateRepoDetailStatus();
@@ -4549,7 +4554,16 @@ private:
     // channel set each session). See promptAddPrivateChannel / inviteToChannel.
     QSet<QString> m_privateChannels;
     QList<RepositoryRecord> m_repositories;
+    // Coalesced catalog writes. Many repo events can ask to publish the same
+    // repo in the same second; keep one timer/request per repo and one real POST
+    // cadence per account so the relay's catalog write cooldown is respected.
+    QHash<QString, QTimer *> m_catalogPublishTimers; // owner/name -> timer
+    QHash<QString, qint64> m_catalogPublishOwnerLastAttemptMs; // owner -> ms
+    QSet<QString> m_catalogPublishInFlight;      // owner/name
+    QSet<QString> m_catalogPublishQueued;        // owner/name dirtied mid-flight
+    QSet<QString> m_catalogPublishDialogQueued;  // owner/name wants UI feedback
     QList<RepoHost *> m_repoHosts;
+    QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
     QList<MemberInfo> m_homeRoster;
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time

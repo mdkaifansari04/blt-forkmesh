@@ -12,11 +12,20 @@
 using namespace forkmesh::ui;
 
 namespace {
+constexpr qint64 kCatalogPublishDebounceMs = 1000;
+constexpr qint64 kCatalogPublishMinIntervalMs = 6000;
+
 struct RepoRemoteRow {
     QString name;
     QString fetchUrl;
     QString pushUrl;
 };
+
+QString catalogPublishOwnerFromKey(const QString &key)
+{
+    const int slash = key.indexOf(QLatin1Char('/'));
+    return slash > 0 ? key.left(slash) : key;
+}
 
 QString repoRemoteGitDir(const RepositoryRecord &repo)
 {
@@ -2282,16 +2291,40 @@ void MainWindow::stopRepoHosts()
         host->deleteLater();
     }
     m_repoHosts.clear();
+    m_repoHostKeys.clear();
     refreshNetworkDiagnostics();
 }
 
 void MainWindow::startRepoHosts()
 {
     // One live host per published repository that already has a local mirror.
-    // Rebuilt from scratch so adding/removing repos stays simple.
-    stopRepoHosts();
-    if (!hasActiveAccountSession())
+    // Rebuild only when the desired set changes; many sync/publish/status paths
+    // call this defensively, and restarting identical host tunnels creates noisy
+    // duplicate WebSocket traffic.
+    if (!hasActiveAccountSession()) {
+        if (!m_repoHosts.isEmpty())
+            stopRepoHosts();
+        else
+            refreshNetworkDiagnostics();
         return;
+    }
+
+    QSet<QString> desiredKeys;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
+            !QDir(repo.mirrorPath).exists())
+            continue;
+        desiredKeys.insert(catalogOwner(repo) + "/" +
+                           repoSegment(repo.name, QStringLiteral("repository")) +
+                           "\n" + repo.mirrorPath + "\n" +
+                           hostWsUrl(repo).toString(QUrl::RemoveUserInfo));
+    }
+    if (desiredKeys == m_repoHostKeys && m_repoHosts.size() == desiredKeys.size()) {
+        refreshNetworkDiagnostics();
+        return;
+    }
+
+    stopRepoHosts();
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
             !QDir(repo.mirrorPath).exists())
@@ -2325,6 +2358,7 @@ void MainWindow::startRepoHosts()
         host->start();
         m_repoHosts.append(host);
     }
+    m_repoHostKeys = desiredKeys;
     refreshNetworkDiagnostics();
 }
 
@@ -2395,13 +2429,116 @@ void MainWindow::saveRepoStats() const
                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
+QString MainWindow::catalogPublishKey(const RepositoryRecord &repo) const
+{
+    const QString owner = catalogOwner(repo);
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    if (owner.isEmpty() || name.isEmpty())
+        return QString();
+    return owner + "/" + name;
+}
+
+int MainWindow::repositoryIndexForCatalogPublishKey(const QString &key) const
+{
+    if (key.isEmpty())
+        return -1;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
+        if (!repo.previewOnly && catalogPublishKey(repo) == key)
+            return i;
+    }
+    return -1;
+}
+
+void MainWindow::scheduleCatalogPublish(const QString &key,
+                                        bool showDialogOnError,
+                                        qint64 minDelayMs)
+{
+    if (key.isEmpty())
+        return;
+
+    if (showDialogOnError)
+        m_catalogPublishDialogQueued.insert(key);
+
+    if (m_catalogPublishInFlight.contains(key)) {
+        m_catalogPublishQueued.insert(key);
+        return;
+    }
+
+    if (m_catalogPublishTimers.contains(key))
+        return;
+
+    const QString owner = catalogPublishOwnerFromKey(key);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 lastAttempt = m_catalogPublishOwnerLastAttemptMs.value(owner, 0);
+    const qint64 cooldownDelay =
+        lastAttempt > 0
+            ? qMax<qint64>(0, lastAttempt + kCatalogPublishMinIntervalMs - now)
+            : 0;
+    const qint64 delay =
+        qMax(minDelayMs, qMax(kCatalogPublishDebounceMs, cooldownDelay));
+
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    m_catalogPublishTimers.insert(key, timer);
+    connect(timer, &QTimer::timeout, this, [this, key, timer] {
+        if (m_catalogPublishTimers.value(key) == timer)
+            m_catalogPublishTimers.remove(key);
+        timer->deleteLater();
+
+        const bool wantsDialog = m_catalogPublishDialogQueued.contains(key);
+        m_catalogPublishDialogQueued.remove(key);
+
+        if (m_catalogPublishInFlight.contains(key)) {
+            m_catalogPublishQueued.insert(key);
+            if (wantsDialog)
+                m_catalogPublishDialogQueued.insert(key);
+            return;
+        }
+
+        const QString owner = catalogPublishOwnerFromKey(key);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const qint64 lastAttempt =
+            m_catalogPublishOwnerLastAttemptMs.value(owner, 0);
+        const qint64 cooldownDelay =
+            lastAttempt > 0
+                ? qMax<qint64>(0,
+                               lastAttempt + kCatalogPublishMinIntervalMs - now)
+                : 0;
+        if (cooldownDelay > 0) {
+            scheduleCatalogPublish(key, wantsDialog, cooldownDelay);
+            return;
+        }
+
+        const int index = repositoryIndexForCatalogPublishKey(key);
+        if (index < 0)
+            return;
+        publishRepositoryNow(index, wantsDialog);
+    });
+    timer->start(static_cast<int>(
+        qMin<qint64>(delay, std::numeric_limits<int>::max())));
+}
+
 void MainWindow::publishRepository(int index, bool showDialogOnError)
 {
     if (index < 0 || index >= m_repositories.size())
         return;
     if (m_repositories.at(index).previewOnly)
         return;
+    scheduleCatalogPublish(catalogPublishKey(m_repositories.at(index)),
+                           showDialogOnError);
+}
+
+void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    if (m_repositories.at(index).previewOnly)
+        return;
     RepositoryRecord &repo = m_repositories[index];
+    const QString publishKey = catalogPublishKey(repo);
+    if (publishKey.isEmpty())
+        return;
     if (!hasActiveAccountSession()) {
         // Publishing/hosting is the opt-in, paid side of the app. Point the user
         // at the "Get paid to mirror" button on their node profile rather than
@@ -2613,21 +2750,40 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
     request.setRawHeader("Accept", "application/json");
+    m_catalogPublishInFlight.insert(publishKey);
+    m_catalogPublishOwnerLastAttemptMs.insert(
+        owner, QDateTime::currentMSecsSinceEpoch());
     QNetworkReply *reply =
         m_networkAccess->post(request, QJsonDocument(metadata).toJson(QJsonDocument::Compact));
     logSystem("Catalog: publishing " + repo.owner + "/" + repo.name + " to " +
               request.url().toString() + ".");
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, index, showDialogOnError] {
+            [this, reply, index, publishKey, showDialogOnError] {
                 const QByteArray body = reply->readAll();
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
                 reply->deleteLater();
+                m_catalogPublishInFlight.remove(publishKey);
+                const bool publishQueued =
+                    m_catalogPublishQueued.contains(publishKey);
+                m_catalogPublishQueued.remove(publishKey);
+                const bool queuedDialog =
+                    m_catalogPublishDialogQueued.contains(publishKey);
+                if (publishQueued)
+                    m_catalogPublishDialogQueued.remove(publishKey);
 
-                if (index < 0 || index >= m_repositories.size())
+                auto publishQueuedUpdate = [this, publishKey, publishQueued,
+                                            queuedDialog] {
+                    if (publishQueued)
+                        scheduleCatalogPublish(publishKey, queuedDialog);
+                };
+
+                if (index < 0 || index >= m_repositories.size()) {
+                    publishQueuedUpdate();
                     return;
+                }
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (error == QNetworkReply::NoError && status >= 200 && status < 300) {
@@ -2644,6 +2800,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                     // "clones are being rejected" banner for the open repo.
                     if (index == m_repoDetailIndex)
                         refreshRepoPinBanner();
+                    publishQueuedUpdate();
                     return;
                 }
 
@@ -2665,6 +2822,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                 logSystem(message);
                 if (showDialogOnError)
                     flashMessage(message, /*error=*/true);
+                publishQueuedUpdate();
             });
 }
 
