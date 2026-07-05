@@ -6,6 +6,7 @@
     page: 1,
     pageSize: 5,
     selectedRepo: null,
+    repoActivityFetches: {},
     selectedBranches: {},
     repoBranches: {},
     repoBranchQueries: {},
@@ -63,4 +64,3 @@
   const REPO_COLLECTION_PAGE_SIZE = 5;
   const PROFILE_SYNC_INTERVAL_MS = 60000;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
-

@@ -16,6 +16,7 @@
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
+#include <QVector>
 
 #include <utility>
 
@@ -116,6 +117,41 @@ bool runGit(const QString &mirrorPath, const QStringList &args, QByteArray &outp
         return false;
     }
     return true;
+}
+
+QJsonArray commitActivityWeeksFor(const QString &mirrorPath, const QString &ref)
+{
+    constexpr int kWeeks = 52;
+    constexpr qint64 kWeekSeconds = 7LL * 24LL * 60LL * 60LL;
+    QVector<int> buckets(kWeeks, 0);
+    auto toArray = [&buckets]() {
+        QJsonArray arr;
+        for (int n : buckets)
+            arr.append(n);
+        return arr;
+    };
+
+    if (mirrorPath.trimmed().isEmpty() || ref.trimmed().isEmpty())
+        return toArray();
+
+    QByteArray output;
+    if (!runGit(mirrorPath,
+                {"log", "--since=52 weeks ago", "--format=%ct", ref},
+                output, nullptr))
+        return toArray();
+
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    const qint64 start = now - (qint64(kWeeks) * kWeekSeconds);
+    for (const QByteArray &line : output.split('\n')) {
+        bool ok = false;
+        const qint64 ts = QString::fromUtf8(line).trimmed().toLongLong(&ok);
+        if (!ok)
+            continue;
+        const int idx =
+            qBound(0, int((ts - start) / kWeekSeconds), kWeeks - 1);
+        buckets[idx] += 1;
+    }
+    return toArray();
 }
 
 // Free (non-member) equivalents of RepoHost::baseRef/branchRefCandidates/
@@ -1286,7 +1322,9 @@ QJsonObject RepoHost::buildCommitsReply(const QString &branch) const
                                    {"date", QString::fromUtf8(f.at(2))},
                                    {"subject", QString::fromUtf8(f.at(3))}});
     }
-    return {{"ok", true}, {"commits", commits}};
+    return {{"ok", true},
+            {"commits", commits},
+            {"activityWeeks", commitActivityWeeksFor(m_mirrorPath, ref)}};
 }
 
 QJsonObject RepoHost::buildCommitReply(const QString &hash) const

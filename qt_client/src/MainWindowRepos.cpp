@@ -2533,7 +2533,8 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const int branchCount = mirrorBranchCount(repo.mirrorPath);
     const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
     const int discussionCount = mirrorDiscussionCount(repo.mirrorPath, headBranch);
-    const QJsonArray activityWeeks = mirrorCommitActivityWeeks(repo.mirrorPath);
+    const QJsonArray activityWeeks =
+        mirrorCommitActivityWeeks(repo.mirrorPath, headBranch);
     const int worktreeCount = mirrorWorktreeCount(repo.localPath);
     const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
     QString selfPlatform, selfVersion, selfNodeId;
