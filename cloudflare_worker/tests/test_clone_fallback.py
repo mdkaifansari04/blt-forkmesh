@@ -312,10 +312,12 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     assert "public_browse" in browse
     assert "(0, 502, 503, 504)" in browse  # rotated pick failed/errored -> named owner
     assert "(502, 503, 504)" in browse     # named owner failed -> remaining mirrors
-    # The retry must skip BOTH the named owner and a mirror that already failed
-    # this request's first hop, so it can't re-pick the flapping node and
-    # surface its error while other live mirrors sit unused.
-    assert "exclude=[owner, failed_mirror]" in browse
+    # The retry must skip BOTH the named owner and every mirror that already
+    # failed this request, so it can't re-pick a flapping node and surface its
+    # error while other live mirrors sit unused.
+    assert "tried = [owner, failed_mirror]" in browse
+    assert "exclude=tried" in browse
+    assert "tried.append(fallback)" in browse
     assert "failed_mirror = served" in browse
     assert "_forward_to_node" in browse
 

@@ -43,6 +43,14 @@ qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
     return qMin(delay, kCatalogPublishMaxRetryAfterMs);
 }
 
+bool mirrorHasServedCommit(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return false;
+    const QString branch = mirrorHeadBranch(mirrorPath);
+    return !mirrorBranchCommit(mirrorPath, branch).isEmpty();
+}
+
 QString repoRemoteGitDir(const RepositoryRecord &repo)
 {
     const QString local = repo.localPath.trimmed();
@@ -586,6 +594,8 @@ void MainWindow::refreshRepositoryList()
             // source commit while the bare served mirror is catching up.
             advert.branch = mirrorHeadBranch(repo.mirrorPath);
             advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
+            if (advert.commit.isEmpty())
+                continue;
             if (!repo.localPath.trimmed().isEmpty()) {
                 QString sourceCommit =
                     worktreeBranchCommit(repo.localPath, advert.branch);
@@ -2328,7 +2338,7 @@ void MainWindow::startRepoHosts()
     QSet<QString> desiredKeys;
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
-            !QDir(repo.mirrorPath).exists())
+            !mirrorHasServedCommit(repo.mirrorPath))
             continue;
         desiredKeys.insert(catalogOwner(repo) + "/" +
                            repoSegment(repo.name, QStringLiteral("repository")) +
@@ -2343,7 +2353,7 @@ void MainWindow::startRepoHosts()
     stopRepoHosts();
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         if (repo.previewOnly || !repo.publishToNetwork || repo.mirrorPath.isEmpty() ||
-            !QDir(repo.mirrorPath).exists())
+            !mirrorHasServedCommit(repo.mirrorPath))
             continue;
         auto *host = new RepoHost(catalogOwner(repo), repo.name, repo.mirrorPath,
                                   hostWsUrl(repo), this);
@@ -2602,6 +2612,17 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         return;
     }
 
+    const QString servedHeadBranch = mirrorHeadBranch(repo.mirrorPath);
+    const QString servedHeadCommit =
+        mirrorBranchCommit(repo.mirrorPath, servedHeadBranch);
+    if (servedHeadCommit.isEmpty()) {
+        if (!repositorySource(repo).isEmpty() && !m_syncingRepos.contains(index))
+            syncRepository(index, /*quiet=*/true);
+        logSystem("Catalog: delaying publish for " + repo.owner + "/" +
+                  repo.name + " until its mirror has a served commit.");
+        return;
+    }
+
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     // Always publish under the registered account name so the catalog dedups by
     // account/name (one entry per fork) and the server can verify ownership.
@@ -2694,8 +2715,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // everything but sync time and size (adhoc #56). The HEAD/issue figures mirror
     // the live advert (setMirroredRepos); platform/version/id come from our own
     // roster entry (the same values makeMessage broadcasts).
-    QString headBranch = mirrorHeadBranch(repo.mirrorPath);
-    QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
+    QString headBranch = servedHeadBranch;
+    QString headCommit = servedHeadCommit;
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
     const int branchCount = mirrorBranchCount(repo.mirrorPath);

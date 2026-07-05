@@ -22,6 +22,9 @@
 #include <QStyleFactory>
 #include <QStyleHints>
 
+#include <cstdio>
+#include <cstdlib>
+
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
 #include <unistd.h>
 #endif
@@ -276,11 +279,11 @@ int main(int argc, char *argv[])
     startup.start();
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
                              .arg(startup.elapsed(), 5);
-    MainWindow window;
+    auto *window = new MainWindow;
     // Tell the window it's running without a GUI so its auto-start path can
     // register a fresh mirror's account non-interactively (the desktop pops a
     // "Join ForkMesh" dialog for that, which a headless VM cannot click).
-    window.setHeadlessMode(headless);
+    window->setHeadlessMode(headless);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
     // A later launch attempt bounces off acquireSingleInstance() above and
@@ -290,20 +293,20 @@ int main(int argc, char *argv[])
     // not support raise()" on every call, which makes a successful re-run of a
     // headless install (bouncing off an already-running node) look like an
     // error in the SSH install log. Skip the no-op calls entirely headless.
-    forkmesh::onSingleInstanceActivation([&window, headless] {
+    forkmesh::onSingleInstanceActivation([window, headless] {
         if (headless)
             return;
-        window.setWindowState((window.windowState() & ~Qt::WindowMinimized) |
+        window->setWindowState((window->windowState() & ~Qt::WindowMinimized) |
                               Qt::WindowActive);
-        window.show();
-        window.raise();
-        window.activateWindow();
+        window->show();
+        window->raise();
+        window->activateWindow();
     });
     // show() works under the offscreen platform too (rendering to an offscreen
     // surface) and drives the same deferred-startup path — including the
     // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
     // auto-connect behave identically headless and on the desktop.
-    window.show();
+    window->show();
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
 
@@ -311,8 +314,19 @@ int main(int argc, char *argv[])
     // interact with, so attach a stdin REPL to observe and drive it.
     HeadlessConsole *console = nullptr;
     if (headless)
-        console = new HeadlessConsole(&window, &app, &app);
+        console = new HeadlessConsole(window, &app, &app);
     Q_UNUSED(console);
 
-    return app.exec();
+    const int exitCode = app.exec();
+    if (headless) {
+        // Offscreen Qt has crashed in widget teardown on SIGTERM while deleting
+        // the hidden text-edit-heavy UI tree. The process is exiting anyway, so
+        // let the OS reclaim those widgets after closeEvent/aboutToQuit have
+        // flushed logs and settings.
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(exitCode);
+    }
+    delete window;
+    return exitCode;
 }

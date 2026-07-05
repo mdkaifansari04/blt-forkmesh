@@ -45,6 +45,10 @@ MAX_TEXT_BYTES = 4 * 1024 * 1024
 # Per-socket room message rate limit: at most this many frames per window.
 ROOM_MSG_WINDOW_MS = 10 * 1000
 ROOM_MSG_MAX_PER_WINDOW = 20
+# Chat room sockets send regular encrypted presence/hello frames. If a reinstall
+# or network break leaves an old WebSocket hibernated in the room, stop counting
+# and forwarding to it instead of letting ghost peers inflate the roster.
+ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
 # Catalog write throttle per owner, and a hard cap on records an owner may hold.
 CATALOG_WRITE_COOLDOWN_MS = 5 * 1000
 CATALOG_MAX_RECORDS_PER_OWNER = 50
@@ -9453,16 +9457,22 @@ class Default(WorkerEntrypoint):
                 except Exception:
                     status = 0
                 if status in (502, 503, 504):
-                    fallback = await self._select_browse_mirror(
-                        owner, repo, exclude=[owner, failed_mirror])
-                    if fallback and fallback.lower() != owner.lower():
+                    tried = [owner, failed_mirror]
+                    while True:
+                        fallback = await self._select_browse_mirror(
+                            owner, repo, exclude=tried)
+                        if not fallback or fallback.lower() == owner.lower():
+                            break
                         try:
-                            return await self._forward_to_node(
+                            forwarded = await self._forward_to_node(
                                 request, url, repo, fallback,
                                 "/api/repo/%s/%s/%s" % (
                                     fallback, repo, host_match.group(3)))
+                            if int(forwarded.status) not in (502, 503, 504):
+                                return forwarded
                         except Exception:
                             pass
+                        tried.append(fallback)
             return response
 
         room = room_key_from_path(url.path)
@@ -10105,7 +10115,10 @@ class ForkMeshRoom(DurableObject):
 
         client, server = WebSocketPair.new().object_values()
         self.ctx.acceptWebSocket(server, to_js(["chat"]))
-        server.serializeAttachment(to_js({"id": new_socket_id(), "room": room_key}))
+        server.serializeAttachment(to_js({
+            "id": new_socket_id(), "room": room_key,
+            "last": int(Date.now()),
+        }))
 
         # Replay retained (still-encrypted) history to the joining client so new
         # users see some recent backlog even when no peer is online to send it.
@@ -10124,9 +10137,28 @@ class ForkMeshRoom(DurableObject):
 
     def _client_count(self):
         try:
-            return len(self.ctx.getWebSockets("chat"))
+            return len(self._live_chat_sockets(close_stale=True))
         except Exception:
             return 0
+
+    def _live_chat_sockets(self, close_stale=False):
+        now = int(Date.now())
+        sockets = []
+        try:
+            peers = self.ctx.getWebSockets("chat")
+        except Exception:
+            return sockets
+        for peer in peers:
+            try:
+                last = int(_ws_attr(peer, "last", 0) or 0)
+            except (TypeError, ValueError):
+                last = 0
+            if not last or now - last > ROOM_CLIENT_STALE_MS:
+                if close_stale:
+                    self._safe_close(peer, 1001, "stale")
+                continue
+            sockets.append(peer)
+        return sockets
 
     def _rate_ok(self, ws):
         # Per-socket token bucket kept in the hibernation attachment: at most
@@ -10144,7 +10176,7 @@ class ForkMeshRoom(DurableObject):
         try:
             ws.serializeAttachment(to_js({
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
-                "rl_start": start, "rl_count": count,
+                "last": now, "rl_start": start, "rl_count": count,
             }))
         except Exception:
             pass
@@ -10161,7 +10193,7 @@ class ForkMeshRoom(DurableObject):
         if not self._rate_ok(ws):
             return
         sender_id = _ws_attr(ws, "id")
-        for peer in self.ctx.getWebSockets("chat"):
+        for peer in self._live_chat_sockets(close_stale=True):
             if _ws_attr(peer, "id") == sender_id:
                 continue
             try:
