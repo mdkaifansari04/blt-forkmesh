@@ -2011,6 +2011,7 @@ async def catalog_handler(env, request):
         # per-viewer, so an authenticated request must never read from or write to
         # the SHARED public edge cache — that would leak private repos to everyone.
         params = parse_qs(urlparse(request.url).query)
+        admin_query = _admin_query(params.get("admin", [""])[0])
         viewer = safe_segment(params.get("viewer", [""])[0])
         view_ts = clean_string(params.get("ts", [""])[0], 20)
         view_sig = clean_string(params.get("sig", [""])[0], 200)
@@ -3019,7 +3020,7 @@ async def _account_public_payload(env, rec):
     if is_admin:
         admin_path = _admin_path(env)
         if admin_path:
-            payload["adminUrl"] = "/" + admin_path
+            payload["adminUrl"] = "/" + admin_path + "?admin=" + quote(name)
     return payload
 
 
@@ -7881,10 +7882,9 @@ async def telemetry_summary(env):
 
 
 def _admin_csrf_token(env):
-    # A deterministic CSRF token derived from admin/at-rest secrets. It is only
-    # ever rendered inside the (Basic-auth-protected) admin HTML, so a cross-site
-    # forged POST — which still carries the browser's cached Basic-auth creds —
-    # cannot include it. No server-side session store is needed to verify it.
+    # A deterministic CSRF token derived from at-rest secrets. It is only rendered
+    # inside the admin HTML after the requester names an is_admin account, so a
+    # cross-site forged POST cannot include it without first loading the page.
     secret = (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
               str(getattr(env, "DATA_KEY", "") or "")).encode()
     return hmac.new(secret, b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
@@ -7896,24 +7896,24 @@ def _admin_csrf_ok(env, form):
         submitted, _admin_csrf_token(env))
 
 
-def _check_basic_auth(env, request):
-    user = str(getattr(env, "ADMIN_USER", "") or "")
-    password = str(getattr(env, "ADMIN_PASS", "") or "")
-    if not user or not password:
-        return False  # fail closed until creds are configured
-    header = request.headers.get("authorization") or ""
-    if not header.startswith("Basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
-    except Exception:
-        return False
-    sep = decoded.find(":")
-    if sep < 0:
-        return False
-    ok_user = hmac.compare_digest(decoded[:sep], user)
-    ok_pass = hmac.compare_digest(decoded[sep + 1:], password)
-    return ok_user and ok_pass
+async def _check_admin_page_auth(env, request):
+    params = parse_qs(urlparse(request.url).query)
+    admin = clean_string(params.get("admin", [""])[0], MAX_NODE_NAME).lower()
+    return bool(admin and await _is_admin(env, admin))
+
+
+def _admin_query(admin):
+    admin = clean_string(admin or "", MAX_NODE_NAME).lower()
+    return "admin=" + quote(admin) if admin else ""
+
+
+def _admin_href(admin_query, **params):
+    parts = [admin_query] if admin_query else []
+    for key, value in params.items():
+        if value is None or value == "":
+            continue
+        parts.append(quote(str(key)) + "=" + quote(str(value)))
+    return "?" + "&amp;".join(parts)
 
 
 ADMIN_STYLE = """
@@ -7988,9 +7988,9 @@ def _admin_cell(column, value, env_unused=None):
 
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
 
-def _admin_bulk_form_open(table, csrf_field=""):
+def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
     return (
-        '<form method="post" action="?table=%s&amp;action=delete_rows" '
+        '<form method="post" action="%s" '
         'onsubmit="return confirm(\'Delete the selected row(s)? This cannot be '
         'undone.\')">'
         '%s'
@@ -7998,7 +7998,7 @@ def _admin_bulk_form_open(table, csrf_field=""):
         '<button type="submit">Delete selected</button>'
         '<span class="meta">Tick rows (or the header box for all) then delete.'
         '</span></div>'
-    ) % (_html_escape(table), csrf_field)
+    ) % (_admin_href(admin_query, table=table, action="delete_rows"), csrf_field)
 
 
 def _admin_select_all_th():
@@ -8020,7 +8020,7 @@ async def _admin_table_columns(env, table):
     return [str(r.get("name", "")) for r in rows if r.get("name")]
 
 
-async def _render_row_form(env, table, rowid, csrf_field=""):
+async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
     # Full-page create/edit form for one row. Field per column; the encrypted
     # `data` column is shown decrypted as JSON in a textarea and re-encrypted on
     # save. Field names are prefixed "f_" so they never collide with rowid/action.
@@ -8054,13 +8054,15 @@ async def _render_row_form(env, table, rowid, csrf_field=""):
     title = ("Edit row in %s" % table) if editing else ("Add row to %s" % table)
     return (
         '<div class="title">%s</div>'
-        '<form method="post" action="?table=%s&amp;action=%s" class="rowform">'
+        '<form method="post" action="%s" class="rowform">'
         '%s%s%s'
         '<div class="tools"><button type="submit">Save</button>'
-        '<a class="navlink" href="?table=%s">Cancel</a></div>'
+        '<a class="navlink" href="%s">Cancel</a></div>'
         '</form>'
-        % (_html_escape(title), _html_escape(table), action,
-           csrf_field, hidden_rowid, "".join(fields), _html_escape(table))
+        % (_html_escape(title),
+           _admin_href(admin_query, table=table, action=action),
+           csrf_field, hidden_rowid, "".join(fields),
+           _admin_href(admin_query, table=table))
     )
 
 
@@ -8178,7 +8180,7 @@ def _render_telemetry_overview(summary):
     )
 
 
-async def _render_table_view(env, table, csrf_field=""):
+async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
     # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
@@ -8195,7 +8197,7 @@ async def _render_table_view(env, table, csrf_field=""):
     if table == "accounts":
         prefix = (
             '<div class="tools">'
-            '<form method="post" action="?table=accounts&amp;action=set_password" '
+            '<form method="post" action="%s" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
             + csrf_field +
@@ -8208,7 +8210,7 @@ async def _render_table_view(env, table, csrf_field=""):
             '<span class="meta">Resets a user account\'s login password '
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
-        )
+        ) % _admin_href(admin_query, table="accounts", action="set_password")
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -8235,7 +8237,7 @@ async def _render_table_view(env, table, csrf_field=""):
         if not body:
             events = '<div class="empty">No telemetry reported yet.</div>'
         else:
-            events = (_admin_bulk_form_open(table, csrf_field)
+            events = (_admin_bulk_form_open(table, csrf_field, admin_query)
                       + "<table><thead><tr>" + _admin_select_all_th()
                       + "<th>Time</th><th>Kind</th><th>Version</th><th>OS</th>"
                       "<th>Node</th><th>Report</th>"
@@ -8271,7 +8273,7 @@ async def _render_table_view(env, table, csrf_field=""):
         if not body:
             events = '<div class="empty">No install events recorded yet.</div>'
         else:
-            events = (_admin_bulk_form_open(table, csrf_field)
+            events = (_admin_bulk_form_open(table, csrf_field, admin_query)
                       + "<table><thead><tr>" + _admin_select_all_th()
                       + "<th>Time</th><th>Step</th><th>Result</th><th>OS</th>"
                       "<th>Arch</th><th>PM</th><th>Distro</th><th>Detail</th>"
@@ -8301,15 +8303,15 @@ async def _render_table_view(env, table, csrf_field=""):
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
-            inner = (_admin_bulk_form_open(table, csrf_field)
+            inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
                      + "<table><thead><tr>" + _admin_select_all_th()
                      + "<th>Time</th><th>Status</th><th>Method</th>"
                      "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
         return ('<div class="title">Error logs · %d row(s)</div>' % total) + inner
 
-    add_link = (' <a class="navlink" href="?table=%s&amp;action=new">+ Add row</a>'
-                % _html_escape(table))
+    add_link = (' <a class="navlink" href="%s">+ Add row</a>'
+                % _admin_href(admin_query, table=table, action="new"))
     if not rows:
         return (prefix
                 + '<div class="title">%s · 0 rows%s</div>'
@@ -8328,8 +8330,8 @@ async def _render_table_view(env, table, csrf_field=""):
     for r in rows:
         rid = r.get("_rowid_", "")
         cells = [_admin_row_checkbox(rid),
-                 '<td><a class="navlink" href="?table=%s&amp;action=edit&amp;rowid=%s">'
-                 'Edit</a></td>' % (_html_escape(table), _html_escape(rid))]
+                 '<td><a class="navlink" href="%s">Edit</a></td>'
+                 % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
         for col in columns:
             value = r.get(col)
             if col == "data" and isinstance(value, str) and value:
@@ -8346,7 +8348,7 @@ async def _render_table_view(env, table, csrf_field=""):
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
-        + _admin_bulk_form_open(table, csrf_field)
+        + _admin_bulk_form_open(table, csrf_field, admin_query)
         + "<table><thead><tr>" + head + "</tr></thead><tbody>"
         + "".join(body) + "</tbody></table></form>"
     )
@@ -8371,7 +8373,7 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
-def _render_admin_nav(tables, active, counts=None):
+def _render_admin_nav(tables, active, counts=None, admin_query=""):
     counts = counts or {}
     links = ['<div class="sec">Tables</div>']
     for t in tables:
@@ -8379,13 +8381,14 @@ def _render_admin_nav(tables, active, counts=None):
         cls = ' class="active"' if t == active else ""
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
-        links.append('<a href="?table=%s"%s>%s%s</a>'
-                     % (_html_escape(t), cls, _html_escape(label), suffix))
+        links.append('<a href="%s"%s>%s%s</a>'
+                     % (_admin_href(admin_query, table=t), cls,
+                        _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field=""):
+                      counts=None, csrf_field="", admin_query=""):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -8395,15 +8398,17 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
-        + '<div class="tools"><form method="post" action="?action=disburse" '
+        + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Sweep confirmed join deposits now?\')">'
+          % _admin_href(admin_query, action="disburse")
           + csrf_field +
           '<button type="submit">Sweep join deposits</button></form>'
           '<span class="meta">Automated sweeping is enabled: confirmed join '
           'deposits sweep to the treasury and online node payout addresses; '
           'this retries any pending sweep.</span></div>'
-        + '<div class="tools"><form method="post" action="?action=request_ownership" '
+        + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Request ownership transfer for this node?\')">'
+          % _admin_href(admin_query, action="request_ownership")
           + csrf_field +
           '<input type="text" name="target" placeholder="node to take (name)" '
           'autocomplete="off" required>'
@@ -8415,7 +8420,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
           'owner approves the confirmation prompt on its own client.</span></div>'
         + banner_html
         + '<div class="layout">'
-        + _render_admin_nav(tables, active_table, counts)
+        + _render_admin_nav(tables, active_table, counts, admin_query)
         + "<main>" + table_html + "</main>"
         + "</div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
@@ -8426,9 +8431,10 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
 
 
 async def _admin_set_password(env, name, password):
-    # Reset a user account's login password. The admin (basic-auth) supplies a
-    # node name and a new password; we PBKDF2-hash it and overwrite pass_salt /
-    # pass_hash on the encrypted account record, leaving email/solana/etc intact.
+    # Reset a user account's login password. The is_admin-gated admin page
+    # supplies a node name and a new password; we PBKDF2-hash it and overwrite
+    # pass_salt / pass_hash on the encrypted account record, leaving
+    # email/solana/etc intact.
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not name:
         return "Set password failed: a node name is required."
@@ -8609,20 +8615,19 @@ class Default(WorkerEntrypoint):
         return response
 
     async def _admin(self, request):
-        if not _check_basic_auth(self.env, request):
-            return Response(
-                "Authentication required.",
-                status=401,
-                headers={"WWW-Authenticate": 'Basic realm="forkmesh-admin"'},
-            )
         await ensure_schema(self.env)
+        if not await _check_admin_page_auth(self.env, request):
+            return Response(
+                "Admin account required.",
+                status=403,
+                headers={"content-type": "text/plain; charset=utf-8"},
+            )
         params = parse_qs(urlparse(request.url).query)
 
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
-        # state-changing POST must carry a CSRF token (rendered only into this
-        # Basic-auth-gated page) so a cross-site form — which would still send the
-        # browser's cached admin credentials — can't trigger these actions.
+        # state-changing POST must carry a CSRF token rendered into the admin
+        # page, so a cross-site form cannot trigger these actions.
         banner = ""
         action = params.get("action", [""])[0]
         csrf_field = ('<input type="hidden" name="csrf" value="%s">'
@@ -8710,11 +8715,14 @@ class Default(WorkerEntrypoint):
         # Edit/create forms are full-page GET views for the active table.
         if action == "edit" and active:
             rowid = params.get("rowid", [""])[0]
-            table_html = await _render_row_form(self.env, active, rowid, csrf_field)
+            table_html = await _render_row_form(
+                self.env, active, rowid, csrf_field, admin_query)
         elif action == "new" and active:
-            table_html = await _render_row_form(self.env, active, None, csrf_field)
+            table_html = await _render_row_form(
+                self.env, active, None, csrf_field, admin_query)
         else:
-            table_html = (await _render_table_view(self.env, active, csrf_field)
+            table_html = (await _render_table_view(
+                              self.env, active, csrf_field, admin_query)
                           if active
                           else '<div class="empty">No tables found.</div>')
 
@@ -8729,7 +8737,7 @@ class Default(WorkerEntrypoint):
         stats = await admin_stats(self.env)
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
-                              csrf_field=csrf_field),
+                              csrf_field=csrf_field, admin_query=admin_query),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )

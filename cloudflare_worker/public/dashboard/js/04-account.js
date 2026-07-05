@@ -104,7 +104,11 @@
     }
     applyAvatar(avatar, session);
     if (adminButton) {
-      const adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
+      let adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
+      if (adminUrl && session?.nodeName && !/[?&]admin=/.test(adminUrl)) {
+        adminUrl += (adminUrl.includes("?") ? "&" : "?") +
+          "admin=" + encodeURIComponent(session.nodeName);
+      }
       // Only show the button once we actually have somewhere to send it —
       // an admin session without adminUrl (ADMIN_PATH not picked up from the
       // Worker env yet) would otherwise show a button that links to "#".
@@ -695,4 +699,3 @@
       if (button) { button.disabled = false; button.textContent = "Delete account"; }
     }
   }
-

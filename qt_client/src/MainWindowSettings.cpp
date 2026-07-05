@@ -1160,12 +1160,19 @@ QWidget *MainWindow::buildSettingsSection()
     auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
     auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
     auto *varDeleteButton = new QPushButton("Delete");
+    auto *varExportButton = new QPushButton("Export");
+    auto *varImportButton = new QPushButton("Import");
     m_varsRevealButton = new QPushButton("Reveal");
-    for (QPushButton *b :
-         {varAddButton, varEditButton, varDeleteButton, m_varsRevealButton}) {
+    for (QPushButton *b : {varAddButton, varEditButton, varDeleteButton,
+                           varExportButton, varImportButton,
+                           m_varsRevealButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
     }
+    varExportButton->setToolTip(
+        "Export variables and secrets to a clear-text JSON file");
+    varImportButton->setToolTip(
+        "Import variables and secrets from a ForkMesh JSON file");
     m_varsRevealButton->setToolTip("Show or hide the secret values in clear text");
     connect(varAddButton, &QPushButton::clicked, this,
             [this] { addOrEditVariable(false); });
@@ -1173,6 +1180,10 @@ QWidget *MainWindow::buildSettingsSection()
             [this] { addOrEditVariable(true); });
     connect(varDeleteButton, &QPushButton::clicked, this,
             &MainWindow::deleteSelectedVariable);
+    connect(varExportButton, &QPushButton::clicked, this,
+            &MainWindow::exportVariables);
+    connect(varImportButton, &QPushButton::clicked, this,
+            &MainWindow::importVariables);
     // Double-clicking a row is the natural "edit this one" gesture.
     connect(m_varsTable, &QTableWidget::cellDoubleClicked, this,
             [this](int, int) { addOrEditVariable(true); });
@@ -1203,6 +1214,8 @@ QWidget *MainWindow::buildSettingsSection()
     varButtonRow->addWidget(varAddButton);
     varButtonRow->addWidget(varEditButton);
     varButtonRow->addWidget(varDeleteButton);
+    varButtonRow->addWidget(varExportButton);
+    varButtonRow->addWidget(varImportButton);
     varButtonRow->addWidget(m_varsRevealButton);
     varButtonRow->addStretch();
 

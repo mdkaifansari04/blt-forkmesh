@@ -7,8 +7,69 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "KebabHeaderView.h"
 
 using namespace forkmesh::ui;
+
+namespace {
+struct RepoRemoteRow {
+    QString name;
+    QString fetchUrl;
+    QString pushUrl;
+};
+
+QString repoRemoteGitDir(const RepositoryRecord &repo)
+{
+    const QString local = repo.localPath.trimmed();
+    if (!local.isEmpty() && QDir(local).exists(QStringLiteral(".git")))
+        return local;
+    const QString mirror = repo.mirrorPath.trimmed();
+    if (!mirror.isEmpty() && QDir(mirror).exists())
+        return mirror;
+    return {};
+}
+
+QList<RepoRemoteRow> readRepoRemotes(const QString &gitDir)
+{
+    QList<RepoRemoteRow> remotes;
+    if (gitDir.isEmpty())
+        return remotes;
+    QByteArray out;
+    if (!runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("-v")},
+                       &out, nullptr))
+        return remotes;
+    QMap<QString, RepoRemoteRow> byName;
+    const QStringList lines =
+        QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        const int tab = line.indexOf('\t');
+        if (tab <= 0)
+            continue;
+        const QString name = line.left(tab).trimmed();
+        QString rest = line.mid(tab + 1).trimmed();
+        const bool isFetch = rest.endsWith(QStringLiteral("(fetch)"));
+        const bool isPush = rest.endsWith(QStringLiteral("(push)"));
+        rest.remove(QStringLiteral("(fetch)"));
+        rest.remove(QStringLiteral("(push)"));
+        rest = rest.trimmed();
+        RepoRemoteRow row = byName.value(name);
+        row.name = name;
+        if (isFetch)
+            row.fetchUrl = rest;
+        else if (isPush)
+            row.pushUrl = rest;
+        byName.insert(name, row);
+    }
+    for (auto it = byName.constBegin(); it != byName.constEnd(); ++it)
+        remotes.append(it.value());
+    std::sort(remotes.begin(), remotes.end(),
+              [](const RepoRemoteRow &a, const RepoRemoteRow &b) {
+                  return a.name < b.name;
+              });
+    return remotes;
+}
+} // namespace
 
 // ------------------------------------------------------------- repositories
 
@@ -1397,6 +1458,45 @@ QWidget *MainWindow::buildRepoSettingsTab()
     m_repoMirrorLocation->setTextInteractionFlags(Qt::TextSelectableByMouse);
     outer->addWidget(m_repoMirrorLocation);
 
+    auto *remotesHeading = new QLabel("Git remotes");
+    remotesHeading->setObjectName("sectionLabel");
+    outer->addWidget(remotesHeading);
+
+    m_repoRemotesTable = new QTableWidget(0, 3);
+    installColumnHeaderMenu(m_repoRemotesTable);
+    m_repoRemotesTable->setHorizontalHeaderLabels({"Name", "Fetch URL", "Push URL"});
+    m_repoRemotesTable->horizontalHeader()->setStretchLastSection(true);
+    m_repoRemotesTable->verticalHeader()->setVisible(false);
+    m_repoRemotesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_repoRemotesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_repoRemotesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_repoRemotesTable->setMaximumHeight(150);
+    makeColumnsResizable(m_repoRemotesTable);
+    outer->addWidget(m_repoRemotesTable);
+
+    auto *remoteAddButton = new QPushButton("Add");
+    auto *remoteEditButton = new QPushButton("Edit");
+    auto *remoteDeleteButton = new QPushButton("Delete");
+    for (QPushButton *b : {remoteAddButton, remoteEditButton, remoteDeleteButton}) {
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    connect(remoteAddButton, &QPushButton::clicked, this,
+            &MainWindow::promptAddRepoRemote);
+    connect(remoteEditButton, &QPushButton::clicked, this,
+            &MainWindow::promptEditRepoRemote);
+    connect(remoteDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteSelectedRepoRemote);
+    connect(m_repoRemotesTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int, int) { promptEditRepoRemote(); });
+    auto *remoteButtonRow = new QHBoxLayout;
+    remoteButtonRow->setContentsMargins(0, 0, 0, 0);
+    remoteButtonRow->addWidget(remoteAddButton);
+    remoteButtonRow->addWidget(remoteEditButton);
+    remoteButtonRow->addWidget(remoteDeleteButton);
+    remoteButtonRow->addStretch();
+    outer->addLayout(remoteButtonRow);
+
     auto *gitIdentityBtn = new QPushButton("Use ForkMesh git identity");
     gitIdentityBtn->setProperty("buttonSize", "sm");
     gitIdentityBtn->setCursor(Qt::PointingHandCursor);
@@ -1747,6 +1847,7 @@ void MainWindow::refreshRepoSettings()
                              : QDir::toNativeSeparators(path)));
         }
     }
+    reloadRepoRemotesTable();
     if (!m_repoVisibilityHint)
         return;
     if (!haveRepo) {
@@ -1795,6 +1896,210 @@ void MainWindow::updateRepoSource()
                   .arg(repo.owner, repo.name,
                        newUrl.isEmpty() ? QStringLiteral("(none)") : newUrl));
     refreshRepoSettings();
+}
+
+void MainWindow::reloadRepoRemotesTable()
+{
+    if (!m_repoRemotesTable)
+        return;
+    const bool haveRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    const QString gitDir = haveRepo ? repoRemoteGitDir(m_repositories.at(m_repoDetailIndex))
+                                    : QString();
+    const QList<RepoRemoteRow> remotes = readRepoRemotes(gitDir);
+    QSignalBlocker block(m_repoRemotesTable);
+    TableRepaintGuard repaintGuard(m_repoRemotesTable);
+    m_repoRemotesTable->setEnabled(!gitDir.isEmpty());
+    m_repoRemotesTable->setRowCount(0);
+    for (const RepoRemoteRow &remote : remotes) {
+        const int row = m_repoRemotesTable->rowCount();
+        m_repoRemotesTable->insertRow(row);
+        m_repoRemotesTable->setItem(row, 0, new QTableWidgetItem(remote.name));
+        m_repoRemotesTable->setItem(row, 1, new QTableWidgetItem(remote.fetchUrl));
+        m_repoRemotesTable->setItem(row, 2, new QTableWidgetItem(remote.pushUrl));
+    }
+}
+
+void MainWindow::promptAddRepoRemote()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString gitDir = repoRemoteGitDir(m_repositories.at(m_repoDetailIndex));
+    if (gitDir.isEmpty()) {
+        QMessageBox::information(
+            this, "Git remotes",
+            "Create a local fork or mirror before editing git remotes.");
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Add git remote");
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *nameEdit = new QLineEdit;
+    auto *fetchEdit = new QLineEdit;
+    auto *pushEdit = new QLineEdit;
+    nameEdit->setPlaceholderText("origin");
+    fetchEdit->setPlaceholderText("https://example.com/owner/repo.git");
+    pushEdit->setPlaceholderText("leave blank to match fetch URL");
+    form->addRow("Name", nameEdit);
+    form->addRow("Fetch URL", fetchEdit);
+    form->addRow("Push URL", pushEdit);
+    layout->addLayout(form);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                         QDialogButtonBox::Cancel);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString name = nameEdit->text().trimmed();
+    const QString fetchUrl = fetchEdit->text().trimmed();
+    const QString pushUrl = pushEdit->text().trimmed();
+    if (name.isEmpty() || fetchUrl.isEmpty()) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Remote name and fetch URL are required.");
+        return;
+    }
+
+    QString error;
+    if (!runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("add"), name,
+                        fetchUrl},
+                       nullptr, &error)) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Could not add remote: " +
+                                 error.trimmed().right(240));
+        return;
+    }
+    if (!pushUrl.isEmpty() && pushUrl != fetchUrl)
+        runGitCapture(gitDir,
+                      {QStringLiteral("remote"), QStringLiteral("set-url"),
+                       QStringLiteral("--push"), name, pushUrl},
+                      nullptr, nullptr);
+    reloadRepoRemotesTable();
+    logSystem(QStringLiteral("Added git remote %1 for %2/%3.")
+                  .arg(name, m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
+}
+
+void MainWindow::promptEditRepoRemote()
+{
+    if (!m_repoRemotesTable || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int row = m_repoRemotesTable->currentRow();
+    if (row < 0 || !m_repoRemotesTable->item(row, 0)) {
+        QMessageBox::information(this, "Git remotes",
+                                 "Select a remote to edit.");
+        return;
+    }
+    const QString gitDir = repoRemoteGitDir(m_repositories.at(m_repoDetailIndex));
+    if (gitDir.isEmpty())
+        return;
+    const QString oldName = m_repoRemotesTable->item(row, 0)->text();
+    const QString oldFetch = m_repoRemotesTable->item(row, 1)
+                                 ? m_repoRemotesTable->item(row, 1)->text()
+                                 : QString();
+    const QString oldPush = m_repoRemotesTable->item(row, 2)
+                                ? m_repoRemotesTable->item(row, 2)->text()
+                                : QString();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Edit git remote");
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *nameEdit = new QLineEdit(oldName);
+    auto *fetchEdit = new QLineEdit(oldFetch);
+    auto *pushEdit = new QLineEdit(oldPush);
+    pushEdit->setPlaceholderText("leave blank to match fetch URL");
+    form->addRow("Name", nameEdit);
+    form->addRow("Fetch URL", fetchEdit);
+    form->addRow("Push URL", pushEdit);
+    layout->addLayout(form);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                         QDialogButtonBox::Cancel);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString name = nameEdit->text().trimmed();
+    const QString fetchUrl = fetchEdit->text().trimmed();
+    const QString pushUrl = pushEdit->text().trimmed();
+    if (name.isEmpty() || fetchUrl.isEmpty()) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Remote name and fetch URL are required.");
+        return;
+    }
+
+    QString error;
+    if (name != oldName &&
+        !runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("rename"),
+                        oldName, name},
+                       nullptr, &error)) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Could not rename remote: " +
+                                 error.trimmed().right(240));
+        return;
+    }
+    if (!runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("set-url"),
+                        name, fetchUrl},
+                       nullptr, &error)) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Could not update fetch URL: " +
+                                 error.trimmed().right(240));
+        return;
+    }
+    const QString effectivePush = pushUrl.isEmpty() ? fetchUrl : pushUrl;
+    if (!runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("set-url"),
+                        QStringLiteral("--push"), name, effectivePush},
+                       nullptr, &error)) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Could not update push URL: " +
+                                 error.trimmed().right(240));
+        return;
+    }
+    reloadRepoRemotesTable();
+    logSystem(QStringLiteral("Updated git remote %1 for %2/%3.")
+                  .arg(name, m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
+}
+
+void MainWindow::deleteSelectedRepoRemote()
+{
+    if (!m_repoRemotesTable || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int row = m_repoRemotesTable->currentRow();
+    if (row < 0 || !m_repoRemotesTable->item(row, 0))
+        return;
+    const QString name = m_repoRemotesTable->item(row, 0)->text();
+    if (QMessageBox::question(
+            this, "Delete git remote",
+            QStringLiteral("Remove remote \"%1\" from this repository?").arg(name),
+            QMessageBox::Cancel | QMessageBox::Yes,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    const QString gitDir = repoRemoteGitDir(m_repositories.at(m_repoDetailIndex));
+    QString error;
+    if (!runGitCapture(gitDir,
+                       {QStringLiteral("remote"), QStringLiteral("remove"), name},
+                       nullptr, &error)) {
+        QMessageBox::warning(this, "Git remotes",
+                             "Could not remove remote: " +
+                                 error.trimmed().right(240));
+        return;
+    }
+    reloadRepoRemotesTable();
+    logSystem(QStringLiteral("Removed git remote %1 for %2/%3.")
+                  .arg(name, m_repositories.at(m_repoDetailIndex).owner,
+                       m_repositories.at(m_repoDetailIndex).name));
 }
 
 void MainWindow::updateRepoDetailStatus()

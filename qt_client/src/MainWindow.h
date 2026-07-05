@@ -1570,6 +1570,8 @@ private:
     void reloadVariablesTable();
     void addOrEditVariable(bool editSelected);
     void deleteSelectedVariable();
+    void exportVariables();
+    void importVariables();
     void toggleVariablesRevealed();
     void persistVariablesFromTable();
 
@@ -1868,6 +1870,10 @@ private:
     // Apply an edited source/fork URL to the open repo: persist it and repoint
     // the bare mirror's origin remote so the next sync fetches from it.
     void updateRepoSource();
+    void reloadRepoRemotesTable();
+    void promptAddRepoRemote();
+    void promptEditRepoRemote();
+    void deleteSelectedRepoRemote();
     // Choose an existing local Git working copy and save it as the open repo's
     // fork location, so future syncs mirror from that local checkout.
     void promptSetRepoForkLocation();
@@ -3807,6 +3813,7 @@ private:
     QLabel *m_repoSourceHint = nullptr;
     QLabel *m_repoForkLocation = nullptr;
     QLabel *m_repoMirrorLocation = nullptr;
+    QTableWidget *m_repoRemotesTable = nullptr;
     // Agent sessions assigned from issues.
     AgentStore *m_agentStore = nullptr;
     // Pool of agent runners so sessions execute in parallel (one process each)

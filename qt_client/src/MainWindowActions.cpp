@@ -2663,6 +2663,140 @@ void MainWindow::deleteSelectedVariable()
     reloadVariablesTable();
 }
 
+void MainWindow::exportVariables()
+{
+    const QMap<QString, QString> vars = ActionStore::variables();
+    if (vars.isEmpty()) {
+        QMessageBox::information(this, "Export variables",
+                                 "There are no variables or secrets to export.");
+        return;
+    }
+
+    const int confirm = QMessageBox::warning(
+        this, "Export variables",
+        "This export writes secret values in clear text. Keep the file private.",
+        QMessageBox::Cancel | QMessageBox::Ok, QMessageBox::Cancel);
+    if (confirm != QMessageBox::Ok)
+        return;
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Export variables / secrets", "forkmesh-variables.json",
+        "ForkMesh variables (*.json);;All files (*)");
+    if (path.isEmpty())
+        return;
+
+    QJsonObject variables;
+    for (auto it = vars.constBegin(); it != vars.constEnd(); ++it)
+        variables.insert(it.key(), it.value());
+
+    QJsonObject root;
+    root.insert("kind", "forkmesh-action-variables-v1");
+    root.insert("exportedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    root.insert("variables", variables);
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, "Export failed",
+                             "Could not write " + path);
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        QMessageBox::warning(this, "Export failed",
+                             "Could not save " + path);
+        return;
+    }
+
+    flashMessage(QStringLiteral("Exported %1 variable%2.")
+                     .arg(vars.size())
+                     .arg(vars.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+void MainWindow::importVariables()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Import variables / secrets", QString(),
+        "ForkMesh variables (*.json);;JSON files (*.json);;All files (*)");
+    if (path.isEmpty())
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Import failed",
+                             "Could not read " + path);
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(
+            this, "Import failed",
+            "That file is not valid variables JSON: " + parseError.errorString());
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    const QJsonObject source =
+        root.value("variables").isObject() ? root.value("variables").toObject()
+                                           : root;
+    QMap<QString, QString> imported;
+    QStringList skipped;
+    for (auto it = source.constBegin(); it != source.constEnd(); ++it) {
+        const QString name = it.key().trimmed();
+        if (name.isEmpty() || !it.value().isString()) {
+            skipped.append(it.key());
+            continue;
+        }
+        imported.insert(name, it.value().toString());
+    }
+
+    if (imported.isEmpty()) {
+        QMessageBox::warning(this, "Import failed",
+                             "No string variables were found in that file.");
+        return;
+    }
+
+    QMap<QString, QString> next = ActionStore::variables();
+    const bool hasExisting = !next.isEmpty();
+    if (hasExisting) {
+        QMessageBox choice(this);
+        choice.setWindowTitle("Import variables");
+        choice.setText("Import " + QString::number(imported.size()) +
+                       " variable" + (imported.size() == 1 ? "" : "s") + "?");
+        choice.setInformativeText(
+            "Merge keeps existing variables and overwrites matching names. "
+            "Replace clears the current list first.");
+        QPushButton *mergeButton =
+            choice.addButton("Merge", QMessageBox::AcceptRole);
+        QPushButton *replaceButton =
+            choice.addButton("Replace", QMessageBox::DestructiveRole);
+        choice.addButton(QMessageBox::Cancel);
+        choice.setDefaultButton(mergeButton);
+        choice.exec();
+        if (choice.clickedButton() == replaceButton)
+            next.clear();
+        else if (choice.clickedButton() != mergeButton)
+            return;
+    }
+
+    for (auto it = imported.constBegin(); it != imported.constEnd(); ++it)
+        next.insert(it.key(), it.value());
+    ActionStore::setVariables(next);
+    reloadVariablesTable();
+
+    QString message = QStringLiteral("Imported %1 variable%2.")
+                          .arg(imported.size())
+                          .arg(imported.size() == 1 ? QString()
+                                                    : QStringLiteral("s"));
+    if (!skipped.isEmpty())
+        message += QStringLiteral(" Skipped %1 non-string entr%2.")
+                       .arg(skipped.size())
+                       .arg(skipped.size() == 1 ? QStringLiteral("y")
+                                                : QStringLiteral("ies"));
+    flashMessage(message);
+}
+
 void MainWindow::toggleVariablesRevealed()
 {
     m_varsRevealed = !m_varsRevealed;
