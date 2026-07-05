@@ -362,7 +362,7 @@ def deploy_worker(
         "observability": config.get("observability") or {},
     }
     migrations = config.get("migrations")
-    if migrations:
+    if migrations and os.environ.get("FORKMESH_API_DEPLOY_DO_MIGRATIONS") == "1":
         metadata["migrations"] = {
             "new_tag": migrations[-1]["tag"],
             "steps": [

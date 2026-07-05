@@ -71,6 +71,11 @@ uploads static assets through Cloudflare's assets upload session, applies D1
 migrations through the D1 query API, and uploads the Python Worker module via
 Cloudflare's multipart Worker upload API.
 
+Durable Object migrations are not resent on normal API deploys; Cloudflare
+stores the current migration tag and rejects replaying the chain. For a brand-new
+Worker that needs the committed DO migration steps, set
+`FORKMESH_API_DEPLOY_DO_MIGRATIONS=1` for that first deploy only.
+
 Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.
 
