@@ -1010,8 +1010,23 @@ void MainWindow::loadMirrorNodesPanel()
     MirrorAdvert selfAdvert;
     selfAdvert.ownerName = canonical;
     selfAdvert.source = source;
-    selfAdvert.branch = mirrorHeadBranch(localMirror);
-    selfAdvert.commit = mirrorBranchCommit(localMirror, selfAdvert.branch);
+    const QString servedBranch = mirrorHeadBranch(localMirror);
+    const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
+    selfAdvert.branch = servedBranch;
+    selfAdvert.commit = servedCommit;
+    if (!repo.localPath.trimmed().isEmpty()) {
+        QString sourceCommit = worktreeBranchCommit(repo.localPath, servedBranch);
+        QString sourceBranch = servedBranch;
+        if (sourceCommit.isEmpty()) {
+            sourceCommit = worktreeHeadCommit(repo.localPath);
+            sourceBranch = worktreeHeadBranch(repo.localPath);
+        }
+        if (!sourceCommit.isEmpty()) {
+            if (!sourceBranch.isEmpty())
+                selfAdvert.branch = sourceBranch;
+            selfAdvert.commit = sourceCommit;
+        }
+    }
     selfAdvert.updatedMs = repo.lastSyncMs;
     selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
     selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
@@ -1028,11 +1043,14 @@ void MainWindow::loadMirrorNodesPanel()
     // show a live "↑N to push" badge the moment a change is made.
     int pendingPush = 0;
     if (repoHasWorkingTree() && !repo.localPath.trimmed().isEmpty() &&
-        !selfAdvert.commit.isEmpty()) {
+        !servedCommit.isEmpty()) {
         QByteArray out;
+        const QString pushTarget = servedBranch.isEmpty()
+                                       ? QStringLiteral("HEAD")
+                                       : servedBranch;
         if (runGitCapture(repo.localPath,
                           {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                           selfAdvert.commit + QStringLiteral("..HEAD")},
+                           servedCommit + QStringLiteral("..") + pushTarget},
                           &out, nullptr))
             pendingPush = QString::fromUtf8(out).trimmed().toInt();
     }

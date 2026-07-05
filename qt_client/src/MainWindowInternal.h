@@ -6190,6 +6190,47 @@ inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArra
     return true;
 }
 
+inline QString worktreeHeadBranch(const QString &workTree)
+{
+    if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(workTree,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("HEAD")},
+                       &out, nullptr))
+        return QString();
+    const QString branch = QString::fromUtf8(out).trimmed();
+    return branch == QLatin1String("HEAD") ? QString() : branch;
+}
+
+inline QString worktreeHeadCommit(const QString &workTree)
+{
+    if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(workTree,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                        QStringLiteral("HEAD")},
+                       &out, nullptr))
+        return QString();
+    return QString::fromUtf8(out).trimmed();
+}
+
+inline QString worktreeBranchCommit(const QString &workTree, const QString &branch)
+{
+    if (workTree.trimmed().isEmpty() || branch.trimmed().isEmpty() ||
+        !QDir(workTree).exists(QStringLiteral(".git")))
+        return QString();
+    QByteArray out;
+    if (!runGitCapture(workTree,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                        branch + QStringLiteral("^{commit}")},
+                       &out, nullptr))
+        return QString();
+    return QString::fromUtf8(out).trimmed();
+}
+
 // True when `workTree`'s issues/ subtree has no uncommitted *tracked* changes —
 // a clean base for the auto-issue-sync to land issue commits on (issue #193).
 // Scoped to issues/ (not the whole tree) because IssueStore::commit() only ever

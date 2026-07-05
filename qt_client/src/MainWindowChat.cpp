@@ -8333,13 +8333,13 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // clone-source mirror to auto-resolve to a real online one. The headless
     // installer then starts the node as a background daemon under this name so it
     // actually joins the network and shows up in the Mirror nodes list.
-    // FORKMESH_OWNER carries this account's owner name so the installer can echo
-    // which account the fresh node is being attached to (adhoc #258), and
+    // FORKMESH_OWNER carries the user name the fresh node is being attached to
+    // so the installer can echo it (adhoc #258), and
     // FORKMESH_REINSTALL=1 tells it to wipe any existing install + data first.
     QString envPrefix = QStringLiteral("FORKMESH_NODE_NAME=%1").arg(shq(node));
-    const QString owner = accountOwner();
-    if (!owner.isEmpty())
-        envPrefix += QStringLiteral(" FORKMESH_OWNER=%1").arg(shq(owner));
+    const QString linkUser = hostLinkUserName();
+    if (!linkUser.isEmpty())
+        envPrefix += QStringLiteral(" FORKMESH_OWNER=%1").arg(shq(linkUser));
     if (reinstall)
         envPrefix += QStringLiteral(" FORKMESH_REINSTALL=1");
     QString pipeline =
@@ -8448,12 +8448,18 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 // a code they can't even see on the remote screen. Fall back to
                 // the manual prompt only when this app has no usable account to
                 // attach it to.
-                if (!accountOwner().isEmpty() && m_profileIdentity.isValid()) {
+                QString linkUser;
+                const QString signer = hostLinkSigningAccountName(&linkUser);
+                if (!signer.isEmpty()) {
                     appendHostInstallLog(QString::fromUtf8(
-                        "\nLinking node to your account (%1)\xE2\x80\xA6\n")
-                        .arg(accountOwner()));
+                        "\nLinking node to your user account (%1)\xE2\x80\xA6\n")
+                        .arg(linkUser));
                     submitHostLinkCode(code);
                 } else {
+                    appendHostInstallLog(QString::fromUtf8(
+                        "\n[warning] Not auto-linking this host: this node is "
+                        "not linked to a user account. Link this node to your "
+                        "user account, then reinstall the host to attach it.\n"));
                     promptHostLinkCode(code);
                 }
             }
@@ -8742,8 +8748,8 @@ void MainWindow::runHostUninstall()
 // type a code read off any machine's screen.
 void MainWindow::promptHostLinkCode(const QString &code)
 {
-    const QString owner = accountOwner();
-    if (owner.isEmpty() || !m_profileIdentity.isValid())
+    QString linkUser;
+    if (hostLinkSigningAccountName(&linkUser).isEmpty())
         return;
     auto *dialog = new QDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -8752,7 +8758,7 @@ void MainWindow::promptHostLinkCode(const QString &code)
     auto *label = new QLabel(
         QStringLiteral("The machine being installed shows a link code. Confirm "
                        "it below to register the new node under your account "
-                       "(<b>%1</b>).").arg(owner.toHtmlEscaped()));
+                       "(<b>%1</b>).").arg(linkUser.toHtmlEscaped()));
     label->setWordWrap(true);
     layout->addWidget(label);
     auto *codeEdit = new QLineEdit(code);
@@ -8781,13 +8787,14 @@ void MainWindow::promptHostLinkCode(const QString &code)
 
 void MainWindow::submitHostLinkCode(const QString &code)
 {
-    const QString owner = accountOwner();
-    if (owner.isEmpty() || !m_profileIdentity.isValid())
+    QString linkUser;
+    const QString signer = hostLinkSigningAccountName(&linkUser);
+    if (signer.isEmpty())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
-        ("forkmesh-link-v1\n" + owner + "\n" + code + "\n" + ts).toUtf8();
-    const QJsonObject body{{"nodeName", owner},
+        ("forkmesh-link-v1\n" + signer + "\n" + code + "\n" + ts).toUtf8();
+    const QJsonObject body{{"nodeName", signer},
                            {"code", code},
                            {"ts", ts},
                            {"sig", m_profileIdentity.signData(canonical)}};
@@ -8796,18 +8803,20 @@ void MainWindow::submitHostLinkCode(const QString &code)
                       QStringLiteral("application/json"));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, linkUser]() {
         const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
         QString message;
         if (resp.value(QStringLiteral("linked")).toBool()) {
             message = QString::fromUtf8(
-                "\n\xE2\x9C\x94 Node \"%1\" is now linked to your account.\n")
-                .arg(resp.value(QStringLiteral("node")).toString());
+                "\n\xE2\x9C\x94 Node \"%1\" is now linked to user \"%2\".\n")
+                .arg(resp.value(QStringLiteral("node")).toString(),
+                     resp.value(QStringLiteral("user")).toString(linkUser));
         } else if (resp.value(QStringLiteral("pending")).toBool()) {
             message = QString::fromUtf8(
                 "\n\xE2\x9C\x94 Link code accepted; the new node will be linked "
-                "to your account as soon as it registers.\n");
+                "to user \"%1\" as soon as it registers.\n")
+                .arg(resp.value(QStringLiteral("user")).toString(linkUser));
         } else {
             message = QString::fromUtf8(
                 "\n\xE2\x9C\x98 Could not link the new node (%1).\n")

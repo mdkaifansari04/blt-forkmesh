@@ -516,18 +516,22 @@ void MainWindow::refreshRepositoryList()
         // that changes when we merely serve a request, yet refreshRepositoryList runs
         // on every onRequestServed and a 1-minute timer, so recomputing it every time
         // blocked the GUI thread for seconds (adhoc #83). A mirror's stats only move
-        // when it is re-synced (repo.lastSyncMs) and the worktree count only when a
-        // worktree is added/removed (the .git/worktrees dir mtime) — so skip the whole
-        // rebuild while that signature is unchanged, and when it did change run the git
-        // reads under GitKeepAlive so the window keeps breathing.
+        // when it is re-synced (repo.lastSyncMs), a source row's latest commit moves
+        // with the working-tree HEAD, and the worktree count only when a worktree is
+        // added/removed (the .git/worktrees dir mtime) — so skip the whole rebuild
+        // while that signature is unchanged, and when it did change run the git reads
+        // under GitKeepAlive so the window keeps breathing.
         QString advertSig;
         for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
             if (repo.previewOnly)
                 continue;
+            const QString sourceHead = repo.localPath.trimmed().isEmpty()
+                                           ? QString()
+                                           : worktreeHeadCommit(repo.localPath);
             advertSig +=
                 repo.mirrorPath + QLatin1Char('|') +
                 QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
-                QLatin1Char('|') +
+                QLatin1Char('|') + sourceHead + QLatin1Char('|') +
                 QString::number(
                     QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
                         .lastModified()
@@ -549,9 +553,25 @@ void MainWindow::refreshRepositoryList()
             advert.source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
                             repoSegment(repo.name, QStringLiteral("repository"));
             // Advertise the HEAD this node currently holds so peers can see how
-            // fresh our mirror is relative to theirs.
+            // fresh our mirror is relative to theirs. A source-of-truth node has
+            // a working tree; report that HEAD so peers don't display a stale
+            // source commit while the bare served mirror is catching up.
             advert.branch = mirrorHeadBranch(repo.mirrorPath);
             advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
+            if (!repo.localPath.trimmed().isEmpty()) {
+                QString sourceCommit =
+                    worktreeBranchCommit(repo.localPath, advert.branch);
+                QString sourceBranch = advert.branch;
+                if (sourceCommit.isEmpty()) {
+                    sourceCommit = worktreeHeadCommit(repo.localPath);
+                    sourceBranch = worktreeHeadBranch(repo.localPath);
+                }
+                if (!sourceCommit.isEmpty()) {
+                    if (!sourceBranch.isEmpty())
+                        advert.branch = sourceBranch;
+                    advert.commit = sourceCommit;
+                }
+            }
             advert.updatedMs = repo.lastSyncMs;
             // On-disk mirror size so peers can show how much data we're holding.
             advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
@@ -2493,8 +2513,21 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     // everything but sync time and size (adhoc #56). The HEAD/issue figures mirror
     // the live advert (setMirroredRepos); platform/version/id come from our own
     // roster entry (the same values makeMessage broadcasts).
-    const QString headBranch = mirrorHeadBranch(repo.mirrorPath);
-    const QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
+    QString headBranch = mirrorHeadBranch(repo.mirrorPath);
+    QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
+    if (!repo.localPath.trimmed().isEmpty()) {
+        QString sourceCommit = worktreeBranchCommit(repo.localPath, headBranch);
+        QString sourceBranch = headBranch;
+        if (sourceCommit.isEmpty()) {
+            sourceCommit = worktreeHeadCommit(repo.localPath);
+            sourceBranch = worktreeHeadBranch(repo.localPath);
+        }
+        if (!sourceCommit.isEmpty()) {
+            if (!sourceBranch.isEmpty())
+                headBranch = sourceBranch;
+            headCommit = sourceCommit;
+        }
+    }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
     const int branchCount = mirrorBranchCount(repo.mirrorPath);
@@ -3287,8 +3320,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                                    (changed ? QString()
                                                             : " (already up to date)"));
                         }
-                        if (!stillPreview && repo.publishToNetwork &&
-                            (changed || !quiet)) {
+                        if (!stillPreview && repo.publishToNetwork) {
                             publishRepository(index, false);
                             // Serve this repo's files live to the web now that a
                             // mirror exists (pure live tunnel, nothing uploaded).

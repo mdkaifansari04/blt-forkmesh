@@ -1547,6 +1547,54 @@ QString MainWindow::accountOwner() const
     return accountNameFromInput(m_userName, QStringLiteral("owner"));
 }
 
+QString MainWindow::hostLinkUserName()
+{
+    if (!hasActiveAccountSession())
+        return QString();
+    const QString linkedOwner = m_nodeOwnerUser.trimmed().toLower();
+    if (!linkedOwner.isEmpty())
+        return linkedOwner;
+
+    const QString signer = accountOwner().trimmed().toLower();
+    if (signer.isEmpty())
+        return QString();
+
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
+        return signer;
+
+    if (!m_networkAccess)
+        return QString();
+
+    int status = 0;
+    const QJsonObject lookup = getAccountSync(signer, &status);
+    if (status != 200 || !lookup.value(QStringLiteral("exists")).toBool())
+        return QString();
+
+    m_nodeOwnerUser = lookup.value(QStringLiteral("owner")).toString().trimmed().toLower();
+    m_profileIsUserAccount =
+        lookup.value(QStringLiteral("kind")).toString() == QStringLiteral("user");
+    if (!m_nodeOwnerUser.isEmpty())
+        return m_nodeOwnerUser;
+    return m_profileIsUserAccount ? signer : QString();
+}
+
+QString MainWindow::hostLinkSigningAccountName(QString *userName)
+{
+    if (userName)
+        userName->clear();
+    const QString signer = accountOwner().trimmed().toLower();
+    if (signer.isEmpty() || !hasActiveAccountSession())
+        return QString();
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
+        return QString();
+    const QString user = hostLinkUserName();
+    if (user.isEmpty())
+        return QString();
+    if (userName)
+        *userName = user;
+    return signer;
+}
+
 QString MainWindow::settingsAccountName() const
 {
     if (!m_accountName.trimmed().isEmpty())
@@ -1745,11 +1793,50 @@ void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
         return;
-    // Already mirroring the ForkMesh project repo — nothing to bootstrap.
-    for (const RepositoryRecord &repo : std::as_const(m_repositories))
-        if (!repo.previewOnly &&
-            repo.name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0)
-            return;
+    // Already mirroring the ForkMesh project repo. Normalize old installs that
+    // learned the flagship from the former newnewnode/forkmesh namespace or from
+    // a transient mirror owner; otherwise they can keep fetching a stale source
+    // forever after a Hosts install that did not wipe data.
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        RepositoryRecord &repo = m_repositories[i];
+        if (repo.previewOnly ||
+            repo.name.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) != 0)
+            continue;
+        const QUrl clone(repo.cloneUrl.trimmed());
+        const QString relayHost = catalogApiUrl().host();
+        const bool relayClone =
+            !clone.host().isEmpty() &&
+            clone.host().compare(relayHost, Qt::CaseInsensitive) == 0;
+        const bool managedFlagship =
+            relayClone ||
+            repo.owner.compare(QStringLiteral("forkmesh"), Qt::CaseInsensitive) == 0 ||
+            repo.owner.compare(QStringLiteral("newnewnode"), Qt::CaseInsensitive) == 0;
+        if (managedFlagship) {
+            const QString canonicalOwner = QStringLiteral("forkmesh");
+            const QString canonicalClone =
+                hostedCloneUrl(canonicalOwner, QStringLiteral("forkmesh"));
+            bool changed = false;
+            if (repo.owner.compare(canonicalOwner, Qt::CaseInsensitive) != 0) {
+                repo.owner = canonicalOwner;
+                changed = true;
+            }
+            if (!canonicalClone.isEmpty() &&
+                repo.cloneUrl.compare(canonicalClone, Qt::CaseInsensitive) != 0) {
+                repo.cloneUrl = canonicalClone;
+                changed = true;
+            }
+            if (changed) {
+                saveRepositories();
+                refreshRepositoryList();
+                logSystem("Mirroring forkmesh/forkmesh from " + repo.cloneUrl);
+                if (!m_syncingRepos.contains(i))
+                    syncRepository(i, /*quiet=*/true);
+            }
+        }
+        // A user-managed repo named forkmesh still counts as "already present";
+        // do not add a duplicate project repo behind their back.
+        return;
+    }
 
     const QJsonArray repos = fetchCatalogRepos();
     QString owner, cloneUrl;
