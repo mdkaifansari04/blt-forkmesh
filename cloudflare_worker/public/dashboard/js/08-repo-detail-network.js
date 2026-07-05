@@ -791,11 +791,17 @@
 
       const openButton = event.target.closest("[data-dashboard-open-repo]");
       if (openButton) {
+        const nestedControl = event.target.closest("a, button, input, textarea, select, [contenteditable='true']");
+        if (nestedControl && nestedControl !== openButton && openButton.contains(nestedControl)) {
+          return;
+        }
+        event.preventDefault();
         const repo = findRepository(openButton.dataset.dashboardOpenRepo);
         if (repo) {
           closeMobileDrawers();
           renderRepoDetail(repo);
         }
+        return;
       }
 
       const historyButton = event.target.closest("[data-dashboard-history-button]");
@@ -1059,6 +1065,16 @@
 	      closeMobileDrawers();
 	      return;
 	    }
+    const openCard = event.target?.closest?.("[data-dashboard-open-repo][role='link']");
+    if (!typingTarget && openCard && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      const repo = findRepository(openCard.dataset.dashboardOpenRepo);
+      if (repo) {
+        closeMobileDrawers();
+        renderRepoDetail(repo);
+      }
+      return;
+    }
     if (fileFinderOpen()) {
       if (event.key === "ArrowDown") {
         event.preventDefault();

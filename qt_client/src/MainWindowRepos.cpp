@@ -2533,6 +2533,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
     const int branchCount = mirrorBranchCount(repo.mirrorPath);
     const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
     const int discussionCount = mirrorDiscussionCount(repo.mirrorPath, headBranch);
+    const QJsonArray activityWeeks = mirrorCommitActivityWeeks(repo.mirrorPath);
     const int worktreeCount = mirrorWorktreeCount(repo.localPath);
     const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
     QString selfPlatform, selfVersion, selfNodeId;
@@ -2562,6 +2563,7 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                          {"branchCount", QString::number(branchCount)},
                          {"pullCount", QString::number(pullCount)},
                          {"discussionCount", QString::number(discussionCount)},
+                         {"activityWeeks", activityWeeks},
                          {"worktreeCount", QString::number(worktreeCount)},
                          {"artifactCount", QString::number(artifactCount)},
                          {"platform", selfPlatform},
@@ -3276,7 +3278,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             m_pendingAutoOpenRepoKey.compare(
                                 repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
                             m_pendingAutoOpenRepoKey.clear();
-                            // On a fresh install, land on the #welcome chat, not the
+                            // On a fresh install, land on the welcome chat, not the
                             // Code view. Just select the repo internally (so the repo
                             // switcher shows "forkmesh") and refresh the UI; don't open
                             // the detail view which would load and show the Agents tab.
@@ -3284,7 +3286,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                             refreshRepositoryList();
                             QTimer::singleShot(0, this, [this] {
                                 showChatView();
-                                switchConversation(kWelcomeChannel);
+                                switchConversation(welcomeChannelForIdentity());
                             });
                         }
                         if (changed && hasMirror && !stillPreview &&

@@ -201,9 +201,10 @@ private:
     QString m_lastTxType;
     QString m_lastTxScope;
 
-    // #welcome is the shared greeting room every node joins; a brand-new node
-    // posts a one-time hello there so the network sees who joined (issue #192).
-    QStringList m_channels{"#general", "#welcome", "#random"};
+    // Split welcome rooms are the one-time join rooms for nodes/users; every
+    // node starts in both so it can open whichever matches its identity.
+    QStringList m_channels{
+        "#general", "#welcome-nodes", "#welcome-users", "#random"};
     // Invite-only channels (subset of m_channels). Never advertised in hello or
     // "channel" broadcasts, and messages in them carry "private":true so a peer
     // who wasn't invited drops them instead of auto-joining. See createPrivateChannel.

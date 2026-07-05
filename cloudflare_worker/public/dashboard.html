@@ -265,16 +265,20 @@
       }
 
 	      .repo-list.grid-mode .repo-layout {
-	        min-height: 13rem;
+	        min-height: 10rem;
 	      }
 
-	      .browse-repo-arrow {
-	        transition: transform 160ms ease;
-	      }
+      .repo-activity-bars {
+        align-items: end;
+        display: grid;
+        gap: 1px;
+        grid-template-columns: repeat(52, minmax(0, 1fr));
+      }
 
-	      .browse-repo-button:hover .browse-repo-arrow {
-	        transform: translateX(0.125rem);
-	      }
+      .repo-activity-bar {
+        border-radius: 2px 2px 0 0;
+        min-width: 1px;
+      }
 
 	      .network-toggle-open {
 	        display: none;

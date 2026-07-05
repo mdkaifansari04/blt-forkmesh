@@ -484,7 +484,8 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
 
     m_homeRoster = newRoster;
     // Now that the room link is live (a roster only arrives once connected), a
-    // brand-new node greets the shared #welcome room — once, ever (issue #192).
+    // brand-new node sends its one-time greeting to the identity-specific
+    // welcome room — once, ever (issue #192).
     maybeAnnounceWelcome();
     refreshChatMembers();
     // The members list is gone (nodes are the members); keep DM tab titles in
@@ -528,6 +529,15 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         syncMirrorsBehindRoster();
 }
 
+QString MainWindow::welcomeChannelForIdentity() const
+{
+    // User accounts and nodes linked under one are considered users for the
+    // split welcome flow; standalone/child nodes go to #welcome-nodes.
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
+        return kWelcomeUsersChannel;
+    return kWelcomeNodesChannel;
+}
+
 void MainWindow::maybeAnnounceWelcome()
 {
     // Self-announce, not peer-detect: only the joining node posts, so the room
@@ -560,7 +570,7 @@ void MainWindow::maybeAnnounceWelcome()
     m_profileIdentity.markWelcomeAnnounced();
     m_welcomeAnnounced = true;
     m_backend->sendChat(
-        kWelcomeChannel,
+        welcomeChannelForIdentity(),
         QString::fromUtf8("\xF0\x9F\x91\x8B Just joined ForkMesh \xE2\x80\x94 hello!"));
 }
 

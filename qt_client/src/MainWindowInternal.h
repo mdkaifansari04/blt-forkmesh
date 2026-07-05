@@ -159,6 +159,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QUuid>
+#include <QVector>
 #include <QWindow>
 #include <QVBoxLayout>
 
@@ -2193,12 +2194,15 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
-// The shared welcome room every node's one-time "just joined" greeting posts
-// to (issue #192). Whether a given identity has already greeted it is tracked
-// by ForkMeshIdentity itself (see hasAnnouncedWelcome/markWelcomeAnnounced),
-// not here; the QSettings prefix below is the flag's pre-move location, read
-// only to migrate nodes that greeted before it moved (adhoc #109).
-const QString kWelcomeChannel = QStringLiteral("#welcome");
+// Split welcome rooms by identity type:
+// - #welcome-users for user-account nodes
+// - #welcome-nodes for regular nodes
+// Each identity posts its one-time "just joined" greeting to one of these
+// channels (issue #192), based on local account-linking state.
+const QString kWelcomeUsersChannel = QStringLiteral("#welcome-users");
+const QString kWelcomeNodesChannel = QStringLiteral("#welcome-nodes");
+// Legacy QSettings migration prefix retained for installs that already posted to
+// the old shared room before #welcome-* split.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
     QStringLiteral("chat/welcomeAnnounced/");
 
@@ -6566,6 +6570,42 @@ inline int mirrorCommitCount(const QString &mirrorPath, const QString &branch)
     bool ok = false;
     const int n = QString::fromUtf8(out).trimmed().toInt(&ok);
     return ok ? n : -1;
+}
+
+// Commit activity histogram for the website repository list: 52 weekly buckets,
+// oldest to newest, across every served ref in the bare mirror.
+inline QJsonArray mirrorCommitActivityWeeks(const QString &mirrorPath)
+{
+    constexpr int kWeeks = 52;
+    constexpr qint64 kWeekSeconds = 7LL * 24LL * 60LL * 60LL;
+    QVector<int> buckets(kWeeks, 0);
+    auto toArray = [&buckets]() {
+        QJsonArray arr;
+        for (int n : buckets)
+            arr.append(n);
+        return arr;
+    };
+
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return toArray();
+    QByteArray out;
+    if (!runGitCapture(mirrorPath,
+                       {"log", "--all", "--since=52 weeks ago", "--format=%ct"},
+                       &out, nullptr))
+        return toArray();
+
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    const qint64 start = now - (qint64(kWeeks) * kWeekSeconds);
+    for (const QByteArray &line : out.split('\n')) {
+        bool ok = false;
+        const qint64 ts = QString::fromUtf8(line).trimmed().toLongLong(&ok);
+        if (!ok)
+            continue;
+        const int idx =
+            qBound(0, int((ts - start) / kWeekSeconds), kWeeks - 1);
+        buckets[idx] += 1;
+    }
+    return toArray();
 }
 
 // How many local branches (refs/heads/*) the node's bare mirror holds. Returns

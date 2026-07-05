@@ -22,6 +22,68 @@
     return repoIsLive(repo) && !repo?.liveHost;
   }
 
+  function groupRepoMetric(group, keys) {
+    let best = null;
+    for (const member of group.members || []) {
+      const value = repoCount(member, keys);
+      if (value === null) continue;
+      best = best === null ? value : Math.max(best, value);
+    }
+    return best === null ? 0 : best;
+  }
+
+  function normalizeActivityWeeks(value) {
+    const raw = Array.isArray(value) ? value.slice(-52) : [];
+    const series = raw.map((item) => {
+      const number = Number(item);
+      return Number.isFinite(number) && number > 0 ? number : 0;
+    });
+    while (series.length < 52) series.unshift(0);
+    return series;
+  }
+
+  function groupActivityWeeks(group) {
+    const buckets = Array.from({ length: 52 }, () => 0);
+    for (const member of group.members || []) {
+      const series = normalizeActivityWeeks(member.activityWeeks);
+      for (let i = 0; i < buckets.length; i += 1) {
+        buckets[i] = Math.max(buckets[i], series[i] || 0);
+      }
+    }
+    return buckets;
+  }
+
+  function repoMetricChip(label, icon, value) {
+    return `
+      <span class="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground">
+        <i data-lucide="${icon}" class="h-3 w-3 shrink-0"></i>
+        <span class="truncate">${label}</span>
+        <span class="ml-auto font-mono text-foreground">${formatCount(value)}</span>
+      </span>
+    `;
+  }
+
+  function repoActivitySparkline(values) {
+    const series = normalizeActivityWeeks(values);
+    const max = Math.max(1, ...series);
+    const total = series.reduce((sum, n) => sum + n, 0);
+    const title = `${formatCount(total)} commits in the past 52 weeks`;
+    const bars = series.map((value) => {
+      const height = value > 0 ? Math.max(3, Math.round((value / max) * 30)) : 2;
+      const tone = value > 0 ? "bg-primary" : "bg-muted-foreground/20";
+      return `<span class="repo-activity-bar ${tone}" style="height:${height}px"></span>`;
+    }).join("");
+    return `
+      <div class="repo-activity-sparkline w-full" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+        <div class="mb-1 flex items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
+          <span>52 weeks</span>
+          <span>${formatCount(total)} commits</span>
+        </div>
+        <div class="repo-activity-bars h-8">${bars}</div>
+      </div>
+    `;
+  }
+
   function repositoryCard(group) {
     const origin = sourceOfTruth(group);
     const repo = group.primary;
@@ -35,15 +97,27 @@
     const statusText = nodeCount > 1
       ? `${liveCount} of ${nodeCount} nodes`
       : (viaMirror ? "via mirror" : live ? "online" : "offline");
+    const metrics = [
+      repoMetricChip("Issues", "circle-dot", groupRepoMetric(group, ["issueCount", "issues", "issuesCount", "openIssues"])),
+      repoMetricChip("Commits", "git-commit-horizontal", groupRepoMetric(group, ["commitCount", "commits", "commitHistory"])),
+      repoMetricChip("Pulls", "git-pull-request", groupRepoMetric(group, ["pullCount", "pulls", "pullsCount", "openPulls", "pullRequests"])),
+      repoMetricChip("Discussions", "message-square", groupRepoMetric(group, ["discussionCount", "discussions"])),
+    ].join("");
+    const activityWeeks = groupActivityWeeks(group);
     return `
-      <div data-repo="${escapeHtml(key.toLowerCase())}" class="repo-card group px-4 sm:px-5 py-5 hover:bg-secondary/40 transition-colors">
-        <div class="repo-layout flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_auto] lg:items-stretch">
+      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+        <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
           <div class="min-w-0">
-            <p class="text-sm font-medium text-foreground truncate">
-              <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
-            </p>
-            <p class="mt-2 text-sm text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
-            <div class="mt-4 flex items-center gap-x-5 gap-y-2 flex-wrap">
+            <div class="flex min-w-0 items-center gap-2">
+              <p class="min-w-0 truncate text-sm font-medium text-foreground">
+                <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
+              </p>
+              <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
+                ${statusText}
+              </span>
+            </div>
+            <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
+            <div class="mt-2 flex items-center gap-x-4 gap-y-1.5 flex-wrap">
               <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(visibility)}
               </span>
@@ -52,21 +126,10 @@
               </span>
               <span class="text-xs text-muted-foreground font-mono">updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
             </div>
-            <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(origin))}" class="copy-button mt-5 inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-secondary text-xs text-foreground hover:bg-secondary/80 transition-colors">
-              <i data-lucide="copy" class="copy-icon w-3.5 h-3.5"></i>
-              <i data-lucide="check" class="copy-check w-3.5 h-3.5 text-primary"></i>
-              Copy clone
-            </button>
+            <div class="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">${metrics}</div>
           </div>
-          <div class="flex flex-col justify-between items-start lg:items-end gap-5 lg:min-w-48">
-            <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-border font-medium font-mono ${statusClass}">
-              <i data-lucide="circle" class="w-1.5 h-1.5 fill-current"></i>
-              ${statusText}
-            </span>
-            <button data-dashboard-open-repo="${escapeHtml(key)}" class="browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors">
-              Browse repository
-              <i data-lucide="arrow-right" class="browse-repo-arrow w-3.5 h-3.5"></i>
-            </button>
+          <div class="min-w-0">
+            ${repoActivitySparkline(activityWeeks)}
           </div>
         </div>
       </div>
@@ -994,4 +1057,3 @@
       setRepoFileFullscreenFallback(viewer.querySelector("[data-repo-file-shell]"), false);
     }, { signal: controller.signal });
   }
-
