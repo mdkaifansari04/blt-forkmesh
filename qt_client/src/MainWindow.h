@@ -1868,6 +1868,12 @@ private:
     // Apply an edited source/fork URL to the open repo: persist it and repoint
     // the bare mirror's origin remote so the next sync fetches from it.
     void updateRepoSource();
+    // Choose an existing local Git working copy and save it as the open repo's
+    // fork location, so future syncs mirror from that local checkout.
+    void promptSetRepoForkLocation();
+    // Set repo-local git user.name/user.email from the ForkMesh username and a
+    // generic ForkMesh email address.
+    void setRepoGitIdentityFromForkMesh();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
     // Enable or disable secret-scanning push protection for the open repo.
@@ -3799,6 +3805,8 @@ private:
     // when the original baked-in URL goes stale (offline node id, moved relay).
     QLineEdit *m_repoSourceEdit = nullptr;
     QLabel *m_repoSourceHint = nullptr;
+    QLabel *m_repoForkLocation = nullptr;
+    QLabel *m_repoMirrorLocation = nullptr;
     // Agent sessions assigned from issues.
     AgentStore *m_agentStore = nullptr;
     // Pool of agent runners so sessions execute in parallel (one process each)

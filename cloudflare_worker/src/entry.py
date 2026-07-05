@@ -2369,12 +2369,73 @@ async def waitlist_handler(env, request):
 
 # --- Accounts (accounts table) — name + solana + password + TOTP ------------
 
+def _account_kind(rec):
+    return "user" if rec.get("pass_hash") else "node"
+
+
+async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
+                                          ip_bi=None, is_admin=None):
+    # Physical users/nodes tables (migration 0025) mirror the encrypted legacy
+    # account record so the website can query users and machine nodes as separate
+    # entities while old clients keep using /api/accounts/* during rollout.
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    if not name:
+        return
+    kind = _account_kind(rec)
+    now = int(Date.now())
+    if kind == "user":
+        if email_bi is None and rec.get("email"):
+            email_bi = await blind_index(env, clean_string(rec.get("email", ""), 254).lower())
+        enc_user = await encrypt_row(env, rec)
+        await d1_run(
+            env,
+            """INSERT INTO users (user_bi, data, email_bi, username, is_admin, ip_bi)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(user_bi) DO UPDATE SET
+                 data=excluded.data,
+                 email_bi=COALESCE(excluded.email_bi, users.email_bi),
+                 username=excluded.username,
+                 is_admin=CASE WHEN ? THEN excluded.is_admin ELSE users.is_admin END,
+                 ip_bi=COALESCE(excluded.ip_bi, users.ip_bi)""",
+            name_bi, enc_user, email_bi, name,
+            int(is_admin or 0), ip_bi, 1 if is_admin is not None else 0)
+    else:
+        await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
+
+    pubkey = clean_string(rec.get("pubkey", ""), 120)
+    if pubkey:
+        owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
+        if not owner and kind == "user":
+            owner = name
+        owner_bi = await blind_index(env, owner) if owner else None
+        enc_node = await encrypt_row(env, rec)
+        await d1_run(
+            env,
+            """INSERT INTO nodes (node_bi, user_bi, pubkey, data, name, last_seen)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(node_bi) DO UPDATE SET
+                 user_bi=excluded.user_bi, pubkey=excluded.pubkey,
+                 data=excluded.data, name=excluded.name,
+                 last_seen=MAX(nodes.last_seen, excluded.last_seen)""",
+            name_bi, owner_bi, pubkey, enc_node, name, now)
+    else:
+        await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+
+
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
-    row = await d1_first(env, "SELECT data FROM accounts WHERE name_bi=?", name_bi)
+    row = await d1_first(
+        env,
+        "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
+        name_bi)
     if not row:
         return name_bi, None
-    return name_bi, await decrypt_row(env, row["data"])
+    rec = await decrypt_row(env, row["data"])
+    if rec:
+        await _mirror_account_identity_tables(
+            env, name_bi, rec, email_bi=row.get("email_bi"),
+            ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
+    return name_bi, rec
 
 
 async def _owner_pubkey(env, owner):
@@ -2383,14 +2444,17 @@ async def _owner_pubkey(env, owner):
 
 
 async def _account_row_by_pubkey(env, pubkey):
-    # Node accounts aren't indexed by key (only by name_bi), so this is a full
-    # scan — the same tradeoff _wallet_name_map already makes at this
-    # project's scale. Only reached as a claim-node fallback when the input
-    # isn't shaped like a node name (see valid_node_pubkey).
+    node = await d1_first(env, "SELECT node_bi, data FROM nodes WHERE pubkey=?", pubkey)
+    if node:
+        rec = await decrypt_row(env, node.get("data"))
+        if rec:
+            return node.get("node_bi"), rec
+    # Legacy fallback while accounts are still migrating into nodes.
     rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
     for row in rows:
         rec = await decrypt_row(env, row.get("data"))
         if rec and rec.get("pubkey") == pubkey:
+            await _mirror_account_identity_tables(env, row["name_bi"], rec)
             return row["name_bi"], rec
     return None, None
 
@@ -2617,6 +2681,8 @@ async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
         "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
         name_bi, *vals,
     )
+    await _mirror_account_identity_tables(
+        env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
 
 
 async def _save_account_full(env, name_bi, rec, email_bi=None, ip_bi=None,
@@ -2633,6 +2699,9 @@ async def _save_account_full(env, name_bi, rec, email_bi=None, ip_bi=None,
         name_bi, enc, email_bi, rec.get("name", ""),
         int(is_admin or 0), ip_bi,
     )
+    await _mirror_account_identity_tables(
+        env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi,
+        is_admin=is_admin)
 
 
 async def _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo):
@@ -2848,6 +2917,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
         new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await edge_cache_delete(CATALOG_CACHE_KEY)
     return new_name_bi, next_rec, ""
 
@@ -2913,14 +2984,8 @@ async def _delete_account_namespace(env, name_bi, rec):
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
-
-
-# Users vs nodes (adhoc #53). Both kinds live in the accounts table; the kind is
-# derived from the record: an account with login credentials is a "user" (a
-# person — their desktop node is intrinsically theirs), a key-bound-only account
-# (e.g. a headless mirror's auto-registration) is a "node" a user can claim.
-def _account_kind(rec):
-    return "user" if rec.get("pass_hash") else "node"
+    await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
+    await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
 
 
 def _owned_nodes(rec):

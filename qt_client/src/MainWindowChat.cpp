@@ -4045,10 +4045,11 @@ void MainWindow::showNodesWindow()
             row->setContentsMargins(12, 12, 12, 12);
             row->setSpacing(12);
 
-            // Icon: real avatar if known, else a generated tile.
+            // Icon: real avatar if known, else a generated machine tile.
             QPixmap avatar = m_avatars.value(node.id);
             if (avatar.isNull())
-                avatar = letterFavicon(node.name);
+                avatar = nodeMachineFavicon(node.id.isEmpty() ? node.name : node.id,
+                                            48);
             auto *icon = new QLabel;
             icon->setPixmap(roundedRectPixmap(avatar, 48, 12));
             icon->setFixedSize(48, 48);
@@ -9034,6 +9035,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "download", "Update", "Pull the latest source, then rebuild and relaunch");
     connect(m_profileUpdateButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_profileUpdateButton); updateRebuildRestart(); });
+    auto *selfAddRepoButton = makeProfileActionButton(
+        "file-directory", "Add repo",
+        "Choose a local Git repository on this computer, mirror it, and publish "
+        "it as public or private");
+    connect(selfAddRepoButton, &QPushButton::clicked, this,
+            &MainWindow::promptAddRepository);
     auto *selfSettingsButton = makeProfileActionButton("gear", "Settings",
                                                         "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
@@ -9047,6 +9054,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     actionRow->setSpacing(6);
     actionRow->addWidget(m_profileRebuildButton);
     actionRow->addWidget(m_profileUpdateButton);
+    actionRow->addWidget(selfAddRepoButton);
     actionRow->addWidget(selfSettingsButton);
     actionRow->addWidget(selfLogoutButton);
     auto *selfLayout = new QVBoxLayout(m_profileSelfActions);
@@ -9295,7 +9303,7 @@ void MainWindow::rescaleProfileAvatar()
     const int side = qMax(m_profileAvatar->width(), 1);
     QPixmap src = m_profileAvatarSource;
     if (src.isNull())
-        src = letterFavicon(m_profileNodeName);
+        src = nodeMachineFavicon(m_profileNodeName, 96);
     m_profileAvatar->setPixmap(roundedRectPixmap(src, side, 20));
 }
 
@@ -9332,10 +9340,11 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     m_profileSolanaValue = solana;
     m_profileIsSelf = info.self;
 
-    // Full-width avatar banner: real avatar if we have one, else a letter tile.
+    // Full-width avatar banner: real avatar if we have one, else a generated
+    // machine tile for the node.
     QPixmap avatar = m_avatars.value(info.id);
     if (avatar.isNull())
-        avatar = letterFavicon(info.name);
+        avatar = nodeMachineFavicon(info.id.isEmpty() ? info.name : info.id, 96);
     m_profileAvatarSource = avatar;
     rescaleProfileAvatar();
 
