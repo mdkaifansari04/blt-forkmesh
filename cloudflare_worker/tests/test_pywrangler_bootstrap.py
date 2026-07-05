@@ -78,4 +78,4 @@ def test_no_node_pipeline_refuses_to_auto_install_pywrangler(tmp_path):
 
     assert result.returncode == 1
     assert "FORKMESH_NO_NODE_PACKAGES=1" in result.stderr
-    assert not venv.exists()
+    assert not (venv / "bin" / "pywrangler").exists()

@@ -61,20 +61,9 @@ one deploy:
 ./deploy.sh dry-run    # validate without uploading
 ```
 
-Local/manual deploys use `pywrangler`. If neither uv nor `pywrangler` is on
-PATH, the script installs `workers-py` into a local `.pywrangler/` venv and runs
-that copy automatically.
-
-ForkMesh CI sets `FORKMESH_CLOUDFLARE_API_DEPLOY=1`, which uses the Python
-standard-library deployer `cf_api_deploy.py` instead of Wrangler/npm. That path
-uploads static assets through Cloudflare's assets upload session, applies D1
-migrations through the D1 query API, and uploads the Python Worker module via
-Cloudflare's multipart Worker upload API.
-
-Durable Object migrations are not resent on normal API deploys; Cloudflare
-stores the current migration tag and rejects replaying the chain. For a brand-new
-Worker that needs the committed DO migration steps, set
-`FORKMESH_API_DEPLOY_DO_MIGRATIONS=1` for that first deploy only.
+Deploys use `pywrangler`. If neither uv nor `pywrangler` is on PATH, the script
+installs `workers-py` into a local `.pywrangler/` venv and runs that copy
+automatically.
 
 Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.

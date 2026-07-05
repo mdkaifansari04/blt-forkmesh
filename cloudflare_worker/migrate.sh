@@ -24,10 +24,6 @@ SCOPE="--remote"
 [ "${FORKMESH_D1_LOCAL:-0}" = "1" ] && SCOPE="--local"
 
 echo "migrate.sh: applying D1 migrations to '$DB' ($SCOPE)"
-if [ "${FORKMESH_CLOUDFLARE_API_DEPLOY:-0}" = "1" ]; then
-  ./cf_api_deploy.py migrate
-  exit 0
-fi
 # Non-interactive (build subprocess): wrangler auto-confirms when stdout is not
 # a TTY. Each migration is tracked in d1_migrations and applied at most once.
 #
