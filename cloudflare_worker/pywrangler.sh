@@ -20,6 +20,23 @@ _pywrangler_ensure_venv_path() {
 
 pywrangler() {
     _pywrangler_ensure_venv_path
+    local pywrangler_path
+    pywrangler_path="$(type -P pywrangler || true)"
+    if [ -n "$pywrangler_path" ]; then
+        "$pywrangler_path" "$@"
+        return
+    fi
+
+    if [ "${FORKMESH_NO_NODE_PACKAGES:-0}" = "1" ]; then
+        echo "error: pywrangler is not installed, and this Cloudflare pipeline is configured" >&2
+        echo "       with FORKMESH_NO_NODE_PACKAGES=1." >&2
+        echo "       Not auto-installing workers-py here: current pywrangler deploy" >&2
+        echo "       proxies to 'npx wrangler', which would require Node/npm packages." >&2
+        echo "       Install/provide a pywrangler executable in the runner image, or run" >&2
+        echo "       without FORKMESH_NO_NODE_PACKAGES if a Node-backed pywrangler is OK." >&2
+        return 1
+    fi
+
     if command -v uvx >/dev/null 2>&1; then
         uvx --from "$WORKERS_PY_SPEC" pywrangler "$@"
         return
@@ -34,12 +51,6 @@ pywrangler() {
     fi
     if [ -x "$PYWRANGLER_UV" ]; then
         "$PYWRANGLER_UV" tool run --from "$WORKERS_PY_SPEC" pywrangler "$@"
-        return
-    fi
-    local pywrangler_path
-    pywrangler_path="$(type -P pywrangler || true)"
-    if [ -n "$pywrangler_path" ]; then
-        "$pywrangler_path" "$@"
         return
     fi
     if [ ! -x "$PYWRANGLER_BIN" ]; then

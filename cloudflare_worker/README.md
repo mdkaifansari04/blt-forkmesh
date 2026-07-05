@@ -61,25 +61,18 @@ one deploy:
 ./deploy.sh dry-run    # validate without uploading
 ```
 
-This uses `uvx --from workers-py pywrangler deploy` when uv is installed
-(`uv tool run` also works). If neither uv nor `pywrangler` is on PATH, the
-script installs `workers-py` into a local `.pywrangler/` venv and runs that copy
-automatically.
+This uses `pywrangler`. For local/manual deploys, if neither uv nor
+`pywrangler` is on PATH, the script installs `workers-py` into a local
+`.pywrangler/` venv and runs that copy automatically.
 
-`workers-py` currently shells out to `wrangler` internally. In environments
-with Node.js `< 22`, set the package selector to a compatible release before
-deploying:
+The ForkMesh build pipeline sets `FORKMESH_NO_NODE_PACKAGES=1`, so it will not
+auto-install the PyPI `workers-py` deploy wrapper. Current `pywrangler deploy`
+proxies deployment to `npx wrangler`; the pipeline must provide a `pywrangler`
+binary itself instead of pulling npm packages during the run.
 
-```sh
-WORKERS_PY_SPEC="workers-py<1.14.0" ./deploy.sh
-```
-
-If your environment is on Node.js 22+, you can keep the default selector:
-
-```sh
-export WORKERS_PY_SPEC="workers-py"
-./deploy.sh
-```
+For manual environments that intentionally allow the Node-backed wrapper,
+`WORKERS_PY_SPEC` can select the `workers-py` version used by uv or the local
+venv.
 
 Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.

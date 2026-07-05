@@ -54,4 +54,28 @@ def test_pywrangler_uses_local_venv_uvx_without_system_uv(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "uvx-call:--from workers-py<1.14.0 pywrangler deploy --env "
+    assert result.stdout.strip() == "uvx-call:--from workers-py<1.14.0 pywrangler deploy --env"
+
+
+def test_no_node_pipeline_refuses_to_auto_install_pywrangler(tmp_path):
+    venv = tmp_path / ".pywrangler"
+    script = f"""
+        set -eu
+        export FORKMESH_NO_NODE_PACKAGES=1
+        export PYWRANGLER_VENV='{venv.as_posix()}'
+        PATH='/usr/bin:/bin'
+        . ./pywrangler.sh
+        pywrangler deploy --env ""
+    """
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "FORKMESH_NO_NODE_PACKAGES=1" in result.stderr
+    assert not venv.exists()
