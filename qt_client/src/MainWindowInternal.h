@@ -5860,7 +5860,19 @@ inline QString octiconMarkup(const QString &name, int size,
 
 inline QString serverHost(const QString &serverUrl)
 {
-    return QUrl(serverUrl).host();
+    const QString trimmed = serverUrl.trimmed();
+    QUrl url(trimmed);
+    if (!url.host().isEmpty())
+        return url.host().toLower();
+
+    // Legacy entries and manual input sometimes omit scheme (e.g.
+    // "forkmesh.com"). Treat the leading authority token as host so relays can
+    // resolve even before migration/canonicalization runs.
+    QString host = trimmed;
+    const int slash = host.indexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        host = host.left(slash);
+    return host.toLower();
 }
 
 // The first-run setup screen shows only the relay *host* (e.g. "forkmesh.com").

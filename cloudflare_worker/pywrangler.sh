@@ -10,7 +10,15 @@ PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
 PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
 PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
 
+_pywrangler_ensure_venv_path() {
+    case ":$PATH:" in
+        *":$PYWRANGLER_VENV/bin:"*) ;;
+        *) PATH="$PYWRANGLER_VENV/bin:$PATH" ;;
+    esac
+}
+
 pywrangler() {
+    _pywrangler_ensure_venv_path
     if command -v uvx >/dev/null 2>&1; then
         uvx --from workers-py pywrangler "$@"
         return
@@ -62,9 +70,13 @@ install_pywrangler() {
     # Newer workers-py binaries can require uv tooling at runtime. Install a
     # project-local uv copy so we can keep the deploy path self-contained when
     # the host only has python3.
-    if [ ! -x "$PYWRANGLER_UVX" ] && [ ! -x "$PYWRANGLER_UV" ]; then
+    if [ ! -x "$PYWRANGLER_UVX" ] || [ ! -x "$PYWRANGLER_UV" ]; then
         "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade uv >/dev/null
     fi
+
+    # Keep the venv bin on PATH so any worker-installed entrypoint that shells
+    # out to uv/uvx can find the project-local copy.
+    _pywrangler_ensure_venv_path
 
     if [ ! -x "$PYWRANGLER_BIN" ]; then
         echo "error: workers-py installed, but $PYWRANGLER_BIN was not created." >&2
