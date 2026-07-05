@@ -171,7 +171,11 @@
   function applyAdminLink(session) {
     const link = document.querySelector("[data-admin-link]");
     if (!link) return;
-    const adminUrl = session && session.isAdmin ? (session.adminUrl || "") : "";
+    let adminUrl = session && session.isAdmin ? (session.adminUrl || "") : "";
+    if (adminUrl && session.nodeName && !/[?&]admin=/.test(adminUrl)) {
+      adminUrl += (adminUrl.includes("?") ? "&" : "?") +
+        "admin=" + encodeURIComponent(session.nodeName);
+    }
     if (adminUrl) {
       link.href = adminUrl;
       link.removeAttribute("hidden");
