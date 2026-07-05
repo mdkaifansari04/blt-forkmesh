@@ -324,6 +324,7 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 # How long a password-reset link stays valid after it is emailed.
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
 # Users-vs-nodes linking (adhoc #53). A website claim's confirmation code (shown
@@ -439,7 +440,8 @@ def _ws_attr(ws, name, default=None):
     return default if value is None else value
 
 
-def json_response(data, status=200, cache_seconds=None, cache_control=None):
+def json_response(data, status=200, cache_seconds=None, cache_control=None,
+                  extra_headers=None):
     headers = {"content-type": "application/json; charset=utf-8"}
     if cache_control is not None:
         headers["cache-control"] = cache_control
@@ -447,6 +449,8 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None):
         # Lets both the Cloudflare edge cache (via the Cache API) and the browser
         # reuse this response for cache_seconds, collapsing repeated polls.
         headers["cache-control"] = "public, max-age=%d" % cache_seconds
+    if extra_headers:
+        headers.update(extra_headers)
     return Response(json.dumps(data, indent=2), status=status, headers=headers)
 
 
@@ -4342,14 +4346,34 @@ async def _account_login(env, request):
         desktop_capable = enabled and "owner_sign" in caps
         device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
         payload = await _account_public_payload(env, rec)
-        return json_response(_with_session_capabilities(
+        payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
-            key_matched=True, desktop_capable=desktop_capable, capabilities=caps))
+            key_matched=True, desktop_capable=desktop_capable, capabilities=caps)
+        return json_response(
+            payload,
+            extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
+                           if payload.get("isAdmin")
+                           else _clear_admin_session_cookie()},
+        )
 
     payload = await _account_public_payload(env, rec)
-    return json_response(_with_session_capabilities(
+    payload = _with_session_capabilities(
         payload, session_kind="account", device_kind="web_or_mobile",
-        key_matched=False, desktop_capable=False))
+        key_matched=False, desktop_capable=False)
+    return json_response(
+        payload,
+        extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
+                       if payload.get("isAdmin")
+                       else _clear_admin_session_cookie()},
+    )
+
+
+async def _account_logout(env, request):
+    return json_response(
+        {"ok": True},
+        extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
 
 
 def _random_bytes(n):
@@ -6263,6 +6287,8 @@ async def accounts_handler(env, request):
         return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
+    if url.path == "/api/accounts/logout" and method == "POST":
+        return await _account_logout(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
         return await _account_forgot_password(env, request)
     if url.path == "/api/accounts/reset-password" and method == "POST":
@@ -7914,10 +7940,68 @@ def _admin_csrf_ok(env, form):
         submitted, _admin_csrf_token(env))
 
 
+ADMIN_SESSION_COOKIE = "forkmesh_admin"
+
+
+def _admin_session_secret(env):
+    return (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
+            str(getattr(env, "DATA_KEY", "") or "")).encode()
+
+
+def _admin_session_signature(env, admin, expires):
+    canonical = ("forkmesh-admin-session-v1\n" + admin + "\n" +
+                 str(expires)).encode()
+    return hmac.new(_admin_session_secret(env), canonical, "sha256").hexdigest()
+
+
+def _admin_session_cookie(env, admin):
+    admin = clean_string(admin or "", MAX_NODE_NAME).lower()
+    expires = int(Date.now()) + ADMIN_SESSION_TTL_MS
+    sig = _admin_session_signature(env, admin, expires)
+    return (
+        ADMIN_SESSION_COOKIE + "=" + admin + "." + str(expires) + "." + sig +
+        "; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax"
+        % int(ADMIN_SESSION_TTL_MS / 1000)
+    )
+
+
+def _clear_admin_session_cookie():
+    return (ADMIN_SESSION_COOKIE +
+            "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+
+
+def _cookie_value(request, name):
+    header = request.headers.get("cookie") or ""
+    for part in header.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and key == name:
+            return value
+    return ""
+
+
+def _admin_session_valid(env, request, admin):
+    token = _cookie_value(request, ADMIN_SESSION_COOKIE)
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    token_admin, expires, sig = parts
+    if not hmac.compare_digest(token_admin, admin):
+        return False
+    try:
+        expires_ms = int(expires)
+    except (TypeError, ValueError):
+        return False
+    if expires_ms < int(Date.now()):
+        return False
+    expected = _admin_session_signature(env, admin, expires_ms)
+    return hmac.compare_digest(sig, expected)
+
+
 async def _check_admin_page_auth(env, request):
     params = parse_qs(urlparse(request.url).query)
     admin = clean_string(params.get("admin", [""])[0], MAX_NODE_NAME).lower()
-    return bool(admin and await _is_admin(env, admin))
+    return bool(admin and await _is_admin(env, admin) and
+                _admin_session_valid(env, request, admin))
 
 
 def _admin_query(admin):
@@ -8635,10 +8719,25 @@ class Default(WorkerEntrypoint):
     async def _admin(self, request):
         await ensure_schema(self.env)
         if not await _check_admin_page_auth(self.env, request):
+            if method_name(request) == "GET":
+                url = urlparse(request.url)
+                next_path = url.path + (("?" + url.query) if url.query else "")
+                return Response(
+                    "Admin login required.",
+                    status=302,
+                    headers={
+                        "location": "/login?next=" + quote(next_path),
+                        "cache-control": "no-store, max-age=0, must-revalidate",
+                        "content-type": "text/plain; charset=utf-8",
+                    },
+                )
             return Response(
                 "Admin account required.",
                 status=403,
-                headers={"content-type": "text/plain; charset=utf-8"},
+                headers={
+                    "cache-control": "no-store, max-age=0, must-revalidate",
+                    "content-type": "text/plain; charset=utf-8",
+                },
             )
         params = parse_qs(urlparse(request.url).query)
         admin_query = _admin_query(params.get("admin", [""])[0])
