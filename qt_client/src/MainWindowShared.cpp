@@ -83,6 +83,35 @@ double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens,
     return (input * kInputPerMillion + output * kOutputPerMillion) / 1000000.0;
 }
 
+QString displayMirrorBranchNameForRef(const QString &ref)
+{
+    if (ref.startsWith(QLatin1String("refs/heads/")))
+        return ref.mid(QStringLiteral("refs/heads/").size());
+    if (!ref.startsWith(QLatin1String("refs/remotes/")))
+        return QString();
+    const QString remotePath = ref.mid(QStringLiteral("refs/remotes/").size());
+    const int slash = remotePath.indexOf(QLatin1Char('/'));
+    if (slash <= 0)
+        return QString();
+    const QString name = remotePath.mid(slash + 1);
+    if (name.isEmpty() || name == QLatin1String("HEAD"))
+        return QString();
+    return name;
+}
+
+QString mirrorCommitForRef(const QString &mirrorPath, const QString &ref)
+{
+    if (!QDir(mirrorPath).exists() || ref.trimmed().isEmpty() ||
+        ref.contains(QChar('\0')))
+        return QString();
+    QProcess p;
+    p.start("git", {"-C", mirrorPath, "rev-parse", "--verify", "-q",
+                    ref + QStringLiteral("^{commit}")});
+    if (!p.waitForFinished(5000) || p.exitCode() != 0)
+        return QString();
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
 QString mirrorHeadBranch(const QString &mirrorPath)
 {
     if (!QDir(mirrorPath).exists())
@@ -91,7 +120,10 @@ QString mirrorHeadBranch(const QString &mirrorPath)
     p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
     if (p.waitForFinished(5000) && p.exitCode() == 0) {
         const QString head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-        if (!head.isEmpty())
+        if (!head.isEmpty() &&
+            (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
+             !mirrorCommitForRef(mirrorPath,
+                                 QStringLiteral("refs/heads/") + head).isEmpty()))
             return head;
     }
     // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
@@ -100,30 +132,68 @@ QString mirrorHeadBranch(const QString &mirrorPath)
     // view shows for a node — its latest commit and the issue/commit/pull/
     // discussion counts — is read relative to this branch, so an empty result
     // blanks nearly the whole row for such a node (issue #243). Fall back to an
-    // actual served branch: prefer main/master, else the first refs/heads/* held.
+    // actual served branch: prefer main/master, else the first refs/heads/* or
+    // refs/remotes/* held. The live RepoHost can serve from remote refs, so the
+    // advert/catalog path must accept them too or a usable headless mirror looks
+    // empty on the website.
     QProcess refs;
     refs.start("git", {"-C", mirrorPath, "for-each-ref",
-                       "--format=%(refname:short)", "refs/heads/"});
+                       "--format=%(refname)", "refs/heads/", "refs/remotes/"});
     if (!refs.waitForFinished(5000) || refs.exitCode() != 0)
         return QString();
-    const QStringList branches = QString::fromUtf8(refs.readAllStandardOutput())
-                                     .split('\n', Qt::SkipEmptyParts);
+    QStringList branches;
+    for (const QString &ref : QString::fromUtf8(refs.readAllStandardOutput())
+                                  .split('\n', Qt::SkipEmptyParts)) {
+        const QString display = displayMirrorBranchNameForRef(ref.trimmed());
+        if (!display.isEmpty() && !branches.contains(display))
+            branches.append(display);
+    }
     for (const QString &preferred : {QStringLiteral("main"), QStringLiteral("master")})
         if (branches.contains(preferred))
             return preferred;
-    return branches.isEmpty() ? QString() : branches.first().trimmed();
+    if (!branches.isEmpty())
+        return branches.first().trimmed();
+    return mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty()
+               ? QString()
+               : QStringLiteral("HEAD");
 }
 
 QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
 {
-    if (!QDir(mirrorPath).exists() || branch.isEmpty())
+    if (!QDir(mirrorPath).exists())
         return QString();
-    QProcess p;
-    p.start("git", {"-C", mirrorPath, "rev-parse", "--verify",
-                    "refs/heads/" + branch});
-    if (!p.waitForFinished(5000) || p.exitCode() != 0)
-        return QString();
-    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+    const QString raw = branch.trimmed();
+    QStringList candidates;
+    auto add = [&candidates](const QString &ref) {
+        if (!ref.isEmpty() && !candidates.contains(ref))
+            candidates.append(ref);
+    };
+    if (raw.isEmpty() || raw == QLatin1String("HEAD")) {
+        add(QStringLiteral("HEAD"));
+    } else if (raw.startsWith(QLatin1String("refs/"))) {
+        add(raw);
+    } else {
+        add(QStringLiteral("refs/heads/") + raw);
+        add(QStringLiteral("refs/remotes/") + raw);
+        QProcess refs;
+        refs.start("git", {"-C", mirrorPath, "for-each-ref",
+                           "--format=%(refname)", "refs/remotes/"});
+        if (refs.waitForFinished(5000) && refs.exitCode() == 0) {
+            for (const QString &ref : QString::fromUtf8(refs.readAllStandardOutput())
+                                          .split('\n', Qt::SkipEmptyParts)) {
+                const QString trimmed = ref.trimmed();
+                if (displayMirrorBranchNameForRef(trimmed) == raw)
+                    add(trimmed);
+            }
+        }
+        add(raw);
+    }
+    for (const QString &candidate : std::as_const(candidates)) {
+        const QString commit = mirrorCommitForRef(mirrorPath, candidate);
+        if (!commit.isEmpty())
+            return commit;
+    }
+    return QString();
 }
 
 QString actionStatusText(const QString &status)

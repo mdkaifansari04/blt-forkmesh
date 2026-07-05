@@ -13,6 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SETUP = ROOT / "qt_client" / "src" / "MainWindowSetup.cpp"
+WINDOW = ROOT / "qt_client" / "src" / "MainWindow.cpp"
+SHARED = ROOT / "qt_client" / "src" / "MainWindowShared.cpp"
+MAIN = ROOT / "qt_client" / "src" / "main.cpp"
 REPOS = ROOT / "qt_client" / "src" / "MainWindowRepos.cpp"
 ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
 
@@ -51,7 +54,7 @@ def test_headless_flagship_bootstrap_uses_canonical_fallback_without_catalog():
 
 
 def test_headless_flagship_bootstrap_runs_after_account_session_is_ready():
-    main = (ROOT / "qt_client" / "src" / "MainWindow.cpp").read_text(encoding="utf-8")
+    main = WINDOW.read_text(encoding="utf-8")
     setup = SETUP.read_text(encoding="utf-8")
     deferred_start = main.index("void MainWindow::runDeferredStartup()")
     deferred_end = main.index("void MainWindow::applyTheme()", deferred_start)
@@ -71,6 +74,27 @@ def test_headless_flagship_bootstrap_runs_after_account_session_is_ready():
     assert deferred_body.count("ensureFlagshipRepo();") >= 2
 
 
+def test_headless_autoconnect_is_not_gated_on_a_visible_pubkey_label():
+    main = WINDOW.read_text(encoding="utf-8")
+    start = main.index("if (!m_profileIdentity.load())")
+    end = main.index("logStartup(QStringLiteral(\"identity loaded\"))", start)
+    body = main[start:end]
+
+    assert "} else {" in body
+    assert "if (m_pubkeyLabel)" in body
+    assert "m_pendingSilentAuth = true;" in body
+    assert body.index("if (m_pubkeyLabel)") < body.index("m_pendingSilentAuth = true;")
+
+
+def test_headless_shutdown_skips_hidden_widget_tree_teardown():
+    main = MAIN.read_text(encoding="utf-8")
+    assert "auto *window = new MainWindow" in main
+    assert "const int exitCode = app.exec();" in main
+    assert "if (headless)" in main
+    assert "std::_Exit(exitCode);" in main
+    assert "delete window;" in main
+
+
 def test_mirror_advert_cache_includes_namespace_and_publish_state():
     repos = REPOS.read_text(encoding="utf-8")
     start = repos.index("QString advertSig;")
@@ -80,6 +104,59 @@ def test_mirror_advert_cache_includes_namespace_and_publish_state():
     assert "repo.owner + QLatin1Char('|') + repo.name" in body
     assert "repo.cloneUrl + QLatin1Char('|')" in body
     assert "repo.publishToNetwork ? 1 : 0" in body
+
+
+def test_mirror_publish_and_host_require_a_served_commit():
+    repos = REPOS.read_text(encoding="utf-8")
+    assert "bool mirrorHasServedCommit(const QString &mirrorPath)" in repos
+    start = repos.index("void MainWindow::startRepoHosts()")
+    end = repos.index("void MainWindow::onRequestServed", start)
+    start_hosts = repos[start:end]
+    assert "!mirrorHasServedCommit(repo.mirrorPath)" in start_hosts
+
+    publish_start = repos.index("void MainWindow::publishRepositoryNow")
+    publish_end = repos.index("QNetworkRequest request(catalogApiUrl())", publish_start)
+    publish_body = repos[publish_start:publish_end]
+    assert "servedHeadCommit.isEmpty()" in publish_body
+    assert "until its mirror has a served commit" in publish_body
+    assert "syncRepository(index, /*quiet=*/true)" in publish_body
+
+
+def test_mirror_metadata_resolves_remote_refs_like_repo_host():
+    shared = SHARED.read_text(encoding="utf-8")
+    start = shared.index("QString mirrorHeadBranch")
+    end = shared.index("QString actionStatusText", start)
+    body = shared[start:end]
+
+    assert '"refs/remotes/"' in body
+    assert "displayMirrorBranchNameForRef" in body
+    assert 'QStringLiteral("refs/remotes/") + raw' in body
+    assert 'raw == QLatin1String("HEAD")' in body
+
+
+def test_public_browse_failover_walks_past_stale_empty_mirrors():
+    entry = ENTRY.read_text(encoding="utf-8")
+    start = entry.index("if status in (502, 503, 504):")
+    end = entry.index("return response", start)
+    body = entry[start:end]
+
+    assert "tried = [owner, failed_mirror]" in body
+    assert "while True:" in body
+    assert "tried.append(fallback)" in body
+
+
+def test_room_stale_sockets_are_not_counted_or_forwarded():
+    entry = ENTRY.read_text(encoding="utf-8")
+    assert "ROOM_CLIENT_STALE_MS = 3 * 60 * 1000" in entry
+    start = entry.index("class ForkMeshRoom")
+    end = entry.index("class ForkMeshHost", start)
+    body = entry[start:end]
+
+    assert '"last": int(Date.now())' in body
+    assert "return len(self._live_chat_sockets(close_stale=True))" in body
+    assert "def _live_chat_sockets(self, close_stale=False):" in body
+    assert 'self._safe_close(peer, 1001, "stale")' in body
+    assert "for peer in self._live_chat_sockets(close_stale=True):" in body
 
 
 def test_public_account_row_tolerates_identity_table_repair_failure():

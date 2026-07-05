@@ -367,10 +367,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     if (!m_profileIdentity.load()) {
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
-    } else if (m_pubkeyLabel) {
-        m_pubkeyLabel->setText("Ed25519 public key: " +
-                               m_profileIdentity.shortPublicKey());
-        m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
+    } else {
+        if (m_pubkeyLabel) {
+            m_pubkeyLabel->setText("Ed25519 public key: " +
+                                   m_profileIdentity.shortPublicKey());
+            m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
+        }
         // A first run already got a generated fun name saved above, so
         // m_nameEdit is never blank here — the deferred auto-connect below
         // treats every launch the same way instead of stopping first runs on
