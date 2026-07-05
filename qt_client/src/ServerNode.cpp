@@ -834,12 +834,17 @@ void ServerNode::sendPresence()
 
 void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
 {
-    // Re-advertise when the set of repos OR any HEAD changed (a fresh sync moves
-    // a commit/timestamp without changing the name list), so peers see freshness.
+    // Re-advertise when the set of repos OR any freshness detail changed. A
+    // source node can advertise the new working-tree commit before its served
+    // bare mirror catches up; when that sync finishes the commit is unchanged
+    // but updatedMs moves, and peers need that second hello to retry the fetch.
     bool changed = repos.size() != m_mirroredRepos.size();
     for (int i = 0; !changed && i < repos.size(); ++i)
         changed = repos.at(i).ownerName != m_mirroredRepos.at(i).ownerName ||
-                  repos.at(i).commit != m_mirroredRepos.at(i).commit;
+                  repos.at(i).source != m_mirroredRepos.at(i).source ||
+                  repos.at(i).commit != m_mirroredRepos.at(i).commit ||
+                  repos.at(i).branch != m_mirroredRepos.at(i).branch ||
+                  repos.at(i).updatedMs != m_mirroredRepos.at(i).updatedMs;
     if (!changed)
         return;
     m_mirroredRepos = repos;
