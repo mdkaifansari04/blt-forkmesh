@@ -72,6 +72,8 @@ def test_headless_flagship_bootstrap_runs_after_account_session_is_ready():
     assert "Startup: checking forkmesh/forkmesh mirror bootstrap." in deferred_body
     assert "Startup: rechecking forkmesh/forkmesh mirror bootstrap." in deferred_body
     assert deferred_body.count("ensureFlagshipRepo();") >= 2
+    assert "accountNameFromInput(savedProfileName(), QString())" in deferred_body
+    assert "if (m_headless && !headlessBootstrapQueued)" in deferred_body
 
 
 def test_headless_autoconnect_is_not_gated_on_a_visible_pubkey_label():
