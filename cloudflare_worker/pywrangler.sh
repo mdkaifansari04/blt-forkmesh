@@ -10,6 +10,7 @@ PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
 PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
 PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
 WORKERS_PY_SPEC="${WORKERS_PY_SPEC:-workers-py<1.14.0}"
+WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.42.1}"
 
 _pywrangler_ensure_venv_path() {
     case ":$PATH:" in
@@ -18,8 +19,48 @@ _pywrangler_ensure_venv_path() {
     esac
 }
 
+_pywrangler_install_npx_wrapper() {
+    mkdir -p "$PYWRANGLER_VENV/bin"
+    cat > "$PYWRANGLER_VENV/bin/npx" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ge 2 ] && [ "$1" = "--yes" ] && [ "$2" = "wrangler" ]; then
+    shift 2
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "error: npm is required because pywrangler delegates deploys to Wrangler." >&2
+        exit 1
+    fi
+    exec npm exec --yes --package "${WRANGLER_NPM_SPEC:-wrangler@4.42.1}" -- wrangler "$@"
+fi
+
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+old_path="$PATH"
+new_path=""
+IFS=':' read -r -a path_parts <<< "$old_path"
+for path_part in "${path_parts[@]}"; do
+    [ "$path_part" = "$self_dir" ] && continue
+    if [ -z "$new_path" ]; then
+        new_path="$path_part"
+    else
+        new_path="$new_path:$path_part"
+    fi
+done
+PATH="$new_path"
+real_npx="$(command -v npx || true)"
+PATH="$old_path"
+if [ -z "$real_npx" ]; then
+    echo "error: npx not found on PATH." >&2
+    exit 1
+fi
+exec "$real_npx" "$@"
+EOF
+    chmod 0755 "$PYWRANGLER_VENV/bin/npx"
+}
+
 pywrangler() {
     _pywrangler_ensure_venv_path
+    _pywrangler_install_npx_wrapper
     local pywrangler_path
     pywrangler_path="$(type -P pywrangler || true)"
     if [ -n "$pywrangler_path" ]; then
@@ -89,6 +130,7 @@ install_pywrangler() {
     # Keep the venv bin on PATH so any worker-installed entrypoint that shells
     # out to uv/uvx can find the project-local copy.
     _pywrangler_ensure_venv_path
+    _pywrangler_install_npx_wrapper
 
     if [ ! -x "$PYWRANGLER_BIN" ]; then
         echo "error: workers-py installed, but $PYWRANGLER_BIN was not created." >&2
