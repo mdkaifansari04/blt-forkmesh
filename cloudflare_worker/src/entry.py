@@ -2043,7 +2043,13 @@ async def catalog_rate_check(env, owner_bi):
         except (TypeError, ValueError):
             last = 0
         if now - last < CATALOG_WRITE_COOLDOWN_MS:
-            return json_response({"error": "rate_limited"}, status=429)
+            retry_ms = max(1000, CATALOG_WRITE_COOLDOWN_MS - (now - last))
+            retry_seconds = max(1, (retry_ms + 999) // 1000)
+            return json_response(
+                {"error": "rate_limited", "retryAfterMs": retry_ms},
+                status=429,
+                extra_headers={"Retry-After": str(retry_seconds)},
+            )
     await d1_run(
         env,
         "INSERT INTO catalog_rate (owner_bi, ts) VALUES (?,?) "

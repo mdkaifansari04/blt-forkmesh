@@ -251,15 +251,44 @@
     window.history.pushState(null, "", url);
   }
 
+  function cloneJson(value) {
+    if (typeof structuredClone === "function") return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function fetchJsonCacheTtl(path) {
+    if (path === "/api/repositories") return 15000;
+    if (path === "/api/network/overview") return 20000;
+    if (path === "/api/version") return 60000;
+    return 0;
+  }
+
   async function fetchJson(path) {
-    const response = await fetch(path, {
-      headers: { accept: "application/json" },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.ok === false) {
-      throw new Error(data.error || `HTTP ${response.status}`);
+    const ttl = fetchJsonCacheTtl(path);
+    if (!state.fetchJsonInflight) state.fetchJsonInflight = {};
+    if (!state.fetchJsonCache) state.fetchJsonCache = {};
+    const now = Date.now();
+    const cached = ttl ? state.fetchJsonCache[path] : null;
+    if (cached && cached.expiresAt > now) return cloneJson(cached.data);
+    if (state.fetchJsonInflight[path]) return cloneJson(await state.fetchJsonInflight[path]);
+
+    const pending = (async () => {
+      const response = await fetch(path, {
+        headers: { accept: "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      if (ttl) state.fetchJsonCache[path] = { data: cloneJson(data), expiresAt: Date.now() + ttl };
+      return data;
+    })();
+    state.fetchJsonInflight[path] = pending;
+    try {
+      return cloneJson(await pending);
+    } finally {
+      if (state.fetchJsonInflight[path] === pending) delete state.fetchJsonInflight[path];
     }
-    return data;
   }
 
   // ---- Web issue authoring (signed inbox submissions) ------------------------

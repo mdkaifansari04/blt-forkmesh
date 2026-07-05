@@ -130,9 +130,7 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
 
     for endpoint in (
         "/api/repositories",
-        "/api/network/stats",
-        "/api/network/leaderboards",
-        "/api/network/online-history",
+        "/api/network/overview",
     ):
         assert endpoint in dashboard_js
 
@@ -354,8 +352,11 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
         "backfillVisibleRepoActivity(visible)",
         "fetchJson(repoLiveUrl(origin, \"history\"))",
         "activityWeeksFromCommits(data.commits)",
+        "repoActivityFetches",
     ):
-        assert marker in dashboard_js
+        assert marker not in dashboard_js
+    assert "groupActivityWeeks(group)" in card
+    assert "repoActivitySparkline(activityWeeks, { totalHint: commitTotal })" in card
     assert "data-dashboard-copy" not in card
     assert "Copy clone" not in card
 

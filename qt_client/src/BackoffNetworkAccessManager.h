@@ -93,6 +93,9 @@ signals:
 protected:
     QNetworkReply *createRequest(Operation op, const QNetworkRequest &request,
                                   QIODevice *outgoingData = nullptr) override;
+    virtual QNetworkReply *createNetworkRequest(Operation op,
+                                                const QNetworkRequest &request,
+                                                QIODevice *outgoingData);
 
 private:
     static int normalizedPort(const QUrl &url);

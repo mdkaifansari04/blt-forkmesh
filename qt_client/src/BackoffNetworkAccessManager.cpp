@@ -206,6 +206,12 @@ BackoffNetworkAccessManager::BackoffNetworkAccessManager(QObject *parent)
 {
 }
 
+QNetworkReply *BackoffNetworkAccessManager::createNetworkRequest(
+    Operation op, const QNetworkRequest &request, QIODevice *outgoingData)
+{
+    return QNetworkAccessManager::createRequest(op, request, outgoingData);
+}
+
 void BackoffNetworkAccessManager::setFirewallEnabled(bool enabled)
 {
     m_firewallEnabled = enabled;
@@ -606,8 +612,7 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
             (outgoingData && !outgoingData->isSequential())
                 ? qMax<qint64>(0, outgoingData->size())
                 : 0;
-        QNetworkReply *reply =
-            QNetworkAccessManager::createRequest(op, request, outgoingData);
+        QNetworkReply *reply = createNetworkRequest(op, request, outgoingData);
         auto *tracker = new EndpointTransferTracker(reply);
         tracker->uploaded = outgoingKnown;
         connect(reply, &QNetworkReply::uploadProgress, this,
