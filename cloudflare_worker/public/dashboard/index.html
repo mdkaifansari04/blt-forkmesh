@@ -513,6 +513,7 @@
 
 	      function handleLogout() {
 	        try {
+	          fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
 	          localStorage.removeItem("forkmesh.session");
 	        } catch (_) {}
 

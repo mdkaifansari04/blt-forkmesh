@@ -72,6 +72,7 @@
     state.pollProfileToken = null;
     state.pollNotifToken = null;
     try {
+      fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
       localStorage.removeItem("forkmesh.session");
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     } catch (_) {}
