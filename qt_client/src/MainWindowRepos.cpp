@@ -3168,11 +3168,16 @@ void MainWindow::syncRepository(int index, bool quiet)
             // should fetch from that copy, not from a stale relay URL baked into
             // origin at clone time (which can return HTTP 5xx through the host
             // tunnel).
-            if (hasMirror && !source.isEmpty())
+            if (hasMirror && !source.isEmpty() &&
+                !runGitCapture(mirrorPath,
+                               {QStringLiteral("remote"), QStringLiteral("set-url"),
+                                QStringLiteral("origin"), source},
+                               nullptr, nullptr)) {
                 runGitCapture(mirrorPath,
-                              {QStringLiteral("remote"), QStringLiteral("set-url"),
+                              {QStringLiteral("remote"), QStringLiteral("add"),
                                QStringLiteral("origin"), source},
                               nullptr, nullptr);
+            }
         });
     connect(prep, &QThread::finished, this,
             [this, prep, index, quiet, hasMirror, args, beforeDigest,
