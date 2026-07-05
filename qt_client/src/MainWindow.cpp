@@ -455,6 +455,21 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral("agent sessions resumed (deferred)"));
     }
 
+    bool headlessBootstrapQueued = false;
+    auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
+        if (!m_headless)
+            return;
+        headlessBootstrapQueued = true;
+        logSystem(QStringLiteral(
+            "Startup: checking forkmesh/forkmesh mirror bootstrap."));
+        ensureFlagshipRepo();
+        QTimer::singleShot(10000, this, [this] {
+            logSystem(QStringLiteral(
+                "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
+            ensureFlagshipRepo();
+        });
+    };
+
     // Then auto-enter the app whenever this machine has a node name — which now
     // includes a first run, since one was generated for it above if needed.
     // No account is required: the node drops straight into the app shell.
@@ -471,18 +486,28 @@ void MainWindow::runDeferredStartup()
             if (m_stack)
                 m_stack->setCurrentIndex(1); // app shell
             startSession();
-            {
-                logSystem(QStringLiteral(
-                    "Startup: checking forkmesh/forkmesh mirror bootstrap."));
-                ensureFlagshipRepo();
-                QTimer::singleShot(10000, this, [this] {
-                    logSystem(QStringLiteral(
-                        "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
-                    ensureFlagshipRepo();
-                });
-            }
+            runHeadlessBootstrap();
         } else if (m_stack) {
             m_stack->setCurrentIndex(0); // first run / no saved name: show setup
+        }
+    }
+
+    // Headless/offscreen launches should never depend on the setup-page widgets
+    // or a GUI label existing. If the normal pending-silent-auth path did not run
+    // for any reason, use the persisted node name directly and still start the
+    // backend + flagship mirror bootstrap.
+    if (m_headless && !headlessBootstrapQueued) {
+        const QString name = accountNameFromInput(savedProfileName(), QString());
+        if (!name.isEmpty() && isValidNodeName(name)) {
+            if (!m_backend) {
+                if (m_nameEdit)
+                    m_nameEdit->setText(name);
+                authenticateSilently(name);
+                if (m_stack)
+                    m_stack->setCurrentIndex(1);
+                startSession();
+            }
+            runHeadlessBootstrap();
         }
     }
 
