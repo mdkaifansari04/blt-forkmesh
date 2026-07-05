@@ -1964,6 +1964,7 @@ private:
     // commit message (or an X post) with Claude/OpenAI.
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
+    void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
     void scmStagePath(const QString &path);
     void scmUnstagePath(const QString &path);
     void scmDiscardPath(const QString &path, bool untracked);

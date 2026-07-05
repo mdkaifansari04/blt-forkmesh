@@ -17,12 +17,14 @@ pywrangler() {
         uv tool run --from workers-py pywrangler "$@"
         return
     fi
-    if command -v pywrangler >/dev/null 2>&1; then
-        command pywrangler "$@"
+    local pywrangler_path
+    pywrangler_path="$(type -P pywrangler || true)"
+    if [ -n "$pywrangler_path" ]; then
+        "$pywrangler_path" "$@"
         return
     fi
     if [ ! -x "$PYWRANGLER_BIN" ]; then
-        install_pywrangler
+        install_pywrangler || return
     fi
     "$PYWRANGLER_BIN" "$@"
 }
