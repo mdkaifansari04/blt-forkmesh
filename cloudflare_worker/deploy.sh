@@ -17,19 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# pywrangler is run through uv's ephemeral tool runner so there is no global
-# install or node_modules to manage.
-pywrangler() {
-    if command -v uvx >/dev/null 2>&1; then
-        uvx --from workers-py pywrangler "$@"
-    elif command -v pywrangler >/dev/null 2>&1; then
-        command pywrangler "$@"
-    else
-        echo "error: need 'uvx' (from uv) or 'pywrangler' on PATH." >&2
-        echo "       install uv: https://docs.astral.sh/uv/getting-started/" >&2
-        exit 1
-    fi
-}
+. ./pywrangler.sh
 
 # Production Worker config (admin creds, etc.) lives in .env.production —
 # gitignored so secrets stay out of the committed wrangler.toml.

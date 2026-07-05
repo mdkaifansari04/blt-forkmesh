@@ -6,6 +6,7 @@
 # do one-time, non-idempotent things (e.g. dropping a superseded table).
 set -euo pipefail
 cd "$(dirname "$0")"
+. ./pywrangler.sh
 
 DB="${FORKMESH_D1_NAME:-forkmesh}"
 
@@ -15,15 +16,6 @@ if grep -q "REPLACE_WITH_D1_DATABASE_ID" wrangler.toml; then
   echo "migrate.sh: D1 not configured yet (placeholder database_id) — skipping."
   echo "  Run: uvx --from workers-py pywrangler d1 create $DB, then paste the id."
   exit 0
-fi
-
-# Use whichever wrangler is available (this is a Python worker → pywrangler).
-if command -v pywrangler >/dev/null 2>&1; then
-  WRANGLER=(pywrangler)
-elif command -v wrangler >/dev/null 2>&1; then
-  WRANGLER=(wrangler)
-else
-  WRANGLER=(uvx --from workers-py pywrangler)
 fi
 
 # Target the deployed (remote) D1 by default; set FORKMESH_D1_LOCAL=1 to apply
@@ -42,7 +34,7 @@ echo "migrate.sh: applying D1 migrations to '$DB' ($SCOPE)"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 set +e
-"${WRANGLER[@]}" d1 migrations apply "$DB" "$SCOPE" 2>&1 | tee "$log"
+pywrangler d1 migrations apply "$DB" "$SCOPE" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 set -e
 
