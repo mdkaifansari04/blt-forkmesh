@@ -329,7 +329,7 @@ def _response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _load_handler(*, rows, presence=None, first_hosted=None):
+def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
     calls = []
 
     async def ensure_schema(_env):
@@ -348,12 +348,18 @@ def _load_handler(*, rows, presence=None, first_hosted=None):
     async def decrypt_row(_env, data):
         return data
 
+    async def repo_live_host_count(_env, owner, repo):
+        if live_hosts is None:
+            return None
+        return live_hosts.get(f"{owner}/{repo}")
+
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
         "ensure_schema": ensure_schema,
         "d1_all": d1_all,
         "decrypt_row": decrypt_row,
+        "repo_live_host_count": repo_live_host_count,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
         "json_response": _response,
     }
@@ -405,6 +411,24 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():
+    handler, _ = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row("a", "mainnode", "forkmesh", root="abc")["data"]},
+            {"key_bi": "b", "data": _row("b", "kaif-node", "forkmesh", root="abc")["data"]},
+        ],
+        presence=[],
+        live_hosts={"mainnode/forkmesh": 0, "kaif-node/forkmesh": 1},
+    )
+
+    response = asyncio.run(handler(object(), _Request("GET"), "mainnode", "forkmesh"))
+
+    assert response["status"] == 200
+    statuses = {m["node"]: m["status"] for m in response["data"]["mirrors"]}
+    assert statuses == {"kaif-node": "online", "mainnode": "offline"}
+    assert response["data"]["summary"]["online"] == 1
 
 
 def test_repo_mirrors_handler_returns_404_for_private_or_unpublished_target():
