@@ -593,7 +593,7 @@
       startProfileSync();
     }
     try {
-      const data = await fetchJson("/api/repositories");
+      const data = await fetchJson("/api/repositories", { fresh: true });
       renderRepositories(data.repositories, session);
       if (requested) {
         const repo = findRepository(requested);

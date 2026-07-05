@@ -2616,6 +2616,9 @@ private:
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
+    void publishRepositoryAfterMirrorRefresh(int index,
+                                             bool showDialogOnError = true,
+                                             bool quietSync = false);
     void publishRepository(int index, bool showDialogOnError = true);
     void scheduleCatalogPublish(const QString &key, bool showDialogOnError,
                                 qint64 minDelayMs = 0);

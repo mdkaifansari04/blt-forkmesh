@@ -483,6 +483,16 @@ async def edge_cache_delete(cache_key):
         pass
 
 
+async def purge_catalog_related_caches():
+    for key in (
+        CATALOG_CACHE_KEY,
+        NETWORK_STATS_CACHE_KEY,
+        NETWORK_LEADERBOARDS_CACHE_KEY,
+        NETWORK_OVERVIEW_CACHE_KEY,
+    ):
+        await edge_cache_delete(key)
+
+
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
@@ -2126,6 +2136,11 @@ async def catalog_handler(env, request):
         # the SHARED public edge cache — that would leak private repos to everyone.
         params = parse_qs(urlparse(request.url).query)
         admin_query = _admin_query(params.get("admin", [""])[0])
+        headers = getattr(request, "headers", {}) or {}
+        cache_control = (headers.get("cache-control") or "").lower()
+        bypass_cache = bool(
+            params.get("fresh") or params.get("_") or params.get("fmv") or
+            "no-cache" in cache_control or "no-store" in cache_control)
         viewer = safe_segment(params.get("viewer", [""])[0])
         view_ts = clean_string(params.get("ts", [""])[0], 20)
         view_sig = clean_string(params.get("sig", [""])[0], 200)
@@ -2133,7 +2148,7 @@ async def catalog_handler(env, request):
         if viewer and view_sig:
             authed_viewer = await verify_catalog_view_token(
                 env, viewer, view_ts, view_sig)
-        if not authed_viewer:
+        if not authed_viewer and not bypass_cache:
             cached = await edge_cache_match(CATALOG_CACHE_KEY)
             if cached is not None:
                 return cached
@@ -2200,8 +2215,10 @@ async def catalog_handler(env, request):
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
         # Per-viewer responses (with private repos) must not be cached at the shared
         # edge; only the public-only list is cacheable.
-        if authed_viewer:
-            return json_response(payload)
+        if authed_viewer or bypass_cache:
+            return json_response(
+                payload,
+                cache_control="no-store, max-age=0, must-revalidate")
         resp = json_response(payload, cache_seconds=CATALOG_TTL)
         await edge_cache_put(CATALOG_CACHE_KEY, resp)
         return resp
@@ -2323,7 +2340,7 @@ async def catalog_handler(env, request):
             decoded.sort(key=lambda x: x[1], reverse=True)
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
-        await edge_cache_delete(CATALOG_CACHE_KEY)
+        await purge_catalog_related_caches()
         return json_response({"ok": True, "repository": record}, status=201)
 
     if method == "DELETE":
@@ -2356,7 +2373,7 @@ async def catalog_handler(env, request):
         if not await ed25519_verify(owner_pub, sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
         await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
-        await edge_cache_delete(CATALOG_CACHE_KEY)
+        await purge_catalog_related_caches()
         return json_response({"ok": True, "deleted": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -3037,7 +3054,7 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
-    await edge_cache_delete(CATALOG_CACHE_KEY)
+    await purge_catalog_related_caches()
     return new_name_bi, next_rec, ""
 
 
@@ -3086,7 +3103,7 @@ async def _delete_repo_namespace(env, owner_bi, owner):
                 "DELETE FROM funds_received WHERE scope='project' AND key=?",
                 owner + "/" + repo)
     await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
-    await edge_cache_delete(CATALOG_CACHE_KEY)
+    await purge_catalog_related_caches()
 
 
 async def _delete_account_namespace(env, name_bi, rec):

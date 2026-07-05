@@ -769,7 +769,7 @@ void MainWindow::mirrorPreviewRepository(int index)
         ensurePushHook(repo);
         if (m_backend)
             m_backend->addChannel(repositoryChannel(repo));
-        publishRepository(index, false);
+        publishRepositoryAfterMirrorRefresh(index, false);
         startRepoHosts();
         refreshRepositoryList();
         openRepoDetail(index);
@@ -806,7 +806,7 @@ void MainWindow::mirrorPreviewRepository(int index)
                     ensurePushHook(repo);
                     if (m_backend)
                         m_backend->addChannel(repositoryChannel(repo));
-                    publishRepository(index, false);
+                    publishRepositoryAfterMirrorRefresh(index, false);
                     startRepoHosts();
                     refreshRepositoryList();
                     openRepoDetail(index);
@@ -920,8 +920,7 @@ void MainWindow::promptAddRepository()
     logSystem("Repository: signed mirror metadata for " + repo.owner + "/" +
               repo.name + " with signature " +
               m_profileIdentity.signJson(metadata).left(16) + "...");
-    publishRepository(m_repositories.size() - 1, false);
-    syncRepository(m_repositories.size() - 1);
+    publishRepositoryAfterMirrorRefresh(m_repositories.size() - 1, false);
 }
 
 void MainWindow::createNewRepository()
@@ -1002,8 +1001,7 @@ void MainWindow::createNewRepository()
     if (m_backend)
         m_backend->addChannel(repositoryChannel(repo));
     const int index = m_repositories.size() - 1;
-    publishRepository(index, false);
-    syncRepository(index);
+    publishRepositoryAfterMirrorRefresh(index, false);
     logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
               dest + ".");
     flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
@@ -1128,8 +1126,7 @@ void MainWindow::importRemoteRepository()
                 if (m_backend)
                     m_backend->addChannel(repositoryChannel(repo));
                 const int index = m_repositories.size() - 1;
-                publishRepository(index, false);
-                syncRepository(index);
+                publishRepositoryAfterMirrorRefresh(index, false);
 
                 setStatus(QStringLiteral("Imported %1/%2 — mirroring and "
                                          "publishing now.")
@@ -2545,6 +2542,34 @@ void MainWindow::publishRepository(int index, bool showDialogOnError)
                            showDialogOnError);
 }
 
+void MainWindow::publishRepositoryAfterMirrorRefresh(int index,
+                                                     bool showDialogOnError,
+                                                     bool quietSync)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(index);
+    if (repo.previewOnly)
+        return;
+
+    // The website serves the bare mirror, not the working copy. Refresh that
+    // mirror first whenever there is an upstream/source path; syncRepository's
+    // success path publishes the catalog record with the freshly-served refs.
+    if (!repositorySource(repo).isEmpty()) {
+        if (m_syncingRepos.contains(index)) {
+            if (!quietSync)
+                logSystem("Catalog: mirror refresh already running for " +
+                          repo.owner + "/" + repo.name +
+                          "; publishing after it finishes.");
+            return;
+        }
+        syncRepository(index, quietSync);
+        return;
+    }
+
+    publishRepository(index, showDialogOnError);
+}
+
 void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
 {
     if (index < 0 || index >= m_repositories.size())
@@ -2668,19 +2693,6 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // roster entry (the same values makeMessage broadcasts).
     QString headBranch = mirrorHeadBranch(repo.mirrorPath);
     QString headCommit = mirrorBranchCommit(repo.mirrorPath, headBranch);
-    if (!repo.localPath.trimmed().isEmpty()) {
-        QString sourceCommit = worktreeBranchCommit(repo.localPath, headBranch);
-        QString sourceBranch = headBranch;
-        if (sourceCommit.isEmpty()) {
-            sourceCommit = worktreeHeadCommit(repo.localPath);
-            sourceBranch = worktreeHeadBranch(repo.localPath);
-        }
-        if (!sourceCommit.isEmpty()) {
-            if (!sourceBranch.isEmpty())
-                headBranch = sourceBranch;
-            headCommit = sourceCommit;
-        }
-    }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
     const int branchCount = mirrorBranchCount(repo.mirrorPath);

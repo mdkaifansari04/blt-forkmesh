@@ -629,13 +629,13 @@ void MainWindow::onReleaseMetadataLanded(int runId)
     if (index < 0)
         return;
     // The release workflow staged the artifact bytes into the served CAS and the
-    // runner committed the tiny releases/ manifest into the working copy. Publish
-    // it so the served mirror carries the metadata (install.sh reads it over the
-    // git proxy) and the catalog reflects the new commit.
+    // runner committed the tiny releases/ manifest into the working copy. Refresh
+    // the served mirror before publishing so install.sh and the website read the
+    // same release metadata the catalog advertises.
     logSystem(QStringLiteral(
-                  "Release: published artifact metadata for %1/%2 to the mirror.")
+                  "Release: refreshing artifact metadata for %1/%2 online.")
                   .arg(run->owner, run->name));
-    publishRepository(index, /*showDialogOnError=*/false);
+    publishRepositoryAfterMirrorRefresh(index, /*showDialogOnError=*/false);
     // If this repo's Releases panel is on screen, refresh it so the freshly
     // attached artifacts appear without a manual reload.
     if (index == m_repoDetailIndex && m_releasesTabIndex >= 0 &&
