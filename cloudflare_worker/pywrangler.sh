@@ -7,14 +7,24 @@
 
 PYWRANGLER_VENV="${PYWRANGLER_VENV:-.pywrangler}"
 PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
+PYWRANGLER_UVX="$PYWRANGLER_VENV/bin/uvx"
+PYWRANGLER_UV="$PYWRANGLER_VENV/bin/uv"
 
 pywrangler() {
     if command -v uvx >/dev/null 2>&1; then
         uvx --from workers-py pywrangler "$@"
         return
     fi
+    if [ -x "$PYWRANGLER_UVX" ]; then
+        "$PYWRANGLER_UVX" --from workers-py pywrangler "$@"
+        return
+    fi
     if command -v uv >/dev/null 2>&1; then
         uv tool run --from workers-py pywrangler "$@"
+        return
+    fi
+    if [ -x "$PYWRANGLER_UV" ]; then
+        "$PYWRANGLER_UV" tool run --from workers-py pywrangler "$@"
         return
     fi
     local pywrangler_path
@@ -25,6 +35,14 @@ pywrangler() {
     fi
     if [ ! -x "$PYWRANGLER_BIN" ]; then
         install_pywrangler || return
+    fi
+    if [ -x "$PYWRANGLER_UVX" ]; then
+        "$PYWRANGLER_UVX" --from workers-py pywrangler "$@"
+        return
+    fi
+    if [ -x "$PYWRANGLER_UV" ]; then
+        "$PYWRANGLER_UV" tool run --from workers-py pywrangler "$@"
+        return
     fi
     "$PYWRANGLER_BIN" "$@"
 }
@@ -41,6 +59,12 @@ install_pywrangler() {
     python3 -m venv "$PYWRANGLER_VENV"
     "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade pip >/dev/null
     "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade workers-py
+    # Newer workers-py binaries can require uv tooling at runtime. Install a
+    # project-local uv copy so we can keep the deploy path self-contained when
+    # the host only has python3.
+    if [ ! -x "$PYWRANGLER_UVX" ] && [ ! -x "$PYWRANGLER_UV" ]; then
+        "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade uv >/dev/null
+    fi
 
     if [ ! -x "$PYWRANGLER_BIN" ]; then
         echo "error: workers-py installed, but $PYWRANGLER_BIN was not created." >&2
