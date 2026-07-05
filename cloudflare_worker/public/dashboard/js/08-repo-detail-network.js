@@ -304,11 +304,10 @@
 
   async function renderNetwork() {
     try {
-      const [stats, leaderboards, history] = await Promise.all([
-        fetchJson("/api/network/stats"),
-        fetchJson("/api/network/leaderboards"),
-        fetchJson("/api/network/online-history"),
-      ]);
+      const overview = await fetchJson("/api/network/overview");
+      const stats = overview.stats || {};
+      const leaderboards = overview.leaderboards || {};
+      const history = overview.history || {};
       const hosts = Number(stats.hosts) || 0;
       const repos = Number(stats.repos) || 0;
       const clients = Number(stats.clients) || 0;

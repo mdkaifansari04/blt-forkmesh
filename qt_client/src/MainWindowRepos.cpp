@@ -13,7 +13,9 @@ using namespace forkmesh::ui;
 
 namespace {
 constexpr qint64 kCatalogPublishDebounceMs = 1000;
-constexpr qint64 kCatalogPublishMinIntervalMs = 6000;
+constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
+constexpr qint64 kCatalogPublishRateLimitRetryMs = 60LL * 1000;
+constexpr qint64 kCatalogPublishMaxRetryAfterMs = 10LL * 60 * 1000;
 
 struct RepoRemoteRow {
     QString name;
@@ -25,6 +27,20 @@ QString catalogPublishOwnerFromKey(const QString &key)
 {
     const int slash = key.indexOf(QLatin1Char('/'));
     return slash > 0 ? key.left(slash) : key;
+}
+
+qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
+{
+    if (status != 429)
+        return 0;
+    qint64 delay = kCatalogPublishRateLimitRetryMs;
+    const QByteArray retryAfter = reply ? reply->rawHeader("Retry-After") : QByteArray();
+    bool ok = false;
+    const qint64 seconds =
+        QString::fromLatin1(retryAfter).trimmed().toLongLong(&ok);
+    if (ok && seconds > 0)
+        delay = qMax(delay, seconds * 1000);
+    return qMin(delay, kCatalogPublishMaxRetryAfterMs);
 }
 
 QString repoRemoteGitDir(const RepositoryRecord &repo)
@@ -2764,6 +2780,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                const qint64 retryDelayMs =
+                    catalogPublishRetryDelayMs(reply, status);
                 reply->deleteLater();
                 m_catalogPublishInFlight.remove(publishKey);
                 const bool publishQueued =
@@ -2775,9 +2793,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                     m_catalogPublishDialogQueued.remove(publishKey);
 
                 auto publishQueuedUpdate = [this, publishKey, publishQueued,
-                                            queuedDialog] {
+                                            queuedDialog](qint64 minDelayMs = 0) {
                     if (publishQueued)
-                        scheduleCatalogPublish(publishKey, queuedDialog);
+                        scheduleCatalogPublish(publishKey, queuedDialog, minDelayMs);
                 };
 
                 if (index < 0 || index >= m_repositories.size()) {
@@ -2822,7 +2840,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 logSystem(message);
                 if (showDialogOnError)
                     flashMessage(message, /*error=*/true);
-                publishQueuedUpdate();
+                publishQueuedUpdate(retryDelayMs);
             });
 }
 

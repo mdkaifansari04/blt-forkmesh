@@ -210,6 +210,13 @@ int main(int argc, char *argv[])
         qCritical("FAIL: could not create temporary settings directory");
         return 1;
     }
+    QTemporaryDir runtimeDir;
+    if (!runtimeDir.isValid()) {
+        qCritical("FAIL: could not create temporary runtime directory");
+        return 1;
+    }
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+    qputenv("GSETTINGS_BACKEND", QByteArrayLiteral("memory"));
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        settingsDir.path());
 

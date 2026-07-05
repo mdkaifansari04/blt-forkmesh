@@ -42,10 +42,6 @@
     return series;
   }
 
-  function activityTotal(values) {
-    return normalizeActivityWeeks(values).reduce((sum, n) => sum + n, 0);
-  }
-
   function groupActivityWeeks(group) {
     const buckets = Array.from({ length: 52 }, () => 0);
     for (const member of group.members || []) {
@@ -53,21 +49,6 @@
       for (let i = 0; i < buckets.length; i += 1) {
         buckets[i] = Math.max(buckets[i], series[i] || 0);
       }
-    }
-    return buckets;
-  }
-
-  function activityWeeksFromCommits(commits) {
-    const buckets = Array.from({ length: 52 }, () => 0);
-    if (!Array.isArray(commits)) return buckets;
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
-    const start = Date.now() - (52 * weekMs);
-    for (const commit of commits) {
-      const date = new Date(commit?.date || "");
-      const ts = date.getTime();
-      if (!Number.isFinite(ts)) continue;
-      const idx = Math.min(51, Math.max(0, Math.floor((ts - start) / weekMs)));
-      buckets[idx] += 1;
     }
     return buckets;
   }
@@ -110,45 +91,6 @@
     `;
   }
 
-  function repoActivityNeedsBackfill(group, activityWeeks, commitTotal) {
-    if (!commitTotal || activityTotal(activityWeeks) > 0) return false;
-    const key = repoKey(sourceOfTruth(group));
-    if (state.repoActivityFetches?.[key]) return false;
-    return (group.members || []).some((member) => repoIsLive(member));
-  }
-
-  async function backfillRepoActivity(group) {
-    if (!state.repoActivityFetches) state.repoActivityFetches = {};
-    const origin = sourceOfTruth(group);
-    const key = repoKey(origin);
-    const activityWeeks = groupActivityWeeks(group);
-    const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
-    if (!repoActivityNeedsBackfill(group, activityWeeks, commitTotal)) return;
-    state.repoActivityFetches[key] = "loading";
-    try {
-      const data = await fetchJson(repoLiveUrl(origin, "history"));
-      let series = normalizeActivityWeeks(data.activityWeeks);
-      if (activityTotal(series) === 0 && Array.isArray(data.commits)) {
-        series = activityWeeksFromCommits(data.commits);
-      }
-      origin.activityWeeks = series;
-      for (const repo of state.repositories) {
-        if (repoKey(repo) === key) repo.activityWeeks = series;
-      }
-      state.repoActivityFetches[key] = "done";
-      updateRepositoryPagination();
-    } catch (_) {
-      state.repoActivityFetches[key] = "failed";
-      updateRepositoryPagination();
-    }
-  }
-
-  function backfillVisibleRepoActivity(groups) {
-    window.setTimeout(() => {
-      for (const group of groups) backfillRepoActivity(group);
-    }, 0);
-  }
-
   function repositoryCard(group) {
     const origin = sourceOfTruth(group);
     const repo = group.primary;
@@ -170,9 +112,6 @@
     ].join("");
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
-    const activityStatus = state.repoActivityFetches?.[key] || "";
-    const loadingActivity = activityStatus !== "failed"
-      && repoActivityNeedsBackfill(group, activityWeeks, commitTotal);
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
@@ -198,7 +137,7 @@
             <div class="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">${metrics}</div>
           </div>
           <div class="min-w-0">
-            ${repoActivitySparkline(activityWeeks, { loading: loadingActivity, totalHint: commitTotal })}
+            ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
           </div>
         </div>
       </div>
@@ -256,7 +195,6 @@
     }
 
     window.lucide?.createIcons();
-    backfillVisibleRepoActivity(visible);
   }
 
   function applyRepositoryFilter() {

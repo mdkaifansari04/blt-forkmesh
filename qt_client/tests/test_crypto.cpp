@@ -23,19 +23,18 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
-#include <QTcpServer>
-#include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QUrl>
 
 #include <openssl/evp.h>
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -50,6 +49,71 @@ void check(bool condition, const char *what)
         ++failures;
     }
 }
+
+class StubNetworkReply : public QNetworkReply
+{
+public:
+    StubNetworkReply(const QNetworkRequest &request,
+                     QNetworkAccessManager::Operation op, int status,
+                     const QByteArray &body, QObject *parent)
+        : QNetworkReply(parent), m_body(body)
+    {
+        setRequest(request);
+        setUrl(request.url());
+        setOperation(op);
+        setAttribute(QNetworkRequest::HttpStatusCodeAttribute, status);
+        if (status >= 400)
+            setError(QNetworkReply::ContentOperationNotPermittedError,
+                     QStringLiteral("HTTP %1").arg(status));
+        setOpenMode(QIODevice::ReadOnly);
+        QTimer::singleShot(0, this, [this] {
+            setFinished(true);
+            emit finished();
+        });
+    }
+
+    void abort() override {}
+
+    qint64 bytesAvailable() const override
+    {
+        return (m_body.size() - m_offset) + QNetworkReply::bytesAvailable();
+    }
+
+protected:
+    qint64 readData(char *data, qint64 maxSize) override
+    {
+        if (m_offset >= m_body.size())
+            return -1;
+        const qint64 n = qMin(maxSize, qint64(m_body.size() - m_offset));
+        memcpy(data, m_body.constData() + m_offset, size_t(n));
+        m_offset += n;
+        return n;
+    }
+
+private:
+    QByteArray m_body;
+    qint64 m_offset = 0;
+};
+
+class StubBackoffNetworkAccessManager : public BackoffNetworkAccessManager
+{
+public:
+    QList<int> responseStatuses;
+    QStringList seenPaths;
+
+protected:
+    QNetworkReply *createNetworkRequest(Operation op,
+                                        const QNetworkRequest &request,
+                                        QIODevice *) override
+    {
+        seenPaths.append(request.url().path());
+        const int status =
+            responseStatuses.isEmpty() ? 200 : responseStatuses.takeFirst();
+        const QByteArray body =
+            status == 429 ? QByteArray("{\"error\":\"rate_limited\"}") : QByteArray();
+        return new StubNetworkReply(request, op, status, body, this);
+    }
+};
 
 // Verify a base64url Ed25519 signature against a base64url raw public key, the
 // same encoding ForkMeshIdentity uses, so the test mirrors the worker's
@@ -86,6 +150,13 @@ bool verifyEd25519(const QString &pubB64Url, const QString &sigB64Url,
 
 int main(int argc, char *argv[])
 {
+    QTemporaryDir dataDir;
+    if (!dataDir.isValid()) {
+        qCritical("FAIL: could not create temporary data directory");
+        return 1;
+    }
+    qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
+
     QCoreApplication app(argc, argv);
     app.setApplicationName("ForkMeshCryptoTest");
     app.setOrganizationName("ForkMesh");
@@ -127,7 +198,10 @@ int main(int argc, char *argv[])
     }
 
     ForkMeshIdentity identity;
-    check(identity.load(), "Ed25519 identity loads or generates");
+    const bool identityLoaded = identity.load();
+    if (!identityLoaded)
+        qCritical("Identity load error: %s", qPrintable(identity.errorString()));
+    check(identityLoaded, "Ed25519 identity loads or generates");
     check(identity.isValid(), "Ed25519 identity is valid");
     check(!identity.publicKey().isEmpty(), "public key is exported");
 
@@ -589,38 +663,14 @@ int main(int argc, char *argv[])
           "a successful poll clears the exponential backoff");
 
     // --- BackoffNetworkAccessManager: host-wide 429 gate (adhoc #78) -----
-    // A minimal loopback HTTP server stands in for the relay so createRequest's
-    // real routing/gating logic runs end-to-end instead of just NetworkBackoff
-    // in isolation: /api/* paths are gated per-host, a 429 starts a cooldown
-    // during which further /api/* requests never reach the network, and
-    // non-/api/ paths always bypass the gate.
+    // An in-process reply stub stands in for the relay so createRequest's
+    // routing/gating logic runs end-to-end without needing a loopback listener
+    // (some CI/sandbox profiles deny bind()). /api/* paths are gated per-host,
+    // a 429 starts a cooldown during which further /api/* requests never reach
+    // the network handoff, and non-/api/ paths always bypass the gate.
     {
-        QTcpServer fakeRelay;
-        check(fakeRelay.listen(QHostAddress::LocalHost),
-              "fake relay listens on loopback for the backoff-manager test");
-        QList<QByteArray> pendingResponses;
-        QStringList seenPaths;
-        QObject::connect(&fakeRelay, &QTcpServer::newConnection, [&] {
-            while (fakeRelay.hasPendingConnections()) {
-                QTcpSocket *sock = fakeRelay.nextPendingConnection();
-                QObject::connect(sock, &QTcpSocket::readyRead, [&, sock] {
-                    const QString requestLine =
-                        QString::fromLatin1(sock->readAll()).section(QStringLiteral("\r\n"), 0, 0);
-                    seenPaths.append(requestLine.section(QLatin1Char(' '), 1, 1));
-                    const QByteArray body = pendingResponses.isEmpty()
-                        ? QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                        : pendingResponses.takeFirst();
-                    sock->write(body);
-                    sock->flush();
-                    sock->disconnectFromHost();
-                });
-                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
-            }
-        });
-
-        BackoffNetworkAccessManager manager;
-        const QString base =
-            QStringLiteral("http://127.0.0.1:%1").arg(fakeRelay.serverPort());
+        StubBackoffNetworkAccessManager manager;
+        const QString base = QStringLiteral("http://relay.test");
         const auto runRequest = [&](const QString &path) {
             QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(base + path)));
             bool done = false;
@@ -634,28 +684,27 @@ int main(int argc, char *argv[])
             return err;
         };
 
-        pendingResponses.append(
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        manager.responseStatuses.append(429);
         runRequest(QStringLiteral("/api/version"));
-        check(seenPaths == QStringList{QStringLiteral("/api/version")},
-              "first /api/ request reaches the fake relay");
+        check(manager.seenPaths == QStringList{QStringLiteral("/api/version")},
+              "first /api/ request reaches the network handoff");
 
-        seenPaths.clear();
+        manager.seenPaths.clear();
         const QString suppressedErr = runRequest(QStringLiteral("/api/version"));
-        check(seenPaths.isEmpty(),
-              "a second /api/ request during cooldown never reaches the network");
+        check(manager.seenPaths.isEmpty(),
+              "a second /api/ request during cooldown never reaches the network handoff");
         check(suppressedErr.contains(QStringLiteral("rate-limited")),
               "the suppressed reply reports a rate-limited error");
 
-        seenPaths.clear();
+        manager.seenPaths.clear();
         runRequest(QStringLiteral("/static/app.js"));
-        check(!seenPaths.isEmpty(),
+        check(!manager.seenPaths.isEmpty(),
               "non-/api/ paths bypass the backoff gate even during cooldown");
 
         manager.setFirewallEnabled(true);
-        seenPaths.clear();
+        manager.seenPaths.clear();
         const QString deniedErr = runRequest(QStringLiteral("/static/firewall-block"));
-        check(seenPaths.isEmpty(),
+        check(manager.seenPaths.isEmpty(),
               "firewall-enabled manager blocks non-whitelisted requests locally");
         check(deniedErr.contains(QStringLiteral("firewall"), Qt::CaseInsensitive),
               "the firewall-denied reply reports a firewall block");
@@ -668,14 +717,14 @@ int main(int argc, char *argv[])
                     *ruleOut = BackoffNetworkAccessManager::firewallRuleForUrl(url, true);
                 return true;
             });
-        seenPaths.clear();
+        manager.seenPaths.clear();
         runRequest(QStringLiteral("/static/firewall-allow"));
-        check(prompts == 1 && !seenPaths.isEmpty(),
+        check(prompts == 1 && !manager.seenPaths.isEmpty(),
               "allowing from the firewall prompt lets the request reach the network");
 
-        seenPaths.clear();
+        manager.seenPaths.clear();
         runRequest(QStringLiteral("/static/firewall-allow-again"));
-        check(prompts == 1 && !seenPaths.isEmpty(),
+        check(prompts == 1 && !manager.seenPaths.isEmpty(),
               "the accepted firewall rule whitelists subsequent requests");
     }
 
