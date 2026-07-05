@@ -301,6 +301,14 @@ FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
 # active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
 HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
 HOST_PRESENCE_REFRESH_MS = 60 * 1000
+# Registered desktop/headless node accounts that have not been seen for this
+# long are treated as abandoned: their physical node row and public repo catalog
+# namespace are pruned so old one-off registrations stop participating in
+# browse/clone routing. A node that returns after this window must register
+# again.
+REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
+STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
+STALE_NODE_PURGE_BATCH = 100
 # How long a downed repo's clone traffic stays pinned to one chosen mirror (see
 # clone_sticky). Long enough that a clone's info/refs and upload-pack POST land
 # on the same node; short enough that the load still rotates across mirrors.
@@ -1408,7 +1416,11 @@ async def network_leaderboards(env):
     first_hosted = {str(r.get("repo_bi")): int(r.get("ts") or 0)
                     for r in first_rows if r.get("repo_bi")}
     repo_rows = await d1_all(
-        env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
+        env, "SELECT key_bi, owner_bi, data FROM repositories WHERE is_private = 0")
+    try:
+        active_nodes = await active_registered_node_bis(env, now)
+    except Exception:
+        active_nodes = None
     counts = {}
     mirror_owners = {}
     hosted_board = []
@@ -1421,6 +1433,8 @@ async def network_leaderboards(env):
     # most recently — so a multi-repo node shows one coherent "latest" state.
     node_details = {}
     for row in repo_rows:
+        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
@@ -1613,9 +1627,15 @@ async def install_source(env):
         env,
         "SELECT owner_bi, data FROM repositories",
     )
+    try:
+        active_nodes = await active_registered_node_bis(env, now)
+    except Exception:
+        active_nodes = None
 
     candidates = {}
     for row in rows:
+        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec or safe_segment(rec.get("name", "")) != "forkmesh":
             continue
@@ -1791,6 +1811,78 @@ async def purge_blocked_catalog(env):
         await d1_run(env, "DELETE FROM repositories WHERE owner_bi=?", owner_bi)
 
 
+async def active_registered_node_bis(env, now=None):
+    # A node is active if either its physical node row has recent activity, its
+    # signed account heartbeat is recent, or it is currently serving at least one
+    # repo host tunnel. The host-presence arm keeps older clients from being
+    # purged before they have written nodes.last_seen.
+    await ensure_schema(env)
+    now = int(now if now is not None else Date.now())
+    cutoff = now - REGISTERED_NODE_ACTIVE_MS
+    active = set()
+    rows = await d1_all(
+        env,
+        """SELECT node_bi AS key FROM nodes WHERE COALESCE(last_seen, 0) >= ?
+           UNION
+           SELECT name_bi AS key FROM account_presence WHERE ts >= ?
+           UNION
+           SELECT r.owner_bi AS key
+             FROM host_presence hp
+             JOIN repositories r ON r.key_bi = hp.repo_bi
+            WHERE hp.ts >= ?""",
+        cutoff, cutoff, cutoff,
+    )
+    for row in rows or []:
+        key = str(row.get("key") or "")
+        if key:
+            active.add(key)
+    return active
+
+
+async def purge_stale_registered_nodes(env, force=False):
+    # Bound the registered-node table and public repo catalog to nodes that have
+    # been live in the last hour. This is intentionally NOT account deletion:
+    # accounts are credentials/ownership records. What gets pruned is the
+    # request-serving surface (nodes mirror rows + repo catalog namespace) that
+    # made old one-off registrations keep participating in browse/clone fanout.
+    await ensure_schema(env)
+    now = int(Date.now())
+    if not force and now - int(_stale_node_purge.get("ts") or 0) < STALE_NODE_PURGE_INTERVAL_MS:
+        return 0
+    _stale_node_purge["ts"] = now
+    cutoff = now - REGISTERED_NODE_ACTIVE_MS
+    try:
+        await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
+        await notify_stale_hosts_offline(env, cutoff)
+        await d1_run(env, "DELETE FROM host_presence WHERE ts < ?", cutoff)
+    except Exception:
+        pass
+    active = await active_registered_node_bis(env, now)
+    rows = await d1_all(
+        env,
+        """SELECT node_bi, name FROM nodes
+           WHERE COALESCE(last_seen, 0) < ?
+           ORDER BY COALESCE(last_seen, 0) ASC
+           LIMIT ?""",
+        cutoff, STALE_NODE_PURGE_BATCH,
+    )
+    removed = 0
+    for row in rows or []:
+        node_bi = str(row.get("node_bi") or "")
+        if not node_bi or node_bi in active:
+            continue
+        name = clean_string(row.get("name", ""), MAX_NODE_NAME).lower()
+        try:
+            await _delete_repo_namespace(env, node_bi, name)
+            await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", node_bi)
+            removed += 1
+        except Exception:
+            continue
+    if removed:
+        await purge_catalog_related_caches()
+    return removed
+
+
 # --- D1 storage --------------------------------------------------------------
 # Durable Objects are reserved for transient relaying (chat rooms + the live
 # file/git tunnel). Everything that must persist lives in D1, and every row is
@@ -1851,6 +1943,7 @@ CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
 CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
+_stale_node_purge = {"ts": 0}
 
 # Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
 # constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
@@ -2162,6 +2255,14 @@ async def catalog_handler(env, request):
             await purge_blocked_catalog(env)
         except Exception:
             pass
+        try:
+            await purge_stale_registered_nodes(env)
+        except Exception:
+            pass
+        try:
+            active_nodes = await active_registered_node_bis(env)
+        except Exception:
+            active_nodes = None
         # Public repos are listed for everyone; an authenticated viewer additionally
         # gets the private repos they own (matched by blind index) AND any private
         # repo another owner has shared with them (issue #9, via the repo_shares
@@ -2170,13 +2271,13 @@ async def catalog_handler(env, request):
             viewer_bi = await blind_index(env, authed_viewer)
             rows = await d1_all(
                 env,
-                "SELECT key_bi, data FROM repositories "
+                "SELECT key_bi, owner_bi, data FROM repositories "
                 "WHERE is_private = 0 OR owner_bi = ? OR key_bi IN "
                 "(SELECT repo_bi FROM repo_shares WHERE grantee_bi = ?)",
                 viewer_bi, viewer_bi)
         else:
             rows = await d1_all(
-                env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
+                env, "SELECT key_bi, owner_bi, data FROM repositories WHERE is_private = 0")
         # Annotate each repo with whether a host is currently live, computed once
         # here from the presence table (keyed by the same blind index as the repo)
         # instead of the catalog page probing every repo's tunnel DO per visit.
@@ -2187,6 +2288,8 @@ async def catalog_handler(env, request):
         live = {r["repo_bi"] for r in live_rows}
         repos = []
         for r in rows:
+            if active_nodes is not None and str(r.get("owner_bi") or "") not in active_nodes:
+                continue
             rec = await decrypt_row(env, r["data"])
             if rec:
                 # Defense in depth: never surface a blocked identity even if a
@@ -2255,6 +2358,12 @@ async def catalog_handler(env, request):
                      "\n" + record["updatedAt"]).encode()
         if not await ed25519_verify(owner_pub, catalog_sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
+        owner_bi = await blind_index(env, owner)
+        try:
+            _, owner_rec = await _account_row(env, owner)
+            await touch_registered_node(env, owner_bi, owner_rec)
+        except Exception:
+            pass
 
         # Repo-state attestation: the same owner key signs the fingerprint of the
         # refs it serves, so the relay can later reject a tampered/stale mirror.
@@ -2271,7 +2380,6 @@ async def catalog_handler(env, request):
                     owner_pub, state_sig, state_canonical)):
                 return json_response({"error": "bad_state_signature"}, status=401)
 
-        owner_bi = await blind_index(env, owner)
         # Anti-spam: throttle writes per owner and cap how many repos one owner may
         # publish, so a single key can't flood the catalog.
         limited = await catalog_rate_check(env, owner_bi)
@@ -2388,10 +2496,17 @@ async def repo_mirrors_handler(env, request, owner, repo):
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
     rows = await d1_all(
-        env, "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0"
+        env,
+        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
     )
+    try:
+        active_nodes = await active_registered_node_bis(env)
+    except Exception:
+        active_nodes = None
     catalog_rows = []
     for row in rows:
+        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+            continue
         rec = await decrypt_row(env, row.get("data"))
         if not rec:
             continue
@@ -2513,7 +2628,8 @@ def _account_kind(rec):
 
 
 async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
-                                          ip_bi=None, is_admin=None):
+                                          ip_bi=None, is_admin=None,
+                                          touch_seen=False):
     # Physical users/nodes tables (migration 0025) mirror the encrypted legacy
     # account record so the website can query users and machine nodes as separate
     # entities while old clients keep using /api/accounts/* during rollout.
@@ -2548,6 +2664,7 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
             owner = name
         owner_bi = await blind_index(env, owner) if owner else None
         enc_node = await encrypt_row(env, rec)
+        last_seen = now if touch_seen else 0
         await d1_run(
             env,
             """INSERT INTO nodes (node_bi, user_bi, pubkey, data, name, last_seen)
@@ -2555,10 +2672,29 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                ON CONFLICT(node_bi) DO UPDATE SET
                  user_bi=excluded.user_bi, pubkey=excluded.pubkey,
                  data=excluded.data, name=excluded.name,
-                 last_seen=MAX(nodes.last_seen, excluded.last_seen)""",
-            name_bi, owner_bi, pubkey, enc_node, name, now)
+                 last_seen=CASE WHEN ? THEN
+                   MAX(nodes.last_seen, excluded.last_seen)
+                   ELSE nodes.last_seen END""",
+            name_bi, owner_bi, pubkey, enc_node, name, last_seen,
+            1 if touch_seen else 0)
     else:
         await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+
+
+async def touch_registered_node(env, name_bi, rec=None):
+    # A real node activity signal (registration/finalize, signed heartbeat,
+    # desktop login, or host WebSocket connect). Plain account reads repair the
+    # users/nodes mirror but deliberately do NOT refresh this timestamp; otherwise
+    # merely browsing stale profiles would keep abandoned nodes alive forever.
+    if not name_bi:
+        return
+    if rec and clean_string(rec.get("pubkey", ""), 120):
+        await _mirror_account_identity_tables(
+            env, name_bi, rec, touch_seen=True)
+        return
+    await d1_run(
+        env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
+        int(Date.now()), name_bi)
 
 
 async def _account_row(env, name):
@@ -3322,6 +3458,11 @@ async def _account_reserve(env, request):
     if pubkey:
         rec["pubkey"] = pubkey
     await _save_account(env, name_bi, rec)
+    if pubkey:
+        try:
+            await touch_registered_node(env, name_bi, rec)
+        except Exception:
+            pass
     return json_response(
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
@@ -3763,6 +3904,11 @@ async def _account_finalize(env, request):
     signup_ip = (rec.get("signup") or {}).get("ip") or ""
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
+    if rec.get("pubkey"):
+        try:
+            await touch_registered_node(env, name_bi, rec)
+        except Exception:
+            pass
     # Send a verification email (Mailtrap). If the email service is unconfigured
     # or the send fails, fall back to the admin queue so an admin can still verify
     # by hand. A free key-bound join with no email yet has nothing to verify.
@@ -4511,6 +4657,10 @@ async def _account_login(env, request):
         if not rec.get("pubkey"):
             rec["pubkey"] = pubkey
             await _save_account(env, name_bi, rec)
+        try:
+            await touch_registered_node(env, name_bi, rec)
+        except Exception:
+            pass
         caps = device.get("capabilities", DESKTOP_NODE_CAPABILITIES) if device else DESKTOP_NODE_CAPABILITIES
         if isinstance(caps, str):
             caps = [c for c in caps.split(",") if c]
@@ -4617,6 +4767,10 @@ async def _account_heartbeat(env, request):
         "ON CONFLICT(name_bi) DO UPDATE SET ts=excluded.ts",
         name_bi, int(Date.now()),
     )
+    try:
+        await touch_registered_node(env, name_bi, rec)
+    except Exception:
+        pass
 
     # Report this node's payout-wallet balance in the heartbeat reply so the
     # client doesn't have to poll Solana itself. We track the last balance we
@@ -8861,6 +9015,14 @@ class Default(WorkerEntrypoint):
                 "purge_blocked_catalog failed: " + _safe_error_text(error),
                 "",
             )
+        try:
+            await purge_stale_registered_nodes(self.env, force=True)
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/purge-stale-nodes",
+                "purge_stale_registered_nodes failed: " + _safe_error_text(error),
+                "",
+            )
         # Backstop the bounty escrow split so a funded bounty pays out to the
         # author + treasury even if no client polls its status.
         try:
@@ -9374,6 +9536,11 @@ class Default(WorkerEntrypoint):
                 sig = params.get("sig", [""])[0]
                 if not await verify_host_token(self.env, owner, repo, ts, sig):
                     return json_response({"error": "unauthorized"}, status=401)
+                try:
+                    owner_bi, owner_rec = await _account_row(self.env, owner)
+                    await touch_registered_node(self.env, owner_bi, owner_rec)
+                except Exception:
+                    pass
             elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
@@ -9593,9 +9760,15 @@ class Default(WorkerEntrypoint):
             }
             rows = await d1_all(
                 self.env,
-                "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
+                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+            try:
+                active_nodes = await active_registered_node_bis(self.env, now)
+            except Exception:
+                active_nodes = None
             catalog_rows = []
             for row in rows:
+                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+                    continue
                 rec = await decrypt_row(self.env, row.get("data"))
                 if not rec:
                     continue
@@ -9649,9 +9822,15 @@ class Default(WorkerEntrypoint):
             }
             rows = await d1_all(
                 self.env,
-                "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
+                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+            try:
+                active_nodes = await active_registered_node_bis(self.env, now)
+            except Exception:
+                active_nodes = None
             catalog_rows = []
             for row in rows:
+                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+                    continue
                 rec = await decrypt_row(self.env, row.get("data"))
                 if not rec:
                     continue
@@ -10977,9 +11156,17 @@ class ForkMeshHost(DurableObject):
             source = str(target.get("source") or "local-node")
             catalog_rows = []
             if source != "local-node":
+                try:
+                    active_nodes = await active_registered_node_bis(
+                        self.env, int(Date.now()))
+                except Exception:
+                    active_nodes = None
                 rows = await d1_all(
-                    self.env, "SELECT key_bi, data FROM repositories")
+                    self.env, "SELECT key_bi, owner_bi, data FROM repositories")
                 for r in rows:
+                    if (active_nodes is not None and
+                            str(r.get("owner_bi") or "") not in active_nodes):
+                        continue
                     rec = await decrypt_row(self.env, r.get("data"))
                     if rec:
                         catalog_rows.append(

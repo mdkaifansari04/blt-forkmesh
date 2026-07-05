@@ -108,7 +108,7 @@ private:
                        const QString &scope = QString());
     void sendControlFrame(int opcode, const QByteArray &payload = QByteArray());
     void sendEncrypted(const QJsonObject &plain, bool showActivity = false);
-    void sendHello();
+    void sendHello(bool force = false, bool showActivity = false);
     // Refresh the cached host resource telemetry (CPU/RAM/disk) advertised in the
     // "sys" field of every frame. Throttled internally so it only re-samples on
     // the heartbeats, not on each chat send. Cheap on Linux (/proc + statvfs).
@@ -178,6 +178,7 @@ private:
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
     QTimer *m_presenceTimer = nullptr; // periodic presence beat + stale-peer sweep
+    QTimer *m_helloAdvertiseTimer = nullptr; // coalesces mirror hello updates
     // Auto-reconnect: the node stays online across drops, retrying quickly at
     // first and backing off exponentially while the relay keeps refusing, until
     // it returns or the user explicitly leaves (adhoc #192, adhoc #66).
@@ -185,6 +186,10 @@ private:
     int m_reconnectAttempts = 0; // consecutive failures since the last upgrade
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
+    QHash<QString, qint64> m_lastHelloReplyMs; // peer id -> last directed hello reply
+    qint64 m_lastHelloSentMs = 0;
+    QString m_lastStatusText;
+    qint64 m_lastStatusEmitMs = 0;
     qint64 m_wsConnectedAtMs = 0;
     qint64 m_lastRxMs = 0;
     qint64 m_lastTxMs = 0;
