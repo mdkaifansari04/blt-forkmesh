@@ -164,13 +164,13 @@ def test_ignores_other_platform_entries():
 
 def test_blob_url_uses_manifest_repo_not_mirror():
     # The clone came from the mirror "alice/forkmesh" (REPO_CANDIDATES), but the
-    # release.json manifest records the canonical "newnewnode/forkmesh" — the only
+    # release.json manifest records the canonical "forkmesh/forkmesh" — the only
     # node that holds the out-of-git blob. The blob URL MUST target the canonical
     # repo, otherwise the mirror 404s and a published binary falls back to source.
     payload = b"\x7fELF prebuilt" * 20
     digest = hashlib.sha256(payload).hexdigest()
     manifest = (
-        '{"schema":"forkmesh-release-v1","repo":"newnewnode/forkmesh",'
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
         '"channel":"latest","assets":[{"name":"forkmesh-linux-x86_64",'
         '"blob_sha256":"%s"}]}' % digest
     )
@@ -179,7 +179,7 @@ def test_blob_url_uses_manifest_repo_not_mirror():
     assert rc == 0
     assert installed == payload
     assert blob_url == (
-        "https://relay.test/api/repo/newnewnode/forkmesh"
+        "https://relay.test/api/repo/forkmesh/forkmesh"
         "/releases/blob/sha256/%s" % digest)
 
 

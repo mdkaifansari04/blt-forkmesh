@@ -718,9 +718,18 @@ int main(int argc, char *argv[])
             MemberInfo newIdentity = testMember(QStringLiteral("mirror1-new-key"),
                                                 QStringLiteral("mirror1"));
             newIdentity.version = QStringLiteral("0.5.30");
+            newIdentity.platform = QStringLiteral("linux");
+            newIdentity.diskUsedBytes = 40 * 1024 * 1024;
+            newIdentity.diskTotalBytes = 100 * 1024 * 1024;
+            advert.worktreeCount = 3;
             newIdentity.mirrorDetails.append(advert);
+            MemberInfo offlineNode = testMember(QStringLiteral("offline-key"),
+                                                QStringLiteral("offline-node"));
+            offlineNode.online = false;
+            offlineNode.mirrorDetails.append(advert);
             dupRoster.append(oldIdentity);
             dupRoster.append(newIdentity);
+            dupRoster.append(offlineNode);
             // Set the roster directly and rebuild just the Mirror nodes panel:
             // routing this through the full setRoster (which also rebuilds the
             // repo/node switcher) isn't needed to exercise loadMirrorNodesPanel's
@@ -728,14 +737,19 @@ int main(int argc, char *argv[])
             // detail since the repo-owning node ("me") isn't in this synthetic
             // roster snapshot.
             window.testSetHomeRosterAndReloadMirrorPanel(dupRoster);
+            check(window.testMirrorNodesOnlineOnlyChecked(),
+                  QStringLiteral("Mirror nodes defaults to showing online nodes only"));
             const QStringList mirrorRows = window.testMirrorNodeRows();
             int mirror1Rows = 0;
             QString mirror1Id;
+            bool sawOffline = false;
             for (const QString &row : mirrorRows) {
                 if (row.startsWith(QStringLiteral("mirror1"))) {
                     ++mirror1Rows;
                     mirror1Id = row.section(QLatin1Char('|'), 1);
                 }
+                if (row.startsWith(QStringLiteral("offline-node")))
+                    sawOffline = true;
             }
             check(mirror1Rows == 1,
                   QString("a node re-registered under a new key shows one Mirror "
@@ -744,6 +758,23 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
+            check(!sawOffline,
+                  QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 9) ==
+                      QStringLiteral("3"),
+                  QStringLiteral("Mirror nodes Worktrees column is populated before CPU/RAM/Disk"));
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 12)
+                      .startsWith(QStringLiteral("Disk:")),
+                  QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 13) ==
+                      QStringLiteral("linux"),
+                  QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
+            window.testSetMirrorNodesOnlineOnly(false);
+            QApplication::processEvents();
+            const QStringList unfilteredRows = window.testMirrorNodeRows();
+            check(unfilteredRows.join(QStringLiteral("\n"))
+                      .contains(QStringLiteral("offline-node")),
+                  QStringLiteral("unchecking Online only shows offline mirror nodes"));
         }
 
         // issue #172: the Branches list must also surface the worktree a branch

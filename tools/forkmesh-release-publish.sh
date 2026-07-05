@@ -26,7 +26,8 @@
 #               <mirror>/forkmesh-releases directory. Defaults to
 #               $FORKMESH_RELEASE_CAS, else .forkmesh/release-blobs (the node that
 #               serves the repo must read its CAS from this path).
-#   --repo      owner/repo for the manifest (default: $FORKMESH_REPO).
+#   --repo      owner/repo for the manifest (default: $FORKMESH_REPO,
+#               else forkmesh/forkmesh).
 #
 # Each BINARY should already be named the way install.sh resolves per platform:
 #   forkmesh-<os>-<arch>[.exe]   (os: linux|macos|windows, arch: x86_64|arm64)
@@ -35,7 +36,7 @@ set -euo pipefail
 channel="${RELEASE_CHANNEL:-latest}"
 tag="${FORKMESH_TAG:-}"
 cas_dir="${FORKMESH_RELEASE_CAS:-}"
-repo="${FORKMESH_REPO:-}"
+repo="${FORKMESH_REPO:-forkmesh/forkmesh}"
 bins=()
 
 while [ $# -gt 0 ]; do

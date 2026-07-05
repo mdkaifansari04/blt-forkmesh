@@ -110,6 +110,7 @@ class QTreeWidgetItem;
 class QProcess;
 class QTemporaryDir;
 class QVBoxLayout;
+class QCheckBox;
 class QHBoxLayout;
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
@@ -362,6 +363,10 @@ public:
     // The Mirror nodes rows as "name-cell-text|node-id", so a test can prove a
     // node that re-registered under a new key shows exactly one row (adhoc #46).
     Q_INVOKABLE QStringList testMirrorNodeRows() const;
+    bool testMirrorNodesOnlineOnlyChecked() const;
+    void testSetMirrorNodesOnlineOnly(bool checked);
+    QString testMirrorNodeCellText(const QString &nodeName, int column) const;
+    QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -3245,6 +3250,7 @@ private:
     QProcess *m_shortcutProcess = nullptr; // running shortcut, if any
     QTableWidget *m_mirrorNodesTable = nullptr;
     QLabel *m_mirrorNodesSummary = nullptr;
+    QCheckBox *m_mirrorNodesOnlineOnlyCheck = nullptr;
     // Live activity strip floating just above the Mirror nodes tab: a dot per
     // active node that flashes green when it serves a clone, orange when it
     // serves browsing. Held as a QWidget* (concrete MirrorActivityStrip is
