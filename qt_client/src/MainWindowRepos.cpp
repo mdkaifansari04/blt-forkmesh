@@ -736,7 +736,8 @@ void MainWindow::promptAddRepository()
 {
     // Simple flow: pick a local Git repository. Everything else is derived.
     // The folder is mirrored locally and only signed metadata is published to
-    // the website; the .git data never leaves this machine.
+    // the website; the .git data never leaves this machine unless this node is
+    // online and serving clone/browse requests.
     const QString path = QFileDialog::getExistingDirectory(
         this, "Choose a local Git repository to mirror and publish");
     if (path.isEmpty())
@@ -752,15 +753,44 @@ void MainWindow::promptAddRepository()
         return;
     }
 
+    const QString name = repoNameFromUrl(path);
+    if (repoIndexFor(accountOwner(), name) >= 0) {
+        QMessageBox::warning(
+            this, "Add repository",
+            QStringLiteral("You already have a repository named \"%1\".").arg(name));
+        return;
+    }
+
+    QMessageBox visibility(this);
+    visibility.setWindowTitle(QStringLiteral("Repository visibility"));
+    visibility.setIcon(QMessageBox::Question);
+    visibility.setText(QStringLiteral("Mirror %1 as a public or private repository?")
+                           .arg(name));
+    visibility.setInformativeText(QStringLiteral(
+        "Public repositories appear in the catalog. Private repositories are "
+        "hidden from public browse and clone routes unless shared."));
+    QPushButton *publicButton =
+        visibility.addButton(QStringLiteral("Public"), QMessageBox::AcceptRole);
+    QPushButton *privateButton =
+        visibility.addButton(QStringLiteral("Private"), QMessageBox::AcceptRole);
+    visibility.addButton(QMessageBox::Cancel);
+    visibility.setDefaultButton(publicButton);
+    visibility.exec();
+    if (visibility.clickedButton() != publicButton &&
+        visibility.clickedButton() != privateButton)
+        return;
+    const bool isPrivate = visibility.clickedButton() == privateButton;
+
     RepositoryRecord repo;
     repo.localPath = path;
-    repo.name = repoNameFromUrl(path);
+    repo.name = name;
     // Repos are namespaced under the single account name.
     repo.owner = accountOwner();
     repo.solanaAddress = savedSolanaAddress();
     // Selecting a local repo publishes it to the website so it shows up online
     // and others can discover and mirror it. No public clone URL is sent.
     repo.publishToNetwork = true;
+    repo.isPrivate = isPrivate;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
@@ -777,6 +807,9 @@ void MainWindow::promptAddRepository()
                                {"channel", repositoryChannel(repo)},
                                {"mirrorPath", repo.mirrorPath},
                                {"hostedSince", QString::number(repo.hostedSinceMs)},
+                               {"visibility", repo.isPrivate
+                                                  ? QStringLiteral("private")
+                                                  : QStringLiteral("public")},
                                {"maintainer", m_profileIdentity.publicKey()}};
     logSystem("Repository: signed mirror metadata for " + repo.owner + "/" +
               repo.name + " with signature " +
@@ -1340,6 +1373,44 @@ QWidget *MainWindow::buildRepoSettingsTab()
     m_repoSourceHint->setWordWrap(true);
     outer->addWidget(m_repoSourceHint);
 
+    m_repoForkLocation = new QLabel;
+    m_repoForkLocation->setObjectName("statusLine");
+    m_repoForkLocation->setWordWrap(true);
+    m_repoForkLocation->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *forkLocationButton = new QPushButton("Set");
+    forkLocationButton->setProperty("buttonSize", "sm");
+    forkLocationButton->setCursor(Qt::PointingHandCursor);
+    forkLocationButton->setToolTip(
+        "Choose an existing local Git working copy to use as this repo's fork "
+        "location.");
+    connect(forkLocationButton, &QPushButton::clicked, this,
+            &MainWindow::promptSetRepoForkLocation);
+    auto *forkLocationRow = new QHBoxLayout;
+    forkLocationRow->setContentsMargins(0, 0, 0, 0);
+    forkLocationRow->addWidget(m_repoForkLocation, 1);
+    forkLocationRow->addWidget(forkLocationButton);
+    outer->addLayout(forkLocationRow);
+
+    m_repoMirrorLocation = new QLabel;
+    m_repoMirrorLocation->setObjectName("statusLine");
+    m_repoMirrorLocation->setWordWrap(true);
+    m_repoMirrorLocation->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    outer->addWidget(m_repoMirrorLocation);
+
+    auto *gitIdentityBtn = new QPushButton("Use ForkMesh git identity");
+    gitIdentityBtn->setProperty("buttonSize", "sm");
+    gitIdentityBtn->setCursor(Qt::PointingHandCursor);
+    gitIdentityBtn->setToolTip(
+        "Set this repository's local git user.name and user.email from your "
+        "ForkMesh username.");
+    connect(gitIdentityBtn, &QPushButton::clicked, this,
+            &MainWindow::setRepoGitIdentityFromForkMesh);
+    auto *gitIdentityRow = new QHBoxLayout;
+    gitIdentityRow->setContentsMargins(0, 0, 0, 0);
+    gitIdentityRow->addWidget(gitIdentityBtn);
+    gitIdentityRow->addStretch();
+    outer->addLayout(gitIdentityRow);
+
     outer->addSpacing(10);
 
     // --- Actions ----------------------------------------------------------
@@ -1475,6 +1546,105 @@ bool MainWindow::isWorkflowDisabled(const QString &path) const
     return m_repositories.at(m_repoDetailIndex).disabledWorkflows.contains(path);
 }
 
+void MainWindow::promptSetRepoForkLocation()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+
+    const RepositoryRecord current = m_repositories.at(m_repoDetailIndex);
+    const QString startDir = current.localPath.trimmed().isEmpty()
+                                 ? QDir::homePath()
+                                 : current.localPath.trimmed();
+    const QString path = QFileDialog::getExistingDirectory(
+        this, "Choose existing fork location", startDir);
+    if (path.isEmpty())
+        return;
+
+    const bool looksLikeGit =
+        QDir(path).exists(QStringLiteral(".git")) ||
+        QDir(path).exists(QStringLiteral("HEAD"));
+    if (!looksLikeGit) {
+        QMessageBox::warning(
+            this, "Fork location",
+            "That folder is not a Git working copy. Choose a folder created by "
+            "\"git clone\" or \"git init\".");
+        return;
+    }
+
+    const QString cleanPath = QDir::cleanPath(path);
+    const QString mirrorPath =
+        QDir::cleanPath(m_repositories.at(m_repoDetailIndex).mirrorPath.trimmed());
+    if (!mirrorPath.isEmpty() && cleanPath == mirrorPath) {
+        QMessageBox::warning(
+            this, "Fork location",
+            "The fork location cannot be the same folder as the bare mirror.");
+        return;
+    }
+
+    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
+    if (QDir::cleanPath(repo.localPath.trimmed()) == cleanPath) {
+        refreshRepoSettings();
+        return;
+    }
+    repo.localPath = cleanPath;
+    saveRepositories();
+    ensurePushHook(repo);
+    refreshRepositoryList();
+    refreshRepoSettings();
+    refreshSourceControl();
+    logSystem(QStringLiteral("Fork location for %1/%2 set to %3.")
+                  .arg(repo.owner, repo.name, cleanPath));
+    syncRepository(m_repoDetailIndex);
+}
+
+void MainWindow::setRepoGitIdentityFromForkMesh()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString dir = repo.localPath.trimmed();
+    if (dir.isEmpty() || !QDir(dir).exists(QStringLiteral(".git"))) {
+        QMessageBox::warning(
+            this, "Git identity",
+            "Set a local fork location first. Git identity is stored in the "
+            "working copy's local config.");
+        return;
+    }
+
+    const QString user = settingsAccountName().trimmed();
+    if (user.isEmpty()) {
+        QMessageBox::warning(
+            this, "Git identity",
+            "Join or log in to ForkMesh before setting a repository git identity.");
+        return;
+    }
+    const QString email = user.toLower() + QStringLiteral("@users.forkmesh.local");
+
+    QString error;
+    const bool okName =
+        runGitCapture(dir,
+                      {QStringLiteral("config"), QStringLiteral("--local"),
+                       QStringLiteral("user.name"), user},
+                      nullptr, &error);
+    const bool okEmail =
+        runGitCapture(dir,
+                      {QStringLiteral("config"), QStringLiteral("--local"),
+                       QStringLiteral("user.email"), email},
+                      nullptr, &error);
+    if (!okName || !okEmail) {
+        QMessageBox::warning(
+            this, "Git identity",
+            QStringLiteral("Could not update git config: %1")
+                .arg(error.trimmed().right(240)));
+        return;
+    }
+
+    updateFooterGitIdentity();
+    logSystem(QStringLiteral("Git identity for %1/%2 set to %3 <%4>.")
+                  .arg(repo.owner, repo.name, user, email));
+    flashMessage(QStringLiteral("Git identity set to %1 <%2>.").arg(user, email));
+}
+
 void MainWindow::setWorkflowDisabled(const QString &path, bool disabled)
 {
     if (path.isEmpty() || m_repoDetailIndex < 0 ||
@@ -1549,6 +1719,32 @@ void MainWindow::refreshRepoSettings()
                 m_repoSourceHint->setText(
                     "The mirror fetches from this URL. Update it to repoint the "
                     "fork at a different node, then sync to pull from it.");
+        }
+    }
+    if (m_repoForkLocation) {
+        if (!haveRepo) {
+            m_repoForkLocation->clear();
+        } else {
+            const QString path =
+                m_repositories.at(m_repoDetailIndex).localPath.trimmed();
+            m_repoForkLocation->setText(
+                QStringLiteral("Fork location: %1")
+                    .arg(path.isEmpty()
+                             ? QStringLiteral("No local working copy")
+                             : QDir::toNativeSeparators(path)));
+        }
+    }
+    if (m_repoMirrorLocation) {
+        if (!haveRepo) {
+            m_repoMirrorLocation->clear();
+        } else {
+            const QString path =
+                m_repositories.at(m_repoDetailIndex).mirrorPath.trimmed();
+            m_repoMirrorLocation->setText(
+                QStringLiteral("Mirror location: %1")
+                    .arg(path.isEmpty()
+                             ? QStringLiteral("Mirror has not been created yet")
+                             : QDir::toNativeSeparators(path)));
         }
     }
     if (!m_repoVisibilityHint)

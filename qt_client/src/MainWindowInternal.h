@@ -3349,18 +3349,18 @@ inline bool isValidNodeName(const QString &value)
 inline QString randomFunNodeName()
 {
     static const char *const adjectives[] = {
-        "swift",   "silent",   "nimble",  "resilient", "distributed", "encrypted",
-        "parallel", "wired",   "forked",  "meshed",    "decentralized", "redundant",
-        "synced",  "cascading", "rebased", "cloned",   "merged",      "threaded",
-        "routed",  "tunneled", "relayed", "mirrored",  "hashed",      "committed",
-        "branched", "patched", "stitched", "woven",    "linked",      "looped",
+        "cobalt", "vector", "matrix", "quantum", "neon", "radar",
+        "servo", "optic", "circuit", "static", "binary", "ion",
+        "modular", "atomic", "thermal", "signal", "carbon", "titanium",
+        "magnetic", "packet", "kernel", "proxy", "cache", "relay",
+        "armored", "synced", "sharded", "routed", "mirrored", "hashed",
     };
     static const char *const nouns[] = {
-        "fork",    "mirror",   "node",    "mesh",      "relay",       "branch",
-        "commit",  "patch",    "packet",  "socket",    "daemon",      "kernel",
-        "cache",   "gateway",  "tunnel",  "beacon",    "router",      "hub",
-        "thread",  "loom",     "weaver",  "forge",     "anchor",      "compass",
-        "lantern", "ember",    "spark",   "comet",     "satellite",   "byte",
+        "terminal", "daemon", "router", "gateway", "switch", "beacon",
+        "socket", "server", "node", "relay", "mirror", "archive",
+        "cluster", "module", "engine", "kernel", "probe", "sensor",
+        "uplink", "rack", "core", "bus", "cache", "vault",
+        "forge", "drone", "bot", "array", "host", "mesh",
     };
     const int a = QRandomGenerator::global()->bounded(
         int(sizeof(adjectives) / sizeof(adjectives[0])));
@@ -4095,6 +4095,135 @@ inline QByteArray forkMeshAvatarPng(const QString &seed)
     return png;
 }
 
+// Deterministic procedural node avatar: compact machine/server marks rather
+// than faces, so node identities read differently from user identities.
+inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
+{
+    const QByteArray h =
+        QCryptographicHash::hash(seed.toUtf8(), QCryptographicHash::Sha256);
+    quint64 state = 0x84222325CBF29CE4ULL;
+    for (char c : h)
+        state = (state ^ static_cast<quint8>(c)) * 0x100000001B3ULL;
+    auto nextU64 = [&state]() {
+        state += 0x9E3779B97F4A7C15ULL;
+        quint64 z = state;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    };
+    auto rnd = [&](int n) { return n > 0 ? int(nextU64() % quint64(n)) : 0; };
+    auto chance = [&](int pct) { return int(nextU64() % 100) < pct; };
+
+    static const char *kBackdrops[][2] = {
+        {"#0f766e", "#042f2e"}, {"#2563eb", "#111827"},
+        {"#7c3aed", "#1f1235"}, {"#dc2626", "#2b0b0b"},
+        {"#0891b2", "#082f49"}, {"#65a30d", "#1a2e05"},
+        {"#4f46e5", "#0f172a"}, {"#ca8a04", "#3b2600"}};
+    static const char *kPanels[] = {
+        "#dbeafe", "#ccfbf1", "#e0e7ff", "#fef3c7", "#e5e7eb", "#dcfce7"};
+    static const char *kAccents[] = {
+        "#22c55e", "#38bdf8", "#f97316", "#f43f5e", "#a78bfa", "#facc15"};
+
+    const int S = 128;
+    QImage img(S, S, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    const int bg = rnd(int(sizeof(kBackdrops) / sizeof(kBackdrops[0])));
+    QLinearGradient grad(0, 0, S, S);
+    grad.setColorAt(0.0, QColor(kBackdrops[bg][0]));
+    grad.setColorAt(1.0, QColor(kBackdrops[bg][1]));
+    p.fillRect(QRectF(0, 0, S, S), QBrush(grad));
+
+    QColor grid("#ffffff");
+    grid.setAlpha(24);
+    p.setPen(QPen(grid, 1));
+    const int pitch = 16 + rnd(9);
+    for (int x = -S; x < S * 2; x += pitch)
+        p.drawLine(QPointF(x, 0), QPointF(x + S, S));
+    for (int y = pitch / 2; y < S; y += pitch)
+        p.drawLine(QPointF(0, y), QPointF(S, y));
+
+    const QColor panel(kPanels[rnd(int(sizeof(kPanels) / sizeof(kPanels[0])))]);
+    const QColor shade = panel.darker(122);
+    const QColor accent(kAccents[rnd(int(sizeof(kAccents) / sizeof(kAccents[0])))]);
+    const int form = rnd(4);
+    QRectF body(31, 33, 66, 62);
+    QPainterPath chassis;
+    if (form == 0) {
+        chassis.addRoundedRect(body, 10, 10);
+    } else if (form == 1) {
+        chassis.moveTo(39, 31);
+        chassis.lineTo(89, 31);
+        chassis.lineTo(99, 48);
+        chassis.lineTo(92, 96);
+        chassis.lineTo(36, 96);
+        chassis.lineTo(29, 48);
+        chassis.closeSubpath();
+    } else if (form == 2) {
+        chassis.addRoundedRect(QRectF(27, 39, 74, 50), 8, 8);
+        chassis.addRoundedRect(QRectF(43, 26, 42, 20), 7, 7);
+    } else {
+        chassis.addRoundedRect(QRectF(35, 25, 58, 78), 14, 14);
+    }
+    p.setPen(QPen(QColor(0, 0, 0, 80), 3));
+    p.setBrush(panel);
+    p.drawPath(chassis);
+    p.setPen(QPen(shade, 2));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(chassis);
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(accent);
+    if (chance(55)) {
+        p.drawRoundedRect(QRectF(43, 48, 42, 12), 4, 4);
+    } else {
+        p.drawEllipse(QPointF(50, 55), 7, 7);
+        p.drawEllipse(QPointF(78, 55), 7, 7);
+    }
+    QColor dark("#111827");
+    dark.setAlpha(210);
+    p.setBrush(dark);
+    if (chance(70)) {
+        for (int i = 0; i < 3; ++i)
+            p.drawRoundedRect(QRectF(43 + i * 15, 72, 10, 4), 2, 2);
+    } else {
+        p.drawRoundedRect(QRectF(48, 72, 32, 5), 2, 2);
+    }
+
+    p.setPen(QPen(accent, 3, Qt::SolidLine, Qt::RoundCap));
+    if (chance(65)) {
+        p.drawLine(QPointF(64, 32), QPointF(64, 17));
+        p.setBrush(accent);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(64, 15), 4, 4);
+        p.setPen(QPen(accent, 3, Qt::SolidLine, Qt::RoundCap));
+    }
+    if (chance(55)) {
+        p.drawLine(QPointF(32, 64), QPointF(18, 58));
+        p.drawLine(QPointF(96, 64), QPointF(110, 58));
+        p.setPen(Qt::NoPen);
+        p.setBrush(shade);
+        p.drawEllipse(QPointF(17, 58), 5, 5);
+        p.drawEllipse(QPointF(111, 58), 5, 5);
+    }
+
+    p.setPen(QPen(QColor(255, 255, 255, 115), 2));
+    p.drawLine(QPointF(42, 38), QPointF(77, 38));
+    if (chance(45)) {
+        p.setPen(QPen(accent.lighter(130), 2));
+        p.drawArc(QRectF(38, 83, 52, 30), 20 * 16, 140 * 16);
+    }
+
+    p.end();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    img.save(&buffer, "PNG");
+    return png;
+}
+
 // Clip avatar PNG bytes into a rounded-rect pixmap for the nav button.
 inline QPixmap roundedAvatar(const QByteArray &png, int side)
 {
@@ -4111,6 +4240,14 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side)
     p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                   Qt::SmoothTransformation));
     return out;
+}
+
+inline QPixmap nodeMachineFavicon(const QString &seed, int side = 36)
+{
+    QPixmap pm = roundedAvatar(forkMeshNodeAvatarPng(seed), side);
+    if (!pm.isNull())
+        return pm;
+    return QPixmap();
 }
 
 // OS badge for a node row: a small Linux / Windows / macOS mark, tinted by the

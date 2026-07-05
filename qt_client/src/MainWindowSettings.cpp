@@ -33,7 +33,10 @@ QWidget *MainWindow::buildSettingsSection()
 
     m_settingsNameEdit = new QLineEdit;
     m_settingsNameEdit->setMaxLength(32);
-    m_settingsNameEdit->setPlaceholderText("Name");
+    m_settingsNameEdit->setPlaceholderText("Node name");
+    m_settingsNameEdit->setToolTip(
+        "This machine's node name on the network. Your user account can own "
+        "multiple nodes.");
     connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
             [this] { onProfileNameChanged(m_settingsNameEdit->text()); });
 
@@ -48,9 +51,9 @@ QWidget *MainWindow::buildSettingsSection()
     auto *generateButton = new QPushButton("Generate");
     generateButton->setObjectName("ghostButton");
     generateButton->setCursor(Qt::PointingHandCursor);
-    generateButton->setToolTip("Generate a fresh random face avatar");
+    generateButton->setToolTip("Generate a fresh random machine avatar for this node");
     connect(generateButton, &QPushButton::clicked, this, [this] {
-        const QByteArray png = forkMeshAvatarPng(
+        const QByteArray png = forkMeshNodeAvatarPng(
             QString::number(QRandomGenerator::global()->generate64()));
         setSettingsAvatar(png);
         onAvatarChosen(png);
@@ -83,7 +86,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft);
     form->setSpacing(8);
-    form->addRow("Name", m_settingsNameEdit);
+    form->addRow("Node name", m_settingsNameEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
     m_settingsEmailLabel = new QLabel("Email");
     m_settingsEmailVerifiedBadge = new QLabel;
@@ -1595,7 +1598,7 @@ QByteArray MainWindow::effectiveAvatar()
                                                 : m_profileIdentity.publicKey());
     if (seed.isEmpty())
         seed = QStringLiteral("forkmesh");
-    return forkMeshAvatarPng(seed);
+    return forkMeshNodeAvatarPng(seed);
 }
 
 void MainWindow::updateAvatarButton()
