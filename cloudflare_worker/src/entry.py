@@ -1723,6 +1723,30 @@ def method_name(request):
     return str(method).upper()
 
 
+async def durable_object_request(request, target_url=None, include_body=False):
+    # DurableObject.fetch may outlive the Python call frame. Passing the Python
+    # Request proxy directly across that JS boundary can trip Pyodide's
+    # "PyProxy when Python GIL not held" crash under load. Rebuild a JS-owned
+    # Request from primitive strings/bytes for the no-body paths (including
+    # WebSocket upgrades) and for small buffered POSTs such as upload-pack.
+    headers = {}
+    for name in (
+        "upgrade", "connection", "sec-websocket-version", "sec-websocket-key",
+        "sec-websocket-protocol", "content-type", "content-encoding",
+        "authorization", "accept", "user-agent",
+    ):
+        try:
+            value = request.headers.get(name)
+        except Exception:
+            value = None
+        if value:
+            headers[name] = value
+    init = {"method": method_name(request), "headers": headers}
+    if include_body:
+        init["body"] = Uint8Array.new(_to_js(bytes(await request.bytes())))
+    return JsRequest.new(str(target_url or request.url), to_js(init))
+
+
 
 def room_key_from_path(pathname):
     match = REPO_ROOM_RE.match(pathname)
@@ -9493,7 +9517,8 @@ class Default(WorkerEntrypoint):
             # mirrors of the same logical repo before failing the installer.
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            response = await host_object.fetch(request)
+            response = await host_object.fetch(
+                await durable_object_request(request))
             try:
                 status = int(response.status)
             except Exception:
@@ -9607,7 +9632,8 @@ class Default(WorkerEntrypoint):
                             failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            response = await host_object.fetch(request)
+            response = await host_object.fetch(
+                await durable_object_request(request))
             if public_browse:
                 # The routed node couldn't serve (no host connected: 503, a
                 # dead-but-lingering tunnel: 504, or a host that answered but
@@ -9646,7 +9672,7 @@ class Default(WorkerEntrypoint):
         if room:
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
-            return await room_object.fetch(request)
+            return await room_object.fetch(await durable_object_request(request))
 
         # Dashboard SPA shell: /dashboard and /dashboard/* paths are client-side
         # routes, not real files. The shell is split into HTML partials
@@ -9963,7 +9989,8 @@ class Default(WorkerEntrypoint):
                         pass
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
-        response = await host_object.fetch(request)
+        response = await host_object.fetch(
+            await durable_object_request(request, include_body=not is_info))
         # The named source's host is connected but stalled answering the (small,
         # idempotent) info/refs advertisement — GIT_TIMEOUT_MS elapses and its
         # host DO returns 504. The upfront liveness check above sees the live
@@ -10005,6 +10032,8 @@ class Default(WorkerEntrypoint):
             return _basic_auth_challenge()
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
+        if method_name(request) != "POST":
+            return await host_object.fetch(await durable_object_request(request))
         return await host_object.fetch(request)
 
     async def _source_has_live_host(self, owner, repo):
