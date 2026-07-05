@@ -32,12 +32,54 @@ def repo_mirror_same_group(target, record):
     # unset HEAD and so publish an empty rootCommit (issue #243); when either side
     # lacks a root, fall back to matching the repo name so such a mirror still
     # groups with its source of truth instead of vanishing from the owner's
-    # mirror-nodes list. Two differing non-empty roots mean a genuine fork with
-    # rewritten history, which stays in its own group.
+    # mirror-nodes list. If both roots are present but differ, trust a ForkMesh
+    # clone URL that points at the other row's owner/name: older mirror records
+    # could publish the wrong root while still clearly being clones of the source
+    # repo, and those must still show up and serve as live mirrors. Otherwise two
+    # differing non-empty roots mean a genuine fork with rewritten history, which
+    # stays in its own group.
+    def owner_name(rec):
+        return (
+            str((rec or {}).get("owner") or "").strip().lower(),
+            str((rec or {}).get("name") or "").strip().lower(),
+        )
+
+    def clone_target(rec):
+        raw = str((rec or {}).get("cloneUrl") or "").strip()
+        if not raw:
+            return "", ""
+        path = raw
+        if "://" in path:
+            path = path.split("://", 1)[1]
+            path = path.split("/", 1)[1] if "/" in path else ""
+        elif path.startswith("git@") and ":" in path:
+            path = path.split(":", 1)[1]
+        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2:
+            return "", ""
+        owner = parts[-2].strip().lower()
+        name = parts[-1].strip().lower()
+        if name.endswith(".git"):
+            name = name[:-4]
+        return owner, name
+
+    def clone_points_to(src, dst):
+        target_owner, target_name = clone_target(src)
+        dst_owner, dst_name = owner_name(dst)
+        return bool(
+            target_owner and target_name and dst_owner and dst_name and
+            target_owner == dst_owner and target_name == dst_name
+        )
+
     troot = str((target or {}).get("rootCommit") or "").strip().lower()
     rroot = str((record or {}).get("rootCommit") or "").strip().lower()
     if troot and rroot:
-        return troot == rroot
+        return (
+            troot == rroot or
+            clone_points_to(record, target) or
+            clone_points_to(target, record)
+        )
     tname = str((target or {}).get("name") or "").strip().lower()
     rname = str((record or {}).get("name") or "").strip().lower()
     return bool(tname) and tname == rname

@@ -47,17 +47,21 @@ NOW = 1_000_000_000_000
 STALE = 10 * 60 * 1000  # HOST_PRESENCE_STALE_MS
 
 
-def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW):
+def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW,
+         clone_url=""):
+    data = {
+        "owner": owner,
+        "name": name,
+        "visibility": visibility,
+        "rootCommit": root,
+        "lastSync": str(synced),
+    }
+    if clone_url:
+        data["cloneUrl"] = clone_url
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
-        "data": {
-            "owner": owner,
-            "name": name,
-            "visibility": visibility,
-            "rootCommit": root,
-            "lastSync": str(synced),
-        },
+        "data": data,
     }
 
 
@@ -207,6 +211,17 @@ def test_browse_excludes_private_and_forked_mirrors():
     ]
     presence = {"kS": NOW, "kP": NOW, "kF": NOW}
     assert _browse("source", "forkmesh", rows, presence) == ["source"]
+
+
+def test_browse_includes_clone_url_mirror_with_bad_legacy_root():
+    rows = [
+        _row("kS", "forkmesh", "forkmesh", root="rootA", synced=NOW - 1),
+        _row("kM", "mirror2", "forkmesh", root="wrongRoot", synced=NOW,
+             clone_url="https://forkmesh.com/forkmesh/forkmesh"),
+    ]
+    presence = {"kS": NOW, "kM": NOW}
+    assert _browse("forkmesh", "forkmesh", rows, presence) == [
+        "mirror2", "forkmesh"]
 
 
 def test_browse_empty_when_nothing_online():

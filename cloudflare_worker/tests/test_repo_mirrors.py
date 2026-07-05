@@ -99,6 +99,25 @@ def test_same_group_matches_root_then_name():
     assert not repo_mirror_same_group(rooted, {"rootCommit": "", "name": "other"})
 
 
+def test_same_group_accepts_clone_url_when_legacy_root_is_wrong():
+    source = {"owner": "forkmesh", "name": "forkmesh", "rootCommit": "abc"}
+    mirror = {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "rootCommit": "def",
+        "cloneUrl": "https://forkmesh.com/forkmesh/forkmesh",
+    }
+    assert repo_mirror_same_group(source, mirror)
+    assert repo_mirror_same_group(mirror, source)
+    fork = {
+        "owner": "other",
+        "name": "forkmesh",
+        "rootCommit": "def",
+        "cloneUrl": "https://github.com/other/forkmesh.git",
+    }
+    assert not repo_mirror_same_group(source, fork)
+
+
 def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     now = 1_000_000
     rows = [
@@ -135,6 +154,29 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["hostedSince"] == 80_000
     assert payload["mirrors"][1]["behind"] is True
     assert payload["mirrors"][1]["cloneAvailable"] is True
+
+
+def test_payload_keeps_clone_url_mirror_with_mismatched_legacy_root():
+    now = 1_000_000
+    rows = [
+        _row("a", "forkmesh", "forkmesh", root="abc", synced="990000"),
+        _row("b", "mirror2", "forkmesh", root="def", synced="995000",
+             source="remote-clone"),
+    ]
+    rows[1]["data"]["cloneUrl"] = "https://forkmesh.com/forkmesh/forkmesh"
+    payload = build_repo_mirrors_payload(
+        "forkmesh",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 2_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    assert payload["summary"]["mirrors"] == 2
+    assert [m["node"] for m in payload["mirrors"]] == ["mirror2", "forkmesh"]
 
 
 def test_payload_carries_node_facts_for_offline_mirrors():
