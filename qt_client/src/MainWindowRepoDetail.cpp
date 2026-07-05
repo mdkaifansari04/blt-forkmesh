@@ -733,6 +733,29 @@ QWidget *MainWindow::buildAboutSidebar()
     m_contributorsRow->setObjectName("statusLine");
     m_contributorsRow->setWordWrap(true);
     m_contributorsRow->setTextFormat(Qt::RichText);
+    connect(m_contributorsRow, &QLabel::linkHovered, this,
+            [this](const QString &link) {
+                if (!m_contributorsRow)
+                    return;
+                if (!link.startsWith("contributor:")) {
+                    m_contributorsRow->setToolTip(QString());
+                    return;
+                }
+                const QString payload =
+                    link.mid(QStringLiteral("contributor:").size());
+                const int sep = payload.indexOf('|');
+                const QString encodedName =
+                    (sep >= 0) ? payload.left(sep) : payload;
+                const QString countText =
+                    (sep >= 0) ? payload.mid(sep + 1) : QString();
+                const QString name =
+                    QUrl::fromPercentEncoding(encodedName.toUtf8());
+                const QString tip = countText.isEmpty()
+                                       ? name
+                                       : QStringLiteral("%1 · %2 commits")
+                                             .arg(name, countText);
+                m_contributorsRow->setToolTip(tip);
+            });
 
     // Thin hairline separators between sections for a cleaner, carded look.
     auto rule = [&side]() {
@@ -8515,9 +8538,8 @@ void MainWindow::loadAboutSidebar()
         m_contributorsHeader->setText(
             QStringLiteral("CONTRIBUTORS %1").arg(formatCount(contribs.size())));
 
-        // Round a source PNG into a rounded-rect avatar (rendered at 2x for
-        // crisp hi-dpi edges) so contributors read as soft tiles rather than
-        // hard squares. Falls back to the original bytes if decoding fails.
+        // Round a source PNG into a circular avatar (rendered at 2x for crisp
+        // hi-dpi edges), then embed it directly in the rich-text label.
         auto rounded = [](QByteArray src, int px) -> QByteArray {
             QPixmap p;
             if (!p.loadFromData(src, "PNG") || p.isNull())
@@ -8530,7 +8552,7 @@ void MainWindow::loadAboutSidebar()
             QPainter painter(&out);
             painter.setRenderHint(QPainter::Antialiasing, true);
             QPainterPath path;
-            path.addRoundedRect(0, 0, s, s, s * 0.28, s * 0.28);
+            path.addEllipse(0, 0, s, s);
             painter.setClipPath(path);
             painter.drawPixmap(0, 0, scaled);
             painter.end();
@@ -8559,9 +8581,15 @@ void MainWindow::loadAboutSidebar()
             const QString tip = (c.name + QString::fromUtf8(" \xC2\xB7 ") +
                                  QString::number(c.count) + " commits")
                                     .toHtmlEscaped();
+            const QString link = QStringLiteral("contributor:%1|%2")
+                                   .arg(QString::fromLatin1(
+                                            QUrl::toPercentEncoding(c.name)),
+                                        QString::number(c.count));
             return QStringLiteral(
-                       "<img src='data:image/png;base64,%1' width='%2' "
-                       "height='%2' title='%3'>")
+                       "<a href='%1'><img src='data:image/png;base64,%2' "
+                       "width='%3' height='%3' title='%4' "
+                       "style='border-radius:999px;'></a>")
+                .arg(link)
                 .arg(QString::fromLatin1(png.toBase64()))
                 .arg(px)
                 .arg(tip);
@@ -8570,7 +8598,7 @@ void MainWindow::loadAboutSidebar()
         QString html;
         const int shown = qMin(12, int(contribs.size()));
         for (int i = 0; i < shown; ++i)
-            html += avatarTag(contribs.at(i), 28) +
+            html += avatarTag(contribs.at(i), 32) +
                     QString::fromUtf8("&nbsp;&nbsp;");
         if (contribs.size() > shown)
             html += QStringLiteral(

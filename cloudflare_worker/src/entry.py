@@ -1532,7 +1532,23 @@ async def install_source(env):
             hosts = (status.get("hosts", 0) if isinstance(status, dict)
                      else getattr(status, "hosts", 0))
             if int(hosts or 0) > 0:
-                candidates[owner_bi] = owner
+                source_kind = str(rec.get("source") or "local-node").strip()
+                try:
+                    last_sync = int(rec.get("lastSync") or 0)
+                except (TypeError, ValueError):
+                    last_sync = 0
+                # Prefer the canonical source of truth for installs, then any
+                # other working-copy source, then mirrors. Uptime only breaks ties
+                # inside those buckets; otherwise a stale long-running mirror can
+                # beat forkmesh/forkmesh and fresh hosts clone old code.
+                priority = 2
+                if source_kind == "local-node":
+                    priority = 0 if owner == "forkmesh" else 1
+                candidates[owner_bi] = {
+                    "node": owner,
+                    "priority": priority,
+                    "lastSync": last_sync,
+                }
         except Exception:
             # A single unavailable DO must not stop another live mirror from
             # being selected.
@@ -1556,10 +1572,12 @@ async def install_source(env):
               for r in uptime_rows}
     ranked = sorted(
         (
-            {"node": node, "totalMinutes": totals.get(node_key, 0)}
-            for node_key, node in candidates.items()
+            {**item, "totalMinutes": totals.get(node_key, 0)}
+            for node_key, item in candidates.items()
         ),
-        key=lambda item: (-item["totalMinutes"], item["node"]),
+        key=lambda item: (
+            item["priority"], -item["lastSync"],
+            -item["totalMinutes"], item["node"]),
     )
     best = ranked[0]
     # Hand the installer the whole ranked list (capped), not just the top pick,

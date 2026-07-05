@@ -587,6 +587,8 @@ private:
                                 int *status);
     QJsonObject getAccountSync(const QString &leaf, int *status);
     QString accountOwner() const; // the registered account name (repo namespace)
+    QString hostLinkUserName();
+    QString hostLinkSigningAccountName(QString *userName = nullptr);
     void applyAccountEmailVerified(const QString &accountName, bool verified);
     bool accountEmailVerified(const QString &accountName) const;
     QString settingsAccountName() const;
