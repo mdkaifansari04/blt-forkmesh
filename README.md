@@ -145,9 +145,9 @@ uvx --from workers-py pywrangler dev      # local
 uvx --from workers-py pywrangler deploy   # deploy
 ```
 
-The ForkMesh deploy pipeline does not install npm packages. It uses `pywrangler`
-when the runner provides it, and otherwise fails before falling back to the PyPI
-`workers-py` deploy wrapper that shells out to `npx wrangler`.
+The ForkMesh deploy pipeline does not install npm packages. CI deploys through
+the Cloudflare HTTP API using the same `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` secrets; local development can still use `pywrangler`.
 
 Local relay testing URL:
 
@@ -208,8 +208,9 @@ root registers it so Claude Code discovers it automatically. Run
   relay stays inside a free Cloudflare plan.
 - **Repo-centric routes.** The API leads with repository identity, not generic
   room names.
-- **No heavy edge toolchains in-repo.** Cloudflare code is Python Workers +
-  `pywrangler` — no npm or TypeScript project dependencies are committed.
+- **No heavy edge toolchains in CI.** Cloudflare code is Python Workers; the
+  deploy pipeline uses Python + Cloudflare's API, with no npm or TypeScript
+  project dependencies committed or installed.
 
 ## Security Notes
 

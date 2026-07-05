@@ -6,6 +6,7 @@ cloudflare_worker/python_modules/
 .env.*
 !.env.*.example
 build-forkmesh/
+.venv/
 .git-rewrite/
 tools/__pycache__/
 

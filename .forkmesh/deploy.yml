@@ -56,4 +56,4 @@ jobs:
       - name: Deploy worker
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
-          cd cloudflare_worker && FORKMESH_NO_NODE_PACKAGES=1 ./deploy.sh
+          cd cloudflare_worker && FORKMESH_CLOUDFLARE_API_DEPLOY=1 ./deploy.sh

@@ -61,18 +61,15 @@ one deploy:
 ./deploy.sh dry-run    # validate without uploading
 ```
 
-This uses `pywrangler`. For local/manual deploys, if neither uv nor
-`pywrangler` is on PATH, the script installs `workers-py` into a local
-`.pywrangler/` venv and runs that copy automatically.
+Local/manual deploys use `pywrangler`. If neither uv nor `pywrangler` is on
+PATH, the script installs `workers-py` into a local `.pywrangler/` venv and runs
+that copy automatically.
 
-The ForkMesh build pipeline sets `FORKMESH_NO_NODE_PACKAGES=1`, so it will not
-auto-install the PyPI `workers-py` deploy wrapper. Current `pywrangler deploy`
-proxies deployment to `npx wrangler`; the pipeline must provide a `pywrangler`
-binary itself instead of pulling npm packages during the run.
-
-For manual environments that intentionally allow the Node-backed wrapper,
-`WORKERS_PY_SPEC` can select the `workers-py` version used by uv or the local
-venv.
+ForkMesh CI sets `FORKMESH_CLOUDFLARE_API_DEPLOY=1`, which uses the Python
+standard-library deployer `cf_api_deploy.py` instead of Wrangler/npm. That path
+uploads static assets through Cloudflare's assets upload session, applies D1
+migrations through the D1 query API, and uploads the Python Worker module via
+Cloudflare's multipart Worker upload API.
 
 Set `NODE_NAME` and `NODE_SOLANA_ADDRESS` in `wrangler.toml` or as dashboard
 environment variables for the health response.
