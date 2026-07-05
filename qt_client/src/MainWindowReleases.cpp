@@ -850,6 +850,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorResetPinButton->hide();
     connect(m_mirrorResetPinButton, &QPushButton::clicked, this,
             &MainWindow::resetRepoPin);
+    m_mirrorNodesOnlineOnlyCheck = new QCheckBox(QStringLiteral("Online only"));
+    m_mirrorNodesOnlineOnlyCheck->setChecked(true);
+    m_mirrorNodesOnlineOnlyCheck->setToolTip(
+        QStringLiteral("Show only mirror nodes that are online right now"));
+    connect(m_mirrorNodesOnlineOnlyCheck, &QCheckBox::toggled, this,
+            &MainWindow::loadMirrorNodesPanel);
     auto *refreshButton = new QPushButton("Refresh");
     refreshButton->setObjectName("ghostButton");
     refreshButton->setCursor(Qt::PointingHandCursor);
@@ -860,6 +866,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     headerRow->addWidget(heading);
     headerRow->addWidget(m_mirrorNodesSummary);
     headerRow->addStretch();
+    headerRow->addWidget(m_mirrorNodesOnlineOnlyCheck);
     headerRow->addWidget(m_mirrorResetPinButton);
     headerRow->addWidget(refreshButton);
     layout->addLayout(headerRow);
@@ -963,6 +970,8 @@ void MainWindow::loadMirrorNodesPanel()
     TableRepaintGuard repaintGuard(m_mirrorNodesTable);
     m_mirrorNodesTable->setSortingEnabled(false);
     m_mirrorNodesTable->setRowCount(0);
+    const bool onlineOnly =
+        !m_mirrorNodesOnlineOnlyCheck || m_mirrorNodesOnlineOnlyCheck->isChecked();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         if (m_mirrorNodesSummary)
@@ -1206,6 +1215,15 @@ void MainWindow::loadMirrorNodesPanel()
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
             continue;
+
+        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
+        const bool online = node.self ? (m_backend != nullptr) : node.online;
+        const bool integrityFailing =
+            integrityByNode.value(node.name.trimmed().toLower()) ==
+            QLatin1String("rejected");
+        if (onlineOnly && !online)
+            continue;
+
         shownNames.insert(node.name.trimmed().toLower());
         if (!node.id.isEmpty())
             shownIds.insert(node.id);
@@ -1218,11 +1236,6 @@ void MainWindow::loadMirrorNodesPanel()
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
 
-        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
-        const bool online = node.self ? (m_backend != nullptr) : node.online;
-        const bool integrityFailing =
-            integrityByNode.value(node.name.trimmed().toLower()) ==
-            QLatin1String("rejected");
         // Only online nodes normally get a dot; keep an offline one too when
         // it's failing the integrity pin, so the warning doesn't just vanish
         // from the strip (adhoc #196).
@@ -1369,24 +1382,28 @@ void MainWindow::loadMirrorNodesPanel()
             row, 8,
             makeCountCell(advert ? advert->discussionCount : -1, "discussion",
                           "discussions"));
+        m_mirrorNodesTable->setItem(
+            row, 9,
+            makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
+                          "worktrees"));
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
-        m_mirrorNodesTable->setItem(row, 9, makeCpuUsageCell(node.cpuPercent));
+        m_mirrorNodesTable->setItem(row, 10, makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 10, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+            row, 11, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
         m_mirrorNodesTable->setItem(
-            row, 11,
+            row, 12,
             makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
 
         m_mirrorNodesTable->setItem(
-            row, 12,
+            row, 13,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 13,
+            row, 14,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -1394,7 +1411,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 14, idItem);
+        m_mirrorNodesTable->setItem(row, 15, idItem);
 
         // Clones / website serves: per-node local counters. Our own row reads the
         // freshest count straight from the local tally (keyed as onRequestServed
@@ -1411,15 +1428,15 @@ void MainWindow::loadMirrorNodesPanel()
             nodeClones = s.first;
             nodeWebsite = s.second;
         }
-        m_mirrorNodesTable->setItem(row, 15,
+        m_mirrorNodesTable->setItem(row, 16,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
         m_mirrorNodesTable->setItem(
-            row, 16, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
+            row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
         // Artifacts: how many release binaries this node is hosting for download
         // in its content-addressed store (issue #304). A mirror replicates these
         // separately from git, so the count reflects what it can actually serve.
         m_mirrorNodesTable->setItem(
-            row, 17,
+            row, 18,
             makeCountCell(advert ? advert->artifactCount : -1, "artifact",
                           "artifacts"));
         ++count;
@@ -1453,6 +1470,8 @@ void MainWindow::loadMirrorNodesPanel()
                 m.value("status").toString() == QLatin1String("online");
             const bool integrityFailing =
                 m.value("integrity").toString() == QLatin1String("rejected");
+            if (onlineOnly && !online)
+                continue;
             // Only online nodes normally get a dot; keep an offline one too
             // when it's failing the integrity pin (adhoc #196).
             if (online || integrityFailing)
@@ -1513,7 +1532,7 @@ void MainWindow::loadMirrorNodesPanel()
             // Issues / commit / branch / pull / discussion counts / platform /
             // version / node id: also mirrored into the catalog record by the
             // publishing node, so they show for an offline node too (adhoc #56).
-            // Only the live CPU/RAM/disk telemetry (cols 9-11) stays unknown for
+            // Only the live CPU/RAM/disk telemetry (cols 10-12) stays unknown for
             // catalog rows — it's broadcast per heartbeat, never stored.
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
@@ -1542,18 +1561,22 @@ void MainWindow::loadMirrorNodesPanel()
                 row, 8,
                 makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
                               "discussions"));
-            for (int col : {9, 10, 11})
+            m_mirrorNodesTable->setItem(
+                row, 9,
+                makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
+                              "worktrees"));
+            for (int col : {10, 11, 12})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
-                row, 12,
+                row, 13,
                 new QTableWidgetItem(catPlatform.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catPlatform));
             const QString catVersion = m.value("version").toString();
             m_mirrorNodesTable->setItem(
-                row, 13,
+                row, 14,
                 new QTableWidgetItem(catVersion.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catVersion));
@@ -1566,19 +1589,19 @@ void MainWindow::loadMirrorNodesPanel()
                                             : QString()));
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
-            m_mirrorNodesTable->setItem(row, 14, catIdItem);
+            m_mirrorNodesTable->setItem(row, 15, catIdItem);
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
             const int catWebsite = m.value("websiteServed").toInt(-1);
             m_mirrorNodesTable->setItem(
-                row, 15, makeServeCountCell(catClones, clonesTip(catClones)));
+                row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
             m_mirrorNodesTable->setItem(
-                row, 16, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
+                row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             // Artifacts the publishing node reported hosting for download, so the
             // count shows for an offline node too.
             m_mirrorNodesTable->setItem(
-                row, 17,
+                row, 18,
                 makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
                               "artifacts"));
             ++count;
@@ -1661,7 +1684,9 @@ void MainWindow::loadMirrorNodesPanel()
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
-            "No other nodes are advertising a mirror of this repository yet.");
+            onlineOnly
+                ? "No online nodes are advertising a mirror of this repository right now."
+                : "No other nodes are advertising a mirror of this repository yet.");
         empty->setForeground(QColor("#8b949e"));
         m_mirrorNodesTable->setItem(0, 0, empty);
     }
@@ -2317,5 +2342,44 @@ QStringList MainWindow::testMirrorNodeRows() const
                     item->data(Qt::UserRole).toString());
     }
     return rows;
+}
+
+bool MainWindow::testMirrorNodesOnlineOnlyChecked() const
+{
+    return m_mirrorNodesOnlineOnlyCheck && m_mirrorNodesOnlineOnlyCheck->isChecked();
+}
+
+void MainWindow::testSetMirrorNodesOnlineOnly(bool checked)
+{
+    if (m_mirrorNodesOnlineOnlyCheck)
+        m_mirrorNodesOnlineOnlyCheck->setChecked(checked);
+}
+
+QString MainWindow::testMirrorNodeCellText(const QString &nodeName, int column) const
+{
+    if (!m_mirrorNodesTable)
+        return QString();
+    for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
+        const QTableWidgetItem *name = m_mirrorNodesTable->item(row, 0);
+        if (!name || !name->text().startsWith(nodeName))
+            continue;
+        const QTableWidgetItem *item = m_mirrorNodesTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+QString MainWindow::testMirrorNodeCellToolTip(const QString &nodeName, int column) const
+{
+    if (!m_mirrorNodesTable)
+        return QString();
+    for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
+        const QTableWidgetItem *name = m_mirrorNodesTable->item(row, 0);
+        if (!name || !name->text().startsWith(nodeName))
+            continue;
+        const QTableWidgetItem *item = m_mirrorNodesTable->item(row, column);
+        return item ? item->toolTip() : QString();
+    }
+    return QString();
 }
 #endif

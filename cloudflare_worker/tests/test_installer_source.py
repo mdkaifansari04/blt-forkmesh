@@ -43,10 +43,10 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
 
 def test_installer_uses_selected_online_node():
     result = _run_with_response(
-        '{"ok":true,"node":"newnewnode","repo":"forkmesh","totalMinutes":486}'
+        '{"ok":true,"node":"forkmesh","repo":"forkmesh","totalMinutes":486}'
     )
     assert result.returncode == 0, result.stderr
-    assert "REPO=https://forkmesh.com/newnewnode/forkmesh" in result.stdout
+    assert "REPO=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def test_installer_uses_first_of_ranked_node_list():
@@ -124,13 +124,13 @@ def test_installer_reinstall_wipes_then_continues():
     # through to the normal install (the source resolution still happens), rather
     # than exiting after the uninstall (adhoc #258).
     result = _run_prefix(
-        '{"ok":true,"node":"newnewnode","repo":"forkmesh","totalMinutes":9}',
+        '{"ok":true,"node":"forkmesh","repo":"forkmesh","totalMinutes":9}',
         {"FORKMESH_REINSTALL": "1", "FORKMESH_NO_LAUNCH": "1"},
     )
     assert result.returncode == 0, result.stderr
     assert "Reinstall requested" in result.stdout
     # It carried on into the install (resolved a source) instead of exiting.
-    assert "REPO=https://forkmesh.com/newnewnode/forkmesh" in result.stdout
+    assert "REPO=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def test_installer_echoes_owner_when_attached():

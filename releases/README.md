@@ -39,7 +39,7 @@ the publisher directly:
 
 ```sh
 tools/forkmesh-release-publish.sh \
-  --channel latest --tag v1.2.3 --repo <owner>/forkmesh \
+  --channel latest --tag v1.2.3 --repo forkmesh/forkmesh \
   --cas-dir <mirror>/forkmesh-releases \
   forkmesh-linux-x86_64
 ```
