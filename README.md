@@ -73,8 +73,8 @@ ForkMesh is well past "prototype." Here's what you can do right now:
 - QR handoffs, node profile pages, and network presence throughout.
 
 The mesh currently runs on a Cloudflare Python Worker relay (Durable Objects,
-no npm/npx/TypeScript project dependencies) and a Qt 6 desktop node — see the
-[CHANGELOG](CHANGELOG.md) for the full release-by-release story.
+no npm/TypeScript project dependencies in the repo) and a Qt 6 desktop node —
+see the [CHANGELOG](CHANGELOG.md) for the full release-by-release story.
 
 ---
 
@@ -145,6 +145,10 @@ uvx --from workers-py pywrangler dev      # local
 uvx --from workers-py pywrangler deploy   # deploy
 ```
 
+The ForkMesh deploy pipeline does not install npm packages. It uses `pywrangler`
+when the runner provides it, and otherwise fails before falling back to the PyPI
+`workers-py` deploy wrapper that shells out to `npx wrangler`.
+
 Local relay testing URL:
 
 ```text
@@ -204,8 +208,8 @@ root registers it so Claude Code discovers it automatically. Run
   relay stays inside a free Cloudflare plan.
 - **Repo-centric routes.** The API leads with repository identity, not generic
   room names.
-- **No heavy edge toolchains.** Cloudflare code is Python Workers + `pywrangler`
-  — no npm, npx, or TypeScript project dependencies.
+- **No heavy edge toolchains in-repo.** Cloudflare code is Python Workers +
+  `pywrangler` — no npm or TypeScript project dependencies are committed.
 
 ## Security Notes
 
