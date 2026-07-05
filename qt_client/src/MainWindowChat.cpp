@@ -34,7 +34,7 @@ void MainWindow::loadServers()
         if (url.isEmpty())
             continue;
         ServerConfig server;
-        server.url = url;
+        server.url = canonicalServerUrl(url);
         server.room = obj.value("room").toString(kDefaultRoomName);
         m_servers.append(server);
     }
@@ -159,6 +159,7 @@ void MainWindow::promptAddServer()
     server.url = urlEdit->text().trimmed();
     if (server.url.isEmpty())
         server.url = kDefaultServerUrl;
+    server.url = canonicalServerUrl(server.url);
     server.room = kDefaultRoomName;
     m_servers.append(server);
     const int newIndex = m_servers.size() - 1;
