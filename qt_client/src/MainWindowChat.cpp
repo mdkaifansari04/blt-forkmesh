@@ -6481,7 +6481,8 @@ QWidget *MainWindow::buildHostsSection()
         "Click Update on a saved host to re-run the installer and bring it up to "
         "the latest ForkMesh release. Click Uninstall to completely remove "
         "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Double-click a host instead to reload it into the form "
+        "that host. Click Logs to open a live SSH tail for that host. "
+        "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
     hostsHint->setWordWrap(true);
@@ -6598,6 +6599,15 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(uninstallBtn);
+        auto *viewLogsBtn = new QPushButton(QStringLiteral("Logs"));
+        viewLogsBtn->setCursor(Qt::PointingHandCursor);
+        setOcticon(viewLogsBtn, "terminal", 12);
+        connect(viewLogsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                viewHostLogsForSelection(i);
+            });
+        });
+        cellRow->addWidget(viewLogsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
 }
@@ -8017,6 +8027,198 @@ void MainWindow::loadHostIntoForm(int row, int /*column*/)
     if (m_hostInstallStatus)
         m_hostInstallStatus->setText(QString::fromUtf8(
             "Loaded \"%1\". Click Install ForkMesh to run the installer.").arg(name));
+}
+
+void MainWindow::viewHostLogsForSelection(int row)
+{
+    if (m_hostLogProcess &&
+        m_hostLogProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host log stream is already running."));
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+    loadHostIntoForm(row, 0);
+    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
+    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
+    if (ip.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Load a host row first, then click Logs."));
+        return;
+    }
+    QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
+    if (pass.isEmpty()) {
+        bool ok = false;
+        const QString entered = QInputDialog::getText(
+            this, QStringLiteral("Host SSH password"),
+            QString::fromUtf8("Enter the SSH password for %1@%2.").arg(user, ip),
+            QLineEdit::Password, QString(), &ok);
+        if (!ok || entered.isEmpty())
+            return;
+        pass = entered;
+        if (m_hostPassEdit)
+            m_hostPassEdit->setText(pass);
+    }
+    runHostLogSession(ip, user, pass, node);
+}
+
+void MainWindow::runHostLogSession(const QString &ip, const QString &user,
+                                  const QString &pass, const QString &node)
+{
+    if (m_hostLogProcess &&
+        m_hostLogProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host log stream is already running."));
+        return;
+    }
+    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Enter host IP, SSH username, password and node name."));
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(QStringLiteral("Host logs: %1").arg(node));
+    dialog->setMinimumSize(860, 520);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *status = new QLabel(
+        QString::fromUtf8("Connecting to %1 as %2 \xE2\x80\xA6").arg(ip, user));
+    status->setObjectName("mutedLabel");
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto *logView = new QPlainTextEdit;
+    logView->setObjectName("actionLog");
+    logView->setReadOnly(true);
+    logView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    logView->setMinimumHeight(420);
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    logView->setFont(mono);
+    logView->setPlaceholderText(
+        QString::fromUtf8("Remote node output starts streaming here\xE2\x80\xA6"));
+    layout->addWidget(logView, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    if (auto *closeBtn = buttons->button(QDialogButtonBox::Close))
+        closeBtn->setDefault(true);
+    layout->addWidget(buttons);
+
+    auto appendLog = [logView](const QString &text) {
+        if (!logView || text.isEmpty())
+            return;
+        QTextCursor cursor(logView->document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText(text);
+        logView->moveCursor(QTextCursor::End);
+        logView->ensureCursorVisible();
+    };
+
+    auto *proc = new QProcess(this);
+    m_hostLogProcess = proc;
+    auto stopLogStream = [this, node, ip, user, proc]() {
+        if (!proc || proc->state() == QProcess::NotRunning) {
+            if (m_hostLogProcess == proc)
+                m_hostLogProcess = nullptr;
+            return;
+        }
+        proc->terminate();
+        if (!proc->waitForFinished(250))
+            proc->kill();
+        proc->deleteLater();
+        if (m_hostLogProcess == proc)
+            m_hostLogProcess = nullptr;
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QString::fromUtf8("Stopped log stream for %1@%2 (%3).")
+                    .arg(user, ip, node));
+        }
+    };
+
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(dialog, &QDialog::finished, this, [this, stopLogStream](int) {
+        stopLogStream();
+    });
+
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("SSHPASS"), pass);
+    proc->setProcessEnvironment(env);
+
+    const auto shq = [](const QString &s) {
+        QString out = s;
+        out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
+        return QStringLiteral("'") + out + QStringLiteral("'");
+    };
+    const QString remoteLogCmd =
+        QStringLiteral(
+            "logPath=\"${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log\"; "
+            "if [ -f \"$logPath\" ]; then "
+            "  tail -n 200 -f \"$logPath\"; "
+            "elif [ -f \"$HOME/.forkmesh/node.log\" ]; then "
+            "  tail -n 200 -f \"$HOME/.forkmesh/node.log\"; "
+            "else "
+            "  echo \"No ForkMesh node log file found at $logPath or ~/.forkmesh/node.log\"; "
+            "  exit 1; "
+            "fi");
+    const QString remoteCmd = QStringLiteral("sh -lc ") + shq(remoteLogCmd);
+    const QStringList sshArgs = {
+        QStringLiteral("-e"), QStringLiteral("ssh"),
+        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
+        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+        user + QStringLiteral("@") + ip, remoteCmd};
+
+    appendLog(QStringLiteral("Attempting SSH log stream to %1@%2\n")
+                  .arg(user, ip));
+    status->setText(QString::fromUtf8("Connected — streaming logs from host..."));
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(QStringLiteral("Opening host logs..."));
+
+    connect(proc, &QProcess::readyReadStandardOutput, this,
+            [this, proc, appendLog] {
+                appendLog(QString::fromUtf8(proc->readAllStandardOutput()));
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc, appendLog, status](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart) {
+            appendLog(QString::fromUtf8(
+                "\n[error] Could not start sshpass/ssh. Install openssh-client "
+                "and sshpass on this machine and try again.\n"));
+            status->setText(
+                QString::fromUtf8("Could not start SSH session to host."));
+        }
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, ip, user, proc, status, node, appendLog](
+                int code, QProcess::ExitStatus exitStatus) {
+                if (m_hostLogProcess == proc)
+                    m_hostLogProcess = nullptr;
+                if (status)
+                    status->setText(
+                        QString::fromUtf8("Log stream ended for %1@%2.")
+                            .arg(user, ip));
+                if (code != 0 || exitStatus != QProcess::NormalExit) {
+                    appendLog(QStringLiteral(
+                        "\n[error] Stream ended with exit %1.\n").arg(code));
+                } else {
+                    appendLog(QString::fromUtf8("\n[info] Stream ended.\n"));
+                }
+                proc->deleteLater();
+            });
+
+    proc->start(QStringLiteral("sshpass"), sshArgs);
+    dialog->exec();
 }
 
 void MainWindow::addHostFromForm()

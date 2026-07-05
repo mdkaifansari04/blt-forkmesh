@@ -986,6 +986,8 @@ void MainWindow::startSession()
         // builds its mirror rows from catalog records, so without this the node
         // would host (host_presence) yet never appear in the list.
         if (registered) {
+            if (m_headless)
+                ensureFlagshipRepo();
             for (int i = 0; i < m_repositories.size(); ++i) {
                 const RepositoryRecord &r = m_repositories.at(i);
                 if (!r.previewOnly && r.publishToNetwork &&
@@ -1147,6 +1149,8 @@ void MainWindow::startSession()
             }
             m_heartbeatTimer->start();
             sendNodeHeartbeat();
+            if (m_headless)
+                QTimer::singleShot(0, this, &MainWindow::ensureFlagshipRepo);
         }
         updateNodeOnlineControls();
     }
@@ -1835,7 +1839,9 @@ void MainWindow::ensureFlagshipRepo()
                 repo.localPath.clear();
                 changed = true;
             }
-            if (repo.mirrorPath.trimmed().isEmpty()) {
+            if (repo.mirrorPath.trimmed().isEmpty() ||
+                (m_headless &&
+                 QDir::cleanPath(repo.mirrorPath) != QDir::cleanPath(canonicalMirrorPath))) {
                 repo.mirrorPath = canonicalMirrorPath;
                 changed = true;
             }
@@ -1872,7 +1878,8 @@ void MainWindow::ensureFlagshipRepo()
     }
 
     const QJsonArray repos = fetchCatalogRepos();
-    QString owner, cloneUrl;
+    QString owner = canonicalOwner;
+    QString cloneUrl = canonicalClone;
     bool ownerLive = false;
     for (const QJsonValue &v : repos) {
         const QJsonObject r = v.toObject();
@@ -1880,36 +1887,31 @@ void MainWindow::ensureFlagshipRepo()
                                                Qt::CaseInsensitive) != 0)
             continue;
         const QString candidateOwner = r.value("owner").toString();
-        if (candidateOwner.isEmpty())
+        if (candidateOwner.compare(canonicalOwner, Qt::CaseInsensitive) != 0)
             continue;
         QString candidateUrl = r.value("cloneUrl").toString().trimmed();
         if (candidateUrl.isEmpty())
-            candidateUrl = hostedCloneUrl(candidateOwner, QStringLiteral("forkmesh"));
+            candidateUrl = canonicalClone;
         if (candidateUrl.isEmpty())
             continue;
-        const bool live = r.value("liveHost").toBool();
-        // Prefer a live host; otherwise keep the first usable entry as a fallback.
-        if (live || owner.isEmpty()) {
-            owner = candidateOwner;
-            cloneUrl = candidateUrl;
-            ownerLive = live;
-        }
-        if (live)
-            break;
+        owner = canonicalOwner;
+        cloneUrl = candidateUrl;
+        ownerLive = r.value("liveHost").toBool();
+        break;
     }
-    if (owner.isEmpty() || cloneUrl.isEmpty())
+    if (cloneUrl.isEmpty())
         return;
     if (!ownerLive)
-        logSystem("No live ForkMesh host right now; mirroring " + owner +
-                  "/forkmesh anyway so it appears once a host comes online.");
+        logSystem("No live ForkMesh host right now; mirroring forkmesh/forkmesh "
+                  "through the relay so it appears once a host comes online.");
     // On a fresh install, tell the user we're pulling down the project repo and
     // jump them straight into it once the initial clone finishes (adhoc #113),
     // instead of leaving them on an empty repo list wondering what happened.
     if (m_freshInstall) {
-        m_pendingAutoOpenRepoKey = owner + "/forkmesh";
+        m_pendingAutoOpenRepoKey = canonicalOwner + "/forkmesh";
         flashMessage(QStringLiteral("Syncing the ForkMesh project repo\xE2\x80\xA6"));
     }
-    mirrorCatalogRepo(owner, QStringLiteral("forkmesh"), cloneUrl);
+    mirrorCatalogRepo(canonicalOwner, QStringLiteral("forkmesh"), cloneUrl);
 }
 
 bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &solana)
@@ -2190,6 +2192,8 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
+                        if (m_headless)
+                            ensureFlagshipRepo();
                         // Bring the live /host tunnels up now. startSession() ran
                         // startRepoHosts() back when this node had no session — a
                         // no-op then (hasActiveAccountSession() was false) — and

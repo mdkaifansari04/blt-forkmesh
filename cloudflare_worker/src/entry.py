@@ -9318,13 +9318,40 @@ class Default(WorkerEntrypoint):
         if release_blob_match:
             owner = safe_segment(release_blob_match.group(1))
             repo = safe_segment(release_blob_match.group(2))
+            sha256 = release_blob_match.group(3)
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             # Public, content-addressed download: forward to the repo's host DO,
-            # which streams the blob from a serving node over the tunnel.
+            # which streams the blob from a serving node over the tunnel. If the
+            # named source is offline or lacks that CAS blob, retry through live
+            # mirrors of the same logical repo before failing the installer.
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            return await host_object.fetch(request)
+            response = await host_object.fetch(request)
+            try:
+                status = int(response.status)
+            except Exception:
+                status = 0
+            if status in (404, 502, 503, 504):
+                failed_release_nodes = [owner]
+                for _ in range(4):
+                    fallback = await self._select_browse_mirror(
+                        owner, repo, exclude=failed_release_nodes)
+                    if not fallback or fallback.lower() == owner.lower():
+                        break
+                    try:
+                        forwarded = await self._forward_to_node(
+                            request, url, repo, fallback,
+                            "/api/repo/%s/%s/releases/blob/sha256/%s" % (
+                                fallback, repo, sha256))
+                        fstatus = int(forwarded.status)
+                    except Exception:
+                        failed_release_nodes.append(fallback)
+                        continue
+                    if fstatus not in (404, 502, 503, 504):
+                        return forwarded
+                    failed_release_nodes.append(fallback)
+            return response
 
         host_match = REPO_HOST_RE.match(url.path)
         if host_match:

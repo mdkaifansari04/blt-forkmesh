@@ -727,7 +727,7 @@ _install_binary() {
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
-  local tmp repo sums manifest canon hash url bin got
+  local tmp repo sums manifest canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest="releases/${RELEASE_CHANNEL}/release.json"
@@ -751,17 +751,26 @@ install_prebuilt_release() {
         url="${FORKMESH_HOST%/}/api/repo/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/blob/sha256/${hash}"
         bin="$tmp/asset.bin"
         say "Downloading prebuilt ${ASSET_OS}/${ASSET_ARCH} binary ($ASSET_NAME)…"
-        if curl -fsSL "$url" -o "$bin" 2>/dev/null && [ -s "$bin" ]; then
+        for attempt in 1 2; do
+          attempt_url="$url"
+          if [ "$attempt" = "2" ]; then
+            attempt_url="${url}?retry=$(date +%s)"
+          fi
+          if ! curl -fsSL -H 'Cache-Control: no-cache' "$attempt_url" -o "$bin" 2>/dev/null || [ ! -s "$bin" ]; then
+            continue
+          fi
           got="$(_sha256_file "$bin")"
           if [ -n "$got" ] && [ "$got" != "$hash" ]; then
             warn "Checksum mismatch for $ASSET_NAME (expected $hash, got $got); skipping."
+            rm -f "$bin"
+            continue
           elif _install_binary "$bin"; then
             [ -n "$got" ] || warn "No sha256 tool found; installed $ASSET_NAME unverified."
             REPO="$repo"; rm -rf "$tmp"
             say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
             return 0
           fi
-        fi
+        done
       fi
     fi
     # Legacy model: binary committed directly into releases/<channel>/.

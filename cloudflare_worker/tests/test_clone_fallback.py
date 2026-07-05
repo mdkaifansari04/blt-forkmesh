@@ -320,6 +320,20 @@ def test_browse_route_retries_a_failed_host_on_a_live_mirror():
     assert "_forward_to_node" in browse
 
 
+def test_release_blob_route_retries_live_mirrors_before_failing_install():
+    # Installer binaries are content-addressed release blobs. A source host can be
+    # offline, missing the blob, or timing out while an online mirror can serve
+    # it, so the public release route must retry the same logical repo's live
+    # mirrors before returning a 404/50x that makes install.sh fail integrity.
+    src = _route_source()
+    release = src.split("RELEASE_BLOB_RE.match(url.path)")[-1].split(
+        "host_match = REPO_HOST_RE.match", 1)[0]
+    assert "_select_browse_mirror(owner, repo, exclude=failed_release_nodes)" in release
+    assert "_forward_to_node" in release
+    assert "/api/repo/%s/%s/releases/blob/sha256/%s" in release
+    assert "(404, 502, 503, 504)" in release
+
+
 def test_select_browse_mirror_drops_the_excluded_node():
     # The retry path passes exclude=[<failed owner>, <failed mirror>];
     # _select_browse_mirror must filter every named node out of the candidate
