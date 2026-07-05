@@ -27,7 +27,8 @@ FUNCS = {
     "_account_kind", "_owned_nodes", "_generate_confirm_code", "_claim_pending",
     "_resolve_user_by_password", "_link_node_to_user", "_account_claim_node",
     "_account_claim_confirm", "_redeem_or_park_link_code", "_account_link_node",
-    "_account_link_self", "_account_link_grant", "_account_heartbeat",
+    "_account_reclaim_node", "_account_link_self", "_account_link_grant",
+    "_account_heartbeat",
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
     "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
     "_account_ownership_transfer_confirm", "_park_ownership_transfer",
@@ -106,6 +107,12 @@ def _harness(accounts):
             for name, rec in accounts.items():
                 if rec.get("email") == email:
                     return {"name_bi": "bi:" + name, "data": dict(rec)}
+            return None
+        if "FROM nodes WHERE pubkey" in sql:
+            pubkey = args[0]
+            for name, rec in accounts.items():
+                if rec.get("pubkey") == pubkey and not rec.get("pass_hash"):
+                    return {"node_bi": "bi:" + name, "data": dict(rec)}
             return None
         if "FROM link_codes" in sql:
             row = link_rows.get(args[0])
@@ -663,6 +670,66 @@ def test_link_code_rendezvous_offer_arrives_first():
     assert not ns["_link_rows"]
 
 
+def test_installer_reclaim_rehomes_owned_node_and_rotates_key_offer_first():
+    new_pubkey = "A" * 43
+    accounts = {
+        "alice": _user_rec(),
+        "oldowner": dict(_user_rec("oldowner", "old@example.com"),
+                         nodes=["mirror2"]),
+        "mirror2": dict(_node_rec("mirror2"), owner="oldowner",
+                        pubkey="old-node-key"),
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    offer = asyncio.run(ns["_account_link_node"](env, _Request(
+        {"nodeName": "alice", "code": "222333", "ts": "1", "sig": "s"})))
+    assert offer["status"] == 202
+
+    reclaim = asyncio.run(ns["_account_reclaim_node"](env, _Request(
+        {"nodeName": "mirror2", "pubkey": new_pubkey, "linkCode": "222333",
+         "ts": "1", "sig": "s"})))
+    assert reclaim["status"] == 200
+    assert reclaim["data"]["linked"] is True
+    assert reclaim["data"]["user"] == "alice"
+    assert accounts["mirror2"]["owner"] == "alice"
+    assert accounts["mirror2"]["pubkey"] == new_pubkey
+    assert accounts["alice"]["nodes"] == ["mirror2"]
+    assert accounts["oldowner"]["nodes"] == []
+    assert not ns["_link_rows"]
+
+
+def test_installer_reclaim_rehomes_owned_node_and_rotates_key_node_first():
+    new_pubkey = "B" * 43
+    accounts = {
+        "alice": _user_rec(),
+        "oldowner": dict(_user_rec("oldowner", "old@example.com"),
+                         nodes=["mirror3"]),
+        "mirror3": dict(_node_rec("mirror3"), owner="oldowner",
+                        pubkey="old-node-key"),
+    }
+    ns = _harness(accounts)
+    env = object()
+
+    reclaim = asyncio.run(ns["_account_reclaim_node"](env, _Request(
+        {"nodeName": "mirror3", "pubkey": new_pubkey, "linkCode": "333444",
+         "ts": "1", "sig": "s"})))
+    assert reclaim["status"] == 202
+    assert reclaim["data"]["pending"] is True
+    assert accounts["mirror3"]["owner"] == "oldowner"
+    assert accounts["mirror3"]["pubkey"] == "old-node-key"
+
+    offer = asyncio.run(ns["_account_link_node"](env, _Request(
+        {"nodeName": "alice", "code": "333444", "ts": "1", "sig": "s"})))
+    assert offer["status"] == 200
+    assert offer["data"]["linked"] is True
+    assert accounts["mirror3"]["owner"] == "alice"
+    assert accounts["mirror3"]["pubkey"] == new_pubkey
+    assert accounts["alice"]["nodes"] == ["mirror3"]
+    assert accounts["oldowner"]["nodes"] == []
+    assert not ns["_link_rows"]
+
+
 def test_link_offer_resolves_the_user_behind_an_owned_node():
     # An owned node's key can offer a code on behalf of its owning user; a
     # bare, unowned node account cannot confer ownership at all.
@@ -709,7 +776,7 @@ def test_wire_contracts_across_worker_qt_and_installer():
 
     # The link-offer canonical string matches on both ends.
     assert '"forkmesh-link-v1\\n" + name + "\\n" + code + "\\n" + ts' in entry
-    assert '"forkmesh-link-v1\\n" + owner + "\\n" + code + "\\n" + ts' in qt_chat
+    assert '"forkmesh-link-v1\\n" + signer + "\\n" + code + "\\n" + ts' in qt_chat
 
     # The installer's printed marker is exactly what the desktop app scans for.
     assert 'FORKMESH LINK CODE: $FORKMESH_LINK_CODE' in install
@@ -720,6 +787,10 @@ def test_wire_contracts_across_worker_qt_and_installer():
     assert 'qEnvironmentVariable("FORKMESH_LINK_CODE")' in qt_setup
     assert '"linkCode"' in qt_setup
     assert 'data.get("linkCode", "")' in entry
+    assert '"/api/accounts/reclaim-node"' in entry
+    assert '"forkmesh-reclaim-node-v1\\n" + name + "\\n" + pubkey +' in entry
+    assert 'postAccountSync(\n            "reclaim-node"' in qt_setup
+    assert '"forkmesh-reclaim-node-v1\\n" + accountName + "\\n" + pubkey +' in qt_setup
 
     # The heartbeat is the only channel that carries the claim code out.
     assert 'response["claim"]' in entry

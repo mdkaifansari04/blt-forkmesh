@@ -1989,16 +1989,66 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     if (m_accountAuthenticated && m_accountName == accountName)
         return true;
 
-    // Don't try to claim a name that already belongs to another node's key: an
-    // active account bound to a different pubkey isn't ours to register. The node
-    // keeps mirroring + chatting; it just won't host under a name it can't sign
-    // for. (A stale/abandoned reservation on another key is reclaimable — the
-    // relay's reserve step decides — so only an ACTIVE mismatch bails here.)
+    auto activateSession = [&](const QString &owner, bool emailVerified) {
+        m_accountAuthenticated = true;
+        m_accountName = accountName;
+        m_accountTier = QStringLiteral("active");
+        m_accountSolanaVerified = true;
+        m_nodeOwnerUser = owner;
+        QSettings().setValue(kAuthedAccountSetting, accountName);
+        applyAccountEmailVerified(accountName, emailVerified);
+    };
+
+    const QString linkCode =
+        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
+    static const QRegularExpression linkCodeRe(QStringLiteral("^[0-9]{6}$"));
+    auto reclaimWithInstallerLinkCode = [&]() -> bool {
+        if (!linkCodeRe.match(linkCode).hasMatch())
+            return false;
+        const QString pubkey = m_profileIdentity.publicKey();
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray canonical =
+            ("forkmesh-reclaim-node-v1\n" + accountName + "\n" + pubkey +
+             "\n" + linkCode + "\n" + ts).toUtf8();
+        int status = 0;
+        const QJsonObject resp = postAccountSync(
+            "reclaim-node",
+            QJsonObject{{"nodeName", accountName},
+                        {"pubkey", pubkey},
+                        {"linkCode", linkCode},
+                        {"ts", ts},
+                        {"sig", m_profileIdentity.signData(canonical)}},
+            &status);
+        if (status == 200 && resp.value("ok").toBool() &&
+            resp.value("linked").toBool()) {
+            activateSession(resp.value("user").toString(),
+                            resp.value("emailVerified").toBool());
+            logSystem("Account: reclaimed headless node \"" + accountName +
+                      "\" for owner \"" + m_nodeOwnerUser +
+                      "\"; its mirrors will now publish and host.");
+            return true;
+        }
+        if (status == 202 && resp.value("pending").toBool()) {
+            logSystem("Account: link code accepted for \"" + accountName +
+                      "\"; waiting for the desktop link offer before hosting.");
+        } else if (status) {
+            logSystem("Account: could not reclaim \"" + accountName +
+                      "\" with the installer link code.");
+        }
+        return false;
+    };
+
+    // Don't try to claim a name that already belongs to another node's key unless
+    // this process was launched by the Hosts installer with a link code. In that
+    // reinstall path the desktop user's signed code offer and this fresh node's
+    // new-key signature are paired by the relay to rotate the hosting key.
     int lookupStatus = 0;
     const QJsonObject lookup = getAccountSync(accountName, &lookupStatus);
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == QStringLiteral("active") &&
         lookup.value("pubkey").toString() != m_profileIdentity.publicKey()) {
+        if (reclaimWithInstallerLinkCode())
+            return true;
         logSystem("Account: \"" + accountName + "\" is registered to another "
                   "node; this headless node will keep mirroring without hosting "
                   "under that name.");
@@ -2018,14 +2068,10 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == QStringLiteral("active") &&
         lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
-        m_accountAuthenticated = true;
-        m_accountName = accountName;
-        m_accountTier = QStringLiteral("active");
-        m_accountSolanaVerified = true;
-        m_nodeOwnerUser = lookup.value("owner").toString();
-        QSettings().setValue(kAuthedAccountSetting, accountName);
-        applyAccountEmailVerified(accountName,
-                                  lookup.value("emailVerified").toBool());
+        if (reclaimWithInstallerLinkCode())
+            return true;
+        activateSession(lookup.value("owner").toString(),
+                        lookup.value("emailVerified").toBool());
         return true;
     }
 
@@ -2064,9 +2110,6 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     // machine and handed it to the daemon it launched. Presenting it at
     // registration lets the relay attach this fresh node to the user whose
     // desktop app drove the install (which offers the same code, key-signed).
-    const QString linkCode =
-        qEnvironmentVariable("FORKMESH_LINK_CODE").trimmed();
-    static const QRegularExpression linkCodeRe(QStringLiteral("^[0-9]{6}$"));
     if (linkCodeRe.match(linkCode).hasMatch())
         finalizeBody.insert(QStringLiteral("linkCode"), linkCode);
     const QJsonObject fresp = postAccountSync("finalize", finalizeBody, &fstatus);
