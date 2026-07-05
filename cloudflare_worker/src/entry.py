@@ -486,6 +486,7 @@ async def edge_cache_delete(cache_key):
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
+NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
 CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
 
 
@@ -869,6 +870,35 @@ async def online_history(env):
         {"ok": True, "hours": series, "nodes": nodes[:ONLINE_HISTORY_MAX_NODES]},
         cache_seconds=30,
     )
+
+
+async def _response_json(response):
+    try:
+        data = await response.json()
+        return data if isinstance(data, dict) else dict(data)
+    except Exception:
+        return {}
+
+
+async def network_overview(env):
+    cached = await edge_cache_match(NETWORK_OVERVIEW_CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    stats = await _response_json(await network_stats(env))
+    leaderboards = await _response_json(await network_leaderboards(env))
+    history = await _response_json(await online_history(env))
+    resp = json_response(
+        {
+            "ok": True,
+            "stats": stats,
+            "leaderboards": leaderboards,
+            "history": history,
+        },
+        cache_seconds=NETWORK_STATS_TTL,
+    )
+    await edge_cache_put(NETWORK_OVERVIEW_CACHE_KEY, resp)
+    return resp
 
 
 # --- System status page (/status) -------------------------------------------
@@ -7508,6 +7538,35 @@ async def log_error(env, status, method, path, message, ray=""):
         pass
 
 
+def _safe_error_text(error):
+    """Best-effort extraction of a readable error body from Python + JS errors."""
+    if error is None:
+        return ""
+    try:
+        message = str(error)
+        if message and message != "[object Object]":
+            return message
+    except Exception:
+        pass
+    try:
+        parts = []
+        for key in ("name", "message", "code", "stack"):
+            try:
+                value = getattr(error, key)
+            except Exception:
+                continue
+            if value is not None:
+                parts.append(str(key) + ":" + str(value))
+        if parts:
+            return "; ".join(parts)
+    except Exception:
+        pass
+    try:
+        return repr(error)
+    except Exception:
+        return "[unrenderable error]"
+
+
 # Ordered install funnel: every step the installer reports, in the order it runs.
 # Used both to validate incoming events and to render the admin funnel in order.
 INSTALL_DIAG_STEPS = (
@@ -8632,49 +8691,77 @@ class Default(WorkerEntrypoint):
         # /network/ activity graph. Best-effort — never raise from the cron
         try:
             await record_online_sample(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/record-online-sample",
+                "record_online_sample failed: " + _safe_error_text(error),
+                "",
+            )
         # Fold one health check per system into today's bucket for the public
         # /status page's 30-day history.
         try:
             await record_status_sample(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/record-status-sample",
+                "record_status_sample failed: " + _safe_error_text(error),
+                "",
+            )
         # Keep blocked phantom catalog entries (and their host presence) purged
         # even if no one loads /network/.
         try:
             await purge_blocked_catalog(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/purge-blocked-catalog",
+                "purge_blocked_catalog failed: " + _safe_error_text(error),
+                "",
+            )
         # Backstop the bounty escrow split so a funded bounty pays out to the
         # author + treasury even if no client polls its status.
         try:
             await sweep_funded_bounties(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/sweep-funded-bounties",
+                "sweep_funded_bounties failed: " + _safe_error_text(error),
+                "",
+            )
         # Central donation fund: once an hour, sweep the fund wallet out to the
         # currently-online nodes (issue #308). The interval gate inside makes the
         # per-minute cron a no-op until an hour has elapsed.
         try:
             await ensure_schema(self.env)
             await _distribute_central_fund(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/distribute-central-fund",
+                "distribute_central_fund failed: " + _safe_error_text(error),
+                "",
+            )
         # Relay federation: a federated relay registers + reports its online nodes
         # to the main relay; the main relay expires stale federated presence and
         # sweeps confirmed federated signups.
         try:
             await ensure_schema(self.env)
             await _federation_cron(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/federation-cron",
+                "federation_cron failed: " + _safe_error_text(error),
+                "",
+            )
         # Retained chat history is only pruned per-room on client join
         # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
         # gets its 7-day-old messages deleted.
         try:
             await chat_history_prune_expired(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/chat-history-prune-expired",
+                "chat_history_prune_expired failed: " + _safe_error_text(error),
+                "",
+            )
         # Email digest bridge (issue #361): roll each recipient's unread
         # notifications into one email so a reply reaches people who don't have
         # the app open. Per-recipient interval + min-age gates inside keep the
@@ -8682,8 +8769,12 @@ class Default(WorkerEntrypoint):
         # actively reading.
         try:
             await send_notification_digests(self.env)
-        except Exception:
-            pass
+        except BaseException as error:
+            await log_error(
+                self.env, 500, "scheduled", "/cron/send-notification-digests",
+                "send_notification_digests failed: " + _safe_error_text(error),
+                "",
+            )
 
     async def fetch(self, request):
         url = urlparse(request.url)
@@ -8918,6 +9009,9 @@ class Default(WorkerEntrypoint):
         # Cached aggregate stats for the homepage/network page. Served before the
         # per-repo handlers so a burst of visitors collapses to one computation
         # per colo per TTL instead of a Durable Object fan-out per page view.
+        if url.path in ("/api/network/overview", "/api/network/overview/"):
+            return await network_overview(self.env)
+
         if url.path in ("/api/network/stats", "/api/network/stats/"):
             include_payouts = parse_qs(url.query).get("payouts", [""])[0] == "1"
             return await network_stats(self.env, include_payouts=include_payouts)
