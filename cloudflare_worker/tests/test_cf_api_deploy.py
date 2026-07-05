@@ -53,6 +53,8 @@ def test_worker_upload_has_no_requirements_part():
     assert parts
     assert all(content_type == "text/x-python" for _, content_type, _ in parts)
     assert all(name != "pylock.toml" for name, _, _ in parts)
+    assert all(not name.startswith("src/") for name, _, _ in parts)
+    assert "entry.py" in {name for name, _, _ in parts}
 
 
 def test_worker_upload_omits_durable_object_migrations_by_default(monkeypatch):
@@ -61,7 +63,7 @@ def test_worker_upload_omits_durable_object_migrations_by_default(monkeypatch):
     monkeypatch.delenv("FORKMESH_API_DEPLOY_DO_MIGRATIONS", raising=False)
     monkeypatch.setattr(cf_api_deploy, "upload_assets", lambda *args: "asset-jwt")
     monkeypatch.setattr(cf_api_deploy, "apply_d1_migrations", lambda *args: None)
-    monkeypatch.setattr(cf_api_deploy, "module_parts", lambda: [])
+    monkeypatch.setattr(cf_api_deploy, "module_parts", lambda config=None: [])
 
     def fake_api_request(method, path, token, *, body=None, content_type=None):
         captured["body"] = body
@@ -81,3 +83,4 @@ def test_worker_upload_omits_durable_object_migrations_by_default(monkeypatch):
     cf_api_deploy.deploy_worker("acct", "token", config, {}, dry_run=False)
 
     assert b'"migrations"' not in captured["body"]
+    assert b'"main_module": "entry.py"' in captured["body"]

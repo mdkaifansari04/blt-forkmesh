@@ -305,10 +305,20 @@ def binding_metadata(config: dict, extra_vars: dict[str, str], assets_jwt: str) 
     return bindings
 
 
-def module_parts() -> list[tuple[str, str, bytes]]:
+def module_root(config: dict | None = None) -> Path:
+    main = (config or load_config()).get("main", "src/entry.py")
+    return ROOT / Path(main).parent
+
+
+def main_module_name(config: dict) -> str:
+    return Path(config["main"]).name
+
+
+def module_parts(config: dict | None = None) -> list[tuple[str, str, bytes]]:
+    root = module_root(config)
     parts: list[tuple[str, str, bytes]] = []
-    for path in sorted((ROOT / "src").glob("*.py")):
-        rel = path.relative_to(ROOT).as_posix()
+    for path in sorted(root.glob("*.py")):
+        rel = path.relative_to(root).as_posix()
         parts.append((rel, "text/x-python", path.read_bytes()))
     return parts
 
@@ -344,12 +354,12 @@ def deploy_worker(
     if dry_run:
         manifest, _ = build_asset_manifest(ROOT / "public")
         print(f"cf_api_deploy: would upload {len(manifest)} asset(s).")
-        print(f"cf_api_deploy: would upload {len(module_parts())} Python module part(s).")
+        print(f"cf_api_deploy: would upload {len(module_parts(config))} Python module part(s).")
         return
 
     assets_jwt = upload_assets(account_id, script_name, token)
     metadata = {
-        "main_module": config["main"],
+        "main_module": main_module_name(config),
         "compatibility_date": config["compatibility_date"],
         "compatibility_flags": config.get("compatibility_flags") or [],
         "bindings": binding_metadata(config, extra_vars, assets_jwt),
@@ -383,7 +393,7 @@ def deploy_worker(
         }
 
     fields = [("metadata", "application/json", json.dumps(metadata).encode("utf-8"), None)]
-    fields.extend((name, content_type, data, name) for name, content_type, data in module_parts())
+    fields.extend((name, content_type, data, name) for name, content_type, data in module_parts(config))
     body, content_type = multipart_body(fields)
     print(f"cf_api_deploy: uploading Worker script {script_name}.")
     api_request(
