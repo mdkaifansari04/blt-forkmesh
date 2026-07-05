@@ -695,6 +695,8 @@
       if (value) query.set(key, value);
     });
     query.set("ref", repoSelectedBranch(repo));
+    const version = repoDataVersion(repo);
+    if (version) query.set("fmv", version);
     return `${repoApiBase(repo)}/${action}?${query.toString()}`;
   }
 

@@ -7128,7 +7128,7 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
     loadAboutSidebar();
     refreshRepositoryList();
     if (repo.publishToNetwork)
-        publishRepository(index, false);
+        publishRepositoryAfterMirrorRefresh(index, false);
     logSystem(QStringLiteral("Updated About details for %1/%2.")
                   .arg(repo.owner, repo.name));
     setRepoDetailNotice(QStringLiteral("Updated repository details."));

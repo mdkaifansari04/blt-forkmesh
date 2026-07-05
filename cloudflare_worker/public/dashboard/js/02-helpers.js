@@ -196,6 +196,12 @@
     return `/api/repo/${encodeURIComponent(repo.owner || "")}/${encodeURIComponent(repo.name || "")}`;
   }
 
+  function repoDataVersion(repo) {
+    return String(
+      repo?.updatedAt || repo?.lastSync || repo?.commit || repo?.stateHash || "",
+    ).trim();
+  }
+
   function repoPathUrl(repo, kind = "tree", path = "") {
     const owner = encodeURIComponent(repo.owner || "");
     const name = encodeURIComponent(repo.name || "");
@@ -263,31 +269,53 @@
     return 0;
   }
 
-  async function fetchJson(path) {
-    const ttl = fetchJsonCacheTtl(path);
+  function cacheBustedPath(path) {
+    const url = new URL(path, location.origin);
+    url.searchParams.set("_", String(Date.now()));
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
+  async function fetchJson(path, options = {}) {
+    const fresh = options.fresh === true;
+    const baseTtl = fetchJsonCacheTtl(path);
+    const ttl = fresh ? 0 : baseTtl;
     if (!state.fetchJsonInflight) state.fetchJsonInflight = {};
     if (!state.fetchJsonCache) state.fetchJsonCache = {};
+    if (fresh) delete state.fetchJsonCache[path];
     const now = Date.now();
     const cached = ttl ? state.fetchJsonCache[path] : null;
     if (cached && cached.expiresAt > now) return cloneJson(cached.data);
-    if (state.fetchJsonInflight[path]) return cloneJson(await state.fetchJsonInflight[path]);
+    const requestPath = fresh ? cacheBustedPath(path) : path;
+    const inflightKey = fresh ? requestPath : path;
+    if (state.fetchJsonInflight[inflightKey]) {
+      return cloneJson(await state.fetchJsonInflight[inflightKey]);
+    }
 
     const pending = (async () => {
-      const response = await fetch(path, {
-        headers: { accept: "application/json" },
+      const noStore = fresh || !ttl;
+      const response = await fetch(requestPath, {
+        cache: noStore ? "no-store" : "default",
+        headers: noStore
+          ? { accept: "application/json", "cache-control": "no-cache" }
+          : { accept: "application/json" },
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
         throw new Error(data.error || `HTTP ${response.status}`);
       }
-      if (ttl) state.fetchJsonCache[path] = { data: cloneJson(data), expiresAt: Date.now() + ttl };
+      if (ttl || (fresh && baseTtl)) {
+        state.fetchJsonCache[path] = {
+          data: cloneJson(data),
+          expiresAt: Date.now() + (ttl || baseTtl),
+        };
+      }
       return data;
     })();
-    state.fetchJsonInflight[path] = pending;
+    state.fetchJsonInflight[inflightKey] = pending;
     try {
       return cloneJson(await pending);
     } finally {
-      if (state.fetchJsonInflight[path] === pending) delete state.fetchJsonInflight[path];
+      if (state.fetchJsonInflight[inflightKey] === pending) delete state.fetchJsonInflight[inflightKey];
     }
   }
 

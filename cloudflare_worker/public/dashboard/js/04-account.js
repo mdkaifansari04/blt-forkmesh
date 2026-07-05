@@ -267,7 +267,7 @@
   }
 
   async function refreshRepositories() {
-    const data = await fetchJson("/api/repositories");
+    const data = await fetchJson("/api/repositories", { fresh: true });
     renderRepositories(data.repositories, state.session);
   }
 

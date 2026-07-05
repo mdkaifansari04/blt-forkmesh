@@ -178,7 +178,10 @@
   }
 
   async function fetchRepoJson(path) {
-    const response = await fetch(path, { headers: { accept: "application/json" } });
+    const response = await fetch(path, {
+      cache: "no-store",
+      headers: { accept: "application/json", "cache-control": "no-cache" },
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
       const error = new Error(data.error || `HTTP ${response.status}`);
@@ -262,6 +265,8 @@
       if (value) query.set(key, value);
     });
     query.set("ref", repoSelectedBranch(repo));
+    const version = repoDataVersion(repo);
+    if (version) query.set("fmv", version);
     const requestedAt = performance.now();
     const data = await fetchRepoJson(`${repoApiBase(repo)}/blobs?${query.toString()}`);
     renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
@@ -1338,4 +1343,3 @@
       if (submit) submit.disabled = false;
     }
   }
-
