@@ -877,6 +877,10 @@ private:
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
+    // Open a live SSH tail of a saved host's node log file (when available).
+    void viewHostLogsForSelection(int row);
+    void runHostLogSession(const QString &ip, const QString &user,
+                          const QString &pass, const QString &node);
     // Direct-upload install (adhoc #257) against every saved host, one at a
     // time: loads each row into the form and runs runHostInstall(true, ...),
     // chaining to the next host once the previous one finishes.
@@ -2854,6 +2858,7 @@ private:
     bool m_hostInstallLogBold = false;
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
+    QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.

@@ -36,6 +36,41 @@ def test_headless_forkmesh_record_is_repaired_into_canonical_flagship():
     assert "startRepoHosts()" in body
 
 
+def test_headless_flagship_bootstrap_uses_canonical_fallback_without_catalog():
+    setup = SETUP.read_text(encoding="utf-8")
+    start = setup.index("void MainWindow::ensureFlagshipRepo()")
+    end = setup.index("bool MainWindow::ensureNodeAccount", start)
+    body = setup[start:end]
+
+    assert "QString owner = canonicalOwner" in body
+    assert "QString cloneUrl = canonicalClone" in body
+    assert "candidateOwner.compare(canonicalOwner" in body
+    assert "m_pendingAutoOpenRepoKey = canonicalOwner + \"/forkmesh\"" in body
+    assert "mirrorCatalogRepo(canonicalOwner, QStringLiteral(\"forkmesh\"), cloneUrl)" in body
+    assert "if (owner.isEmpty() || cloneUrl.isEmpty())" not in body
+
+
+def test_headless_flagship_bootstrap_runs_after_account_session_is_ready():
+    main = (ROOT / "qt_client" / "src" / "MainWindow.cpp").read_text(encoding="utf-8")
+    setup = SETUP.read_text(encoding="utf-8")
+    deferred_start = main.index("void MainWindow::runDeferredStartup()")
+    deferred_end = main.index("void MainWindow::applyTheme()", deferred_start)
+    deferred_body = main[deferred_start:deferred_end]
+    start = setup.index("void MainWindow::startSession()")
+    end = setup.index("void MainWindow::sendNodeHeartbeat()", start)
+    start_session = setup[start:end]
+    retry_start = setup.index("void MainWindow::scheduleHeadlessRegisterRetry")
+    retry_end = setup.index("bool MainWindow::verifyTotpLogin", retry_start)
+    retry_body = setup[retry_start:retry_end]
+
+    assert "if (m_headless)\n                ensureFlagshipRepo();" in start_session
+    assert "QTimer::singleShot(0, this, &MainWindow::ensureFlagshipRepo)" in start_session
+    assert "if (m_headless)\n                            ensureFlagshipRepo();" in retry_body
+    assert "Startup: checking forkmesh/forkmesh mirror bootstrap." in deferred_body
+    assert "Startup: rechecking forkmesh/forkmesh mirror bootstrap." in deferred_body
+    assert deferred_body.count("ensureFlagshipRepo();") >= 2
+
+
 def test_mirror_advert_cache_includes_namespace_and_publish_state():
     repos = REPOS.read_text(encoding="utf-8")
     start = repos.index("QString advertSig;")

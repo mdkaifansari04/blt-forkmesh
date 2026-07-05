@@ -469,6 +469,16 @@ void MainWindow::runDeferredStartup()
             if (m_stack)
                 m_stack->setCurrentIndex(1); // app shell
             startSession();
+            {
+                logSystem(QStringLiteral(
+                    "Startup: checking forkmesh/forkmesh mirror bootstrap."));
+                ensureFlagshipRepo();
+                QTimer::singleShot(10000, this, [this] {
+                    logSystem(QStringLiteral(
+                        "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
+                    ensureFlagshipRepo();
+                });
+            }
         } else if (m_stack) {
             m_stack->setCurrentIndex(0); // first run / no saved name: show setup
         }
