@@ -8623,6 +8623,7 @@ class Default(WorkerEntrypoint):
                 headers={"content-type": "text/plain; charset=utf-8"},
             )
         params = parse_qs(urlparse(request.url).query)
+        admin_query = _admin_query(params.get("admin", [""])[0])
 
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
