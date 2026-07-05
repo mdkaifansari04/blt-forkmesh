@@ -45,3 +45,11 @@ def test_asset_bucket_upload_uses_multipart_form_data(monkeypatch, tmp_path):
     assert content_type.startswith("multipart/form-data; boundary=")
     assert f'name="{digest}"'.encode("ascii") in body
     assert base64.b64encode(b"hello") in body
+
+
+def test_worker_upload_has_no_requirements_part():
+    parts = cf_api_deploy.module_parts()
+
+    assert parts
+    assert all(content_type == "text/x-python" for _, content_type, _ in parts)
+    assert all(name != "pylock.toml" for name, _, _ in parts)
