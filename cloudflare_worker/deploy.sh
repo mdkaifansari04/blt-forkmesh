@@ -559,7 +559,11 @@ case "${1:-deploy}" in
         # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
         # them) and we re-pass it every deploy, so it persists; secrets are
         # untouched. This is the marker verify_deploy checks below.
-        pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
+        if [ "${FORKMESH_CLOUDFLARE_API_DEPLOY:-0}" = "1" ]; then
+            ./cf_api_deploy.py deploy --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
+        else
+            pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
+        fi
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
         # push_secrets
@@ -595,7 +599,11 @@ case "${1:-deploy}" in
         # --dry-run still runs the [build] command (migrate.sh → remote D1), which
         # needs Cloudflare auth, so the same non-interactive guard applies.
         require_cloudflare_auth
-        pywrangler deploy --env "" --dry-run
+        if [ "${FORKMESH_CLOUDFLARE_API_DEPLOY:-0}" = "1" ]; then
+            ./cf_api_deploy.py --dry-run deploy
+        else
+            pywrangler deploy --env "" --dry-run
+        fi
         ;;
     *)
         echo "Usage: $0 [deploy|secrets|dev|dry-run]" >&2
