@@ -140,6 +140,7 @@ def _run_catalog_get(n_repos):
             "edge_cache_put": noop,
             "decrypt_row": identity,
             "_is_blocked_catalog_identity": (lambda env, o, n: False),
+            "_admin_query": (lambda admin: "admin=" + admin if admin else ""),
             "d1_all": d1_all,
             "json_response": json_response,
             "urlparse": urlparse,

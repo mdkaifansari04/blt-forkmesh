@@ -522,6 +522,25 @@ async def touch_host_presence(env, repo_bi):
         pass
 
 
+async def repo_live_host_count(env, owner, repo):
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    if not owner or not repo:
+        return None
+    try:
+        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+        host_object = env.FORKMESH_HOST.get(host_id)
+        response = await host_object.fetch(
+            f"https://forkmesh.internal/api/repo/{owner}/{repo}/host"
+        )
+        status = await response.json()
+        hosts = (status.get("hosts", 0) if isinstance(status, dict)
+                 else getattr(status, "hosts", 0))
+        return max(0, int(hosts or 0))
+    except Exception:
+        return None
+
+
 async def next_clone_rotation(env, repo_bi):
     # Advance and read back this repo's round-robin cursor so consecutive clone
     # fallbacks rotate across its mirrors instead of all hitting the freshest one.
@@ -2332,6 +2351,36 @@ async def repo_mirrors_handler(env, request, owner, repo):
         for r in presence_rows
         if r.get("repo_bi")
     }
+    now = int(Date.now())
+    owner_l = owner.strip().lower()
+    repo_l = repo.strip().lower()
+    target_rec = None
+    for row in catalog_rows:
+        rec = row.get("data") or {}
+        if (str(rec.get("owner") or "").strip().lower() == owner_l and
+                str(rec.get("name") or "").strip().lower() == repo_l):
+            target_rec = rec
+            break
+    if target_rec:
+        # The mirror page should reflect the real live tunnels, not only the
+        # D1 heartbeat row. Headless hosts can be connected while host_presence
+        # is missing or stale (for example after a DO hibernation/redeploy), and
+        # the installer source picker already treats the DO's connected-host
+        # count as ground truth. Probe only this repo's mirror group so the
+        # public sidebar agrees with the actual serving set.
+        for row in catalog_rows:
+            rec = row.get("data") or {}
+            key = str(row.get("key_bi") or "")
+            if not key or not repo_mirror_same_group(target_rec, rec):
+                continue
+            hosts = await repo_live_host_count(
+                env, rec.get("owner"), rec.get("name"))
+            if hosts is None:
+                continue
+            if hosts > 0:
+                presence[key] = now
+            else:
+                presence.pop(key, None)
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {
         str(r.get("repo_bi")): int(r.get("ts") or 0)
@@ -2352,7 +2401,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         catalog_rows,
         presence,
         first_hosted,
-        int(Date.now()),
+        now,
         HOST_PRESENCE_STALE_MS,
         5 * 1000,
         history,
