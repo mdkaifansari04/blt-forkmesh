@@ -211,7 +211,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     setOcticon(m_scmRefreshButton, "sync", 14);
     m_scmRefreshButton->setToolTip("Rescan the working tree for changes");
     connect(m_scmRefreshButton, &QPushButton::clicked, this,
-            &MainWindow::refreshSourceControl);
+            [this] { refreshSourceControl(true); });
     addRefreshSpin(m_scmRefreshButton);
 
     for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton}) {
@@ -276,6 +276,11 @@ QWidget *MainWindow::buildSourceControlPanel()
 
 void MainWindow::refreshSourceControl()
 {
+    refreshSourceControl(/*force=*/false);
+}
+
+void MainWindow::refreshSourceControl(bool force)
+{
     if (!m_scmTree)
         return;
     const QString dir = repoGitDir();
@@ -315,8 +320,9 @@ void MainWindow::refreshSourceControl()
     // Skip the full rebuild when the working tree is unchanged since the last
     // scan. This matters now that we rescan on tab focus / window activation:
     // without it, every rescan would clear the tree (losing the open diff and the
-    // selection) and flicker even when nothing moved.
-    if (out == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
+    // selection) and flicker even when nothing moved. Manual refresh skips this
+    // short-circuit via force=true.
+    if (!force && out == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
     m_scmStatusCache = out;
     m_scmDiffCache.clear(); // the tree changed, so any cached diffs are stale
@@ -2535,4 +2541,3 @@ QWidget *MainWindow::buildPlaceholderTab(const QString &name)
     layout->addStretch();
     return page;
 }
-
