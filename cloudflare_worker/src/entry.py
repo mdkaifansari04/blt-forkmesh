@@ -541,6 +541,43 @@ async def repo_live_host_count(env, owner, repo):
         return None
 
 
+async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
+                                        presence, now):
+    # host_presence is an eventually-refreshed D1 cache. For routing and the
+    # public mirror list, the DO's connected host count is the ground truth. Probe
+    # only the logical repo group for this request and patch the in-memory
+    # presence map before candidate selection.
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    if not owner_l or not repo_l:
+        return presence
+    target = None
+    for row in catalog_rows or []:
+        rec = row.get("data") or {}
+        if (str(rec.get("owner") or "").strip().lower() == owner_l and
+                str(rec.get("name") or "").strip().lower() == repo_l):
+            target = rec
+            break
+    if target is None:
+        # Fallback mirrors can still be selected by name when the named source
+        # has no catalog row yet.
+        target = {"owner": owner, "name": repo, "rootCommit": ""}
+    for row in catalog_rows or []:
+        rec = row.get("data") or {}
+        key = str(row.get("key_bi") or "")
+        if not key or not repo_mirror_same_group(target, rec):
+            continue
+        hosts = await repo_live_host_count(
+            env, rec.get("owner"), rec.get("name"))
+        if hosts is None:
+            continue
+        if hosts > 0:
+            presence[key] = now
+        else:
+            presence.pop(key, None)
+    return presence
+
+
 async def next_clone_rotation(env, repo_bi):
     # Advance and read back this repo's round-robin cursor so consecutive clone
     # fallbacks rotate across its mirrors instead of all hitting the freshest one.
@@ -2352,35 +2389,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
         if r.get("repo_bi")
     }
     now = int(Date.now())
-    owner_l = owner.strip().lower()
-    repo_l = repo.strip().lower()
-    target_rec = None
-    for row in catalog_rows:
-        rec = row.get("data") or {}
-        if (str(rec.get("owner") or "").strip().lower() == owner_l and
-                str(rec.get("name") or "").strip().lower() == repo_l):
-            target_rec = rec
-            break
-    if target_rec:
-        # The mirror page should reflect the real live tunnels, not only the
-        # D1 heartbeat row. Headless hosts can be connected while host_presence
-        # is missing or stale (for example after a DO hibernation/redeploy), and
-        # the installer source picker already treats the DO's connected-host
-        # count as ground truth. Probe only this repo's mirror group so the
-        # public sidebar agrees with the actual serving set.
-        for row in catalog_rows:
-            rec = row.get("data") or {}
-            key = str(row.get("key_bi") or "")
-            if not key or not repo_mirror_same_group(target_rec, rec):
-                continue
-            hosts = await repo_live_host_count(
-                env, rec.get("owner"), rec.get("name"))
-            if hosts is None:
-                continue
-            if hosts > 0:
-                presence[key] = now
-            else:
-                presence.pop(key, None)
+    presence = await hydrate_repo_group_live_hosts(
+        env, owner, repo, catalog_rows, presence, now)
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {
         str(r.get("repo_bi")): int(r.get("ts") or 0)
@@ -9469,13 +9479,6 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            source_ts = presence.get(repo_bi) or 0
-            source_online = bool(
-                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS) and not force
-            # Fast path: the named host is live, so serve it directly (and skip the
-            # catalog decrypt entirely) — never redirect away from an online source.
-            if source_online:
-                return None
             rows = await d1_all(
                 self.env,
                 "SELECT key_bi, data, is_private FROM repositories WHERE is_private = 0")
@@ -9492,6 +9495,14 @@ class Default(WorkerEntrypoint):
                     "is_private": int(row.get("is_private") or 0),
                     "data": rec,
                 })
+            presence = await hydrate_repo_group_live_hosts(
+                self.env, owner, repo, catalog_rows, presence, now)
+            source_ts = presence.get(repo_bi) or 0
+            source_online = bool(
+                source_ts and now - source_ts <= HOST_PRESENCE_STALE_MS) and not force
+            # Fast path: the named host is live, so serve it directly.
+            if source_online:
+                return None
             rotate = await next_clone_rotation(self.env, repo_bi)
             return select_clone_fallback(
                 owner, repo, catalog_rows, presence, now,
@@ -9540,6 +9551,8 @@ class Default(WorkerEntrypoint):
                     "is_private": int(row.get("is_private") or 0),
                     "data": rec,
                 })
+            presence = await hydrate_repo_group_live_hosts(
+                self.env, owner, repo, catalog_rows, presence, now)
             candidates = browse_mirror_candidates(
                 owner, repo, catalog_rows, presence, now, HOST_PRESENCE_STALE_MS)
             if exclude:
@@ -9609,6 +9622,24 @@ class Default(WorkerEntrypoint):
                     # Best-effort: fall through to the normal route (which may
                     # still mirror-fallback) rather than take the request down.
                     pass
+            if is_info:
+                serving = await self._select_browse_mirror(owner, repo)
+                if serving and serving.lower() != owner.lower():
+                    forwarded = None
+                    try:
+                        forwarded = await self._forward_to_node(
+                            request, url, repo, serving,
+                            "/%s/%s/info/refs" % (serving, repo))
+                        fstatus = int(forwarded.status)
+                    except Exception:
+                        fstatus = 0
+                    if forwarded is not None and \
+                            fstatus not in (0, 502, 503, 504):
+                        await self._set_clone_pin(owner, repo, serving)
+                        return forwarded
+                    await self._set_clone_pin(owner, repo, None)
+                else:
+                    await self._set_clone_pin(owner, repo, None)
             if not await self._source_has_live_host(owner, repo):
                 serving = await self._sticky_clone_fallback(
                     owner, repo, refresh=is_info)
@@ -9808,6 +9839,24 @@ class Default(WorkerEntrypoint):
             # held"), not an exception.
             "body": Uint8Array.new(_to_js(body)),
         })))
+
+    async def _set_clone_pin(self, owner, repo, serving):
+        try:
+            await ensure_schema(self.env)
+            repo_bi = await blind_index(self.env, owner + "/" + repo)
+            if serving and serving.lower() != owner.lower():
+                await d1_run(
+                    self.env,
+                    "INSERT INTO clone_sticky (repo_bi, owner, ts) VALUES (?,?,?) "
+                    "ON CONFLICT(repo_bi) DO UPDATE SET "
+                    "owner=excluded.owner, ts=excluded.ts",
+                    repo_bi, serving, int(Date.now()),
+                )
+            else:
+                await d1_run(
+                    self.env, "DELETE FROM clone_sticky WHERE repo_bi=?", repo_bi)
+        except Exception:
+            pass
 
     async def _sticky_clone_fallback(self, owner, repo, refresh):
         # Which mirror serves owner/repo's clones while its named node is down.

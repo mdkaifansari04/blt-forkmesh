@@ -365,6 +365,7 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
     }
     handler, *_ = _load(
         "repo_mirrors_handler",
+        "hydrate_repo_group_live_hosts",
         "method_name",
         "_mirror_ms",
         "repo_mirror_group_key",

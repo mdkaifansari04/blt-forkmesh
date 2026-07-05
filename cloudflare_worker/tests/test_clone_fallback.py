@@ -426,6 +426,19 @@ def test_clone_falls_back_when_source_has_no_live_host_despite_fresh_presence():
     assert "status=302" not in src  # same-URL serving, no redirects
 
 
+def test_public_clone_info_refs_round_robins_to_live_mirrors():
+    # Public clone info/refs should use the same live mirror rotation as website
+    # browse, then pin the successful mirror so the upload-pack POST follows the
+    # same node. A failed mirror advertisement clears the stale pin and falls
+    # through instead of poisoning the second clone leg.
+    src = _worker_method_source("_git_host")
+    assert "_select_browse_mirror(owner, repo)" in src
+    assert "/%s/%s/info/refs" in src
+    assert "_set_clone_pin(owner, repo, serving)" in src
+    assert "_set_clone_pin(owner, repo, None)" in src
+    assert "(0, 502, 503, 504)" in src
+
+
 def test_clone_falls_back_when_a_live_source_stalls_info_refs():
     # A connected-but-stalled host answers info/refs with a 504 (GIT_TIMEOUT_MS
     # elapses in its host DO). The upfront liveness check sees the live socket
@@ -514,3 +527,13 @@ def test_select_clone_fallback_force_overrides_stale_presence():
     src = _worker_method_source("_select_clone_fallback")
     assert "force=False" in src
     assert "not force" in src  # source_online is ANDed with `not force`
+
+
+def test_browse_and_clone_selection_hydrate_live_host_counts():
+    # Routing must not depend only on host_presence. A connected hibernating
+    # headless host can have a missing/stale D1 row, so both selectors patch the
+    # candidate map from the repo host DO's connected-host count first.
+    clone_src = _worker_method_source("_select_clone_fallback")
+    browse_src = _worker_method_source("_select_browse_mirror")
+    assert "hydrate_repo_group_live_hosts" in clone_src
+    assert "hydrate_repo_group_live_hosts" in browse_src
