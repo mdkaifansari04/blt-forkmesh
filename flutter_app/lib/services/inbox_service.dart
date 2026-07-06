@@ -378,6 +378,46 @@ class InboxService {
     });
   }
 
+  // ---- thread subscriptions -----------------------------------------------
+
+  /// [source] is "issue" or "pull". This signs the Worker/mainnode thread
+  /// subscription contract so replies can fan out into the notification inbox.
+  Future<void> setThreadSubscription(
+    String owner,
+    String name, {
+    required String node,
+    required String source,
+    required int number,
+    required bool subscribed,
+  }) async {
+    final cleanNode = node.trim().toLowerCase();
+    if (cleanNode.isEmpty) {
+      throw ArgumentError.value(node, 'node', 'expected account node name');
+    }
+    if (source != 'issue' && source != 'pull') {
+      throw ArgumentError.value(source, 'source', 'expected issue or pull');
+    }
+    if (number <= 0) {
+      throw ArgumentError.value(
+        number,
+        'number',
+        'expected positive thread number',
+      );
+    }
+    final ts = '$_now';
+    final canonical =
+        'forkmesh-subscribe-v1\n$owner/$name\n$source\n$number\n${subscribed ? '1' : '0'}\n$ts';
+    final sig = await _sign(canonical);
+    await _post(_repoEndpoint(owner, name, 'subscribe'), {
+      'node': cleanNode,
+      'source': source,
+      'number': number,
+      'subscribed': subscribed,
+      'ts': ts,
+      'sig': sig,
+    });
+  }
+
   // ---- transport ----------------------------------------------------------
 
   Future<void> _post(Uri uri, Map<String, dynamic> body) async {
