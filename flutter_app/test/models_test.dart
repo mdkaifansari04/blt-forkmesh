@@ -190,6 +190,9 @@ void main() {
     expect(commit?.initialTab, RepoDetailTab.commits);
     expect(commit?.reference, 'abc123');
 
+    final agents = NotificationDeepLink.parse('/mona/forkmesh/agents');
+    expect(agents?.initialTab, RepoDetailTab.agents);
+
     expect(
       NotificationDeepLink.parse('https://evil.test/mona/forkmesh'),
       isNull,

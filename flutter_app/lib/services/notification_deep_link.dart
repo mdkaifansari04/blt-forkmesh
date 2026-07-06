@@ -1,6 +1,15 @@
 import '../models/models.dart';
 
-enum RepoDetailTab { code, issues, pulls, discussions, commits, mirrors, about }
+enum RepoDetailTab {
+  code,
+  issues,
+  pulls,
+  discussions,
+  commits,
+  mirrors,
+  about,
+  agents,
+}
 
 class NotificationDeepLink {
   const NotificationDeepLink({
@@ -58,6 +67,8 @@ class NotificationDeepLink {
           tab = RepoDetailTab.mirrors;
         case 'about':
           tab = RepoDetailTab.about;
+        case 'agents':
+          tab = RepoDetailTab.agents;
         case 'tree':
         case 'blob':
         case 'raw':

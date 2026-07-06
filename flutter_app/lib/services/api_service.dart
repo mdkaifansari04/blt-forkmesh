@@ -161,6 +161,42 @@ class ApiService {
     });
   }
 
+  Future<List<AgentSession>> agentSessions(
+    String owner,
+    String name, {
+    String ownerAccount = '',
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$name/agents/list'), {
+      if (ownerAccount.trim().isNotEmpty)
+        'ownerAccount': ownerAccount.trim().toLowerCase(),
+    });
+    final raw = data is Map<String, dynamic>
+        ? _asList(data)
+        : data is List
+        ? data
+        : const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => AgentSession.fromJson(Map<String, dynamic>.from(item)))
+        .toList();
+  }
+
+  Future<AgentTranscript> agentTranscript(
+    String owner,
+    String name,
+    int id, {
+    String ownerAccount = '',
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/agents/$id/transcript'), {
+          if (ownerAccount.trim().isNotEmpty)
+            'ownerAccount': ownerAccount.trim().toLowerCase(),
+        });
+    return AgentTranscript.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(
@@ -613,6 +649,7 @@ class ApiService {
         'tree',
         'data',
         'items',
+        'agents',
       ]) {
         if (data[key] is List) return data[key] as List;
       }
