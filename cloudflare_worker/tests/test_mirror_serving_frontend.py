@@ -69,7 +69,7 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
     # mirror-owned remote clones, the card/detail URL identity is inferred from
     # cloneUrl while the mirror rows remain aliases for direct route lookup.
     transformed = DASHBOARD_JS.replace(
-        "  applyDashboardTheme(readDashboardTheme());\n  init();",
+        "  applyDashboardTheme(readDashboardTheme());\n  renderLongDiffPreference();\n  init();",
         """  globalThis.__dashboardExports = {
     state,
     groupRepositories,
@@ -201,3 +201,13 @@ def test_served_by_badge_includes_serving_node_counters():
     # The tree/blob request may set servedBy before /mirrors has loaded; after
     # counters arrive, refresh the badge so it gains clone and website counts.
     assert "renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs)" in mirrors
+
+
+def test_live_mirror_rows_show_node_version_under_name():
+    rows = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderMirrorRow(mirror, servedBy)")
+        : DASHBOARD_JS.index("function renderRepoLiveMirrorList(")
+    ]
+    assert "mirror.version || mirror.appVersion || mirror.clientVersion" in rows
+    assert 'rawVersion[0].toLowerCase() === "v"' in rows
+    assert "block min-w-0 truncate text-[10px] text-muted-foreground font-mono" in rows
