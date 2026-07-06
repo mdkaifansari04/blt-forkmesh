@@ -105,6 +105,9 @@ class Issue {
     this.body = '',
     this.author = '',
     this.labels = const [],
+    this.milestone = '',
+    this.priority = 0,
+    this.assignees = const [],
     this.events = const [],
     this.votes = 0,
     this.bountyUsd = 0,
@@ -116,6 +119,9 @@ class Issue {
   final String body;
   final String author;
   final List<String> labels;
+  final String milestone;
+  final int priority;
+  final List<String> assignees;
   final List<IssueEvent> events;
   final int votes;
   final double bountyUsd;
@@ -133,6 +139,11 @@ class Issue {
       author: (j['author'] ?? '').toString(),
       labels:
           (j['labels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      milestone: (j['milestone'] ?? '').toString(),
+      priority: asInt(j['priority']),
+      assignees:
+          (j['assignees'] as List?)?.map((e) => e.toString()).toList() ??
+          const [],
       events:
           (j['events'] as List?)
               ?.whereType<Map>()

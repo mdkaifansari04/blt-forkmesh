@@ -415,6 +415,14 @@ class ApiService {
     List<IssueEvent> events = const [],
   }) {
     final meta = _frontMatter(md);
+    List<String> metaList(String key) => (meta[key] ?? '')
+        .replaceAll('[', '')
+        .replaceAll(']', '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
     final title = meta['title'] ?? _firstHeading(md) ?? 'Issue #$number';
     final status =
         meta['status'] ?? (md.contains('status: closed') ? 'closed' : 'open');
@@ -424,13 +432,10 @@ class ApiService {
       status: status,
       body: _bodyWithoutFrontMatter(md),
       author: meta['authorName'] ?? meta['author'] ?? '',
-      labels: (meta['labels'] ?? '')
-          .replaceAll('[', '')
-          .replaceAll(']', '')
-          .split(',')
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(),
+      labels: metaList('labels'),
+      milestone: meta['milestone'] ?? '',
+      priority: int.tryParse(meta['priority'] ?? '') ?? 0,
+      assignees: metaList('assignees'),
       events: events,
       votes: events.where((event) => event.type == 'vote').length,
       bountyUsd: double.tryParse(meta['bountyUsd'] ?? '') ?? 0,

@@ -96,6 +96,9 @@ title: Stabilize signed inbox
 status: open
 authorName: Alice
 labels: [mobile, signed]
+milestone: v2 mobile
+priority: 4
+assignees: [mona, kai]
 bountyUsd: 150
 ---
 Mobile should make signed collaboration clear.''',
@@ -135,6 +138,9 @@ ts: 10
 
     expect(issues.single.title, 'Stabilize signed inbox');
     expect(issues.single.labels, ['mobile', 'signed']);
+    expect(issues.single.milestone, 'v2 mobile');
+    expect(issues.single.priority, 4);
+    expect(issues.single.assignees, ['mona', 'kai']);
     expect(issues.single.votes, 2);
     expect(issues.single.bountyUsd, 150);
   });
