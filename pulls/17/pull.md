@@ -20,4 +20,3 @@ Validation:
 - cd qt_client && ./run.sh test passed
 
 Scope: qt_client only.
-
