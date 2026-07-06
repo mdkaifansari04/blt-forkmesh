@@ -27,6 +27,7 @@ class AuthSession {
     this.deviceKind = '',
     this.desktopCapable = false,
     this.capabilities = const [],
+    this.devices = const [],
   });
 
   final String nodeName;
@@ -45,11 +46,15 @@ class AuthSession {
   final String deviceKind;
   final bool desktopCapable;
   final List<String> capabilities;
+  final List<AccountDevice> devices;
 
   bool get canSubmitIssue => capabilities.contains('submit_issue');
   bool get canSubmitPr => capabilities.contains('submit_pr');
   bool get canHost => capabilities.contains('host_repo');
   bool get canPublish => capabilities.contains('publish_repo');
+  List<AccountDevice> get desktopDevices => devices
+      .where((device) => device.kind == 'desktop_node' && device.enabled)
+      .toList();
 
   factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
     nodeName: '${json['nodeName'] ?? json['name'] ?? ''}',
@@ -70,6 +75,15 @@ class AuthSession {
     capabilities: (json['capabilities'] is List)
         ? (json['capabilities'] as List).map((e) => '$e').toList()
         : const [],
+    devices: (json['devices'] is List)
+        ? (json['devices'] as List)
+              .whereType<Map>()
+              .map(
+                (item) =>
+                    AccountDevice.fromJson(Map<String, dynamic>.from(item)),
+              )
+              .toList()
+        : const [],
   );
 
   Map<String, dynamic> toJson() => {
@@ -89,12 +103,94 @@ class AuthSession {
     'deviceKind': deviceKind,
     'desktopCapable': desktopCapable,
     'capabilities': capabilities,
+    'devices': devices.map((device) => device.toJson()).toList(),
   };
 
   static int _asInt(dynamic value) {
     if (value is int) return value;
     if (value is num) return value.toInt();
     return int.tryParse('$value') ?? 0;
+  }
+}
+
+class AccountDevice {
+  const AccountDevice({
+    required this.id,
+    required this.pubkey,
+    required this.kind,
+    required this.label,
+    required this.capabilities,
+    required this.enabled,
+    required this.lastSeen,
+  });
+
+  final String id;
+  final String pubkey;
+  final String kind;
+  final String label;
+  final List<String> capabilities;
+  final bool enabled;
+  final int lastSeen;
+
+  bool get canOwnerSign => capabilities.contains('owner_sign');
+  bool get canHost => capabilities.contains('host_repo');
+  bool get canPublish => capabilities.contains('publish_repo');
+
+  String get displayName => label.trim().isNotEmpty
+      ? label.trim()
+      : kind == 'desktop_node'
+      ? 'Desktop node'
+      : 'Mobile client';
+
+  String get kindLabel => switch (kind) {
+    'desktop_node' => 'Desktop node',
+    'mobile_client' => 'Mobile client',
+    _ => 'Device',
+  };
+
+  String get statusLabel => !enabled
+      ? 'Disabled'
+      : canOwnerSign
+      ? 'Ready for signed controls'
+      : 'Browse only';
+
+  String get capabilityLabel {
+    final labels = <String>[];
+    if (canHost) labels.add('Host repo');
+    if (canPublish) labels.add('Publish repo');
+    if (canOwnerSign) labels.add('Owner signing');
+    if (labels.isEmpty) labels.addAll(capabilities.map(_capabilityTitle));
+    return labels.isEmpty ? 'No capabilities' : labels.join(' · ');
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'pubkey': pubkey,
+    'kind': kind,
+    'label': label,
+    'capabilities': capabilities,
+    'enabled': enabled,
+    'lastSeen': lastSeen,
+  };
+
+  factory AccountDevice.fromJson(Map<String, dynamic> json) => AccountDevice(
+    id: '${json['id'] ?? ''}',
+    pubkey: '${json['pubkey'] ?? ''}',
+    kind: '${json['kind'] ?? ''}',
+    label: '${json['label'] ?? ''}',
+    capabilities: (json['capabilities'] is List)
+        ? (json['capabilities'] as List).map((e) => '$e').toList()
+        : const [],
+    enabled: json['enabled'] != false,
+    lastSeen: AuthSession._asInt(json['lastSeen'] ?? json['last_seen']),
+  );
+
+  static String _capabilityTitle(String raw) {
+    final words = raw.split('_').where((word) => word.isNotEmpty).toList();
+    if (words.isEmpty) return raw;
+    return words
+        .map((word) => word[0].toUpperCase() + word.substring(1))
+        .join(' ');
   }
 }
 
