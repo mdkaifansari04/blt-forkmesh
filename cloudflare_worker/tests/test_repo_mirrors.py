@@ -179,6 +179,42 @@ def test_payload_keeps_clone_url_mirror_with_mismatched_legacy_root():
     assert [m["node"] for m in payload["mirrors"]] == ["mirror2", "forkmesh"]
 
 
+def test_payload_uses_clone_url_canonical_target_when_source_row_is_absent():
+    # The source-of-truth node can intentionally be offline and absent from the
+    # catalog. A mirror-only group still belongs under the cloneUrl namespace, so
+    # /api/repo/mainnode/forkmesh/mirrors must resolve even when only
+    # remote-clone rows owned by mirror nodes exist.
+    now = 1_000_000
+    rows = [
+        _row("b", "mirror3", "forkmesh", root="abc", synced="995000",
+             source="remote-clone"),
+        _row("c", "mirror4", "forkmesh", root="abc", synced="990000",
+             source="remote-clone"),
+        _row("d", "other", "forkmesh", root="abc", synced="999000",
+             source="remote-clone"),
+    ]
+    rows[0]["data"]["cloneUrl"] = "https://forkmesh.com/mainnode/forkmesh"
+    rows[1]["data"]["cloneUrl"] = "https://forkmesh.com/mainnode/forkmesh.git"
+    rows[2]["data"]["cloneUrl"] = "https://forkmesh.com/other/forkmesh"
+
+    payload = build_repo_mirrors_payload(
+        "mainnode",
+        "forkmesh",
+        rows,
+        {"b": now - 1_000, "c": now - 2_000, "d": now - 500},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    assert payload["ok"] is True
+    assert payload["owner"] == "mainnode"
+    assert payload["repo"] == "forkmesh"
+    assert payload["summary"]["mirrors"] == 2
+    assert [m["node"] for m in payload["mirrors"]] == ["mirror3", "mirror4"]
+
+
 def test_payload_carries_node_facts_for_offline_mirrors():
     # A node mirrors its latest commit / issue count / platform / version / id into
     # its catalog record, so the Mirror nodes view can show those columns even while

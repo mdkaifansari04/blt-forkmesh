@@ -48,13 +48,14 @@ STALE = 10 * 60 * 1000  # HOST_PRESENCE_STALE_MS
 
 
 def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW,
-         clone_url=""):
+         clone_url="", source="local-node"):
     data = {
         "owner": owner,
         "name": name,
         "visibility": visibility,
         "rootCommit": root,
         "lastSync": str(synced),
+        "source": source,
     }
     if clone_url:
         data["cloneUrl"] = clone_url
@@ -242,6 +243,23 @@ def test_browse_round_robin_walks_every_online_mirror():
     assert sorted(cands) == ["alpha", "bravo", "source"]
     picks = [cands[i % len(cands)] for i in range(6)]
     assert set(picks) == set(cands)  # every online node gets served
+
+
+def test_browse_round_robin_is_unchanged_for_mirror_only_source_namespace():
+    # The source namespace may be absent/offline while mirror rows advertise that
+    # they were cloned from it. Website browse must still rotate across the
+    # online mirrors serving /mainnode/forkmesh instead of collapsing to one.
+    rows = [
+        _row("kA", "mirror3", "forkmesh", source="remote-clone",
+             clone_url="https://forkmesh.com/mainnode/forkmesh"),
+        _row("kB", "mirror4", "forkmesh", source="remote-clone",
+             clone_url="https://forkmesh.com/mainnode/forkmesh.git"),
+    ]
+    presence = {"kA": NOW, "kB": NOW}
+    cands = _browse("mainnode", "forkmesh", rows, presence)
+    assert sorted(cands) == ["mirror3", "mirror4"]
+    picks = [cands[i % len(cands)] for i in range(4)]
+    assert picks == cands + cands
 
 
 def _route_source():

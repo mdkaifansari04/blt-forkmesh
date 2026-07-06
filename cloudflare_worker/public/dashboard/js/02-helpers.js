@@ -150,6 +150,111 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
+  function normalizeRepoSegment(value) {
+    const text = String(value || "").trim();
+    return /^[A-Za-z0-9._:-]+$/.test(text) ? text : "";
+  }
+
+  function safeDecodeURIComponent(value) {
+    try {
+      return decodeURIComponent(value);
+    } catch (_) {
+      return String(value || "");
+    }
+  }
+
+  function parseCloneUrlIdentity(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    let path = raw;
+    try {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
+        path = new URL(path).pathname;
+      } else if (path.startsWith("/") && typeof location !== "undefined") {
+        path = new URL(path, location.origin).pathname;
+      } else if (path.startsWith("git@") && path.includes(":")) {
+        path = path.slice(path.indexOf(":") + 1);
+      }
+    } catch (_) {}
+    path = path.split("?")[0].split("#")[0].replace(/^\/+|\/+$/g, "");
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const owner = normalizeRepoSegment(safeDecodeURIComponent(parts[parts.length - 2] || ""));
+    let name = normalizeRepoSegment(safeDecodeURIComponent(parts[parts.length - 1] || ""));
+    if (name.toLowerCase().endsWith(".git")) {
+      name = normalizeRepoSegment(name.slice(0, -4));
+    }
+    return owner && name ? { owner, name } : null;
+  }
+
+  function repoCanonicalIdentity(repo) {
+    const source = String(repo?.source || "").trim();
+    if (source === "remote-clone") {
+      const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
+      if (parsed) return parsed;
+    }
+    return {
+      owner: String(repo?.owner || "").trim(),
+      name: String(repo?.name || "").trim(),
+    };
+  }
+
+  function repoCanonicalKey(repo) {
+    const id = repoCanonicalIdentity(repo);
+    return `${id.owner || ""}/${id.name || ""}`;
+  }
+
+  function repoAliasKeys(members, canonical) {
+    const aliases = new Set();
+    const add = (key) => {
+      const text = String(key || "").trim().toLowerCase();
+      if (text && text.includes("/")) aliases.add(text);
+    };
+    add(repoKey(canonical));
+    add(repoCanonicalKey(canonical));
+    (members || []).forEach((member) => {
+      add(repoKey(member));
+      add(repoCanonicalKey(member));
+    });
+    return [...aliases];
+  }
+
+  function canonicalRepoFromGroup(primary, members) {
+    const all = Array.isArray(members) ? members : [];
+    const local = all.find((m) => (m.source || "").trim() === "local-node");
+    if (local) {
+      return { ...local, _repoAliases: repoAliasKeys(all, local) };
+    }
+    const mirror = all.find((m) =>
+      (m.source || "").trim() === "remote-clone" && parseCloneUrlIdentity(m.cloneUrl));
+    const base = mirror || primary || all[0] || {};
+    const id = repoCanonicalIdentity(base);
+    const canonical = {
+      ...base,
+      owner: id.owner || base.owner || "",
+      name: id.name || base.name || "",
+      canonicalOwner: id.owner || "",
+      canonicalName: id.name || "",
+      servingOwner: base.owner || "",
+      servingName: base.name || "",
+    };
+    if ((base.owner || "") !== canonical.owner || (base.name || "") !== canonical.name) {
+      canonical.liveHost = false;
+      canonical.cloneOnline = Boolean(base.cloneOnline ?? base.liveHost);
+    }
+    canonical._repoAliases = repoAliasKeys(all, canonical);
+    return canonical;
+  }
+
+  function repoMatchesKey(repo, key) {
+    const wanted = String(key || "").trim().toLowerCase();
+    if (!wanted) return false;
+    if (repoKey(repo).toLowerCase() === wanted || repoCanonicalKey(repo).toLowerCase() === wanted) {
+      return true;
+    }
+    return Array.isArray(repo?._repoAliases) && repo._repoAliases.includes(wanted);
+  }
+
   function repoGroupKey(repo) {
     const root = (repo?.rootCommit || "").trim();
     return root ? "root:" + root : "name:" + (repo?.name || "").trim().toLowerCase();
@@ -184,12 +289,17 @@
         if (!!b.liveHost !== !!a.liveHost) return (b.liveHost ? 1 : 0) - (a.liveHost ? 1 : 0);
         return (b.lastSync || 0) > (a.lastSync || 0) ? 1 : -1;
       });
-      return { primary: sorted[0], members: sorted };
+      const group = { primary: sorted[0], members: sorted };
+      group.source = canonicalRepoFromGroup(group.primary, group.members);
+      return group;
     });
   }
 
   function sourceOfTruth(group) {
-    return group.members.find((m) => (m.source || "").trim() === "local-node") || group.primary;
+    const canonical = group.source || canonicalRepoFromGroup(group.primary, group.members);
+    return (canonical.owner || canonical.name)
+      ? canonical
+      : group.members.find((m) => (m.source || "").trim() === "local-node") || group.primary;
   }
 
   function repoApiBase(repo) {
