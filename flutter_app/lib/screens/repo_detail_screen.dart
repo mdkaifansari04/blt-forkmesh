@@ -288,6 +288,61 @@ T? _firstWhereOrNull<T>(Iterable<T> items, bool Function(T item) test) {
   return null;
 }
 
+Future<void> _requestDesktopCommand(
+  BuildContext context,
+  ApiService api,
+  Repository repo, {
+  required String command,
+  required String target,
+  required Map<String, Object?> payload,
+  required String successMessage,
+  String failureMessage = 'Desktop request was not queued.',
+}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final auth = context.read<AuthService?>();
+    final identity = context.read<Identity?>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    if (session == null || identity == null || account.isEmpty) {
+      throw Exception(
+        'Sign in with the repo owner account to request desktop control.',
+      );
+    }
+    if (account != repo.owner.trim().toLowerCase()) {
+      throw Exception(
+        'Only the repo owner can request desktop control for this repo.',
+      );
+    }
+    if (session.pubkey.trim() != identity.publicKeyB64url) {
+      throw Exception(
+        'Pair this mobile device with the owner key before requesting desktop control.',
+      );
+    }
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    final canonical =
+        'forkmesh-desktop-command-v1\n${repo.owner}\n${repo.name}\n$command\n$target\n$ts';
+    final sig = await identity.sign(utf8.encode(canonical));
+    final result = await api.desktopCommand(
+      repo.owner,
+      repo.name,
+      ownerAccount: account,
+      command: command,
+      target: target,
+      ts: ts,
+      sig: sig,
+      payload: payload,
+    );
+    if (!context.mounted) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.ok ? successMessage : failureMessage)),
+    );
+  } catch (error) {
+    if (!context.mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('$error')));
+  }
+}
+
 Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
   final inbox = context.read<InboxService>();
   final title = TextEditingController();
@@ -1295,57 +1350,19 @@ class _ActionRunDetailScreen extends StatelessWidget {
   final _ActionReadProof proof;
 
   Future<void> _requestRerun(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final auth = context.read<AuthService?>();
-      final identity = context.read<Identity?>();
-      final session = auth?.session;
-      final account = session?.nodeName.trim().toLowerCase() ?? '';
-      if (session == null || identity == null || account.isEmpty) {
-        throw Exception(
-          'Sign in with the repo owner account to request desktop control.',
-        );
-      }
-      if (account != repo.owner.trim().toLowerCase()) {
-        throw Exception(
-          'Only the repo owner can request desktop control for this repo.',
-        );
-      }
-      if (session.pubkey.trim() != identity.publicKeyB64url) {
-        throw Exception(
-          'Pair this mobile device with the owner key before requesting desktop control.',
-        );
-      }
-      final target = 'run:${run.id}';
-      final ts = DateTime.now().millisecondsSinceEpoch.toString();
-      final canonical =
-          'forkmesh-desktop-command-v1\n${repo.owner}\n${repo.name}\naction.rerun\n$target\n$ts';
-      final sig = await identity.sign(utf8.encode(canonical));
-      final result = await api.desktopCommand(
-        repo.owner,
-        repo.name,
-        ownerAccount: account,
-        command: 'action.rerun',
-        target: target,
-        ts: ts,
-        sig: sig,
-        payload: {
-          'runId': run.id,
-          if (run.workflowPath.isNotEmpty) 'workflowPath': run.workflowPath,
-        },
-      );
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            result.ok
-                ? 'Desktop request queued. Approve it on the Qt desktop node to rerun.'
-                : 'Desktop request was not queued.',
-          ),
-        ),
-      );
-    } catch (error) {
-      messenger.showSnackBar(SnackBar(content: Text('$error')));
-    }
+    await _requestDesktopCommand(
+      context,
+      api,
+      repo,
+      command: 'action.rerun',
+      target: 'run:${run.id}',
+      payload: {
+        'runId': run.id,
+        if (run.workflowPath.isNotEmpty) 'workflowPath': run.workflowPath,
+      },
+      successMessage:
+          'Desktop request queued. Approve it on the Qt desktop node to rerun.',
+    );
   }
 
   @override
@@ -2918,6 +2935,25 @@ class _PullDetailScreen extends StatelessWidget {
   final Repository repo;
   final PublishedPull pull;
 
+  bool get _canRequestMerge => pull.status.trim().toLowerCase() == 'open';
+
+  Future<void> _requestMerge(BuildContext context) async {
+    await _requestDesktopCommand(
+      context,
+      context.read<ApiService>(),
+      repo,
+      command: 'pull.merge',
+      target: 'pull:${pull.number}',
+      payload: {
+        'pullNumber': pull.number,
+        if (pull.base.isNotEmpty) 'base': pull.base,
+        if (pull.head.isNotEmpty) 'head': pull.head,
+      },
+      successMessage:
+          'Merge request queued. Approve it on the Qt desktop node to merge PR #${pull.number}.',
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text('PR #${pull.number}')),
@@ -2966,6 +3002,24 @@ class _PullDetailScreen extends StatelessWidget {
         _InfoCard(
           title: 'Timeline',
           children: [_PullTimeline(pull: pull)],
+        ),
+        const SizedBox(height: 12),
+        _InfoCard(
+          title: 'Merge on desktop',
+          children: [
+            Text(
+              _canRequestMerge
+                  ? 'Queue a signed merge request. The desktop node will verify and run the Git merge with the repo owner approving locally.'
+                  : 'This pull request is ${pull.status}; merge requests are only available for open PRs.',
+              style: TextStyle(color: FmTheme.textSecondary(context)),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _canRequestMerge ? () => _requestMerge(context) : null,
+              icon: const Icon(Icons.call_merge_outlined),
+              label: const Text('Request merge on desktop'),
+            ),
+          ],
         ),
         const SizedBox(height: 12),
         _InfoCard(

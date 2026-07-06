@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/models/models.dart';
@@ -13,6 +15,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class CollaborationApiService extends ApiService {
   CollaborationApiService(super.settings);
+
+  final commandRequests = <Map<String, Object?>>[];
+
+  @override
+  Future<DesktopCommandResult> desktopCommand(
+    String owner,
+    String name, {
+    required String ownerAccount,
+    required String command,
+    required String target,
+    required String ts,
+    required String sig,
+    Map<String, Object?> payload = const {},
+  }) async {
+    commandRequests.add({
+      'owner': owner,
+      'name': name,
+      'ownerAccount': ownerAccount,
+      'command': command,
+      'target': target,
+      'ts': ts,
+      'sig': sig,
+      'payload': payload,
+    });
+    return const DesktopCommandResult(ok: true, queued: 1);
+  }
 
   @override
   Future<List<RepoBranch>> branches(String owner, String name) async => [
@@ -276,6 +304,33 @@ class RecordingInboxService extends InboxService {
   }
 }
 
+Future<AuthService> _ownerAuth(
+  SettingsService settings,
+  Identity identity,
+) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(
+    'auth/session',
+    jsonEncode(
+      AuthSession(
+        nodeName: 'owner',
+        email: 'owner@example.com',
+        status: 'active',
+        pubkey: identity.publicKeyB64url,
+        emailVerified: true,
+        isAdmin: false,
+        solana: '',
+        hasPayoutAddress: false,
+        avatarPng: '',
+        avatarUpdatedAt: 0,
+        createdAt: 1,
+        savedAt: 1,
+      ).toJson(),
+    ),
+  );
+  return AuthService(settings, identity, prefs);
+}
+
 void main() {
   testWidgets('issue detail can subscribe and unsubscribe from thread alerts', (
     tester,
@@ -340,6 +395,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Subscribe thread'), findsOneWidget);
+    await tester.ensureVisible(find.text('Subscribe thread'));
     await tester.tap(find.text('Subscribe thread'));
     await tester.pumpAndSettle();
 
@@ -349,12 +405,51 @@ void main() {
     expect(inbox.subscriptionSubscribed, isTrue);
     expect(find.text('Unsubscribe thread'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Unsubscribe thread'));
     await tester.tap(find.text('Unsubscribe thread'));
     await tester.pumpAndSettle();
 
     expect(inbox.subscriptionCount, 2);
     expect(inbox.subscriptionSubscribed, isFalse);
     expect(find.text('Subscribe thread'), findsOneWidget);
+  });
+
+  testWidgets('pull detail queues signed desktop merge request', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final auth = await _ownerAuth(settings, identity);
+    final api = CollaborationApiService(settings);
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, api, inbox: inbox, identity: identity, auth: auth);
+
+    await tester.tap(find.text('Pulls'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add signed review flow'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Request merge on desktop'), findsOneWidget);
+    expect(
+      find.textContaining('desktop node will verify and run the Git merge'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Request merge on desktop'));
+    await tester.pumpAndSettle();
+
+    expect(api.commandRequests.single['command'], 'pull.merge');
+    expect(api.commandRequests.single['target'], 'pull:7');
+    expect(api.commandRequests.single['ownerAccount'], 'owner');
+    expect((api.commandRequests.single['ts'] as String).isNotEmpty, isTrue);
+    expect((api.commandRequests.single['sig'] as String).isNotEmpty, isTrue);
+    expect(api.commandRequests.single['payload'], {
+      'pullNumber': 7,
+      'base': 'main',
+      'head': 'review/mobile',
+    });
+    expect(find.textContaining('Merge request queued'), findsOneWidget);
   });
 
   testWidgets('thread alert control is disabled without account signing key', (
