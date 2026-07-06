@@ -230,6 +230,12 @@ double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens = nullptr,
                         qint64 *outTokens = nullptr);
 QString mirrorHeadBranch(const QString &mirrorPath);
 QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch);
+struct MirrorBranchTip {
+    QString branch;
+    QString commit;
+};
+MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
+                                       const QString &workTree);
 QString actionStatusText(const QString &status);
 QColor actionStatusColor(const QString &status);
 void logStartup(const QString &phase);
@@ -259,6 +265,8 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
+bool longDiffsPref();
+void setLongDiffsPref(bool on);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
 QString diffStickyStyleSheet(int fontPt);

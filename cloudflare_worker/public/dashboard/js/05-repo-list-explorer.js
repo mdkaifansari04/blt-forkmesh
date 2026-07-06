@@ -200,12 +200,37 @@
     window.lucide?.createIcons();
   }
 
+  function renderSidebarRepositories(session) {
+    const list = $("[data-sidebar-repo-list]");
+    const count = $("[data-sidebar-repo-count]");
+    const groups = Array.isArray(state.filteredGroups)
+      ? state.filteredGroups
+      : groupRepositories(state.repositories || []);
+    if (count) count.textContent = formatCount(groups.length);
+    if (!list) return;
+    if (!groups.length) {
+      list.innerHTML = '<div class="rounded-md border border-border bg-background px-2.5 py-2 text-xs text-muted-foreground">No mirrored repositories yet.</div>';
+      return;
+    }
+    list.innerHTML = groups.slice(0, 12).map((group) => {
+      const repo = sourceOfTruth(group);
+      const key = repoKey(repo);
+      const live = repoIsLive(repo);
+      return `
+        <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" role="link" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+          <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
+          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+        </button>`;
+    }).join("");
+  }
+
   function applyRepositoryFilter() {
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
       repositoryMatchesQuery(repo, query));
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
+    renderSidebarRepositories();
   }
 
   function renderRepositories(repositories, session) {

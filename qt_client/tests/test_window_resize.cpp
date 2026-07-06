@@ -33,6 +33,12 @@ namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
 QString agentModelLabel(const QString &model);
+struct MirrorBranchTip {
+    QString branch;
+    QString commit;
+};
+MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
+                                       const QString &workTree);
 }
 } // namespace forkmesh
 
@@ -164,6 +170,34 @@ bool runGitChecked(const QString &repoDir, const QStringList &arguments)
     return runProcessChecked(QStringLiteral("git"), arguments, repoDir);
 }
 
+QString runProcessOutput(const QString &program, const QStringList &arguments,
+                         const QString &workingDir)
+{
+    QProcess process;
+    if (!workingDir.isEmpty())
+        process.setWorkingDirectory(workingDir);
+    process.start(program, arguments);
+    if (!process.waitForFinished(10000)) {
+        qCritical().noquote()
+            << "FAIL: timed out:" << quotedCommand(program, arguments);
+        ++failures;
+        return {};
+    }
+    if (process.exitCode() != 0) {
+        qCritical().noquote()
+            << "FAIL:" << quotedCommand(program, arguments)
+            << QString::fromUtf8(process.readAllStandardError()).trimmed();
+        ++failures;
+        return {};
+    }
+    return QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+}
+
+QString gitOutput(const QString &repoDir, const QStringList &arguments)
+{
+    return runProcessOutput(QStringLiteral("git"), arguments, repoDir);
+}
+
 bool initGitRepo(QTemporaryDir &repo)
 {
     if (!repo.isValid()) {
@@ -287,6 +321,34 @@ int main(int argc, char *argv[])
     MainWindow window;
     window.show();
     QApplication::processEvents();
+
+    QTemporaryDir primaryBranchRepo;
+    QTemporaryDir primaryMirrorParent;
+    if (initGitRepo(primaryBranchRepo) && primaryMirrorParent.isValid()) {
+        const QString mainCommit =
+            gitOutput(primaryBranchRepo.path(), {"rev-parse", "main"});
+        runGitChecked(primaryBranchRepo.path(), {"checkout", "-b", "feature/current"});
+        runGitChecked(primaryBranchRepo.path(),
+                      {"commit", "--allow-empty", "-m", "feature current"});
+        const QString featureCommit =
+            gitOutput(primaryBranchRepo.path(), {"rev-parse", "feature/current"});
+        const QString mirrorPath =
+            QDir(primaryMirrorParent.path()).filePath(QStringLiteral("repo.git"));
+        runProcessChecked(QStringLiteral("git"),
+                          {"clone", "--mirror", primaryBranchRepo.path(), mirrorPath},
+                          QString());
+
+        const forkmesh::ui::MirrorBranchTip tip =
+            forkmesh::ui::mirrorPrimaryBranchTip(mirrorPath,
+                                                 primaryBranchRepo.path());
+        check(mainCommit.size() == 40 && featureCommit.size() == 40 &&
+                  mainCommit != featureCommit,
+              QStringLiteral("test repo has distinct main and checked-out feature commits"));
+        check(tip.branch == QStringLiteral("main"),
+              QStringLiteral("mirror primary tip reports main, not checked-out branch"));
+        check(tip.commit == mainCommit,
+              QStringLiteral("mirror primary tip uses the latest main commit"));
+    }
 
     QTemporaryDir upstreamRepo;
     QTemporaryDir upstreamRemote;

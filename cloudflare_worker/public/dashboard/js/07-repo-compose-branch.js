@@ -272,8 +272,9 @@
       </div>`).join("");
   }
 
-  function renderRepoCommitDiff(diff, imageDiffs) {
+  function renderRepoCommitDiff(diff, imageDiffs, key = "") {
     if (!String(diff || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual diff is available for this commit.</div>';
+    if (!shouldRenderLongDiff(diff, key)) return renderLongDiffNotice("commit diff", key, diff);
     return `<div data-repo-commit-diff>${renderDiffFiles(parseDiffFiles(diff), imageDiffs)}</div>`;
   }
 
@@ -304,10 +305,9 @@
           </div>
           <div data-repo-commit-files>${renderRepoCommitFiles(data.files)}</div>
         </section>
-        ${data.truncated ? '<div data-repo-commit-truncated class="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">Large diff truncated by the live desktop host.</div>' : '<div data-repo-commit-truncated class="hidden"></div>'}
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Diff</div>
-          ${renderRepoCommitDiff(data.diff, data.imageDiffs)}
+          ${renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)}
         </section>
       </article>`;
   }
@@ -318,6 +318,7 @@
     container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commit from the live mirror...</div>';
     try {
       const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
+      state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Commit detail is unavailable until a live desktop host serves this commit.</div>';

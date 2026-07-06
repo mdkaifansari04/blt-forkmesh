@@ -522,6 +522,14 @@
                         </button>
                       </div>
                       <p data-appearance-theme-status aria-live="polite" class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
+                      <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                        <input data-long-diff-toggle type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                        <span>
+                          <span class="block font-medium text-foreground">Render long diffs automatically</span>
+                          <span class="mt-1 block leading-4">Off by default so commit and PR pages stay snappy. Hidden diffs still include a Show full diff button.</span>
+                          <span data-long-diff-status class="mt-1 block text-[11px] text-muted-foreground">Large diffs stay collapsed until you open them.</span>
+                        </span>
+                      </label>
                     </div>
                   </section>
 

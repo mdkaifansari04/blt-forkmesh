@@ -196,6 +196,42 @@ QString mirrorBranchCommit(const QString &mirrorPath, const QString &branch)
     return QString();
 }
 
+MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
+                                       const QString &workTree)
+{
+    auto commitForBranch = [&](const QString &branch) -> QString {
+        if (branch.trimmed().isEmpty())
+            return QString();
+        QString commit = worktreeBranchCommit(workTree, branch);
+        if (commit.isEmpty())
+            commit = mirrorBranchCommit(mirrorPath, branch);
+        return commit;
+    };
+
+    for (const QString &preferred : {QStringLiteral("main"),
+                                     QStringLiteral("master")}) {
+        const QString commit = commitForBranch(preferred);
+        if (!commit.isEmpty())
+            return {preferred, commit};
+    }
+
+    const QString servedBranch = mirrorHeadBranch(mirrorPath);
+    QString servedCommit = mirrorBranchCommit(mirrorPath, servedBranch);
+    if (!servedCommit.isEmpty()) {
+        const QString sourceCommit = worktreeBranchCommit(workTree, servedBranch);
+        return {servedBranch, sourceCommit.isEmpty() ? servedCommit : sourceCommit};
+    }
+
+    const QString headBranch = worktreeHeadBranch(workTree);
+    QString headCommit = worktreeBranchCommit(workTree, headBranch);
+    if (headCommit.isEmpty())
+        headCommit = worktreeHeadCommit(workTree);
+    if (!headCommit.isEmpty())
+        return {headBranch, headCommit};
+
+    return {};
+}
+
 QString actionStatusText(const QString &status)
 {
     if (status == ActionStatus::AwaitingApproval) return QStringLiteral("Awaiting approval");
@@ -1242,6 +1278,18 @@ bool diffSplitPref()
 void setDiffSplitPref(bool split)
 {
     QSettings().setValue(QStringLiteral("view/diffSplit"), split);
+}
+
+// User preference (persisted): render very large diffs automatically.
+// Defaults off so opening a huge PR/commit does not immediately lay out a large
+// QTextDocument on the GUI thread. Individual notices still offer "Show full diff".
+bool longDiffsPref()
+{
+    return QSettings().value(QStringLiteral("view/longDiffs"), false).toBool();
+}
+void setLongDiffsPref(bool on)
+{
+    QSettings().setValue(QStringLiteral("view/longDiffs"), on);
 }
 
 // User preference (persisted): automatically mark a pull request's files as

@@ -1399,14 +1399,6 @@ QJsonObject RepoHost::buildCommitReply(const QString &hash) const
             imageDiffs.append(image);
     }
 
-    // Keep the single tunnel frame bounded; the web view notes truncation.
-    constexpr int kMaxDiffBytes = 600 * 1024;
-    bool truncated = false;
-    if (diff.size() > kMaxDiffBytes) {
-        diff = diff.left(kMaxDiffBytes);
-        truncated = true;
-    }
-
     QJsonObject commit{{"hash", full},
                        {"author", QString::fromUtf8(mf.value(1))},
                        {"date", QString::fromUtf8(mf.value(2))},
@@ -1417,7 +1409,7 @@ QJsonObject RepoHost::buildCommitReply(const QString &hash) const
             {"commit", commit},
             {"files", files},
             {"imageDiffs", imageDiffs},
-            {"truncated", truncated},
+            {"truncated", false},
             {"diff", QString::fromUtf8(diff)}};
 }
 

@@ -3115,24 +3115,14 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     // into per-file blocks and stream them in: paint enough to fill the viewport
     // now (so the commit shows immediately), then append the rest a batch at a
     // time off the event loop, keeping the window responsive while it fills in
-    // (adhoc #51). A truly pathological diff (a huge generated/vendored file) is
-    // still refused past a hard ceiling, to stay mindful of memory.
+    // (adhoc #51).
     constexpr int kStreamDiffHtmlChars = 1'000'000;  // stream, don't block, above this
-    constexpr int kMaxDiffHtmlChars = 8'000'000;     // refuse entirely above this
     constexpr int kFirstPaintChars = 250'000;        // fill the viewport synchronously
     if (html.isEmpty()) {
         setDiffHtml(m_branchDiffView,
             QStringLiteral("<p style='color:#8b949e'>%1</p>")
                 .arg(emptyMessage.toHtmlEscaped()));
-    } else if (html.size() > kMaxDiffHtmlChars) {
-        setDiffHtml(m_branchDiffView,
-            QStringLiteral(
-                "<p style='color:#d29922'>This diff is too large to render here "
-                "(%1 file%2). Use the changed-files list, or view the branch in "
-                "your editor.</p>")
-                .arg(files.size())
-                .arg(files.size() == 1 ? "" : "s"));
-    } else if (html.size() > kStreamDiffHtmlChars) {
+    } else if (html.size() > kStreamDiffHtmlChars && longDiffsPref()) {
         QStringList blocks = splitDiffFileBlocks(html);
         QString firstChunk;
         while (!blocks.isEmpty() &&
@@ -4126,4 +4116,3 @@ void MainWindow::setDiffViewed(const QString &context, const QString &path, bool
     QSettings().setValue(QStringLiteral("diffViewed/") + scope,
                          QStringList(set.begin(), set.end()));
 }
-

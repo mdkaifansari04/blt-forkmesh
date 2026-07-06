@@ -2350,8 +2350,9 @@ QWidget *MainWindow::buildRepoActionsTab()
         "border-radius:6px; padding:8px;");
     m_actionApprovalBanner->hide();
 
-    m_actionDiff = new QTextEdit;
+    m_actionDiff = new QTextBrowser;
     m_actionDiff->setReadOnly(true);
+    m_actionDiff->setOpenExternalLinks(false);
     m_actionDiff->setLineWrapMode(QTextEdit::NoWrap);
     m_actionDiff->setFontFamily(QStringLiteral("monospace"));
     m_actionDiff->hide();
