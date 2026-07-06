@@ -1,25 +1,25 @@
-From 41b29fc8c9678ea3fdda894c89372994de6f2bfe Mon Sep 17 00:00:00 2001
+From a563cf72dd361a1520fa75eea9f0abd410cbcedb Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Tue, 7 Jul 2026 00:15:33 +0530
 Subject: [PATCH] Fix Qt client responsive layout
 
 ---
  qt_client/src/MainWindow.h             | 10 +++
- qt_client/src/MainWindowActions.cpp    | 15 ++--
- qt_client/src/MainWindowAgents.cpp     |  7 +-
- qt_client/src/MainWindowChat.cpp       | 83 +++++++++++++++++++----
- qt_client/src/MainWindowIssues.cpp     | 29 +++++---
- qt_client/src/MainWindowRepoDetail.cpp | 62 ++++++++++++-----
- qt_client/src/MainWindowSetup.cpp      | 60 +++++++++++++++-
+ qt_client/src/MainWindowActions.cpp    | 14 ++--
+ qt_client/src/MainWindowAgents.cpp     |  6 +-
+ qt_client/src/MainWindowChat.cpp       | 82 ++++++++++++++++++----
+ qt_client/src/MainWindowIssues.cpp     | 28 +++++---
+ qt_client/src/MainWindowRepoDetail.cpp | 66 ++++++++++++------
+ qt_client/src/MainWindowSetup.cpp      | 59 ++++++++++++++++
  qt_client/src/Theme.h                  | 12 ++--
  qt_client/tests/test_window_resize.cpp | 94 +++++++++++++++++++++++++-
- 9 files changed, 309 insertions(+), 63 deletions(-)
+ 9 files changed, 310 insertions(+), 61 deletions(-)
 
 diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
-index c066b25f..60b03402 100644
+index 130d81df..9c470754 100644
 --- a/qt_client/src/MainWindow.h
 +++ b/qt_client/src/MainWindow.h
-@@ -213,6 +213,11 @@ public:
+@@ -214,6 +214,11 @@ public:
      using TestIssueHistoryDeleteRunner =
          std::function<bool(int number, QString *error)>;
      void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
@@ -31,7 +31,7 @@ index c066b25f..60b03402 100644
      // Sets the live roster directly (skipping setRoster's side effects, e.g.
      // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
      // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
-@@ -296,6 +301,10 @@ public:
+@@ -297,6 +302,10 @@ public:
      void testStopRepoHosts() { stopRepoHosts(); }
      void testShowPublishBar(bool on);
      int testRepoTabContentTop(); // y of the tab content within the window
@@ -42,7 +42,7 @@ index c066b25f..60b03402 100644
      QString testRepoGitDir() const { return repoGitDir(); }
      int testRepoHostCount() const { return m_repoHosts.size(); }
      void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
-@@ -369,6 +378,7 @@ public:
+@@ -378,6 +387,7 @@ public:
      {
          m_agentSessions.append(session);
      }
@@ -51,10 +51,10 @@ index c066b25f..60b03402 100644
      // the branches list names the issue/agent a branch is attached to (adhoc #191).
      QString testBranchAttachmentText(const QString &branch) const;
 diff --git a/qt_client/src/MainWindowActions.cpp b/qt_client/src/MainWindowActions.cpp
-index 7cc86865..cf9d4986 100644
+index 9464a1dd..1ec65553 100644
 --- a/qt_client/src/MainWindowActions.cpp
 +++ b/qt_client/src/MainWindowActions.cpp
-@@ -1405,8 +1405,7 @@ void MainWindow::positionRepoPushButton()
+@@ -1407,8 +1407,7 @@ void MainWindow::positionRepoPushButton()
  {
      if (!m_repoPushButton || !m_repoCodeTab)
          return;
@@ -64,7 +64,7 @@ index 7cc86865..cf9d4986 100644
      if (!page)
          return;
      if (m_repoPushButton->parentWidget() != page)
-@@ -1484,8 +1483,7 @@ void MainWindow::positionLooperToggle()
+@@ -1486,8 +1485,7 @@ void MainWindow::positionLooperToggle()
  {
      if (!m_looperToggle || !m_repoIssuesTab)
          return;
@@ -74,7 +74,7 @@ index 7cc86865..cf9d4986 100644
      if (!page)
          return;
      if (m_looperToggle->parentWidget() != page)
-@@ -1493,7 +1491,7 @@ void MainWindow::positionLooperToggle()
+@@ -1495,7 +1493,7 @@ void MainWindow::positionLooperToggle()
      const int w = m_looperToggle->sizeHint().width();
      const int h = m_looperToggle->sizeHint().height();
      const QPoint tl = m_repoIssuesTab->mapTo(page, QPoint(0, 0));
@@ -83,7 +83,7 @@ index 7cc86865..cf9d4986 100644
      int y = tl.y() - h - 1; // the meta band above the tab row
      if (y < 0)
          y = 0;
-@@ -1527,8 +1525,7 @@ void MainWindow::positionMirrorActivityStrip()
+@@ -1529,8 +1527,7 @@ void MainWindow::positionMirrorActivityStrip()
      auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
      if (!strip || !m_repoMirrorsTab)
          return;
@@ -93,7 +93,7 @@ index 7cc86865..cf9d4986 100644
      if (!page)
          return;
      if (strip->parentWidget() != page)
-@@ -1567,8 +1564,7 @@ void MainWindow::positionReleaseStrip()
+@@ -1569,8 +1566,7 @@ void MainWindow::positionReleaseStrip()
  {
      if (!m_releaseStrip || !m_repoReleasesTab)
          return;
@@ -103,16 +103,11 @@ index 7cc86865..cf9d4986 100644
      if (!page)
          return;
      if (m_releaseStrip->parentWidget() != page)
-@@ -2673,4 +2669,3 @@ void MainWindow::persistVariablesFromTable()
- {
-     // Variables are written directly in add/edit/delete; nothing to flush here.
- }
--
 diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
-index e3a7181b..0eb59ffb 100644
+index 0dca7b29..eed6e609 100644
 --- a/qt_client/src/MainWindowAgents.cpp
 +++ b/qt_client/src/MainWindowAgents.cpp
-@@ -380,7 +380,7 @@ QWidget *MainWindow::buildAgentsTab()
+@@ -382,7 +382,7 @@ QWidget *MainWindow::buildAgentsTab()
      auto *page = new QWidget;
  
      auto *listPane = new QWidget;
@@ -121,7 +116,7 @@ index e3a7181b..0eb59ffb 100644
      auto *heading = new QLabel("Agent sessions");
      heading->setObjectName("channelTitle");
      auto *headingRow = new QHBoxLayout;
-@@ -1144,7 +1144,7 @@ QWidget *MainWindow::buildAgentsTab()
+@@ -1146,7 +1146,7 @@ QWidget *MainWindow::buildAgentsTab()
      detailPane->hide();
  
      auto *splitter = new QSplitter(Qt::Horizontal);
@@ -130,7 +125,7 @@ index e3a7181b..0eb59ffb 100644
      // Non-opaque resize: dragging the divider tracks a lightweight rubber-band
      // line and the panes only resize once, on release. With opaque resize (the
      // Qt default) every mouse-move re-lays-out the detail pane, whose transcript
-@@ -1153,6 +1153,8 @@ QWidget *MainWindow::buildAgentsTab()
+@@ -1155,6 +1155,8 @@ QWidget *MainWindow::buildAgentsTab()
      splitter->setOpaqueResize(false);
      splitter->addWidget(listPane);
      splitter->addWidget(detailPane);
@@ -139,26 +134,21 @@ index e3a7181b..0eb59ffb 100644
      splitter->setStretchFactor(0, 1);
      splitter->setStretchFactor(1, 1);
      // Equal split so the divider sits in the middle of the screen (issue #85).
-@@ -7204,4 +7206,3 @@ void MainWindow::updateAgentActionState()
-             selected && !aiFixBusy && session && !session->branchName.isEmpty()
-             && !isExternalSession(m_selectedAgentSessionId));
- }
--
 diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
-index c9fc3cb8..0943db6d 100644
+index 23bfcfdd..6315eb63 100644
 --- a/qt_client/src/MainWindowChat.cpp
 +++ b/qt_client/src/MainWindowChat.cpp
-@@ -399,6 +399,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -411,6 +411,8 @@ QWidget *MainWindow::buildNetworkLogDock()
                                       QStringLiteral("claude-code"));
-     selectDefaultAgentProvider(m_quickAddAgentProvider);
+     selectQuickAddAgentProvider(m_quickAddAgentProvider);
      m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
 +    m_quickAddAgentProvider->setMinimumWidth(112);
 +    m_quickAddAgentProvider->setMaximumWidth(150);
      // Show the whole list at once rather than a scrollable popup (adhoc #99).
      m_quickAddAgentProvider->setMaxVisibleItems(30);
-     // Claude model chooser (adhoc #261): live list of models from the provider.
-@@ -406,8 +408,11 @@ QWidget *MainWindow::buildNetworkLogDock()
-     // startClaudeCodeTranscript.
+     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+@@ -418,8 +420,11 @@ QWidget *MainWindow::buildNetworkLogDock()
+     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
      m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
      m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
 -    m_quickAddClaudeModel->setMinimumWidth(170);
@@ -171,7 +161,7 @@ index c9fc3cb8..0943db6d 100644
      // Show the whole model list at once rather than a scrollable popup, even
      // once the live provider list-up fills in more than a handful (adhoc #99).
      m_quickAddClaudeModel->setMaxVisibleItems(30);
-@@ -431,7 +436,11 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -479,7 +484,11 @@ QWidget *MainWindow::buildNetworkLogDock()
      // drive per-tool approval headlessly.
      m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
      m_quickAddModeSelector->setObjectName("quickAddModeSelector");
@@ -184,7 +174,7 @@ index c9fc3cb8..0943db6d 100644
      m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
      m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
      m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
-@@ -578,8 +587,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -635,8 +644,8 @@ QWidget *MainWindow::buildNetworkLogDock()
      auto *quickAddSendButton = new QPushButton;
      quickAddSendButton->setObjectName("quickAddSendIcon");
      quickAddSendButton->setCursor(Qt::PointingHandCursor);
@@ -195,7 +185,7 @@ index c9fc3cb8..0943db6d 100644
      quickAddSendButton->setToolTip("Send (Enter)");
      connect(quickAddSendButton, &QPushButton::clicked, this,
              &MainWindow::quickAddIssue);
-@@ -591,8 +600,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -648,8 +657,8 @@ QWidget *MainWindow::buildNetworkLogDock()
      m_quickAddSendToAgentButton = new QPushButton;
      m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
      m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
@@ -206,7 +196,7 @@ index c9fc3cb8..0943db6d 100644
      m_quickAddSendToAgentButton->setToolTip(
          "Send to the agent open above, as a follow-up message");
      connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
-@@ -650,8 +659,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -707,8 +716,8 @@ QWidget *MainWindow::buildNetworkLogDock()
      // and they read as floating above the send icons instead of level with
      // them.
      auto *bottomBar = new QHBoxLayout;
@@ -217,7 +207,7 @@ index c9fc3cb8..0943db6d 100644
      bottomBar->addWidget(m_quickAddImageButton, 0, Qt::AlignBottom);
      bottomBar->addWidget(m_quickAddMicButton, 0, Qt::AlignBottom);
      bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
-@@ -668,6 +677,22 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -725,6 +734,22 @@ QWidget *MainWindow::buildNetworkLogDock()
      bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
      bottomBar->addLayout(sendColumn);
  
@@ -240,7 +230,7 @@ index c9fc3cb8..0943db6d 100644
      // Prompt wrapper: the border lives on this frame; the text edit sits on
      // top with the bottom bar nested below it inside the same box, so the
      // controls read as an overlay along the foot of the prompt input rather
-@@ -678,7 +703,7 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -735,7 +760,7 @@ QWidget *MainWindow::buildNetworkLogDock()
      promptLayout->setContentsMargins(0, 0, 0, 0);
      promptLayout->setSpacing(0);
      promptLayout->addWidget(m_issueQuickAdd);
@@ -249,7 +239,7 @@ index c9fc3cb8..0943db6d 100644
  
      // "Agents:" status strip above the prompt input (adhoc #111): a clickable
      // label plus one small colored dot per known agent session — a status
-@@ -731,6 +756,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -788,6 +813,8 @@ QWidget *MainWindow::buildNetworkLogDock()
      cardLayout->setSpacing(4);
      cardLayout->addWidget(m_agentStatusRow);
      cardLayout->addWidget(promptWrapper);
@@ -258,7 +248,7 @@ index c9fc3cb8..0943db6d 100644
  
      // A scrollable strip below the quick-add bar: the always-on live log. It
      // fills as much height as the dock row allows (matching the prompt card
-@@ -745,6 +772,7 @@ QWidget *MainWindow::buildNetworkLogDock()
+@@ -802,6 +829,7 @@ QWidget *MainWindow::buildNetworkLogDock()
      m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
      m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
      m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -266,7 +256,7 @@ index c9fc3cb8..0943db6d 100644
      m_footerUpdateLog->setToolTip(
          "Live log \xE2\x80\x94 scroll up to search back through recent history.");
      // Bound the live buffer the same way the seed below is bounded, so it can't
-@@ -2968,7 +2996,22 @@ QWidget *MainWindow::buildBreadcrumb()
+@@ -3115,7 +3143,22 @@ QWidget *MainWindow::buildBreadcrumb()
      mainRow->addWidget(m_navTokenUsage);
      mainRow->addSpacing(4);
      mainRow->addWidget(m_avatarNavButton);
@@ -290,7 +280,7 @@ index c9fc3cb8..0943db6d 100644
  
      // Hairline divider separating the relay/node row from the section nav below.
      auto *navDivider = new QFrame;
-@@ -3002,7 +3045,22 @@ QWidget *MainWindow::buildBreadcrumb()
+@@ -3151,7 +3194,22 @@ QWidget *MainWindow::buildBreadcrumb()
      navRow->addWidget(m_navDrawButton);
      navRow->addWidget(m_navScreenshotButton);
      navRow->addWidget(m_navRebuildButton);
@@ -314,13 +304,8 @@ index c9fc3cb8..0943db6d 100644
      // Home/Code is the initial section, so show its nav button selected up front.
      m_repoViewButton->setChecked(true);
  
-@@ -8277,4 +8335,3 @@ void MainWindow::clearRepoDetail()
-         m_filesStack->setCurrentIndex(0);
-     updateBreadcrumb();
- }
--
 diff --git a/qt_client/src/MainWindowIssues.cpp b/qt_client/src/MainWindowIssues.cpp
-index 363b49e8..93f22ecb 100644
+index 2901ef2e..425fa18f 100644
 --- a/qt_client/src/MainWindowIssues.cpp
 +++ b/qt_client/src/MainWindowIssues.cpp
 @@ -25,7 +25,7 @@ QWidget *MainWindow::buildIssuesSection()
@@ -332,7 +317,7 @@ index 363b49e8..93f22ecb 100644
  
      auto *heading = new QLabel("Issues");
      heading->setObjectName("channelTitle");
-@@ -501,8 +501,8 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -502,8 +502,8 @@ QWidget *MainWindow::buildIssuesSection()
      // Right: GitHub-style metadata sidebar.
      auto *meta = new QWidget;
      meta->setObjectName("issueSidebar");
@@ -343,7 +328,7 @@ index 363b49e8..93f22ecb 100644
      m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
      m_issueLabelsValue = new QLabel("No labels");
      m_issueMilestoneValue = new QLabel("No milestone");
-@@ -914,8 +914,8 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -915,8 +915,8 @@ QWidget *MainWindow::buildIssuesSection()
      metaScroll->setFrameShape(QFrame::NoFrame);
      metaScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
      metaScroll->setWidgetResizable(true);
@@ -354,7 +339,7 @@ index 363b49e8..93f22ecb 100644
      // The long issue sidebar should scroll, not force the Issues tab height.
      metaScroll->setMinimumHeight(0);
      metaScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
-@@ -925,9 +925,11 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -926,9 +926,11 @@ QWidget *MainWindow::buildIssuesSection()
      // sharing their own draggable divider.
      auto *issueDetailView = new QWidget;
      auto *detailSplit = new QSplitter(Qt::Horizontal);
@@ -367,7 +352,7 @@ index 363b49e8..93f22ecb 100644
      detailSplit->setStretchFactor(0, 1);
      detailSplit->setStretchFactor(1, 0);
      detailSplit->setSizes({520, 220});
-@@ -937,7 +939,7 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -938,7 +940,7 @@ QWidget *MainWindow::buildIssuesSection()
      // its hunk, activating one opens it (when it lives in a worktree on disk).
      m_issueFilesList = new QListWidget;
      m_issueFilesList->setObjectName("agentFilesList");
@@ -376,7 +361,7 @@ index 363b49e8..93f22ecb 100644
      // Green-outline selection (like the agents list) so the selected file stays
      // legible; click-to-scroll / scroll-to-select handled by DiffFileNavigator.
      m_issueFilesList->setItemDelegate(
-@@ -966,9 +968,11 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -967,9 +969,11 @@ QWidget *MainWindow::buildIssuesSection()
      // DiffFileNavigator is created lazily on first render (complete type in scope).
  
      auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
@@ -389,7 +374,7 @@ index 363b49e8..93f22ecb 100644
      issueFilesSplit->setStretchFactor(0, 0);
      issueFilesSplit->setStretchFactor(1, 1);
      issueFilesSplit->setSizes({220, 700});
-@@ -996,9 +1000,11 @@ QWidget *MainWindow::buildIssuesSection()
+@@ -997,9 +1001,11 @@ QWidget *MainWindow::buildIssuesSection()
      // detail lets the table use the full width.
      auto *splitter = new QSplitter(Qt::Horizontal);
      splitter->setObjectName("issuesSplitter");
@@ -402,7 +387,7 @@ index 363b49e8..93f22ecb 100644
      // The table is the primary surface: it keeps the width and the detail panel
      // opens at a minimal size beside it (the divider is still draggable).
      splitter->setStretchFactor(0, 1);
-@@ -3245,7 +3251,9 @@ void MainWindow::promptNewIssue()
+@@ -3246,7 +3252,9 @@ void MainWindow::promptNewIssue()
  
      auto *sidebar = new QWidget(page);
      sidebar->setObjectName("issueComposeSidebar");
@@ -413,27 +398,26 @@ index 363b49e8..93f22ecb 100644
      auto *sideLayout = new QVBoxLayout(sidebar);
      sideLayout->setContentsMargins(18, 2, 0, 0);
      sideLayout->setSpacing(8);
-@@ -7226,4 +7234,3 @@ QString MainWindow::selfNodeStats() const
-            formatDuration(totalMs) +
-            (key.isEmpty() ? QString() : " \xC2\xB7 key " + key);
- }
--
 diff --git a/qt_client/src/MainWindowRepoDetail.cpp b/qt_client/src/MainWindowRepoDetail.cpp
-index bc3b6996..90408b0d 100644
+index 54ec5a34..e9d441aa 100644
 --- a/qt_client/src/MainWindowRepoDetail.cpp
 +++ b/qt_client/src/MainWindowRepoDetail.cpp
-@@ -3621,8 +3621,8 @@ QWidget *MainWindow::createGlobalSearchBox()
+@@ -4395,11 +4395,9 @@ QWidget *MainWindow::createGlobalSearchBox()
      m_globalSearch->setObjectName("globalSearch");
      m_globalSearch->setClearButtonEnabled(true);
      m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
 -    m_globalSearch->setMinimumWidth(220);
 -    m_globalSearch->setMaximumWidth(440);
+-    m_globalSearch->setFixedHeight(30);
+-    m_globalSearch->setTextMargins(2, 0, 0, 0);
+-    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 13),
 +    m_globalSearch->setMinimumWidth(150);
 +    m_globalSearch->setMaximumWidth(360);
-     m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
++    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
                                QLineEdit::LeadingPosition);
      m_globalSearch->setToolTip(QString::fromUtf8(
-@@ -5337,9 +5337,17 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
+         "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "
+@@ -6116,9 +6114,17 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
      m_currentCommitHash = fullHash;
  
      // --- Header labels.
@@ -453,7 +437,7 @@ index bc3b6996..90408b0d 100644
      if (m_commitMessage) {
          QString msg =
              QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
-@@ -6736,7 +6744,7 @@ QWidget *MainWindow::buildRepoDetailSection()
+@@ -7515,7 +7521,7 @@ QWidget *MainWindow::buildRepoDetailSection()
      m_repoDetailTabs->setExclusive(true);
      auto *tabRow = new QHBoxLayout;
      tabRow->setContentsMargins(12, 0, 12, 0);
@@ -462,7 +446,7 @@ index bc3b6996..90408b0d 100644
      for (int i = 0; i < tabs.size(); ++i) {
          // Commits (id 1) no longer gets a top-bar tab: its panel lives inside
          // the Code overview, toggled by the commit strip's "N Commits" button.
-@@ -6781,6 +6789,19 @@ QWidget *MainWindow::buildRepoDetailSection()
+@@ -7560,6 +7566,19 @@ QWidget *MainWindow::buildRepoDetailSection()
      auto *tabBar = new QWidget;
      tabBar->setObjectName("repoTabBar");
      tabBar->setLayout(tabRow);
@@ -482,7 +466,7 @@ index bc3b6996..90408b0d 100644
  
      // The integrity-pin warning ("clones are being rejected — reset the pin") no
      // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
-@@ -6993,7 +7014,7 @@ QWidget *MainWindow::buildRepoDetailSection()
+@@ -7772,7 +7791,7 @@ QWidget *MainWindow::buildRepoDetailSection()
      layout->addLayout(headerRow);
      layout->addWidget(m_repoDetailNotice);
      layout->addWidget(metaBand);
@@ -491,7 +475,7 @@ index bc3b6996..90408b0d 100644
      layout->addWidget(m_repoDetailStack, 1);
      return page;
  }
-@@ -7223,6 +7244,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
+@@ -8002,6 +8021,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
      m_commitTitle->setObjectName("repoHeaderTitle");
      m_commitTitle->setTextFormat(Qt::RichText);
      m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -500,7 +484,7 @@ index bc3b6996..90408b0d 100644
  
      // Copy a forkmesh:// permalink to this commit (issue #154): pasted into a
      // comment it renders as a link back here via autolinkReferences().
-@@ -7290,6 +7313,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
+@@ -8069,6 +8090,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
          if (!m_currentCommitHash.isEmpty())
              showCommit(m_currentCommitHash);
      });
@@ -514,7 +498,7 @@ index bc3b6996..90408b0d 100644
  
      auto *navCol = new QVBoxLayout;
      navCol->setContentsMargins(0, 0, 0, 0);
-@@ -7298,20 +7328,20 @@ QWidget *MainWindow::buildRepoCommitsTab()
+@@ -8077,20 +8105,20 @@ QWidget *MainWindow::buildRepoCommitsTab()
      auto *prevNextRow = new QHBoxLayout;
      prevNextRow->setContentsMargins(0, 0, 0, 0);
      prevNextRow->setSpacing(4);
@@ -540,7 +524,7 @@ index bc3b6996..90408b0d 100644
  
      m_commitMessage = new QLabel;
      m_commitMessage->setObjectName("commitMessage");
-@@ -7446,14 +7476,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
+@@ -8225,14 +8253,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
      auto *outerSplit = new QSplitter(Qt::Horizontal);
      outerSplit->addWidget(listPage);
      outerSplit->addWidget(m_commitsStack);
@@ -560,10 +544,10 @@ index bc3b6996..90408b0d 100644
      // New top panel: a VSCode-style Source Control view for the working tree
      // (compose strip + changes tree + diff), sitting above the committed-history
 diff --git a/qt_client/src/MainWindowSetup.cpp b/qt_client/src/MainWindowSetup.cpp
-index 5275df17..9affff0d 100644
+index 3aae0938..b57e1b2d 100644
 --- a/qt_client/src/MainWindowSetup.cpp
 +++ b/qt_client/src/MainWindowSetup.cpp
-@@ -818,6 +818,65 @@ int MainWindow::testRepoTabContentTop()
+@@ -885,6 +885,65 @@ int MainWindow::testRepoTabContentTop()
  {
      return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;
  }
@@ -629,16 +613,11 @@ index 5275df17..9affff0d 100644
  #endif
  
  void MainWindow::setHeadlessMode(bool headless)
-@@ -2790,4 +2849,3 @@ void MainWindow::updateRebuildRestart()
-         recloneFromMirror();
-     }
- }
--
 diff --git a/qt_client/src/Theme.h b/qt_client/src/Theme.h
-index 5399bf72..7386ca5f 100644
+index 89bc2760..602181db 100644
 --- a/qt_client/src/Theme.h
 +++ b/qt_client/src/Theme.h
-@@ -777,8 +777,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
+@@ -794,8 +794,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
      border-radius: 8px;
      padding: 5px 8px;
      font-size: 12px;
@@ -649,7 +628,7 @@ index 5399bf72..7386ca5f 100644
  }
  #issueQuickAdd:focus { border-color: #58a6ff; }
  #promptWrapper {
-@@ -787,7 +787,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
+@@ -804,7 +804,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
  #promptWrapper:focus-within { border-color: #39d353; }
  #promptWrapper #issueQuickAdd {
      background: transparent; border: none; border-radius: 0;
@@ -658,7 +637,7 @@ index 5399bf72..7386ca5f 100644
  }
  #promptWrapper #issueQuickAdd:focus { border: none; }
  QPushButton#quickAddSendIcon {
-@@ -1887,8 +1887,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
+@@ -1922,8 +1922,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
      border-radius: 8px;
      padding: 5px 8px;
      font-size: 12px;
@@ -669,7 +648,7 @@ index 5399bf72..7386ca5f 100644
  }
  #issueQuickAdd:focus { border-color: #0969da; }
  #promptWrapper {
-@@ -1897,7 +1897,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
+@@ -1932,7 +1932,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
  #promptWrapper:focus-within { border-color: #1a7f37; }
  #promptWrapper #issueQuickAdd {
      background: transparent; border: none; border-radius: 0;
@@ -679,10 +658,10 @@ index 5399bf72..7386ca5f 100644
  #promptWrapper #issueQuickAdd:focus { border: none; }
  QPushButton#quickAddSendIcon {
 diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
-index 025d803a..b5c313fc 100644
+index 51cc0a85..bab892bc 100644
 --- a/qt_client/tests/test_window_resize.cpp
 +++ b/qt_client/tests/test_window_resize.cpp
-@@ -107,6 +107,44 @@ void dumpTallMinimums(QWidget &root)
+@@ -115,6 +115,44 @@ void dumpTallMinimums(QWidget &root)
      }
  }
  
@@ -727,7 +706,7 @@ index 025d803a..b5c313fc 100644
  QCheckBox *findCheckBox(QWidget &root, const QString &text)
  {
      const QList<QCheckBox *> boxes = root.findChildren<QCheckBox *>();
-@@ -437,6 +475,8 @@ int main(int argc, char *argv[])
+@@ -508,6 +546,8 @@ int main(int argc, char *argv[])
      }
  
      QSettings().setValue(QStringLiteral("notifications/nodeConnect"), false);
@@ -736,7 +715,7 @@ index 025d803a..b5c313fc 100644
      window.testSetNodeAlertGraceUntilMs(0);
      QList<MemberInfo> initialRoster;
      initialRoster.append(testMember(QStringLiteral("self-node"),
-@@ -547,6 +587,52 @@ int main(int argc, char *argv[])
+@@ -618,6 +658,52 @@ int main(int argc, char *argv[])
                    .arg(realized)
                    .arg(onScreen));
  
@@ -789,7 +768,7 @@ index 025d803a..b5c313fc 100644
      // Issue #207: the commit detail page must expose a restore/revert action
      // beside the destructive delete-history action.
      {
-@@ -577,12 +663,16 @@ int main(int argc, char *argv[])
+@@ -648,12 +734,16 @@ int main(int argc, char *argv[])
          check(deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window) &&
                    adjacent && restoreOnScreen,
                QString("commit restore button is visible beside delete "
@@ -809,5 +788,5 @@ index 025d803a..b5c313fc 100644
      }
  
 -- 
-2.50.1 (Apple Git-155)
+2.47.3
 
