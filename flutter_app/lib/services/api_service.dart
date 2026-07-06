@@ -301,7 +301,8 @@ class ApiService {
         dirs.map((dir) async {
           try {
             final b = await blob(owner, name, 'pulls/$dir/pull.md');
-            return _pullFromMarkdown(dir, b.content);
+            final events = await _pullEvents(owner, name, dir);
+            return _pullFromMarkdown(dir, b.content, events: events);
           } catch (_) {
             return null;
           }
@@ -310,6 +311,36 @@ class ApiService {
       return items.whereType<PublishedPull>().toList()
         ..sort((a, b) => b.number.compareTo(a.number));
     });
+  }
+
+  Future<List<PullEvent>> _pullEvents(
+    String owner,
+    String name,
+    String number,
+  ) async {
+    try {
+      final t = await tree(owner, name, path: 'pulls/$number');
+      final eventFiles =
+          t.entries
+              .where(
+                (e) =>
+                    !e.isDirectory &&
+                    e.name.endsWith('.md') &&
+                    e.name != 'pull.md',
+              )
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+      final events = <PullEvent>[];
+      for (final file in eventFiles) {
+        try {
+          final b = await blob(owner, name, file.path);
+          events.add(_pullEventFromMarkdown(b.content));
+        } catch (_) {}
+      }
+      return events;
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<List<RepoDiscussion>> publishedDiscussions(String owner, String name) {
@@ -401,6 +432,8 @@ class ApiService {
           .where((s) => s.isNotEmpty)
           .toList(),
       events: events,
+      votes: events.where((event) => event.type == 'vote').length,
+      bountyUsd: double.tryParse(meta['bountyUsd'] ?? '') ?? 0,
     );
   }
 
@@ -416,7 +449,11 @@ class ApiService {
     );
   }
 
-  PublishedPull _pullFromMarkdown(String number, String md) {
+  PublishedPull _pullFromMarkdown(
+    String number,
+    String md, {
+    List<PullEvent> events = const [],
+  }) {
     final meta = _frontMatter(md);
     final body = _bodyWithoutFrontMatter(md);
     final title = meta['title'] ?? _firstHeading(md) ?? 'Pull request #$number';
@@ -429,6 +466,19 @@ class ApiService {
       head: meta['head'] ?? '',
       patch: meta['patch'] ?? meta['diff'] ?? _extractPatch(body),
       signed: (meta['sig'] ?? '').isNotEmpty,
+      events: events,
+    );
+  }
+
+  PullEvent _pullEventFromMarkdown(String md) {
+    final meta = _frontMatter(md);
+    return PullEvent(
+      type: meta['type'] ?? 'comment',
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? '',
+      authorName: meta['authorName'] ?? '',
+      state: meta['state'] ?? '',
+      ts: int.tryParse(meta['ts'] ?? '') ?? 0,
     );
   }
 

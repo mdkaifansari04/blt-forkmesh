@@ -542,6 +542,50 @@ class DiscussionEvent {
   String get displayAuthor => authorName.isNotEmpty ? authorName : author;
 }
 
+class PullEvent {
+  const PullEvent({
+    required this.type,
+    this.body = '',
+    this.author = '',
+    this.authorName = '',
+    this.state = '',
+    this.ts = 0,
+  });
+
+  final String type;
+  final String body;
+  final String author;
+  final String authorName;
+  final String state;
+  final int ts;
+
+  String get displayAuthor => authorName.isNotEmpty ? authorName : author;
+
+  String get displayTitle {
+    if (type == 'review') {
+      switch (state) {
+        case 'approve':
+        case 'approved':
+          return 'Approved';
+        case 'request-changes':
+        case 'changes-requested':
+        case 'changes_requested':
+        case 'requested_changes':
+          return 'Requested changes';
+        case 'comment':
+          return 'Review comment';
+      }
+      return 'Review';
+    }
+    if (type == 'line-comment') return 'Line comment';
+    if (type == 'thread-comment') return 'Thread comment';
+    if (type == 'thread-reply') return 'Thread reply';
+    if (type == 'thread-state') return 'Thread state';
+    if (type == 'suggestion-state') return 'Suggestion state';
+    return 'Comment';
+  }
+}
+
 class PublishedPull {
   PublishedPull({
     required this.number,
@@ -552,6 +596,7 @@ class PublishedPull {
     this.head = '',
     this.patch = '',
     this.signed = false,
+    this.events = const [],
   });
 
   final int number;
@@ -562,6 +607,7 @@ class PublishedPull {
   final String head;
   final String patch;
   final bool signed;
+  final List<PullEvent> events;
 }
 
 class NetworkStats {
