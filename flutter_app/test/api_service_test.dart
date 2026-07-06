@@ -108,6 +108,114 @@ void main() {
     expect(repos.single.fullName, 'owner/forkmesh');
   });
 
+  test(
+    'network stats requests payout readiness and parses payout nodes',
+    () async {
+      final requests = <Uri>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        requests.add(request.uri);
+        request.response.headers.contentType = ContentType.json;
+        if (request.method == 'GET' &&
+            request.uri.path == '/api/network/stats') {
+          request.response.write(
+            jsonEncode({
+              'nodesOnline': 2,
+              'hostsOnline': 1,
+              'repos': 3,
+              'payoutNodes': [
+                {
+                  'name': 'mainnode-a',
+                  'wallet': 'Wallet11111111111111111111111111111111',
+                  'balanceLamports': '1250000000',
+                  'balanceSol': '1.25',
+                  'online': true,
+                  'payoutEligible': true,
+                  'eligibilityReason': 'eligible',
+                },
+              ],
+            }),
+          );
+        } else {
+          request.response.statusCode = HttpStatus.notFound;
+        }
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final stats = await api.networkStats();
+
+      expect(requests.single.path, '/api/network/stats');
+      expect(requests.single.queryParameters['payouts'], '1');
+      expect(stats.nodesOnline, 2);
+      expect(stats.payoutNodes.single.name, 'mainnode-a');
+      expect(stats.payoutNodes.single.payoutEligible, isTrue);
+      expect(
+        stats.payoutNodes.single.balanceLabel,
+        '1.25 SOL (1250000000 lamports)',
+      );
+    },
+  );
+
+  test('network leaderboards parse funds received boards', () async {
+    final requests = <Uri>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      requests.add(request.uri);
+      request.response.headers.contentType = ContentType.json;
+      if (request.method == 'GET' &&
+          request.uri.path == '/api/network/leaderboards') {
+        request.response.write(
+          jsonEncode({
+            'fundsMainnodes': [
+              {'name': 'mainnode-a', 'lamports': '1250000000', 'sol': '1.25'},
+            ],
+            'fundsContributors': [
+              {'name': 'alice', 'lamports': 500000000, 'sol': 0.5},
+            ],
+            'fundsProjects': [
+              {'name': 'forkmesh/mobile', 'lamports': '42'},
+            ],
+          }),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final boards = await api.networkLeaderboards();
+
+    expect(requests.single.path, '/api/network/leaderboards');
+    expect(boards.fundsMainnodes.single.name, 'mainnode-a');
+    expect(
+      boards.fundsContributors.single.amountLabel,
+      '0.5 SOL (500000000 lamports)',
+    );
+    expect(boards.fundsProjects.single.amountLabel, '42 lamports');
+  });
+
   test('published markdown issues include bounty and vote count', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final subscription = server.listen((request) async {

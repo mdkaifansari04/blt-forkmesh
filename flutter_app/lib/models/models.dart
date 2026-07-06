@@ -584,6 +584,12 @@ int _modelInt(dynamic value) => value is int
 double _modelDouble(dynamic value) =>
     value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
 
+bool _modelBool(dynamic value) {
+  if (value is bool) return value;
+  final text = '$value'.trim().toLowerCase();
+  return text == 'true' || text == '1' || text == 'yes';
+}
+
 String _modelString(dynamic value) => value == null ? '' : '$value';
 
 String _firstModelString(Map<String, dynamic> json, List<String> keys) {
@@ -1546,18 +1552,157 @@ class RepoRelease {
 }
 
 class NetworkStats {
-  NetworkStats({this.nodesOnline = 0, this.hostsOnline = 0, this.repos = 0});
+  const NetworkStats({
+    this.nodesOnline = 0,
+    this.hostsOnline = 0,
+    this.repos = 0,
+    this.payoutNodes = const [],
+  });
+
   final int nodesOnline;
   final int hostsOnline;
   final int repos;
+  final List<PayoutNode> payoutNodes;
 
   factory NetworkStats.fromJson(Map<String, dynamic> j) {
     int asInt(dynamic v) =>
         v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    final payoutRaw = j['payoutNodes'] is List
+        ? j['payoutNodes'] as List
+        : j['payout_nodes'] is List
+        ? j['payout_nodes'] as List
+        : const [];
     return NetworkStats(
       nodesOnline: asInt(j['nodesOnline'] ?? j['clients'] ?? 0),
       hostsOnline: asInt(j['hostsOnline'] ?? j['hosts'] ?? 0),
       repos: asInt(j['repos'] ?? j['repositories'] ?? 0),
+      payoutNodes: payoutRaw
+          .whereType<Map>()
+          .map((item) => PayoutNode.fromJson(Map<String, dynamic>.from(item)))
+          .toList(),
     );
   }
+}
+
+class PayoutNode {
+  const PayoutNode({
+    this.name = '',
+    this.wallet = '',
+    this.balanceLamports = 0,
+    this.balanceSol = 0,
+    this.online = false,
+    this.payoutEligible = false,
+    this.eligibilityReason = '',
+    this.relay = '',
+  });
+
+  final String name;
+  final String wallet;
+  final int balanceLamports;
+  final double balanceSol;
+  final bool online;
+  final bool payoutEligible;
+  final String eligibilityReason;
+  final String relay;
+
+  String get shortWallet {
+    final clean = wallet.trim();
+    if (clean.length <= 16) return clean;
+    return '${clean.substring(0, 6)}...${clean.substring(clean.length - 6)}';
+  }
+
+  String get eligibilityLabel {
+    final reason = eligibilityReason.trim();
+    if (reason.isNotEmpty) {
+      return reason.replaceAll('_', ' ').replaceAll('-', ' ');
+    }
+    return payoutEligible ? 'eligible' : 'not eligible';
+  }
+
+  String get balanceLabel {
+    if (balanceSol > 0) {
+      return '${_trimModelDouble(balanceSol)} SOL ($balanceLamports lamports)';
+    }
+    return '$balanceLamports lamports';
+  }
+
+  factory PayoutNode.fromJson(Map<String, dynamic> json) => PayoutNode(
+    name: _firstModelString(json, const ['name', 'node', 'id']),
+    wallet: _firstModelString(json, const [
+      'wallet',
+      'walletAddress',
+      'payoutWallet',
+      'address',
+    ]),
+    balanceLamports: _modelInt(json['balanceLamports']),
+    balanceSol: _modelDouble(json['balanceSol']),
+    online: _modelBool(json['online']),
+    payoutEligible: _modelBool(json['payoutEligible']),
+    eligibilityReason: _firstModelString(json, const [
+      'eligibilityReason',
+      'reason',
+    ]),
+    relay: _firstModelString(json, const ['relay']),
+  );
+}
+
+class NetworkLeaderboards {
+  const NetworkLeaderboards({
+    this.fundsMainnodes = const [],
+    this.fundsContributors = const [],
+    this.fundsProjects = const [],
+  });
+
+  final List<FundsReceivedEntry> fundsMainnodes;
+  final List<FundsReceivedEntry> fundsContributors;
+  final List<FundsReceivedEntry> fundsProjects;
+
+  bool get isEmpty =>
+      fundsMainnodes.isEmpty &&
+      fundsContributors.isEmpty &&
+      fundsProjects.isEmpty;
+
+  factory NetworkLeaderboards.fromJson(Map<String, dynamic> json) =>
+      NetworkLeaderboards(
+        fundsMainnodes: _fundsReceivedList(json['fundsMainnodes']),
+        fundsContributors: _fundsReceivedList(json['fundsContributors']),
+        fundsProjects: _fundsReceivedList(json['fundsProjects']),
+      );
+
+  static List<FundsReceivedEntry> _fundsReceivedList(dynamic raw) {
+    final items = raw is List ? raw : const [];
+    return items
+        .whereType<Map>()
+        .map(
+          (item) =>
+              FundsReceivedEntry.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList();
+  }
+}
+
+class FundsReceivedEntry {
+  const FundsReceivedEntry({this.name = '', this.lamports = 0, this.sol = 0});
+
+  final String name;
+  final int lamports;
+  final double sol;
+
+  String get amountLabel {
+    if (sol > 0) return '${_trimModelDouble(sol)} SOL ($lamports lamports)';
+    return '$lamports lamports';
+  }
+
+  factory FundsReceivedEntry.fromJson(Map<String, dynamic> json) =>
+      FundsReceivedEntry(
+        name: _firstModelString(json, const [
+          'name',
+          'node',
+          'account',
+          'project',
+          'repo',
+        ]),
+        lamports: _modelInt(json['lamports']),
+        sol: _modelDouble(json['sol']),
+      );
 }

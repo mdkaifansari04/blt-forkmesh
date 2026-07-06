@@ -21,6 +21,7 @@ class ApiService {
   final PerformanceMonitorService? _performanceMonitor;
   _CacheEntry<List<Repository>>? _repositoriesCache;
   _CacheEntry<NetworkStats>? _networkStatsCache;
+  _CacheEntry<NetworkLeaderboards>? _networkLeaderboardsCache;
   final Map<String, DateTime> _offlineRepoUntil = {};
   final Map<String, _CacheEntry<RepoTree>> _treeCache = {};
   final Map<String, _CacheEntry<RepoBlob>> _blobCache = {};
@@ -127,12 +128,31 @@ class ApiService {
     }
     final future = () async {
       try {
-        final data = await _getJson(_base('/api/network/stats'));
+        final data = await _getJson(
+          _base('/api/network/stats', {'payouts': '1'}),
+        );
         if (data is Map<String, dynamic>) return NetworkStats.fromJson(data);
       } catch (_) {}
-      return NetworkStats();
+      return const NetworkStats();
     }();
     _networkStatsCache = _CacheEntry(future, DateTime.now());
+    return future;
+  }
+
+  Future<NetworkLeaderboards> networkLeaderboards() async {
+    if (_isFresh(_networkLeaderboardsCache, catalogTtl)) {
+      return _networkLeaderboardsCache!.future;
+    }
+    final future = () async {
+      try {
+        final data = await _getJson(_base('/api/network/leaderboards'));
+        if (data is Map<String, dynamic>) {
+          return NetworkLeaderboards.fromJson(data);
+        }
+      } catch (_) {}
+      return const NetworkLeaderboards();
+    }();
+    _networkLeaderboardsCache = _CacheEntry(future, DateTime.now());
     return future;
   }
 
