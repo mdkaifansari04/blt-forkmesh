@@ -512,6 +512,7 @@ class ApiService {
       title: meta['title'] ?? _firstHeading(md) ?? 'Discussion #$number',
       body: _bodyWithoutFrontMatter(md),
       author: meta['authorName'] ?? meta['author'] ?? '',
+      category: meta['category'] ?? 'general',
       updatedMs: int.tryParse(meta['updatedAt'] ?? meta['ts'] ?? '') ?? 0,
       events: events,
     );

@@ -523,6 +523,7 @@ class RepoDiscussion {
     required this.title,
     this.body = '',
     this.author = '',
+    this.category = 'general',
     this.updatedMs = 0,
     this.events = const [],
   });
@@ -531,6 +532,7 @@ class RepoDiscussion {
   final String title;
   final String body;
   final String author;
+  final String category;
   final int updatedMs;
   final List<DiscussionEvent> events;
 }

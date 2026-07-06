@@ -162,6 +162,13 @@ Future<void> _run(
 const _pendingNote =
     'Submitted to the inbox - pending the repo owner applying it.';
 
+const Map<String, String> _discussionCategoryLabels = {
+  'general': 'General',
+  'ideas': 'Ideas',
+  'help': 'Help',
+  'show-and-tell': 'Show & tell',
+};
+
 Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
   final inbox = context.read<InboxService>();
   final title = TextEditingController();
@@ -456,54 +463,74 @@ Future<void> showNewDiscussionDialog(
 ) async {
   final inbox = context.read<InboxService>();
   final title = TextEditingController();
-  final category = TextEditingController(text: 'general');
+  var selectedCategory = 'general';
   final body = TextEditingController();
   final ok = await showDialog<bool>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      backgroundColor: FmTheme.bgOverlay(ctx),
-      surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(FmRadius.lg),
-      ),
-      title: const Text('New discussion'),
-      content: SizedBox(
-        width: 520,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: title,
-              decoration: const InputDecoration(labelText: 'Title'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: category,
-              decoration: const InputDecoration(labelText: 'Category'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: body,
-              minLines: 5,
-              maxLines: 12,
-              decoration: const InputDecoration(
-                labelText: 'Body',
-                alignLabelWithHint: true,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: FmTheme.bgOverlay(ctx),
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(FmRadius.lg),
+        ),
+        title: const Text('New discussion'),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: title,
+                decoration: const InputDecoration(labelText: 'Title'),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              const Text(
+                'Category',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final entry in _discussionCategoryLabels.entries)
+                    ChoiceChip(
+                      label: Text(entry.value),
+                      selected: selectedCategory == entry.key,
+                      onSelected: (_) => setDialogState(() {
+                        selectedCategory = entry.key;
+                      }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: body,
+                minLines: 5,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  labelText: 'Body',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const _PendingInboxNote(),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Submit'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Submit'),
-        ),
-      ],
     ),
   );
   if (ok != true || title.text.trim().isEmpty || body.text.trim().isEmpty) {
@@ -517,7 +544,7 @@ Future<void> showNewDiscussionDialog(
       repo.name,
       title: title.text.trim(),
       body: body.text.trim(),
-      category: category.text.trim().isEmpty ? 'general' : category.text.trim(),
+      category: selectedCategory,
     ),
     _pendingNote,
   );
@@ -2079,6 +2106,10 @@ class _DiscussionDetailScreen extends StatelessWidget {
                 runSpacing: 8,
                 children: [
                   const _Chip(icon: Icons.forum_outlined, label: 'discussion'),
+                  _Chip(
+                    icon: Icons.category_outlined,
+                    label: discussion.category,
+                  ),
                   if (discussion.author.isNotEmpty)
                     _Chip(icon: Icons.person_outline, label: discussion.author),
                   _Chip(icon: Icons.folder_outlined, label: repo.fullName),
@@ -2100,17 +2131,23 @@ class _DiscussionDetailScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _InfoCard(
-            title: 'Reply',
+            title: 'Signed discussion reply',
             children: [
+              const Text(
+                'Replies are signed and sent to the discussion inbox, pending the repo owner applying them.',
+              ),
+              const SizedBox(height: 12),
               TextField(
                 controller: body,
                 minLines: 3,
                 maxLines: 8,
                 decoration: const InputDecoration(
-                  labelText: 'Write a reply',
+                  labelText: 'Write a signed reply',
                   alignLabelWithHint: true,
                 ),
               ),
+              const SizedBox(height: 12),
+              const _PendingInboxNote(),
               const SizedBox(height: 12),
               FilledButton.icon(
                 onPressed: () {
@@ -2221,8 +2258,9 @@ class _DiscussionsTab extends StatelessWidget {
         icon: Icons.forum_outlined,
         iconColor: FmTheme.accent(context),
         title: d.title,
-        subtitle: '#${d.number}${d.author.isNotEmpty ? " · ${d.author}" : ""}',
-        badge: 'discussion',
+        subtitle:
+            '#${d.number} · ${d.category}${d.author.isNotEmpty ? " · ${d.author}" : ""}',
+        badge: d.category,
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => _DiscussionDetailScreen(repo: repo, discussion: d),
@@ -2917,16 +2955,71 @@ Future<void> _commentOnCommit(
   String hash,
 ) async {
   final inbox = context.read<InboxService>();
-  final body = await _promptText(
-    context,
-    'Comment on commit ${hash.length < 7 ? hash : hash.substring(0, 7)}',
-    multiline: true,
-  );
-  if (body == null || body.trim().isEmpty || !context.mounted) return;
+  final body = await _showCommitCommentComposer(context, hash: hash);
+  if (body == null || !context.mounted) return;
   await _run(
     context,
-    () => inbox.commentOnCommit(repo.owner, repo.name, hash, body.trim()),
+    () => inbox.commentOnCommit(repo.owner, repo.name, hash, body),
     _pendingNote,
+  );
+}
+
+Future<String?> _showCommitCommentComposer(
+  BuildContext context, {
+  required String hash,
+}) {
+  final controller = TextEditingController();
+  final short = hash.length < 7 ? hash : hash.substring(0, 7);
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: FmTheme.bgOverlay(ctx),
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(FmRadius.lg),
+      ),
+      title: const Text('Signed commit comment'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Commit comments are signed and sent to the commit inbox for $short, pending the repo owner applying them.',
+              style: const TextStyle(height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              minLines: 4,
+              maxLines: 8,
+              decoration: const InputDecoration(
+                labelText: 'Comment',
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const _PendingInboxNote(),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final body = controller.text.trim();
+            if (body.isEmpty) return;
+            Navigator.pop(ctx, body);
+          },
+          child: const Text('Submit comment'),
+        ),
+      ],
+    ),
   );
 }
 

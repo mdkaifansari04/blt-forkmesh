@@ -145,6 +145,89 @@ ts: 10
     expect(issues.single.bountyUsd, 150);
   });
 
+  test('published discussions include category and replies', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      final path = request.uri.queryParameters['path'] ?? '';
+      if (request.uri.path.endsWith('/tree') && path == 'discussions') {
+        request.response.write(
+          jsonEncode({
+            'entries': [
+              {'name': '3', 'path': 'discussions/3', 'type': 'dir'},
+            ],
+          }),
+        );
+      } else if (request.uri.path.endsWith('/tree') &&
+          path == 'discussions/3') {
+        request.response.write(
+          jsonEncode({
+            'entries': [
+              {
+                'name': 'discussion.md',
+                'path': 'discussions/3/discussion.md',
+                'type': 'file',
+              },
+              {
+                'name': '001-comment.md',
+                'path': 'discussions/3/001-comment.md',
+                'type': 'file',
+              },
+            ],
+          }),
+        );
+      } else if (request.uri.path.endsWith('/blob') &&
+          path == 'discussions/3/discussion.md') {
+        request.response.write(
+          jsonEncode({
+            'content': '''---
+title: Mobile maintainer workflow
+category: ideas
+authorName: Alice
+---
+How should maintainers review from phones?''',
+          }),
+        );
+      } else if (request.uri.path.endsWith('/blob') &&
+          path == 'discussions/3/001-comment.md') {
+        request.response.write(
+          jsonEncode({
+            'content': '''---
+type: comment
+authorName: Mona
+ts: 10
+---
+Keep desktop node as the canonical apply surface.''',
+          }),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+        request.response.write('not found');
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final discussions = await api.publishedDiscussions('owner', 'repo');
+
+    expect(discussions.single.title, 'Mobile maintainer workflow');
+    expect(discussions.single.category, 'ideas');
+    expect(
+      discussions.single.events.single.body,
+      'Keep desktop node as the canonical apply surface.',
+    );
+  });
+
   test(
     'published pulls include signed comment and review timeline events',
     () async {
