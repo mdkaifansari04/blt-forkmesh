@@ -371,6 +371,60 @@ class RepoBlob {
   }
 }
 
+class RepoCommitFile {
+  RepoCommitFile({required this.path, this.adds = '', this.dels = ''});
+
+  final String path;
+  final String adds;
+  final String dels;
+
+  factory RepoCommitFile.fromJson(Map<String, dynamic> j) => RepoCommitFile(
+    path: (j['path'] ?? j['file'] ?? '').toString(),
+    adds: (j['adds'] ?? j['additions'] ?? '').toString(),
+    dels: (j['dels'] ?? j['deletions'] ?? '').toString(),
+  );
+}
+
+class RepoCommitDetail {
+  RepoCommitDetail({
+    required this.commit,
+    this.files = const [],
+    this.diff = '',
+    this.truncated = false,
+    this.source = '',
+  });
+
+  final Map<String, dynamic> commit;
+  final List<RepoCommitFile> files;
+  final String diff;
+  final bool truncated;
+  final String source;
+
+  factory RepoCommitDetail.fromJson(
+    dynamic data, {
+    Map<String, dynamic> fallbackCommit = const {},
+  }) {
+    if (data is! Map<String, dynamic>) {
+      return RepoCommitDetail(commit: fallbackCommit);
+    }
+    final commit = data['commit'] is Map
+        ? Map<String, dynamic>.from(data['commit'] as Map)
+        : Map<String, dynamic>.from(fallbackCommit);
+    final rawFiles = data['files'] is List ? data['files'] as List : const [];
+    return RepoCommitDetail(
+      commit: commit,
+      files: rawFiles
+          .whereType<Map>()
+          .map((f) => RepoCommitFile.fromJson(Map<String, dynamic>.from(f)))
+          .where((f) => f.path.isNotEmpty)
+          .toList(),
+      diff: (data['diff'] ?? '').toString(),
+      truncated: data['truncated'] == true,
+      source: (data['source'] ?? data['servedBy'] ?? '').toString(),
+    );
+  }
+}
+
 class RepoBranch {
   RepoBranch({required this.name, this.sha = '', this.isDefault = false});
 
@@ -383,6 +437,42 @@ class RepoBranch {
     sha: (j['sha'] ?? j['hash'] ?? j['commit'] ?? '').toString(),
     isDefault: j['default'] == true || j['isDefault'] == true,
   );
+}
+
+class RepoCodeSearchMatch {
+  RepoCodeSearchMatch({required this.path, this.line = 0, this.text = ''});
+
+  final String path;
+  final int line;
+  final String text;
+
+  factory RepoCodeSearchMatch.fromJson(Map<String, dynamic> j) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return RepoCodeSearchMatch(
+      path: (j['path'] ?? j['file'] ?? '').toString(),
+      line: asInt(j['line'] ?? j['lineNumber']),
+      text: (j['text'] ?? j['snippet'] ?? j['match'] ?? '').toString(),
+    );
+  }
+}
+
+class RepoSearchResults {
+  RepoSearchResults({this.code = const []});
+
+  final List<RepoCodeSearchMatch> code;
+
+  factory RepoSearchResults.fromJson(dynamic data) {
+    if (data is! Map<String, dynamic>) return RepoSearchResults();
+    final rawCode = data['code'] is List ? data['code'] as List : const [];
+    return RepoSearchResults(
+      code: rawCode
+          .whereType<Map<String, dynamic>>()
+          .map(RepoCodeSearchMatch.fromJson)
+          .where((m) => m.path.isNotEmpty)
+          .toList(),
+    );
+  }
 }
 
 class RepoMirror {

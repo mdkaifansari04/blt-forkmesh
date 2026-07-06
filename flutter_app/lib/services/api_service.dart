@@ -57,8 +57,11 @@ class ApiService {
     );
   }
 
-  Uri rawUri(String owner, String name, String path) =>
-      _base('/api/repo/$owner/$name/raw', {'path': path});
+  Uri rawUri(String owner, String name, String path, {String ref = ''}) =>
+      _base('/api/repo/$owner/$name/raw', {
+        'path': path,
+        if (ref.isNotEmpty) 'ref': ref,
+      });
 
   Exception? _repoOfflineError(String repoKey) {
     final until = _offlineRepoUntil[repoKey];
@@ -105,6 +108,14 @@ class ApiService {
           .toList();
     }();
     _repositoriesCache = _CacheEntry(future, DateTime.now());
+    future.then(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        if (identical(_repositoriesCache?.future, future)) {
+          _repositoriesCache = null;
+        }
+      },
+    );
     return future;
   }
 
@@ -145,27 +156,55 @@ class ApiService {
     });
   }
 
-  Future<RepoTree> tree(String owner, String name, {String path = ''}) {
+  Future<RepoCommitDetail> commitDetail(
+    String owner,
+    String name,
+    String hash, {
+    Map<String, dynamic> fallbackCommit = const {},
+  }) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/commit', {'path': hash}),
+    );
+    return RepoCommitDetail.fromJson(data, fallbackCommit: fallbackCommit);
+  }
+
+  Future<RepoTree> tree(
+    String owner,
+    String name, {
+    String path = '',
+    String ref = '',
+  }) {
     final repoKey = '$owner/$name';
     final offline = _repoOfflineError(repoKey);
     if (offline != null) return Future<RepoTree>.error(offline);
-    final key = '$repoKey:$path';
+    final key = '$repoKey:$ref:$path';
     return _cached(_treeCache, key, () async {
       final data = await _getJson(
-        _base('/api/repo/$owner/$name/tree', {'path': path}),
+        _base('/api/repo/$owner/$name/tree', {
+          'path': path,
+          if (ref.isNotEmpty) 'ref': ref,
+        }),
       );
       return RepoTree.fromJson(data, path: path);
     });
   }
 
-  Future<RepoBlob> blob(String owner, String name, String path) {
+  Future<RepoBlob> blob(
+    String owner,
+    String name,
+    String path, {
+    String ref = '',
+  }) {
     final repoKey = '$owner/$name';
     final offline = _repoOfflineError(repoKey);
     if (offline != null) return Future<RepoBlob>.error(offline);
-    final key = '$repoKey:$path';
+    final key = '$repoKey:$ref:$path';
     return _cached(_blobCache, key, () async {
       final data = await _getJson(
-        _base('/api/repo/$owner/$name/blob', {'path': path}),
+        _base('/api/repo/$owner/$name/blob', {
+          'path': path,
+          if (ref.isNotEmpty) 'ref': ref,
+        }),
       );
       return RepoBlob.fromJson(data, path: path);
     });
@@ -187,6 +226,21 @@ class ApiService {
         .map(RepoMirror.fromJson)
         .where((m) => m.label.isNotEmpty)
         .toList();
+  }
+
+  Future<RepoSearchResults> searchRepo(
+    String owner,
+    String name,
+    String query, {
+    String ref = '',
+  }) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/search', {
+        'q': query,
+        if (ref.isNotEmpty) 'ref': ref,
+      }),
+    );
+    return RepoSearchResults.fromJson(data);
   }
 
   Future<List<Issue>> publishedIssues(String owner, String name) {
