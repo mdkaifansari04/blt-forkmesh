@@ -411,7 +411,13 @@ LGTM from mobile.''',
         jsonEncode({
           'ok': true,
           'agents': [
-            {'id': 42, 'status': 'done', 'provider': 'claude-code'},
+            {
+              'id': 42,
+              'status': 'done',
+              'provider': 'claude-code',
+              'prNumber': 7,
+              'diffStats': {'files': 3, 'ahead': 2, 'behind': 1},
+            },
           ],
         }),
       );
@@ -438,6 +444,8 @@ LGTM from mobile.''',
     expect(posted['ownerAccount'], 'owner');
     expect(sessions.single.id, 42);
     expect(sessions.single.providerLabel, 'Claude Code');
+    expect(sessions.single.prNumber, 7);
+    expect(sessions.single.diffLabel, '3 files · ↑2 ↓1');
   });
 
   test(

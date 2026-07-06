@@ -1186,6 +1186,10 @@ class _AgentsTabState extends State<_AgentsTab> {
                     if (session.numTurns > 0) '${session.numTurns} turns',
                     if (session.durationLabel.isNotEmpty) session.durationLabel,
                     if (session.costLabel.isNotEmpty) session.costLabel,
+                    if (session.prLabel.isNotEmpty) session.prLabel,
+                    if (session.diffLabel.isNotEmpty) session.diffLabel,
+                    if (session.conflicted) 'Conflict',
+                    if (session.tokenLabel.isNotEmpty) session.tokenLabel,
                   ],
                 ),
           ],
@@ -1257,7 +1261,32 @@ class _AgentSessionDetailScreen extends StatelessWidget {
                     ),
                   if (session.costLabel.isNotEmpty)
                     _Chip(icon: Icons.paid_outlined, label: session.costLabel),
+                  if (session.prLabel.isNotEmpty)
+                    _Chip(
+                      icon: Icons.call_merge_outlined,
+                      label: session.prLabel,
+                    ),
+                  if (session.diffLabel.isNotEmpty)
+                    _Chip(
+                      icon: Icons.difference_outlined,
+                      label: session.diffLabel,
+                    ),
+                  if (session.conflicted)
+                    _Chip(
+                      icon: Icons.warning_amber_outlined,
+                      label: 'Conflict',
+                    ),
+                  if (session.tokenLabel.isNotEmpty)
+                    _Chip(
+                      icon: Icons.data_usage_outlined,
+                      label: session.tokenLabel,
+                    ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Desktop-controlled session. Mobile can watch progress and open results; start, stop, retry, resume, merge, and apply stay on the desktop node until signed pairing is designed.',
+                style: TextStyle(color: FmTheme.textSecondary(context)),
               ),
               if (session.lastError.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -1327,7 +1356,7 @@ class _AgentStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (session.statusLabel) {
-      'Done' => FmTheme.success(context),
+      'Merged' || 'Done' => FmTheme.success(context),
       'Failed' || 'Stopped' => FmTheme.danger(context),
       'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
       _ => FmTheme.textTertiary(context),
