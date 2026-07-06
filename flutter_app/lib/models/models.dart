@@ -164,6 +164,139 @@ class ForkNotification {
   }
 }
 
+class AgentTranscript {
+  const AgentTranscript({required this.status, required this.transcript});
+
+  final String status;
+  final String transcript;
+
+  factory AgentTranscript.fromJson(Map<String, dynamic> json) =>
+      AgentTranscript(
+        status: (json['status'] ?? '').toString(),
+        transcript: (json['transcript'] ?? '').toString(),
+      );
+}
+
+class AgentSession {
+  AgentSession({
+    required this.id,
+    this.issueNumber = 0,
+    this.issueTitle = '',
+    this.status = '',
+    this.provider = '',
+    this.model = '',
+    this.branchName = '',
+    this.lastError = '',
+    this.createdAtMs = 0,
+    this.startedAtMs = 0,
+    this.finishedAtMs = 0,
+    this.numTurns = 0,
+    this.durationMs = 0,
+    this.costUsd = 0,
+  });
+
+  final int id;
+  final int issueNumber;
+  final String issueTitle;
+  final String status;
+  final String provider;
+  final String model;
+  final String branchName;
+  final String lastError;
+  final int createdAtMs;
+  final int startedAtMs;
+  final int finishedAtMs;
+  final int numTurns;
+  final int durationMs;
+  final double costUsd;
+
+  bool get isActive {
+    final clean = status.toLowerCase().replaceAll('_', '-');
+    return clean == 'queued' || clean == 'running' || clean == 'waiting';
+  }
+
+  String get displayTitle => issueTitle.isNotEmpty
+      ? issueTitle
+      : issueNumber > 0
+      ? 'Issue #$issueNumber'
+      : 'Agent session #$id';
+
+  String get statusLabel {
+    final clean = status.toLowerCase().replaceAll('_', '-');
+    return switch (clean) {
+      'queued' => 'Queued',
+      'running' => 'Running',
+      'waiting' || 'waiting-for-input' => 'Waiting',
+      'done' || 'completed' || 'success' => 'Done',
+      'failed' || 'error' => 'Failed',
+      'stopped' || 'cancelled' || 'canceled' => 'Stopped',
+      _ => status.isEmpty ? 'Unknown' : _titleCase(status),
+    };
+  }
+
+  String get providerLabel => switch (provider.toLowerCase()) {
+    'claude-code' => 'Claude Code',
+    'claude-api' => 'Claude API',
+    'openai' => 'OpenAI',
+    'codex' => 'Codex',
+    _ => provider.isEmpty ? 'Agent' : _titleCase(provider),
+  };
+
+  String get durationLabel {
+    if (durationMs <= 0) return '';
+    final totalSeconds = durationMs ~/ 1000;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    if (minutes <= 0) return '${seconds}s';
+    return '${minutes}m ${seconds}s';
+  }
+
+  String get costLabel {
+    if (costUsd <= 0) return '';
+    if (costUsd < 0.01) return '<\$0.01';
+    return '\$${costUsd.toStringAsFixed(2)}';
+  }
+
+  factory AgentSession.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic value) => value is int
+        ? value
+        : value is num
+        ? value.toInt()
+        : int.tryParse('$value') ?? 0;
+    double asDouble(dynamic value) =>
+        value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+    return AgentSession(
+      id: asInt(json['id']),
+      issueNumber: asInt(json['issueNumber']),
+      issueTitle: (json['issueTitle'] ?? '').toString(),
+      status: (json['status'] ?? '').toString(),
+      provider: (json['provider'] ?? '').toString(),
+      model: (json['model'] ?? '').toString(),
+      branchName: (json['branchName'] ?? '').toString(),
+      lastError: (json['lastError'] ?? '').toString(),
+      createdAtMs: asInt(json['createdAtMs']),
+      startedAtMs: asInt(json['startedAtMs']),
+      finishedAtMs: asInt(json['finishedAtMs']),
+      numTurns: asInt(json['numTurns']),
+      durationMs: asInt(json['durationMs']),
+      costUsd: asDouble(json['costUsd']),
+    );
+  }
+}
+
+String _titleCase(String value) {
+  final clean = value.replaceAll('_', ' ').replaceAll('-', ' ').trim();
+  if (clean.isEmpty) return '';
+  return clean
+      .split(RegExp(r'\s+'))
+      .map(
+        (part) => part.isEmpty
+            ? part
+            : '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}',
+      )
+      .join(' ');
+}
+
 class Repository {
   Repository({
     required this.owner,

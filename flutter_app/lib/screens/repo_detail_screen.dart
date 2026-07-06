@@ -130,6 +130,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
         case RepoDetailTab.code:
         case RepoDetailTab.mirrors:
         case RepoDetailTab.about:
+        case RepoDetailTab.agents:
           return;
       }
     } catch (_) {
@@ -219,6 +220,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
                 Tab(text: 'Commits'),
                 Tab(text: 'Mirrors'),
                 Tab(text: 'About'),
+                Tab(text: 'Agents'),
               ],
             ),
           ),
@@ -235,6 +237,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           _CommitsTab(api: api, repo: repo),
           _MirrorsTab(api: api, repo: repo),
           _AboutTab(repo: repo),
+          _AgentsTab(api: api, repo: repo),
         ],
       ),
     );
@@ -1018,6 +1021,241 @@ class _AboutTab extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class _AgentsTab extends StatelessWidget {
+  const _AgentsTab({required this.api, required this.repo});
+
+  final ApiService api;
+  final Repository repo;
+
+  String _ownerAccount(BuildContext context) {
+    final auth = context.read<AuthService?>();
+    final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
+    return node.isNotEmpty ? node : repo.owner;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ownerAccount = _ownerAccount(context);
+    final future = api.agentSessions(
+      repo.owner,
+      repo.name,
+      ownerAccount: ownerAccount,
+    );
+    return FutureBuilder<List<AgentSession>>(
+      future: future,
+      builder: (context, snap) {
+        final items = snap.data ?? const <AgentSession>[];
+        return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                FmSpace.x4,
+                FmSpace.x2,
+                FmSpace.x4,
+                FmSpace.x2,
+              ),
+              child: FmSectionHeader(
+                title: 'Agent sessions',
+                count: snap.hasData ? items.length : null,
+              ),
+            ),
+            if (snap.connectionState == ConnectionState.waiting)
+              const Padding(
+                padding: EdgeInsets.all(FmSpace.x4),
+                child: _LoadingCard(label: 'Loading agent sessions…'),
+              )
+            else if (snap.hasError)
+              Padding(
+                padding: const EdgeInsets.all(FmSpace.x4),
+                child: _EmptyCard(message: '${snap.error}'),
+              )
+            else if (items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(FmSpace.x4),
+                child: _EmptyCard(
+                  message:
+                      'No agent sessions have been pushed by the desktop node for this repo yet.',
+                ),
+              )
+            else
+              for (final session in items)
+                _MobileCard(
+                  icon: Icons.smart_toy_outlined,
+                  iconColor: FmTheme.accent(context),
+                  title: session.displayTitle,
+                  subtitle: session.issueNumber > 0
+                      ? 'Issue #${session.issueNumber} • ${session.providerLabel}'
+                      : session.providerLabel,
+                  trailing: _AgentStatusBadge(session: session),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => _AgentSessionDetailScreen(
+                        api: api,
+                        repo: repo,
+                        session: session,
+                        ownerAccount: ownerAccount,
+                      ),
+                    ),
+                  ),
+                  chips: [
+                    if (session.issueNumber > 0) '#${session.issueNumber}',
+                    session.providerLabel,
+                    session.statusLabel,
+                    if (session.branchName.isNotEmpty) session.branchName,
+                    if (session.numTurns > 0) '${session.numTurns} turns',
+                    if (session.durationLabel.isNotEmpty) session.durationLabel,
+                    if (session.costLabel.isNotEmpty) session.costLabel,
+                  ],
+                ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AgentSessionDetailScreen extends StatelessWidget {
+  const _AgentSessionDetailScreen({
+    required this.api,
+    required this.repo,
+    required this.session,
+    required this.ownerAccount,
+  });
+
+  final ApiService api;
+  final Repository repo;
+  final AgentSession session;
+  final String ownerAccount;
+
+  @override
+  Widget build(BuildContext context) {
+    final transcriptFuture = api.agentTranscript(
+      repo.owner,
+      repo.name,
+      session.id,
+      ownerAccount: ownerAccount,
+    );
+    return Scaffold(
+      appBar: AppBar(title: Text('Agent session #${session.id}')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: session.displayTitle,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Chip(
+                    icon: Icons.smart_toy_outlined,
+                    label: session.providerLabel,
+                  ),
+                  _Chip(icon: Icons.info_outline, label: session.statusLabel),
+                  if (session.model.isNotEmpty)
+                    _Chip(icon: Icons.memory_outlined, label: session.model),
+                  if (session.issueNumber > 0)
+                    _Chip(
+                      icon: Icons.error_outline,
+                      label: '#${session.issueNumber}',
+                    ),
+                  if (session.branchName.isNotEmpty)
+                    _Chip(
+                      icon: Icons.account_tree_outlined,
+                      label: session.branchName,
+                    ),
+                  if (session.numTurns > 0)
+                    _Chip(
+                      icon: Icons.chat_bubble_outline,
+                      label: '${session.numTurns} turns',
+                    ),
+                  if (session.durationLabel.isNotEmpty)
+                    _Chip(
+                      icon: Icons.timer_outlined,
+                      label: session.durationLabel,
+                    ),
+                  if (session.costLabel.isNotEmpty)
+                    _Chip(icon: Icons.paid_outlined, label: session.costLabel),
+                ],
+              ),
+              if (session.lastError.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  session.lastError,
+                  style: TextStyle(color: FmTheme.danger(context)),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          FutureBuilder<AgentTranscript>(
+            future: transcriptFuture,
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const _LoadingCard(label: 'Loading transcript…');
+              }
+              if (snap.hasError) {
+                return _EmptyCard(message: '${snap.error}');
+              }
+              final detail =
+                  snap.data ??
+                  const AgentTranscript(status: '', transcript: '');
+              final status = detail.status.isNotEmpty
+                  ? AgentSession(
+                      id: session.id,
+                      status: detail.status,
+                    ).statusLabel
+                  : session.statusLabel;
+              return _InfoCard(
+                title: 'Transcript',
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _Chip(icon: Icons.info_outline, label: status),
+                      _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    detail.transcript.trim().isEmpty
+                        ? 'No transcript has been pushed by the desktop node yet.'
+                        : detail.transcript.trim(),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentStatusBadge extends StatelessWidget {
+  const _AgentStatusBadge({required this.session});
+
+  final AgentSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (session.statusLabel) {
+      'Done' => FmTheme.success(context),
+      'Failed' || 'Stopped' => FmTheme.danger(context),
+      'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
+      _ => FmTheme.textTertiary(context),
+    };
+    return FmStatusBadge(label: session.statusLabel, color: color);
   }
 }
 
@@ -3912,6 +4150,8 @@ class _MobileCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     this.badge = '',
+    this.chips = const [],
+    this.trailing,
     this.onTap,
   });
   final IconData icon;
@@ -3919,6 +4159,8 @@ class _MobileCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final String badge;
+  final List<String> chips;
+  final Widget? trailing;
   final VoidCallback? onTap;
   @override
   Widget build(BuildContext context) => Padding(
@@ -3960,10 +4202,21 @@ class _MobileCard extends StatelessWidget {
                     ),
                   ),
                 ],
+                if (chips.isNotEmpty) ...[
+                  const SizedBox(height: FmSpace.x2),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [for (final chip in chips) _SmallBadge(chip)],
+                  ),
+                ],
               ],
             ),
           ),
-          if (badge.isNotEmpty) ...[
+          if (trailing != null) ...[
+            const SizedBox(width: FmSpace.x2),
+            trailing!,
+          ] else if (badge.isNotEmpty) ...[
             const SizedBox(width: FmSpace.x2),
             _SmallBadge(badge),
           ],

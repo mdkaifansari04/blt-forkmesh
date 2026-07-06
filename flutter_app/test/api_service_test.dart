@@ -396,4 +396,93 @@ LGTM from mobile.''',
       expect(pulls.single.events.last.state, 'approve');
     },
   );
+
+  test('agent session list posts ownerAccount and parses agents', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    Map<String, dynamic> posted = const {};
+    final subscription = server.listen((request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/api/repo/owner/repo/agents/list');
+      posted =
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(
+        jsonEncode({
+          'ok': true,
+          'agents': [
+            {'id': 42, 'status': 'done', 'provider': 'claude-code'},
+          ],
+        }),
+      );
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final sessions = await api.agentSessions(
+      'owner',
+      'repo',
+      ownerAccount: 'owner',
+    );
+
+    expect(posted['ownerAccount'], 'owner');
+    expect(sessions.single.id, 42);
+    expect(sessions.single.providerLabel, 'Claude Code');
+  });
+
+  test(
+    'agent transcript posts ownerAccount and parses transcript detail',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      Map<String, dynamic> posted = const {};
+      final subscription = server.listen((request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/api/repo/owner/repo/agents/42/transcript');
+        posted =
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, dynamic>;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'ok': true,
+            'status': 'done',
+            'transcript': 'Running tests\nflutter test passed',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final detail = await api.agentTranscript(
+        'owner',
+        'repo',
+        42,
+        ownerAccount: 'owner',
+      );
+
+      expect(posted['ownerAccount'], 'owner');
+      expect(detail.status, 'done');
+      expect(detail.transcript, contains('flutter test passed'));
+    },
+  );
 }
