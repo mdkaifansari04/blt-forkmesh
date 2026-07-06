@@ -7,6 +7,7 @@ enum RepoDetailTab {
   discussions,
   commits,
   mirrors,
+  releases,
   about,
   actions,
   agents,
@@ -66,6 +67,8 @@ class NotificationDeepLink {
           reference = parts.length >= 4 ? Uri.decodeComponent(parts[3]) : '';
         case 'mirrors':
           tab = RepoDetailTab.mirrors;
+        case 'releases':
+          tab = RepoDetailTab.releases;
         case 'about':
           tab = RepoDetailTab.about;
         case 'actions':

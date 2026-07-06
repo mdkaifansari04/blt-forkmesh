@@ -397,6 +397,133 @@ LGTM from mobile.''',
     },
   );
 
+  test(
+    'releases parse release manifests with artifact download counts',
+    () async {
+      final requests = <String>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sha =
+          '1938916325d5839850fbc39db05a3a1f836b10615ac4467725b9f49e864884fb';
+      final secondSha =
+          '2938916325d5839850fbc39db05a3a1f836b10615ac4467725b9f49e864884fc';
+      final subscription = server.listen((request) async {
+        requests.add('${request.uri.path}?${request.uri.query}');
+        request.response.headers.contentType = ContentType.json;
+        if (request.uri.path == '/api/repo/owner/repo/tree') {
+          request.response.write(
+            jsonEncode({
+              'entries': [
+                {'name': 'latest', 'path': 'releases/latest', 'type': 'dir'},
+              ],
+            }),
+          );
+        } else if (request.uri.path == '/api/repo/owner/repo/blob') {
+          request.response.write(
+            jsonEncode({
+              'content': jsonEncode({
+                'schema': 'forkmesh-release-v1',
+                'tag': 'v1.2.3',
+                'channel': 'latest',
+                'tag_commit': 'abcdef1234567890',
+                'created_at': 1700000000000,
+                'assets': [
+                  {
+                    'name': 'forkmesh-linux-x86_64',
+                    'blob_sha256': sha,
+                    'size': 14949672,
+                    'os': 'linux',
+                    'arch': 'x86_64',
+                  },
+                  {
+                    'name': 'forkmesh-darwin-arm64',
+                    'sha256': secondSha,
+                    'size': '2048',
+                    'os': 'darwin',
+                    'arch': 'arm64',
+                  },
+                ],
+              }),
+            }),
+          );
+        } else if (request.uri.path ==
+            '/api/repo/owner/repo/releases/downloads') {
+          request.response.write(
+            jsonEncode({
+              'ok': true,
+              'counts': {sha: 3, secondSha: '5'},
+            }),
+          );
+        } else {
+          request.response.statusCode = 404;
+          request.response.write(jsonEncode({'error': 'not_found'}));
+        }
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final releases = await api.releases('owner', 'repo');
+
+      expect(releases.single.tag, 'v1.2.3');
+      expect(releases.single.channel, 'latest');
+      expect(releases.single.shortCommit, 'abcdef12');
+      expect(releases.single.assets.map((asset) => asset.sha256), [
+        sha,
+        secondSha,
+      ]);
+      expect(releases.single.assets.first.downloads, 3);
+      expect(releases.single.assets.first.sizeLabel, '14.3 MB');
+      expect(releases.single.assets.last.downloads, 5);
+      expect(releases.single.assets.last.sizeLabel, '2.0 KB');
+      expect(requests, contains('/api/repo/owner/repo/releases/downloads?'));
+    },
+  );
+
+  test('releases return empty list when release tree is absent', () async {
+    final requests = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      requests.add(request.uri.path);
+      request.response.headers.contentType = ContentType.json;
+      if (request.uri.path == '/api/repo/owner/repo/releases/downloads') {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        request.response.write(jsonEncode({'error': 'offline'}));
+      } else if (request.uri.path == '/api/repo/owner/repo/tree') {
+        expect(request.uri.queryParameters['path'], 'releases');
+        request.response.statusCode = HttpStatus.notFound;
+        request.response.write(jsonEncode({'error': 'not_found'}));
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+        request.response.write(jsonEncode({'error': 'not_found'}));
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    await expectLater(api.releases('owner', 'repo'), completion(isEmpty));
+    expect(requests, contains('/api/repo/owner/repo/releases/downloads'));
+    expect(requests, contains('/api/repo/owner/repo/tree'));
+  });
+
   test('agent session list posts ownerAccount and parses agents', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     Map<String, dynamic> posted = const {};

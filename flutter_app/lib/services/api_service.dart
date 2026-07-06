@@ -28,6 +28,7 @@ class ApiService {
   final Map<String, _CacheEntry<List<PublishedPull>>> _pullsCache = {};
   final Map<String, _CacheEntry<List<RepoDiscussion>>> _discussionsCache = {};
   final Map<String, _CacheEntry<List<Map<String, dynamic>>>> _commitsCache = {};
+  final Map<String, _CacheEntry<List<RepoRelease>>> _releasesCache = {};
 
   void clearRepoCache(String owner, String name) {
     final prefix = '$owner/$name:';
@@ -37,6 +38,7 @@ class ApiService {
     _pullsCache.remove('$owner/$name');
     _discussionsCache.remove('$owner/$name');
     _commitsCache.remove('$owner/$name');
+    _releasesCache.remove('$owner/$name');
     _offlineRepoUntil.remove('$owner/$name');
   }
 
@@ -351,6 +353,76 @@ class ApiService {
         .map(RepoMirror.fromJson)
         .where((m) => m.label.isNotEmpty)
         .toList();
+  }
+
+  Future<List<RepoRelease>> releases(String owner, String name) {
+    final key = '$owner/$name';
+    return _cached(_releasesCache, key, () async {
+      final downloads = await _releaseDownloadCounts(owner, name);
+      final RepoTree treeRoot;
+      try {
+        final data = await _getJson(
+          _base('/api/repo/$owner/$name/tree', {'path': 'releases'}),
+        );
+        treeRoot = RepoTree.fromJson(data, path: 'releases');
+      } catch (_) {
+        return const <RepoRelease>[];
+      }
+      final dirs = treeRoot.entries.where((entry) => entry.isDirectory).toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      final items = await Future.wait(
+        dirs.map((dir) async {
+          try {
+            final blob = await this.blob(
+              owner,
+              name,
+              'releases/${dir.name}/release.json',
+            );
+            final decoded = jsonDecode(blob.content);
+            if (decoded is! Map<String, dynamic>) return null;
+            return RepoRelease.fromJson(decoded, downloads: downloads);
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+      final releases = items.whereType<RepoRelease>().toList();
+      releases.sort((a, b) {
+        final byTime = b.createdAtMs.compareTo(a.createdAtMs);
+        if (byTime != 0) return byTime;
+        return b.tag.compareTo(a.tag);
+      });
+      return releases;
+    });
+  }
+
+  Future<Map<String, int>> _releaseDownloadCounts(
+    String owner,
+    String name,
+  ) async {
+    try {
+      final data = await _getJson(
+        _base('/api/repo/$owner/$name/releases/downloads'),
+      );
+      final raw = data is Map<String, dynamic> && data['counts'] is Map
+          ? data['counts'] as Map
+          : data is Map
+          ? data
+          : const {};
+      return raw.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          value is int
+              ? value
+              : value is num
+              ? value.toInt()
+              : int.tryParse('$value') ?? 0,
+        ),
+      );
+    } catch (_) {
+      _offlineRepoUntil.remove('$owner/$name');
+      return const {};
+    }
   }
 
   Future<RepoSearchResults> searchRepo(

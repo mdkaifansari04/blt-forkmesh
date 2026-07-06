@@ -1154,6 +1154,131 @@ class PublishedPull {
   final List<PullEvent> events;
 }
 
+class RepoReleaseAsset {
+  const RepoReleaseAsset({
+    required this.name,
+    required this.sha256,
+    this.size = 0,
+    this.os = '',
+    this.arch = '',
+    this.downloads = 0,
+  });
+
+  final String name;
+  final String sha256;
+  final int size;
+  final String os;
+  final String arch;
+  final int downloads;
+
+  String get shortSha => sha256.length > 12 ? sha256.substring(0, 12) : sha256;
+
+  String get platformLabel {
+    final parts = [os, arch].where((p) => p.trim().isNotEmpty).toList();
+    return parts.isEmpty ? 'artifact' : parts.join(' / ');
+  }
+
+  String get sizeLabel {
+    if (size <= 0) return 'unknown size';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var value = size.toDouble();
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    if (unit == 0) return '${value.toStringAsFixed(0)} ${units[unit]}';
+    return '${value.toStringAsFixed(1)} ${units[unit]}';
+  }
+
+  String get downloadLabel =>
+      '$downloads ${downloads == 1 ? 'download' : 'downloads'}';
+
+  factory RepoReleaseAsset.fromJson(
+    Map<String, dynamic> json, {
+    int downloads = 0,
+  }) {
+    int asInt(dynamic value) => value is int
+        ? value
+        : value is num
+        ? value.toInt()
+        : int.tryParse('$value') ?? 0;
+    return RepoReleaseAsset(
+      name: (json['name'] ?? json['filename'] ?? '').toString(),
+      sha256: (json['sha256'] ?? json['blob_sha256'] ?? json['hash'] ?? '')
+          .toString(),
+      size: asInt(json['size'] ?? json['bytes']),
+      os: (json['os'] ?? '').toString(),
+      arch: (json['arch'] ?? '').toString(),
+      downloads: downloads,
+    );
+  }
+}
+
+class RepoRelease {
+  const RepoRelease({
+    required this.tag,
+    this.channel = '',
+    this.tagCommit = '',
+    this.createdAtMs = 0,
+    this.assets = const [],
+  });
+
+  final String tag;
+  final String channel;
+  final String tagCommit;
+  final int createdAtMs;
+  final List<RepoReleaseAsset> assets;
+
+  String get shortCommit =>
+      tagCommit.length > 8 ? tagCommit.substring(0, 8) : tagCommit;
+
+  String get createdDate {
+    if (createdAtMs <= 0) return '';
+    final d = DateTime.fromMillisecondsSinceEpoch(createdAtMs);
+    final month = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '${d.year}-$month-$day';
+  }
+
+  String get assetSummary => assets.isEmpty
+      ? 'No published artifacts yet'
+      : '${assets.length} ${assets.length == 1 ? 'artifact' : 'artifacts'}';
+
+  factory RepoRelease.fromJson(
+    Map<String, dynamic> json, {
+    Map<String, int> downloads = const {},
+  }) {
+    int asInt(dynamic value) => value is int
+        ? value
+        : value is num
+        ? value.toInt()
+        : int.tryParse('$value') ?? 0;
+    final rawAssets = json['assets'] is List
+        ? json['assets'] as List
+        : const [];
+    final assets = rawAssets
+        .whereType<Map>()
+        .map((asset) {
+          final map = Map<String, dynamic>.from(asset);
+          final sha = (map['sha256'] ?? map['blob_sha256'] ?? map['hash'] ?? '')
+              .toString();
+          return RepoReleaseAsset.fromJson(map, downloads: downloads[sha] ?? 0);
+        })
+        .where((asset) => asset.name.isNotEmpty || asset.sha256.isNotEmpty)
+        .toList();
+    return RepoRelease(
+      tag: (json['tag'] ?? json['name'] ?? '').toString(),
+      channel: (json['channel'] ?? '').toString(),
+      tagCommit:
+          (json['tag_commit'] ?? json['tagCommit'] ?? json['commit'] ?? '')
+              .toString(),
+      createdAtMs: asInt(json['created_at'] ?? json['createdAt'] ?? json['ts']),
+      assets: assets,
+    );
+  }
+}
+
 class NetworkStats {
   NetworkStats({this.nodesOnline = 0, this.hostsOnline = 0, this.repos = 0});
   final int nodesOnline;
