@@ -193,6 +193,9 @@ void main() {
     final agents = NotificationDeepLink.parse('/mona/forkmesh/agents');
     expect(agents?.initialTab, RepoDetailTab.agents);
 
+    final actions = NotificationDeepLink.parse('/mona/forkmesh/actions');
+    expect(actions?.initialTab, RepoDetailTab.actions);
+
     expect(
       NotificationDeepLink.parse('https://evil.test/mona/forkmesh'),
       isNull,

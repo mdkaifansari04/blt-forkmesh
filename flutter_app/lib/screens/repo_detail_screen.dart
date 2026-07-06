@@ -131,6 +131,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
         case RepoDetailTab.code:
         case RepoDetailTab.mirrors:
         case RepoDetailTab.about:
+        case RepoDetailTab.actions:
         case RepoDetailTab.agents:
           return;
       }
@@ -221,6 +222,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
                 Tab(text: 'Commits'),
                 Tab(text: 'Mirrors'),
                 Tab(text: 'About'),
+                Tab(text: 'Actions'),
                 Tab(text: 'Agents'),
               ],
             ),
@@ -238,6 +240,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           _CommitsTab(api: api, repo: repo),
           _MirrorsTab(api: api, repo: repo),
           _AboutTab(repo: repo),
+          _ActionsTab(api: api, repo: repo),
           _AgentsTab(api: api, repo: repo),
         ],
       ),
@@ -1022,6 +1025,380 @@ class _AboutTab extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class _ActionReadProof {
+  const _ActionReadProof({
+    required this.ownerAccount,
+    required this.ts,
+    required this.sig,
+  });
+
+  final String ownerAccount;
+  final String ts;
+  final String sig;
+}
+
+class _ActionsTab extends StatefulWidget {
+  const _ActionsTab({required this.api, required this.repo});
+
+  final ApiService api;
+  final Repository repo;
+
+  @override
+  State<_ActionsTab> createState() => _ActionsTabState();
+}
+
+class _ActionsTabState extends State<_ActionsTab> {
+  static const _pollInterval = Duration(seconds: 10);
+
+  Future<RepoActions>? _future;
+  Timer? _pollTimer;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _future ??= _loadActions();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<_ActionReadProof> _readProof(BuildContext context) async {
+    final auth = context.read<AuthService?>();
+    final identity = context.read<Identity?>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    if (session == null || identity == null || account.isEmpty) {
+      throw Exception(
+        'Actions are owner-key gated. Sign in with the repo owner account and local owner key to view workflow logs.',
+      );
+    }
+    if (account != widget.repo.owner.trim().toLowerCase()) {
+      throw Exception(
+        'Actions are owner-key gated. This device is signed in as $account, not ${widget.repo.owner}.',
+      );
+    }
+    if (session.pubkey.trim() != identity.publicKeyB64url) {
+      throw Exception(
+        'Actions are owner-key gated. Pair this mobile device with the owner key before viewing workflow logs.',
+      );
+    }
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    final canonical =
+        'forkmesh-actions-read-v1\n${widget.repo.owner}\n${widget.repo.name}\n$ts';
+    final sig = await identity.sign(utf8.encode(canonical));
+    return _ActionReadProof(ownerAccount: account, ts: ts, sig: sig);
+  }
+
+  Future<RepoActions> _loadActions() async {
+    final proof = await _readProof(context);
+    final actions = await widget.api.repoActions(
+      widget.repo.owner,
+      widget.repo.name,
+      ownerAccount: proof.ownerAccount,
+      ts: proof.ts,
+      sig: proof.sig,
+    );
+    _syncPolling(actions);
+    return actions;
+  }
+
+  void _syncPolling(RepoActions actions) {
+    if (!mounted) return;
+    if (actions.runs.any((run) => run.isActive)) {
+      _pollTimer ??= Timer.periodic(_pollInterval, (_) {
+        if (!mounted) return;
+        setState(() {
+          _future = _loadActions();
+        });
+      });
+    } else {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _future = _loadActions();
+    });
+    await _future;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final future = _future ??= _loadActions();
+    return FutureBuilder<RepoActions>(
+      future: future,
+      builder: (context, snap) {
+        final actions = snap.data ?? const RepoActions();
+        final polling =
+            _pollTimer != null || actions.runs.any((run) => run.isActive);
+        return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                FmSpace.x4,
+                FmSpace.x2,
+                FmSpace.x4,
+                FmSpace.x2,
+              ),
+              child: FmSectionHeader(
+                title: 'Workflows',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (snap.hasData)
+                      Text(
+                        '${actions.workflows.length} workflows · ${actions.runs.length} runs',
+                        style: TextStyle(
+                          color: FmTheme.textSecondary(context),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    if (polling) ...[
+                      const SizedBox(width: FmSpace.x2),
+                      const Text('Live refresh on'),
+                    ],
+                    const SizedBox(width: FmSpace.x1),
+                    IconButton(
+                      tooltip: 'Refresh actions',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _refresh,
+                      icon: const Icon(Icons.refresh, size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                FmSpace.x4,
+                0,
+                FmSpace.x4,
+                FmSpace.x3,
+              ),
+              child: Text(
+                'Desktop node runs workflows and owns rerun, cancel, approve, secrets, and artifacts. Mobile watches status and logs until signed desktop pairing is designed.',
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            if (snap.connectionState == ConnectionState.waiting &&
+                actions.workflows.isEmpty &&
+                actions.runs.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(FmSpace.x4),
+                child: _LoadingCard(label: 'Loading actions…'),
+              )
+            else if (snap.hasError)
+              Padding(
+                padding: const EdgeInsets.all(FmSpace.x4),
+                child: _EmptyCard(message: '${snap.error}'),
+              )
+            else if (actions.workflows.isEmpty && actions.runs.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(FmSpace.x4),
+                child: _EmptyCard(
+                  message:
+                      'No action snapshots have been pushed by the desktop node for this repo yet.',
+                ),
+              )
+            else ...[
+              for (final workflow in actions.workflows)
+                _MobileCard(
+                  icon: Icons.playlist_play_outlined,
+                  iconColor: FmTheme.accent(context),
+                  title: workflow.displayName,
+                  subtitle: workflow.path,
+                  chips: [
+                    workflow.triggerLabel,
+                    if (workflow.stepCount > 0)
+                      workflow.stepCount == 1
+                          ? '1 step'
+                          : '${workflow.stepCount} steps',
+                    if (workflow.manual) 'Manual run',
+                    if (!workflow.valid) 'Invalid',
+                  ],
+                ),
+              if (actions.runs.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    FmSpace.x4,
+                    FmSpace.x4,
+                    FmSpace.x4,
+                    FmSpace.x2,
+                  ),
+                  child: FmSectionHeader(title: 'Runs'),
+                ),
+              for (final run in actions.runs)
+                _MobileCard(
+                  icon: Icons.terminal_outlined,
+                  iconColor: FmTheme.accent(context),
+                  title: run.displayName,
+                  subtitle: [
+                    if (run.refLabel.isNotEmpty) run.refLabel,
+                    if (run.shortCommit.isNotEmpty) run.shortCommit,
+                  ].join(' • '),
+                  trailing: _ActionStatusBadge(run: run),
+                  onTap: () async {
+                    final navigator = Navigator.of(context);
+                    final proof = await _readProof(context);
+                    if (!mounted) return;
+                    navigator.push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => _ActionRunDetailScreen(
+                          api: widget.api,
+                          repo: widget.repo,
+                          run: run,
+                          proof: proof,
+                        ),
+                      ),
+                    );
+                  },
+                  chips: [
+                    run.statusLabel,
+                    if (run.refLabel.isNotEmpty) run.refLabel,
+                    if (run.shortCommit.isNotEmpty) run.shortCommit,
+                    if (run.durationLabel.isNotEmpty) run.durationLabel,
+                    if (run.workflowPath.isNotEmpty) run.workflowPath,
+                  ],
+                ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ActionRunDetailScreen extends StatelessWidget {
+  const _ActionRunDetailScreen({
+    required this.api,
+    required this.repo,
+    required this.run,
+    required this.proof,
+  });
+
+  final ApiService api;
+  final Repository repo;
+  final ActionRun run;
+  final _ActionReadProof proof;
+
+  @override
+  Widget build(BuildContext context) {
+    final logFuture = api.actionLog(
+      repo.owner,
+      repo.name,
+      run.id,
+      ownerAccount: proof.ownerAccount,
+      ts: proof.ts,
+      sig: proof.sig,
+    );
+    return Scaffold(
+      appBar: AppBar(title: Text('Action run #${run.id}')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: run.displayName,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Chip(icon: Icons.info_outline, label: run.statusLabel),
+                  if (run.refLabel.isNotEmpty)
+                    _Chip(
+                      icon: Icons.account_tree_outlined,
+                      label: run.refLabel,
+                    ),
+                  if (run.shortCommit.isNotEmpty)
+                    _Chip(icon: Icons.commit_outlined, label: run.shortCommit),
+                  if (run.workflowPath.isNotEmpty)
+                    _Chip(
+                      icon: Icons.description_outlined,
+                      label: run.workflowPath,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Desktop-controlled workflow. Mobile can inspect run output; rerun, cancel, approve changed workflows, and edit secrets stay on the desktop node until signed pairing is designed.',
+                style: TextStyle(color: FmTheme.textSecondary(context)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          FutureBuilder<ActionLog>(
+            future: logFuture,
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const _LoadingCard(label: 'Loading action log…');
+              }
+              if (snap.hasError) {
+                return _EmptyCard(message: '${snap.error}');
+              }
+              final detail =
+                  snap.data ?? ActionLog(id: run.id, status: run.status);
+              return _InfoCard(
+                title: 'Run log',
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _Chip(
+                        icon: Icons.info_outline,
+                        label: detail.statusLabel,
+                      ),
+                      _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    detail.log.trim().isEmpty
+                        ? 'No log has been pushed by the desktop node yet.'
+                        : detail.log.trim(),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionStatusBadge extends StatelessWidget {
+  const _ActionStatusBadge({required this.run});
+
+  final ActionRun run;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (run.statusLabel) {
+      'Success' => FmTheme.success(context),
+      'Failed' || 'Rejected' || 'Cancelled' => FmTheme.danger(context),
+      'Running' || 'Queued' || 'Awaiting approval' => FmTheme.accent(context),
+      _ => FmTheme.textTertiary(context),
+    };
+    return FmStatusBadge(label: run.statusLabel, color: color);
   }
 }
 

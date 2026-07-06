@@ -493,4 +493,102 @@ LGTM from mobile.''',
       expect(detail.transcript, contains('flutter test passed'));
     },
   );
+
+  test(
+    'action list and log post ownerAccount and parse action payloads',
+    () async {
+      final requests = <Map<String, dynamic>>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final body = await utf8.decoder.bind(request).join();
+        requests.add({
+          'method': request.method,
+          'path': request.uri.path,
+          'body': body,
+        });
+        request.response.headers.contentType = ContentType.json;
+        if (request.uri.path == '/api/repo/owner/repo/actions/list') {
+          request.response.write(
+            jsonEncode({
+              'ok': true,
+              'workflows': [
+                {
+                  'path': '.forkmesh/test.yml',
+                  'name': 'Test suite',
+                  'on': ['push'],
+                  'stepCount': 2,
+                },
+              ],
+              'runs': [
+                {
+                  'id': 7,
+                  'workflowName': 'Test suite',
+                  'status': 'running',
+                  'ref': 'refs/heads/main',
+                },
+              ],
+            }),
+          );
+        } else if (request.uri.path == '/api/repo/owner/repo/actions/7/log') {
+          request.response.write(
+            jsonEncode({
+              'ok': true,
+              'id': 7,
+              'status': 'success',
+              'log': 'flutter test passed',
+            }),
+          );
+        } else {
+          request.response.statusCode = HttpStatus.notFound;
+          request.response.write('not found');
+        }
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final actions = await api.repoActions(
+        'owner',
+        'repo',
+        ownerAccount: 'owner',
+        ts: '1000',
+        sig: 'signed-list',
+      );
+      final log = await api.actionLog(
+        'owner',
+        'repo',
+        7,
+        ownerAccount: 'owner',
+        ts: '1001',
+        sig: 'signed-log',
+      );
+
+      expect(requests[0]['method'], 'POST');
+      expect(requests[0]['path'], '/api/repo/owner/repo/actions/list');
+      expect(jsonDecode(requests[0]['body'] as String), {
+        'ownerAccount': 'owner',
+        'ts': '1000',
+        'sig': 'signed-list',
+      });
+      expect(actions.workflows.single.name, 'Test suite');
+      expect(actions.runs.single.statusLabel, 'Running');
+      expect(requests[1]['path'], '/api/repo/owner/repo/actions/7/log');
+      expect(jsonDecode(requests[1]['body'] as String), {
+        'ownerAccount': 'owner',
+        'ts': '1001',
+        'sig': 'signed-log',
+      });
+      expect(log.statusLabel, 'Success');
+      expect(log.log, 'flutter test passed');
+    },
+  );
 }

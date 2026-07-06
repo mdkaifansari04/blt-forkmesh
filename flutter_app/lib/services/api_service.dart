@@ -197,6 +197,44 @@ class ApiService {
     );
   }
 
+  Future<RepoActions> repoActions(
+    String owner,
+    String name, {
+    String ownerAccount = '',
+    String ts = '',
+    String sig = '',
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$name/actions/list'), {
+      if (ownerAccount.trim().isNotEmpty)
+        'ownerAccount': ownerAccount.trim().toLowerCase(),
+      if (ts.trim().isNotEmpty) 'ts': ts.trim(),
+      if (sig.trim().isNotEmpty) 'sig': sig.trim(),
+    });
+    return RepoActions.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<ActionLog> actionLog(
+    String owner,
+    String name,
+    int id, {
+    String ownerAccount = '',
+    String ts = '',
+    String sig = '',
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/actions/$id/log'), {
+          if (ownerAccount.trim().isNotEmpty)
+            'ownerAccount': ownerAccount.trim().toLowerCase(),
+          if (ts.trim().isNotEmpty) 'ts': ts.trim(),
+          if (sig.trim().isNotEmpty) 'sig': sig.trim(),
+        });
+    return ActionLog.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(
