@@ -134,6 +134,81 @@ void main() {
     expect(legacy.repos, 5);
   });
 
+  test('NetworkStats.fromJson reads payout readiness nodes', () {
+    final stats = NetworkStats.fromJson({
+      'nodesOnline': 2,
+      'payoutNodes': [
+        {
+          'name': 'mainnode-a',
+          'wallet': 'Wallet11111111111111111111111111111111',
+          'balanceLamports': '1250000000',
+          'balanceSol': '1.25',
+          'online': true,
+          'payoutEligible': true,
+          'eligibilityReason': 'eligible',
+          'relay': 'us-east',
+        },
+        {
+          'name': 'mainnode-b',
+          'online': false,
+          'eligibilityReason': 'missing wallet',
+        },
+      ],
+    });
+
+    expect(stats.payoutNodes, hasLength(2));
+    expect(stats.payoutNodes.first.name, 'mainnode-a');
+    expect(
+      stats.payoutNodes.first.wallet,
+      'Wallet11111111111111111111111111111111',
+    );
+    expect(stats.payoutNodes.first.shortWallet, 'Wallet...111111');
+    expect(stats.payoutNodes.first.balanceLamports, 1250000000);
+    expect(stats.payoutNodes.first.balanceSol, 1.25);
+    expect(stats.payoutNodes.first.online, isTrue);
+    expect(stats.payoutNodes.first.payoutEligible, isTrue);
+    expect(stats.payoutNodes.first.eligibilityLabel, 'eligible');
+    expect(
+      stats.payoutNodes.first.balanceLabel,
+      '1.25 SOL (1250000000 lamports)',
+    );
+    expect(stats.payoutNodes.first.relay, 'us-east');
+    expect(stats.payoutNodes.last.name, 'mainnode-b');
+    expect(stats.payoutNodes.last.wallet, isEmpty);
+    expect(stats.payoutNodes.last.balanceLamports, 0);
+    expect(stats.payoutNodes.last.balanceSol, 0);
+    expect(stats.payoutNodes.last.payoutEligible, isFalse);
+    expect(stats.payoutNodes.last.eligibilityLabel, 'missing wallet');
+  });
+
+  test('NetworkLeaderboards.fromJson parses funds received boards', () {
+    final boards = NetworkLeaderboards.fromJson({
+      'fundsMainnodes': [
+        {'name': 'mainnode-a', 'lamports': '1250000000', 'sol': '1.25'},
+      ],
+      'fundsContributors': [
+        {'name': 'alice', 'lamports': 500000000, 'sol': 0.5},
+      ],
+      'fundsProjects': [
+        {'name': 'forkmesh/mobile', 'lamports': '42'},
+      ],
+    });
+
+    expect(boards.fundsMainnodes.single.name, 'mainnode-a');
+    expect(boards.fundsMainnodes.single.lamports, 1250000000);
+    expect(boards.fundsMainnodes.single.sol, 1.25);
+    expect(
+      boards.fundsMainnodes.single.amountLabel,
+      '1.25 SOL (1250000000 lamports)',
+    );
+    expect(
+      boards.fundsContributors.single.amountLabel,
+      '0.5 SOL (500000000 lamports)',
+    );
+    expect(boards.fundsProjects.single.amountLabel, '42 lamports');
+    expect(boards.isEmpty, isFalse);
+  });
+
   test('ForkNotification.fromJson parses worker notification payloads', () {
     final notification = ForkNotification.fromJson({
       'id': 'dedupe-1',
