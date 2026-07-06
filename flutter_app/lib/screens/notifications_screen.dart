@@ -161,8 +161,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (link == null) return;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            RepoDetailScreen(repo: link.repo, initialTab: link.initialTab),
+        builder: (_) => RepoDetailScreen(
+          repo: link.repo,
+          initialTab: link.initialTab,
+          initialTarget: link,
+        ),
       ),
     );
   }

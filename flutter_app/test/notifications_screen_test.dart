@@ -62,8 +62,15 @@ class NotificationApiService extends ApiService {
   }
 
   @override
-  Future<List<Issue>> publishedIssues(String owner, String name) async =>
-      const [];
+  Future<List<Issue>> publishedIssues(String owner, String name) async => [
+    Issue(
+      number: 12,
+      title: 'Stabilize signed inbox',
+      body: 'Open the exact issue detail from a notification.',
+      author: 'kai',
+      labels: const ['mobile'],
+    ),
+  ];
 }
 
 Future<NotificationApiService> _pumpNotifications(WidgetTester tester) async {
@@ -121,7 +128,7 @@ void main() {
     expect(find.text('0 unread'), findsOneWidget);
   });
 
-  testWidgets('tapping a repo notification opens the linked repo tab', (
+  testWidgets('tapping an issue notification opens the exact issue detail', (
     tester,
   ) async {
     final api = await _pumpNotifications(tester);
@@ -130,8 +137,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.markedIds, ['n1']);
-    expect(find.text('mona/forkmesh'), findsWidgets);
-    expect(find.text('New issue'), findsOneWidget);
+    expect(find.text('#12'), findsWidgets);
+    expect(find.text('Stabilize signed inbox'), findsOneWidget);
+    expect(find.text('Comment / vote / status'), findsOneWidget);
     expect(find.text('Open context: /mona/forkmesh/issues/12'), findsNothing);
   });
 }
