@@ -34,6 +34,9 @@ void main() {
         'not-an-event', // stray shapes are skipped, not fatal
       ],
       'labels': ['bug', 42],
+      'milestone': 'v2 mobile',
+      'priority': '4',
+      'assignees': ['mona', 'kai'],
     });
 
     expect(issue.number, 7);
@@ -41,6 +44,9 @@ void main() {
     expect(issue.events, hasLength(1));
     expect(issue.events.single.body, 'me too');
     expect(issue.labels, ['bug', '42']);
+    expect(issue.milestone, 'v2 mobile');
+    expect(issue.priority, 4);
+    expect(issue.assignees, ['mona', 'kai']);
   });
 
   test('RepoTree.fromJson accepts list and wrapped-map payloads', () {

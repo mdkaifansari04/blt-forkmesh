@@ -166,6 +166,10 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
   final inbox = context.read<InboxService>();
   final title = TextEditingController();
   final body = TextEditingController();
+  final labels = TextEditingController();
+  final priority = TextEditingController();
+  final milestone = TextEditingController();
+  final assignees = TextEditingController();
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -176,25 +180,64 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
       ),
       title: const Text('New issue'),
       content: SizedBox(
-        width: 460,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: title,
-              decoration: const InputDecoration(labelText: 'Title'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: body,
-              minLines: 4,
-              maxLines: 10,
-              decoration: const InputDecoration(
-                labelText: 'Description',
-                alignLabelWithHint: true,
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: title,
+                decoration: const InputDecoration(labelText: 'Title'),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: body,
+                minLines: 4,
+                maxLines: 10,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: labels,
+                decoration: const InputDecoration(
+                  labelText: 'Labels',
+                  helperText: 'Comma-separated, e.g. mobile, bug',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: priority,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Priority'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: milestone,
+                      decoration: const InputDecoration(labelText: 'Milestone'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: assignees,
+                decoration: const InputDecoration(
+                  labelText: 'Assignees',
+                  helperText: 'Comma-separated node/user names',
+                ),
+              ),
+              const SizedBox(height: 12),
+              const _PendingInboxNote(),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -218,6 +261,10 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
       repo.name,
       title: title.text.trim(),
       body: body.text.trim(),
+      labels: _splitCommaSeparated(labels.text),
+      milestone: milestone.text.trim(),
+      priority: int.tryParse(priority.text.trim()) ?? 0,
+      assignees: _splitCommaSeparated(assignees.text),
     ),
     _pendingNote,
   );
@@ -1631,6 +1678,15 @@ class _IssueDetailScreen extends StatelessWidget {
                   _Chip(icon: Icons.person_outline, label: issue.author),
                 for (final label in issue.labels)
                   _Chip(icon: Icons.sell_outlined, label: label),
+                if (issue.priority > 0)
+                  _Chip(
+                    icon: Icons.priority_high_outlined,
+                    label: 'priority ${issue.priority}',
+                  ),
+                if (issue.milestone.isNotEmpty)
+                  _Chip(icon: Icons.flag_outlined, label: issue.milestone),
+                for (final assignee in issue.assignees)
+                  _Chip(icon: Icons.assignment_ind_outlined, label: assignee),
                 if (issue.votes > 0)
                   _Chip(
                     icon: Icons.how_to_vote_outlined,
@@ -2994,6 +3050,12 @@ String _formatUsd(double value) {
   if (value == value.roundToDouble()) return '\$${value.toInt()}';
   return '\$${value.toStringAsFixed(2)}';
 }
+
+List<String> _splitCommaSeparated(String value) => value
+    .split(',')
+    .map((part) => part.trim())
+    .where((part) => part.isNotEmpty)
+    .toList();
 
 class _SourceChip extends StatelessWidget {
   const _SourceChip({required this.source});
