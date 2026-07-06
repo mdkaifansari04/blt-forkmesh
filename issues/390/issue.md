@@ -1,0 +1,24 @@
+---
+schema: forkmesh-issue-v1
+number: 390
+title: users should comment on issues as the username and not the nodename
+status: open
+labels: []
+milestone: 
+priority: 0
+progress: 0
+assignees: []
+createdAt: 1783360893056
+author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
+authorName: forkmesh
+bountyUsd: 0.00
+bountyAddress: 
+bountyStatus: 
+type: open
+id: open-390
+ts: 1783360893056
+attachments: []
+sig: imtGorug_d7z35sst85gj_kPWNZlLH7IkLpq0F0cXNqpZmPiXvB-Wnn7C4XFe0w-E63KPo6Qn8r_CqetHr5NDw
+---
+
+
