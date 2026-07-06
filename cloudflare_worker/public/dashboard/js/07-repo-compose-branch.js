@@ -344,10 +344,17 @@
       ? "grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
       : "grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
     const speed = isServing ? formatServeSpeed(servedBy.tookMs) : "";
+    const rawVersion = String(mirror.version || mirror.appVersion || mirror.clientVersion || "").trim();
+    const version = rawVersion
+      ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
+      : "";
     return `
         <div class="${rowClass}">
           <i data-lucide="${online ? "radio" : "circle"}" class="mt-0.5 h-4 w-4 ${online ? "text-primary" : "text-muted-foreground"}"></i>
-          <span class="min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+          <span class="min-w-0">
+            <span class="block min-w-0 truncate text-foreground font-mono">${escapeHtml(mirror.owner || mirror.node || mirror.name || "mirror")}</span>
+            ${version ? `<span class="mt-0.5 block min-w-0 truncate text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+          </span>
           <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
             ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
             ${escapeHtml(mirror.status || "unknown")}
