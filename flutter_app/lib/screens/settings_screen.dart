@@ -88,6 +88,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: FmSpace.x5),
 
+        const FmSectionHeader(title: 'Desktop nodes'),
+        const SizedBox(height: FmSpace.x2),
+        FmCard(
+          radius: FmRadius.lg,
+          child: _DesktopNodesCard(session: session),
+        ),
+        const SizedBox(height: FmSpace.x5),
+
         const FmSectionHeader(title: 'Relay'),
         const SizedBox(height: FmSpace.x2),
         FmCard(
@@ -346,6 +354,178 @@ class _RelayStateBadge extends StatelessWidget {
       RelayConnectionState.offline => FmColors.offline,
     };
     return FmStatusBadge(label: label, color: color);
+  }
+}
+
+class _DesktopNodesCard extends StatelessWidget {
+  const _DesktopNodesCard({required this.session});
+
+  final AuthSession? session;
+
+  @override
+  Widget build(BuildContext context) {
+    final devices = session?.devices ?? const <AccountDevice>[];
+    final desktopDevices = session?.desktopDevices ?? const <AccountDevice>[];
+    if (session == null || session?.sessionKind == 'preview') {
+      return _DesktopNodeEmptyState(
+        title: 'Sign in to inspect desktop nodes',
+        body:
+            'Desktop pairing uses your Worker account device inventory. Log in to see which Qt desktop nodes can later receive signed mobile commands.',
+      );
+    }
+    if (devices.isEmpty) {
+      return _DesktopNodeEmptyState(
+        title: 'No desktop node inventory yet',
+        body:
+            'Log in from the Qt desktop app with this account to register a desktop node. Mobile controls stay locked until a desktop node is available.',
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          desktopDevices.isEmpty
+              ? 'No owner-capable desktop node registered'
+              : '${desktopDevices.length} desktop node${desktopDevices.length == 1 ? '' : 's'} ready',
+          style: TextStyle(
+            color: FmTheme.textPrimary(context),
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: FmSpace.x2),
+        Text(
+          'Remote commands stay locked until a desktop approval flow is added. This inventory only shows which nodes could later run trusted work.',
+          style: TextStyle(
+            color: FmTheme.textSecondary(context),
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: FmSpace.x3),
+        for (final device in devices) ...[
+          _DesktopDeviceRow(device: device),
+          if (device != devices.last) const SizedBox(height: FmSpace.x2),
+        ],
+      ],
+    );
+  }
+}
+
+class _DesktopNodeEmptyState extends StatelessWidget {
+  const _DesktopNodeEmptyState({required this.title, required this.body});
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        title,
+        style: TextStyle(
+          color: FmTheme.textPrimary(context),
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: FmSpace.x2),
+      Text(
+        body,
+        style: TextStyle(
+          color: FmTheme.textSecondary(context),
+          fontSize: 12,
+          height: 1.35,
+        ),
+      ),
+    ],
+  );
+}
+
+class _DesktopDeviceRow extends StatelessWidget {
+  const _DesktopDeviceRow({required this.device});
+
+  final AccountDevice device;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDesktop = device.kind == 'desktop_node';
+    final color = !device.enabled
+        ? FmColors.offline
+        : device.canOwnerSign
+        ? FmTheme.success(context)
+        : FmTheme.warning(context);
+    return Container(
+      padding: const EdgeInsets.all(FmSpace.x3),
+      decoration: BoxDecoration(
+        color: FmTheme.bgBase(context),
+        borderRadius: BorderRadius.circular(FmRadius.md),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: color.withAlpha(28),
+              borderRadius: BorderRadius.circular(FmRadius.md),
+            ),
+            child: Icon(
+              isDesktop ? Icons.desktop_mac_outlined : Icons.phone_iphone,
+              color: color,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: FmSpace.x3),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  device.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: FmTheme.textPrimary(context),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: FmSpace.x1),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FmStatusBadge(label: device.statusLabel, color: color),
+                ),
+                const SizedBox(height: FmSpace.x1),
+                Text(
+                  '${device.kindLabel} · ${device.capabilityLabel}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: FmTheme.textSecondary(context),
+                    fontSize: 12,
+                  ),
+                ),
+                if (device.pubkey.isNotEmpty) ...[
+                  const SizedBox(height: FmSpace.x1),
+                  Text(
+                    'Key: ${_shortKey(device.pubkey)}',
+                    style: TextStyle(
+                      color: FmTheme.textTertiary(context),
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _shortKey(String key) {
+    if (key.length <= 18) return key;
+    return '${key.substring(0, 9)}...${key.substring(key.length - 6)}';
   }
 }
 
