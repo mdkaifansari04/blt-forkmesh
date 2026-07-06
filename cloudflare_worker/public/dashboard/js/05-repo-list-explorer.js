@@ -1,8 +1,11 @@
   function repositoryMatchesQuery(repo, query) {
     if (!query) return true;
+    const canonical = repoCanonicalIdentity(repo);
     const haystack = [
       repo.owner,
       repo.name,
+      canonical.owner,
+      canonical.name,
       repo.description,
       repo.channel,
       repo.source,
@@ -95,8 +98,8 @@
     const origin = sourceOfTruth(group);
     const repo = group.primary;
     const key = repoKey(origin);
-    const live = repoIsLive(repo);
-    const viaMirror = repoServedByMirror(repo);
+    const live = repoIsLive(origin);
+    const viaMirror = repoServedByMirror(origin);
     const visibility = origin.isPrivate ? "private" : "public";
     const statusClass = live ? "text-primary" : "text-muted-foreground";
     const nodeCount = group.members.length;
@@ -113,7 +116,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `
-      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
           <div class="min-w-0">
             <div class="flex min-w-0 items-center gap-2">

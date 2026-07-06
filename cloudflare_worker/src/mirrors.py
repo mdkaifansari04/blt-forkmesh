@@ -136,10 +136,43 @@ def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
     history=None,
 ):
+    def clone_target(rec):
+        raw = str((rec or {}).get("cloneUrl") or "").strip()
+        if not raw:
+            return "", ""
+        path = raw
+        if "://" in path:
+            path = path.split("://", 1)[1]
+            path = path.split("/", 1)[1] if "/" in path else ""
+        elif path.startswith("git@") and ":" in path:
+            path = path.split(":", 1)[1]
+        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2:
+            return "", ""
+        clone_owner = parts[-2].strip().lower()
+        clone_name = parts[-1].strip().lower()
+        if clone_name.endswith(".git"):
+            clone_name = clone_name[:-4]
+        return clone_owner, clone_name
+
+    def canonical_owner_name(rec):
+        source = str((rec or {}).get("source") or "").strip()
+        if source == "remote-clone":
+            clone_owner, clone_name = clone_target(rec)
+            if clone_owner and clone_name:
+                return clone_owner, clone_name
+        return (
+            str((rec or {}).get("owner") or "").strip().lower(),
+            str((rec or {}).get("name") or "").strip().lower(),
+        )
+
     owner_l = (owner or "").strip().lower()
     repo_l = (repo or "").strip().lower()
     public_rows = []
     target = None
+    canonical_target = None
+    inferred_target = False
     for row in rows or []:
         rec = row.get("data") or {}
         if row.get("is_private") or rec.get("visibility") == "private":
@@ -152,13 +185,32 @@ def build_repo_mirrors_payload(
         public_rows.append(item)
         if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
             target = item
+        if canonical_target is None and canonical_owner_name(rec) == (owner_l, repo_l):
+            canonical_target = item
     if not target:
-        return None
+        if not canonical_target:
+            return None
+        inferred_target = True
+        target = {
+            "key_bi": canonical_target.get("key_bi"),
+            "data": {
+                **canonical_target["data"],
+                "owner": owner,
+                "name": repo,
+                "liveHost": False,
+            },
+        }
 
     group_key = repo_mirror_group_key(target["data"])
-    members = [
-        r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
-    ]
+    if inferred_target:
+        members = [
+            r for r in public_rows
+            if canonical_owner_name(r["data"]) == (owner_l, repo_l)
+        ]
+    else:
+        members = [
+            r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
+        ]
     freshest_sync = 0
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)

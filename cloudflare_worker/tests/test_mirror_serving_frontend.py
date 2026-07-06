@@ -4,6 +4,8 @@ host is down but whose mirror is online must read as available ("served by
 mirror"), not "host offline", on both the repo card and the repo detail page."""
 
 from pathlib import Path
+import json
+import subprocess
 
 from _dashboard_bundle import assembled_dashboard_js
 
@@ -27,8 +29,8 @@ def test_repo_card_uses_group_liveness_not_raw_livehost():
         DASHBOARD_JS.index("function repositoryCard(group)")
         : DASHBOARD_JS.index("function updateRepositoryPagination(")
     ]
-    assert "const live = repoIsLive(repo);" in card
-    assert "const viaMirror = repoServedByMirror(repo);" in card
+    assert "const live = repoIsLive(origin);" in card
+    assert "const viaMirror = repoServedByMirror(origin);" in card
     # A repo served by a live mirror reads as "via mirror" / "served by mirror",
     # never a flat "offline".
     assert "viaMirror ? \"via mirror\"" in card
@@ -42,7 +44,7 @@ def test_repo_card_groups_mirrors_under_source_of_truth():
     assert "function groupRepositories(" in DASHBOARD_JS
     source_of_truth = DASHBOARD_JS[
         DASHBOARD_JS.index("function sourceOfTruth(group)")
-        : DASHBOARD_JS.index("function sourceOfTruth(group)") + 200
+        : DASHBOARD_JS.index("function sourceOfTruth(group)") + 500
     ]
     assert '(m.source || "").trim() === "local-node"' in source_of_truth
     assert "|| group.primary" in source_of_truth
@@ -60,6 +62,102 @@ def test_repo_card_groups_mirrors_under_source_of_truth():
     # A grouped repo advertises how many nodes mirror it.
     assert "const nodeCount = group.members.length;" in card
     assert "${nodeCount} nodes" in card
+
+
+def test_remote_clone_only_group_uses_clone_url_canonical_identity():
+    # Exercise the actual assembled browser helpers: when the only rows are
+    # mirror-owned remote clones, the card/detail URL identity is inferred from
+    # cloneUrl while the mirror rows remain aliases for direct route lookup.
+    transformed = DASHBOARD_JS.replace(
+        "  applyDashboardTheme(readDashboardTheme());\n  init();",
+        """  globalThis.__dashboardExports = {
+    state,
+    groupRepositories,
+    sourceOfTruth,
+    findRepository,
+    repositoryCard,
+    cloneUrl,
+    repoPathUrl,
+  };""",
+    )
+    script = "const SOURCE = " + json.dumps(transformed) + ";\n" + """
+const assert = require("assert");
+const vm = require("vm");
+global.location = { origin: "https://forkmesh.test", pathname: "/dashboard", search: "" };
+global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+const emptyClassList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
+global.document = {
+  body: { classList: emptyClassList },
+  documentElement: { dataset: {}, style: {} },
+  cookie: "",
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+};
+global.window = {
+  matchMedia() { return { addEventListener() {}, addListener() {} }; },
+  addEventListener() {},
+  history: { pushState() {} },
+  lucide: { createIcons() {} },
+  setTimeout() {},
+  clearInterval() {},
+};
+global.navigator = {};
+vm.runInThisContext(SOURCE);
+const {
+  state,
+  groupRepositories,
+  sourceOfTruth,
+  findRepository,
+  repositoryCard,
+  cloneUrl,
+  repoPathUrl,
+} = global.__dashboardExports;
+const repos = [
+  {
+    owner: "mirror3",
+    name: "forkmesh",
+    source: "remote-clone",
+    cloneUrl: "https://forkmesh.com/mainnode/forkmesh",
+    rootCommit: "abc",
+    liveHost: true,
+    cloneOnline: true,
+    lastSync: 2000,
+  },
+  {
+    owner: "mirror4",
+    name: "forkmesh",
+    source: "remote-clone",
+    cloneUrl: "https://forkmesh.com/mainnode/forkmesh.git",
+    rootCommit: "abc",
+    liveHost: true,
+    cloneOnline: true,
+    lastSync: 1000,
+  },
+];
+state.repositories = repos;
+const group = groupRepositories(repos)[0];
+const origin = sourceOfTruth(group);
+assert.equal(origin.owner, "mainnode");
+assert.equal(origin.name, "forkmesh");
+assert.equal(origin.liveHost, false);
+assert.equal(origin.cloneOnline, true);
+assert.equal(cloneUrl(origin), "https://forkmesh.test/mainnode/forkmesh");
+assert.equal(repoPathUrl(origin), "/mainnode/forkmesh");
+assert.equal(findRepository("mainnode/forkmesh").owner, "mainnode");
+assert.equal(findRepository("mirror3/forkmesh").owner, "mainnode");
+const card = repositoryCard(group);
+assert(card.includes("mainnode/"));
+assert(!card.includes("mirror3/</span>forkmesh"));
+"""
+    result = subprocess.run(
+        ["node"],
+        input=script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stderr == ""
 
 
 def test_repo_list_paginates_grouped_repos_not_raw_mirrors():

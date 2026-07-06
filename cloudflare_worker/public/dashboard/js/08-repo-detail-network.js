@@ -22,9 +22,11 @@
     // the repo list/sidebar while some other repo's tab URL is showing should
     // still land on Code, not inherit the other repo's tab).
     const routeParts = repoRouteParts();
+    const routeRepoKey = routeParts.length >= 2
+      ? `${safeDecodeURIComponent(routeParts[0])}/${safeDecodeURIComponent(routeParts[1])}`
+      : "";
     const routeMatchesRepo = routeParts.length >= 2
-      && decodeURIComponent(routeParts[0]) === (repo.owner || "")
-      && decodeURIComponent(routeParts[1]) === (repo.name || "");
+      && repoMatchesKey(repo, routeRepoKey);
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
     const detailPath = repoTabRoutesFor(repo).includes(routeKind)
@@ -209,7 +211,16 @@
   }
 
   function findRepository(key) {
-    return state.repositories.find((repo) => repoKey(repo) === key);
+    const wanted = String(key || "").trim();
+    if (!wanted) return null;
+    for (const group of groupRepositories(state.repositories)) {
+      const origin = sourceOfTruth(group);
+      if (repoMatchesKey(origin, wanted)) return origin;
+      if ((group.members || []).some((member) => repoMatchesKey(member, wanted))) {
+        return origin;
+      }
+    }
+    return null;
   }
 
   // A node's dot is only filled green when it is online *right now*; historical
