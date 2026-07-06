@@ -1,0 +1,2620 @@
+From e004742a4707cf1b8e3751d6ec80e0f81f9a8c9d Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 6 Jul 2026 21:51:46 +0530
+Subject: [PATCH] feat(flutter): complete mobile repo experience phase 1
+
+---
+ flutter_app/lib/models/models.dart            |   90 ++
+ .../lib/screens/repo_detail_screen.dart       | 1087 +++++++++++++++--
+ flutter_app/lib/screens/repos_screen.dart     |  366 ++++--
+ flutter_app/lib/services/api_service.dart     |   70 +-
+ flutter_app/test/api_service_test.dart        |   54 +
+ flutter_app/test/repo_detail_branch_test.dart |  330 +++++
+ flutter_app/test/repos_screen_test.dart       |  168 +++
+ 7 files changed, 1953 insertions(+), 212 deletions(-)
+ create mode 100644 flutter_app/test/api_service_test.dart
+ create mode 100644 flutter_app/test/repo_detail_branch_test.dart
+ create mode 100644 flutter_app/test/repos_screen_test.dart
+
+diff --git a/flutter_app/lib/models/models.dart b/flutter_app/lib/models/models.dart
+index 921d1b40..8a10f06c 100644
+--- a/flutter_app/lib/models/models.dart
++++ b/flutter_app/lib/models/models.dart
+@@ -371,6 +371,60 @@ class RepoBlob {
+   }
+ }
+ 
++class RepoCommitFile {
++  RepoCommitFile({required this.path, this.adds = '', this.dels = ''});
++
++  final String path;
++  final String adds;
++  final String dels;
++
++  factory RepoCommitFile.fromJson(Map<String, dynamic> j) => RepoCommitFile(
++    path: (j['path'] ?? j['file'] ?? '').toString(),
++    adds: (j['adds'] ?? j['additions'] ?? '').toString(),
++    dels: (j['dels'] ?? j['deletions'] ?? '').toString(),
++  );
++}
++
++class RepoCommitDetail {
++  RepoCommitDetail({
++    required this.commit,
++    this.files = const [],
++    this.diff = '',
++    this.truncated = false,
++    this.source = '',
++  });
++
++  final Map<String, dynamic> commit;
++  final List<RepoCommitFile> files;
++  final String diff;
++  final bool truncated;
++  final String source;
++
++  factory RepoCommitDetail.fromJson(
++    dynamic data, {
++    Map<String, dynamic> fallbackCommit = const {},
++  }) {
++    if (data is! Map<String, dynamic>) {
++      return RepoCommitDetail(commit: fallbackCommit);
++    }
++    final commit = data['commit'] is Map
++        ? Map<String, dynamic>.from(data['commit'] as Map)
++        : Map<String, dynamic>.from(fallbackCommit);
++    final rawFiles = data['files'] is List ? data['files'] as List : const [];
++    return RepoCommitDetail(
++      commit: commit,
++      files: rawFiles
++          .whereType<Map>()
++          .map((f) => RepoCommitFile.fromJson(Map<String, dynamic>.from(f)))
++          .where((f) => f.path.isNotEmpty)
++          .toList(),
++      diff: (data['diff'] ?? '').toString(),
++      truncated: data['truncated'] == true,
++      source: (data['source'] ?? data['servedBy'] ?? '').toString(),
++    );
++  }
++}
++
+ class RepoBranch {
+   RepoBranch({required this.name, this.sha = '', this.isDefault = false});
+ 
+@@ -385,6 +439,42 @@ class RepoBranch {
+   );
+ }
+ 
++class RepoCodeSearchMatch {
++  RepoCodeSearchMatch({required this.path, this.line = 0, this.text = ''});
++
++  final String path;
++  final int line;
++  final String text;
++
++  factory RepoCodeSearchMatch.fromJson(Map<String, dynamic> j) {
++    int asInt(dynamic v) =>
++        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    return RepoCodeSearchMatch(
++      path: (j['path'] ?? j['file'] ?? '').toString(),
++      line: asInt(j['line'] ?? j['lineNumber']),
++      text: (j['text'] ?? j['snippet'] ?? j['match'] ?? '').toString(),
++    );
++  }
++}
++
++class RepoSearchResults {
++  RepoSearchResults({this.code = const []});
++
++  final List<RepoCodeSearchMatch> code;
++
++  factory RepoSearchResults.fromJson(dynamic data) {
++    if (data is! Map<String, dynamic>) return RepoSearchResults();
++    final rawCode = data['code'] is List ? data['code'] as List : const [];
++    return RepoSearchResults(
++      code: rawCode
++          .whereType<Map<String, dynamic>>()
++          .map(RepoCodeSearchMatch.fromJson)
++          .where((m) => m.path.isNotEmpty)
++          .toList(),
++    );
++  }
++}
++
+ class RepoMirror {
+   RepoMirror({
+     required this.owner,
+diff --git a/flutter_app/lib/screens/repo_detail_screen.dart b/flutter_app/lib/screens/repo_detail_screen.dart
+index e9e8d7a6..1be08536 100644
+--- a/flutter_app/lib/screens/repo_detail_screen.dart
++++ b/flutter_app/lib/screens/repo_detail_screen.dart
+@@ -1,6 +1,7 @@
+ import 'dart:convert';
+ 
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../models/models.dart';
+@@ -779,10 +780,19 @@ class _CodeTab extends StatefulWidget {
+ 
+ class _CodeTabState extends State<_CodeTab> {
+   String _path = '';
+-  late Future<RepoTree> _future = widget.api.tree(
++  late String _selectedRef = widget.repo.defaultBranch;
++  late final Future<List<RepoBranch>> _branchesFuture = widget.api.branches(
+     widget.repo.owner,
+     widget.repo.name,
+   );
++  late Future<RepoTree> _future = _loadTree('');
++
++  Future<RepoTree> _loadTree(String path) => widget.api.tree(
++    widget.repo.owner,
++    widget.repo.name,
++    path: path,
++    ref: _selectedRef,
++  );
+ 
+   void _openDir(String path, {bool refresh = false}) {
+     if (refresh) {
+@@ -790,14 +800,48 @@ class _CodeTabState extends State<_CodeTab> {
+     }
+     setState(() {
+       _path = path;
+-      _future = widget.api.tree(
+-        widget.repo.owner,
+-        widget.repo.name,
+-        path: path,
+-      );
++      _future = _loadTree(path);
+     });
+   }
+ 
++  void _switchRef(String ref) {
++    if (ref == _selectedRef) return;
++    widget.api.clearRepoCache(widget.repo.owner, widget.repo.name);
++    setState(() {
++      _selectedRef = ref;
++      _path = '';
++      _future = _loadTree('');
++    });
++  }
++
++  void _openFilePath(String path) {
++    Navigator.of(context).push(
++      MaterialPageRoute(
++        builder: (_) => RepoFileScreen(
++          api: widget.api,
++          repo: widget.repo,
++          path: path,
++          ref: _selectedRef,
++        ),
++      ),
++    );
++  }
++
++  void _showGoToFile() {
++    showModalBottomSheet<void>(
++      context: context,
++      useSafeArea: true,
++      isScrollControlled: true,
++      backgroundColor: Colors.transparent,
++      builder: (_) => _GoToFileSheet(
++        api: widget.api,
++        repo: widget.repo,
++        ref: _selectedRef,
++        onFileSelected: _openFilePath,
++      ),
++    );
++  }
++
+   void _up() {
+     if (_path.isEmpty) return;
+     final parts = _path.split('/')..removeLast();
+@@ -816,7 +860,25 @@ class _CodeTabState extends State<_CodeTab> {
+           children: [
+             _RepoHeaderCard(repo: widget.repo),
+             const SizedBox(height: 14),
+-            _PathBar(path: _path, onUp: _path.isEmpty ? null : _up),
++            _BranchSelector(
++              selectedRef: _selectedRef,
++              branchesFuture: _branchesFuture,
++              onSelected: _switchRef,
++            ),
++            const SizedBox(height: 10),
++            _PathBar(
++              path: _path,
++              onUp: _path.isEmpty ? null : _up,
++              onPath: _openDir,
++              onGoToFile: _showGoToFile,
++            ),
++            if (!loading && _sourceLabel(tree?.source ?? '') != null) ...[
++              const SizedBox(height: 10),
++              Align(
++                alignment: Alignment.centerLeft,
++                child: _SourceChip(source: tree!.source),
++              ),
++            ],
+             const SizedBox(height: 10),
+             if (loading)
+               const _LoadingCard(label: 'Loading files…')
+@@ -831,42 +893,183 @@ class _CodeTabState extends State<_CodeTab> {
+               _FileList(
+                 entries: tree.entries,
+                 onDir: _openDir,
+-                onFile: (entry) => Navigator.of(context).push(
+-                  MaterialPageRoute(
+-                    builder: (_) => RepoFileScreen(
+-                      api: widget.api,
+-                      repo: widget.repo,
+-                      path: entry.path,
++                onFile: (entry) => _openFilePath(entry.path),
++              ),
++          ],
++        );
++      },
++    );
++  }
++}
++
++class _BranchSelector extends StatelessWidget {
++  const _BranchSelector({
++    required this.selectedRef,
++    required this.branchesFuture,
++    required this.onSelected,
++  });
++
++  final String selectedRef;
++  final Future<List<RepoBranch>> branchesFuture;
++  final ValueChanged<String> onSelected;
++
++  @override
++  Widget build(BuildContext context) {
++    return FutureBuilder<List<RepoBranch>>(
++      future: branchesFuture,
++      builder: (context, snap) {
++        final branchNames = <String>{
++          if (selectedRef.isNotEmpty) selectedRef,
++          for (final branch in snap.data ?? const <RepoBranch>[])
++            if (branch.name.isNotEmpty) branch.name,
++        }.toList();
++        final canSwitch = branchNames.isNotEmpty;
++        return PopupMenuButton<String>(
++          tooltip: 'Switch branch',
++          enabled: canSwitch,
++          onSelected: onSelected,
++          itemBuilder: (context) => [
++            for (final name in branchNames)
++              PopupMenuItem<String>(
++                value: name,
++                child: Row(
++                  children: [
++                    Icon(
++                      name == selectedRef
++                          ? Icons.check_circle
++                          : Icons.circle_outlined,
++                      size: 16,
++                      color: name == selectedRef
++                          ? FmTheme.accent(context)
++                          : FmTheme.textTertiary(context),
+                     ),
+-                  ),
++                    const SizedBox(width: FmSpace.x2),
++                    Expanded(
++                      child: Text(name, overflow: TextOverflow.ellipsis),
++                    ),
++                  ],
+                 ),
+               ),
+           ],
++          child: _BranchPill(
++            selectedRef: selectedRef,
++            canSwitch: canSwitch,
++            loading: snap.connectionState == ConnectionState.waiting,
++            hasError: snap.hasError,
++          ),
+         );
+       },
+     );
+   }
+ }
+ 
++class _BranchPill extends StatelessWidget {
++  const _BranchPill({
++    required this.selectedRef,
++    required this.canSwitch,
++    required this.loading,
++    required this.hasError,
++  });
++
++  final String selectedRef;
++  final bool canSwitch;
++  final bool loading;
++  final bool hasError;
++
++  @override
++  Widget build(BuildContext context) {
++    final muted = !canSwitch || loading || hasError;
++    return FmCard(
++      radius: FmRadius.lg,
++      padding: const EdgeInsets.symmetric(
++        horizontal: FmSpace.x3,
++        vertical: FmSpace.x2,
++      ),
++      child: Row(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          Icon(
++            Icons.account_tree_outlined,
++            size: 17,
++            color: muted
++                ? FmTheme.textTertiary(context)
++                : FmTheme.accent(context),
++          ),
++          const SizedBox(width: FmSpace.x2),
++          Text(
++            'Branch: ${selectedRef.isEmpty ? 'Default branch' : selectedRef}',
++            style: TextStyle(
++              color: FmTheme.textPrimary(context),
++              fontWeight: FontWeight.w800,
++              fontSize: 13,
++            ),
++          ),
++          const SizedBox(width: FmSpace.x1),
++          if (loading)
++            SizedBox(
++              width: 14,
++              height: 14,
++              child: CircularProgressIndicator(
++                strokeWidth: 2,
++                color: FmTheme.textTertiary(context),
++              ),
++            )
++          else
++            Icon(
++              canSwitch
++                  ? Icons.keyboard_arrow_down_rounded
++                  : Icons.lock_outline,
++              size: 17,
++              color: FmTheme.textTertiary(context),
++            ),
++        ],
++      ),
++    );
++  }
++}
++
+ class RepoFileScreen extends StatelessWidget {
+   const RepoFileScreen({
+     super.key,
+     required this.api,
+     required this.repo,
+     required this.path,
++    this.ref = '',
+   });
+   final ApiService api;
+   final Repository repo;
+   final String path;
++  final String ref;
+ 
+   @override
+   Widget build(BuildContext context) {
++    final rawUrl = api.rawUri(repo.owner, repo.name, path, ref: ref).toString();
++    Future<void> copy(String label, String value) async {
++      await Clipboard.setData(ClipboardData(text: value));
++      if (!context.mounted) return;
++      ScaffoldMessenger.of(
++        context,
++      ).showSnackBar(SnackBar(content: Text('$label copied')));
++    }
++
+     return Scaffold(
+       appBar: AppBar(
+         title: Text(path.split('/').last, overflow: TextOverflow.ellipsis),
++        actions: [
++          IconButton(
++            tooltip: 'Copy path',
++            onPressed: () => copy('Path', path),
++            icon: const Icon(Icons.copy_all_outlined),
++          ),
++          IconButton(
++            tooltip: 'Copy raw URL',
++            onPressed: () => copy('Raw URL', rawUrl),
++            icon: const Icon(Icons.link),
++          ),
++        ],
+       ),
+       body: FutureBuilder<RepoBlob>(
+-        future: api.blob(repo.owner, repo.name, path),
++        future: api.blob(repo.owner, repo.name, path, ref: ref),
+         builder: (context, snap) {
+           if (snap.connectionState == ConnectionState.waiting) {
+             return const Center(child: CircularProgressIndicator());
+@@ -880,7 +1083,7 @@ class RepoFileScreen extends StatelessWidget {
+             );
+           }
+           final blob = snap.data ?? RepoBlob(path: path, content: '');
+-          return _FilePreview(api: api, repo: repo, blob: blob);
++          return _FilePreview(api: api, repo: repo, blob: blob, ref: ref);
+         },
+       ),
+     );
+@@ -892,33 +1095,45 @@ class _FilePreview extends StatelessWidget {
+     required this.api,
+     required this.repo,
+     required this.blob,
++    required this.ref,
+   });
+ 
+   final ApiService api;
+   final Repository repo;
+   final RepoBlob blob;
++  final String ref;
+ 
+   @override
+   Widget build(BuildContext context) {
+     final path = blob.path;
++    final rawUrl = api.rawUri(repo.owner, repo.name, path, ref: ref).toString();
+     final kind = _previewKind(path);
+     if (kind == _PreviewKind.image) {
+       return ColoredBox(
+         color: FmTheme.bgBase(context),
+-        child: Center(
+-          child: InteractiveViewer(
+-            minScale: .5,
+-            maxScale: 5,
+-            child: Image.network(
+-              api.rawUri(repo.owner, repo.name, path).toString(),
+-              fit: BoxFit.contain,
+-              errorBuilder: (_, error, _) => _UnsupportedPreview(
+-                path: path,
+-                message:
+-                    'Could not render this image preview. ${error.toString()}',
++        child: Column(
++          children: [
++            _FilePreviewHeader(path: path, source: blob.source),
++            Expanded(
++              child: Center(
++                child: InteractiveViewer(
++                  minScale: .5,
++                  maxScale: 5,
++                  child: Image.network(
++                    rawUrl,
++                    fit: BoxFit.contain,
++                    errorBuilder: (_, error, _) => _UnsupportedPreview(
++                      path: path,
++                      message:
++                          'Could not render this image preview. ${error.toString()}',
++                      rawUrl: rawUrl,
++                      source: blob.source,
++                    ),
++                  ),
++                ),
+               ),
+             ),
+-          ),
++          ],
+         ),
+       );
+     }
+@@ -927,7 +1142,8 @@ class _FilePreview extends StatelessWidget {
+         path: path,
+         message:
+             'Video preview is not bundled in the mobile app yet. Use the raw file URL below to open or download it.',
+-        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
++        rawUrl: rawUrl,
++        source: blob.source,
+       );
+     }
+     final decoded = _decodedText(blob);
+@@ -936,12 +1152,14 @@ class _FilePreview extends StatelessWidget {
+         path: path,
+         message:
+             'This looks like a binary file, so ForkMesh is not showing it as text.',
+-        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
++        rawUrl: rawUrl,
++        source: blob.source,
+       );
+     }
+     return _CodePreview(
+       path: path,
+       content: decoded.isEmpty ? 'Empty file.' : decoded,
++      source: blob.source,
+     );
+   }
+ 
+@@ -987,31 +1205,39 @@ class _UnsupportedPreview extends StatelessWidget {
+     required this.path,
+     required this.message,
+     this.rawUrl = '',
++    this.source = '',
+   });
+ 
+   final String path;
+   final String message;
+   final String rawUrl;
++  final String source;
+ 
+   @override
+   Widget build(BuildContext context) => ColoredBox(
+     color: FmTheme.bgBase(context),
+-    child: Center(
+-      child: Padding(
++    child: SafeArea(
++      child: SingleChildScrollView(
+         padding: const EdgeInsets.all(FmSpace.x5),
+         child: _InfoCard(
+           title: path.split('/').last,
+           children: [
++            if (_sourceLabel(source) != null) ...[
++              Align(
++                alignment: Alignment.centerLeft,
++                child: _SourceChip(source: source),
++              ),
++              const SizedBox(height: FmSpace.x3),
++            ],
+             Text(
+               message,
+               style: TextStyle(color: FmTheme.textSecondary(context)),
+             ),
++            const SizedBox(height: FmSpace.x3),
++            _PreviewValue(label: 'Path', value: path),
+             if (rawUrl.isNotEmpty) ...[
+               const SizedBox(height: FmSpace.x3),
+-              SelectableText(
+-                rawUrl,
+-                style: TextStyle(color: FmTheme.accent(context), fontSize: 12),
+-              ),
++              _PreviewValue(label: 'Raw URL', value: rawUrl, accent: true),
+             ],
+           ],
+         ),
+@@ -1020,11 +1246,117 @@ class _UnsupportedPreview extends StatelessWidget {
+   );
+ }
+ 
++class _PreviewValue extends StatelessWidget {
++  const _PreviewValue({
++    required this.label,
++    required this.value,
++    this.accent = false,
++  });
++
++  final String label;
++  final String value;
++  final bool accent;
++
++  @override
++  Widget build(BuildContext context) => Column(
++    crossAxisAlignment: CrossAxisAlignment.start,
++    children: [
++      Text(
++        label,
++        style: TextStyle(
++          color: FmTheme.textTertiary(context),
++          fontSize: 11,
++          fontWeight: FontWeight.w800,
++        ),
++      ),
++      const SizedBox(height: FmSpace.x1),
++      Container(
++        width: double.infinity,
++        padding: const EdgeInsets.symmetric(
++          horizontal: FmSpace.x3,
++          vertical: FmSpace.x2,
++        ),
++        decoration: BoxDecoration(
++          color: FmTheme.bgBase(context),
++          borderRadius: BorderRadius.circular(FmRadius.sm),
++          border: Border.all(color: FmTheme.border(context)),
++        ),
++        child: SelectableText(
++          value,
++          style: TextStyle(
++            color: accent
++                ? FmTheme.accent(context)
++                : FmTheme.textSecondary(context),
++            fontFamily: accent ? null : 'monospace',
++            fontSize: 12,
++          ),
++        ),
++      ),
++    ],
++  );
++}
++
++class _FilePreviewHeader extends StatelessWidget {
++  const _FilePreviewHeader({required this.path, this.source = ''});
++
++  final String path;
++  final String source;
++
++  @override
++  Widget build(BuildContext context) {
++    final editorBg = FmTheme.isDark(context)
++        ? FmColors.darkBgRaised
++        : FmColors.bgRaised;
++    return Container(
++      constraints: const BoxConstraints(minHeight: 38),
++      padding: const EdgeInsets.symmetric(
++        horizontal: FmSpace.x4,
++        vertical: FmSpace.x2,
++      ),
++      decoration: BoxDecoration(
++        color: editorBg,
++        border: Border(bottom: BorderSide(color: FmTheme.border(context))),
++      ),
++      child: Row(
++        children: [
++          Icon(
++            Icons.description_outlined,
++            size: 17,
++            color: FmTheme.textTertiary(context),
++          ),
++          const SizedBox(width: FmSpace.x2),
++          Expanded(
++            child: Text(
++              path,
++              maxLines: 1,
++              overflow: TextOverflow.ellipsis,
++              style: TextStyle(
++                color: FmTheme.textSecondary(context),
++                fontSize: 12,
++                fontWeight: FontWeight.w700,
++              ),
++            ),
++          ),
++          if (_sourceLabel(source) != null) ...[
++            const SizedBox(width: FmSpace.x2),
++            Flexible(child: _SourceChip(source: source)),
++          ],
++        ],
++      ),
++    );
++  }
++}
++
+ class _CodePreview extends StatelessWidget {
+-  const _CodePreview({required this.path, required this.content});
++  const _CodePreview({
++    required this.path,
++    required this.content,
++    this.source = '',
++  });
+ 
+   final String path;
+   final String content;
++  final String source;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -1048,38 +1380,7 @@ class _CodePreview extends StatelessWidget {
+       color: FmTheme.bgBase(context),
+       child: Column(
+         children: [
+-          Container(
+-            height: 38,
+-            padding: const EdgeInsets.symmetric(horizontal: FmSpace.x4),
+-            decoration: BoxDecoration(
+-              color: editorBg,
+-              border: Border(
+-                bottom: BorderSide(color: FmTheme.border(context)),
+-              ),
+-            ),
+-            child: Row(
+-              children: [
+-                Icon(
+-                  Icons.description_outlined,
+-                  size: 17,
+-                  color: FmTheme.textTertiary(context),
+-                ),
+-                const SizedBox(width: FmSpace.x2),
+-                Expanded(
+-                  child: Text(
+-                    path,
+-                    maxLines: 1,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: TextStyle(
+-                      color: FmTheme.textSecondary(context),
+-                      fontSize: 12,
+-                      fontWeight: FontWeight.w700,
+-                    ),
+-                  ),
+-                ),
+-              ],
+-            ),
+-          ),
++          _FilePreviewHeader(path: path, source: source),
+           Expanded(
+             child: LayoutBuilder(
+               builder: (context, constraints) {
+@@ -1164,6 +1465,7 @@ class _CodeLine extends StatelessWidget {
+               padding: const EdgeInsets.fromLTRB(FmSpace.x3, 3, FmSpace.x4, 3),
+               child: SelectableText.rich(
+                 TextSpan(children: _highlightCodeLine(context, line)),
++                maxLines: 1,
+                 style: baseStyle,
+               ),
+             ),
+@@ -1174,6 +1476,24 @@ class _CodeLine extends StatelessWidget {
+   }
+ }
+ 
++String? _sourceLabel(String source) {
++  final value = source.trim();
++  if (value.isEmpty) return null;
++  final lower = value.toLowerCase();
++  if (lower == 'live' || lower == 'live_source' || lower == 'live-source') {
++    return 'live source';
++  }
++  if (lower == 'live mirror' ||
++      lower == 'live_mirror' ||
++      lower == 'live-mirror') {
++    return 'live mirror';
++  }
++  if (lower.startsWith('served by ') || lower.startsWith('live ')) {
++    return value;
++  }
++  return 'served by $value';
++}
++
+ List<TextSpan> _highlightCodeLine(BuildContext context, String line) {
+   final baseColor = FmTheme.isDark(context)
+       ? const Color(0xFFD7D9E0)
+@@ -1739,7 +2059,7 @@ class _CommitsTab extends StatelessWidget {
+           padding: EdgeInsets.zero,
+           children: [
+             _GitHistoryHeader(commits: commits.length),
+-            _CommitHistoryTimeline(repo: repo, commits: commits),
++            _CommitHistoryTimeline(api: api, repo: repo, commits: commits),
+             const SizedBox(height: FmSpace.x4),
+           ],
+         );
+@@ -1806,8 +2126,13 @@ class _GitHistoryHeader extends StatelessWidget {
+ }
+ 
+ class _CommitHistoryTimeline extends StatelessWidget {
+-  const _CommitHistoryTimeline({required this.repo, required this.commits});
++  const _CommitHistoryTimeline({
++    required this.api,
++    required this.repo,
++    required this.commits,
++  });
+ 
++  final ApiService api;
+   final Repository repo;
+   final List<Map<String, dynamic>> commits;
+ 
+@@ -1819,6 +2144,7 @@ class _CommitHistoryTimeline extends StatelessWidget {
+         children: [
+           for (var i = 0; i < commits.length; i++)
+             _CommitTimelineRow(
++              api: api,
+               repo: repo,
+               commit: commits[i],
+               isHead: i == 0,
+@@ -1833,6 +2159,7 @@ class _CommitHistoryTimeline extends StatelessWidget {
+ 
+ class _CommitTimelineRow extends StatelessWidget {
+   const _CommitTimelineRow({
++    required this.api,
+     required this.repo,
+     required this.commit,
+     required this.isHead,
+@@ -1840,6 +2167,7 @@ class _CommitTimelineRow extends StatelessWidget {
+     required this.isLast,
+   });
+ 
++  final ApiService api;
+   final Repository repo;
+   final Map<String, dynamic> commit;
+   final bool isHead;
+@@ -1855,7 +2183,8 @@ class _CommitTimelineRow extends StatelessWidget {
+     return InkWell(
+       onTap: () => Navigator.of(context).push(
+         MaterialPageRoute(
+-          builder: (_) => _CommitDetailScreen(repo: repo, commit: commit),
++          builder: (_) =>
++              _CommitDetailScreen(api: api, repo: repo, commit: commit),
+         ),
+       ),
+       child: SizedBox(
+@@ -2123,69 +2452,237 @@ String _relativeCommitTime(Map<String, dynamic> commit) {
+ }
+ 
+ class _CommitDetailScreen extends StatelessWidget {
+-  const _CommitDetailScreen({required this.repo, required this.commit});
++  const _CommitDetailScreen({
++    required this.api,
++    required this.repo,
++    required this.commit,
++  });
+ 
++  final ApiService api;
+   final Repository repo;
+   final Map<String, dynamic> commit;
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final hash = (commit['hash'] ?? commit['sha'] ?? '').toString();
+-    final message = (commit['subject'] ?? commit['message'] ?? 'Commit')
+-        .toString();
+-    final author = (commit['author'] ?? commit['authorName'] ?? '').toString();
+-    final body = (commit['body'] ?? commit['description'] ?? '').toString();
++    final hash = _commitHash(commit);
+     final short = hash.length < 7 ? hash : hash.substring(0, 7);
+     return Scaffold(
+       appBar: AppBar(title: Text(short.isEmpty ? 'Commit' : short)),
+-      body: ListView(
+-        padding: const EdgeInsets.all(20),
+-        children: [
+-          _InfoCard(
+-            title: message,
+-            children: [
+-              Wrap(
+-                spacing: 8,
+-                runSpacing: 8,
+-                children: [
+-                  _Chip(
+-                    icon: Icons.tag,
+-                    label: hash.isEmpty ? 'unknown' : hash,
+-                  ),
+-                  if (author.isNotEmpty)
+-                    _Chip(icon: Icons.person_outline, label: author),
+-                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+-                ],
+-              ),
+-              if (body.isNotEmpty) ...[
+-                const SizedBox(height: 16),
+-                SelectableText(body, style: const TextStyle(height: 1.45)),
++      body: hash.isEmpty
++          ? ListView(
++              padding: const EdgeInsets.all(20),
++              children: [
++                _CommitSummaryCard(
++                  repo: repo,
++                  detail: RepoCommitDetail(commit: commit),
++                ),
+               ],
+-            ],
+-          ),
+-          const SizedBox(height: 12),
+-          _InfoCard(
+-            title: 'Commit comments',
+-            children: [
+-              const Text(
+-                'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
++            )
++          : FutureBuilder<RepoCommitDetail>(
++              future: api.commitDetail(
++                repo.owner,
++                repo.name,
++                hash,
++                fallbackCommit: commit,
+               ),
+-              const SizedBox(height: 12),
+-              FilledButton.icon(
+-                onPressed: hash.isEmpty
+-                    ? null
+-                    : () => _commentOnCommit(context, repo, hash),
+-                icon: const Icon(Icons.add_comment_outlined),
+-                label: const Text('Comment on commit'),
++              builder: (context, snap) {
++                final detail = snap.data ?? RepoCommitDetail(commit: commit);
++                return ListView(
++                  padding: const EdgeInsets.all(20),
++                  children: [
++                    _CommitSummaryCard(repo: repo, detail: detail),
++                    const SizedBox(height: 12),
++                    if (snap.connectionState == ConnectionState.waiting)
++                      const _LoadingCard(label: 'Loading commit diff...')
++                    else if (snap.hasError)
++                      _EmptyCard(
++                        message: 'Could not load commit diff: ${snap.error}',
++                      )
++                    else ...[
++                      _CommitFilesCard(files: detail.files),
++                      const SizedBox(height: 12),
++                      _CommitDiffCard(
++                        diff: detail.diff,
++                        truncated: detail.truncated,
++                      ),
++                    ],
++                    const SizedBox(height: 12),
++                    _CommitCommentCard(repo: repo, hash: hash),
++                  ],
++                );
++              },
++            ),
++    );
++  }
++}
++
++class _CommitSummaryCard extends StatelessWidget {
++  const _CommitSummaryCard({required this.repo, required this.detail});
++
++  final Repository repo;
++  final RepoCommitDetail detail;
++
++  @override
++  Widget build(BuildContext context) {
++    final commit = detail.commit;
++    final hash = _commitHash(commit);
++    final message = _commitSubject(commit);
++    final author = _commitAuthor(commit);
++    final body = (commit['body'] ?? commit['description'] ?? '').toString();
++    return _InfoCard(
++      title: message,
++      children: [
++        Wrap(
++          spacing: 8,
++          runSpacing: 8,
++          children: [
++            _Chip(icon: Icons.tag, label: hash.isEmpty ? 'unknown' : hash),
++            if (author.isNotEmpty)
++              _Chip(icon: Icons.person_outline, label: author),
++            _Chip(icon: Icons.folder_outlined, label: repo.fullName),
++            if (_sourceLabel(detail.source) != null)
++              _Chip(
++                icon: Icons.dns_outlined,
++                label: _sourceLabel(detail.source)!,
+               ),
+-            ],
++          ],
++        ),
++        if (body.isNotEmpty) ...[
++          const SizedBox(height: 16),
++          SelectableText(body, style: const TextStyle(height: 1.45)),
++        ],
++      ],
++    );
++  }
++}
++
++class _CommitFilesCard extends StatelessWidget {
++  const _CommitFilesCard({required this.files});
++
++  final List<RepoCommitFile> files;
++
++  @override
++  Widget build(BuildContext context) {
++    if (files.isEmpty) {
++      return const _EmptyCard(
++        message: 'No changed files reported for this commit.',
++      );
++    }
++    return _InfoCard(
++      title: '${files.length} changed ${files.length == 1 ? "file" : "files"}',
++      children: [for (final file in files) _CommitFileRow(file: file)],
++    );
++  }
++}
++
++class _CommitFileRow extends StatelessWidget {
++  const _CommitFileRow({required this.file});
++
++  final RepoCommitFile file;
++
++  @override
++  Widget build(BuildContext context) => Padding(
++    padding: const EdgeInsets.only(bottom: FmSpace.x2),
++    child: Row(
++      children: [
++        Icon(
++          Icons.description_outlined,
++          size: 18,
++          color: FmTheme.textTertiary(context),
++        ),
++        const SizedBox(width: FmSpace.x2),
++        Expanded(
++          child: Text(
++            file.path,
++            maxLines: 1,
++            overflow: TextOverflow.ellipsis,
++            style: TextStyle(
++              color: FmTheme.textPrimary(context),
++              fontWeight: FontWeight.w700,
++            ),
++          ),
++        ),
++        const SizedBox(width: FmSpace.x2),
++        if (file.adds.isNotEmpty)
++          Text(
++            '+${file.adds}',
++            style: TextStyle(
++              color: FmTheme.success(context),
++              fontWeight: FontWeight.w800,
++            ),
++          ),
++        if (file.dels.isNotEmpty) ...[
++          const SizedBox(width: FmSpace.x1),
++          Text(
++            '-${file.dels}',
++            style: TextStyle(
++              color: FmTheme.danger(context),
++              fontWeight: FontWeight.w800,
++            ),
+           ),
+         ],
+-      ),
++      ],
++    ),
++  );
++}
++
++class _CommitDiffCard extends StatelessWidget {
++  const _CommitDiffCard({required this.diff, required this.truncated});
++
++  final String diff;
++  final bool truncated;
++
++  @override
++  Widget build(BuildContext context) {
++    if (diff.isEmpty) {
++      return const _EmptyCard(
++        message: 'No text diff available for this commit.',
++      );
++    }
++    return _InfoCard(
++      title: 'Unified diff',
++      children: [
++        if (truncated) ...[
++          Text(
++            'Diff truncated by the desktop host to keep the mobile response bounded.',
++            style: TextStyle(
++              color: FmTheme.warning(context),
++              fontWeight: FontWeight.w700,
++            ),
++          ),
++          const SizedBox(height: FmSpace.x3),
++        ],
++        _DiffViewer(diff: diff),
++      ],
+     );
+   }
+ }
+ 
++class _CommitCommentCard extends StatelessWidget {
++  const _CommitCommentCard({required this.repo, required this.hash});
++
++  final Repository repo;
++  final String hash;
++
++  @override
++  Widget build(BuildContext context) => _InfoCard(
++    title: 'Commit comments',
++    children: [
++      const Text(
++        'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
++      ),
++      const SizedBox(height: 12),
++      FilledButton.icon(
++        onPressed: hash.isEmpty
++            ? null
++            : () => _commentOnCommit(context, repo, hash),
++        icon: const Icon(Icons.add_comment_outlined),
++        label: const Text('Comment on commit'),
++      ),
++    ],
++  );
++}
++
+ Future<void> _commentOnCommit(
+   BuildContext context,
+   Repository repo,
+@@ -2349,38 +2846,358 @@ class _Chip extends StatelessWidget {
+   );
+ }
+ 
++class _SourceChip extends StatelessWidget {
++  const _SourceChip({required this.source});
++
++  final String source;
++
++  @override
++  Widget build(BuildContext context) {
++    final label = _sourceLabel(source);
++    if (label == null) return const SizedBox.shrink();
++    return ConstrainedBox(
++      constraints: const BoxConstraints(maxWidth: 220),
++      child: Container(
++        padding: const EdgeInsets.symmetric(
++          horizontal: FmSpace.x3,
++          vertical: FmSpace.x2,
++        ),
++        decoration: BoxDecoration(
++          color: FmTheme.bgBase(context),
++          borderRadius: BorderRadius.circular(FmRadius.full),
++          border: Border.all(color: FmTheme.border(context)),
++        ),
++        child: Row(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            Icon(
++              Icons.dns_outlined,
++              size: 14,
++              color: FmTheme.textTertiary(context),
++            ),
++            const SizedBox(width: FmSpace.x1),
++            Flexible(
++              child: Text(
++                label,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                style: TextStyle(
++                  color: FmTheme.textSecondary(context),
++                  fontSize: 12,
++                  fontWeight: FontWeight.w700,
++                ),
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
+ class _PathBar extends StatelessWidget {
+-  const _PathBar({required this.path, required this.onUp});
++  const _PathBar({
++    required this.path,
++    required this.onUp,
++    required this.onPath,
++    required this.onGoToFile,
++  });
++
+   final String path;
+   final VoidCallback? onUp;
++  final ValueChanged<String> onPath;
++  final VoidCallback onGoToFile;
++
++  @override
++  Widget build(BuildContext context) {
++    final segments = path.split('/').where((p) => p.isNotEmpty).toList();
++    var prefix = '';
++    final crumbs = <Widget>[
++      TextButton.icon(
++        onPressed: () => onPath(''),
++        icon: const Icon(Icons.home_outlined, size: 17),
++        label: const Text(repoRootLabel),
++      ),
++    ];
++    for (final segment in segments) {
++      prefix = prefix.isEmpty ? segment : '$prefix/$segment';
++      final target = prefix;
++      crumbs.add(
++        Icon(
++          Icons.chevron_right,
++          size: 16,
++          color: FmTheme.textTertiary(context),
++        ),
++      );
++      crumbs.add(
++        TextButton(
++          onPressed: () => onPath(target),
++          child: Text(segment, overflow: TextOverflow.ellipsis),
++        ),
++      );
++    }
++
++    return FmCard(
++      radius: FmRadius.lg,
++      padding: const EdgeInsets.symmetric(
++        horizontal: FmSpace.x2,
++        vertical: FmSpace.x2,
++      ),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: onUp,
++            icon: const Icon(Icons.arrow_upward_rounded),
++            tooltip: 'Up',
++          ),
++          Expanded(
++            child: SingleChildScrollView(
++              scrollDirection: Axis.horizontal,
++              child: Row(children: crumbs),
++            ),
++          ),
++          const SizedBox(width: FmSpace.x2),
++          OutlinedButton.icon(
++            onPressed: onGoToFile,
++            icon: const Icon(Icons.search, size: 17),
++            label: const Text('Go to file'),
++          ),
++        ],
++      ),
++    );
++  }
++
++  static const repoRootLabel = 'Repository root';
++}
++
++class _GoToFileSheet extends StatefulWidget {
++  const _GoToFileSheet({
++    required this.api,
++    required this.repo,
++    required this.ref,
++    required this.onFileSelected,
++  });
++
++  final ApiService api;
++  final Repository repo;
++  final String ref;
++  final ValueChanged<String> onFileSelected;
++
++  @override
++  State<_GoToFileSheet> createState() => _GoToFileSheetState();
++}
++
++class _GoToFileSheetState extends State<_GoToFileSheet> {
++  final _query = TextEditingController();
++  Future<List<RepoCodeSearchMatch>>? _future;
++  String _lastQuery = '';
++
++  @override
++  void dispose() {
++    _query.dispose();
++    super.dispose();
++  }
++
++  void _search() {
++    final q = _query.text.trim();
++    if (q.length < 2) return;
++    setState(() {
++      _lastQuery = q;
++      _future = widget.api
++          .searchRepo(widget.repo.owner, widget.repo.name, q, ref: widget.ref)
++          .then((results) => results.code);
++    });
++  }
++
++  void _select(String path) {
++    Navigator.of(context).pop();
++    widget.onFileSelected(path);
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final bottom = MediaQuery.viewInsetsOf(context).bottom;
++    return Padding(
++      padding: EdgeInsets.only(bottom: bottom),
++      child: Container(
++        constraints: BoxConstraints(
++          maxHeight: MediaQuery.sizeOf(context).height * .78,
++        ),
++        decoration: BoxDecoration(
++          color: FmTheme.bgRaised(context),
++          borderRadius: const BorderRadius.vertical(
++            top: Radius.circular(FmRadius.lg),
++          ),
++          border: Border(top: BorderSide(color: FmTheme.border(context))),
++        ),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            Padding(
++              padding: const EdgeInsets.all(FmSpace.x4),
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Row(
++                    children: [
++                      Expanded(
++                        child: Text(
++                          'Go to file',
++                          style: TextStyle(
++                            color: FmTheme.textPrimary(context),
++                            fontSize: 20,
++                            fontWeight: FontWeight.w800,
++                          ),
++                        ),
++                      ),
++                      IconButton(
++                        tooltip: 'Close',
++                        onPressed: () => Navigator.of(context).pop(),
++                        icon: const Icon(Icons.close),
++                      ),
++                    ],
++                  ),
++                  const SizedBox(height: FmSpace.x3),
++                  Row(
++                    children: [
++                      Expanded(
++                        child: TextField(
++                          controller: _query,
++                          autofocus: true,
++                          textInputAction: TextInputAction.search,
++                          decoration: const InputDecoration(
++                            hintText: 'Search file names or code...',
++                            prefixIcon: Icon(Icons.search),
++                          ),
++                          onSubmitted: (_) => _search(),
++                        ),
++                      ),
++                      const SizedBox(width: FmSpace.x2),
++                      FilledButton(
++                        onPressed: _search,
++                        child: const Text('Search'),
++                      ),
++                    ],
++                  ),
++                  const SizedBox(height: FmSpace.x2),
++                  Text(
++                    'Searching ${widget.repo.fullName} on ${widget.ref}.',
++                    style: TextStyle(
++                      color: FmTheme.textTertiary(context),
++                      fontSize: 12,
++                    ),
++                  ),
++                ],
++              ),
++            ),
++            Flexible(
++              child: FutureBuilder<List<RepoCodeSearchMatch>>(
++                future: _future,
++                builder: (context, snap) {
++                  if (_future == null) {
++                    return const FmEmptyState(
++                      icon: Icons.search,
++                      title: 'Search this repository',
++                      message:
++                          'Type at least two characters to find files quickly.',
++                    );
++                  }
++                  if (snap.connectionState == ConnectionState.waiting) {
++                    return const Center(child: CircularProgressIndicator());
++                  }
++                  if (snap.hasError) {
++                    return _ErrorCard(
++                      message: 'Could not search files: ${snap.error}',
++                      onRetry: _search,
++                    );
++                  }
++                  final matches = snap.data ?? const <RepoCodeSearchMatch>[];
++                  if (matches.isEmpty) {
++                    return FmEmptyState(
++                      icon: Icons.search_off,
++                      title: 'No file matches',
++                      message: 'No code results for "$_lastQuery".',
++                    );
++                  }
++                  return ListView.separated(
++                    shrinkWrap: true,
++                    padding: const EdgeInsets.fromLTRB(
++                      FmSpace.x4,
++                      FmSpace.x0,
++                      FmSpace.x4,
++                      FmSpace.x5,
++                    ),
++                    itemCount: matches.length,
++                    separatorBuilder: (_, _) =>
++                        const SizedBox(height: FmSpace.x2),
++                    itemBuilder: (context, index) {
++                      final match = matches[index];
++                      return _SearchFileRow(
++                        match: match,
++                        onTap: () => _select(match.path),
++                      );
++                    },
++                  );
++                },
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++class _SearchFileRow extends StatelessWidget {
++  const _SearchFileRow({required this.match, required this.onTap});
++
++  final RepoCodeSearchMatch match;
++  final VoidCallback onTap;
++
+   @override
+   Widget build(BuildContext context) => FmCard(
+-    radius: FmRadius.lg,
+-    padding: const EdgeInsets.symmetric(
+-      horizontal: FmSpace.x2,
+-      vertical: FmSpace.x2,
+-    ),
++    onTap: onTap,
++    radius: FmRadius.md,
++    padding: const EdgeInsets.all(FmSpace.x3),
+     child: Row(
+       children: [
+-        IconButton(
+-          onPressed: onUp,
+-          icon: const Icon(Icons.arrow_upward_rounded),
+-          tooltip: 'Up',
++        Icon(
++          Icons.description_outlined,
++          color: FmTheme.textTertiary(context),
++          size: 20,
+         ),
++        const SizedBox(width: FmSpace.x3),
+         Expanded(
+-          child: Text(
+-            path.isEmpty ? repoRootLabel : path,
+-            overflow: TextOverflow.ellipsis,
+-            style: TextStyle(
+-              color: FmTheme.textPrimary(context),
+-              fontWeight: FontWeight.w800,
+-            ),
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Text(
++                match.path,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                style: TextStyle(
++                  color: FmTheme.textPrimary(context),
++                  fontWeight: FontWeight.w800,
++                ),
++              ),
++              if (match.text.isNotEmpty) ...[
++                const SizedBox(height: FmSpace.x1),
++                Text(
++                  match.line > 0 ? '${match.line}: ${match.text}' : match.text,
++                  maxLines: 2,
++                  overflow: TextOverflow.ellipsis,
++                  style: TextStyle(
++                    color: FmTheme.textSecondary(context),
++                    fontSize: 12,
++                  ),
++                ),
++              ],
++            ],
+           ),
+         ),
+       ],
+     ),
+   );
+-  static const repoRootLabel = 'Repository root';
+ }
+ 
+ class _FileList extends StatelessWidget {
+diff --git a/flutter_app/lib/screens/repos_screen.dart b/flutter_app/lib/screens/repos_screen.dart
+index da563563..558e5c7e 100644
+--- a/flutter_app/lib/screens/repos_screen.dart
++++ b/flutter_app/lib/screens/repos_screen.dart
+@@ -7,6 +7,51 @@ import '../theme.dart';
+ import '../widgets/fm_ui.dart';
+ import 'repo_detail_screen.dart';
+ 
++enum _RepoFilter { all, online, offline, public, private }
++
++enum _RepoSort { recentlyUpdated, name, mirrors }
++
++extension _RepoFilterLabel on _RepoFilter {
++  String get label {
++    switch (this) {
++      case _RepoFilter.all:
++        return 'All';
++      case _RepoFilter.online:
++        return 'Online';
++      case _RepoFilter.offline:
++        return 'Offline';
++      case _RepoFilter.public:
++        return 'Public';
++      case _RepoFilter.private:
++        return 'Private';
++    }
++  }
++}
++
++extension _RepoSortLabel on _RepoSort {
++  String get buttonLabel {
++    switch (this) {
++      case _RepoSort.recentlyUpdated:
++        return 'Updated';
++      case _RepoSort.name:
++        return 'Name';
++      case _RepoSort.mirrors:
++        return 'Mirrors';
++    }
++  }
++
++  String get menuLabel {
++    switch (this) {
++      case _RepoSort.recentlyUpdated:
++        return 'Recently updated first';
++      case _RepoSort.name:
++        return 'Name A-Z';
++      case _RepoSort.mirrors:
++        return 'Mirrors high-low';
++    }
++  }
++}
++
+ /// The public catalog of repositories across the network (Code section).
+ class ReposScreen extends StatefulWidget {
+   const ReposScreen({super.key});
+@@ -18,6 +63,8 @@ class ReposScreen extends StatefulWidget {
+ class _ReposScreenState extends State<ReposScreen> {
+   late Future<List<Repository>> _future;
+   String _query = '';
++  _RepoFilter _filter = _RepoFilter.all;
++  _RepoSort _sort = _RepoSort.recentlyUpdated;
+ 
+   @override
+   void initState() {
+@@ -26,7 +73,9 @@ class _ReposScreenState extends State<ReposScreen> {
+   }
+ 
+   void _reload() {
+-    setState(() => _future = context.read<ApiService>().repositories());
++    setState(() {
++      _future = context.read<ApiService>().repositories();
++    });
+   }
+ 
+   @override
+@@ -35,57 +84,70 @@ class _ReposScreenState extends State<ReposScreen> {
+       children: [
+         Padding(
+           padding: const EdgeInsets.all(FmSpace.x4),
+-          child: Row(
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.stretch,
+             children: [
+-              Expanded(
+-                child: SizedBox(
+-                  height: 48,
+-                  child: TextField(
+-                    decoration: InputDecoration(
+-                      hintText: 'Find a repository...',
+-                      prefixIcon: Icon(
+-                        Icons.search,
+-                        size: 18,
+-                        color: FmTheme.textTertiary(context),
+-                      ),
+-                      filled: true,
+-                      fillColor: FmTheme.bgRaised(context),
+-                      contentPadding: const EdgeInsets.symmetric(
+-                        horizontal: FmSpace.x4,
+-                        vertical: FmSpace.x3,
+-                      ),
+-                      enabledBorder: OutlineInputBorder(
+-                        borderRadius: BorderRadius.circular(FmRadius.lg),
+-                        borderSide: BorderSide.none,
+-                      ),
+-                      focusedBorder: OutlineInputBorder(
+-                        borderRadius: BorderRadius.circular(FmRadius.lg),
+-                        borderSide: BorderSide(
+-                          color: FmTheme.accent(context),
+-                          width: 1.2,
++              Row(
++                children: [
++                  Expanded(
++                    child: SizedBox(
++                      height: 48,
++                      child: TextField(
++                        decoration: InputDecoration(
++                          hintText: 'Find a repository...',
++                          prefixIcon: Icon(
++                            Icons.search,
++                            size: 18,
++                            color: FmTheme.textTertiary(context),
++                          ),
++                          filled: true,
++                          fillColor: FmTheme.bgRaised(context),
++                          contentPadding: const EdgeInsets.symmetric(
++                            horizontal: FmSpace.x4,
++                            vertical: FmSpace.x3,
++                          ),
++                          enabledBorder: OutlineInputBorder(
++                            borderRadius: BorderRadius.circular(FmRadius.lg),
++                            borderSide: BorderSide.none,
++                          ),
++                          focusedBorder: OutlineInputBorder(
++                            borderRadius: BorderRadius.circular(FmRadius.lg),
++                            borderSide: BorderSide(
++                              color: FmTheme.accent(context),
++                              width: 1.2,
++                            ),
++                          ),
+                         ),
++                        onChanged: (v) =>
++                            setState(() => _query = v.trim().toLowerCase()),
+                       ),
+                     ),
+-                    onChanged: (v) => setState(() => _query = v.toLowerCase()),
+                   ),
+-                ),
+-              ),
+-              const SizedBox(width: FmSpace.x2),
+-              SizedBox(
+-                width: 48,
+-                height: 48,
+-                child: IconButton(
+-                  onPressed: _reload,
+-                  tooltip: 'Refresh repositories',
+-                  style: IconButton.styleFrom(
+-                    backgroundColor: FmTheme.bgRaised(context),
+-                    foregroundColor: FmTheme.textSecondary(context),
+-                    shape: RoundedRectangleBorder(
+-                      borderRadius: BorderRadius.circular(FmRadius.lg),
++                  const SizedBox(width: FmSpace.x2),
++                  SizedBox(
++                    width: 48,
++                    height: 48,
++                    child: IconButton(
++                      onPressed: _reload,
++                      tooltip: 'Refresh repositories',
++                      style: IconButton.styleFrom(
++                        backgroundColor: FmTheme.bgRaised(context),
++                        foregroundColor: FmTheme.textSecondary(context),
++                        shape: RoundedRectangleBorder(
++                          borderRadius: BorderRadius.circular(FmRadius.lg),
++                        ),
++                      ),
++                      icon: const Icon(Icons.refresh),
+                     ),
+                   ),
+-                  icon: const Icon(Icons.refresh),
+-                ),
++                ],
++              ),
++              const SizedBox(height: FmSpace.x3),
++              _RepoCatalogControls(
++                filter: _filter,
++                sort: _sort,
++                onFilterChanged: (filter) => setState(() => _filter = filter),
++                onSortChanged: (sort) => setState(() => _sort = sort),
+               ),
+             ],
+           ),
+@@ -100,19 +162,18 @@ class _ReposScreenState extends State<ReposScreen> {
+               if (snap.hasError) {
+                 return _ErrorView(message: '${snap.error}', onRetry: _reload);
+               }
+-              final repos = (snap.data ?? [])
+-                  .where(
+-                    (r) =>
+-                        _query.isEmpty ||
+-                        r.fullName.toLowerCase().contains(_query),
+-                  )
+-                  .toList();
++              final repos = _filteredAndSortedRepos(snap.data ?? []);
+               if (repos.isEmpty) {
+-                return const FmEmptyState(
++                final hasActiveControls =
++                    _query.isNotEmpty || _filter != _RepoFilter.all;
++                return FmEmptyState(
+                   icon: Icons.book_outlined,
+-                  title: 'No repositories',
+-                  message:
+-                      'Repository mirrors will appear here when available.',
++                  title: hasActiveControls
++                      ? 'No matching repositories'
++                      : 'No repositories',
++                  message: hasActiveControls
++                      ? 'Try another search term or filter.'
++                      : 'Repository mirrors will appear here when available.',
+                 );
+               }
+               return RefreshIndicator(
+@@ -139,6 +200,154 @@ class _ReposScreenState extends State<ReposScreen> {
+       ],
+     );
+   }
++
++  List<Repository> _filteredAndSortedRepos(List<Repository> repos) {
++    final filtered = repos
++        .where((repo) => _matchesQuery(repo) && _matchesFilter(repo))
++        .toList();
++    filtered.sort(_compareRepos);
++    return filtered;
++  }
++
++  bool _matchesQuery(Repository repo) {
++    if (_query.isEmpty) return true;
++    return repo.fullName.toLowerCase().contains(_query) ||
++        repo.description.toLowerCase().contains(_query) ||
++        repo.language.toLowerCase().contains(_query);
++  }
++
++  bool _matchesFilter(Repository repo) {
++    final online = _isRepoOnline(repo);
++    switch (_filter) {
++      case _RepoFilter.all:
++        return true;
++      case _RepoFilter.online:
++        return online;
++      case _RepoFilter.offline:
++        return !online;
++      case _RepoFilter.public:
++        return !repo.isPrivate;
++      case _RepoFilter.private:
++        return repo.isPrivate;
++    }
++  }
++
++  int _compareRepos(Repository a, Repository b) {
++    switch (_sort) {
++      case _RepoSort.recentlyUpdated:
++        final updated = b.updatedMs.compareTo(a.updatedMs);
++        return updated == 0 ? _compareNames(a, b) : updated;
++      case _RepoSort.name:
++        return _compareNames(a, b);
++      case _RepoSort.mirrors:
++        final mirrors = b.mirrors.compareTo(a.mirrors);
++        return mirrors == 0 ? _compareNames(a, b) : mirrors;
++    }
++  }
++
++  int _compareNames(Repository a, Repository b) {
++    return a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase());
++  }
++}
++
++class _RepoCatalogControls extends StatelessWidget {
++  const _RepoCatalogControls({
++    required this.filter,
++    required this.sort,
++    required this.onFilterChanged,
++    required this.onSortChanged,
++  });
++
++  final _RepoFilter filter;
++  final _RepoSort sort;
++  final ValueChanged<_RepoFilter> onFilterChanged;
++  final ValueChanged<_RepoSort> onSortChanged;
++
++  @override
++  Widget build(BuildContext context) {
++    return Row(
++      children: [
++        Expanded(
++          child: SizedBox(
++            height: 36,
++            child: ListView.separated(
++              scrollDirection: Axis.horizontal,
++              itemCount: _RepoFilter.values.length,
++              separatorBuilder: (_, _) => const SizedBox(width: FmSpace.x2),
++              itemBuilder: (context, i) {
++                final option = _RepoFilter.values[i];
++                final selected = option == filter;
++                return ChoiceChip(
++                  label: Text(option.label),
++                  selected: selected,
++                  showCheckmark: false,
++                  visualDensity: VisualDensity.compact,
++                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
++                  onSelected: (_) => onFilterChanged(option),
++                  backgroundColor: FmTheme.bgRaised(context),
++                  selectedColor: FmTheme.accentSubtle(context),
++                  side: BorderSide(
++                    color: selected
++                        ? FmTheme.accent(context)
++                        : FmTheme.border(context),
++                  ),
++                  labelStyle: TextStyle(
++                    color: selected
++                        ? FmTheme.accent(context)
++                        : FmTheme.textSecondary(context),
++                    fontSize: 12,
++                    fontWeight: FontWeight.w700,
++                  ),
++                );
++              },
++            ),
++          ),
++        ),
++        const SizedBox(width: FmSpace.x2),
++        PopupMenuButton<_RepoSort>(
++          tooltip: 'Sort repositories',
++          initialValue: sort,
++          onSelected: onSortChanged,
++          itemBuilder: (context) => _RepoSort.values
++              .map(
++                (option) => PopupMenuItem<_RepoSort>(
++                  value: option,
++                  child: Text(option.menuLabel),
++                ),
++              )
++              .toList(),
++          child: Container(
++            height: 36,
++            padding: const EdgeInsets.symmetric(horizontal: FmSpace.x3),
++            decoration: BoxDecoration(
++              color: FmTheme.bgRaised(context),
++              borderRadius: BorderRadius.circular(FmRadius.full),
++              border: Border.all(color: FmTheme.border(context)),
++            ),
++            child: Row(
++              mainAxisSize: MainAxisSize.min,
++              children: [
++                Icon(
++                  Icons.sort,
++                  size: 16,
++                  color: FmTheme.textSecondary(context),
++                ),
++                const SizedBox(width: FmSpace.x1),
++                Text(
++                  sort.buttonLabel,
++                  style: TextStyle(
++                    color: FmTheme.textSecondary(context),
++                    fontSize: 12,
++                    fontWeight: FontWeight.w700,
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ],
++    );
++  }
+ }
+ 
+ class _RepoTile extends StatelessWidget {
+@@ -147,6 +356,7 @@ class _RepoTile extends StatelessWidget {
+ 
+   @override
+   Widget build(BuildContext context) {
++    final online = _isRepoOnline(repo);
+     return FmCard(
+       onTap: () => Navigator.of(
+         context,
+@@ -186,19 +396,6 @@ class _RepoTile extends StatelessWidget {
+                   ),
+                 ),
+               ),
+-              const SizedBox(width: FmSpace.x2),
+-              FmStatusBadge(
+-                label: repo.cloneOnline || repo.liveHost ? 'Online' : 'Offline',
+-                color: repo.cloneOnline || repo.liveHost
+-                    ? FmTheme.success(context)
+-                    : FmColors.offline,
+-              ),
+-              FmStatusBadge(
+-                label: repo.isPrivate ? 'Private' : 'Public',
+-                color: repo.isPrivate
+-                    ? FmTheme.warning(context)
+-                    : FmTheme.success(context),
+-              ),
+             ],
+           ),
+           if (repo.description.isNotEmpty)
+@@ -234,6 +431,28 @@ class _RepoTile extends StatelessWidget {
+                 icon: Icons.dns_outlined,
+                 text: '${repo.mirrors} mirror${repo.mirrors == 1 ? "" : "s"}',
+               ),
++              if (repo.updatedMs > 0)
++                _RepoMetaItem(
++                  icon: Icons.update,
++                  text: 'Updated ${_formatRepoDate(repo.updatedMs)}',
++                ),
++            ],
++          ),
++          const SizedBox(height: FmSpace.x3),
++          Wrap(
++            spacing: FmSpace.x2,
++            runSpacing: FmSpace.x2,
++            children: [
++              FmStatusBadge(
++                label: online ? 'Online' : 'Offline',
++                color: online ? FmTheme.success(context) : FmColors.offline,
++              ),
++              FmStatusBadge(
++                label: repo.isPrivate ? 'Private' : 'Public',
++                color: repo.isPrivate
++                    ? FmTheme.warning(context)
++                    : FmTheme.success(context),
++              ),
+             ],
+           ),
+         ],
+@@ -242,6 +461,15 @@ class _RepoTile extends StatelessWidget {
+   }
+ }
+ 
++bool _isRepoOnline(Repository repo) => repo.cloneOnline || repo.liveHost;
++
++String _formatRepoDate(int ms) {
++  final d = DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
++  final month = d.month.toString().padLeft(2, '0');
++  final day = d.day.toString().padLeft(2, '0');
++  return '${d.year}-$month-$day';
++}
++
+ class _RepoMetaItem extends StatelessWidget {
+   const _RepoMetaItem({
+     required this.icon,
+diff --git a/flutter_app/lib/services/api_service.dart b/flutter_app/lib/services/api_service.dart
+index 7bc1dcd7..0c2e0b8d 100644
+--- a/flutter_app/lib/services/api_service.dart
++++ b/flutter_app/lib/services/api_service.dart
+@@ -57,8 +57,11 @@ class ApiService {
+     );
+   }
+ 
+-  Uri rawUri(String owner, String name, String path) =>
+-      _base('/api/repo/$owner/$name/raw', {'path': path});
++  Uri rawUri(String owner, String name, String path, {String ref = ''}) =>
++      _base('/api/repo/$owner/$name/raw', {
++        'path': path,
++        if (ref.isNotEmpty) 'ref': ref,
++      });
+ 
+   Exception? _repoOfflineError(String repoKey) {
+     final until = _offlineRepoUntil[repoKey];
+@@ -105,6 +108,14 @@ class ApiService {
+           .toList();
+     }();
+     _repositoriesCache = _CacheEntry(future, DateTime.now());
++    future.then(
++      (_) {},
++      onError: (Object error, StackTrace stackTrace) {
++        if (identical(_repositoriesCache?.future, future)) {
++          _repositoriesCache = null;
++        }
++      },
++    );
+     return future;
+   }
+ 
+@@ -145,27 +156,55 @@ class ApiService {
+     });
+   }
+ 
+-  Future<RepoTree> tree(String owner, String name, {String path = ''}) {
++  Future<RepoCommitDetail> commitDetail(
++    String owner,
++    String name,
++    String hash, {
++    Map<String, dynamic> fallbackCommit = const {},
++  }) async {
++    final data = await _getJson(
++      _base('/api/repo/$owner/$name/commit', {'path': hash}),
++    );
++    return RepoCommitDetail.fromJson(data, fallbackCommit: fallbackCommit);
++  }
++
++  Future<RepoTree> tree(
++    String owner,
++    String name, {
++    String path = '',
++    String ref = '',
++  }) {
+     final repoKey = '$owner/$name';
+     final offline = _repoOfflineError(repoKey);
+     if (offline != null) return Future<RepoTree>.error(offline);
+-    final key = '$repoKey:$path';
++    final key = '$repoKey:$ref:$path';
+     return _cached(_treeCache, key, () async {
+       final data = await _getJson(
+-        _base('/api/repo/$owner/$name/tree', {'path': path}),
++        _base('/api/repo/$owner/$name/tree', {
++          'path': path,
++          if (ref.isNotEmpty) 'ref': ref,
++        }),
+       );
+       return RepoTree.fromJson(data, path: path);
+     });
+   }
+ 
+-  Future<RepoBlob> blob(String owner, String name, String path) {
++  Future<RepoBlob> blob(
++    String owner,
++    String name,
++    String path, {
++    String ref = '',
++  }) {
+     final repoKey = '$owner/$name';
+     final offline = _repoOfflineError(repoKey);
+     if (offline != null) return Future<RepoBlob>.error(offline);
+-    final key = '$repoKey:$path';
++    final key = '$repoKey:$ref:$path';
+     return _cached(_blobCache, key, () async {
+       final data = await _getJson(
+-        _base('/api/repo/$owner/$name/blob', {'path': path}),
++        _base('/api/repo/$owner/$name/blob', {
++          'path': path,
++          if (ref.isNotEmpty) 'ref': ref,
++        }),
+       );
+       return RepoBlob.fromJson(data, path: path);
+     });
+@@ -189,6 +228,21 @@ class ApiService {
+         .toList();
+   }
+ 
++  Future<RepoSearchResults> searchRepo(
++    String owner,
++    String name,
++    String query, {
++    String ref = '',
++  }) async {
++    final data = await _getJson(
++      _base('/api/repo/$owner/$name/search', {
++        'q': query,
++        if (ref.isNotEmpty) 'ref': ref,
++      }),
++    );
++    return RepoSearchResults.fromJson(data);
++  }
++
+   Future<List<Issue>> publishedIssues(String owner, String name) {
+     final key = '$owner/$name';
+     return _cached(_issuesCache, key, () async {
+diff --git a/flutter_app/test/api_service_test.dart b/flutter_app/test/api_service_test.dart
+new file mode 100644
+index 00000000..99c18f3a
+--- /dev/null
++++ b/flutter_app/test/api_service_test.dart
+@@ -0,0 +1,54 @@
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++void main() {
++  test('repositories retries after a failed catalog load', () async {
++    var requestCount = 0;
++    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++    final subscription = server.listen((request) async {
++      requestCount += 1;
++      expect(request.uri.path, '/api/repositories');
++
++      if (requestCount <= 2) {
++        request.response.statusCode = HttpStatus.internalServerError;
++        request.response.write('temporary failure');
++      } else {
++        request.response.headers.contentType = ContentType.json;
++        request.response.write(
++          jsonEncode({
++            'ok': true,
++            'repositories': [
++              {'owner': 'owner', 'name': 'forkmesh'},
++            ],
++          }),
++        );
++      }
++
++      await request.response.close();
++    });
++    addTearDown(() async {
++      await subscription.cancel();
++      await server.close(force: true);
++    });
++
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    await settings.setServerUrl(
++      'ws://${server.address.host}:${server.port}/ws',
++    );
++    final api = ApiService(settings);
++
++    await expectLater(api.repositories(), throwsException);
++    expect(requestCount, 2);
++
++    final repos = await api.repositories();
++
++    expect(requestCount, 3);
++    expect(repos.single.fullName, 'owner/forkmesh');
++  });
++}
+diff --git a/flutter_app/test/repo_detail_branch_test.dart b/flutter_app/test/repo_detail_branch_test.dart
+new file mode 100644
+index 00000000..bd269f83
+--- /dev/null
++++ b/flutter_app/test/repo_detail_branch_test.dart
+@@ -0,0 +1,330 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/models/models.dart';
++import 'package:forkmesh/screens/repo_detail_screen.dart';
++import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:forkmesh/theme.dart';
++import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++class BranchAwareApiService extends ApiService {
++  BranchAwareApiService(super.settings);
++
++  final treeRefs = <String>[];
++  final blobRefs = <String>[];
++  final searchRefs = <String>[];
++  final commitDetailHashes = <String>[];
++  var nextBlob = RepoBlob(
++    path: 'README.md',
++    content: 'void main() {}',
++    source: 'qt-node-a',
++  );
++
++  @override
++  Future<List<RepoBranch>> branches(String owner, String name) async {
++    return [
++      RepoBranch(name: 'main', sha: 'aaa', isDefault: true),
++      RepoBranch(name: 'dev', sha: 'bbb'),
++    ];
++  }
++
++  @override
++  Future<RepoTree> tree(
++    String owner,
++    String name, {
++    String path = '',
++    String ref = '',
++  }) async {
++    treeRefs.add(ref);
++    return RepoTree(
++      path: path,
++      source: 'qt-node-a',
++      entries: [
++        RepoTreeEntry(name: 'README.md', path: 'README.md', type: 'file'),
++        RepoTreeEntry(name: 'lib', path: 'lib', type: 'dir'),
++      ],
++    );
++  }
++
++  @override
++  Future<RepoBlob> blob(
++    String owner,
++    String name,
++    String path, {
++    String ref = '',
++  }) async {
++    blobRefs.add(ref);
++    return RepoBlob(
++      path: path,
++      content: nextBlob.content,
++      encoding: nextBlob.encoding,
++      size: nextBlob.size,
++      source: nextBlob.source,
++    );
++  }
++
++  @override
++  Future<RepoSearchResults> searchRepo(
++    String owner,
++    String name,
++    String query, {
++    String ref = '',
++  }) async {
++    searchRefs.add(ref);
++    return RepoSearchResults(
++      code: [
++        RepoCodeSearchMatch(path: 'lib/main.dart', line: 1, text: 'void main'),
++      ],
++    );
++  }
++
++  @override
++  Future<List<Map<String, dynamic>>> commits(String owner, String name) async {
++    return [
++      {
++        'hash': 'abcdef1234567890',
++        'author': 'Mona',
++        'date': '2026-07-04',
++        'subject': 'Add mobile commit diff',
++      },
++    ];
++  }
++
++  @override
++  Future<RepoCommitDetail> commitDetail(
++    String owner,
++    String name,
++    String hash, {
++    Map<String, dynamic> fallbackCommit = const {},
++  }) async {
++    commitDetailHashes.add(hash);
++    return RepoCommitDetail(
++      commit: {
++        ...fallbackCommit,
++        'hash': hash,
++        'subject': 'Add mobile commit diff',
++        'author': 'Mona',
++        'body': 'Shows changed files and a unified diff.',
++      },
++      files: [RepoCommitFile(path: 'lib/main.dart', adds: '12', dels: '3')],
++      diff: 'diff --git a/lib/main.dart b/lib/main.dart\n+hello\n-old',
++      truncated: true,
++      source: 'qt-node-a',
++    );
++  }
++}
++
++void main() {
++  testWidgets(
++    'code tab switches branches and reloads the tree with selected ref',
++    (tester) async {
++      SharedPreferences.setMockInitialValues({});
++      final settings = await SettingsService.create();
++      final api = BranchAwareApiService(settings);
++      final repo = Repository(
++        owner: 'owner',
++        name: 'repo',
++        defaultBranch: 'main',
++      );
++
++      await tester.pumpWidget(
++        Provider<ApiService>.value(
++          value: api,
++          child: MaterialApp(
++            theme: buildForkMeshLightTheme(),
++            home: RepoDetailScreen(repo: repo),
++          ),
++        ),
++      );
++      await tester.pumpAndSettle();
++
++      expect(find.text('Branch: main'), findsOneWidget);
++      expect(api.treeRefs, ['main']);
++
++      await tester.tap(find.byTooltip('Switch branch'));
++      await tester.pumpAndSettle();
++      await tester.tap(find.text('dev').last);
++      await tester.pumpAndSettle();
++
++      expect(find.text('Branch: dev'), findsOneWidget);
++      expect(api.treeRefs.last, 'dev');
++    },
++  );
++
++  testWidgets('empty default branch lets the host choose its default ref', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = BranchAwareApiService(settings);
++    final repo = Repository(owner: 'owner', name: 'repo', defaultBranch: '');
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: RepoDetailScreen(repo: repo),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    expect(find.text('Branch: Default branch'), findsOneWidget);
++    expect(api.treeRefs, ['']);
++    expect(api.treeRefs, isNot(contains('main')));
++  });
++
++  testWidgets('go to file opens a searched file with the selected branch ref', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = BranchAwareApiService(settings);
++    final repo = Repository(
++      owner: 'owner',
++      name: 'repo',
++      defaultBranch: 'main',
++    );
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: RepoDetailScreen(repo: repo),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.tap(find.text('Go to file').first);
++    await tester.pumpAndSettle();
++    await tester.enterText(find.byType(TextField).last, 'main');
++    await tester.tap(find.text('Search'));
++    await tester.pumpAndSettle();
++
++    expect(api.searchRefs, ['main']);
++    expect(find.text('lib/main.dart'), findsOneWidget);
++
++    await tester.tap(find.text('lib/main.dart'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('main.dart'), findsOneWidget);
++    expect(api.blobRefs, ['main']);
++    expect(find.byTooltip('Copy path'), findsOneWidget);
++    expect(find.byTooltip('Copy raw URL'), findsOneWidget);
++  });
++
++  testWidgets('code and file preview surface source context when available', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = BranchAwareApiService(settings);
++    final repo = Repository(
++      owner: 'owner',
++      name: 'repo',
++      defaultBranch: 'main',
++    );
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: RepoDetailScreen(repo: repo),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    expect(find.text('served by qt-node-a'), findsOneWidget);
++
++    await tester.tap(find.text('README.md'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('served by qt-node-a'), findsOneWidget);
++  });
++
++  testWidgets('unsupported file preview shows path and ref-aware raw URL', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = BranchAwareApiService(settings)
++      ..nextBlob = RepoBlob(
++        path: 'README.md',
++        content: 'AAAB',
++        encoding: 'base64',
++        source: 'qt-node-a',
++      );
++    final repo = Repository(
++      owner: 'owner',
++      name: 'repo',
++      defaultBranch: 'main',
++    );
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: RepoDetailScreen(repo: repo),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.tap(find.text('README.md'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('README.md'), findsWidgets);
++    expect(find.text('Path'), findsOneWidget);
++    expect(find.text('README.md'), findsWidgets);
++    expect(find.text('Raw URL'), findsOneWidget);
++    expect(find.textContaining('ref=main'), findsOneWidget);
++    expect(find.textContaining('binary file'), findsOneWidget);
++    expect(find.text('served by qt-node-a'), findsOneWidget);
++  });
++
++  testWidgets('commit detail renders changed files and unified diff', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = BranchAwareApiService(settings);
++    final repo = Repository(
++      owner: 'owner',
++      name: 'repo',
++      defaultBranch: 'main',
++    );
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: RepoDetailScreen(repo: repo),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.tap(find.text('Commits'));
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('Add mobile commit diff').first);
++    await tester.pumpAndSettle();
++
++    expect(api.commitDetailHashes, ['abcdef1234567890']);
++    expect(find.text('1 changed file'), findsOneWidget);
++    expect(find.text('lib/main.dart'), findsOneWidget);
++    expect(find.text('+12'), findsOneWidget);
++    expect(find.text('-3'), findsOneWidget);
++    expect(find.text('Unified diff'), findsOneWidget);
++    expect(find.textContaining('diff --git'), findsOneWidget);
++    expect(find.textContaining('Diff truncated'), findsOneWidget);
++    expect(find.text('Comment on commit'), findsOneWidget);
++  });
++}
+diff --git a/flutter_app/test/repos_screen_test.dart b/flutter_app/test/repos_screen_test.dart
+new file mode 100644
+index 00000000..bfee94f6
+--- /dev/null
++++ b/flutter_app/test/repos_screen_test.dart
+@@ -0,0 +1,168 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/models/models.dart';
++import 'package:forkmesh/screens/repos_screen.dart';
++import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:forkmesh/theme.dart';
++import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++class RefreshingApiService extends ApiService {
++  RefreshingApiService(super.settings);
++
++  int calls = 0;
++
++  @override
++  Future<List<Repository>> repositories() async {
++    calls += 1;
++    return [Repository(owner: 'owner', name: 'repo$calls')];
++  }
++}
++
++class CatalogApiService extends ApiService {
++  CatalogApiService(super.settings);
++
++  @override
++  Future<List<Repository>> repositories() async {
++    return [
++      Repository(
++        owner: 'beta',
++        name: 'relay',
++        description: 'Mainnode catalog relay',
++        language: 'Python',
++        mirrors: 1,
++        isPrivate: true,
++        updatedMs: 1000,
++      ),
++      Repository(
++        owner: 'alpha',
++        name: 'mobile',
++        description: 'Phone command center',
++        language: 'Dart',
++        mirrors: 8,
++        cloneOnline: true,
++        updatedMs: 2000,
++      ),
++      Repository(
++        owner: 'gamma',
++        name: 'desktop',
++        description: 'Qt canonical host',
++        language: 'C++',
++        mirrors: 3,
++        liveHost: true,
++        updatedMs: 3000,
++      ),
++    ];
++  }
++}
++
++Future<CatalogApiService> _pumpCatalog(WidgetTester tester) async {
++  SharedPreferences.setMockInitialValues({});
++  final settings = await SettingsService.create();
++  final api = CatalogApiService(settings);
++
++  await tester.pumpWidget(
++    Provider<ApiService>.value(
++      value: api,
++      child: MaterialApp(
++        theme: buildForkMeshLightTheme(),
++        home: const Scaffold(body: ReposScreen()),
++      ),
++    ),
++  );
++  await tester.pumpAndSettle();
++
++  return api;
++}
++
++void main() {
++  testWidgets('refresh reloads repositories without setState async errors', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = RefreshingApiService(settings);
++
++    await tester.pumpWidget(
++      Provider<ApiService>.value(
++        value: api,
++        child: MaterialApp(
++          theme: buildForkMeshLightTheme(),
++          home: const Scaffold(body: ReposScreen()),
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    expect(find.text('owner/repo1'), findsOneWidget);
++
++    await tester.tap(find.byTooltip('Refresh repositories'));
++    await tester.pumpAndSettle();
++
++    expect(tester.takeException(), isNull);
++    expect(api.calls, 2);
++    expect(find.text('owner/repo2'), findsOneWidget);
++  });
++
++  testWidgets('search matches repository description and language', (
++    tester,
++  ) async {
++    await _pumpCatalog(tester);
++
++    await tester.enterText(find.byType(TextField), 'mainnode');
++    await tester.pumpAndSettle();
++
++    expect(find.text('beta/relay'), findsOneWidget);
++    expect(find.text('alpha/mobile'), findsNothing);
++    expect(find.text('gamma/desktop'), findsNothing);
++
++    await tester.enterText(find.byType(TextField), 'dart');
++    await tester.pumpAndSettle();
++
++    expect(find.text('alpha/mobile'), findsOneWidget);
++    expect(find.text('beta/relay'), findsNothing);
++    expect(find.text('gamma/desktop'), findsNothing);
++  });
++
++  testWidgets('filters and sort controls refine the mobile catalog', (
++    tester,
++  ) async {
++    await _pumpCatalog(tester);
++
++    expect(
++      tester.getTopLeft(find.text('gamma/desktop')).dy,
++      lessThan(tester.getTopLeft(find.text('alpha/mobile')).dy),
++    );
++    expect(
++      tester.getTopLeft(find.text('alpha/mobile')).dy,
++      lessThan(tester.getTopLeft(find.text('beta/relay')).dy),
++    );
++    expect(find.text('Dart'), findsOneWidget);
++    expect(find.text('8 mirrors'), findsOneWidget);
++
++    await tester.tap(find.widgetWithText(ChoiceChip, 'Private'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('beta/relay'), findsOneWidget);
++    expect(find.text('alpha/mobile'), findsNothing);
++    expect(find.text('gamma/desktop'), findsNothing);
++
++    await tester.tap(find.widgetWithText(ChoiceChip, 'Online'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('alpha/mobile'), findsOneWidget);
++    expect(find.text('gamma/desktop'), findsOneWidget);
++    expect(find.text('beta/relay'), findsNothing);
++
++    await tester.tap(find.byTooltip('Sort repositories'));
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('Mirrors high-low').last);
++    await tester.pumpAndSettle();
++
++    expect(
++      tester.getTopLeft(find.text('alpha/mobile')).dy,
++      lessThan(tester.getTopLeft(find.text('gamma/desktop')).dy),
++    );
++  });
++}
+-- 
+2.50.1 (Apple Git-155)
+
