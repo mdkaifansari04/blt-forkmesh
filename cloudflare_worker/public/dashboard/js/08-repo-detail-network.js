@@ -162,8 +162,8 @@
 		            </section>
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
-            ${renderRepoCollectionPanel("issues", repo, null, null)}
-            ${renderRepoCollectionPanel("pulls", repo, null, null)}
+            ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
+            ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
@@ -701,6 +701,29 @@
       return;
     }
 
+    const longDiffToggle = event.target.closest("[data-long-diff-toggle]");
+    if (longDiffToggle) {
+      saveDashboardLongDiffs(Boolean(longDiffToggle.checked));
+      return;
+    }
+
+    const showFullDiff = event.target.closest("[data-show-full-diff]");
+    if (showFullDiff) {
+      const key = showFullDiff.dataset.showFullDiff || "";
+      if (key) state.longDiffOverrides[key] = true;
+      if (key.startsWith("commit:") && state.repoCommitDetail) {
+        const { repo, data } = state.repoCommitDetail;
+        const container = $("[data-repo-commits]");
+        if (container) container.innerHTML = renderRepoCommitDetail(repo, data);
+      } else if (key.startsWith("pull:") && state.repoRecordDetail) {
+        const { repo, kind, number, parsed } = state.repoRecordDetail;
+        const container = $(`[data-repo-${kind}]`);
+        if (container) container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
+      }
+      window.lucide?.createIcons();
+      return;
+    }
+
     if (event.target.closest("[data-profile-modal-close], [data-profile-modal-backdrop]")) {
       setProfileModalOpen(false);
       return;
@@ -1139,5 +1162,6 @@
   });
 
   applyDashboardTheme(readDashboardTheme());
+  renderLongDiffPreference();
   init();
 })();

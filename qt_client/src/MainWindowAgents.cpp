@@ -6778,22 +6778,8 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
     const QString html =
         renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
                        QString(), QHash<QString, QString>(), QSet<QString>());
-    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays it
-    // all out on the UI thread, freezing it for many seconds (issue #187; the
-    // Branches diff caps the same way). Past a sane size, show the changed-files
-    // list with a notice instead of the full table.
-    constexpr int kMaxDiffHtmlChars = 1'000'000;
     const QString shown =
-        html.size() > kMaxDiffHtmlChars
-            ? QStringLiteral(
-                  "<p style='color:#d29922'>This diff is too large to render here "
-                  "(%1 file%2). Use the changed-files list, or view the branch in "
-                  "your editor.</p>")
-                  .arg(files.size())
-                  .arg(files.size() == 1 ? "" : "s")
-            : (html.isEmpty()
-                   ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
-                   : html);
+        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>") : html;
     // Re-running setHtml when the rendered diff is byte-identical to what's
     // already on screen just re-freezes the UI for no visible change (this fires
     // on every transcript burst while an agent streams). Skip it when unchanged;

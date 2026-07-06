@@ -1585,6 +1585,23 @@ void MainWindow::switchToPullTab(int pullNumber)
 // Property holding a diff view's last-set source HTML, so a font-size change can
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
+static const char *kLongDiffFullHtmlProp = "fm_longDiffFullHtml";
+constexpr qsizetype kLongDiffAutoRenderHtmlChars = 900'000;
+
+QString longDiffNoticeHtml(qsizetype chars)
+{
+    const double mib = double(chars) / (1024.0 * 1024.0);
+    return QStringLiteral(
+               "<div style='margin:14px; padding:14px; border:1px solid #30363d; "
+               "border-radius:6px; background:#161b22; color:#8b949e'>"
+               "<div style='color:#f2cc60; font-weight:700'>Diff hidden for speed</div>"
+               "<div style='margin-top:6px'>This diff renders to about %1 MiB of HTML. "
+               "Enable long diffs in Settings to render these automatically, or "
+               "<a href='fm-show-full-diff:current' style='color:#58a6ff; "
+               "text-decoration:none'>show the full diff now</a>.</div>"
+               "</div>")
+        .arg(QString::number(mib, 'f', mib < 10.0 ? 1 : 0));
+}
 
 // Track a diff viewer for the shared text-size zoom: the +/- buttons and
 // Ctrl+wheel re-render every registered view at the new size (issue #254).
@@ -1596,62 +1613,37 @@ void MainWindow::registerDiffView(QTextEdit *view)
     if (view->toolTip().isEmpty())
         view->setToolTip(QStringLiteral("Ctrl+scroll to change the text size"));
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
+    if (auto *browser = qobject_cast<QTextBrowser *>(view)) {
+        browser->setOpenLinks(false);
+        connect(browser, &QTextBrowser::anchorClicked, this,
+                [this, browser](const QUrl &url) {
+                    if (url.scheme() != QLatin1String("fm-show-full-diff"))
+                        return;
+                    const QString full =
+                        browser->property(kLongDiffFullHtmlProp).toString();
+                    if (!full.isEmpty())
+                        setDiffHtml(browser, full, /*forceLongDiff=*/true);
+                });
+    }
     connect(view, &QObject::destroyed, this, [this](QObject *o) {
         m_diffViews.removeAll(static_cast<QTextEdit *>(o));
     });
 }
 
-// QTextDocument's rich-text layout is synchronous, GUI-thread work that grows
-// super-linearly with document size: a ~2.6M-char commit diff blocked the event
-// loop for ~6.7 s (adhoc #112). Above this many chars, cut the rendered diff at
-// a file boundary — every file block from the diff renderers ends with
-// "</table></div>", so the truncated document stays well-formed — and append a
-// notice saying how much was cut.
-static QString truncateDiffHtmlForLayout(const QString &html)
-{
-    constexpr int kMaxChars = 400 * 1000;
-    static const QLatin1String fileEnd("</table></div>");
-    if (html.size() <= kMaxChars)
-        return html;
-    int cut = html.lastIndexOf(fileEnd, kMaxChars);
-    QString shown;
-    if (cut >= 0) {
-        shown = html.left(cut + fileEnd.size());
-    } else {
-        // One giant file with no earlier boundary: cut at a row and close its
-        // table/div by hand so the markup stays balanced.
-        static const QLatin1String rowEnd("</tr>");
-        cut = html.lastIndexOf(rowEnd, kMaxChars);
-        if (cut < 0)
-            return html; // not the diff renderers' markup; leave it alone
-        shown = html.left(cut + rowEnd.size()) + fileEnd;
-    }
-    // Per-file blocks each open one difftable; the counts tell the reader how
-    // many files made it in. (Collapsed "Viewed" files emit no table, so this
-    // slightly undercounts them — fine for a notice.)
-    static const QLatin1String tableOpen("<table class='difftable'");
-    const int shownFiles = shown.count(tableOpen);
-    const int totalFiles = html.count(tableOpen);
-    shown += QString::fromUtf8(
-                 "<p style='color:#8b949e'>&#9888; Diff too large to display in "
-                 "full \xE2\x80\x94 showing the first %1 of %2 files. Open the "
-                 "remaining files individually or view the diff externally.</p>")
-                 .arg(shownFiles)
-                 .arg(totalFiles);
-    return shown;
-}
-
 // Set a diff viewer's HTML, remembering the source so adjustDiffFont can later
 // re-render it at a new text size. Use this for every diff viewer's content so
 // the zoom works everywhere (issue #254).
-void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
+void MainWindow::setDiffHtml(QTextEdit *view, const QString &html,
+                             bool forceLongDiff)
 {
     if (!view)
         return;
-    // Cap what reaches setHtml so one giant diff can't freeze the window; the
-    // capped source is also what adjustDiffFont later re-renders, so zooming
-    // never re-pays the full-document layout either.
-    const QString shown = truncateDiffHtmlForLayout(html);
+    const bool hideLongDiff =
+        !forceLongDiff && !longDiffsPref() &&
+        html.size() > kLongDiffAutoRenderHtmlChars;
+    const QString shown =
+        hideLongDiff ? longDiffNoticeHtml(html.size()) : html;
+    view->setProperty(kLongDiffFullHtmlProp, hideLongDiff ? html : QString());
     // Rich-text parse + layout runs synchronously on the GUI thread and is the
     // slow half of showing a diff; name it so a stall report points here instead
     // of an anonymous harfbuzz/QTextDocumentLayout backtrace.
@@ -1831,26 +1823,8 @@ void MainWindow::renderPullDiff()
     }
 
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
-    // Handing an enormous diff to QTextEdit::setHtml() parses, styles and lays it
-    // all out on the GUI thread, freezing the window for seconds (issue #244,
-    // same cause as the branch-diff cap in #187). Rendering every file at once
-    // raises the ceiling, so cap the combined HTML: past a sane size show a
-    // notice instead so opening a huge PR stays responsive. Capping body here
-    // also feeds the skip-when-unchanged key below.
-    constexpr int kMaxDiffHtmlChars = 3'000'000;
     const QString body =
-        html.size() > kMaxDiffHtmlChars
-            ? QStringLiteral("<p style='color:#d29922'>This pull request's diff is "
-                             "too large to render here (%1 KB). View it in your "
-                             "editor.</p>")
-                  .arg(fullPatch.size() / 1024)
-            : html.isEmpty()
-                  ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>")
-                  : html;
-    if (html.size() > kMaxDiffHtmlChars) {
-        m_pullFileAnchors.clear(); // notice has no per-file anchors to jump to
-        m_pullFileOrder.clear();
-    }
+        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>") : html;
 
     // Laying out a large diff's HTML table in QTextDocument can block the GUI
     // thread for a second or more. A background PR refresh re-runs showPull(),
@@ -7100,4 +7074,3 @@ void MainWindow::pollOwnedInboxes()
         drainCommitInboxFor(repo, /*interactive=*/false);
     }
 }
-

@@ -1061,7 +1061,8 @@ private:
     void registerDiffView(QTextEdit *view);
     // Set a diff viewer's HTML, remembering the source so a later font-size
     // change can re-render it in place without re-running its renderer.
-    void setDiffHtml(QTextEdit *view, const QString &html);
+    void setDiffHtml(QTextEdit *view, const QString &html,
+                     bool forceLongDiff = false);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
     void pullSelectAdjacentChange(int delta);
@@ -3786,7 +3787,7 @@ private:
     QLabel *m_actionRunMeta = nullptr;
     QLabel *m_actionApprovalBanner = nullptr;
     QPlainTextEdit *m_actionLog = nullptr;
-    QTextEdit *m_actionDiff = nullptr;
+    QTextBrowser *m_actionDiff = nullptr;
     QWidget *m_actionApprovalBar = nullptr;
     QPushButton *m_actionApproveButton = nullptr;
     QPushButton *m_actionRejectButton = nullptr;

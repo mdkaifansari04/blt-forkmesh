@@ -44,6 +44,9 @@
     // whose detail page — live transcript + prompt — is currently open, or null
     // for the session list.
     agentsView: { agents: [], selectedAgentId: null },
+    longDiffOverrides: {},
+    repoCommitDetail: null,
+    repoRecordDetail: null,
   };
 
   // Auto-refresh timer for the Agents tab (adhoc #182): polls the session list
@@ -65,3 +68,5 @@
   const REPO_COLLECTION_PAGE_SIZE = 5;
   const PROFILE_SYNC_INTERVAL_MS = 60000;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
+  const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
+  const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;

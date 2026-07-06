@@ -512,6 +512,15 @@ QWidget *MainWindow::buildSettingsSection()
                              showCurrencyCombo->currentData().toString());
         updateNavSolanaBalance();
     });
+    auto *longDiffsCheck =
+        new QCheckBox("Render long diffs automatically");
+    longDiffsCheck->setChecked(longDiffsPref());
+    longDiffsCheck->setToolTip(
+        "When off, very large diffs show a lightweight notice first. You can "
+        "still click the notice to render that diff in full.");
+    connect(longDiffsCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        setLongDiffsPref(enabled);
+    });
     auto *rebuildButtonCheck =
         new QCheckBox("Show a rebuild & restart button in the top bar");
     rebuildButtonCheck->setChecked(
@@ -1302,6 +1311,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(appearanceLabel);
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
+    generalCol->addWidget(longDiffsCheck);
     generalCol->addWidget(rebuildButtonCheck);
     generalCol->addWidget(verboseNetLogCheck);
     generalCol->addSpacing(6);

@@ -1005,28 +1005,17 @@ void MainWindow::loadMirrorNodesPanel()
     // Our own mirror, used to resolve a peer's advertised commit to its subject.
     const QString localMirror = repo.mirrorPath;
 
-    // For our own row, read the HEAD straight from the local mirror so it always
-    // reflects the latest sync without waiting for a roster round-trip.
+    // For our own row, read the primary branch tip locally so it always reflects
+    // main/default-branch freshness without waiting for a roster round-trip.
     MirrorAdvert selfAdvert;
     selfAdvert.ownerName = canonical;
     selfAdvert.source = source;
-    const QString servedBranch = mirrorHeadBranch(localMirror);
+    const MirrorBranchTip selfTip =
+        mirrorPrimaryBranchTip(localMirror, repo.localPath);
+    selfAdvert.branch = selfTip.branch;
+    selfAdvert.commit = selfTip.commit;
+    const QString servedBranch = selfAdvert.branch;
     const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
-    selfAdvert.branch = servedBranch;
-    selfAdvert.commit = servedCommit;
-    if (!repo.localPath.trimmed().isEmpty()) {
-        QString sourceCommit = worktreeBranchCommit(repo.localPath, servedBranch);
-        QString sourceBranch = servedBranch;
-        if (sourceCommit.isEmpty()) {
-            sourceCommit = worktreeHeadCommit(repo.localPath);
-            sourceBranch = worktreeHeadBranch(repo.localPath);
-        }
-        if (!sourceCommit.isEmpty()) {
-            if (!sourceBranch.isEmpty())
-                selfAdvert.branch = sourceBranch;
-            selfAdvert.commit = sourceCommit;
-        }
-    }
     selfAdvert.updatedMs = repo.lastSyncMs;
     selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
     selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
@@ -1057,7 +1046,7 @@ void MainWindow::loadMirrorNodesPanel()
 
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row
-    // always reads the live local HEAD via selfAdvert.
+    // always reads the live local primary branch via selfAdvert.
     auto matchAdvert = [&](const MemberInfo &node,
                            bool &namedOnly) -> const MirrorAdvert * {
         const MirrorAdvert *advert = nullptr;

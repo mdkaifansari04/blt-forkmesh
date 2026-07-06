@@ -11,8 +11,15 @@ from _dashboard_bundle import assembled_dashboard_js
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
+URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
+REPO_HOST_ROUTE_RE = (
+    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$"'
+)
+REPO_HOST_BROWSE_ACTIONS = (
+    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search"):'
+)
 
 
 def _read(path: Path) -> str:
@@ -658,14 +665,16 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
         "async function loadRepoPullPatch(repo, number)",
         "function parsePatchStats(patch)",
         "function renderRepoPullFiles(files)",
-        "function renderRepoPullPatch(patch)",
+        "function renderRepoPullPatch(patch, key = \"\")",
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
         "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath }))",
         "const pullPatch = kind === \"pulls\" ? await loadRepoPullPatch(repo, number) : null;",
         "renderRepoPullFiles(pullPatch.files)",
-        "renderRepoPullPatch(pullPatch.patch)",
+        "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
+        "data-show-full-diff",
+        "DASHBOARD_LONG_DIFFS_KEY",
     ):
         assert marker in dashboard_js
 
@@ -679,18 +688,23 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
     for marker in (
         "async function loadRepoCommitDetail(repo, hash)",
         "function renderRepoCommitDetail(repo, data)",
-        "function renderRepoCommitDiff(diff, imageDiffs)",
+        "function renderRepoCommitDiff(diff, imageDiffs, key = \"\")",
         "function renderRepoCommitFiles(files)",
         "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
         "data-repo-commit-back",
         "data-repo-commit-files",
         "data-repo-commit-diff",
-        "data-repo-commit-truncated",
+        "renderRepoCommitDiff(data.diff, data.imageDiffs, `commit:${repoKey(repo)}:${hash}`)",
+        "Diff hidden for speed",
+        "data-long-diff-toggle",
         "loadRepoCommitDetail(state.selectedRepo, commitButton.dataset.dashboardCommitHash || \"\")",
     ):
         assert marker in dashboard_js
 
+    assert "data-repo-commit-truncated" not in dashboard_js
+    assert "MAX_DIFF_LINES" not in dashboard_js
+    assert "Diff truncated for display" not in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/commits" not in dashboard_js
 
 
@@ -743,14 +757,14 @@ def test_worker_routes_public_history_through_live_host_not_commit_inbox():
     owner_inbox_dispatch = route.index("commits_match = REPO_COMMITS_RE.match")
 
     assert owner_inbox_dispatch < live_history_dispatch
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
+    assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
 
 def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
-    assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in ENTRY_TEXT
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
-    assert 'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
+    assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
+    assert REPO_HOST_ROUTE_RE in URLS_TEXT
+    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
     assert 'if action in ("tree", "blob", "history", "commit", "branches"):' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
@@ -996,8 +1010,8 @@ def test_dashboard_repository_blob_viewer_previews_media_csv_pdf_and_binary():
 
 
 def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
-    assert 'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"' in ENTRY_TEXT
-    assert 'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):' in ENTRY_TEXT
+    assert REPO_HOST_ROUTE_RE in URLS_TEXT
+    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
     assert 'if action == "raw":' in ENTRY_TEXT
     assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
     assert 'op": "raw-blob"' in ENTRY_TEXT
@@ -1013,8 +1027,6 @@ def test_worker_and_desktop_host_route_live_repository_branches():
     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
 
     for marker in (
-        'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches)$"',
-        'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches"):',
         'if action in ("tree", "blob", "history", "commit", "branches"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
@@ -1022,6 +1034,8 @@ def test_worker_and_desktop_host_route_live_repository_branches():
         '"ref": ref',
     ):
         assert marker in ENTRY_TEXT
+    assert REPO_HOST_ROUTE_RE in URLS_TEXT
+    assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
 
     for marker in (
         'else if (op == "branches")',
@@ -1211,18 +1225,20 @@ def test_desktop_client_install_page_exists():
     html = _read(PUBLIC / "desktop.html")
 
     assert "<title>Install ForkMesh Desktop" in html
-    # Per-OS install sections the homepage buttons deep-link into.
+    # The install page owns the platform-specific sections; homepage CTAs point
+    # to the page rather than duplicating per-OS buttons.
     for anchor in ('id="macos"', 'id="windows"', 'id="linux"'):
         assert anchor in html
     assert "curl -fsSL https://forkmesh.com/install.sh | bash" in html
 
 
-def test_homepage_hero_has_per_os_install_buttons():
+def test_homepage_hero_links_to_desktop_install_page():
     index = _read(PUBLIC / "index.html")
 
-    assert 'id="install-os-buttons"' in index
+    assert 'href="/desktop"' in index
+    assert 'id="install-os-buttons"' not in index
     for href in ("/desktop#macos", "/desktop#windows", "/desktop#linux"):
-        assert href in index
+        assert href not in index
 
 
 def test_homepage_network_selector_hides_mobile_beam_and_bars():

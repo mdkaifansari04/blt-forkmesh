@@ -346,7 +346,7 @@
         </span>
         <span class="self-start shrink-0 flex items-center gap-2">
           ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
-          <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
+          <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
         </span>
       </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
@@ -355,13 +355,9 @@
   // patch views. Groups lines per file and tracks real old/new line numbers
   // per hunk so the viewer can render a GitHub-style dual gutter instead of
   // a single running index.
-  const MAX_DIFF_LINES = 4000;
-
   function parseDiffFiles(rawText) {
-    const allLines = String(rawText || "").split("\n");
-    if (allLines.length && allLines[allLines.length - 1] === "") allLines.pop();
-    const truncated = allLines.length > MAX_DIFF_LINES;
-    const lines = truncated ? allLines.slice(0, MAX_DIFF_LINES) : allLines;
+    const lines = String(rawText || "").split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
     const files = [];
     let current = null;
     let oldLine = 0;
@@ -396,7 +392,7 @@
       if (marker === "\\") { current.rows.push({ type: "meta", text: line }); return; }
       current.rows.push({ type: "ctx", oldLine: oldLine++, newLine: newLine++, text: line.slice(1) });
     });
-    return { files, truncated };
+    return { files };
   }
 
   function parsePatchStats(patch) {
@@ -474,18 +470,18 @@
   }
 
   function renderDiffFiles(parsed, imageDiffs) {
-    const { files, truncated } = parsed;
+    const { files } = parsed;
     if (!files.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No changes to display.</div>';
     const images = new Map();
     (Array.isArray(imageDiffs) ? imageDiffs : []).forEach((item) => {
       if (item?.path && item?.mime) images.set(item.path, item);
     });
-    const note = truncated ? '<div class="border-t border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Diff truncated for display; showing the first portion of this change.</div>' : "";
-    return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>${note}`;
+    return `<div class="grid gap-3 p-3">${files.map((file) => renderDiffFileBlock(file, images.get(file.newPath) || images.get(file.oldPath))).join("")}</div>`;
   }
 
-  function renderRepoPullPatch(patch) {
+  function renderRepoPullPatch(patch, key = "") {
     if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
+    if (!shouldRenderLongDiff(patch, key)) return renderLongDiffNotice("pull request patch", key, patch);
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
   }
 
@@ -665,7 +661,8 @@
     ];
   }
 
-  function renderRepoRecordDetail(repo, kind, number, parsed, options = {}) {
+  function renderRepoRecordDetail(repo, kind, number, parsed) {
+    const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
@@ -696,7 +693,7 @@
         </section>
         <section class="overflow-hidden rounded-lg border border-border">
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
-          ${renderRepoPullPatch(pullPatch.patch)}
+          ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
         </section>` : "";
     const discussionConversation = parsed.discussionConversation || [];
     const discussionConversationSection = kind === "discussions" ? `
@@ -750,7 +747,8 @@
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, {
         values: { title: pendingItem.title, status: pendingItem.status, authorName: pendingItem.author },
         body: pendingItem.body,
-      }, { pending: true });
+        options: { pending: true },
+      });
       window.lucide?.createIcons();
       return;
     }
@@ -763,6 +761,7 @@
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
+      state.repoRecordDetail = { repo, kind, number, parsed };
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
     } catch (_) {
       container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">This ${escapeHtml(config.itemLabel)} is unavailable until a live desktop host serves ${escapeHtml(recordPath)}.</div>`;

@@ -550,24 +550,24 @@ void MainWindow::refreshRepositoryList()
         // on every onRequestServed and a 1-minute timer, so recomputing it every time
         // blocked the GUI thread for seconds (adhoc #83). A mirror's stats only move
         // when it is re-synced (repo.lastSyncMs), a source row's latest commit moves
-        // with the working-tree HEAD, and the worktree count only when a worktree is
-        // added/removed (the .git/worktrees dir mtime) — so skip the whole rebuild
-        // while that signature is unchanged, and when it did change run the git reads
-        // under GitKeepAlive so the window keeps breathing.
+        // with the primary branch tip, and the worktree count only when a worktree
+        // is added/removed (the .git/worktrees dir mtime) — so skip the whole
+        // rebuild while that signature is unchanged, and when it did change run the
+        // git reads under GitKeepAlive so the window keeps breathing.
         QString advertSig;
         for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
             if (repo.previewOnly)
                 continue;
-            const QString sourceHead = repo.localPath.trimmed().isEmpty()
-                                           ? QString()
-                                           : worktreeHeadCommit(repo.localPath);
+            const MirrorBranchTip primaryTip =
+                mirrorPrimaryBranchTip(repo.mirrorPath, repo.localPath);
             advertSig +=
                 repo.owner + QLatin1Char('|') + repo.name + QLatin1Char('|') +
                 repo.cloneUrl + QLatin1Char('|') +
                 QString::number(repo.publishToNetwork ? 1 : 0) + QLatin1Char('|') +
                 repo.mirrorPath + QLatin1Char('|') +
                 QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
-                QLatin1Char('|') + sourceHead + QLatin1Char('|') +
+                QLatin1Char('|') + primaryTip.branch + QLatin1Char('|') +
+                primaryTip.commit + QLatin1Char('|') +
                 QString::number(
                     QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
                         .lastModified()
@@ -575,61 +575,54 @@ void MainWindow::refreshRepositoryList()
                 QLatin1Char('\n');
         }
         if (advertSig != m_mirrorAdvertSig) {
-        GitKeepAlive keepAlive;
-        QList<MirrorAdvert> ours;
-        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-            if (repo.previewOnly)
-                continue;
-            MirrorAdvert advert;
-            advert.ownerName = catalogOwner(repo) + "/" +
-                               repoSegment(repo.name, QStringLiteral("repository"));
-            // Shared upstream identity: every node mirroring the same source repo
-            // carries the same "<sourceOwner>/name", so the mirror-nodes view can
-            // group them even though each advertises its own clone (catalog) owner.
-            advert.source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
-                            repoSegment(repo.name, QStringLiteral("repository"));
-            // Advertise the HEAD this node currently holds so peers can see how
-            // fresh our mirror is relative to theirs. A source-of-truth node has
-            // a working tree; report that HEAD so peers don't display a stale
-            // source commit while the bare served mirror is catching up.
-            advert.branch = mirrorHeadBranch(repo.mirrorPath);
-            advert.commit = mirrorBranchCommit(repo.mirrorPath, advert.branch);
-            if (advert.commit.isEmpty())
-                continue;
-            if (!repo.localPath.trimmed().isEmpty()) {
-                QString sourceCommit =
-                    worktreeBranchCommit(repo.localPath, advert.branch);
-                QString sourceBranch = advert.branch;
-                if (sourceCommit.isEmpty()) {
-                    sourceCommit = worktreeHeadCommit(repo.localPath);
-                    sourceBranch = worktreeHeadBranch(repo.localPath);
-                }
-                if (!sourceCommit.isEmpty()) {
-                    if (!sourceBranch.isEmpty())
-                        advert.branch = sourceBranch;
-                    advert.commit = sourceCommit;
-                }
+            GitKeepAlive keepAlive;
+            QList<MirrorAdvert> ours;
+            for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+                if (repo.previewOnly)
+                    continue;
+                MirrorAdvert advert;
+                advert.ownerName =
+                    catalogOwner(repo) + "/" +
+                    repoSegment(repo.name, QStringLiteral("repository"));
+                // Shared upstream identity: every node mirroring the same source repo
+                // carries the same "<sourceOwner>/name", so the mirror-nodes view can
+                // group them even though each advertises its own clone (catalog) owner.
+                advert.source =
+                    repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+                    repoSegment(repo.name, QStringLiteral("repository"));
+                // Advertise the stable primary branch, not whichever branch the
+                // source node currently has checked out. A source-of-truth node can
+                // still report its working tree's primary-branch commit when that
+                // branch is ahead of the served bare mirror, so peers see freshness
+                // against main rather than a transient feature branch.
+                const MirrorBranchTip primaryTip =
+                    mirrorPrimaryBranchTip(repo.mirrorPath, repo.localPath);
+                advert.branch = primaryTip.branch;
+                advert.commit = primaryTip.commit;
+                if (advert.commit.isEmpty())
+                    continue;
+                advert.updatedMs = repo.lastSyncMs;
+                // On-disk mirror size so peers can show how much data we're holding.
+                advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
+                // Issues we're mirroring, so peers can show the count per node.
+                advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
+                // More tallies the Mirror nodes view shows per node: history depth,
+                // branch/PR/discussion counts, and our live worktree (agent task)
+                // count.
+                advert.commitCount =
+                    mirrorCommitCount(repo.mirrorPath, advert.branch);
+                advert.branchCount = mirrorBranchCount(repo.mirrorPath);
+                advert.pullCount = mirrorPullCount(repo.mirrorPath, advert.branch);
+                advert.discussionCount =
+                    mirrorDiscussionCount(repo.mirrorPath, advert.branch);
+                advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+                // Release artifacts we're actually hosting for download (issue #304
+                // CAS blobs), so peers can see which nodes can serve a binary.
+                advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
+                ours.append(advert);
             }
-            advert.updatedMs = repo.lastSyncMs;
-            // On-disk mirror size so peers can show how much data we're holding.
-            advert.sizeBytes = mirrorRepoSizeBytes(repo.mirrorPath);
-            // Issues we're mirroring, so peers can show the count per node.
-            advert.issueCount = mirrorIssueCount(repo.mirrorPath, advert.branch);
-            // More tallies the Mirror nodes view shows per node: history depth,
-            // branch/PR/discussion counts, and our live worktree (agent task) count.
-            advert.commitCount = mirrorCommitCount(repo.mirrorPath, advert.branch);
-            advert.branchCount = mirrorBranchCount(repo.mirrorPath);
-            advert.pullCount = mirrorPullCount(repo.mirrorPath, advert.branch);
-            advert.discussionCount =
-                mirrorDiscussionCount(repo.mirrorPath, advert.branch);
-            advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-            // Release artifacts we're actually hosting for download (issue #304 CAS
-            // blobs), so peers can see which nodes can serve a binary.
-            advert.artifactCount = mirrorArtifactCount(repo.mirrorPath);
-            ours.append(advert);
-        }
-        m_backend->setMirroredRepos(ours);
-        m_mirrorAdvertSig = advertSig;
+            m_backend->setMirroredRepos(ours);
+            m_mirrorAdvertSig = advertSig;
         }
     }
 }
@@ -2712,11 +2705,17 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // count, platform, version, node id). Published alongside the mirror so those
     // columns stay populated for a node that's offline or only intermittently in
     // the room — otherwise a catalog-backed row falls back to em-dashes for
-    // everything but sync time and size (adhoc #56). The HEAD/issue figures mirror
-    // the live advert (setMirroredRepos); platform/version/id come from our own
-    // roster entry (the same values makeMessage broadcasts).
-    QString headBranch = servedHeadBranch;
-    QString headCommit = servedHeadCommit;
+    // everything but sync time and size (adhoc #56). The commit/issue figures
+    // mirror the live advert (setMirroredRepos); platform/version/id come from our
+    // own roster entry (the same values makeMessage broadcasts).
+    const MirrorBranchTip primaryTip =
+        mirrorPrimaryBranchTip(repo.mirrorPath, repo.localPath);
+    QString headBranch = primaryTip.branch;
+    QString headCommit = primaryTip.commit;
+    if (headCommit.isEmpty()) {
+        headBranch = servedHeadBranch;
+        headCommit = servedHeadCommit;
+    }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
     const int branchCount = mirrorBranchCount(repo.mirrorPath);
