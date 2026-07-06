@@ -1,0 +1,2429 @@
+From 7df7e6f302069b537f73d699dd75a12dc34e03cf Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 6 Jul 2026 21:51:47 +0530
+Subject: [PATCH 1/3] feat(flutter): add agent session monitoring
+
+---
+ flutter_app/lib/models/models.dart            | 133 +++++++++
+ .../lib/screens/repo_detail_screen.dart       | 255 +++++++++++++++++-
+ flutter_app/lib/services/api_service.dart     |  37 +++
+ .../lib/services/notification_deep_link.dart  |  13 +-
+ flutter_app/test/agent_sessions_test.dart     | 135 ++++++++++
+ flutter_app/test/api_service_test.dart        |  89 ++++++
+ flutter_app/test/models_test.dart             |   3 +
+ 7 files changed, 663 insertions(+), 2 deletions(-)
+ create mode 100644 flutter_app/test/agent_sessions_test.dart
+
+diff --git a/flutter_app/lib/models/models.dart b/flutter_app/lib/models/models.dart
+index 4e4ce846..886a5763 100644
+--- a/flutter_app/lib/models/models.dart
++++ b/flutter_app/lib/models/models.dart
+@@ -164,6 +164,139 @@ class ForkNotification {
+   }
+ }
+ 
++class AgentTranscript {
++  const AgentTranscript({required this.status, required this.transcript});
++
++  final String status;
++  final String transcript;
++
++  factory AgentTranscript.fromJson(Map<String, dynamic> json) =>
++      AgentTranscript(
++        status: (json['status'] ?? '').toString(),
++        transcript: (json['transcript'] ?? '').toString(),
++      );
++}
++
++class AgentSession {
++  AgentSession({
++    required this.id,
++    this.issueNumber = 0,
++    this.issueTitle = '',
++    this.status = '',
++    this.provider = '',
++    this.model = '',
++    this.branchName = '',
++    this.lastError = '',
++    this.createdAtMs = 0,
++    this.startedAtMs = 0,
++    this.finishedAtMs = 0,
++    this.numTurns = 0,
++    this.durationMs = 0,
++    this.costUsd = 0,
++  });
++
++  final int id;
++  final int issueNumber;
++  final String issueTitle;
++  final String status;
++  final String provider;
++  final String model;
++  final String branchName;
++  final String lastError;
++  final int createdAtMs;
++  final int startedAtMs;
++  final int finishedAtMs;
++  final int numTurns;
++  final int durationMs;
++  final double costUsd;
++
++  bool get isActive {
++    final clean = status.toLowerCase().replaceAll('_', '-');
++    return clean == 'queued' || clean == 'running' || clean == 'waiting';
++  }
++
++  String get displayTitle => issueTitle.isNotEmpty
++      ? issueTitle
++      : issueNumber > 0
++      ? 'Issue #$issueNumber'
++      : 'Agent session #$id';
++
++  String get statusLabel {
++    final clean = status.toLowerCase().replaceAll('_', '-');
++    return switch (clean) {
++      'queued' => 'Queued',
++      'running' => 'Running',
++      'waiting' || 'waiting-for-input' => 'Waiting',
++      'done' || 'completed' || 'success' => 'Done',
++      'failed' || 'error' => 'Failed',
++      'stopped' || 'cancelled' || 'canceled' => 'Stopped',
++      _ => status.isEmpty ? 'Unknown' : _titleCase(status),
++    };
++  }
++
++  String get providerLabel => switch (provider.toLowerCase()) {
++    'claude-code' => 'Claude Code',
++    'claude-api' => 'Claude API',
++    'openai' => 'OpenAI',
++    'codex' => 'Codex',
++    _ => provider.isEmpty ? 'Agent' : _titleCase(provider),
++  };
++
++  String get durationLabel {
++    if (durationMs <= 0) return '';
++    final totalSeconds = durationMs ~/ 1000;
++    final minutes = totalSeconds ~/ 60;
++    final seconds = totalSeconds % 60;
++    if (minutes <= 0) return '${seconds}s';
++    return '${minutes}m ${seconds}s';
++  }
++
++  String get costLabel {
++    if (costUsd <= 0) return '';
++    if (costUsd < 0.01) return '<\$0.01';
++    return '\$${costUsd.toStringAsFixed(2)}';
++  }
++
++  factory AgentSession.fromJson(Map<String, dynamic> json) {
++    int asInt(dynamic value) => value is int
++        ? value
++        : value is num
++        ? value.toInt()
++        : int.tryParse('$value') ?? 0;
++    double asDouble(dynamic value) =>
++        value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
++    return AgentSession(
++      id: asInt(json['id']),
++      issueNumber: asInt(json['issueNumber']),
++      issueTitle: (json['issueTitle'] ?? '').toString(),
++      status: (json['status'] ?? '').toString(),
++      provider: (json['provider'] ?? '').toString(),
++      model: (json['model'] ?? '').toString(),
++      branchName: (json['branchName'] ?? '').toString(),
++      lastError: (json['lastError'] ?? '').toString(),
++      createdAtMs: asInt(json['createdAtMs']),
++      startedAtMs: asInt(json['startedAtMs']),
++      finishedAtMs: asInt(json['finishedAtMs']),
++      numTurns: asInt(json['numTurns']),
++      durationMs: asInt(json['durationMs']),
++      costUsd: asDouble(json['costUsd']),
++    );
++  }
++}
++
++String _titleCase(String value) {
++  final clean = value.replaceAll('_', ' ').replaceAll('-', ' ').trim();
++  if (clean.isEmpty) return '';
++  return clean
++      .split(RegExp(r'\s+'))
++      .map(
++        (part) => part.isEmpty
++            ? part
++            : '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}',
++      )
++      .join(' ');
++}
++
+ class Repository {
+   Repository({
+     required this.owner,
+diff --git a/flutter_app/lib/screens/repo_detail_screen.dart b/flutter_app/lib/screens/repo_detail_screen.dart
+index 24862eee..5ff1bafe 100644
+--- a/flutter_app/lib/screens/repo_detail_screen.dart
++++ b/flutter_app/lib/screens/repo_detail_screen.dart
+@@ -130,6 +130,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+         case RepoDetailTab.code:
+         case RepoDetailTab.mirrors:
+         case RepoDetailTab.about:
++        case RepoDetailTab.agents:
+           return;
+       }
+     } catch (_) {
+@@ -219,6 +220,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+                 Tab(text: 'Commits'),
+                 Tab(text: 'Mirrors'),
+                 Tab(text: 'About'),
++                Tab(text: 'Agents'),
+               ],
+             ),
+           ),
+@@ -235,6 +237,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
+           _CommitsTab(api: api, repo: repo),
+           _MirrorsTab(api: api, repo: repo),
+           _AboutTab(repo: repo),
++          _AgentsTab(api: api, repo: repo),
+         ],
+       ),
+     );
+@@ -1021,6 +1024,241 @@ class _AboutTab extends StatelessWidget {
+   }
+ }
+ 
++class _AgentsTab extends StatelessWidget {
++  const _AgentsTab({required this.api, required this.repo});
++
++  final ApiService api;
++  final Repository repo;
++
++  String _ownerAccount(BuildContext context) {
++    final auth = context.read<AuthService?>();
++    final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
++    return node.isNotEmpty ? node : repo.owner;
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final ownerAccount = _ownerAccount(context);
++    final future = api.agentSessions(
++      repo.owner,
++      repo.name,
++      ownerAccount: ownerAccount,
++    );
++    return FutureBuilder<List<AgentSession>>(
++      future: future,
++      builder: (context, snap) {
++        final items = snap.data ?? const <AgentSession>[];
++        return ListView(
++          padding: const EdgeInsets.symmetric(vertical: 10),
++          children: [
++            Padding(
++              padding: const EdgeInsets.fromLTRB(
++                FmSpace.x4,
++                FmSpace.x2,
++                FmSpace.x4,
++                FmSpace.x2,
++              ),
++              child: FmSectionHeader(
++                title: 'Agent sessions',
++                count: snap.hasData ? items.length : null,
++              ),
++            ),
++            if (snap.connectionState == ConnectionState.waiting)
++              const Padding(
++                padding: EdgeInsets.all(FmSpace.x4),
++                child: _LoadingCard(label: 'Loading agent sessions…'),
++              )
++            else if (snap.hasError)
++              Padding(
++                padding: const EdgeInsets.all(FmSpace.x4),
++                child: _EmptyCard(message: '${snap.error}'),
++              )
++            else if (items.isEmpty)
++              const Padding(
++                padding: EdgeInsets.all(FmSpace.x4),
++                child: _EmptyCard(
++                  message:
++                      'No agent sessions have been pushed by the desktop node for this repo yet.',
++                ),
++              )
++            else
++              for (final session in items)
++                _MobileCard(
++                  icon: Icons.smart_toy_outlined,
++                  iconColor: FmTheme.accent(context),
++                  title: session.displayTitle,
++                  subtitle: session.issueNumber > 0
++                      ? 'Issue #${session.issueNumber} • ${session.providerLabel}'
++                      : session.providerLabel,
++                  trailing: _AgentStatusBadge(session: session),
++                  onTap: () => Navigator.of(context).push(
++                    MaterialPageRoute<void>(
++                      builder: (_) => _AgentSessionDetailScreen(
++                        api: api,
++                        repo: repo,
++                        session: session,
++                        ownerAccount: ownerAccount,
++                      ),
++                    ),
++                  ),
++                  chips: [
++                    if (session.issueNumber > 0) '#${session.issueNumber}',
++                    session.providerLabel,
++                    session.statusLabel,
++                    if (session.branchName.isNotEmpty) session.branchName,
++                    if (session.numTurns > 0) '${session.numTurns} turns',
++                    if (session.durationLabel.isNotEmpty) session.durationLabel,
++                    if (session.costLabel.isNotEmpty) session.costLabel,
++                  ],
++                ),
++          ],
++        );
++      },
++    );
++  }
++}
++
++class _AgentSessionDetailScreen extends StatelessWidget {
++  const _AgentSessionDetailScreen({
++    required this.api,
++    required this.repo,
++    required this.session,
++    required this.ownerAccount,
++  });
++
++  final ApiService api;
++  final Repository repo;
++  final AgentSession session;
++  final String ownerAccount;
++
++  @override
++  Widget build(BuildContext context) {
++    final transcriptFuture = api.agentTranscript(
++      repo.owner,
++      repo.name,
++      session.id,
++      ownerAccount: ownerAccount,
++    );
++    return Scaffold(
++      appBar: AppBar(title: Text('Agent session #${session.id}')),
++      body: ListView(
++        padding: const EdgeInsets.all(20),
++        children: [
++          _InfoCard(
++            title: session.displayTitle,
++            children: [
++              Wrap(
++                spacing: 8,
++                runSpacing: 8,
++                children: [
++                  _Chip(
++                    icon: Icons.smart_toy_outlined,
++                    label: session.providerLabel,
++                  ),
++                  _Chip(icon: Icons.info_outline, label: session.statusLabel),
++                  if (session.model.isNotEmpty)
++                    _Chip(icon: Icons.memory_outlined, label: session.model),
++                  if (session.issueNumber > 0)
++                    _Chip(
++                      icon: Icons.error_outline,
++                      label: '#${session.issueNumber}',
++                    ),
++                  if (session.branchName.isNotEmpty)
++                    _Chip(
++                      icon: Icons.account_tree_outlined,
++                      label: session.branchName,
++                    ),
++                  if (session.numTurns > 0)
++                    _Chip(
++                      icon: Icons.chat_bubble_outline,
++                      label: '${session.numTurns} turns',
++                    ),
++                  if (session.durationLabel.isNotEmpty)
++                    _Chip(
++                      icon: Icons.timer_outlined,
++                      label: session.durationLabel,
++                    ),
++                  if (session.costLabel.isNotEmpty)
++                    _Chip(icon: Icons.paid_outlined, label: session.costLabel),
++                ],
++              ),
++              if (session.lastError.isNotEmpty) ...[
++                const SizedBox(height: 12),
++                Text(
++                  session.lastError,
++                  style: TextStyle(color: FmTheme.danger(context)),
++                ),
++              ],
++            ],
++          ),
++          const SizedBox(height: 12),
++          FutureBuilder<AgentTranscript>(
++            future: transcriptFuture,
++            builder: (context, snap) {
++              if (snap.connectionState == ConnectionState.waiting) {
++                return const _LoadingCard(label: 'Loading transcript…');
++              }
++              if (snap.hasError) {
++                return _EmptyCard(message: '${snap.error}');
++              }
++              final detail =
++                  snap.data ??
++                  const AgentTranscript(status: '', transcript: '');
++              final status = detail.status.isNotEmpty
++                  ? AgentSession(
++                      id: session.id,
++                      status: detail.status,
++                    ).statusLabel
++                  : session.statusLabel;
++              return _InfoCard(
++                title: 'Transcript',
++                children: [
++                  Wrap(
++                    spacing: 8,
++                    runSpacing: 8,
++                    children: [
++                      _Chip(icon: Icons.info_outline, label: status),
++                      _Chip(icon: Icons.folder_outlined, label: repo.fullName),
++                    ],
++                  ),
++                  const SizedBox(height: 12),
++                  SelectableText(
++                    detail.transcript.trim().isEmpty
++                        ? 'No transcript has been pushed by the desktop node yet.'
++                        : detail.transcript.trim(),
++                    style: const TextStyle(
++                      fontFamily: 'monospace',
++                      fontSize: 12,
++                      height: 1.45,
++                    ),
++                  ),
++                ],
++              );
++            },
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _AgentStatusBadge extends StatelessWidget {
++  const _AgentStatusBadge({required this.session});
++
++  final AgentSession session;
++
++  @override
++  Widget build(BuildContext context) {
++    final color = switch (session.statusLabel) {
++      'Done' => FmTheme.success(context),
++      'Failed' || 'Stopped' => FmTheme.danger(context),
++      'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
++      _ => FmTheme.textTertiary(context),
++    };
++    return FmStatusBadge(label: session.statusLabel, color: color);
++  }
++}
++
+ class _CodeTab extends StatefulWidget {
+   const _CodeTab({required this.api, required this.repo});
+   final ApiService api;
+@@ -3912,6 +4150,8 @@ class _MobileCard extends StatelessWidget {
+     required this.title,
+     required this.subtitle,
+     this.badge = '',
++    this.chips = const [],
++    this.trailing,
+     this.onTap,
+   });
+   final IconData icon;
+@@ -3919,6 +4159,8 @@ class _MobileCard extends StatelessWidget {
+   final String title;
+   final String subtitle;
+   final String badge;
++  final List<String> chips;
++  final Widget? trailing;
+   final VoidCallback? onTap;
+   @override
+   Widget build(BuildContext context) => Padding(
+@@ -3960,10 +4202,21 @@ class _MobileCard extends StatelessWidget {
+                     ),
+                   ),
+                 ],
++                if (chips.isNotEmpty) ...[
++                  const SizedBox(height: FmSpace.x2),
++                  Wrap(
++                    spacing: 6,
++                    runSpacing: 6,
++                    children: [for (final chip in chips) _SmallBadge(chip)],
++                  ),
++                ],
+               ],
+             ),
+           ),
+-          if (badge.isNotEmpty) ...[
++          if (trailing != null) ...[
++            const SizedBox(width: FmSpace.x2),
++            trailing!,
++          ] else if (badge.isNotEmpty) ...[
+             const SizedBox(width: FmSpace.x2),
+             _SmallBadge(badge),
+           ],
+diff --git a/flutter_app/lib/services/api_service.dart b/flutter_app/lib/services/api_service.dart
+index 36687f90..39f5526d 100644
+--- a/flutter_app/lib/services/api_service.dart
++++ b/flutter_app/lib/services/api_service.dart
+@@ -161,6 +161,42 @@ class ApiService {
+     });
+   }
+ 
++  Future<List<AgentSession>> agentSessions(
++    String owner,
++    String name, {
++    String ownerAccount = '',
++  }) async {
++    final data = await _postJson(_base('/api/repo/$owner/$name/agents/list'), {
++      if (ownerAccount.trim().isNotEmpty)
++        'ownerAccount': ownerAccount.trim().toLowerCase(),
++    });
++    final raw = data is Map<String, dynamic>
++        ? _asList(data)
++        : data is List
++        ? data
++        : const [];
++    return raw
++        .whereType<Map>()
++        .map((item) => AgentSession.fromJson(Map<String, dynamic>.from(item)))
++        .toList();
++  }
++
++  Future<AgentTranscript> agentTranscript(
++    String owner,
++    String name,
++    int id, {
++    String ownerAccount = '',
++  }) async {
++    final data =
++        await _postJson(_base('/api/repo/$owner/$name/agents/$id/transcript'), {
++          if (ownerAccount.trim().isNotEmpty)
++            'ownerAccount': ownerAccount.trim().toLowerCase(),
++        });
++    return AgentTranscript.fromJson(
++      data is Map<String, dynamic> ? data : const <String, dynamic>{},
++    );
++  }
++
+   Future<List<Issue>> issues(String owner, String name) async {
+     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
+     return _asList(
+@@ -613,6 +649,7 @@ class ApiService {
+         'tree',
+         'data',
+         'items',
++        'agents',
+       ]) {
+         if (data[key] is List) return data[key] as List;
+       }
+diff --git a/flutter_app/lib/services/notification_deep_link.dart b/flutter_app/lib/services/notification_deep_link.dart
+index ec5dbf84..a6b67519 100644
+--- a/flutter_app/lib/services/notification_deep_link.dart
++++ b/flutter_app/lib/services/notification_deep_link.dart
+@@ -1,6 +1,15 @@
+ import '../models/models.dart';
+ 
+-enum RepoDetailTab { code, issues, pulls, discussions, commits, mirrors, about }
++enum RepoDetailTab {
++  code,
++  issues,
++  pulls,
++  discussions,
++  commits,
++  mirrors,
++  about,
++  agents,
++}
+ 
+ class NotificationDeepLink {
+   const NotificationDeepLink({
+@@ -58,6 +67,8 @@ class NotificationDeepLink {
+           tab = RepoDetailTab.mirrors;
+         case 'about':
+           tab = RepoDetailTab.about;
++        case 'agents':
++          tab = RepoDetailTab.agents;
+         case 'tree':
+         case 'blob':
+         case 'raw':
+diff --git a/flutter_app/test/agent_sessions_test.dart b/flutter_app/test/agent_sessions_test.dart
+new file mode 100644
+index 00000000..1aa89685
+--- /dev/null
++++ b/flutter_app/test/agent_sessions_test.dart
+@@ -0,0 +1,135 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/models/models.dart';
++import 'package:forkmesh/screens/repo_detail_screen.dart';
++import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:forkmesh/theme.dart';
++import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++class AgentApiService extends ApiService {
++  AgentApiService(super.settings);
++
++  @override
++  Future<List<RepoBranch>> branches(String owner, String name) async => [
++    RepoBranch(name: 'main', isDefault: true),
++  ];
++
++  @override
++  Future<RepoTree> tree(
++    String owner,
++    String name, {
++    String path = '',
++    String ref = '',
++  }) async => RepoTree(path: path, entries: const []);
++
++  @override
++  Future<List<AgentSession>> agentSessions(
++    String owner,
++    String name, {
++    String ownerAccount = '',
++  }) async => [
++    AgentSession(
++      id: 42,
++      issueNumber: 12,
++      issueTitle: 'Stabilize signed inbox',
++      status: 'running',
++      provider: 'openai',
++      model: 'gpt-5.5',
++      branchName: 'agent/fix-inbox',
++      numTurns: 7,
++      durationMs: 125000,
++      costUsd: 1.25,
++    ),
++  ];
++
++  @override
++  Future<AgentTranscript> agentTranscript(
++    String owner,
++    String name,
++    int id, {
++    String ownerAccount = '',
++  }) async => const AgentTranscript(
++    status: 'done',
++    transcript: 'Running tests\nflutter test passed\nOpened PR #7',
++  );
++}
++
++Future<void> _pumpRepo(WidgetTester tester, ApiService api) async {
++  tester.view.physicalSize = const Size(900, 1200);
++  tester.view.devicePixelRatio = 1;
++  addTearDown(tester.view.resetPhysicalSize);
++  addTearDown(tester.view.resetDevicePixelRatio);
++  await tester.pumpWidget(
++    Provider<ApiService>.value(
++      value: api,
++      child: MaterialApp(
++        theme: buildForkMeshLightTheme(),
++        home: RepoDetailScreen(
++          repo: Repository(owner: 'owner', name: 'repo', defaultBranch: 'main'),
++        ),
++      ),
++    ),
++  );
++  await tester.pumpAndSettle();
++}
++
++void main() {
++  test('AgentSession parses Worker agent session payloads', () {
++    final session = AgentSession.fromJson({
++      'id': '42',
++      'issueNumber': '12',
++      'issueTitle': 'Stabilize signed inbox',
++      'status': 'running',
++      'provider': 'openai',
++      'model': 'gpt-5.5',
++      'branchName': 'agent/fix-inbox',
++      'lastError': '',
++      'createdAtMs': '1700000000000',
++      'startedAtMs': 1700000001000,
++      'finishedAtMs': 0,
++      'numTurns': '7',
++      'durationMs': 125000,
++      'costUsd': '1.25',
++    });
++
++    expect(session.id, 42);
++    expect(session.issueNumber, 12);
++    expect(session.issueTitle, 'Stabilize signed inbox');
++    expect(session.statusLabel, 'Running');
++    expect(session.providerLabel, 'OpenAI');
++    expect(session.displayTitle, 'Stabilize signed inbox');
++    expect(session.branchName, 'agent/fix-inbox');
++    expect(session.numTurns, 7);
++    expect(session.durationLabel, '2m 5s');
++    expect(session.costLabel, r'$1.25');
++    expect(session.isActive, isTrue);
++  });
++
++  testWidgets('repo Agents tab lists sessions and opens transcript detail', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    await _pumpRepo(tester, AgentApiService(settings));
++
++    await tester.ensureVisible(find.text('Agents'));
++    await tester.tap(find.text('Agents'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('AGENT SESSIONS'), findsOneWidget);
++    expect(find.text('Stabilize signed inbox'), findsOneWidget);
++    expect(find.text('RUNNING'), findsWidgets);
++    expect(find.textContaining('OpenAI'), findsOneWidget);
++    expect(find.text('#12'), findsOneWidget);
++    expect(find.text('AGENT/FIX-INBOX'), findsOneWidget);
++
++    await tester.tap(find.text('Stabilize signed inbox'));
++    await tester.pumpAndSettle();
++
++    expect(find.text('Agent session #42'), findsOneWidget);
++    expect(find.text('Transcript'), findsOneWidget);
++    expect(find.textContaining('flutter test passed'), findsOneWidget);
++  });
++}
+diff --git a/flutter_app/test/api_service_test.dart b/flutter_app/test/api_service_test.dart
+index dc66e81a..cfa9251d 100644
+--- a/flutter_app/test/api_service_test.dart
++++ b/flutter_app/test/api_service_test.dart
+@@ -396,4 +396,93 @@ LGTM from mobile.''',
+       expect(pulls.single.events.last.state, 'approve');
+     },
+   );
++
++  test('agent session list posts ownerAccount and parses agents', () async {
++    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++    Map<String, dynamic> posted = const {};
++    final subscription = server.listen((request) async {
++      expect(request.method, 'POST');
++      expect(request.uri.path, '/api/repo/owner/repo/agents/list');
++      posted =
++          jsonDecode(await utf8.decoder.bind(request).join())
++              as Map<String, dynamic>;
++      request.response.headers.contentType = ContentType.json;
++      request.response.write(
++        jsonEncode({
++          'ok': true,
++          'agents': [
++            {'id': 42, 'status': 'done', 'provider': 'claude-code'},
++          ],
++        }),
++      );
++      await request.response.close();
++    });
++    addTearDown(() async {
++      await subscription.cancel();
++      await server.close(force: true);
++    });
++
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    await settings.setServerUrl(
++      'ws://${server.address.host}:${server.port}/ws',
++    );
++    final api = ApiService(settings);
++
++    final sessions = await api.agentSessions(
++      'owner',
++      'repo',
++      ownerAccount: 'owner',
++    );
++
++    expect(posted['ownerAccount'], 'owner');
++    expect(sessions.single.id, 42);
++    expect(sessions.single.providerLabel, 'Claude Code');
++  });
++
++  test(
++    'agent transcript posts ownerAccount and parses transcript detail',
++    () async {
++      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++      Map<String, dynamic> posted = const {};
++      final subscription = server.listen((request) async {
++        expect(request.method, 'POST');
++        expect(request.uri.path, '/api/repo/owner/repo/agents/42/transcript');
++        posted =
++            jsonDecode(await utf8.decoder.bind(request).join())
++                as Map<String, dynamic>;
++        request.response.headers.contentType = ContentType.json;
++        request.response.write(
++          jsonEncode({
++            'ok': true,
++            'status': 'done',
++            'transcript': 'Running tests\nflutter test passed',
++          }),
++        );
++        await request.response.close();
++      });
++      addTearDown(() async {
++        await subscription.cancel();
++        await server.close(force: true);
++      });
++
++      SharedPreferences.setMockInitialValues({});
++      final settings = await SettingsService.create();
++      await settings.setServerUrl(
++        'ws://${server.address.host}:${server.port}/ws',
++      );
++      final api = ApiService(settings);
++
++      final detail = await api.agentTranscript(
++        'owner',
++        'repo',
++        42,
++        ownerAccount: 'owner',
++      );
++
++      expect(posted['ownerAccount'], 'owner');
++      expect(detail.status, 'done');
++      expect(detail.transcript, contains('flutter test passed'));
++    },
++  );
+ }
+diff --git a/flutter_app/test/models_test.dart b/flutter_app/test/models_test.dart
+index babe1a30..fe4e7e3b 100644
+--- a/flutter_app/test/models_test.dart
++++ b/flutter_app/test/models_test.dart
+@@ -190,6 +190,9 @@ void main() {
+     expect(commit?.initialTab, RepoDetailTab.commits);
+     expect(commit?.reference, 'abc123');
+ 
++    final agents = NotificationDeepLink.parse('/mona/forkmesh/agents');
++    expect(agents?.initialTab, RepoDetailTab.agents);
++
+     expect(
+       NotificationDeepLink.parse('https://evil.test/mona/forkmesh'),
+       isNull,
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 4a4e0d4a3ad4a24b9b288a5fc7ec9e37a164c179 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 6 Jul 2026 21:51:47 +0530
+Subject: [PATCH 2/3] feat(flutter): add global agent monitoring
+
+---
+ flutter_app/lib/screens/agents_screen.dart    | 664 ++++++++++++++++++
+ flutter_app/lib/screens/home_shell.dart       |  13 +-
+ .../lib/screens/repo_detail_screen.dart       | 103 ++-
+ flutter_app/test/agent_sessions_test.dart     |  49 ++
+ flutter_app/test/agents_screen_test.dart      | 201 ++++++
+ flutter_app/test/mock_auth_flow_test.dart     |   2 +
+ 6 files changed, 1014 insertions(+), 18 deletions(-)
+ create mode 100644 flutter_app/lib/screens/agents_screen.dart
+ create mode 100644 flutter_app/test/agents_screen_test.dart
+
+diff --git a/flutter_app/lib/screens/agents_screen.dart b/flutter_app/lib/screens/agents_screen.dart
+new file mode 100644
+index 00000000..904d2352
+--- /dev/null
++++ b/flutter_app/lib/screens/agents_screen.dart
+@@ -0,0 +1,664 @@
++import 'dart:async';
++
++import 'package:flutter/material.dart';
++import 'package:provider/provider.dart';
++
++import '../models/models.dart';
++import '../services/api_service.dart';
++import '../services/auth_service.dart';
++import '../theme.dart';
++import '../widgets/fm_ui.dart';
++
++const _agentPollInterval = Duration(seconds: 10);
++
++class AgentsScreen extends StatefulWidget {
++  const AgentsScreen({super.key, this.enabled = true});
++
++  final bool enabled;
++
++  @override
++  State<AgentsScreen> createState() => _AgentsScreenState();
++}
++
++class _AgentsScreenState extends State<AgentsScreen> {
++  Future<List<_AgentRepoGroup>>? _future;
++  Timer? _pollTimer;
++  int _loadGeneration = 0;
++
++  @override
++  void didChangeDependencies() {
++    super.didChangeDependencies();
++    if (widget.enabled) _future ??= _startLoad();
++  }
++
++  @override
++  void didUpdateWidget(covariant AgentsScreen oldWidget) {
++    super.didUpdateWidget(oldWidget);
++    if (widget.enabled && _future == null) {
++      _future = _startLoad();
++    }
++    if (!widget.enabled && oldWidget.enabled) {
++      _loadGeneration += 1;
++      _future = null;
++      _pollTimer?.cancel();
++      _pollTimer = null;
++    }
++  }
++
++  @override
++  void dispose() {
++    _pollTimer?.cancel();
++    super.dispose();
++  }
++
++  Future<void> _refresh() async {
++    if (!widget.enabled) return;
++    setState(() {
++      _future = _startLoad();
++    });
++    await _future;
++  }
++
++  Future<List<_AgentRepoGroup>> _startLoad() {
++    final generation = ++_loadGeneration;
++    return _loadGroups(generation);
++  }
++
++  Future<List<_AgentRepoGroup>> _loadGroups(int generation) async {
++    final api = context.read<ApiService>();
++    final repos = await api.repositories();
++    if (!mounted || !widget.enabled || generation != _loadGeneration) {
++      return const [];
++    }
++    final groups = await Future.wait(
++      repos.map((repo) async {
++        try {
++          final sessions = await api.agentSessions(
++            repo.owner,
++            repo.name,
++            ownerAccount: _ownerAccount(repo),
++          );
++          final sorted = sessions.toList()..sort(_compareSessions);
++          return _AgentRepoGroup(repo: repo, sessions: sorted);
++        } catch (_) {
++          return _AgentRepoGroup(repo: repo, sessions: const []);
++        }
++      }),
++    );
++    if (!mounted || !widget.enabled || generation != _loadGeneration) {
++      return const [];
++    }
++    final visible = groups.where((group) => group.sessions.isNotEmpty).toList()
++      ..sort(_compareGroups);
++    _syncPolling(visible);
++    return visible;
++  }
++
++  String _ownerAccount(Repository repo) {
++    final auth = context.read<AuthService?>();
++    final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
++    return node.isNotEmpty ? node : repo.owner;
++  }
++
++  void _syncPolling(List<_AgentRepoGroup> groups) {
++    if (!mounted || !widget.enabled) {
++      _pollTimer?.cancel();
++      _pollTimer = null;
++      return;
++    }
++    final hasActive = groups.any((group) => group.hasActive);
++    if (hasActive) {
++      _pollTimer ??= Timer.periodic(_agentPollInterval, (_) {
++        if (!mounted || !widget.enabled) return;
++        setState(() {
++          _future = _startLoad();
++        });
++      });
++    } else {
++      _pollTimer?.cancel();
++      _pollTimer = null;
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final future = _future;
++    if (future == null) {
++      return const SizedBox.shrink();
++    }
++    return FutureBuilder<List<_AgentRepoGroup>>(
++      future: future,
++      builder: (context, snap) {
++        final groups = snap.data ?? const <_AgentRepoGroup>[];
++        final sessions = groups.fold<int>(
++          0,
++          (count, group) => count + group.sessions.length,
++        );
++        final running = groups.fold<int>(
++          0,
++          (count, group) =>
++              count +
++              group.sessions.where((session) => session.isActive).length,
++        );
++        return Column(
++          crossAxisAlignment: CrossAxisAlignment.stretch,
++          children: [
++            _AgentsHeader(
++              running: running,
++              sessions: sessions,
++              repositories: groups.length,
++              polling: _pollTimer != null,
++              onRefresh: _refresh,
++            ),
++            Expanded(
++              child: _AgentsBody(
++                state: snap.connectionState,
++                error: snap.error,
++                groups: groups,
++                onRefresh: _refresh,
++              ),
++            ),
++          ],
++        );
++      },
++    );
++  }
++}
++
++class AgentSessionDetailScreen extends StatelessWidget {
++  const AgentSessionDetailScreen({
++    super.key,
++    required this.api,
++    required this.repo,
++    required this.session,
++    required this.ownerAccount,
++  });
++
++  final ApiService api;
++  final Repository repo;
++  final AgentSession session;
++  final String ownerAccount;
++
++  @override
++  Widget build(BuildContext context) {
++    final transcriptFuture = api.agentTranscript(
++      repo.owner,
++      repo.name,
++      session.id,
++      ownerAccount: ownerAccount,
++    );
++    return Scaffold(
++      appBar: AppBar(title: Text('Agent session #${session.id}')),
++      body: ListView(
++        padding: const EdgeInsets.all(FmSpace.x5),
++        children: [
++          FmCard(
++            radius: FmRadius.lg,
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  session.displayTitle,
++                  style: TextStyle(
++                    color: FmTheme.textPrimary(context),
++                    fontSize: 18,
++                    fontWeight: FontWeight.w800,
++                  ),
++                ),
++                const SizedBox(height: FmSpace.x3),
++                Wrap(
++                  spacing: FmSpace.x2,
++                  runSpacing: FmSpace.x2,
++                  children: [
++                    _AgentChip(label: session.providerLabel),
++                    _AgentChip(label: session.statusLabel),
++                    if (session.model.isNotEmpty)
++                      _AgentChip(label: session.model),
++                    if (session.issueNumber > 0)
++                      _AgentChip(label: '#${session.issueNumber}'),
++                    if (session.branchName.isNotEmpty)
++                      _AgentChip(label: session.branchName),
++                    if (session.numTurns > 0)
++                      _AgentChip(label: '${session.numTurns} turns'),
++                    if (session.durationLabel.isNotEmpty)
++                      _AgentChip(label: session.durationLabel),
++                    if (session.costLabel.isNotEmpty)
++                      _AgentChip(label: session.costLabel),
++                  ],
++                ),
++                if (session.lastError.isNotEmpty) ...[
++                  const SizedBox(height: FmSpace.x3),
++                  Text(
++                    session.lastError,
++                    style: TextStyle(color: FmTheme.danger(context)),
++                  ),
++                ],
++              ],
++            ),
++          ),
++          const SizedBox(height: FmSpace.x3),
++          FutureBuilder<AgentTranscript>(
++            future: transcriptFuture,
++            builder: (context, snap) {
++              if (snap.connectionState == ConnectionState.waiting) {
++                return const FmCard(
++                  radius: FmRadius.lg,
++                  child: LinearProgressIndicator(),
++                );
++              }
++              if (snap.hasError) {
++                return FmCard(
++                  radius: FmRadius.lg,
++                  child: Text(
++                    '${snap.error}',
++                    style: TextStyle(color: FmTheme.textSecondary(context)),
++                  ),
++                );
++              }
++              final detail =
++                  snap.data ??
++                  const AgentTranscript(status: '', transcript: '');
++              final status = detail.status.isNotEmpty
++                  ? AgentSession(
++                      id: session.id,
++                      status: detail.status,
++                    ).statusLabel
++                  : session.statusLabel;
++              return FmCard(
++                radius: FmRadius.lg,
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      'Transcript',
++                      style: TextStyle(
++                        color: FmTheme.textPrimary(context),
++                        fontSize: 16,
++                        fontWeight: FontWeight.w800,
++                      ),
++                    ),
++                    const SizedBox(height: FmSpace.x3),
++                    Wrap(
++                      spacing: FmSpace.x2,
++                      runSpacing: FmSpace.x2,
++                      children: [
++                        _AgentChip(label: status),
++                        _AgentChip(label: repo.fullName),
++                      ],
++                    ),
++                    const SizedBox(height: FmSpace.x3),
++                    SelectableText(
++                      detail.transcript.trim().isEmpty
++                          ? 'No transcript has been pushed by the desktop node yet.'
++                          : detail.transcript.trim(),
++                      style: const TextStyle(
++                        fontFamily: 'monospace',
++                        fontSize: 12,
++                        height: 1.45,
++                      ),
++                    ),
++                  ],
++                ),
++              );
++            },
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _AgentsHeader extends StatelessWidget {
++  const _AgentsHeader({
++    required this.running,
++    required this.sessions,
++    required this.repositories,
++    required this.polling,
++    required this.onRefresh,
++  });
++
++  final int running;
++  final int sessions;
++  final int repositories;
++  final bool polling;
++  final Future<void> Function() onRefresh;
++
++  @override
++  Widget build(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.all(FmSpace.x4),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Row(
++            children: [
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      'Agents',
++                      style: TextStyle(
++                        color: FmTheme.textPrimary(context),
++                        fontSize: 24,
++                        fontWeight: FontWeight.w800,
++                      ),
++                    ),
++                    const SizedBox(height: FmSpace.x1),
++                    Text(
++                      'Read-only desktop agent monitoring across repositories.',
++                      style: TextStyle(
++                        color: FmTheme.textSecondary(context),
++                        fontSize: 13,
++                      ),
++                    ),
++                  ],
++                ),
++              ),
++              IconButton(
++                tooltip: 'Refresh agents',
++                onPressed: onRefresh,
++                style: IconButton.styleFrom(
++                  backgroundColor: FmTheme.bgRaised(context),
++                  foregroundColor: FmTheme.textSecondary(context),
++                  shape: RoundedRectangleBorder(
++                    borderRadius: BorderRadius.circular(FmRadius.lg),
++                  ),
++                ),
++                icon: const Icon(Icons.refresh),
++              ),
++            ],
++          ),
++          const SizedBox(height: FmSpace.x3),
++          Wrap(
++            spacing: FmSpace.x2,
++            runSpacing: FmSpace.x2,
++            children: [
++              Text('$running running'),
++              Text('$sessions session${sessions == 1 ? '' : 's'}'),
++              Text('$repositories repo${repositories == 1 ? '' : 's'}'),
++              if (polling) const Text('Live refresh on'),
++            ],
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _AgentsBody extends StatelessWidget {
++  const _AgentsBody({
++    required this.state,
++    required this.error,
++    required this.groups,
++    required this.onRefresh,
++  });
++
++  final ConnectionState state;
++  final Object? error;
++  final List<_AgentRepoGroup> groups;
++  final Future<void> Function() onRefresh;
++
++  @override
++  Widget build(BuildContext context) {
++    if (state == ConnectionState.waiting && groups.isEmpty) {
++      return const Center(child: CircularProgressIndicator());
++    }
++    if (error != null && groups.isEmpty) {
++      return Center(
++        child: Padding(
++          padding: const EdgeInsets.all(FmSpace.x5),
++          child: FmCard(
++            radius: FmRadius.lg,
++            child: Column(
++              mainAxisSize: MainAxisSize.min,
++              children: [
++                Text(
++                  '$error',
++                  style: TextStyle(color: FmTheme.textSecondary(context)),
++                ),
++                const SizedBox(height: FmSpace.x3),
++                OutlinedButton(
++                  onPressed: onRefresh,
++                  child: const Text('Retry'),
++                ),
++              ],
++            ),
++          ),
++        ),
++      );
++    }
++    if (groups.isEmpty) {
++      return const FmEmptyState(
++        icon: Icons.smart_toy_outlined,
++        title: 'No agent sessions',
++        message:
++            'Agent sessions pushed by desktop nodes will appear here by repository.',
++      );
++    }
++    return RefreshIndicator(
++      onRefresh: onRefresh,
++      child: ListView.builder(
++        padding: const EdgeInsets.fromLTRB(
++          FmSpace.x4,
++          FmSpace.x0,
++          FmSpace.x4,
++          FmSpace.x5,
++        ),
++        itemCount: groups.length,
++        itemBuilder: (context, index) => _AgentRepoCard(group: groups[index]),
++      ),
++    );
++  }
++}
++
++class _AgentRepoCard extends StatelessWidget {
++  const _AgentRepoCard({required this.group});
++
++  final _AgentRepoGroup group;
++
++  @override
++  Widget build(BuildContext context) {
++    final api = context.read<ApiService>();
++    final ownerAccount = _ownerAccount(context, group.repo);
++    return FmCard(
++      radius: FmRadius.lg,
++      margin: const EdgeInsets.only(bottom: FmSpace.x3),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Row(
++            children: [
++              Icon(Icons.folder_outlined, color: FmTheme.accent(context)),
++              const SizedBox(width: FmSpace.x2),
++              Expanded(
++                child: Text(
++                  group.repo.fullName,
++                  style: TextStyle(
++                    color: FmTheme.textPrimary(context),
++                    fontSize: 16,
++                    fontWeight: FontWeight.w800,
++                  ),
++                ),
++              ),
++              Text(
++                '${group.sessions.length}',
++                style: TextStyle(
++                  color: FmTheme.textTertiary(context),
++                  fontWeight: FontWeight.w700,
++                ),
++              ),
++            ],
++          ),
++          const SizedBox(height: FmSpace.x3),
++          for (var i = 0; i < group.sessions.length; i++) ...[
++            _AgentSessionRow(
++              repo: group.repo,
++              session: group.sessions[i],
++              api: api,
++              ownerAccount: ownerAccount,
++            ),
++            if (i != group.sessions.length - 1)
++              const SizedBox(height: FmSpace.x2),
++          ],
++        ],
++      ),
++    );
++  }
++
++  String _ownerAccount(BuildContext context, Repository repo) {
++    final auth = context.read<AuthService?>();
++    final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
++    return node.isNotEmpty ? node : repo.owner;
++  }
++}
++
++class _AgentSessionRow extends StatelessWidget {
++  const _AgentSessionRow({
++    required this.repo,
++    required this.session,
++    required this.api,
++    required this.ownerAccount,
++  });
++
++  final Repository repo;
++  final AgentSession session;
++  final ApiService api;
++  final String ownerAccount;
++
++  @override
++  Widget build(BuildContext context) {
++    return Material(
++      color: FmTheme.bgOverlay(context),
++      borderRadius: BorderRadius.circular(FmRadius.md),
++      clipBehavior: Clip.antiAlias,
++      child: InkWell(
++        onTap: () => Navigator.of(context).push(
++          MaterialPageRoute<void>(
++            builder: (_) => AgentSessionDetailScreen(
++              api: api,
++              repo: repo,
++              session: session,
++              ownerAccount: ownerAccount,
++            ),
++          ),
++        ),
++        child: Padding(
++          padding: const EdgeInsets.all(FmSpace.x3),
++          child: Row(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Icon(Icons.smart_toy_outlined, color: FmTheme.accent(context)),
++              const SizedBox(width: FmSpace.x3),
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      session.displayTitle,
++                      maxLines: 2,
++                      overflow: TextOverflow.ellipsis,
++                      style: TextStyle(
++                        color: FmTheme.textPrimary(context),
++                        fontWeight: FontWeight.w800,
++                      ),
++                    ),
++                    const SizedBox(height: FmSpace.x1),
++                    Text(
++                      session.issueNumber > 0
++                          ? 'Issue #${session.issueNumber} • ${session.providerLabel}'
++                          : session.providerLabel,
++                      style: TextStyle(
++                        color: FmTheme.textSecondary(context),
++                        fontSize: 12,
++                      ),
++                    ),
++                    const SizedBox(height: FmSpace.x2),
++                    Wrap(
++                      spacing: FmSpace.x2,
++                      runSpacing: FmSpace.x2,
++                      children: [
++                        if (session.branchName.isNotEmpty)
++                          _AgentChip(label: session.branchName),
++                        if (session.numTurns > 0)
++                          _AgentChip(label: '${session.numTurns} turns'),
++                        if (session.durationLabel.isNotEmpty)
++                          _AgentChip(label: session.durationLabel),
++                        if (session.costLabel.isNotEmpty)
++                          _AgentChip(label: session.costLabel),
++                      ],
++                    ),
++                  ],
++                ),
++              ),
++              const SizedBox(width: FmSpace.x2),
++              _AgentStatusBadge(session: session),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++class _AgentRepoGroup {
++  const _AgentRepoGroup({required this.repo, required this.sessions});
++
++  final Repository repo;
++  final List<AgentSession> sessions;
++
++  bool get hasActive => sessions.any((session) => session.isActive);
++}
++
++class _AgentStatusBadge extends StatelessWidget {
++  const _AgentStatusBadge({required this.session});
++
++  final AgentSession session;
++
++  @override
++  Widget build(BuildContext context) {
++    final color = switch (session.statusLabel) {
++      'Done' => FmTheme.success(context),
++      'Failed' || 'Stopped' => FmTheme.danger(context),
++      'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
++      _ => FmTheme.textTertiary(context),
++    };
++    return FmStatusBadge(label: session.statusLabel, color: color);
++  }
++}
++
++class _AgentChip extends StatelessWidget {
++  const _AgentChip({required this.label});
++
++  final String label;
++
++  @override
++  Widget build(BuildContext context) =>
++      FmStatusBadge(label: label, color: _agentBadgeColor(context, label));
++}
++
++Color _agentBadgeColor(BuildContext context, String label) {
++  final normalized = label.toLowerCase();
++  if (normalized.contains('running') ||
++      normalized.contains('queued') ||
++      normalized.contains('waiting')) {
++    return FmTheme.accent(context);
++  }
++  if (normalized.contains('done') || normalized.contains('completed')) {
++    return FmTheme.success(context);
++  }
++  if (normalized.contains('failed') || normalized.contains('stopped')) {
++    return FmTheme.danger(context);
++  }
++  return FmTheme.textSecondary(context);
++}
++
++int _compareGroups(_AgentRepoGroup a, _AgentRepoGroup b) {
++  if (a.hasActive != b.hasActive) return a.hasActive ? -1 : 1;
++  return a.repo.fullName.toLowerCase().compareTo(b.repo.fullName.toLowerCase());
++}
++
++int _compareSessions(AgentSession a, AgentSession b) {
++  if (a.isActive != b.isActive) return a.isActive ? -1 : 1;
++  return b.id.compareTo(a.id);
++}
+diff --git a/flutter_app/lib/screens/home_shell.dart b/flutter_app/lib/screens/home_shell.dart
+index f86f73d5..43b6af7e 100644
+--- a/flutter_app/lib/screens/home_shell.dart
++++ b/flutter_app/lib/screens/home_shell.dart
+@@ -11,6 +11,7 @@ import '../theme.dart';
+ import '../widgets/connection_dot.dart';
+ import '../widgets/fm_ui.dart';
+ import 'activity_screen.dart';
++import 'agents_screen.dart';
+ import 'chat_screen.dart';
+ import 'notifications_screen.dart';
+ import 'repos_screen.dart';
+@@ -29,6 +30,7 @@ class _HomeShellState extends State<HomeShell> {
+ 
+   static const _destinations = [
+     (icon: Icons.code, label: 'Code'),
++    (icon: Icons.smart_toy_outlined, label: 'Agents'),
+     (icon: Icons.chat_bubble_outline_rounded, label: 'Chat'),
+     (icon: Icons.bolt_outlined, label: 'Activity'),
+     (icon: Icons.settings_outlined, label: 'Settings'),
+@@ -61,11 +63,12 @@ class _HomeShellState extends State<HomeShell> {
+         ? identity.shortKey
+         : settings.displayName;
+ 
+-    final pages = const [
+-      ReposScreen(),
+-      ChatScreen(),
+-      ActivityScreen(),
+-      SettingsScreen(),
++    final pages = [
++      const ReposScreen(),
++      AgentsScreen(enabled: _index == 1),
++      const ChatScreen(),
++      const ActivityScreen(),
++      const SettingsScreen(),
+     ];
+ 
+     final body = Column(
+diff --git a/flutter_app/lib/screens/repo_detail_screen.dart b/flutter_app/lib/screens/repo_detail_screen.dart
+index 5ff1bafe..b7fd4ada 100644
+--- a/flutter_app/lib/screens/repo_detail_screen.dart
++++ b/flutter_app/lib/screens/repo_detail_screen.dart
+@@ -1,3 +1,4 @@
++import 'dart:async';
+ import 'dart:convert';
+ 
+ import 'package:flutter/material.dart';
+@@ -1024,30 +1025,81 @@ class _AboutTab extends StatelessWidget {
+   }
+ }
+ 
+-class _AgentsTab extends StatelessWidget {
++class _AgentsTab extends StatefulWidget {
+   const _AgentsTab({required this.api, required this.repo});
+ 
+   final ApiService api;
+   final Repository repo;
+ 
++  @override
++  State<_AgentsTab> createState() => _AgentsTabState();
++}
++
++class _AgentsTabState extends State<_AgentsTab> {
++  static const _pollInterval = Duration(seconds: 10);
++
++  Future<List<AgentSession>>? _future;
++  Timer? _pollTimer;
++
++  @override
++  void didChangeDependencies() {
++    super.didChangeDependencies();
++    _future ??= _loadSessions();
++  }
++
++  @override
++  void dispose() {
++    _pollTimer?.cancel();
++    super.dispose();
++  }
++
+   String _ownerAccount(BuildContext context) {
+     final auth = context.read<AuthService?>();
+     final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
+-    return node.isNotEmpty ? node : repo.owner;
++    return node.isNotEmpty ? node : widget.repo.owner;
++  }
++
++  Future<void> _refresh() async {
++    setState(() {
++      _future = _loadSessions();
++    });
++    await _future;
++  }
++
++  Future<List<AgentSession>> _loadSessions() async {
++    final items = await widget.api.agentSessions(
++      widget.repo.owner,
++      widget.repo.name,
++      ownerAccount: _ownerAccount(context),
++    );
++    _syncPolling(items);
++    return items;
++  }
++
++  void _syncPolling(List<AgentSession> items) {
++    if (!mounted) return;
++    if (items.any((session) => session.isActive)) {
++      _pollTimer ??= Timer.periodic(_pollInterval, (_) {
++        if (!mounted) return;
++        setState(() {
++          _future = _loadSessions();
++        });
++      });
++    } else {
++      _pollTimer?.cancel();
++      _pollTimer = null;
++    }
+   }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final ownerAccount = _ownerAccount(context);
+-    final future = api.agentSessions(
+-      repo.owner,
+-      repo.name,
+-      ownerAccount: ownerAccount,
+-    );
++    final future = _future ??= _loadSessions();
+     return FutureBuilder<List<AgentSession>>(
+       future: future,
+       builder: (context, snap) {
+         final items = snap.data ?? const <AgentSession>[];
++        final polling =
++            _pollTimer != null || items.any((session) => session.isActive);
+         return ListView(
+           padding: const EdgeInsets.symmetric(vertical: 10),
+           children: [
+@@ -1060,10 +1112,35 @@ class _AgentsTab extends StatelessWidget {
+               ),
+               child: FmSectionHeader(
+                 title: 'Agent sessions',
+-                count: snap.hasData ? items.length : null,
++                trailing: Row(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    if (snap.hasData)
++                      Text(
++                        '${items.length}',
++                        style: TextStyle(
++                          color: FmTheme.textSecondary(context),
++                          fontSize: 12,
++                          fontWeight: FontWeight.w700,
++                        ),
++                      ),
++                    if (polling) ...[
++                      const SizedBox(width: FmSpace.x2),
++                      const Text('Live refresh on'),
++                    ],
++                    const SizedBox(width: FmSpace.x1),
++                    IconButton(
++                      tooltip: 'Refresh agent sessions',
++                      visualDensity: VisualDensity.compact,
++                      onPressed: _refresh,
++                      icon: const Icon(Icons.refresh, size: 18),
++                    ),
++                  ],
++                ),
+               ),
+             ),
+-            if (snap.connectionState == ConnectionState.waiting)
++            if (snap.connectionState == ConnectionState.waiting &&
++                items.isEmpty)
+               const Padding(
+                 padding: EdgeInsets.all(FmSpace.x4),
+                 child: _LoadingCard(label: 'Loading agent sessions…'),
+@@ -1094,10 +1171,10 @@ class _AgentsTab extends StatelessWidget {
+                   onTap: () => Navigator.of(context).push(
+                     MaterialPageRoute<void>(
+                       builder: (_) => _AgentSessionDetailScreen(
+-                        api: api,
+-                        repo: repo,
++                        api: widget.api,
++                        repo: widget.repo,
+                         session: session,
+-                        ownerAccount: ownerAccount,
++                        ownerAccount: _ownerAccount(context),
+                       ),
+                     ),
+                   ),
+diff --git a/flutter_app/test/agent_sessions_test.dart b/flutter_app/test/agent_sessions_test.dart
+index 1aa89685..e61a97d8 100644
+--- a/flutter_app/test/agent_sessions_test.dart
++++ b/flutter_app/test/agent_sessions_test.dart
+@@ -56,6 +56,32 @@ class AgentApiService extends ApiService {
+   );
+ }
+ 
++class PollingAgentApiService extends AgentApiService {
++  PollingAgentApiService(super.settings);
++
++  int calls = 0;
++
++  @override
++  Future<List<AgentSession>> agentSessions(
++    String owner,
++    String name, {
++    String ownerAccount = '',
++  }) async {
++    calls += 1;
++    return [
++      AgentSession(
++        id: 7,
++        issueNumber: 4,
++        issueTitle: 'Ship mobile agent monitor',
++        status: calls == 1 ? 'running' : 'done',
++        provider: 'codex',
++        branchName: 'agent/mobile-monitor',
++        numTurns: calls,
++      ),
++    ];
++  }
++}
++
+ Future<void> _pumpRepo(WidgetTester tester, ApiService api) async {
+   tester.view.physicalSize = const Size(900, 1200);
+   tester.view.devicePixelRatio = 1;
+@@ -132,4 +158,27 @@ void main() {
+     expect(find.text('Transcript'), findsOneWidget);
+     expect(find.textContaining('flutter test passed'), findsOneWidget);
+   });
++
++  testWidgets('repo Agents tab auto-refreshes while sessions are running', (
++    tester,
++  ) async {
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    final api = PollingAgentApiService(settings);
++    await _pumpRepo(tester, api);
++
++    await tester.ensureVisible(find.text('Agents'));
++    await tester.tap(find.text('Agents'));
++    await tester.pumpAndSettle();
++
++    expect(api.calls, 1);
++    expect(find.text('RUNNING'), findsWidgets);
++    expect(find.text('Live refresh on'), findsOneWidget);
++
++    await tester.pump(const Duration(seconds: 11));
++    await tester.pumpAndSettle();
++
++    expect(api.calls, greaterThanOrEqualTo(2));
++    expect(find.text('DONE'), findsWidgets);
++  });
+ }
+diff --git a/flutter_app/test/agents_screen_test.dart b/flutter_app/test/agents_screen_test.dart
+new file mode 100644
+index 00000000..f8d31d3e
+--- /dev/null
++++ b/flutter_app/test/agents_screen_test.dart
+@@ -0,0 +1,201 @@
++import 'dart:async';
++
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/models/models.dart';
++import 'package:forkmesh/screens/agents_screen.dart';
++import 'package:forkmesh/services/api_service.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:forkmesh/theme.dart';
++import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++class GlobalAgentsApiService extends ApiService {
++  GlobalAgentsApiService(super.settings);
++
++  int repositoriesCalls = 0;
++  final Map<String, int> sessionCalls = {};
++
++  @override
++  Future<List<Repository>> repositories() async {
++    repositoriesCalls += 1;
++    return [
++      Repository(owner: 'alice', name: 'mobile', cloneOnline: true),
++      Repository(owner: 'bob', name: 'worker', liveHost: true),
++    ];
++  }
++
++  @override
++  Future<List<AgentSession>> agentSessions(
++    String owner,
++    String name, {
++    String ownerAccount = '',
++  }) async {
++    final key = '$owner/$name';
++    sessionCalls[key] = (sessionCalls[key] ?? 0) + 1;
++    if (key == 'alice/mobile') {
++      return [
++        AgentSession(
++          id: 7,
++          issueNumber: 12,
++          issueTitle: 'Stabilize signed inbox',
++          status: sessionCalls[key] == 1 ? 'running' : 'done',
++          provider: 'codex',
++          branchName: 'agent/signed-inbox',
++          numTurns: sessionCalls[key]!,
++        ),
++      ];
++    }
++    return [
++      AgentSession(
++        id: 8,
++        issueTitle: 'Publish Worker relay tests',
++        status: 'done',
++        provider: 'claude-code',
++      ),
++    ];
++  }
++
++  @override
++  Future<AgentTranscript> agentTranscript(
++    String owner,
++    String name,
++    int id, {
++    String ownerAccount = '',
++  }) async => AgentTranscript(
++    status: id == 7 ? 'done' : 'running',
++    transcript: 'Session $id transcript for $owner/$name',
++  );
++}
++
++class SlowGlobalAgentsApiService extends ApiService {
++  SlowGlobalAgentsApiService(super.settings);
++
++  int repositoriesCalls = 0;
++  int sessionCalls = 0;
++  final Completer<List<Repository>> repositoriesCompleter = Completer();
++
++  @override
++  Future<List<Repository>> repositories() {
++    repositoriesCalls += 1;
++    return repositoriesCompleter.future;
++  }
++
++  @override
++  Future<List<AgentSession>> agentSessions(
++    String owner,
++    String name, {
++    String ownerAccount = '',
++  }) async {
++    sessionCalls += 1;
++    return [
++      AgentSession(
++        id: 99,
++        issueTitle: 'Long running agent',
++        status: 'running',
++        provider: 'codex',
++      ),
++    ];
++  }
++}
++
++Future<GlobalAgentsApiService> _pumpAgents(WidgetTester tester) async {
++  SharedPreferences.setMockInitialValues({});
++  final settings = await SettingsService.create();
++  final api = GlobalAgentsApiService(settings);
++  await tester.pumpWidget(
++    Provider<ApiService>.value(
++      value: api,
++      child: MaterialApp(
++        theme: buildForkMeshLightTheme(),
++        home: const Scaffold(body: AgentsScreen()),
++      ),
++    ),
++  );
++  await tester.pumpAndSettle();
++  return api;
++}
++
++Future<SlowGlobalAgentsApiService> _pumpToggleableAgents(
++  WidgetTester tester, {
++  required bool enabled,
++  SlowGlobalAgentsApiService? api,
++}) async {
++  SharedPreferences.setMockInitialValues({});
++  final settings = await SettingsService.create();
++  final service = api ?? SlowGlobalAgentsApiService(settings);
++  await tester.pumpWidget(
++    Provider<ApiService>.value(
++      value: service,
++      child: MaterialApp(
++        theme: buildForkMeshLightTheme(),
++        home: Scaffold(body: AgentsScreen(enabled: enabled)),
++      ),
++    ),
++  );
++  await tester.pump();
++  return service;
++}
++
++void main() {
++  testWidgets('global Agents screen groups sessions by repository', (
++    tester,
++  ) async {
++    final api = await _pumpAgents(tester);
++
++    expect(api.repositoriesCalls, 1);
++    expect(api.sessionCalls['alice/mobile'], 1);
++    expect(api.sessionCalls['bob/worker'], 1);
++    expect(find.text('Agents'), findsOneWidget);
++    expect(find.text('1 running'), findsOneWidget);
++    expect(find.text('alice/mobile'), findsOneWidget);
++    expect(find.text('bob/worker'), findsOneWidget);
++    expect(find.text('Stabilize signed inbox'), findsOneWidget);
++    expect(find.text('Publish Worker relay tests'), findsOneWidget);
++    expect(find.text('RUNNING'), findsWidgets);
++    expect(find.text('DONE'), findsWidgets);
++    expect(find.text('Live refresh on'), findsOneWidget);
++  });
++
++  testWidgets(
++    'global Agents screen refreshes running sessions and opens detail',
++    (tester) async {
++      final api = await _pumpAgents(tester);
++
++      await tester.pump(const Duration(seconds: 11));
++      await tester.pumpAndSettle();
++
++      expect(api.sessionCalls['alice/mobile'], greaterThanOrEqualTo(2));
++      expect(find.text('DONE'), findsWidgets);
++
++      await tester.tap(find.text('Stabilize signed inbox'));
++      await tester.pumpAndSettle();
++
++      expect(find.text('Agent session #7'), findsOneWidget);
++      expect(find.text('Transcript'), findsOneWidget);
++      expect(
++        find.textContaining('Session 7 transcript for alice/mobile'),
++        findsOneWidget,
++      );
++    },
++  );
++
++  testWidgets('disabled global Agents screen ignores in-flight loads', (
++    tester,
++  ) async {
++    final api = await _pumpToggleableAgents(tester, enabled: true);
++
++    expect(api.repositoriesCalls, 1);
++
++    await _pumpToggleableAgents(tester, enabled: false, api: api);
++    api.repositoriesCompleter.complete([
++      Repository(owner: 'alice', name: 'mobile'),
++    ]);
++    await tester.pumpAndSettle();
++    await tester.pump(const Duration(seconds: 11));
++    await tester.pump();
++
++    expect(api.sessionCalls, 0);
++    expect(api.repositoriesCalls, 1);
++  });
++}
+diff --git a/flutter_app/test/mock_auth_flow_test.dart b/flutter_app/test/mock_auth_flow_test.dart
+index e418d530..1cf1e6fd 100644
+--- a/flutter_app/test/mock_auth_flow_test.dart
++++ b/flutter_app/test/mock_auth_flow_test.dart
+@@ -339,6 +339,7 @@ void main() {
+       await submitLogin(tester);
+ 
+       expect(find.text('Code'), findsWidgets);
++      expect(find.text('Agents'), findsWidgets);
+       expect(find.text('Chat'), findsWidgets);
+       expect(find.text('Activity'), findsWidgets);
+       expect(find.text('Settings'), findsWidgets);
+@@ -479,6 +480,7 @@ void main() {
+     expect(find.byIcon(Icons.chat_bubble_outline_rounded), findsWidgets);
+     expect(find.byIcon(Icons.chat_bubble_outline), findsNothing);
+     expect(find.text('Code'), findsWidgets);
++    expect(find.text('Agents'), findsWidgets);
+     expect(find.text('Chat'), findsWidgets);
+     expect(find.text('Activity'), findsWidgets);
+     expect(find.text('Settings'), findsWidgets);
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 60abe7cab9ee81727f5cdb8f915d4d38f9bdddc5 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 6 Jul 2026 21:51:47 +0530
+Subject: [PATCH 3/3] feat(flutter): complete agent monitoring phase
+
+---
+ flutter_app/lib/models/models.dart            | 88 +++++++++++++++++++
+ flutter_app/lib/screens/agents_screen.dart    | 53 ++++++++++-
+ .../lib/screens/repo_detail_screen.dart       | 31 ++++++-
+ flutter_app/test/agent_sessions_test.dart     | 46 +++++++++-
+ flutter_app/test/agents_screen_test.dart      | 16 ++++
+ flutter_app/test/api_service_test.dart        | 10 ++-
+ 6 files changed, 239 insertions(+), 5 deletions(-)
+
+diff --git a/flutter_app/lib/models/models.dart b/flutter_app/lib/models/models.dart
+index 886a5763..b8fca32d 100644
+--- a/flutter_app/lib/models/models.dart
++++ b/flutter_app/lib/models/models.dart
+@@ -193,6 +193,25 @@ class AgentSession {
+     this.numTurns = 0,
+     this.durationMs = 0,
+     this.costUsd = 0,
++    this.createPr = false,
++    this.prNumber = 0,
++    this.baseRef = '',
++    this.baseBranch = '',
++    this.merged = false,
++    this.mergedAtMs = 0,
++    this.promptTokens = 0,
++    this.completionTokens = 0,
++    this.totalTokens = 0,
++    this.contextTokens = 0,
++    this.contextWindow = 0,
++    this.maxOutputTokens = 0,
++    this.estimatedCredits = 0,
++    this.spendBeforeUsd = 0,
++    this.spendAfterUsd = 0,
++    this.filesChanged = -1,
++    this.ahead = -1,
++    this.behind = -1,
++    this.conflicted = false,
+   });
+ 
+   final int id;
+@@ -209,8 +228,28 @@ class AgentSession {
+   final int numTurns;
+   final int durationMs;
+   final double costUsd;
++  final bool createPr;
++  final int prNumber;
++  final String baseRef;
++  final String baseBranch;
++  final bool merged;
++  final int mergedAtMs;
++  final int promptTokens;
++  final int completionTokens;
++  final int totalTokens;
++  final int contextTokens;
++  final int contextWindow;
++  final int maxOutputTokens;
++  final int estimatedCredits;
++  final double spendBeforeUsd;
++  final double spendAfterUsd;
++  final int filesChanged;
++  final int ahead;
++  final int behind;
++  final bool conflicted;
+ 
+   bool get isActive {
++    if (merged) return false;
+     final clean = status.toLowerCase().replaceAll('_', '-');
+     return clean == 'queued' || clean == 'running' || clean == 'waiting';
+   }
+@@ -222,6 +261,7 @@ class AgentSession {
+       : 'Agent session #$id';
+ 
+   String get statusLabel {
++    if (merged) return 'Merged';
+     final clean = status.toLowerCase().replaceAll('_', '-');
+     return switch (clean) {
+       'queued' => 'Queued',
+@@ -257,14 +297,41 @@ class AgentSession {
+     return '\$${costUsd.toStringAsFixed(2)}';
+   }
+ 
++  String get prLabel => prNumber > 0 ? 'PR #$prNumber' : '';
++
++  String get tokenLabel => totalTokens > 0 ? '$totalTokens tokens' : '';
++
++  String get diffLabel {
++    final parts = <String>[];
++    if (filesChanged >= 0) {
++      parts.add(filesChanged == 1 ? '1 file' : '$filesChanged files');
++    }
++    if (ahead >= 0 && behind >= 0 && (ahead > 0 || behind > 0)) {
++      parts.add('↑$ahead ↓$behind');
++    }
++    return parts.join(' · ');
++  }
++
+   factory AgentSession.fromJson(Map<String, dynamic> json) {
+     int asInt(dynamic value) => value is int
+         ? value
+         : value is num
+         ? value.toInt()
+         : int.tryParse('$value') ?? 0;
++    int asOptionalInt(dynamic value) {
++      if (value == null) return -1;
++      return value is int
++          ? value
++          : value is num
++          ? value.toInt()
++          : int.tryParse('$value') ?? -1;
++    }
++
+     double asDouble(dynamic value) =>
+         value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
++    final diffStats = json['diffStats'] is Map
++        ? Map<String, dynamic>.from(json['diffStats'] as Map)
++        : const <String, dynamic>{};
+     return AgentSession(
+       id: asInt(json['id']),
+       issueNumber: asInt(json['issueNumber']),
+@@ -280,6 +347,27 @@ class AgentSession {
+       numTurns: asInt(json['numTurns']),
+       durationMs: asInt(json['durationMs']),
+       costUsd: asDouble(json['costUsd']),
++      createPr: json['createPr'] == true,
++      prNumber: asInt(json['prNumber']),
++      baseRef: (json['baseRef'] ?? '').toString(),
++      baseBranch: (json['baseBranch'] ?? '').toString(),
++      merged: json['merged'] == true,
++      mergedAtMs: asInt(json['mergedAtMs']),
++      promptTokens: asInt(json['promptTokens']),
++      completionTokens: asInt(json['completionTokens']),
++      totalTokens: asInt(json['totalTokens']),
++      contextTokens: asInt(json['contextTokens']),
++      contextWindow: asInt(json['contextWindow']),
++      maxOutputTokens: asInt(json['maxOutputTokens']),
++      estimatedCredits: asInt(json['estimatedCredits']),
++      spendBeforeUsd: asDouble(json['spendBeforeUsd']),
++      spendAfterUsd: asDouble(json['spendAfterUsd']),
++      filesChanged: asOptionalInt(
++        diffStats['files'] ?? json['filesChanged'] ?? json['changedFiles'],
++      ),
++      ahead: asOptionalInt(diffStats['ahead'] ?? json['ahead']),
++      behind: asOptionalInt(diffStats['behind'] ?? json['behind']),
++      conflicted: diffStats['conflicted'] == true || json['conflicted'] == true,
+     );
+   }
+ }
+diff --git a/flutter_app/lib/screens/agents_screen.dart b/flutter_app/lib/screens/agents_screen.dart
+index 904d2352..8ba0f52a 100644
+--- a/flutter_app/lib/screens/agents_screen.dart
++++ b/flutter_app/lib/screens/agents_screen.dart
+@@ -6,8 +6,10 @@ import 'package:provider/provider.dart';
+ import '../models/models.dart';
+ import '../services/api_service.dart';
+ import '../services/auth_service.dart';
++import '../services/notification_deep_link.dart';
+ import '../theme.dart';
+ import '../widgets/fm_ui.dart';
++import 'repo_detail_screen.dart';
+ 
+ const _agentPollInterval = Duration(seconds: 10);
+ 
+@@ -179,6 +181,23 @@ class AgentSessionDetailScreen extends StatelessWidget {
+   final AgentSession session;
+   final String ownerAccount;
+ 
++  void _openPull(BuildContext context) {
++    if (session.prNumber <= 0) return;
++    Navigator.of(context).push(
++      MaterialPageRoute<void>(
++        builder: (_) => RepoDetailScreen(
++          repo: repo,
++          initialTab: RepoDetailTab.pulls,
++          initialTarget: NotificationDeepLink(
++            repo: repo,
++            initialTab: RepoDetailTab.pulls,
++            number: session.prNumber,
++          ),
++        ),
++      ),
++    );
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     final transcriptFuture = api.agentTranscript(
+@@ -224,8 +243,32 @@ class AgentSessionDetailScreen extends StatelessWidget {
+                       _AgentChip(label: session.durationLabel),
+                     if (session.costLabel.isNotEmpty)
+                       _AgentChip(label: session.costLabel),
++                    if (session.prLabel.isNotEmpty)
++                      _AgentChip(label: session.prLabel),
++                    if (session.diffLabel.isNotEmpty)
++                      _AgentChip(label: session.diffLabel),
++                    if (session.conflicted) const _AgentChip(label: 'Conflict'),
++                    if (session.tokenLabel.isNotEmpty)
++                      _AgentChip(label: session.tokenLabel),
+                   ],
+                 ),
++                const SizedBox(height: FmSpace.x3),
++                Text(
++                  'Desktop-controlled session. Mobile can watch progress and open results; starting, stopping, retrying, merging, and applying stay on the desktop node until signed pairing is designed.',
++                  style: TextStyle(
++                    color: FmTheme.textSecondary(context),
++                    fontSize: 12,
++                    height: 1.35,
++                  ),
++                ),
++                if (session.prNumber > 0) ...[
++                  const SizedBox(height: FmSpace.x3),
++                  OutlinedButton.icon(
++                    onPressed: () => _openPull(context),
++                    icon: const Icon(Icons.call_merge_outlined),
++                    label: Text('Open PR #${session.prNumber}'),
++                  ),
++                ],
+                 if (session.lastError.isNotEmpty) ...[
+                   const SizedBox(height: FmSpace.x3),
+                   Text(
+@@ -586,6 +629,14 @@ class _AgentSessionRow extends StatelessWidget {
+                           _AgentChip(label: session.durationLabel),
+                         if (session.costLabel.isNotEmpty)
+                           _AgentChip(label: session.costLabel),
++                        if (session.prLabel.isNotEmpty)
++                          _AgentChip(label: session.prLabel),
++                        if (session.diffLabel.isNotEmpty)
++                          _AgentChip(label: session.diffLabel),
++                        if (session.conflicted)
++                          const _AgentChip(label: 'Conflict'),
++                        if (session.tokenLabel.isNotEmpty)
++                          _AgentChip(label: session.tokenLabel),
+                       ],
+                     ),
+                   ],
+@@ -618,7 +669,7 @@ class _AgentStatusBadge extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final color = switch (session.statusLabel) {
+-      'Done' => FmTheme.success(context),
++      'Merged' || 'Done' => FmTheme.success(context),
+       'Failed' || 'Stopped' => FmTheme.danger(context),
+       'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
+       _ => FmTheme.textTertiary(context),
+diff --git a/flutter_app/lib/screens/repo_detail_screen.dart b/flutter_app/lib/screens/repo_detail_screen.dart
+index b7fd4ada..6fa86853 100644
+--- a/flutter_app/lib/screens/repo_detail_screen.dart
++++ b/flutter_app/lib/screens/repo_detail_screen.dart
+@@ -1186,6 +1186,10 @@ class _AgentsTabState extends State<_AgentsTab> {
+                     if (session.numTurns > 0) '${session.numTurns} turns',
+                     if (session.durationLabel.isNotEmpty) session.durationLabel,
+                     if (session.costLabel.isNotEmpty) session.costLabel,
++                    if (session.prLabel.isNotEmpty) session.prLabel,
++                    if (session.diffLabel.isNotEmpty) session.diffLabel,
++                    if (session.conflicted) 'Conflict',
++                    if (session.tokenLabel.isNotEmpty) session.tokenLabel,
+                   ],
+                 ),
+           ],
+@@ -1257,8 +1261,33 @@ class _AgentSessionDetailScreen extends StatelessWidget {
+                     ),
+                   if (session.costLabel.isNotEmpty)
+                     _Chip(icon: Icons.paid_outlined, label: session.costLabel),
++                  if (session.prLabel.isNotEmpty)
++                    _Chip(
++                      icon: Icons.call_merge_outlined,
++                      label: session.prLabel,
++                    ),
++                  if (session.diffLabel.isNotEmpty)
++                    _Chip(
++                      icon: Icons.difference_outlined,
++                      label: session.diffLabel,
++                    ),
++                  if (session.conflicted)
++                    _Chip(
++                      icon: Icons.warning_amber_outlined,
++                      label: 'Conflict',
++                    ),
++                  if (session.tokenLabel.isNotEmpty)
++                    _Chip(
++                      icon: Icons.data_usage_outlined,
++                      label: session.tokenLabel,
++                    ),
+                 ],
+               ),
++              const SizedBox(height: 12),
++              Text(
++                'Desktop-controlled session. Mobile can watch progress and open results; start, stop, retry, resume, merge, and apply stay on the desktop node until signed pairing is designed.',
++                style: TextStyle(color: FmTheme.textSecondary(context)),
++              ),
+               if (session.lastError.isNotEmpty) ...[
+                 const SizedBox(height: 12),
+                 Text(
+@@ -1327,7 +1356,7 @@ class _AgentStatusBadge extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final color = switch (session.statusLabel) {
+-      'Done' => FmTheme.success(context),
++      'Merged' || 'Done' => FmTheme.success(context),
+       'Failed' || 'Stopped' => FmTheme.danger(context),
+       'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
+       _ => FmTheme.textTertiary(context),
+diff --git a/flutter_app/test/agent_sessions_test.dart b/flutter_app/test/agent_sessions_test.dart
+index e61a97d8..0708bbe5 100644
+--- a/flutter_app/test/agent_sessions_test.dart
++++ b/flutter_app/test/agent_sessions_test.dart
+@@ -118,19 +118,61 @@ void main() {
+       'numTurns': '7',
+       'durationMs': 125000,
+       'costUsd': '1.25',
++      'createPr': true,
++      'prNumber': '7',
++      'baseRef': 'abc123',
++      'baseBranch': 'main',
++      'merged': true,
++      'mergedAtMs': '1700000100000',
++      'promptTokens': '1000',
++      'completionTokens': 500,
++      'totalTokens': '1500',
++      'contextTokens': '12000',
++      'contextWindow': '32000',
++      'maxOutputTokens': '4000',
++      'estimatedCredits': '6',
++      'spendBeforeUsd': '2.00',
++      'spendAfterUsd': '3.25',
++      'diffStats': {
++        'files': '3',
++        'ahead': '2',
++        'behind': '1',
++        'conflicted': true,
++      },
+     });
+ 
+     expect(session.id, 42);
+     expect(session.issueNumber, 12);
+     expect(session.issueTitle, 'Stabilize signed inbox');
+-    expect(session.statusLabel, 'Running');
++    expect(session.statusLabel, 'Merged');
+     expect(session.providerLabel, 'OpenAI');
+     expect(session.displayTitle, 'Stabilize signed inbox');
+     expect(session.branchName, 'agent/fix-inbox');
+     expect(session.numTurns, 7);
+     expect(session.durationLabel, '2m 5s');
+     expect(session.costLabel, r'$1.25');
+-    expect(session.isActive, isTrue);
++    expect(session.isActive, isFalse);
++    expect(session.createPr, isTrue);
++    expect(session.prNumber, 7);
++    expect(session.prLabel, 'PR #7');
++    expect(session.baseRef, 'abc123');
++    expect(session.baseBranch, 'main');
++    expect(session.merged, isTrue);
++    expect(session.mergedAtMs, 1700000100000);
++    expect(session.promptTokens, 1000);
++    expect(session.completionTokens, 500);
++    expect(session.totalTokens, 1500);
++    expect(session.contextTokens, 12000);
++    expect(session.contextWindow, 32000);
++    expect(session.maxOutputTokens, 4000);
++    expect(session.estimatedCredits, 6);
++    expect(session.spendBeforeUsd, 2.0);
++    expect(session.spendAfterUsd, 3.25);
++    expect(session.filesChanged, 3);
++    expect(session.ahead, 2);
++    expect(session.behind, 1);
++    expect(session.conflicted, isTrue);
++    expect(session.diffLabel, '3 files · ↑2 ↓1');
+   });
+ 
+   testWidgets('repo Agents tab lists sessions and opens transcript detail', (
+diff --git a/flutter_app/test/agents_screen_test.dart b/flutter_app/test/agents_screen_test.dart
+index f8d31d3e..550f485f 100644
+--- a/flutter_app/test/agents_screen_test.dart
++++ b/flutter_app/test/agents_screen_test.dart
+@@ -43,6 +43,14 @@ class GlobalAgentsApiService extends ApiService {
+           provider: 'codex',
+           branchName: 'agent/signed-inbox',
+           numTurns: sessionCalls[key]!,
++          createPr: true,
++          prNumber: 7,
++          baseBranch: 'main',
++          filesChanged: 3,
++          ahead: 2,
++          behind: 1,
++          conflicted: true,
++          totalTokens: 1500,
+         ),
+       ];
+     }
+@@ -154,6 +162,10 @@ void main() {
+     expect(find.text('Publish Worker relay tests'), findsOneWidget);
+     expect(find.text('RUNNING'), findsWidgets);
+     expect(find.text('DONE'), findsWidgets);
++    expect(find.text('PR #7'), findsOneWidget);
++    expect(find.text('3 FILES · ↑2 ↓1'), findsOneWidget);
++    expect(find.text('CONFLICT'), findsOneWidget);
++    expect(find.text('1500 TOKENS'), findsOneWidget);
+     expect(find.text('Live refresh on'), findsOneWidget);
+   });
+ 
+@@ -173,6 +185,10 @@ void main() {
+ 
+       expect(find.text('Agent session #7'), findsOneWidget);
+       expect(find.text('Transcript'), findsOneWidget);
++      expect(find.text('PR #7'), findsOneWidget);
++      expect(find.text('3 FILES · ↑2 ↓1'), findsOneWidget);
++      expect(find.text('CONFLICT'), findsOneWidget);
++      expect(find.text('Open PR #7'), findsOneWidget);
+       expect(
+         find.textContaining('Session 7 transcript for alice/mobile'),
+         findsOneWidget,
+diff --git a/flutter_app/test/api_service_test.dart b/flutter_app/test/api_service_test.dart
+index cfa9251d..19c02234 100644
+--- a/flutter_app/test/api_service_test.dart
++++ b/flutter_app/test/api_service_test.dart
+@@ -411,7 +411,13 @@ LGTM from mobile.''',
+         jsonEncode({
+           'ok': true,
+           'agents': [
+-            {'id': 42, 'status': 'done', 'provider': 'claude-code'},
++            {
++              'id': 42,
++              'status': 'done',
++              'provider': 'claude-code',
++              'prNumber': 7,
++              'diffStats': {'files': 3, 'ahead': 2, 'behind': 1},
++            },
+           ],
+         }),
+       );
+@@ -438,6 +444,8 @@ LGTM from mobile.''',
+     expect(posted['ownerAccount'], 'owner');
+     expect(sessions.single.id, 42);
+     expect(sessions.single.providerLabel, 'Claude Code');
++    expect(sessions.single.prNumber, 7);
++    expect(sessions.single.diffLabel, '3 files · ↑2 ↓1');
+   });
+ 
+   test(
+-- 
+2.50.1 (Apple Git-155)
+
