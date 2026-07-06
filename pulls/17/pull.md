@@ -4,7 +4,7 @@ number: 17
 title: Fix Qt client responsive layout
 base: main
 head: pr/fix-ui-qt-client
-status: open
+status: merged
 ts: 1783363937227
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
