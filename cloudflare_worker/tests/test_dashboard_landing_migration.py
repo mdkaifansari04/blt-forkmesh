@@ -331,9 +331,10 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Copy clone",
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
-        '"code", "commits", "releases", "issues", "pulls", "discussions", "mirrors"',
+        '"code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"',
         # Releases load lazily on first tab view from releases/<channel>/release.json.
         "loadRepoReleases(state.selectedRepo)",
+        "loadRepoInsights(state.selectedRepo)",
     ):
         assert marker in dashboard_js
 
@@ -388,6 +389,47 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
         assert marker in render
     assert 'data-lucide="${icon}"' in dashboard_js
     assert 'icon = isPulls ? "git-pull-request" : "circle-dot"' in dashboard_js
+
+
+def test_dashboard_about_links_readme_activity_and_owner_edit():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    render = dashboard_js[
+        dashboard_js.index("function renderRepoDetail")
+        : dashboard_js.index("function findRepository")
+    ]
+    click_handler = dashboard_js[
+        dashboard_js.index('const aboutEditButton = event.target.closest("[data-repo-about-edit]")')
+        : dashboard_js.index('const commitButton = event.target.closest("[data-dashboard-commit-hash]")')
+    ]
+    submit_handler = dashboard_js[
+        dashboard_js.index('const aboutForm = event.target.closest("[data-repo-about-form]")')
+        : dashboard_js.index('const issueForm = event.target.closest("[data-repo-issue-form]")')
+    ]
+
+    for marker in (
+        "const canEditAbout = sessionOwnsRepo(repo);",
+        "data-repo-about-edit",
+        "data-repo-about-form",
+        "data-repo-about-description",
+        "data-repo-readme-link",
+        "data-repo-activity-link",
+        "data-repo-insights",
+        'href="${escapeHtml(readmeHref)}"',
+        'href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}"',
+    ):
+        assert marker in render
+    for marker in (
+        "setRepoAboutEditing(true);",
+        "loadRepositoryBlob(state.selectedRepo, readmeLink.dataset.repoReadmePath || \"README.md\")",
+        "activateRepoTab(\"insights\");",
+    ):
+        assert marker in click_handler
+    for marker in (
+        "saveRepoAboutFromWeb(state.selectedRepo, description)",
+        "applyRepoAboutDescription(state.selectedRepo, body.description ?? description)",
+        "Only the source node owner can edit About.",
+    ):
+        assert marker in submit_handler
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
@@ -767,6 +809,19 @@ def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
     assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
     assert 'if action in ("tree", "blob", "history", "commit", "branches"):' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
+
+
+def test_worker_routes_repo_about_catalog_update_for_source_owner():
+    assert 'REPO_ABOUT_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/about$")' in URLS_TEXT
+    assert "async def repo_about_handler(env, request, owner, repo):" in ENTRY_TEXT
+    assert "about_match = REPO_ABOUT_RE.match(url.path)" in ENTRY_TEXT
+    assert "return await repo_about_handler(self.env, request, owner, repo)" in ENTRY_TEXT
+    assert "_catalog_record_matches_identity(record, owner, repo)" in ENTRY_TEXT
+    assert 'record["description"] = description' in ENTRY_TEXT
+    assert "await purge_catalog_related_caches()" in ENTRY_TEXT[
+        ENTRY_TEXT.index("async def repo_about_handler")
+        : ENTRY_TEXT.index("async def repo_mirrors_handler")
+    ]
 
 
 def test_dashboard_repository_go_to_file_is_real_and_add_file_removed():
@@ -1189,7 +1244,7 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "function repoRouteParts()" in dashboard_js
-    assert 'const REPO_TAB_ROUTES = ["commits", "releases", "issues", "pulls", "discussions", "mirrors"];' in dashboard_js
+    assert 'const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"];' in dashboard_js
 
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]

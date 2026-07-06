@@ -51,8 +51,13 @@
         const readmeEntry = entries.find((e) => e.type === "blob" && /^readme(\.md|\.txt|\.rst)?$/i.test(String(e.name || "")));
         const readmeBody = detail.querySelector("[data-repo-readme-body]");
         const readmeFilename = detail.querySelector("[data-repo-readme-filename]");
+        const readmeLink = detail.querySelector("[data-repo-readme-link]");
         if (readmeBody) {
           if (readmeEntry) {
+            if (readmeLink) {
+              readmeLink.href = repoPathUrl(repo, "blob", readmeEntry.name);
+              readmeLink.dataset.repoReadmePath = readmeEntry.name;
+            }
             if (readmeFilename) readmeFilename.innerHTML = `<i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>${escapeHtml(readmeEntry.name)}`;
             try {
               const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: readmeEntry.name }));
@@ -913,6 +918,59 @@
   // adhoc #225), so this is only the client-side gate for showing the checkbox.
   function sessionCanAssignAgent(repo) {
     return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
+  }
+
+  function setRepoAboutEditing(on) {
+    const detail = $("[data-repo-detail]");
+    const text = detail?.querySelector("[data-repo-about-description]");
+    const form = detail?.querySelector("[data-repo-about-form]");
+    const input = detail?.querySelector("[data-repo-about-input]");
+    if (!text || !form) return;
+    text.classList.toggle("hidden", Boolean(on));
+    form.classList.toggle("hidden", !on);
+    if (on) input?.focus();
+  }
+
+  function setRepoAboutStatus(message, tone = "") {
+    const status = $("[data-repo-about-status]");
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+  }
+
+  function applyRepoAboutDescription(repo, description) {
+    const text = String(description || "").trim();
+    repo.description = text;
+    const key = repoKey(repo).toLowerCase();
+    const canonical = repoCanonicalKey(repo).toLowerCase();
+    (state.repositories || []).forEach((item) => {
+      if (repoKey(item).toLowerCase() === key ||
+          repoCanonicalKey(item).toLowerCase() === canonical) {
+        item.description = text;
+      }
+    });
+    $$("[data-repo-about-description]").forEach((el) => {
+      el.textContent = text || "No description published.";
+    });
+    $$("[data-repo-about-input]").forEach((el) => {
+      el.value = text;
+    });
+  }
+
+  async function saveRepoAboutFromWeb(repo, description) {
+    const response = await fetch(`${repoApiBase(repo)}/about`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        description,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "about_update_failed");
+    }
+    return body;
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------

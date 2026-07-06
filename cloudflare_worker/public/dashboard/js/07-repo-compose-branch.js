@@ -523,6 +523,78 @@
     }
   }
 
+  function repoInsightsContributorRows(commits) {
+    const byAuthor = new Map();
+    (Array.isArray(commits) ? commits : []).forEach((commit) => {
+      const author = String(commit.author || "unknown").trim() || "unknown";
+      const current = byAuthor.get(author) || { author, commits: 0, latest: "" };
+      current.commits += 1;
+      current.latest = current.latest || commit.date || "";
+      byAuthor.set(author, current);
+    });
+    return [...byAuthor.values()].sort((a, b) => b.commits - a.commits || a.author.localeCompare(b.author));
+  }
+
+  function renderRepoInsights(repo, commits = [], unavailable = false) {
+    const commitTotal = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
+    const contributors = repoInsightsContributorRows(commits);
+    const top = contributors.slice(0, 10);
+    const rows = top.length
+      ? top.map((item) => `
+        <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-3 text-sm">
+          <div class="min-w-0">
+            <div class="truncate font-medium text-foreground">${escapeHtml(item.author)}</div>
+            <div class="mt-1 text-xs text-muted-foreground">${escapeHtml(item.latest || "recent activity")}</div>
+          </div>
+          <span class="font-mono text-xs text-foreground">${formatCount(item.commits)}</span>
+        </div>`)
+      : ['<div class="border-t border-border px-4 py-3 text-sm text-muted-foreground">No contributor activity is available yet.</div>'];
+    return `
+      <div class="grid gap-4 p-4">
+        ${unavailable ? '<div class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">Live commit history is unavailable; showing catalog activity where available.</div>' : ""}
+        <div class="grid gap-3 md:grid-cols-3">
+          <div class="rounded-md border border-border bg-secondary/30 p-3">
+            <div class="text-[10px] uppercase tracking-wide text-muted-foreground">Commits</div>
+            <div class="mt-2 font-mono text-lg text-foreground">${tabCountLabel(commitTotal)}</div>
+          </div>
+          <div class="rounded-md border border-border bg-secondary/30 p-3">
+            <div class="text-[10px] uppercase tracking-wide text-muted-foreground">Contributors</div>
+            <div class="mt-2 font-mono text-lg text-foreground">${formatCount(contributors.length)}</div>
+          </div>
+          <div class="rounded-md border border-border bg-secondary/30 p-3">
+            <div class="text-[10px] uppercase tracking-wide text-muted-foreground">Data hosted</div>
+            <div class="mt-2 font-mono text-lg text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</div>
+          </div>
+        </div>
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground">Activity</div>
+          <div class="p-4">${repoActivitySparkline(repo.activityWeeks, { totalHint: commitTotal })}</div>
+        </section>
+        <section class="overflow-hidden rounded-lg border border-border">
+          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+            <span class="text-xs font-medium text-foreground">Contributors</span>
+            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(contributors.length)}</span>
+          </div>
+          ${rows.join("")}
+        </section>
+      </div>`;
+  }
+
+  async function loadRepoInsights(repo) {
+    const container = $("[data-repo-insights]");
+    if (!container || !repo) return;
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading insights from the live mirror...</div>';
+    try {
+      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const commits = Array.isArray(data.commits) ? data.commits : [];
+      container.innerHTML = renderRepoInsights(repo, commits);
+    } catch (_) {
+      container.innerHTML = renderRepoInsights(repo, [], true);
+    } finally {
+      window.lucide?.createIcons();
+    }
+  }
+
   function loadRepoFeaturePanels(repo) {
     loadRepoCommits(repo);
     loadRepoMirrors(repo);
@@ -541,6 +613,9 @@
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
+    } else if (active === "insights") {
+      state.loadedRepoTabs.insights = true;
+      loadRepoInsights(repo);
     } else if (active === "agents") {
       state.loadedRepoTabs.agents = true;
       loadRepoAgents(repo);

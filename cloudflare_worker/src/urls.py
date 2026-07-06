@@ -37,6 +37,8 @@ REPO_BOUNTY_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/bounty$")
 REPO_SHARES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/shares$")
 # Public mirror health for a logical repo group.
 REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
+# Catalog-facing About details editable from the dashboard by the source owner.
+REPO_ABOUT_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/about$")
 # Agent-session sync (adhoc #182): desktop node push/drain of Claude Code agent
 # sessions for a repo (signed the same way as issue-inbox drain), the
 # website's password-gated read of that same list, and a queued text prompt
