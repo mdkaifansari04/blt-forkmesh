@@ -19,9 +19,11 @@ class RepoDetailScreen extends StatefulWidget {
     super.key,
     required this.repo,
     this.initialTab = RepoDetailTab.code,
+    this.initialTarget,
   });
   final Repository repo;
   final RepoDetailTab initialTab;
+  final NotificationDeepLink? initialTarget;
 
   @override
   State<RepoDetailScreen> createState() => _RepoDetailScreenState();
@@ -30,6 +32,7 @@ class RepoDetailScreen extends StatefulWidget {
 class _RepoDetailScreenState extends State<RepoDetailScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
+  bool _openedInitialTarget = false;
 
   @override
   void initState() {
@@ -39,6 +42,9 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
       initialIndex: widget.initialTab.index,
       vsync: this,
     )..addListener(() => setState(() {}));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _openInitialTarget();
+    });
   }
 
   @override
@@ -48,6 +54,86 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
   }
 
   Repository get repo => widget.repo;
+
+  Future<void> _openInitialTarget() async {
+    if (_openedInitialTarget) return;
+    _openedInitialTarget = true;
+    final target = widget.initialTarget;
+    if (target == null) return;
+    final api = context.read<ApiService>();
+    try {
+      switch (target.initialTab) {
+        case RepoDetailTab.issues:
+          if (target.number <= 0) return;
+          final issues = await api.publishedIssues(repo.owner, repo.name);
+          if (!mounted) return;
+          if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
+          final issue = _firstWhereOrNull<Issue>(
+            issues,
+            (item) => item.number == target.number,
+          );
+          if (issue == null) return;
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => _IssueDetailScreen(repo: repo, issue: issue),
+            ),
+          );
+        case RepoDetailTab.pulls:
+          if (target.number <= 0) return;
+          final pulls = await api.publishedPulls(repo.owner, repo.name);
+          if (!mounted) return;
+          if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
+          final pull = _firstWhereOrNull<PublishedPull>(
+            pulls,
+            (item) => item.number == target.number,
+          );
+          if (pull == null) return;
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => _PullDetailScreen(repo: repo, pull: pull),
+            ),
+          );
+        case RepoDetailTab.discussions:
+          if (target.number <= 0) return;
+          final discussions = await api.publishedDiscussions(
+            repo.owner,
+            repo.name,
+          );
+          if (!mounted) return;
+          if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
+          final discussion = _firstWhereOrNull<RepoDiscussion>(
+            discussions,
+            (item) => item.number == target.number,
+          );
+          if (discussion == null) return;
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) =>
+                  _DiscussionDetailScreen(repo: repo, discussion: discussion),
+            ),
+          );
+        case RepoDetailTab.commits:
+          final hash = target.reference.trim();
+          if (hash.isEmpty) return;
+          if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => _CommitDetailScreen(
+                api: api,
+                repo: repo,
+                commit: {'hash': hash, 'message': 'Commit $hash'},
+              ),
+            ),
+          );
+        case RepoDetailTab.code:
+        case RepoDetailTab.mirrors:
+        case RepoDetailTab.about:
+          return;
+      }
+    } catch (_) {
+      // Keep the repo tab open if the exact item cannot be loaded yet.
+    }
+  }
 
   Widget? _fab() {
     if (_tabs.index == 1) {
@@ -183,6 +269,13 @@ const Map<String, String> _discussionCategoryLabels = {
   'help': 'Help',
   'show-and-tell': 'Show & tell',
 };
+
+T? _firstWhereOrNull<T>(Iterable<T> items, bool Function(T item) test) {
+  for (final item in items) {
+    if (test(item)) return item;
+  }
+  return null;
+}
 
 Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
   final inbox = context.read<InboxService>();
