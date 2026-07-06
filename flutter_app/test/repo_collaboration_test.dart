@@ -14,9 +14,24 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class CollaborationApiService extends ApiService {
-  CollaborationApiService(super.settings);
+  CollaborationApiService(
+    super.settings, {
+    this.statusBounty = const IssueBounty(
+      address: 'escrow-fixture',
+      status: 'funded',
+      amountUsd: 150,
+      requiredLamports: 1500000000,
+      receivedLamports: 1500000000,
+      amountSol: 1.5,
+      payee: 'maintainer-node',
+      payUri: 'solana:escrow-fixture?amount=1.5',
+    ),
+  });
+
+  final IssueBounty statusBounty;
 
   final commandRequests = <Map<String, Object?>>[];
+  final bountyRequests = <Map<String, Object?>>[];
 
   @override
   Future<DesktopCommandResult> desktopCommand(
@@ -40,6 +55,55 @@ class CollaborationApiService extends ApiService {
       'payload': payload,
     });
     return const DesktopCommandResult(ok: true, queued: 1);
+  }
+
+  @override
+  Future<IssueBounty> issueBountyStatus(
+    String owner,
+    String repo,
+    int number,
+  ) async {
+    bountyRequests.add({
+      'action': 'status',
+      'owner': owner,
+      'repo': repo,
+      'number': number,
+    });
+    return statusBounty;
+  }
+
+  @override
+  Future<IssueBounty> createIssueBounty(
+    String owner,
+    String repo, {
+    required int number,
+    required double amountUsd,
+    String payee = '',
+    String payeeNode = '',
+    required String ts,
+    required String sig,
+  }) async {
+    bountyRequests.add({
+      'action': 'create',
+      'owner': owner,
+      'repo': repo,
+      'number': number,
+      'amountUsd': amountUsd,
+      'payee': payee,
+      'payeeNode': payeeNode,
+      'ts': ts,
+      'sig': sig,
+    });
+    return IssueBounty(
+      address: 'escrow-created',
+      status: 'open',
+      amountUsd: amountUsd,
+      requiredLamports: 1500000000,
+      receivedLamports: 0,
+      amountSol: 1.5,
+      payee: payee.isNotEmpty ? payee : payeeNode,
+      payUri: 'solana:escrow-created?amount=1.5',
+    );
   }
 
   @override
@@ -69,6 +133,14 @@ class CollaborationApiService extends ApiService {
       assignees: const ['mona', 'kai'],
       votes: 2,
       bountyUsd: 150,
+      bountyAddress: 'escrow-fixture',
+      bountyStatus: 'funded',
+      bountyRequiredLamports: 1500000000,
+      bountyReceivedLamports: 750000000,
+      bountyAmountSol: 1.5,
+      bountyPayUri: 'solana:escrow-fixture?amount=1.5',
+      bountyPayee: 'maintainer-node',
+      bountyPayoutSig: 'payout-fixture',
       events: [
         IssueEvent(
           type: 'comment',
@@ -195,7 +267,12 @@ Future<void> _pumpRepo(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  final repo = Repository(owner: 'owner', name: 'repo', defaultBranch: 'main');
+  final repo = Repository(
+    owner: 'owner',
+    name: 'repo',
+    defaultBranch: 'main',
+    solana: 'repo-donation-address',
+  );
   await tester.pumpWidget(
     MultiProvider(
       providers: [
@@ -599,6 +676,115 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+    'issue detail shows bounty funding card and prepares signed deposit request',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      final identity = await Identity.loadOrCreate();
+      final auth = await _ownerAuth(settings, identity);
+      final api = CollaborationApiService(settings);
+      await _pumpRepo(tester, api, identity: identity, auth: auth);
+
+      await tester.tap(find.text('Issues'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Stabilize signed inbox'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Bounty funding'), findsOneWidget);
+      expect(find.text(r'$150 pledged'), findsOneWidget);
+      expect(find.text('Status: funded'), findsOneWidget);
+      expect(find.text('Deposit address'), findsOneWidget);
+      expect(find.text('escrow-fixture'), findsOneWidget);
+      expect(find.text('750000000 / 1500000000 lamports'), findsOneWidget);
+      expect(
+        find.textContaining('Worker-custodied Solana escrow'),
+        findsOneWidget,
+      );
+      expect(find.text('payout-fixture'), findsOneWidget);
+
+      final prepareButton = find
+          .byKey(const Key('issue-bounty-prepare-deposit'))
+          .last;
+      await tester.scrollUntilVisible(
+        prepareButton,
+        180,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(prepareButton);
+      await tester.pumpAndSettle();
+
+      final create = api.bountyRequests.last;
+      expect(create['action'], 'create');
+      expect(create['owner'], 'owner');
+      expect(create['repo'], 'repo');
+      expect(create['number'], 12);
+      expect(create['amountUsd'], 150);
+      expect(create['payee'], '');
+      expect(create['payeeNode'], 'maintainer-node');
+      expect(create['ts'], isNotEmpty);
+      final expectedSig = await identity.sign(
+        utf8.encode(
+          'forkmesh-bounty-create-v1\nowner\nrepo\n12\nmaintainer-node\n${create['ts']}',
+        ),
+      );
+      expect(create['sig'], expectedSig);
+      expect(find.text('escrow-created'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'bounty refresh without worker deposit preserves published payee for prepare',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      final identity = await Identity.loadOrCreate();
+      final auth = await _ownerAuth(settings, identity);
+      final api = CollaborationApiService(
+        settings,
+        statusBounty: const IssueBounty(),
+      );
+      await _pumpRepo(tester, api, identity: identity, auth: auth);
+
+      await tester.tap(find.text('Issues'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Stabilize signed inbox'));
+      await tester.pumpAndSettle();
+
+      final refreshButton = find.byKey(
+        const Key('issue-bounty-refresh-status'),
+      );
+      await tester.scrollUntilVisible(
+        refreshButton,
+        180,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(refreshButton);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('No Worker bounty deposit has been prepared yet.'),
+        findsOneWidget,
+      );
+
+      final prepareButton = find
+          .byKey(const Key('issue-bounty-prepare-deposit'))
+          .last;
+      await tester.tap(prepareButton);
+      await tester.pumpAndSettle();
+
+      final create = api.bountyRequests.last;
+      expect(create['action'], 'create');
+      expect(create['payee'], '');
+      expect(create['payeeNode'], 'maintainer-node');
+      final expectedSig = await identity.sign(
+        utf8.encode(
+          'forkmesh-bounty-create-v1\nowner\nrepo\n12\nmaintainer-node\n${create['ts']}',
+        ),
+      );
+      expect(create['sig'], expectedSig);
+    },
+  );
 
   testWidgets('new issue dialog submits collaboration metadata', (
     tester,

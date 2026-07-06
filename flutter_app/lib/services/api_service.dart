@@ -261,6 +261,45 @@ class ApiService {
     );
   }
 
+  Future<IssueBounty> issueBountyStatus(
+    String owner,
+    String repo,
+    int number,
+  ) async {
+    try {
+      final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+        'action': 'status',
+        'number': number,
+      });
+      return IssueBounty.fromJson(data);
+    } catch (error) {
+      if ('$error'.contains('HTTP 404')) return const IssueBounty();
+      rethrow;
+    }
+  }
+
+  Future<IssueBounty> createIssueBounty(
+    String owner,
+    String repo, {
+    required int number,
+    required double amountUsd,
+    String payee = '',
+    String payeeNode = '',
+    required String ts,
+    required String sig,
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+      'action': 'create',
+      'number': number,
+      'amountUsd': amountUsd,
+      if (payee.trim().isNotEmpty) 'payee': payee.trim(),
+      if (payeeNode.trim().isNotEmpty) 'payeeNode': payeeNode.trim(),
+      'ts': ts.trim(),
+      'sig': sig.trim(),
+    });
+    return IssueBounty.fromJson(data);
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(
@@ -636,6 +675,16 @@ class ApiService {
       events: events,
       votes: events.where((event) => event.type == 'vote').length,
       bountyUsd: double.tryParse(meta['bountyUsd'] ?? '') ?? 0,
+      bountyAddress: meta['bountyAddress'] ?? meta['address'] ?? '',
+      bountyStatus: meta['bountyStatus'] ?? '',
+      bountyRequiredLamports:
+          int.tryParse(meta['bountyRequiredLamports'] ?? '') ?? 0,
+      bountyReceivedLamports:
+          int.tryParse(meta['bountyReceivedLamports'] ?? '') ?? 0,
+      bountyAmountSol: double.tryParse(meta['bountyAmountSol'] ?? '') ?? 0,
+      bountyPayUri: meta['bountyPayUri'] ?? meta['payUri'] ?? meta['uri'] ?? '',
+      bountyPayee: meta['bountyPayee'] ?? meta['payee'] ?? '',
+      bountyPayoutSig: meta['bountyPayoutSig'] ?? meta['payoutSig'] ?? '',
     );
   }
 

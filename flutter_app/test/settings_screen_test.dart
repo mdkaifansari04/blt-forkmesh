@@ -27,6 +27,8 @@ AuthSession _sessionWithDevices() => AuthSession.fromJson({
   'status': 'active',
   'pubkey': 'desktop-primary-key',
   'emailVerified': true,
+  'solana': 'alice-public-solana',
+  'hasPayoutAddress': true,
   'devices': [
     {
       'id': 'dev-1',
@@ -106,4 +108,47 @@ void main() {
       );
     },
   );
+
+  testWidgets('settings shows funding payout card and public address warning', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(430, 932);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final relay = RelayService(settings, identity);
+    final auth = TestAuthService(
+      settings,
+      identity,
+      await SharedPreferences.getInstance(),
+      _sessionWithDevices(),
+    );
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<SettingsService>.value(value: settings),
+          Provider<Identity>.value(value: identity),
+          ChangeNotifierProvider<RelayService>.value(value: relay),
+          ChangeNotifierProvider<AuthService>.value(value: auth),
+        ],
+        child: MaterialApp(
+          theme: buildForkMeshLightTheme(),
+          home: const Scaffold(body: SettingsScreen()),
+        ),
+      ),
+    );
+
+    expect(find.text('FUNDING AND PAYOUTS'), findsOneWidget);
+    expect(find.text('Payout address connected'), findsOneWidget);
+    expect(find.text('alice-public-solana'), findsOneWidget);
+    expect(
+      find.textContaining('never paste private keys or seed phrases'),
+      findsOneWidget,
+    );
+  });
 }

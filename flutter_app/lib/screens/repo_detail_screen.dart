@@ -1069,6 +1069,23 @@ class _AboutTab extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       children: [
         _RepoHeaderCard(repo: repo),
+        if (repo.donationAddress.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          _InfoCard(
+            title: 'Repository funding',
+            children: [
+              Text(
+                'Optional donations use an external Solana wallet and the public repository donation address.',
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _kv('Donation address', repo.donationAddress),
+            ],
+          ),
+        ],
         const SizedBox(height: 14),
         _InfoCard(
           title: 'Repository details',
@@ -2660,74 +2677,374 @@ class _PullsTab extends StatelessWidget {
   }
 }
 
-class _IssueDetailScreen extends StatelessWidget {
+class _IssueDetailScreen extends StatefulWidget {
   const _IssueDetailScreen({required this.repo, required this.issue});
 
   final Repository repo;
   final Issue issue;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text('#${issue.number}')),
-    body: ListView(
-      padding: const EdgeInsets.all(20),
+  State<_IssueDetailScreen> createState() => _IssueDetailScreenState();
+}
+
+class _IssueDetailScreenState extends State<_IssueDetailScreen> {
+  late Issue _issue = widget.issue;
+  late final TextEditingController _bountyAmount = TextEditingController(
+    text: (_issue.bountyUsd > 0 ? _issue.bountyUsd : 1.0).toStringAsFixed(2),
+  );
+  bool _bountyBusy = false;
+  String _bountyMessage = '';
+
+  Repository get repo => widget.repo;
+
+  @override
+  void dispose() {
+    _bountyAmount.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshBounty() async {
+    if (_bountyBusy) return;
+    setState(() {
+      _bountyBusy = true;
+      _bountyMessage = '';
+    });
+    try {
+      final bounty = await context.read<ApiService>().issueBountyStatus(
+        repo.owner,
+        repo.name,
+        _issue.number,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (bounty.hasFunding) {
+          _issue = _issue.copyWithBounty(bounty);
+          _bountyMessage = 'Bounty status refreshed.';
+        } else {
+          _bountyMessage = 'No Worker bounty deposit has been prepared yet.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _bountyMessage = 'Refresh failed: $error');
+    } finally {
+      if (mounted) setState(() => _bountyBusy = false);
+    }
+  }
+
+  Future<void> _prepareBountyDeposit() async {
+    if (_bountyBusy) return;
+    final auth = context.read<AuthService?>();
+    final identity = context.read<Identity?>();
+    final api = context.read<ApiService>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    final amount = double.tryParse(_bountyAmount.text.trim());
+    if (amount == null || amount <= 0) {
+      setState(() => _bountyMessage = 'Enter a funding amount above \$0.');
+      return;
+    }
+    try {
+      if (session == null || identity == null || account.isEmpty) {
+        throw Exception(
+          'Sign in with the repo owner account to prepare a funding deposit.',
+        );
+      }
+      if (account != repo.owner.trim().toLowerCase()) {
+        throw Exception(
+          'Only the repo owner can prepare a funding deposit for this repo.',
+        );
+      }
+      if (session.pubkey.trim() != identity.publicKeyB64url) {
+        throw Exception(
+          'Pair this mobile device with the owner key before preparing a funding deposit.',
+        );
+      }
+      final rawPayee = _issue.bountyPayee.trim();
+      if (rawPayee.isEmpty) {
+        throw Exception(
+          'Publish or refresh a bounty payee before preparing a funding deposit.',
+        );
+      }
+      final payeeIsAddress = _looksLikeSolanaAddress(rawPayee);
+      final payeeId = payeeIsAddress ? rawPayee : rawPayee.toLowerCase();
+      final ts = DateTime.now().millisecondsSinceEpoch.toString();
+      final canonical =
+          'forkmesh-bounty-create-v1\n${repo.owner}\n${repo.name}\n${_issue.number}\n$payeeId\n$ts';
+      setState(() {
+        _bountyBusy = true;
+        _bountyMessage = '';
+      });
+      final sig = await identity.sign(utf8.encode(canonical));
+      final bounty = await api.createIssueBounty(
+        repo.owner,
+        repo.name,
+        number: _issue.number,
+        amountUsd: amount,
+        payee: payeeIsAddress ? payeeId : '',
+        payeeNode: payeeIsAddress ? '' : payeeId,
+        ts: ts,
+        sig: sig,
+      );
+      if (!mounted) return;
+      setState(() {
+        _issue = _issue.copyWithBounty(bounty);
+        _bountyMessage =
+            'Deposit address prepared. Fund it externally from a Solana wallet.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _bountyMessage = '$error');
+    } finally {
+      if (mounted) setState(() => _bountyBusy = false);
+    }
+  }
+
+  String _fundingGateCopy(BuildContext context) {
+    final auth = context.watch<AuthService?>();
+    final identity = context.watch<Identity?>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    if (session == null || identity == null || account.isEmpty) {
+      return 'Sign in with the repo owner account and local owner key to prepare funding deposits.';
+    }
+    if (account != repo.owner.trim().toLowerCase()) {
+      return 'Signed in as $account. Only ${repo.owner} can prepare funding deposits.';
+    }
+    if (session.pubkey.trim() != identity.publicKeyB64url) {
+      return 'Owner account is present, but this mobile identity is not the owner key.';
+    }
+    if (_issue.bountyPayee.trim().isEmpty) {
+      return 'Publish or refresh a bounty payee before preparing a funding deposit.';
+    }
+    return '';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final issue = _issue;
+    return Scaffold(
+      appBar: AppBar(title: Text('#${issue.number}')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: issue.title,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Chip(icon: Icons.label_outline, label: issue.status),
+                  if (issue.author.isNotEmpty)
+                    _Chip(icon: Icons.person_outline, label: issue.author),
+                  for (final label in issue.labels)
+                    _Chip(icon: Icons.sell_outlined, label: label),
+                  if (issue.priority > 0)
+                    _Chip(
+                      icon: Icons.priority_high_outlined,
+                      label: 'priority ${issue.priority}',
+                    ),
+                  if (issue.milestone.isNotEmpty)
+                    _Chip(icon: Icons.flag_outlined, label: issue.milestone),
+                  for (final assignee in issue.assignees)
+                    _Chip(icon: Icons.assignment_ind_outlined, label: assignee),
+                  if (issue.votes > 0)
+                    _Chip(
+                      icon: Icons.how_to_vote_outlined,
+                      label:
+                          '${issue.votes} ${issue.votes == 1 ? 'vote' : 'votes'}',
+                    ),
+                  if (issue.bountyUsd > 0)
+                    _Chip(
+                      icon: Icons.attach_money,
+                      label: '${_formatUsd(issue.bountyUsd)} bounty',
+                    ),
+                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                ],
+              ),
+              const SizedBox(height: 16),
+              SelectableText(
+                issue.body.isEmpty ? 'No description provided.' : issue.body,
+                style: const TextStyle(height: 1.45),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InfoCard(
+            title: 'Timeline',
+            children: [
+              _IssueTimeline(issue: issue),
+              const SizedBox(height: 10),
+              const Text(_threadSubscriptionNote),
+              const SizedBox(height: 14),
+              _IssueQuickActions(repo: repo, issue: issue),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _BountyFundingCard(
+            issue: issue,
+            amountController: _bountyAmount,
+            busy: _bountyBusy,
+            message: _bountyMessage,
+            gateCopy: _fundingGateCopy(context),
+            onRefresh: _refreshBounty,
+            onPrepare: _prepareBountyDeposit,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BountyFundingCard extends StatelessWidget {
+  const _BountyFundingCard({
+    required this.issue,
+    required this.amountController,
+    required this.busy,
+    required this.message,
+    required this.gateCopy,
+    required this.onRefresh,
+    required this.onPrepare,
+  });
+
+  final Issue issue;
+  final TextEditingController amountController;
+  final bool busy;
+  final String message;
+  final String gateCopy;
+  final VoidCallback onRefresh;
+  final VoidCallback onPrepare;
+
+  @override
+  Widget build(BuildContext context) {
+    final canPrepare = gateCopy.isEmpty && !busy;
+    return _InfoCard(
+      title: 'Bounty funding',
       children: [
-        _InfoCard(
-          title: issue.title,
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _Chip(icon: Icons.label_outline, label: issue.status),
-                if (issue.author.isNotEmpty)
-                  _Chip(icon: Icons.person_outline, label: issue.author),
-                for (final label in issue.labels)
-                  _Chip(icon: Icons.sell_outlined, label: label),
-                if (issue.priority > 0)
-                  _Chip(
-                    icon: Icons.priority_high_outlined,
-                    label: 'priority ${issue.priority}',
-                  ),
-                if (issue.milestone.isNotEmpty)
-                  _Chip(icon: Icons.flag_outlined, label: issue.milestone),
-                for (final assignee in issue.assignees)
-                  _Chip(icon: Icons.assignment_ind_outlined, label: assignee),
-                if (issue.votes > 0)
-                  _Chip(
-                    icon: Icons.how_to_vote_outlined,
-                    label:
-                        '${issue.votes} ${issue.votes == 1 ? 'vote' : 'votes'}',
-                  ),
-                if (issue.bountyUsd > 0)
-                  _Chip(
-                    icon: Icons.attach_money,
-                    label: '${_formatUsd(issue.bountyUsd)} bounty',
-                  ),
-                _Chip(icon: Icons.folder_outlined, label: repo.fullName),
-              ],
+        if (issue.bountyUsd > 0)
+          Text(
+            '${_formatUsd(issue.bountyUsd)} pledged',
+            style: TextStyle(
+              color: FmTheme.textPrimary(context),
+              fontWeight: FontWeight.w800,
             ),
-            const SizedBox(height: 16),
-            SelectableText(
-              issue.body.isEmpty ? 'No description provided.' : issue.body,
-              style: const TextStyle(height: 1.45),
+          )
+        else
+          Text(
+            'No pledge amount published yet.',
+            style: TextStyle(color: FmTheme.textSecondary(context)),
+          ),
+        const SizedBox(height: 8),
+        Text('Status: ${issue.bountyStatusLabel}'),
+        if (issue.bountyProgressLabel.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(issue.bountyProgressLabel),
+        ],
+        if (issue.bountyAddress.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Deposit address',
+            style: TextStyle(
+              color: FmTheme.textSecondary(context),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
             ),
-          ],
+          ),
+          const SizedBox(height: 4),
+          SelectableText(issue.bountyAddress),
+        ],
+        if (issue.bountyPayUri.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SelectableText(issue.bountyPayUri),
+        ],
+        if (issue.bountyPayoutSig.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Payout signature',
+            style: TextStyle(
+              color: FmTheme.textSecondary(context),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          SelectableText(issue.bountyPayoutSig),
+        ],
+        const SizedBox(height: 12),
+        Text(
+          'Worker-custodied Solana escrow. Desktop and owner-key flows apply or pay bounties; mobile only prepares a deposit address and shows public funding state.',
+          style: TextStyle(
+            color: FmTheme.textSecondary(context),
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          controller: amountController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: 'Funding amount USD',
+            filled: true,
+            fillColor: FmTheme.bgBase(context),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: FmSpace.x3,
+              vertical: FmSpace.x2,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(FmRadius.md),
+              borderSide: BorderSide.none,
+            ),
+          ),
         ),
         const SizedBox(height: 12),
-        _InfoCard(
-          title: 'Timeline',
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            _IssueTimeline(issue: issue),
-            const SizedBox(height: 10),
-            const Text(_threadSubscriptionNote),
-            const SizedBox(height: 14),
-            _IssueQuickActions(repo: repo, issue: issue),
+            OutlinedButton.icon(
+              key: const Key('issue-bounty-refresh-status'),
+              onPressed: busy ? null : onRefresh,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Refresh bounty status'),
+            ),
+            FilledButton.icon(
+              key: const Key('issue-bounty-prepare-deposit'),
+              onPressed: canPrepare ? onPrepare : null,
+              icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+              label: const Text('Prepare funding deposit'),
+            ),
           ],
         ),
+        if (gateCopy.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            gateCopy,
+            style: TextStyle(
+              color: FmTheme.textTertiary(context),
+              fontSize: 12,
+            ),
+          ),
+        ],
+        if (message.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            message,
+            style: TextStyle(
+              color:
+                  message.startsWith('Refresh failed') ||
+                      message.startsWith('Exception')
+                  ? FmTheme.danger(context)
+                  : FmTheme.textSecondary(context),
+              fontSize: 12,
+            ),
+          ),
+        ],
       ],
-    ),
-  );
+    );
+  }
 }
 
 class _IssueTimeline extends StatelessWidget {
@@ -4550,6 +4867,9 @@ String _formatUsd(double value) {
   if (value == value.roundToDouble()) return '\$${value.toInt()}';
   return '\$${value.toStringAsFixed(2)}';
 }
+
+bool _looksLikeSolanaAddress(String value) =>
+    RegExp(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$').hasMatch(value.trim());
 
 List<String> _splitCommaSeparated(String value) => value
     .split(',')
