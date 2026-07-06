@@ -701,21 +701,15 @@ Future<void> _reviewPublishedPull(
   String state,
 ) async {
   Navigator.pop(sheetCtx);
-  final body = await _promptText(
+  final body = await _showPullReviewComposer(
     context,
-    state == 'comment' ? 'Review comment' : 'Review note (optional)',
-    multiline: true,
+    number: pull.number,
+    state: state,
   );
-  if (!context.mounted) return;
+  if (body == null || !context.mounted) return;
   await _run(
     context,
-    () => inbox.reviewPull(
-      repo.owner,
-      repo.name,
-      pull.number,
-      state,
-      body?.trim() ?? '',
-    ),
+    () => inbox.reviewPull(repo.owner, repo.name, pull.number, state, body),
     _pendingNote,
   );
 }
@@ -729,22 +723,94 @@ Future<void> _review(
   String state,
 ) async {
   Navigator.pop(sheetCtx);
-  final body = await _promptText(
+  final body = await _showPullReviewComposer(
     context,
-    'Review note (optional)',
-    multiline: true,
+    number: pr.number,
+    state: state,
   );
-  if (!context.mounted) return;
+  if (body == null || !context.mounted) return;
   await _run(
     context,
-    () => inbox.reviewPull(
-      repo.owner,
-      repo.name,
-      pr.number,
-      state,
-      body?.trim() ?? '',
-    ),
+    () => inbox.reviewPull(repo.owner, repo.name, pr.number, state, body),
     _pendingNote,
+  );
+}
+
+Future<String?> _showPullReviewComposer(
+  BuildContext context, {
+  required int number,
+  required String state,
+}) {
+  final controller = TextEditingController();
+  var errorText = '';
+  final title = switch (state) {
+    'approve' => 'Approve PR #$number',
+    'request-changes' => 'Request changes on PR #$number',
+    _ => 'Review comment on PR #$number',
+  };
+  final helper = switch (state) {
+    'approve' =>
+      'Approval is signed and sent to the pull inbox. The repo owner still applies canonical changes from their desktop node.',
+    'request-changes' =>
+      'Request-changes reviews are signed and sent to the pull inbox. Add a clear note so the author knows what to fix.',
+    _ =>
+      'Review comments are signed and sent to the pull inbox, pending the repo owner applying them.',
+  };
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: FmTheme.bgOverlay(ctx),
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(FmRadius.lg),
+        ),
+        title: Text(title),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(helper, style: const TextStyle(height: 1.4)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 4,
+                maxLines: 8,
+                decoration: InputDecoration(
+                  labelText: 'Review note',
+                  alignLabelWithHint: true,
+                  errorText: errorText.isEmpty ? null : errorText,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const _PendingInboxNote(),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final body = controller.text.trim();
+              if (state == 'request-changes' && body.isEmpty) {
+                setDialogState(() {
+                  errorText = 'A note is required to request changes.';
+                });
+                return;
+              }
+              Navigator.pop(ctx, body);
+            },
+            child: const Text('Submit review'),
+          ),
+        ],
+      ),
+    ),
   );
 }
 

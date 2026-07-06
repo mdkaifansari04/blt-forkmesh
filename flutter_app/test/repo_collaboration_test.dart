@@ -90,6 +90,10 @@ Future<void> _pumpRepo(
   ApiService api, {
   InboxService? inbox,
 }) async {
+  tester.view.physicalSize = const Size(900, 1200);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
   final repo = Repository(owner: 'owner', name: 'repo', defaultBranch: 'main');
   await tester.pumpWidget(
     MultiProvider(
@@ -115,6 +119,10 @@ class RecordingInboxService extends InboxService {
   String milestone = '';
   int priority = 0;
   List<String> assignees = const [];
+  int reviewNumber = 0;
+  String reviewState = '';
+  String reviewBody = '';
+  int reviewCount = 0;
 
   @override
   Future<void> submitNewIssue(
@@ -133,6 +141,20 @@ class RecordingInboxService extends InboxService {
     this.milestone = milestone;
     this.priority = priority;
     this.assignees = assignees;
+  }
+
+  @override
+  Future<void> reviewPull(
+    String owner,
+    String name,
+    int number,
+    String state,
+    String body,
+  ) async {
+    reviewNumber = number;
+    reviewState = state;
+    reviewBody = body;
+    reviewCount += 1;
   }
 }
 
@@ -209,6 +231,82 @@ void main() {
     );
   });
 
+  testWidgets('approve review composer submits approve state', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+
+    await tester.tap(find.text('Pulls'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add signed review flow'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review / comment'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Approve').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Approve PR #7'), findsOneWidget);
+    expect(
+      find.textContaining('Approval is signed and sent to the pull inbox'),
+      findsOneWidget,
+    );
+    await tester.enterText(find.bySemanticsLabel('Review note'), 'Looks good.');
+    await tester.tap(find.text('Submit review'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.reviewNumber, 7);
+    expect(inbox.reviewState, 'approve');
+    expect(inbox.reviewBody, 'Looks good.');
+    expect(inbox.reviewCount, 1);
+    expect(
+      find.textContaining('pending the repo owner applying'),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('request changes composer requires a review note', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+
+    await tester.tap(find.text('Pulls'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add signed review flow'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review / comment'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Request changes'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Request changes on PR #7'), findsOneWidget);
+    await tester.tap(find.text('Submit review'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.reviewCount, 0);
+    expect(find.text('A note is required to request changes.'), findsOneWidget);
+
+    await tester.enterText(
+      find.bySemanticsLabel('Review note'),
+      'Please cover the empty state before owner apply.',
+    );
+    await tester.tap(find.text('Submit review'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.reviewNumber, 7);
+    expect(inbox.reviewState, 'request-changes');
+    expect(
+      inbox.reviewBody,
+      'Please cover the empty state before owner apply.',
+    );
+    expect(inbox.reviewCount, 1);
+  });
+
   testWidgets('pull detail renders signed comment and review timeline', (
     tester,
   ) async {
@@ -230,7 +328,7 @@ void main() {
     expect(find.text('Please add a regression test.'), findsOneWidget);
     expect(
       find.textContaining('pending the repo owner applying'),
-      findsOneWidget,
+      findsWidgets,
     );
   });
 }
