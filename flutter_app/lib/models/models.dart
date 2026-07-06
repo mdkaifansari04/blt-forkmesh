@@ -46,6 +46,124 @@ class ChatMessage {
   final String fileName;
 }
 
+class NotificationPage {
+  NotificationPage({required this.notifications, required this.unread});
+
+  final List<ForkNotification> notifications;
+  final int unread;
+
+  factory NotificationPage.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    final raw = json['notifications'] is List
+        ? json['notifications'] as List
+        : json['items'] is List
+        ? json['items'] as List
+        : const [];
+    final notifications = raw
+        .whereType<Map>()
+        .map(
+          (item) => ForkNotification.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList();
+    return NotificationPage(
+      notifications: notifications,
+      unread: asInt(json['unread']),
+    );
+  }
+}
+
+class ForkNotification {
+  ForkNotification({
+    required this.id,
+    required this.kind,
+    required this.title,
+    this.body = '',
+    this.repo = '',
+    this.href = '',
+    this.actor = '',
+    this.source = '',
+    this.ts = 0,
+    this.readAt = 0,
+    this.meta = const {},
+  });
+
+  final String id;
+  final String kind;
+  final String title;
+  final String body;
+  final String repo;
+  final String href;
+  final String actor;
+  final String source;
+  final int ts;
+  final int readAt;
+  final Map<String, dynamic> meta;
+
+  bool get isUnread => readAt <= 0;
+
+  String get kindLabel => switch (kind) {
+    'mention' => 'Mention',
+    'subscribed' => 'Subscribed',
+    'pull_submitted' => 'Pull request',
+    'issue_assigned' => 'Assignment',
+    'repo_shared' => 'Repo share',
+    'bounty_funded' || 'bounty_paid' => 'Bounty',
+    'release_published' => 'Release',
+    'host_online' || 'host_offline' => 'Host',
+    'credits_refilled' => 'Credits',
+    'pending_inbox' => 'Inbox',
+    _ => 'Notification',
+  };
+
+  String get filterGroup {
+    if (kind == 'mention') return 'Mentions';
+    if (kind == 'host_online' ||
+        kind == 'host_offline' ||
+        kind == 'release_published' ||
+        kind == 'bounty_funded' ||
+        kind == 'bounty_paid' ||
+        kind == 'credits_refilled') {
+      return 'System';
+    }
+    return 'Repo';
+  }
+
+  ForkNotification copyWith({int? readAt}) => ForkNotification(
+    id: id,
+    kind: kind,
+    title: title,
+    body: body,
+    repo: repo,
+    href: href,
+    actor: actor,
+    source: source,
+    ts: ts,
+    readAt: readAt ?? this.readAt,
+    meta: meta,
+  );
+
+  factory ForkNotification.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return ForkNotification(
+      id: (json['id'] ?? '').toString(),
+      kind: (json['kind'] ?? 'pending_inbox').toString(),
+      title: (json['title'] ?? 'Notification').toString(),
+      body: (json['body'] ?? '').toString(),
+      repo: (json['repo'] ?? '').toString(),
+      href: (json['href'] ?? '').toString(),
+      actor: (json['actor'] ?? '').toString(),
+      source: (json['source'] ?? '').toString(),
+      ts: asInt(json['ts']),
+      readAt: asInt(json['readAt'] ?? json['read_at']),
+      meta: json['meta'] is Map
+          ? Map<String, dynamic>.from(json['meta'] as Map)
+          : const {},
+    );
+  }
+}
+
 class Repository {
   Repository({
     required this.owner,

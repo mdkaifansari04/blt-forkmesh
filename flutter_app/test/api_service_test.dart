@@ -228,8 +228,72 @@ Keep desktop node as the canonical apply surface.''',
     );
   });
 
+  test('notifications fetch and mark read through worker API', () async {
+    final requests = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      requests.add({
+        'method': request.method,
+        'path': request.uri.path,
+        'query': request.uri.queryParameters,
+        'body': await utf8.decoder.bind(request).join(),
+      });
+      request.response.headers.contentType = ContentType.json;
+      if (request.method == 'GET' && request.uri.path == '/api/notifications') {
+        expect(request.uri.queryParameters['node'], 'mona');
+        expect(request.uri.queryParameters['limit'], '25');
+        request.response.write(
+          jsonEncode({
+            'ok': true,
+            'unread': 1,
+            'notifications': [
+              {
+                'id': 'n1',
+                'kind': 'mention',
+                'title': 'You were mentioned in mona/forkmesh',
+                'repo': 'mona/forkmesh',
+                'ts': 1770000000000,
+              },
+            ],
+          }),
+        );
+      } else if (request.method == 'POST' &&
+          request.uri.path == '/api/notifications') {
+        request.response.write(jsonEncode({'ok': true}));
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final page = await api.notifications('mona', limit: 25);
+    await api.markNotificationsRead('mona', ids: ['n1']);
+    await api.markNotificationsRead('mona', all: true);
+
+    expect(page.unread, 1);
+    expect(page.notifications.single.kind, 'mention');
+    final idsPost = jsonDecode(requests[1]['body'] as String);
+    expect(idsPost, {
+      'node': 'mona',
+      'ids': ['n1'],
+    });
+    final allPost = jsonDecode(requests[2]['body'] as String);
+    expect(allPost, {'node': 'mona', 'all': true});
+  });
+
   test(
-    'published pulls include signed comment and review timeline events',
+    'published markdown pulls include signed comment and review timeline events',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final subscription = server.listen((request) async {

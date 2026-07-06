@@ -134,6 +134,33 @@ class ApiService {
     return future;
   }
 
+  Future<NotificationPage> notifications(String node, {int limit = 40}) async {
+    final cleanNode = node.trim().toLowerCase();
+    if (cleanNode.isEmpty) {
+      return NotificationPage(notifications: const [], unread: 0);
+    }
+    final data = await _getJson(
+      _base('/api/notifications', {'node': cleanNode, 'limit': '$limit'}),
+    );
+    return NotificationPage.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<void> markNotificationsRead(
+    String node, {
+    List<String> ids = const [],
+    bool all = false,
+  }) async {
+    final cleanNode = node.trim().toLowerCase();
+    if (cleanNode.isEmpty) return;
+    await _postJson(_base('/api/notifications'), {
+      'node': cleanNode,
+      if (all) 'all': true,
+      if (!all && ids.isNotEmpty) 'ids': ids,
+    });
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(
@@ -617,30 +644,7 @@ class ApiService {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       resp!;
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        if (resp.body.isEmpty) return const [];
-        return jsonDecode(resp.body);
-      }
-      if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
-        final repoKey = _repoKeyFromPath(uri.path);
-        if (repoKey != null) {
-          _offlineRepoUntil[repoKey] = DateTime.now().add(offlineRepoTtl);
-        }
-        throw Exception(
-          'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
-        );
-      }
-      if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
-        throw Exception(
-          'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
-        );
-      }
-      if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
-        throw Exception(
-          'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
-        );
-      }
-      throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
+      return _decodeResponse(uri, resp);
     }
 
     if (monitor == null) return load();
@@ -653,6 +657,57 @@ class ApiService {
         if (uri.query.isNotEmpty) 'query': uri.query,
       },
     );
+  }
+
+  Future<dynamic> _postJson(Uri uri, Map<String, dynamic> payload) async {
+    final monitor = _performanceMonitor;
+    Future<dynamic> load() async {
+      final resp = await http
+          .post(
+            uri,
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 12));
+      return _decodeResponse(uri, resp);
+    }
+
+    if (monitor == null) return load();
+    return monitor.track(
+      'api.POST ${uri.path}',
+      load,
+      details: {'host': uri.host, 'path': uri.path},
+    );
+  }
+
+  dynamic _decodeResponse(Uri uri, http.Response resp) {
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      if (resp.body.isEmpty) return const [];
+      return jsonDecode(resp.body);
+    }
+    if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
+      final repoKey = _repoKeyFromPath(uri.path);
+      if (repoKey != null) {
+        _offlineRepoUntil[repoKey] = DateTime.now().add(offlineRepoTtl);
+      }
+      throw Exception(
+        'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
+      );
+    }
+    if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
+      throw Exception(
+        'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
+      );
+    }
+    if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
+      throw Exception(
+        'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
+      );
+    }
+    throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
   }
 }
 

@@ -17,10 +17,15 @@ import 'package:forkmesh/widgets/connection_dot.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeApiService extends ApiService {
-  FakeApiService(super.settings, {List<Repository> repositories = const []})
-    : _repositories = repositories;
+  FakeApiService(
+    super.settings, {
+    List<Repository> repositories = const [],
+    List<ForkNotification> notifications = const [],
+  }) : _repositories = repositories,
+       _notifications = notifications;
 
   final List<Repository> _repositories;
+  final List<ForkNotification> _notifications;
 
   @override
   Future<List<Repository>> repositories() async => _repositories;
@@ -28,6 +33,20 @@ class FakeApiService extends ApiService {
   @override
   Future<NetworkStats> networkStats() async =>
       NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
+
+  @override
+  Future<NotificationPage> notifications(String node, {int limit = 40}) async =>
+      NotificationPage(
+        notifications: _notifications,
+        unread: _notifications.where((item) => item.isUnread).length,
+      );
+
+  @override
+  Future<void> markNotificationsRead(
+    String node, {
+    List<String> ids = const [],
+    bool all = false,
+  }) async {}
 }
 
 // The login form now performs a real Worker /api/accounts/login round trip
@@ -621,11 +640,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Notifications'), findsOneWidget);
-    expect(find.text('Inbox'), findsOneWidget);
-    expect(find.text('Channels'), findsOneWidget);
-    expect(find.text('Direct'), findsOneWidget);
-    expect(find.text('Attachments'), findsOneWidget);
-    expect(find.text('All'), findsNothing);
+    expect(find.text('All'), findsOneWidget);
+    expect(find.text('Unread'), findsOneWidget);
+    expect(find.text('Mentions'), findsOneWidget);
+    expect(find.text('Repo'), findsOneWidget);
+    expect(find.text('Channels'), findsNothing);
+    expect(find.text('Direct'), findsNothing);
+    expect(find.text('Attachments'), findsNothing);
     expect(find.text('Reminders'), findsNothing);
     expect(find.text('Payment'), findsNothing);
     expect(find.text('Booking'), findsNothing);
@@ -633,26 +654,27 @@ void main() {
     expect(find.text('Activity log'), findsNothing);
   });
 
-  testWidgets('viewing notifications clears the top bar alert', (tester) async {
+  testWidgets('marking worker notifications read clears the top bar alert', (
+    tester,
+  ) async {
     usePhoneView(tester);
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
-    final relay = SeededNotificationRelayService(
+    final relay = RelayService(settings, identity);
+    final api = FakeApiService(
       settings,
-      identity,
-      messages: [
-        ChatMessage(
+      notifications: [
+        ForkNotification(
           id: 'n-1',
-          conversation: '#general',
-          senderId: 'remote-node',
-          senderName: 'Rinkit',
-          text: 'ForkMesh mirror finished syncing flutter_app on main.',
-          timestamp: DateTime(2026, 7, 3, 9, 41),
+          kind: 'mention',
+          title: 'You were mentioned in demo/forkmesh',
+          body: 'ForkMesh mirror finished syncing flutter_app on main.',
+          repo: 'demo/forkmesh',
+          ts: DateTime(2026, 7, 3, 9, 41).millisecondsSinceEpoch,
         ),
       ],
     );
-    final api = FakeApiService(settings);
     final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
@@ -668,6 +690,7 @@ void main() {
     );
 
     await submitLogin(tester);
+    await tester.pumpAndSettle();
 
     final notificationButton = find.byKey(
       const ValueKey('top-notifications-button'),
@@ -686,6 +709,8 @@ void main() {
       findsOneWidget,
     );
 
+    await tester.tap(find.widgetWithText(TextButton, 'Mark all read'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
 

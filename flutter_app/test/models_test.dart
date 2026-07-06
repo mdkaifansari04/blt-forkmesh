@@ -132,4 +132,46 @@ void main() {
     expect(legacy.hostsOnline, 1);
     expect(legacy.repos, 5);
   });
+
+  test('ForkNotification.fromJson parses worker notification payloads', () {
+    final notification = ForkNotification.fromJson({
+      'id': 'dedupe-1',
+      'kind': 'pull_submitted',
+      'title': 'Pull request submitted for mona/forkmesh',
+      'body': 'Mobile review flow is waiting in your desktop inbox.',
+      'repo': 'mona/forkmesh',
+      'href': '/mona/forkmesh/pulls/7',
+      'actor': 'kai',
+      'source': 'pull',
+      'ts': '1770000000000',
+      'readAt': 0,
+      'meta': {'number': 7},
+    });
+
+    expect(notification.id, 'dedupe-1');
+    expect(notification.kind, 'pull_submitted');
+    expect(notification.kindLabel, 'Pull request');
+    expect(notification.title, 'Pull request submitted for mona/forkmesh');
+    expect(notification.repo, 'mona/forkmesh');
+    expect(notification.actor, 'kai');
+    expect(notification.ts, 1770000000000);
+    expect(notification.isUnread, isTrue);
+    expect(notification.meta['number'], 7);
+  });
+
+  test('NotificationPage.fromJson reads list and unread count', () {
+    final page = NotificationPage.fromJson({
+      'ok': true,
+      'unread': '2',
+      'notifications': [
+        {'id': 'n1', 'kind': 'mention', 'title': 'Mention', 'ts': 2},
+        {'id': 'n2', 'kind': 'host_offline', 'title': 'Host offline'},
+      ],
+    });
+
+    expect(page.unread, 2);
+    expect(page.notifications, hasLength(2));
+    expect(page.notifications.first.kindLabel, 'Mention');
+    expect(page.notifications.last.kindLabel, 'Host');
+  });
 }

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/auth_service.dart';
 import '../services/identity.dart';
+import '../services/notification_service.dart';
 import '../services/relay_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -35,8 +36,17 @@ class _HomeShellState extends State<HomeShell> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<NotificationService>().startPolling();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final relay = context.watch<RelayService>();
+    final notifications = context.watch<NotificationService>();
     final auth = context.watch<AuthService>();
     final settings = context.watch<SettingsService>();
     final identity = context.read<Identity>();
@@ -60,7 +70,11 @@ class _HomeShellState extends State<HomeShell> {
 
     final body = Column(
       children: [
-        _TopBar(relay: relay, name: name),
+        _TopBar(
+          relay: relay,
+          name: name,
+          notificationUnreadCount: notifications.unreadCount,
+        ),
         Expanded(
           child: IndexedStack(index: _index, children: pages),
         ),
@@ -295,9 +309,14 @@ class _RailIcon extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.relay, required this.name});
+  const _TopBar({
+    required this.relay,
+    required this.name,
+    required this.notificationUnreadCount,
+  });
   final RelayService relay;
   final String name;
+  final int notificationUnreadCount;
 
   String get _statusText => switch (relay.state) {
     RelayConnectionState.connected =>
@@ -319,9 +338,7 @@ class _TopBar extends StatelessWidget {
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _TopNotificationButton(
-                unreadCount: relay.unseenNotificationCount,
-              ),
+              _TopNotificationButton(unreadCount: notificationUnreadCount),
               const SizedBox(width: FmSpace.x2),
               Tooltip(
                 message: '$_statusText - your node profile',
