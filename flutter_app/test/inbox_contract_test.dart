@@ -76,15 +76,12 @@ void main() {
     );
   });
 
-  test('canonical string templates bind the same fields as Qt and the worker',
-      () {
+  test('canonical string templates bind the same fields as Qt and the worker', () {
     // The composition around the content hash lives in private methods; pin
     // the interpolation templates at the source level (the same way the
     // worker suite pins entry.py) so a field can't be silently dropped or
     // reordered on the mobile side only.
-    final src = File(
-      'lib/services/inbox_service.dart',
-    ).readAsStringSync();
+    final src = File('lib/services/inbox_service.dart').readAsStringSync();
     expect(
       src,
       contains(
@@ -107,6 +104,14 @@ void main() {
         r"'forkmesh-commit-comment-v1\n$sha\n$_author\n$ts\n$contentHash'",
       ),
     );
+    expect(
+      src,
+      contains(
+        r"'forkmesh-subscribe-v1\n$owner/$name\n$source\n$number\n${subscribed ? '1' : '0'}\n$ts'",
+      ),
+    );
+    expect(src, contains("'node': cleanNode"));
+    expect(src, contains("'subscribed': subscribed"));
     // A new pull's content is title/base/head/patch, NUL-joined.
     expect(src, contains(r"[title, base, head, patch].join('\x00')"));
   });

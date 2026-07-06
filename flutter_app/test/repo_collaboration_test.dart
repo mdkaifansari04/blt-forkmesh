@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/repo_detail_screen.dart';
 import 'package:forkmesh/services/api_service.dart';
+import 'package:forkmesh/services/auth_service.dart';
 import 'package:forkmesh/services/identity.dart';
 import 'package:forkmesh/services/inbox_service.dart';
 import 'package:forkmesh/services/settings_service.dart';
@@ -138,6 +139,8 @@ Future<void> _pumpRepo(
   WidgetTester tester,
   ApiService api, {
   InboxService? inbox,
+  Identity? identity,
+  AuthService? auth,
 }) async {
   tester.view.physicalSize = const Size(900, 1200);
   tester.view.devicePixelRatio = 1;
@@ -148,6 +151,9 @@ Future<void> _pumpRepo(
     MultiProvider(
       providers: [
         Provider<ApiService>.value(value: api),
+        if (identity != null) Provider<Identity>.value(value: identity),
+        if (auth != null)
+          ChangeNotifierProvider<AuthService>.value(value: auth),
         if (inbox != null) Provider<InboxService>.value(value: inbox),
       ],
       child: MaterialApp(
@@ -179,6 +185,11 @@ class RecordingInboxService extends InboxService {
   String discussionCommentBody = '';
   String commitSha = '';
   String commitBody = '';
+  String subscriptionNode = '';
+  String subscriptionSource = '';
+  int subscriptionNumber = 0;
+  bool? subscriptionSubscribed;
+  int subscriptionCount = 0;
 
   @override
   Future<void> submitNewIssue(
@@ -247,9 +258,124 @@ class RecordingInboxService extends InboxService {
     commitSha = sha;
     commitBody = body;
   }
+
+  @override
+  Future<void> setThreadSubscription(
+    String owner,
+    String name, {
+    required String node,
+    required String source,
+    required int number,
+    required bool subscribed,
+  }) async {
+    subscriptionNode = node;
+    subscriptionSource = source;
+    subscriptionNumber = number;
+    subscriptionSubscribed = subscribed;
+    subscriptionCount += 1;
+  }
 }
 
 void main() {
+  testWidgets('issue detail can subscribe and unsubscribe from thread alerts', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
+
+    await tester.tap(find.text('Issues'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Stabilize signed inbox'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Subscribe thread'), findsOneWidget);
+    await tester.tap(find.text('Subscribe thread'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.subscriptionNode, 'preview-node');
+    expect(inbox.subscriptionSource, 'issue');
+    expect(inbox.subscriptionNumber, 12);
+    expect(inbox.subscriptionSubscribed, isTrue);
+    expect(find.text('Unsubscribe thread'), findsOneWidget);
+
+    await tester.tap(find.text('Unsubscribe thread'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.subscriptionCount, 2);
+    expect(inbox.subscriptionSubscribed, isFalse);
+    expect(find.text('Subscribe thread'), findsOneWidget);
+  });
+
+  testWidgets('pull detail can subscribe and unsubscribe from thread alerts', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
+
+    await tester.tap(find.text('Pulls'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add signed review flow'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Subscribe thread'), findsOneWidget);
+    await tester.tap(find.text('Subscribe thread'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.subscriptionNode, 'preview-node');
+    expect(inbox.subscriptionSource, 'pull');
+    expect(inbox.subscriptionNumber, 7);
+    expect(inbox.subscriptionSubscribed, isTrue);
+    expect(find.text('Unsubscribe thread'), findsOneWidget);
+
+    await tester.tap(find.text('Unsubscribe thread'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.subscriptionCount, 2);
+    expect(inbox.subscriptionSubscribed, isFalse);
+    expect(find.text('Subscribe thread'), findsOneWidget);
+  });
+
+  testWidgets('thread alert control is disabled without account signing key', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await _pumpRepo(tester, CollaborationApiService(settings));
+
+    await tester.tap(find.text('Issues'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Stabilize signed inbox'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Thread alerts unavailable'), findsOneWidget);
+    final button = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Thread alerts unavailable'),
+    );
+    expect(button.onPressed, isNull);
+  });
+
   testWidgets('issue detail surfaces signed collaboration state', (
     tester,
   ) async {
@@ -328,8 +454,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
     final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
 
     await tester.tap(find.text('Discussions'));
     await tester.pumpAndSettle();
@@ -366,8 +500,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
     final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
 
     await tester.tap(find.text('Discussions'));
     await tester.pumpAndSettle();
@@ -404,8 +546,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
     final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
 
     await tester.tap(find.text('Commits'));
     await tester.pumpAndSettle();
@@ -436,8 +586,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
     final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
 
     await tester.tap(find.text('Pulls'));
     await tester.pumpAndSettle();
@@ -473,8 +631,16 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
+    final auth = await AuthService.create(settings, identity);
+    await auth.authenticatePreview();
     final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+    await _pumpRepo(
+      tester,
+      CollaborationApiService(settings),
+      inbox: inbox,
+      identity: identity,
+      auth: auth,
+    );
 
     await tester.tap(find.text('Pulls'));
     await tester.pumpAndSettle();

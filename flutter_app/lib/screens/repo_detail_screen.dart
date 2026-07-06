@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
+import '../services/identity.dart';
 import '../services/inbox_service.dart';
 import '../services/notification_deep_link.dart';
 import '../theme.dart';
@@ -262,6 +264,8 @@ Future<void> _run(
 
 const _pendingNote =
     'Submitted to the inbox - pending the repo owner applying it.';
+const _threadSubscriptionNote =
+    'Thread notifications are signed with your node key and delivered through the mainnode notification inbox.';
 
 const Map<String, String> _discussionCategoryLabels = {
   'general': 'General',
@@ -1914,6 +1918,8 @@ class _IssueDetailScreen extends StatelessWidget {
           title: 'Timeline',
           children: [
             _IssueTimeline(issue: issue),
+            const SizedBox(height: 10),
+            const Text(_threadSubscriptionNote),
             const SizedBox(height: 14),
             _IssueQuickActions(repo: repo, issue: issue),
           ],
@@ -2020,9 +2026,109 @@ class _IssueQuickActions extends StatelessWidget {
         icon: const Icon(Icons.add_comment_outlined),
         label: const Text('Comment / vote / status'),
       ),
+      _ThreadSubscriptionButton(
+        repo: repo,
+        source: 'issue',
+        number: issue.number,
+      ),
       const _PendingInboxNote(),
     ],
   );
+}
+
+class _ThreadSubscriptionButton extends StatefulWidget {
+  const _ThreadSubscriptionButton({
+    required this.repo,
+    required this.source,
+    required this.number,
+  });
+
+  final Repository repo;
+  final String source;
+  final int number;
+
+  @override
+  State<_ThreadSubscriptionButton> createState() =>
+      _ThreadSubscriptionButtonState();
+}
+
+class _ThreadSubscriptionButtonState extends State<_ThreadSubscriptionButton> {
+  bool _subscribed = false;
+  bool _busy = false;
+
+  String _signedAccountNode(BuildContext context) {
+    final auth = context.watch<AuthService?>();
+    final identity = context.watch<Identity?>();
+    final session = auth?.session;
+    if (session == null || identity == null) return '';
+    final node = session.nodeName.trim().toLowerCase();
+    if (node.isEmpty) return '';
+    if (session.pubkey != identity.publicKeyB64url) return '';
+    return node;
+  }
+
+  Future<void> _toggle(String node) async {
+    if (_busy || node.isEmpty) return;
+    final next = !_subscribed;
+    final inbox = context.read<InboxService>();
+    final messenger = ScaffoldMessenger.of(context);
+    final dangerColor = FmTheme.danger(context);
+    setState(() => _busy = true);
+    try {
+      await inbox.setThreadSubscription(
+        widget.repo.owner,
+        widget.repo.name,
+        node: node,
+        source: widget.source,
+        number: widget.number,
+        subscribed: next,
+      );
+      if (!mounted) return;
+      setState(() => _subscribed = next);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            next
+                ? 'Subscribed to thread notifications.'
+                : 'Unsubscribed from thread notifications.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(backgroundColor: dangerColor, content: Text('Failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final node = _signedAccountNode(context);
+    final canSign = node.isNotEmpty;
+    final label = !canSign
+        ? 'Thread alerts unavailable'
+        : _subscribed
+        ? 'Unsubscribe thread'
+        : 'Subscribe thread';
+    final icon = !canSign
+        ? Icons.lock_outline
+        : _subscribed
+        ? Icons.notifications_off_outlined
+        : Icons.notifications_active_outlined;
+    return OutlinedButton.icon(
+      onPressed: _busy || !canSign ? null : () => _toggle(node),
+      icon: _busy
+          ? const SizedBox.square(
+              dimension: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(icon),
+      label: Text(label),
+    );
+  }
 }
 
 class _PullDetailScreen extends StatelessWidget {
@@ -2089,6 +2195,8 @@ class _PullDetailScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const _PendingInboxNote(),
+            const SizedBox(height: 8),
+            const Text(_threadSubscriptionNote),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -2099,6 +2207,11 @@ class _PullDetailScreen extends StatelessWidget {
                       showPublishedPullActions(context, repo, pull),
                   icon: const Icon(Icons.rate_review_outlined),
                   label: const Text('Review / comment'),
+                ),
+                _ThreadSubscriptionButton(
+                  repo: repo,
+                  source: 'pull',
+                  number: pull.number,
                 ),
               ],
             ),
