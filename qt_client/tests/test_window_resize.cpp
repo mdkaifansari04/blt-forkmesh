@@ -115,6 +115,44 @@ void dumpTallMinimums(QWidget &root)
     }
 }
 
+void dumpWideMinimums(QWidget &root)
+{
+    struct Entry {
+        int effectiveWidth = 0;
+        int minimumHintWidth = 0;
+        int explicitMinimumWidth = 0;
+        QString path;
+    };
+
+    QList<Entry> entries;
+    const QList<QWidget *> widgets = root.findChildren<QWidget *>();
+    for (QWidget *widget : widgets) {
+        const int minimumHintWidth = widget->minimumSizeHint().width();
+        const int explicitMinimumWidth = widget->minimumWidth();
+        const int effectiveWidth =
+            std::max(minimumHintWidth, explicitMinimumWidth);
+        if (effectiveWidth < 180)
+            continue;
+        entries.append({effectiveWidth, minimumHintWidth, explicitMinimumWidth,
+                        widgetPath(widget)});
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry &a, const Entry &b) {
+                  return a.effectiveWidth > b.effectiveWidth;
+              });
+
+    const int limit = std::min<int>(entries.size(), 24);
+    for (int i = 0; i < limit; ++i) {
+        const Entry &entry = entries.at(i);
+        qInfo().noquote()
+            << QString("MIN-W %1px hint=%2 explicit=%3 %4")
+                   .arg(entry.effectiveWidth)
+                   .arg(entry.minimumHintWidth)
+                   .arg(entry.explicitMinimumWidth)
+                   .arg(entry.path);
+    }
+}
+
 QCheckBox *findCheckBox(QWidget &root, const QString &text)
 {
     const QList<QCheckBox *> boxes = root.findChildren<QCheckBox *>();
@@ -508,6 +546,8 @@ int main(int argc, char *argv[])
     }
 
     QSettings().setValue(QStringLiteral("notifications/nodeConnect"), false);
+    window.testResetNetworkLog();
+    window.testResetRosterForAlerts();
     window.testSetNodeAlertGraceUntilMs(0);
     QList<MemberInfo> initialRoster;
     initialRoster.append(testMember(QStringLiteral("self-node"),
@@ -618,6 +658,52 @@ int main(int argc, char *argv[])
                   .arg(realized)
                   .arg(onScreen));
 
+        // Issue #369: on laptop-width screens, the Issues view plus footer
+        // prompt must not advertise a desktop-only horizontal minimum. The
+        // offscreen test window may still resize, but macOS honors this hint
+        // when deciding how far the user can drag the window narrower.
+        const int createdNumber =
+            window.testQuickAddIssueNoAgent(QStringLiteral("Narrow window issue"));
+        for (int i = 0; i < 36; ++i) {
+            AgentSession session;
+            session.id = 5000 + i;
+            session.owner = QStringLiteral("me");
+            session.name = QStringLiteral("r");
+            session.prompt = QStringLiteral("Narrow status strip session %1").arg(i);
+            session.status = (i % 5 == 0) ? AgentStatus::Failed
+                                          : AgentStatus::Running;
+            window.testAddAgentSession(session);
+        }
+        window.testRefreshAgentStatusRow();
+        window.resize(900, 650);
+        QApplication::processEvents();
+        const int minHintWidth = window.minimumSizeHint().width();
+        check(createdNumber > 0 && minHintWidth <= 900,
+              QString("issues view and footer prompt fit within a 900px laptop "
+                      "window (issue %1, minimum hint %2px)")
+                  .arg(createdNumber)
+                  .arg(minHintWidth));
+        if (createdNumber <= 0 || minHintWidth > 900)
+            dumpWideMinimums(window);
+
+        window.resize(1500, 650);
+        QApplication::processEvents();
+        window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+        const int tabGap = window.testRepoTabGapAroundIssues();
+        const int looperGap = window.testIssueLooperGapAboveIssuesTab();
+        const int looperDelta = window.testIssueLooperCenterDelta();
+        const int navTrailingGap = window.testTopNavTrailingGap();
+        check(tabGap >= 8 && looperGap >= -1 && qAbs(looperDelta) <= 24 &&
+                  navTrailingGap >= 0 && navTrailingGap <= 28,
+              QString("responsive top rows keep breathing room and anchor the "
+                      "issue looper (tabGap=%1 looperGap=%2 looperDelta=%3 "
+                      "navTrailingGap=%4)")
+                  .arg(tabGap)
+                  .arg(looperGap)
+                  .arg(looperDelta)
+                  .arg(navTrailingGap));
+
     // Issue #207: the commit detail page must expose a restore/revert action
     // beside the destructive delete-history action.
     {
@@ -648,12 +734,16 @@ int main(int argc, char *argv[])
         check(deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window) &&
                   adjacent && restoreOnScreen,
               QString("commit restore button is visible beside delete "
-                      "(delete=%1 restore=%2 visible=%3 adjacent=%4 onScreen=%5)")
+                      "(delete=%1 restore=%2 visible=%3 adjacent=%4 onScreen=%5 "
+                      "windowW=%6 restoreX=%7 restoreW=%8)")
                   .arg(deleteCommit != nullptr)
                   .arg(restoreCommit != nullptr)
                   .arg(restoreCommit && restoreCommit->isVisibleTo(&window))
                   .arg(adjacent)
-                  .arg(restoreOnScreen));
+                  .arg(restoreOnScreen)
+                  .arg(window.width())
+                  .arg(restoreCommit ? restoreCommit->mapTo(&window, QPoint(0, 0)).x() : -1)
+                  .arg(restoreCommit ? restoreCommit->width() : -1));
     }
     }
 

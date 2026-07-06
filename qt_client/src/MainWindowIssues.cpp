@@ -25,7 +25,7 @@ QWidget *MainWindow::buildIssuesSection()
 
     // --- Left: a sortable issue table with filters above.
     auto *listPane = new QWidget;
-    listPane->setMinimumWidth(360);
+    listPane->setMinimumWidth(260);
 
     auto *heading = new QLabel("Issues");
     heading->setObjectName("channelTitle");
@@ -502,8 +502,8 @@ QWidget *MainWindow::buildIssuesSection()
     // Right: GitHub-style metadata sidebar.
     auto *meta = new QWidget;
     meta->setObjectName("issueSidebar");
-    meta->setMinimumWidth(265);
-    meta->setMaximumWidth(315);
+    meta->setMinimumWidth(190);
+    meta->setMaximumWidth(300);
     m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
@@ -915,8 +915,8 @@ QWidget *MainWindow::buildIssuesSection()
     metaScroll->setFrameShape(QFrame::NoFrame);
     metaScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     metaScroll->setWidgetResizable(true);
-    metaScroll->setMinimumWidth(265);
-    metaScroll->setMaximumWidth(335);
+    metaScroll->setMinimumWidth(190);
+    metaScroll->setMaximumWidth(315);
     // The long issue sidebar should scroll, not force the Issues tab height.
     metaScroll->setMinimumHeight(0);
     metaScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
@@ -926,9 +926,11 @@ QWidget *MainWindow::buildIssuesSection()
     // sharing their own draggable divider.
     auto *issueDetailView = new QWidget;
     auto *detailSplit = new QSplitter(Qt::Horizontal);
-    detailSplit->setChildrenCollapsible(false);
+    detailSplit->setChildrenCollapsible(true);
     detailSplit->addWidget(center);
     detailSplit->addWidget(metaScroll);
+    detailSplit->setCollapsible(0, false);
+    detailSplit->setCollapsible(1, true);
     detailSplit->setStretchFactor(0, 1);
     detailSplit->setStretchFactor(1, 0);
     detailSplit->setSizes({520, 220});
@@ -938,7 +940,7 @@ QWidget *MainWindow::buildIssuesSection()
     // its hunk, activating one opens it (when it lives in a worktree on disk).
     m_issueFilesList = new QListWidget;
     m_issueFilesList->setObjectName("agentFilesList");
-    m_issueFilesList->setMinimumWidth(190);
+    m_issueFilesList->setMinimumWidth(140);
     // Green-outline selection (like the agents list) so the selected file stays
     // legible; click-to-scroll / scroll-to-select handled by DiffFileNavigator.
     m_issueFilesList->setItemDelegate(
@@ -967,9 +969,11 @@ QWidget *MainWindow::buildIssuesSection()
     // DiffFileNavigator is created lazily on first render (complete type in scope).
 
     auto *issueFilesSplit = new QSplitter(Qt::Horizontal);
-    issueFilesSplit->setChildrenCollapsible(false);
+    issueFilesSplit->setChildrenCollapsible(true);
     issueFilesSplit->addWidget(issueFilesPanel);
     issueFilesSplit->addWidget(m_issueDiffView);
+    issueFilesSplit->setCollapsible(0, true);
+    issueFilesSplit->setCollapsible(1, false);
     issueFilesSplit->setStretchFactor(0, 0);
     issueFilesSplit->setStretchFactor(1, 1);
     issueFilesSplit->setSizes({220, 700});
@@ -997,9 +1001,11 @@ QWidget *MainWindow::buildIssuesSection()
     // detail lets the table use the full width.
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("issuesSplitter");
-    splitter->setChildrenCollapsible(false);
+    splitter->setChildrenCollapsible(true);
     splitter->addWidget(listPane);
     splitter->addWidget(m_issueDetail);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, true);
     // The table is the primary surface: it keeps the width and the detail panel
     // opens at a minimal size beside it (the divider is still draggable).
     splitter->setStretchFactor(0, 1);
@@ -3246,7 +3252,9 @@ void MainWindow::promptNewIssue()
 
     auto *sidebar = new QWidget(page);
     sidebar->setObjectName("issueComposeSidebar");
-    sidebar->setFixedWidth(285);
+    sidebar->setMinimumWidth(190);
+    sidebar->setMaximumWidth(285);
+    sidebar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *sideLayout = new QVBoxLayout(sidebar);
     sideLayout->setContentsMargins(18, 2, 0, 0);
     sideLayout->setSpacing(8);

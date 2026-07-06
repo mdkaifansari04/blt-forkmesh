@@ -885,6 +885,65 @@ int MainWindow::testRepoTabContentTop()
 {
     return m_repoDetailStack ? m_repoDetailStack->mapTo(this, QPoint(0, 0)).y() : -1;
 }
+
+int MainWindow::testRepoTabGapAroundIssues() const
+{
+    if (!m_repoCodeTab || !m_repoIssuesTab || !m_repoPullsTab)
+        return -1;
+    const QRect codeRect(m_repoCodeTab->mapTo(const_cast<MainWindow *>(this),
+                                              QPoint(0, 0)),
+                         m_repoCodeTab->size());
+    const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
+                                                  QPoint(0, 0)),
+                           m_repoIssuesTab->size());
+    const QRect pullsRect(m_repoPullsTab->mapTo(const_cast<MainWindow *>(this),
+                                                QPoint(0, 0)),
+                          m_repoPullsTab->size());
+    return qMin(issuesRect.left() - codeRect.right() - 1,
+                pullsRect.left() - issuesRect.right() - 1);
+}
+
+int MainWindow::testIssueLooperGapAboveIssuesTab() const
+{
+    if (!m_looperToggle || !m_repoIssuesTab || !m_looperToggle->isVisible())
+        return -100000;
+    const QRect looperRect(m_looperToggle->mapTo(const_cast<MainWindow *>(this),
+                                                 QPoint(0, 0)),
+                           m_looperToggle->size());
+    const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
+                                                  QPoint(0, 0)),
+                           m_repoIssuesTab->size());
+    return issuesRect.top() - looperRect.bottom() - 1;
+}
+
+int MainWindow::testIssueLooperCenterDelta() const
+{
+    if (!m_looperToggle || !m_repoIssuesTab || !m_looperToggle->isVisible())
+        return 100000;
+    const QRect looperRect(m_looperToggle->mapTo(const_cast<MainWindow *>(this),
+                                                 QPoint(0, 0)),
+                           m_looperToggle->size());
+    const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
+                                                  QPoint(0, 0)),
+                           m_repoIssuesTab->size());
+    return looperRect.center().x() - issuesRect.center().x();
+}
+
+int MainWindow::testTopNavTrailingGap() const
+{
+    int rightEdge = -1;
+    for (QWidget *widget :
+         {static_cast<QWidget *>(m_navDrawButton),
+          static_cast<QWidget *>(m_navScreenshotButton),
+          static_cast<QWidget *>(m_navRebuildButton)}) {
+        if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
+            continue;
+        const QRect rect(widget->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+                         widget->size());
+        rightEdge = qMax(rightEdge, rect.right());
+    }
+    return rightEdge >= 0 ? width() - rightEdge - 1 : -1;
+}
 #endif
 
 void MainWindow::setHeadlessMode(bool headless)

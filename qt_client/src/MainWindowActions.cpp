@@ -1407,8 +1407,7 @@ void MainWindow::positionRepoPushButton()
 {
     if (!m_repoPushButton || !m_repoCodeTab)
         return;
-    QWidget *tabBar = m_repoCodeTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
     if (!page)
         return;
     if (m_repoPushButton->parentWidget() != page)
@@ -1486,8 +1485,7 @@ void MainWindow::positionLooperToggle()
 {
     if (!m_looperToggle || !m_repoIssuesTab)
         return;
-    QWidget *tabBar = m_repoIssuesTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
     if (!page)
         return;
     if (m_looperToggle->parentWidget() != page)
@@ -1495,7 +1493,7 @@ void MainWindow::positionLooperToggle()
     const int w = m_looperToggle->sizeHint().width();
     const int h = m_looperToggle->sizeHint().height();
     const QPoint tl = m_repoIssuesTab->mapTo(page, QPoint(0, 0));
-    int x = tl.x();
+    int x = tl.x() + (m_repoIssuesTab->width() - w) / 2;
     int y = tl.y() - h - 1; // the meta band above the tab row
     if (y < 0)
         y = 0;
@@ -1529,8 +1527,7 @@ void MainWindow::positionMirrorActivityStrip()
     auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
     if (!strip || !m_repoMirrorsTab)
         return;
-    QWidget *tabBar = m_repoMirrorsTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
     if (!page)
         return;
     if (strip->parentWidget() != page)
@@ -1569,8 +1566,7 @@ void MainWindow::positionReleaseStrip()
 {
     if (!m_releaseStrip || !m_repoReleasesTab)
         return;
-    QWidget *tabBar = m_repoReleasesTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
     if (!page)
         return;
     if (m_releaseStrip->parentWidget() != page)

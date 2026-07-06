@@ -214,6 +214,11 @@ public:
     using TestIssueHistoryDeleteRunner =
         std::function<bool(int number, QString *error)>;
     void testSetRoster(const QList<MemberInfo> &members) { setRoster(members); }
+    void testResetRosterForAlerts()
+    {
+        m_homeRoster.clear();
+        m_removedPeerIds.clear();
+    }
     // Sets the live roster directly (skipping setRoster's side effects, e.g.
     // refreshRepositoryList's node-switcher bookkeeping) and rebuilds the Mirror
     // nodes panel, so a test can exercise loadMirrorNodesPanel's row-building
@@ -297,6 +302,10 @@ public:
     void testStopRepoHosts() { stopRepoHosts(); }
     void testShowPublishBar(bool on);
     int testRepoTabContentTop(); // y of the tab content within the window
+    int testRepoTabGapAroundIssues() const;
+    int testIssueLooperGapAboveIssuesTab() const;
+    int testIssueLooperCenterDelta() const;
+    int testTopNavTrailingGap() const;
     QString testRepoGitDir() const { return repoGitDir(); }
     int testRepoHostCount() const { return m_repoHosts.size(); }
     void testSetIssueHistoryDeleteRunner(TestIssueHistoryDeleteRunner runner)
@@ -378,6 +387,7 @@ public:
     {
         m_agentSessions.append(session);
     }
+    void testRefreshAgentStatusRow() { refreshAgentStatusRow(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
