@@ -118,19 +118,61 @@ void main() {
       'numTurns': '7',
       'durationMs': 125000,
       'costUsd': '1.25',
+      'createPr': true,
+      'prNumber': '7',
+      'baseRef': 'abc123',
+      'baseBranch': 'main',
+      'merged': true,
+      'mergedAtMs': '1700000100000',
+      'promptTokens': '1000',
+      'completionTokens': 500,
+      'totalTokens': '1500',
+      'contextTokens': '12000',
+      'contextWindow': '32000',
+      'maxOutputTokens': '4000',
+      'estimatedCredits': '6',
+      'spendBeforeUsd': '2.00',
+      'spendAfterUsd': '3.25',
+      'diffStats': {
+        'files': '3',
+        'ahead': '2',
+        'behind': '1',
+        'conflicted': true,
+      },
     });
 
     expect(session.id, 42);
     expect(session.issueNumber, 12);
     expect(session.issueTitle, 'Stabilize signed inbox');
-    expect(session.statusLabel, 'Running');
+    expect(session.statusLabel, 'Merged');
     expect(session.providerLabel, 'OpenAI');
     expect(session.displayTitle, 'Stabilize signed inbox');
     expect(session.branchName, 'agent/fix-inbox');
     expect(session.numTurns, 7);
     expect(session.durationLabel, '2m 5s');
     expect(session.costLabel, r'$1.25');
-    expect(session.isActive, isTrue);
+    expect(session.isActive, isFalse);
+    expect(session.createPr, isTrue);
+    expect(session.prNumber, 7);
+    expect(session.prLabel, 'PR #7');
+    expect(session.baseRef, 'abc123');
+    expect(session.baseBranch, 'main');
+    expect(session.merged, isTrue);
+    expect(session.mergedAtMs, 1700000100000);
+    expect(session.promptTokens, 1000);
+    expect(session.completionTokens, 500);
+    expect(session.totalTokens, 1500);
+    expect(session.contextTokens, 12000);
+    expect(session.contextWindow, 32000);
+    expect(session.maxOutputTokens, 4000);
+    expect(session.estimatedCredits, 6);
+    expect(session.spendBeforeUsd, 2.0);
+    expect(session.spendAfterUsd, 3.25);
+    expect(session.filesChanged, 3);
+    expect(session.ahead, 2);
+    expect(session.behind, 1);
+    expect(session.conflicted, isTrue);
+    expect(session.diffLabel, '3 files · ↑2 ↓1');
   });
 
   testWidgets('repo Agents tab lists sessions and opens transcript detail', (

@@ -43,6 +43,14 @@ class GlobalAgentsApiService extends ApiService {
           provider: 'codex',
           branchName: 'agent/signed-inbox',
           numTurns: sessionCalls[key]!,
+          createPr: true,
+          prNumber: 7,
+          baseBranch: 'main',
+          filesChanged: 3,
+          ahead: 2,
+          behind: 1,
+          conflicted: true,
+          totalTokens: 1500,
         ),
       ];
     }
@@ -154,6 +162,10 @@ void main() {
     expect(find.text('Publish Worker relay tests'), findsOneWidget);
     expect(find.text('RUNNING'), findsWidgets);
     expect(find.text('DONE'), findsWidgets);
+    expect(find.text('PR #7'), findsOneWidget);
+    expect(find.text('3 FILES · ↑2 ↓1'), findsOneWidget);
+    expect(find.text('CONFLICT'), findsOneWidget);
+    expect(find.text('1500 TOKENS'), findsOneWidget);
     expect(find.text('Live refresh on'), findsOneWidget);
   });
 
@@ -173,6 +185,10 @@ void main() {
 
       expect(find.text('Agent session #7'), findsOneWidget);
       expect(find.text('Transcript'), findsOneWidget);
+      expect(find.text('PR #7'), findsOneWidget);
+      expect(find.text('3 FILES · ↑2 ↓1'), findsOneWidget);
+      expect(find.text('CONFLICT'), findsOneWidget);
+      expect(find.text('Open PR #7'), findsOneWidget);
       expect(
         find.textContaining('Session 7 transcript for alice/mobile'),
         findsOneWidget,

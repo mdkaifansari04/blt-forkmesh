@@ -193,6 +193,25 @@ class AgentSession {
     this.numTurns = 0,
     this.durationMs = 0,
     this.costUsd = 0,
+    this.createPr = false,
+    this.prNumber = 0,
+    this.baseRef = '',
+    this.baseBranch = '',
+    this.merged = false,
+    this.mergedAtMs = 0,
+    this.promptTokens = 0,
+    this.completionTokens = 0,
+    this.totalTokens = 0,
+    this.contextTokens = 0,
+    this.contextWindow = 0,
+    this.maxOutputTokens = 0,
+    this.estimatedCredits = 0,
+    this.spendBeforeUsd = 0,
+    this.spendAfterUsd = 0,
+    this.filesChanged = -1,
+    this.ahead = -1,
+    this.behind = -1,
+    this.conflicted = false,
   });
 
   final int id;
@@ -209,8 +228,28 @@ class AgentSession {
   final int numTurns;
   final int durationMs;
   final double costUsd;
+  final bool createPr;
+  final int prNumber;
+  final String baseRef;
+  final String baseBranch;
+  final bool merged;
+  final int mergedAtMs;
+  final int promptTokens;
+  final int completionTokens;
+  final int totalTokens;
+  final int contextTokens;
+  final int contextWindow;
+  final int maxOutputTokens;
+  final int estimatedCredits;
+  final double spendBeforeUsd;
+  final double spendAfterUsd;
+  final int filesChanged;
+  final int ahead;
+  final int behind;
+  final bool conflicted;
 
   bool get isActive {
+    if (merged) return false;
     final clean = status.toLowerCase().replaceAll('_', '-');
     return clean == 'queued' || clean == 'running' || clean == 'waiting';
   }
@@ -222,6 +261,7 @@ class AgentSession {
       : 'Agent session #$id';
 
   String get statusLabel {
+    if (merged) return 'Merged';
     final clean = status.toLowerCase().replaceAll('_', '-');
     return switch (clean) {
       'queued' => 'Queued',
@@ -257,14 +297,41 @@ class AgentSession {
     return '\$${costUsd.toStringAsFixed(2)}';
   }
 
+  String get prLabel => prNumber > 0 ? 'PR #$prNumber' : '';
+
+  String get tokenLabel => totalTokens > 0 ? '$totalTokens tokens' : '';
+
+  String get diffLabel {
+    final parts = <String>[];
+    if (filesChanged >= 0) {
+      parts.add(filesChanged == 1 ? '1 file' : '$filesChanged files');
+    }
+    if (ahead >= 0 && behind >= 0 && (ahead > 0 || behind > 0)) {
+      parts.add('↑$ahead ↓$behind');
+    }
+    return parts.join(' · ');
+  }
+
   factory AgentSession.fromJson(Map<String, dynamic> json) {
     int asInt(dynamic value) => value is int
         ? value
         : value is num
         ? value.toInt()
         : int.tryParse('$value') ?? 0;
+    int asOptionalInt(dynamic value) {
+      if (value == null) return -1;
+      return value is int
+          ? value
+          : value is num
+          ? value.toInt()
+          : int.tryParse('$value') ?? -1;
+    }
+
     double asDouble(dynamic value) =>
         value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+    final diffStats = json['diffStats'] is Map
+        ? Map<String, dynamic>.from(json['diffStats'] as Map)
+        : const <String, dynamic>{};
     return AgentSession(
       id: asInt(json['id']),
       issueNumber: asInt(json['issueNumber']),
@@ -280,6 +347,27 @@ class AgentSession {
       numTurns: asInt(json['numTurns']),
       durationMs: asInt(json['durationMs']),
       costUsd: asDouble(json['costUsd']),
+      createPr: json['createPr'] == true,
+      prNumber: asInt(json['prNumber']),
+      baseRef: (json['baseRef'] ?? '').toString(),
+      baseBranch: (json['baseBranch'] ?? '').toString(),
+      merged: json['merged'] == true,
+      mergedAtMs: asInt(json['mergedAtMs']),
+      promptTokens: asInt(json['promptTokens']),
+      completionTokens: asInt(json['completionTokens']),
+      totalTokens: asInt(json['totalTokens']),
+      contextTokens: asInt(json['contextTokens']),
+      contextWindow: asInt(json['contextWindow']),
+      maxOutputTokens: asInt(json['maxOutputTokens']),
+      estimatedCredits: asInt(json['estimatedCredits']),
+      spendBeforeUsd: asDouble(json['spendBeforeUsd']),
+      spendAfterUsd: asDouble(json['spendAfterUsd']),
+      filesChanged: asOptionalInt(
+        diffStats['files'] ?? json['filesChanged'] ?? json['changedFiles'],
+      ),
+      ahead: asOptionalInt(diffStats['ahead'] ?? json['ahead']),
+      behind: asOptionalInt(diffStats['behind'] ?? json['behind']),
+      conflicted: diffStats['conflicted'] == true || json['conflicted'] == true,
     );
   }
 }

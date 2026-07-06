@@ -6,8 +6,10 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/notification_deep_link.dart';
 import '../theme.dart';
 import '../widgets/fm_ui.dart';
+import 'repo_detail_screen.dart';
 
 const _agentPollInterval = Duration(seconds: 10);
 
@@ -179,6 +181,23 @@ class AgentSessionDetailScreen extends StatelessWidget {
   final AgentSession session;
   final String ownerAccount;
 
+  void _openPull(BuildContext context) {
+    if (session.prNumber <= 0) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RepoDetailScreen(
+          repo: repo,
+          initialTab: RepoDetailTab.pulls,
+          initialTarget: NotificationDeepLink(
+            repo: repo,
+            initialTab: RepoDetailTab.pulls,
+            number: session.prNumber,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final transcriptFuture = api.agentTranscript(
@@ -224,8 +243,32 @@ class AgentSessionDetailScreen extends StatelessWidget {
                       _AgentChip(label: session.durationLabel),
                     if (session.costLabel.isNotEmpty)
                       _AgentChip(label: session.costLabel),
+                    if (session.prLabel.isNotEmpty)
+                      _AgentChip(label: session.prLabel),
+                    if (session.diffLabel.isNotEmpty)
+                      _AgentChip(label: session.diffLabel),
+                    if (session.conflicted) const _AgentChip(label: 'Conflict'),
+                    if (session.tokenLabel.isNotEmpty)
+                      _AgentChip(label: session.tokenLabel),
                   ],
                 ),
+                const SizedBox(height: FmSpace.x3),
+                Text(
+                  'Desktop-controlled session. Mobile can watch progress and open results; starting, stopping, retrying, merging, and applying stay on the desktop node until signed pairing is designed.',
+                  style: TextStyle(
+                    color: FmTheme.textSecondary(context),
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+                if (session.prNumber > 0) ...[
+                  const SizedBox(height: FmSpace.x3),
+                  OutlinedButton.icon(
+                    onPressed: () => _openPull(context),
+                    icon: const Icon(Icons.call_merge_outlined),
+                    label: Text('Open PR #${session.prNumber}'),
+                  ),
+                ],
                 if (session.lastError.isNotEmpty) ...[
                   const SizedBox(height: FmSpace.x3),
                   Text(
@@ -586,6 +629,14 @@ class _AgentSessionRow extends StatelessWidget {
                           _AgentChip(label: session.durationLabel),
                         if (session.costLabel.isNotEmpty)
                           _AgentChip(label: session.costLabel),
+                        if (session.prLabel.isNotEmpty)
+                          _AgentChip(label: session.prLabel),
+                        if (session.diffLabel.isNotEmpty)
+                          _AgentChip(label: session.diffLabel),
+                        if (session.conflicted)
+                          const _AgentChip(label: 'Conflict'),
+                        if (session.tokenLabel.isNotEmpty)
+                          _AgentChip(label: session.tokenLabel),
                       ],
                     ),
                   ],
@@ -618,7 +669,7 @@ class _AgentStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (session.statusLabel) {
-      'Done' => FmTheme.success(context),
+      'Merged' || 'Done' => FmTheme.success(context),
       'Failed' || 'Stopped' => FmTheme.danger(context),
       'Running' || 'Queued' || 'Waiting' => FmTheme.accent(context),
       _ => FmTheme.textTertiary(context),
