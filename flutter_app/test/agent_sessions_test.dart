@@ -56,6 +56,32 @@ class AgentApiService extends ApiService {
   );
 }
 
+class PollingAgentApiService extends AgentApiService {
+  PollingAgentApiService(super.settings);
+
+  int calls = 0;
+
+  @override
+  Future<List<AgentSession>> agentSessions(
+    String owner,
+    String name, {
+    String ownerAccount = '',
+  }) async {
+    calls += 1;
+    return [
+      AgentSession(
+        id: 7,
+        issueNumber: 4,
+        issueTitle: 'Ship mobile agent monitor',
+        status: calls == 1 ? 'running' : 'done',
+        provider: 'codex',
+        branchName: 'agent/mobile-monitor',
+        numTurns: calls,
+      ),
+    ];
+  }
+}
+
 Future<void> _pumpRepo(WidgetTester tester, ApiService api) async {
   tester.view.physicalSize = const Size(900, 1200);
   tester.view.devicePixelRatio = 1;
@@ -131,5 +157,28 @@ void main() {
     expect(find.text('Agent session #42'), findsOneWidget);
     expect(find.text('Transcript'), findsOneWidget);
     expect(find.textContaining('flutter test passed'), findsOneWidget);
+  });
+
+  testWidgets('repo Agents tab auto-refreshes while sessions are running', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final api = PollingAgentApiService(settings);
+    await _pumpRepo(tester, api);
+
+    await tester.ensureVisible(find.text('Agents'));
+    await tester.tap(find.text('Agents'));
+    await tester.pumpAndSettle();
+
+    expect(api.calls, 1);
+    expect(find.text('RUNNING'), findsWidgets);
+    expect(find.text('Live refresh on'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pumpAndSettle();
+
+    expect(api.calls, greaterThanOrEqualTo(2));
+    expect(find.text('DONE'), findsWidgets);
   });
 }

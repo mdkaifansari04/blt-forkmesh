@@ -11,6 +11,7 @@ import '../theme.dart';
 import '../widgets/connection_dot.dart';
 import '../widgets/fm_ui.dart';
 import 'activity_screen.dart';
+import 'agents_screen.dart';
 import 'chat_screen.dart';
 import 'notifications_screen.dart';
 import 'repos_screen.dart';
@@ -29,6 +30,7 @@ class _HomeShellState extends State<HomeShell> {
 
   static const _destinations = [
     (icon: Icons.code, label: 'Code'),
+    (icon: Icons.smart_toy_outlined, label: 'Agents'),
     (icon: Icons.chat_bubble_outline_rounded, label: 'Chat'),
     (icon: Icons.bolt_outlined, label: 'Activity'),
     (icon: Icons.settings_outlined, label: 'Settings'),
@@ -61,11 +63,12 @@ class _HomeShellState extends State<HomeShell> {
         ? identity.shortKey
         : settings.displayName;
 
-    final pages = const [
-      ReposScreen(),
-      ChatScreen(),
-      ActivityScreen(),
-      SettingsScreen(),
+    final pages = [
+      const ReposScreen(),
+      AgentsScreen(enabled: _index == 1),
+      const ChatScreen(),
+      const ActivityScreen(),
+      const SettingsScreen(),
     ];
 
     final body = Column(
