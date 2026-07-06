@@ -8,6 +8,7 @@ import 'package:forkmesh/services/api_service.dart';
 import 'package:forkmesh/services/auth_service.dart';
 import 'package:forkmesh/services/identity.dart';
 import 'package:forkmesh/services/inbox_service.dart';
+import 'package:forkmesh/services/notification_deep_link.dart';
 import 'package:forkmesh/services/settings_service.dart';
 import 'package:forkmesh/theme.dart';
 import 'package:provider/provider.dart';
@@ -103,6 +104,28 @@ class CollaborationApiService extends ApiService {
       amountSol: 1.5,
       payee: payee.isNotEmpty ? payee : payeeNode,
       payUri: 'solana:escrow-created?amount=1.5',
+    );
+  }
+
+  @override
+  Future<BountyWallet> bountyWallet(
+    String owner,
+    String repo, {
+    required String ts,
+    required String sig,
+  }) async {
+    bountyRequests.add({
+      'action': 'wallet',
+      'owner': owner,
+      'repo': repo,
+      'ts': ts,
+      'sig': sig,
+    });
+    return const BountyWallet(
+      address: 'owner-wallet-fixture',
+      balanceLamports: 2500000000,
+      balanceSol: 2.5,
+      payUri: 'solana:owner-wallet-fixture',
     );
   }
 
@@ -262,6 +285,7 @@ Future<void> _pumpRepo(
   InboxService? inbox,
   Identity? identity,
   AuthService? auth,
+  RepoDetailTab initialTab = RepoDetailTab.code,
 }) async {
   tester.view.physicalSize = const Size(900, 1800);
   tester.view.devicePixelRatio = 1;
@@ -284,7 +308,7 @@ Future<void> _pumpRepo(
       ],
       child: MaterialApp(
         theme: buildForkMeshLightTheme(),
-        home: RepoDetailScreen(repo: repo),
+        home: RepoDetailScreen(repo: repo, initialTab: initialTab),
       ),
     ),
   );
@@ -678,6 +702,79 @@ void main() {
   });
 
   testWidgets(
+    'repo funding panel shows disabled owner bounty wallet when unsigned',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await _pumpRepo(
+        tester,
+        CollaborationApiService(settings),
+        initialTab: RepoDetailTab.about,
+      );
+
+      expect(find.text('Owner bounty wallet'), findsOneWidget);
+      expect(
+        find.text('Worker-custodied bounty wallet deposit address'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'Sign in as owner with this mobile device paired to the owner key',
+        ),
+        findsOneWidget,
+      );
+      final button = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Prepare/view wallet deposit'),
+      );
+      expect(button.onPressed, isNull);
+    },
+  );
+
+  testWidgets(
+    'repo funding panel prepares signed owner bounty wallet deposit',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      final identity = await Identity.loadOrCreate();
+      final auth = await _ownerAuth(settings, identity);
+      final api = CollaborationApiService(settings);
+      await _pumpRepo(
+        tester,
+        api,
+        identity: identity,
+        auth: auth,
+        initialTab: RepoDetailTab.about,
+      );
+
+      final prepareButton = find.widgetWithText(
+        FilledButton,
+        'Prepare/view wallet deposit',
+      );
+      expect(prepareButton, findsOneWidget);
+      await tester.tap(prepareButton);
+      await tester.pumpAndSettle();
+
+      final wallet = api.bountyRequests.last;
+      expect(wallet['action'], 'wallet');
+      expect(wallet['owner'], 'owner');
+      expect(wallet['repo'], 'repo');
+      expect(wallet['ts'], isNotEmpty);
+      expect(wallet['sig'], isNotEmpty);
+      final expectedSig = await identity.sign(
+        utf8.encode('forkmesh-bounty-wallet-v1\nowner\n${wallet['ts']}'),
+      );
+      expect(wallet['sig'], expectedSig);
+      expect(find.text('owner-wallet-fixture'), findsOneWidget);
+      expect(find.text('2.5 SOL (2500000000 lamports)'), findsOneWidget);
+      expect(find.text('solana:owner-wallet-fixture'), findsOneWidget);
+      expect(
+        find.text('https://explorer.solana.com/address/owner-wallet-fixture'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'issue detail shows bounty funding card and prepares signed deposit request',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
@@ -733,6 +830,43 @@ void main() {
       expect(find.text('escrow-created'), findsOneWidget);
     },
   );
+
+  testWidgets('issue bounty card shows copyable transaction links', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await _pumpRepo(tester, CollaborationApiService(settings));
+
+    await tester.tap(find.text('Issues'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Stabilize signed inbox'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Bounty funding'),
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+
+    expect(find.text('escrow-fixture'), findsOneWidget);
+    expect(find.text('solana:escrow-fixture?amount=1.5'), findsOneWidget);
+    expect(find.text('payout-fixture'), findsOneWidget);
+    expect(
+      find.text('https://explorer.solana.com/address/escrow-fixture'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('https://explorer.solana.com/tx/payout-fixture'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('issue-bounty-copy-address')), findsOneWidget);
+    expect(find.byKey(const Key('issue-bounty-copy-pay-uri')), findsOneWidget);
+    expect(
+      find.byKey(const Key('issue-bounty-copy-payout-sig')),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'bounty refresh without worker deposit preserves published payee for prepare',

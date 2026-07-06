@@ -300,6 +300,20 @@ class ApiService {
     return IssueBounty.fromJson(data);
   }
 
+  Future<BountyWallet> bountyWallet(
+    String owner,
+    String repo, {
+    required String ts,
+    required String sig,
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+      'action': 'wallet',
+      'ts': ts.trim(),
+      'sig': sig.trim(),
+    });
+    return BountyWallet.fromJson(data);
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(

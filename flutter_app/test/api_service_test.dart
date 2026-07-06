@@ -8,6 +8,34 @@ import 'package:forkmesh/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('BountyWallet.fromJson parses wallet fields and builds labels/links', () {
+    final wallet = BountyWallet.fromJson({
+      'address': 'OwnerBountyWallet111111111111111111111111111',
+      'balanceLamports': '1234567890',
+      'balanceSol': '1.23456789',
+      'uri': 'solana:OwnerBountyWallet111111111111111111111111111',
+    });
+
+    expect(wallet.hasWallet, isTrue);
+    expect(wallet.address, 'OwnerBountyWallet111111111111111111111111111');
+    expect(wallet.balanceLamports, 1234567890);
+    expect(wallet.balanceSol, 1.23456789);
+    expect(
+      wallet.payUri,
+      'solana:OwnerBountyWallet111111111111111111111111111',
+    );
+    expect(wallet.balanceLabel, '1.23456789 SOL (1234567890 lamports)');
+    expect(wallet.shortAddress, 'OwnerB...111111');
+    expect(
+      wallet.explorerAddressUrl,
+      'https://explorer.solana.com/address/OwnerBountyWallet111111111111111111111111111',
+    );
+    expect(
+      solanaExplorerSignatureUrl('payout-signature'),
+      'https://explorer.solana.com/tx/payout-signature',
+    );
+  });
+
   test('Issue.fromJson parses public bounty funding fields', () {
     final issue = Issue.fromJson({
       'number': 8,
@@ -323,6 +351,64 @@ ts: 10
       expect(bounty.payee, 'owner');
     },
   );
+
+  test('bounty wallet posts owner proof and parses deposit state', () async {
+    final requests = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      requests.add({
+        'method': request.method,
+        'path': request.uri.path,
+        'body': await utf8.decoder.bind(request).join(),
+      });
+      request.response.headers.contentType = ContentType.json;
+      if (request.method == 'POST' &&
+          request.uri.path == '/api/repo/owner/repo/bounty') {
+        request.response.write(
+          jsonEncode({
+            'ok': true,
+            'address': 'owner-wallet-address',
+            'balanceLamports': 500000000,
+            'balanceSol': 0.5,
+            'uri': 'solana:owner-wallet-address',
+          }),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final wallet = await api.bountyWallet(
+      'owner',
+      'repo',
+      ts: '1770000000000',
+      sig: 'wallet-sig',
+    );
+
+    expect(requests.single['method'], 'POST');
+    expect(requests.single['path'], '/api/repo/owner/repo/bounty');
+    expect(jsonDecode(requests.single['body'] as String), {
+      'action': 'wallet',
+      'ts': '1770000000000',
+      'sig': 'wallet-sig',
+    });
+    expect(wallet.address, 'owner-wallet-address');
+    expect(wallet.balanceLamports, 500000000);
+    expect(wallet.balanceSol, 0.5);
+    expect(wallet.payUri, 'solana:owner-wallet-address');
+  });
 
   test('published discussions include category and replies', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
