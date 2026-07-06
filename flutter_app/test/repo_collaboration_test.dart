@@ -51,6 +51,55 @@ class CollaborationApiService extends ApiService {
   ];
 
   @override
+  Future<List<RepoDiscussion>> publishedDiscussions(
+    String owner,
+    String name,
+  ) async => [
+    RepoDiscussion(
+      number: 3,
+      title: 'Mobile maintainer workflow',
+      body: 'How should maintainers review from phones?',
+      author: 'alice',
+      category: 'ideas',
+      events: [
+        DiscussionEvent(
+          type: 'comment',
+          body: 'Keep desktop node as the canonical apply surface.',
+          authorName: 'Mona',
+        ),
+      ],
+    ),
+  ];
+
+  @override
+  Future<List<Map<String, dynamic>>> commits(String owner, String name) async =>
+      [
+        {
+          'hash': 'abcdef1234567890',
+          'author': 'Mona',
+          'date': '2026-07-04',
+          'subject': 'Wire signed commit comments',
+        },
+      ];
+
+  @override
+  Future<RepoCommitDetail> commitDetail(
+    String owner,
+    String name,
+    String hash, {
+    Map<String, dynamic> fallbackCommit = const {},
+  }) async => RepoCommitDetail(
+    commit: {
+      ...fallbackCommit,
+      'hash': hash,
+      'subject': 'Wire signed commit comments',
+      'author': 'Mona',
+    },
+    files: const [],
+    diff: '',
+  );
+
+  @override
   Future<List<PublishedPull>> publishedPulls(String owner, String name) async =>
       [
         PublishedPull(
@@ -123,6 +172,13 @@ class RecordingInboxService extends InboxService {
   String reviewState = '';
   String reviewBody = '';
   int reviewCount = 0;
+  String discussionTitle = '';
+  String discussionBody = '';
+  String discussionCategory = '';
+  int discussionCommentNumber = 0;
+  String discussionCommentBody = '';
+  String commitSha = '';
+  String commitBody = '';
 
   @override
   Future<void> submitNewIssue(
@@ -155,6 +211,41 @@ class RecordingInboxService extends InboxService {
     reviewState = state;
     reviewBody = body;
     reviewCount += 1;
+  }
+
+  @override
+  Future<void> submitNewDiscussion(
+    String owner,
+    String name, {
+    required String title,
+    required String body,
+    String category = 'general',
+  }) async {
+    discussionTitle = title;
+    discussionBody = body;
+    discussionCategory = category;
+  }
+
+  @override
+  Future<void> commentOnDiscussion(
+    String owner,
+    String name,
+    int number,
+    String body,
+  ) async {
+    discussionCommentNumber = number;
+    discussionCommentBody = body;
+  }
+
+  @override
+  Future<void> commentOnCommit(
+    String owner,
+    String name,
+    String sha,
+    String body,
+  ) async {
+    commitSha = sha;
+    commitBody = body;
   }
 }
 
@@ -229,6 +320,116 @@ void main() {
       find.textContaining('pending the repo owner applying'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('new discussion composer submits selected category', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+
+    await tester.tap(find.text('Discussions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New discussion'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.bySemanticsLabel('Title'),
+      'Mobile review rituals',
+    );
+    await tester.tap(find.text('Ideas'));
+    await tester.enterText(
+      find.bySemanticsLabel('Body'),
+      'Let maintainers review without pretending the phone applies Git changes.',
+    );
+    await tester.tap(find.text('Submit'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.discussionTitle, 'Mobile review rituals');
+    expect(inbox.discussionCategory, 'ideas');
+    expect(
+      inbox.discussionBody,
+      'Let maintainers review without pretending the phone applies Git changes.',
+    );
+    expect(
+      find.textContaining('pending the repo owner applying'),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('discussion detail shows category and signed reply composer', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+
+    await tester.tap(find.text('Discussions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mobile maintainer workflow'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ideas'), findsOneWidget);
+    expect(
+      find.text('Keep desktop node as the canonical apply surface.'),
+      findsOneWidget,
+    );
+    expect(find.text('Signed discussion reply'), findsOneWidget);
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.decoration?.labelText == 'Write a signed reply',
+      ),
+      'Replies go through the discussion inbox.',
+    );
+    await tester.tap(find.text('Submit reply'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.discussionCommentNumber, 3);
+    expect(
+      inbox.discussionCommentBody,
+      'Replies go through the discussion inbox.',
+    );
+  });
+
+  testWidgets('commit comment composer submits signed commit comment', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    final identity = await Identity.loadOrCreate();
+    final inbox = RecordingInboxService(settings, identity);
+    await _pumpRepo(tester, CollaborationApiService(settings), inbox: inbox);
+
+    await tester.tap(find.text('Commits'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Wire signed commit comments'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Comment on commit'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Signed commit comment'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Commit comments are signed and sent to the commit inbox',
+      ),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.bySemanticsLabel('Comment'),
+      'This commit is ready for mobile review.',
+    );
+    await tester.tap(find.text('Submit comment'));
+    await tester.pumpAndSettle();
+
+    expect(inbox.commitSha, 'abcdef1234567890');
+    expect(inbox.commitBody, 'This commit is ready for mobile review.');
   });
 
   testWidgets('approve review composer submits approve state', (tester) async {
