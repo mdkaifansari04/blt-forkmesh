@@ -181,3 +181,23 @@ def test_repo_detail_reflects_mirror_serving():
     assert "viaMirror ? \"served by mirror\" : live ? \"host online\" : \"host offline\"" in detail
     assert "viaMirror ? \"via mirror\" : live ? \"online\" : \"offline\"" in detail
     assert "viaMirror ? \"via mirror\" : live ? \"available\" : \"offline\"" in detail
+
+
+def test_served_by_badge_includes_serving_node_counters():
+    served_by = DASHBOARD_JS[
+        DASHBOARD_JS.index("function servedMirrorStats(name)")
+        : DASHBOARD_JS.index("function repoExplorerRowClass(")
+    ]
+    assert "mirror.clonesServed" in served_by
+    assert "mirror.websiteServed" in served_by
+    assert "${formatCount(clones)} clones" in served_by
+    assert "${formatCount(website)} website requests" in served_by
+    assert "`served by ${name}`, speed, servedMirrorStats(name)" in served_by
+
+    mirrors = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoMirrors(repo)")
+        : DASHBOARD_JS.index("function renderRepoRelease(")
+    ]
+    # The tree/blob request may set servedBy before /mirrors has loaded; after
+    # counters arrive, refresh the badge so it gains clone and website counts.
+    assert "renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs)" in mirrors

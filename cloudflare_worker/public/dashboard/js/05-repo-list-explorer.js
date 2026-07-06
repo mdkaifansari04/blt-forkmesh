@@ -299,6 +299,22 @@
       })).join(" ");
   }
 
+  function servedMirrorStats(name) {
+    const servedName = String(name || "").trim().toLowerCase();
+    if (!servedName) return "";
+    const mirror = (state.repoMirrors || []).find((candidate) => {
+      const mirrorName = String(candidate.owner || candidate.node || candidate.name || "").trim().toLowerCase();
+      return mirrorName && mirrorName === servedName;
+    });
+    if (!mirror) return "";
+    const counters = [];
+    const clones = normalizedCount(mirror.clonesServed);
+    const website = normalizedCount(mirror.websiteServed);
+    if (clones !== null) counters.push(`${formatCount(clones)} clones`);
+    if (website !== null) counters.push(`${formatCount(website)} website requests`);
+    return counters.join(" - ");
+  }
+
   function renderRepoServedBy(node, tookMs) {
     const name = String(node || "").trim();
     state.repoServedBy = name ? { name, tookMs: Number(tookMs) || 0 } : null;
@@ -312,7 +328,9 @@
         // router round-robins browse traffic across every online mirror of
         // the repo).
         const speed = formatServeSpeed(tookMs);
-        badge.textContent = speed ? `served by ${name} - ${speed}` : `served by ${name}`;
+        badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
+          .filter(Boolean)
+          .join(" - ");
         badge.hidden = false;
       }
     }

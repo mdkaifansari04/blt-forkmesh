@@ -385,6 +385,9 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
+      if (state.repoServedBy) {
+        renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs);
+      }
       if (!mirrors.length) {
         if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No mirrors reported yet.</div>';
         renderRepoLiveMirrorList([], state.repoServedBy);
@@ -794,4 +797,3 @@
         </div>
       </section>`;
   }
-
