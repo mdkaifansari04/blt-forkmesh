@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/inbox_service.dart';
+import '../services/notification_deep_link.dart';
 import '../theme.dart';
 import '../widgets/fm_ui.dart';
 
@@ -14,8 +15,13 @@ import '../widgets/fm_ui.dart';
 /// Commits, Issues, Pull requests. Reads over the worker REST API; writes
 /// (new issue/PR, comment, vote, review, status) go to the signed relay inbox.
 class RepoDetailScreen extends StatefulWidget {
-  const RepoDetailScreen({super.key, required this.repo});
+  const RepoDetailScreen({
+    super.key,
+    required this.repo,
+    this.initialTab = RepoDetailTab.code,
+  });
   final Repository repo;
+  final RepoDetailTab initialTab;
 
   @override
   State<RepoDetailScreen> createState() => _RepoDetailScreenState();
@@ -23,8 +29,17 @@ class RepoDetailScreen extends StatefulWidget {
 
 class _RepoDetailScreenState extends State<RepoDetailScreen>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 7, vsync: this)
-    ..addListener(() => setState(() {}));
+  late final TabController _tabs;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = TabController(
+      length: RepoDetailTab.values.length,
+      initialIndex: widget.initialTab.index,
+      vsync: this,
+    )..addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {

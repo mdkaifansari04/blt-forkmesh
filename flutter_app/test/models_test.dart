@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/models/models.dart';
+import 'package:forkmesh/services/notification_deep_link.dart';
 
 // Parsing contracts for the repo-browsing models added by pulls #4/#5. The
 // mobile app reads the same Worker/desktop-host JSON as the website, and the
@@ -173,5 +174,26 @@ void main() {
     expect(page.notifications, hasLength(2));
     expect(page.notifications.first.kindLabel, 'Mention');
     expect(page.notifications.last.kindLabel, 'Host');
+  });
+
+  test('NotificationDeepLink parses safe repo context hrefs', () {
+    final issue = NotificationDeepLink.parse('/mona/forkmesh/issues/12');
+    expect(issue?.repo.fullName, 'mona/forkmesh');
+    expect(issue?.initialTab, RepoDetailTab.issues);
+    expect(issue?.number, 12);
+
+    final pull = NotificationDeepLink.parse('/mona/forkmesh/pulls/7');
+    expect(pull?.initialTab, RepoDetailTab.pulls);
+    expect(pull?.number, 7);
+
+    final commit = NotificationDeepLink.parse('/mona/forkmesh/commit/abc123');
+    expect(commit?.initialTab, RepoDetailTab.commits);
+    expect(commit?.reference, 'abc123');
+
+    expect(
+      NotificationDeepLink.parse('https://evil.test/mona/forkmesh'),
+      isNull,
+    );
+    expect(NotificationDeepLink.parse('/api/notifications'), isNull);
   });
 }

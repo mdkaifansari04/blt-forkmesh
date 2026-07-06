@@ -60,6 +60,10 @@ class NotificationApiService extends ApiService {
     markedIds = ids;
     items = [for (final item in items) item.copyWith(readAt: 1770001000000)];
   }
+
+  @override
+  Future<List<Issue>> publishedIssues(String owner, String name) async =>
+      const [];
 }
 
 Future<NotificationApiService> _pumpNotifications(WidgetTester tester) async {
@@ -70,8 +74,11 @@ Future<NotificationApiService> _pumpNotifications(WidgetTester tester) async {
   addTearDown(service.dispose);
 
   await tester.pumpWidget(
-    ChangeNotifierProvider<NotificationService>.value(
-      value: service,
+    MultiProvider(
+      providers: [
+        Provider<ApiService>.value(value: api),
+        ChangeNotifierProvider<NotificationService>.value(value: service),
+      ],
       child: const MaterialApp(home: NotificationsScreen()),
     ),
   );
@@ -112,5 +119,19 @@ void main() {
     expect(api.markAllCount, 1);
     expect(find.text('All caught up'), findsOneWidget);
     expect(find.text('0 unread'), findsOneWidget);
+  });
+
+  testWidgets('tapping a repo notification opens the linked repo tab', (
+    tester,
+  ) async {
+    final api = await _pumpNotifications(tester);
+
+    await tester.tap(find.text('You were mentioned in mona/forkmesh'));
+    await tester.pumpAndSettle();
+
+    expect(api.markedIds, ['n1']);
+    expect(find.text('mona/forkmesh'), findsWidgets);
+    expect(find.text('New issue'), findsOneWidget);
+    expect(find.text('Open context: /mona/forkmesh/issues/12'), findsNothing);
   });
 }

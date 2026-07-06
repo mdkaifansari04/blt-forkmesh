@@ -3,9 +3,11 @@ import 'package:provider/provider.dart';
 
 import '../fm_icons.dart';
 import '../models/models.dart';
+import '../services/notification_deep_link.dart';
 import '../services/notification_service.dart';
 import '../theme.dart';
 import '../widgets/fm_ui.dart';
+import 'repo_detail_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -124,7 +126,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           for (final notification in visible)
             _NotificationRow(
               notification: notification,
-              onTap: () => notifications.markRead(notification),
+              onTap: () =>
+                  _openNotification(context, notifications, notification),
             ),
         ],
       ),
@@ -143,6 +146,25 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         _ => true,
       };
     });
+  }
+
+  Future<void> _openNotification(
+    BuildContext context,
+    NotificationService notifications,
+    ForkNotification notification,
+  ) async {
+    try {
+      await notifications.markRead(notification);
+    } catch (_) {}
+    if (!context.mounted) return;
+    final link = NotificationDeepLink.parse(notification.href);
+    if (link == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            RepoDetailScreen(repo: link.repo, initialTab: link.initialTab),
+      ),
+    );
   }
 }
 
