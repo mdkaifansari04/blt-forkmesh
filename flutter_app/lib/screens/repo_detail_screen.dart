@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/models.dart';
@@ -779,9 +780,18 @@ class _CodeTab extends StatefulWidget {
 
 class _CodeTabState extends State<_CodeTab> {
   String _path = '';
-  late Future<RepoTree> _future = widget.api.tree(
+  late String _selectedRef = widget.repo.defaultBranch;
+  late final Future<List<RepoBranch>> _branchesFuture = widget.api.branches(
     widget.repo.owner,
     widget.repo.name,
+  );
+  late Future<RepoTree> _future = _loadTree('');
+
+  Future<RepoTree> _loadTree(String path) => widget.api.tree(
+    widget.repo.owner,
+    widget.repo.name,
+    path: path,
+    ref: _selectedRef,
   );
 
   void _openDir(String path, {bool refresh = false}) {
@@ -790,12 +800,46 @@ class _CodeTabState extends State<_CodeTab> {
     }
     setState(() {
       _path = path;
-      _future = widget.api.tree(
-        widget.repo.owner,
-        widget.repo.name,
-        path: path,
-      );
+      _future = _loadTree(path);
     });
+  }
+
+  void _switchRef(String ref) {
+    if (ref == _selectedRef) return;
+    widget.api.clearRepoCache(widget.repo.owner, widget.repo.name);
+    setState(() {
+      _selectedRef = ref;
+      _path = '';
+      _future = _loadTree('');
+    });
+  }
+
+  void _openFilePath(String path) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RepoFileScreen(
+          api: widget.api,
+          repo: widget.repo,
+          path: path,
+          ref: _selectedRef,
+        ),
+      ),
+    );
+  }
+
+  void _showGoToFile() {
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _GoToFileSheet(
+        api: widget.api,
+        repo: widget.repo,
+        ref: _selectedRef,
+        onFileSelected: _openFilePath,
+      ),
+    );
   }
 
   void _up() {
@@ -816,7 +860,25 @@ class _CodeTabState extends State<_CodeTab> {
           children: [
             _RepoHeaderCard(repo: widget.repo),
             const SizedBox(height: 14),
-            _PathBar(path: _path, onUp: _path.isEmpty ? null : _up),
+            _BranchSelector(
+              selectedRef: _selectedRef,
+              branchesFuture: _branchesFuture,
+              onSelected: _switchRef,
+            ),
+            const SizedBox(height: 10),
+            _PathBar(
+              path: _path,
+              onUp: _path.isEmpty ? null : _up,
+              onPath: _openDir,
+              onGoToFile: _showGoToFile,
+            ),
+            if (!loading && _sourceLabel(tree?.source ?? '') != null) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _SourceChip(source: tree!.source),
+              ),
+            ],
             const SizedBox(height: 10),
             if (loading)
               const _LoadingCard(label: 'Loading files…')
@@ -831,19 +893,137 @@ class _CodeTabState extends State<_CodeTab> {
               _FileList(
                 entries: tree.entries,
                 onDir: _openDir,
-                onFile: (entry) => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => RepoFileScreen(
-                      api: widget.api,
-                      repo: widget.repo,
-                      path: entry.path,
-                    ),
-                  ),
-                ),
+                onFile: (entry) => _openFilePath(entry.path),
               ),
           ],
         );
       },
+    );
+  }
+}
+
+class _BranchSelector extends StatelessWidget {
+  const _BranchSelector({
+    required this.selectedRef,
+    required this.branchesFuture,
+    required this.onSelected,
+  });
+
+  final String selectedRef;
+  final Future<List<RepoBranch>> branchesFuture;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<RepoBranch>>(
+      future: branchesFuture,
+      builder: (context, snap) {
+        final branchNames = <String>{
+          if (selectedRef.isNotEmpty) selectedRef,
+          for (final branch in snap.data ?? const <RepoBranch>[])
+            if (branch.name.isNotEmpty) branch.name,
+        }.toList();
+        final canSwitch = branchNames.isNotEmpty;
+        return PopupMenuButton<String>(
+          tooltip: 'Switch branch',
+          enabled: canSwitch,
+          onSelected: onSelected,
+          itemBuilder: (context) => [
+            for (final name in branchNames)
+              PopupMenuItem<String>(
+                value: name,
+                child: Row(
+                  children: [
+                    Icon(
+                      name == selectedRef
+                          ? Icons.check_circle
+                          : Icons.circle_outlined,
+                      size: 16,
+                      color: name == selectedRef
+                          ? FmTheme.accent(context)
+                          : FmTheme.textTertiary(context),
+                    ),
+                    const SizedBox(width: FmSpace.x2),
+                    Expanded(
+                      child: Text(name, overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          child: _BranchPill(
+            selectedRef: selectedRef,
+            canSwitch: canSwitch,
+            loading: snap.connectionState == ConnectionState.waiting,
+            hasError: snap.hasError,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BranchPill extends StatelessWidget {
+  const _BranchPill({
+    required this.selectedRef,
+    required this.canSwitch,
+    required this.loading,
+    required this.hasError,
+  });
+
+  final String selectedRef;
+  final bool canSwitch;
+  final bool loading;
+  final bool hasError;
+
+  @override
+  Widget build(BuildContext context) {
+    final muted = !canSwitch || loading || hasError;
+    return FmCard(
+      radius: FmRadius.lg,
+      padding: const EdgeInsets.symmetric(
+        horizontal: FmSpace.x3,
+        vertical: FmSpace.x2,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.account_tree_outlined,
+            size: 17,
+            color: muted
+                ? FmTheme.textTertiary(context)
+                : FmTheme.accent(context),
+          ),
+          const SizedBox(width: FmSpace.x2),
+          Text(
+            'Branch: ${selectedRef.isEmpty ? 'Default branch' : selectedRef}',
+            style: TextStyle(
+              color: FmTheme.textPrimary(context),
+              fontWeight: FontWeight.w800,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(width: FmSpace.x1),
+          if (loading)
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: FmTheme.textTertiary(context),
+              ),
+            )
+          else
+            Icon(
+              canSwitch
+                  ? Icons.keyboard_arrow_down_rounded
+                  : Icons.lock_outline,
+              size: 17,
+              color: FmTheme.textTertiary(context),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -854,19 +1034,42 @@ class RepoFileScreen extends StatelessWidget {
     required this.api,
     required this.repo,
     required this.path,
+    this.ref = '',
   });
   final ApiService api;
   final Repository repo;
   final String path;
+  final String ref;
 
   @override
   Widget build(BuildContext context) {
+    final rawUrl = api.rawUri(repo.owner, repo.name, path, ref: ref).toString();
+    Future<void> copy(String label, String value) async {
+      await Clipboard.setData(ClipboardData(text: value));
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$label copied')));
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(path.split('/').last, overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            tooltip: 'Copy path',
+            onPressed: () => copy('Path', path),
+            icon: const Icon(Icons.copy_all_outlined),
+          ),
+          IconButton(
+            tooltip: 'Copy raw URL',
+            onPressed: () => copy('Raw URL', rawUrl),
+            icon: const Icon(Icons.link),
+          ),
+        ],
       ),
       body: FutureBuilder<RepoBlob>(
-        future: api.blob(repo.owner, repo.name, path),
+        future: api.blob(repo.owner, repo.name, path, ref: ref),
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -880,7 +1083,7 @@ class RepoFileScreen extends StatelessWidget {
             );
           }
           final blob = snap.data ?? RepoBlob(path: path, content: '');
-          return _FilePreview(api: api, repo: repo, blob: blob);
+          return _FilePreview(api: api, repo: repo, blob: blob, ref: ref);
         },
       ),
     );
@@ -892,33 +1095,45 @@ class _FilePreview extends StatelessWidget {
     required this.api,
     required this.repo,
     required this.blob,
+    required this.ref,
   });
 
   final ApiService api;
   final Repository repo;
   final RepoBlob blob;
+  final String ref;
 
   @override
   Widget build(BuildContext context) {
     final path = blob.path;
+    final rawUrl = api.rawUri(repo.owner, repo.name, path, ref: ref).toString();
     final kind = _previewKind(path);
     if (kind == _PreviewKind.image) {
       return ColoredBox(
         color: FmTheme.bgBase(context),
-        child: Center(
-          child: InteractiveViewer(
-            minScale: .5,
-            maxScale: 5,
-            child: Image.network(
-              api.rawUri(repo.owner, repo.name, path).toString(),
-              fit: BoxFit.contain,
-              errorBuilder: (_, error, _) => _UnsupportedPreview(
-                path: path,
-                message:
-                    'Could not render this image preview. ${error.toString()}',
+        child: Column(
+          children: [
+            _FilePreviewHeader(path: path, source: blob.source),
+            Expanded(
+              child: Center(
+                child: InteractiveViewer(
+                  minScale: .5,
+                  maxScale: 5,
+                  child: Image.network(
+                    rawUrl,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, error, _) => _UnsupportedPreview(
+                      path: path,
+                      message:
+                          'Could not render this image preview. ${error.toString()}',
+                      rawUrl: rawUrl,
+                      source: blob.source,
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
+          ],
         ),
       );
     }
@@ -927,7 +1142,8 @@ class _FilePreview extends StatelessWidget {
         path: path,
         message:
             'Video preview is not bundled in the mobile app yet. Use the raw file URL below to open or download it.',
-        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
+        rawUrl: rawUrl,
+        source: blob.source,
       );
     }
     final decoded = _decodedText(blob);
@@ -936,12 +1152,14 @@ class _FilePreview extends StatelessWidget {
         path: path,
         message:
             'This looks like a binary file, so ForkMesh is not showing it as text.',
-        rawUrl: api.rawUri(repo.owner, repo.name, path).toString(),
+        rawUrl: rawUrl,
+        source: blob.source,
       );
     }
     return _CodePreview(
       path: path,
       content: decoded.isEmpty ? 'Empty file.' : decoded,
+      source: blob.source,
     );
   }
 
@@ -987,31 +1205,39 @@ class _UnsupportedPreview extends StatelessWidget {
     required this.path,
     required this.message,
     this.rawUrl = '',
+    this.source = '',
   });
 
   final String path;
   final String message;
   final String rawUrl;
+  final String source;
 
   @override
   Widget build(BuildContext context) => ColoredBox(
     color: FmTheme.bgBase(context),
-    child: Center(
-      child: Padding(
+    child: SafeArea(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(FmSpace.x5),
         child: _InfoCard(
           title: path.split('/').last,
           children: [
+            if (_sourceLabel(source) != null) ...[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _SourceChip(source: source),
+              ),
+              const SizedBox(height: FmSpace.x3),
+            ],
             Text(
               message,
               style: TextStyle(color: FmTheme.textSecondary(context)),
             ),
+            const SizedBox(height: FmSpace.x3),
+            _PreviewValue(label: 'Path', value: path),
             if (rawUrl.isNotEmpty) ...[
               const SizedBox(height: FmSpace.x3),
-              SelectableText(
-                rawUrl,
-                style: TextStyle(color: FmTheme.accent(context), fontSize: 12),
-              ),
+              _PreviewValue(label: 'Raw URL', value: rawUrl, accent: true),
             ],
           ],
         ),
@@ -1020,11 +1246,117 @@ class _UnsupportedPreview extends StatelessWidget {
   );
 }
 
+class _PreviewValue extends StatelessWidget {
+  const _PreviewValue({
+    required this.label,
+    required this.value,
+    this.accent = false,
+  });
+
+  final String label;
+  final String value;
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: TextStyle(
+          color: FmTheme.textTertiary(context),
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: FmSpace.x1),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(
+          horizontal: FmSpace.x3,
+          vertical: FmSpace.x2,
+        ),
+        decoration: BoxDecoration(
+          color: FmTheme.bgBase(context),
+          borderRadius: BorderRadius.circular(FmRadius.sm),
+          border: Border.all(color: FmTheme.border(context)),
+        ),
+        child: SelectableText(
+          value,
+          style: TextStyle(
+            color: accent
+                ? FmTheme.accent(context)
+                : FmTheme.textSecondary(context),
+            fontFamily: accent ? null : 'monospace',
+            fontSize: 12,
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+class _FilePreviewHeader extends StatelessWidget {
+  const _FilePreviewHeader({required this.path, this.source = ''});
+
+  final String path;
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final editorBg = FmTheme.isDark(context)
+        ? FmColors.darkBgRaised
+        : FmColors.bgRaised;
+    return Container(
+      constraints: const BoxConstraints(minHeight: 38),
+      padding: const EdgeInsets.symmetric(
+        horizontal: FmSpace.x4,
+        vertical: FmSpace.x2,
+      ),
+      decoration: BoxDecoration(
+        color: editorBg,
+        border: Border(bottom: BorderSide(color: FmTheme.border(context))),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.description_outlined,
+            size: 17,
+            color: FmTheme.textTertiary(context),
+          ),
+          const SizedBox(width: FmSpace.x2),
+          Expanded(
+            child: Text(
+              path,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: FmTheme.textSecondary(context),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          if (_sourceLabel(source) != null) ...[
+            const SizedBox(width: FmSpace.x2),
+            Flexible(child: _SourceChip(source: source)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _CodePreview extends StatelessWidget {
-  const _CodePreview({required this.path, required this.content});
+  const _CodePreview({
+    required this.path,
+    required this.content,
+    this.source = '',
+  });
 
   final String path;
   final String content;
+  final String source;
 
   @override
   Widget build(BuildContext context) {
@@ -1048,38 +1380,7 @@ class _CodePreview extends StatelessWidget {
       color: FmTheme.bgBase(context),
       child: Column(
         children: [
-          Container(
-            height: 38,
-            padding: const EdgeInsets.symmetric(horizontal: FmSpace.x4),
-            decoration: BoxDecoration(
-              color: editorBg,
-              border: Border(
-                bottom: BorderSide(color: FmTheme.border(context)),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.description_outlined,
-                  size: 17,
-                  color: FmTheme.textTertiary(context),
-                ),
-                const SizedBox(width: FmSpace.x2),
-                Expanded(
-                  child: Text(
-                    path,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: FmTheme.textSecondary(context),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _FilePreviewHeader(path: path, source: source),
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -1164,6 +1465,7 @@ class _CodeLine extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(FmSpace.x3, 3, FmSpace.x4, 3),
               child: SelectableText.rich(
                 TextSpan(children: _highlightCodeLine(context, line)),
+                maxLines: 1,
                 style: baseStyle,
               ),
             ),
@@ -1172,6 +1474,24 @@ class _CodeLine extends StatelessWidget {
       ),
     );
   }
+}
+
+String? _sourceLabel(String source) {
+  final value = source.trim();
+  if (value.isEmpty) return null;
+  final lower = value.toLowerCase();
+  if (lower == 'live' || lower == 'live_source' || lower == 'live-source') {
+    return 'live source';
+  }
+  if (lower == 'live mirror' ||
+      lower == 'live_mirror' ||
+      lower == 'live-mirror') {
+    return 'live mirror';
+  }
+  if (lower.startsWith('served by ') || lower.startsWith('live ')) {
+    return value;
+  }
+  return 'served by $value';
 }
 
 List<TextSpan> _highlightCodeLine(BuildContext context, String line) {
@@ -1739,7 +2059,7 @@ class _CommitsTab extends StatelessWidget {
           padding: EdgeInsets.zero,
           children: [
             _GitHistoryHeader(commits: commits.length),
-            _CommitHistoryTimeline(repo: repo, commits: commits),
+            _CommitHistoryTimeline(api: api, repo: repo, commits: commits),
             const SizedBox(height: FmSpace.x4),
           ],
         );
@@ -1806,8 +2126,13 @@ class _GitHistoryHeader extends StatelessWidget {
 }
 
 class _CommitHistoryTimeline extends StatelessWidget {
-  const _CommitHistoryTimeline({required this.repo, required this.commits});
+  const _CommitHistoryTimeline({
+    required this.api,
+    required this.repo,
+    required this.commits,
+  });
 
+  final ApiService api;
   final Repository repo;
   final List<Map<String, dynamic>> commits;
 
@@ -1819,6 +2144,7 @@ class _CommitHistoryTimeline extends StatelessWidget {
         children: [
           for (var i = 0; i < commits.length; i++)
             _CommitTimelineRow(
+              api: api,
               repo: repo,
               commit: commits[i],
               isHead: i == 0,
@@ -1833,6 +2159,7 @@ class _CommitHistoryTimeline extends StatelessWidget {
 
 class _CommitTimelineRow extends StatelessWidget {
   const _CommitTimelineRow({
+    required this.api,
     required this.repo,
     required this.commit,
     required this.isHead,
@@ -1840,6 +2167,7 @@ class _CommitTimelineRow extends StatelessWidget {
     required this.isLast,
   });
 
+  final ApiService api;
   final Repository repo;
   final Map<String, dynamic> commit;
   final bool isHead;
@@ -1855,7 +2183,8 @@ class _CommitTimelineRow extends StatelessWidget {
     return InkWell(
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => _CommitDetailScreen(repo: repo, commit: commit),
+          builder: (_) =>
+              _CommitDetailScreen(api: api, repo: repo, commit: commit),
         ),
       ),
       child: SizedBox(
@@ -2123,67 +2452,235 @@ String _relativeCommitTime(Map<String, dynamic> commit) {
 }
 
 class _CommitDetailScreen extends StatelessWidget {
-  const _CommitDetailScreen({required this.repo, required this.commit});
+  const _CommitDetailScreen({
+    required this.api,
+    required this.repo,
+    required this.commit,
+  });
 
+  final ApiService api;
   final Repository repo;
   final Map<String, dynamic> commit;
 
   @override
   Widget build(BuildContext context) {
-    final hash = (commit['hash'] ?? commit['sha'] ?? '').toString();
-    final message = (commit['subject'] ?? commit['message'] ?? 'Commit')
-        .toString();
-    final author = (commit['author'] ?? commit['authorName'] ?? '').toString();
-    final body = (commit['body'] ?? commit['description'] ?? '').toString();
+    final hash = _commitHash(commit);
     final short = hash.length < 7 ? hash : hash.substring(0, 7);
     return Scaffold(
       appBar: AppBar(title: Text(short.isEmpty ? 'Commit' : short)),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          _InfoCard(
-            title: message,
-            children: [
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _Chip(
-                    icon: Icons.tag,
-                    label: hash.isEmpty ? 'unknown' : hash,
-                  ),
-                  if (author.isNotEmpty)
-                    _Chip(icon: Icons.person_outline, label: author),
-                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
-                ],
-              ),
-              if (body.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                SelectableText(body, style: const TextStyle(height: 1.45)),
+      body: hash.isEmpty
+          ? ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                _CommitSummaryCard(
+                  repo: repo,
+                  detail: RepoCommitDetail(commit: commit),
+                ),
               ],
-            ],
-          ),
-          const SizedBox(height: 12),
-          _InfoCard(
-            title: 'Commit comments',
-            children: [
-              const Text(
-                'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
+            )
+          : FutureBuilder<RepoCommitDetail>(
+              future: api.commitDetail(
+                repo.owner,
+                repo.name,
+                hash,
+                fallbackCommit: commit,
               ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: hash.isEmpty
-                    ? null
-                    : () => _commentOnCommit(context, repo, hash),
-                icon: const Icon(Icons.add_comment_outlined),
-                label: const Text('Comment on commit'),
-              ),
-            ],
-          ),
-        ],
-      ),
+              builder: (context, snap) {
+                final detail = snap.data ?? RepoCommitDetail(commit: commit);
+                return ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    _CommitSummaryCard(repo: repo, detail: detail),
+                    const SizedBox(height: 12),
+                    if (snap.connectionState == ConnectionState.waiting)
+                      const _LoadingCard(label: 'Loading commit diff...')
+                    else if (snap.hasError)
+                      _EmptyCard(
+                        message: 'Could not load commit diff: ${snap.error}',
+                      )
+                    else ...[
+                      _CommitFilesCard(files: detail.files),
+                      const SizedBox(height: 12),
+                      _CommitDiffCard(
+                        diff: detail.diff,
+                        truncated: detail.truncated,
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    _CommitCommentCard(repo: repo, hash: hash),
+                  ],
+                );
+              },
+            ),
     );
   }
+}
+
+class _CommitSummaryCard extends StatelessWidget {
+  const _CommitSummaryCard({required this.repo, required this.detail});
+
+  final Repository repo;
+  final RepoCommitDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final commit = detail.commit;
+    final hash = _commitHash(commit);
+    final message = _commitSubject(commit);
+    final author = _commitAuthor(commit);
+    final body = (commit['body'] ?? commit['description'] ?? '').toString();
+    return _InfoCard(
+      title: message,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _Chip(icon: Icons.tag, label: hash.isEmpty ? 'unknown' : hash),
+            if (author.isNotEmpty)
+              _Chip(icon: Icons.person_outline, label: author),
+            _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+            if (_sourceLabel(detail.source) != null)
+              _Chip(
+                icon: Icons.dns_outlined,
+                label: _sourceLabel(detail.source)!,
+              ),
+          ],
+        ),
+        if (body.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          SelectableText(body, style: const TextStyle(height: 1.45)),
+        ],
+      ],
+    );
+  }
+}
+
+class _CommitFilesCard extends StatelessWidget {
+  const _CommitFilesCard({required this.files});
+
+  final List<RepoCommitFile> files;
+
+  @override
+  Widget build(BuildContext context) {
+    if (files.isEmpty) {
+      return const _EmptyCard(
+        message: 'No changed files reported for this commit.',
+      );
+    }
+    return _InfoCard(
+      title: '${files.length} changed ${files.length == 1 ? "file" : "files"}',
+      children: [for (final file in files) _CommitFileRow(file: file)],
+    );
+  }
+}
+
+class _CommitFileRow extends StatelessWidget {
+  const _CommitFileRow({required this.file});
+
+  final RepoCommitFile file;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: FmSpace.x2),
+    child: Row(
+      children: [
+        Icon(
+          Icons.description_outlined,
+          size: 18,
+          color: FmTheme.textTertiary(context),
+        ),
+        const SizedBox(width: FmSpace.x2),
+        Expanded(
+          child: Text(
+            file.path,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: FmTheme.textPrimary(context),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(width: FmSpace.x2),
+        if (file.adds.isNotEmpty)
+          Text(
+            '+${file.adds}',
+            style: TextStyle(
+              color: FmTheme.success(context),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        if (file.dels.isNotEmpty) ...[
+          const SizedBox(width: FmSpace.x1),
+          Text(
+            '-${file.dels}',
+            style: TextStyle(
+              color: FmTheme.danger(context),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+class _CommitDiffCard extends StatelessWidget {
+  const _CommitDiffCard({required this.diff, required this.truncated});
+
+  final String diff;
+  final bool truncated;
+
+  @override
+  Widget build(BuildContext context) {
+    if (diff.isEmpty) {
+      return const _EmptyCard(
+        message: 'No text diff available for this commit.',
+      );
+    }
+    return _InfoCard(
+      title: 'Unified diff',
+      children: [
+        if (truncated) ...[
+          Text(
+            'Diff truncated by the desktop host to keep the mobile response bounded.',
+            style: TextStyle(
+              color: FmTheme.warning(context),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: FmSpace.x3),
+        ],
+        _DiffViewer(diff: diff),
+      ],
+    );
+  }
+}
+
+class _CommitCommentCard extends StatelessWidget {
+  const _CommitCommentCard({required this.repo, required this.hash});
+
+  final Repository repo;
+  final String hash;
+
+  @override
+  Widget build(BuildContext context) => _InfoCard(
+    title: 'Commit comments',
+    children: [
+      const Text(
+        'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
+      ),
+      const SizedBox(height: 12),
+      FilledButton.icon(
+        onPressed: hash.isEmpty
+            ? null
+            : () => _commentOnCommit(context, repo, hash),
+        icon: const Icon(Icons.add_comment_outlined),
+        label: const Text('Comment on commit'),
+      ),
+    ],
+  );
 }
 
 Future<void> _commentOnCommit(
@@ -2349,38 +2846,358 @@ class _Chip extends StatelessWidget {
   );
 }
 
+class _SourceChip extends StatelessWidget {
+  const _SourceChip({required this.source});
+
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _sourceLabel(source);
+    if (label == null) return const SizedBox.shrink();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 220),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: FmSpace.x3,
+          vertical: FmSpace.x2,
+        ),
+        decoration: BoxDecoration(
+          color: FmTheme.bgBase(context),
+          borderRadius: BorderRadius.circular(FmRadius.full),
+          border: Border.all(color: FmTheme.border(context)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.dns_outlined,
+              size: 14,
+              color: FmTheme.textTertiary(context),
+            ),
+            const SizedBox(width: FmSpace.x1),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PathBar extends StatelessWidget {
-  const _PathBar({required this.path, required this.onUp});
+  const _PathBar({
+    required this.path,
+    required this.onUp,
+    required this.onPath,
+    required this.onGoToFile,
+  });
+
   final String path;
   final VoidCallback? onUp;
+  final ValueChanged<String> onPath;
+  final VoidCallback onGoToFile;
+
+  @override
+  Widget build(BuildContext context) {
+    final segments = path.split('/').where((p) => p.isNotEmpty).toList();
+    var prefix = '';
+    final crumbs = <Widget>[
+      TextButton.icon(
+        onPressed: () => onPath(''),
+        icon: const Icon(Icons.home_outlined, size: 17),
+        label: const Text(repoRootLabel),
+      ),
+    ];
+    for (final segment in segments) {
+      prefix = prefix.isEmpty ? segment : '$prefix/$segment';
+      final target = prefix;
+      crumbs.add(
+        Icon(
+          Icons.chevron_right,
+          size: 16,
+          color: FmTheme.textTertiary(context),
+        ),
+      );
+      crumbs.add(
+        TextButton(
+          onPressed: () => onPath(target),
+          child: Text(segment, overflow: TextOverflow.ellipsis),
+        ),
+      );
+    }
+
+    return FmCard(
+      radius: FmRadius.lg,
+      padding: const EdgeInsets.symmetric(
+        horizontal: FmSpace.x2,
+        vertical: FmSpace.x2,
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: onUp,
+            icon: const Icon(Icons.arrow_upward_rounded),
+            tooltip: 'Up',
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: crumbs),
+            ),
+          ),
+          const SizedBox(width: FmSpace.x2),
+          OutlinedButton.icon(
+            onPressed: onGoToFile,
+            icon: const Icon(Icons.search, size: 17),
+            label: const Text('Go to file'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const repoRootLabel = 'Repository root';
+}
+
+class _GoToFileSheet extends StatefulWidget {
+  const _GoToFileSheet({
+    required this.api,
+    required this.repo,
+    required this.ref,
+    required this.onFileSelected,
+  });
+
+  final ApiService api;
+  final Repository repo;
+  final String ref;
+  final ValueChanged<String> onFileSelected;
+
+  @override
+  State<_GoToFileSheet> createState() => _GoToFileSheetState();
+}
+
+class _GoToFileSheetState extends State<_GoToFileSheet> {
+  final _query = TextEditingController();
+  Future<List<RepoCodeSearchMatch>>? _future;
+  String _lastQuery = '';
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  void _search() {
+    final q = _query.text.trim();
+    if (q.length < 2) return;
+    setState(() {
+      _lastQuery = q;
+      _future = widget.api
+          .searchRepo(widget.repo.owner, widget.repo.name, q, ref: widget.ref)
+          .then((results) => results.code);
+    });
+  }
+
+  void _select(String path) {
+    Navigator.of(context).pop();
+    widget.onFileSelected(path);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * .78,
+        ),
+        decoration: BoxDecoration(
+          color: FmTheme.bgRaised(context),
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(FmRadius.lg),
+          ),
+          border: Border(top: BorderSide(color: FmTheme.border(context))),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(FmSpace.x4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Go to file',
+                          style: TextStyle(
+                            color: FmTheme.textPrimary(context),
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: FmSpace.x3),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _query,
+                          autofocus: true,
+                          textInputAction: TextInputAction.search,
+                          decoration: const InputDecoration(
+                            hintText: 'Search file names or code...',
+                            prefixIcon: Icon(Icons.search),
+                          ),
+                          onSubmitted: (_) => _search(),
+                        ),
+                      ),
+                      const SizedBox(width: FmSpace.x2),
+                      FilledButton(
+                        onPressed: _search,
+                        child: const Text('Search'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: FmSpace.x2),
+                  Text(
+                    'Searching ${widget.repo.fullName} on ${widget.ref}.',
+                    style: TextStyle(
+                      color: FmTheme.textTertiary(context),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: FutureBuilder<List<RepoCodeSearchMatch>>(
+                future: _future,
+                builder: (context, snap) {
+                  if (_future == null) {
+                    return const FmEmptyState(
+                      icon: Icons.search,
+                      title: 'Search this repository',
+                      message:
+                          'Type at least two characters to find files quickly.',
+                    );
+                  }
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snap.hasError) {
+                    return _ErrorCard(
+                      message: 'Could not search files: ${snap.error}',
+                      onRetry: _search,
+                    );
+                  }
+                  final matches = snap.data ?? const <RepoCodeSearchMatch>[];
+                  if (matches.isEmpty) {
+                    return FmEmptyState(
+                      icon: Icons.search_off,
+                      title: 'No file matches',
+                      message: 'No code results for "$_lastQuery".',
+                    );
+                  }
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.fromLTRB(
+                      FmSpace.x4,
+                      FmSpace.x0,
+                      FmSpace.x4,
+                      FmSpace.x5,
+                    ),
+                    itemCount: matches.length,
+                    separatorBuilder: (_, _) =>
+                        const SizedBox(height: FmSpace.x2),
+                    itemBuilder: (context, index) {
+                      final match = matches[index];
+                      return _SearchFileRow(
+                        match: match,
+                        onTap: () => _select(match.path),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchFileRow extends StatelessWidget {
+  const _SearchFileRow({required this.match, required this.onTap});
+
+  final RepoCodeSearchMatch match;
+  final VoidCallback onTap;
+
   @override
   Widget build(BuildContext context) => FmCard(
-    radius: FmRadius.lg,
-    padding: const EdgeInsets.symmetric(
-      horizontal: FmSpace.x2,
-      vertical: FmSpace.x2,
-    ),
+    onTap: onTap,
+    radius: FmRadius.md,
+    padding: const EdgeInsets.all(FmSpace.x3),
     child: Row(
       children: [
-        IconButton(
-          onPressed: onUp,
-          icon: const Icon(Icons.arrow_upward_rounded),
-          tooltip: 'Up',
+        Icon(
+          Icons.description_outlined,
+          color: FmTheme.textTertiary(context),
+          size: 20,
         ),
+        const SizedBox(width: FmSpace.x3),
         Expanded(
-          child: Text(
-            path.isEmpty ? repoRootLabel : path,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: FmTheme.textPrimary(context),
-              fontWeight: FontWeight.w800,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                match.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: FmTheme.textPrimary(context),
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              if (match.text.isNotEmpty) ...[
+                const SizedBox(height: FmSpace.x1),
+                Text(
+                  match.line > 0 ? '${match.line}: ${match.text}' : match.text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: FmTheme.textSecondary(context),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ],
     ),
   );
-  static const repoRootLabel = 'Repository root';
 }
 
 class _FileList extends StatelessWidget {
