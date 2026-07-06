@@ -150,5 +150,17 @@ void main() {
       find.textContaining('never paste private keys or seed phrases'),
       findsOneWidget,
     );
+    expect(
+      find.textContaining(
+        'public profile metadata for donations and payout metadata',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Worker-custodied and prepared per owner from repo funding panels',
+      ),
+      findsOneWidget,
+    );
   });
 }

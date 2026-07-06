@@ -277,6 +277,18 @@ const _pendingNote =
 const _threadSubscriptionNote =
     'Thread notifications are signed with your node key and delivered through the mainnode notification inbox.';
 
+Future<void> _copyText(
+  BuildContext context, {
+  required String label,
+  required String value,
+}) async {
+  await Clipboard.setData(ClipboardData(text: value));
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text('$label copied')));
+}
+
 const Map<String, String> _discussionCategoryLabels = {
   'general': 'General',
   'ideas': 'Ideas',
@@ -1087,6 +1099,8 @@ class _AboutTab extends StatelessWidget {
           ),
         ],
         const SizedBox(height: 14),
+        _OwnerBountyWalletPanel(repo: repo),
+        const SizedBox(height: 14),
         _InfoCard(
           title: 'Repository details',
           children: [
@@ -1098,6 +1112,176 @@ class _AboutTab extends StatelessWidget {
             _kv('Visibility', repo.isPrivate ? 'Private' : 'Public'),
           ],
         ),
+      ],
+    );
+  }
+}
+
+class _OwnerBountyWalletPanel extends StatefulWidget {
+  const _OwnerBountyWalletPanel({required this.repo});
+
+  final Repository repo;
+
+  @override
+  State<_OwnerBountyWalletPanel> createState() =>
+      _OwnerBountyWalletPanelState();
+}
+
+class _OwnerBountyWalletPanelState extends State<_OwnerBountyWalletPanel> {
+  BountyWallet? _wallet;
+  bool _busy = false;
+  String _message = '';
+
+  Repository get repo => widget.repo;
+
+  String _gateCopy(BuildContext context) {
+    final auth = context.watch<AuthService?>();
+    final identity = context.watch<Identity?>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    if (session == null || identity == null || account.isEmpty) {
+      return 'Sign in as ${repo.owner} with this mobile device paired to the owner key to prepare the Worker-custodied bounty wallet deposit address.';
+    }
+    if (account != repo.owner.trim().toLowerCase()) {
+      return 'Signed in as $account. Only ${repo.owner} can prepare this owner bounty wallet deposit address.';
+    }
+    if (session.pubkey.trim() != identity.publicKeyB64url) {
+      return 'Owner account is present, but this mobile identity is not the owner key.';
+    }
+    return '';
+  }
+
+  Future<void> _prepareWallet() async {
+    if (_busy) return;
+    final auth = context.read<AuthService?>();
+    final identity = context.read<Identity?>();
+    final api = context.read<ApiService>();
+    final session = auth?.session;
+    final account = session?.nodeName.trim().toLowerCase() ?? '';
+    try {
+      if (session == null || identity == null || account.isEmpty) {
+        throw Exception(
+          'Sign in as ${repo.owner} with this mobile device paired to the owner key.',
+        );
+      }
+      if (account != repo.owner.trim().toLowerCase()) {
+        throw Exception('Only ${repo.owner} can prepare this wallet deposit.');
+      }
+      if (session.pubkey.trim() != identity.publicKeyB64url) {
+        throw Exception('This mobile identity is not the owner key.');
+      }
+      final ts = DateTime.now().millisecondsSinceEpoch.toString();
+      final canonical = 'forkmesh-bounty-wallet-v1\n${repo.owner}\n$ts';
+      setState(() {
+        _busy = true;
+        _message = '';
+      });
+      final sig = await identity.sign(utf8.encode(canonical));
+      final wallet = await api.bountyWallet(
+        repo.owner,
+        repo.name,
+        ts: ts,
+        sig: sig,
+      );
+      if (!mounted) return;
+      setState(() {
+        _wallet = wallet;
+        _message = 'Wallet deposit state refreshed.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = '$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final gateCopy = _gateCopy(context);
+    final canPrepare = gateCopy.isEmpty && !_busy;
+    final wallet = _wallet;
+    return _InfoCard(
+      title: 'Owner bounty wallet',
+      children: [
+        Text(
+          'Worker-custodied bounty wallet deposit address',
+          style: TextStyle(
+            color: FmTheme.textPrimary(context),
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Prepare this owner-scoped deposit address from a repo funding panel, then fund it from an external Solana wallet. Mobile never receives private keys and cannot spend or debit this wallet.',
+          style: TextStyle(color: FmTheme.textSecondary(context), height: 1.35),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          key: const Key('repo-owner-bounty-wallet-prepare'),
+          onPressed: canPrepare ? _prepareWallet : null,
+          icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+          label: Text(
+            _busy ? 'Preparing wallet...' : 'Prepare/view wallet deposit',
+          ),
+        ),
+        if (gateCopy.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            gateCopy,
+            style: TextStyle(
+              color: FmTheme.textTertiary(context),
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+        ],
+        if (wallet != null && wallet.hasWallet) ...[
+          const SizedBox(height: 14),
+          _CopyableValue(
+            label: 'Deposit address',
+            value: wallet.address,
+            copyLabel: 'Owner bounty wallet address',
+            copyKey: const Key('repo-owner-bounty-wallet-copy-address'),
+          ),
+          const SizedBox(height: 10),
+          _CopyableValue(
+            label: 'Balance',
+            value: wallet.balanceLabel,
+            copyLabel: 'Owner bounty wallet balance',
+            copyKey: const Key('repo-owner-bounty-wallet-copy-balance'),
+          ),
+          if (wallet.payUri.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _CopyableValue(
+              label: 'Payment URI',
+              value: wallet.payUri,
+              copyLabel: 'Owner bounty wallet payment URI',
+              copyKey: const Key('repo-owner-bounty-wallet-copy-pay-uri'),
+            ),
+          ],
+          if (wallet.explorerAddressUrl.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _CopyableValue(
+              label: 'Address explorer URL',
+              value: wallet.explorerAddressUrl,
+              copyLabel: 'Owner bounty wallet explorer URL',
+              copyKey: const Key('repo-owner-bounty-wallet-copy-explorer'),
+            ),
+          ],
+        ],
+        if (_message.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            _message,
+            style: TextStyle(
+              color: _message.startsWith('Exception')
+                  ? FmTheme.danger(context)
+                  : FmTheme.textSecondary(context),
+              fontSize: 12,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -2919,6 +3103,8 @@ class _BountyFundingCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final canPrepare = gateCopy.isEmpty && !busy;
+    final addressExplorerUrl = solanaExplorerAddressUrl(issue.bountyAddress);
+    final payoutExplorerUrl = solanaExplorerSignatureUrl(issue.bountyPayoutSig);
     return _InfoCard(
       title: 'Bounty funding',
       children: [
@@ -2943,33 +3129,48 @@ class _BountyFundingCard extends StatelessWidget {
         ],
         if (issue.bountyAddress.isNotEmpty) ...[
           const SizedBox(height: 12),
-          Text(
-            'Deposit address',
-            style: TextStyle(
-              color: FmTheme.textSecondary(context),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
+          _CopyableValue(
+            label: 'Deposit address',
+            value: issue.bountyAddress,
+            copyLabel: 'Bounty deposit address',
+            copyKey: const Key('issue-bounty-copy-address'),
           ),
-          const SizedBox(height: 4),
-          SelectableText(issue.bountyAddress),
+          if (addressExplorerUrl.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _CopyableValue(
+              label: 'Address explorer URL',
+              value: addressExplorerUrl,
+              copyLabel: 'Bounty address explorer URL',
+              copyKey: const Key('issue-bounty-copy-address-explorer'),
+            ),
+          ],
         ],
         if (issue.bountyPayUri.isNotEmpty) ...[
           const SizedBox(height: 8),
-          SelectableText(issue.bountyPayUri),
+          _CopyableValue(
+            label: 'Payment URI',
+            value: issue.bountyPayUri,
+            copyLabel: 'Bounty payment URI',
+            copyKey: const Key('issue-bounty-copy-pay-uri'),
+          ),
         ],
         if (issue.bountyPayoutSig.isNotEmpty) ...[
           const SizedBox(height: 12),
-          Text(
-            'Payout signature',
-            style: TextStyle(
-              color: FmTheme.textSecondary(context),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
+          _CopyableValue(
+            label: 'Payout signature',
+            value: issue.bountyPayoutSig,
+            copyLabel: 'Bounty payout signature',
+            copyKey: const Key('issue-bounty-copy-payout-sig'),
           ),
-          const SizedBox(height: 4),
-          SelectableText(issue.bountyPayoutSig),
+          if (payoutExplorerUrl.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _CopyableValue(
+              label: 'Payout transaction explorer URL',
+              value: payoutExplorerUrl,
+              copyLabel: 'Bounty payout explorer URL',
+              copyKey: const Key('issue-bounty-copy-payout-explorer'),
+            ),
+          ],
         ],
         const SizedBox(height: 12),
         Text(
@@ -4791,6 +4992,60 @@ class _InfoCard extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _CopyableValue extends StatelessWidget {
+  const _CopyableValue({
+    required this.label,
+    required this.value,
+    required this.copyLabel,
+    required this.copyKey,
+  });
+
+  final String label;
+  final String value;
+  final String copyLabel;
+  final Key copyKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: FmTheme.textSecondary(context),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: SelectableText(
+                value,
+                style: TextStyle(
+                  color: FmTheme.textPrimary(context),
+                  height: 1.35,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              key: copyKey,
+              tooltip: 'Copy $label',
+              onPressed: () =>
+                  _copyText(context, label: copyLabel, value: value),
+              icon: const Icon(Icons.copy_all_outlined, size: 18),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
 class _Chip extends StatelessWidget {

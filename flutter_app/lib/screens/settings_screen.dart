@@ -97,7 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onSaved: _settings.setSolanaAddress,
               ),
               Text(
-                'Payout and donation addresses are public profile metadata. Use a wallet address only; never paste private keys or seed phrases.',
+                'This address is public profile metadata for donations and payout metadata. Bounty-wallet deposit addresses are Worker-custodied and prepared per owner from repo funding panels. Use a wallet address only; never paste private keys or seed phrases.',
                 style: TextStyle(
                   color: FmTheme.textSecondary(context),
                   fontSize: 12,

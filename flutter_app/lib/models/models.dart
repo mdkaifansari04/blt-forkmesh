@@ -594,6 +594,25 @@ String _firstModelString(Map<String, dynamic> json, List<String> keys) {
   return '';
 }
 
+const solanaExplorerBaseUrl = 'https://explorer.solana.com';
+
+String solanaExplorerAddressUrl(String address) {
+  final clean = address.trim();
+  if (clean.isEmpty) return '';
+  return '$solanaExplorerBaseUrl/address/${Uri.encodeComponent(clean)}';
+}
+
+String solanaExplorerSignatureUrl(String signature) {
+  final clean = signature.trim();
+  if (clean.isEmpty) return '';
+  return '$solanaExplorerBaseUrl/tx/${Uri.encodeComponent(clean)}';
+}
+
+String _trimModelDouble(double value) {
+  final text = value.toString();
+  return text.contains('.') ? text.replaceFirst(RegExp(r'\.?0+$'), '') : text;
+}
+
 class Repository {
   Repository({
     required this.owner,
@@ -649,6 +668,51 @@ class Repository {
         'donationAddress',
         'payoutAddress',
       ]),
+    );
+  }
+}
+
+class BountyWallet {
+  const BountyWallet({
+    this.address = '',
+    this.balanceLamports = 0,
+    this.balanceSol = 0,
+    this.payUri = '',
+  });
+
+  final String address;
+  final int balanceLamports;
+  final double balanceSol;
+  final String payUri;
+
+  bool get hasWallet => address.trim().isNotEmpty;
+
+  String get balanceLabel {
+    if (balanceSol > 0) {
+      return '${_trimModelDouble(balanceSol)} SOL ($balanceLamports lamports)';
+    }
+    return '$balanceLamports lamports';
+  }
+
+  String get shortAddress {
+    final clean = address.trim();
+    if (clean.length <= 16) return clean;
+    return '${clean.substring(0, 6)}...${clean.substring(clean.length - 6)}';
+  }
+
+  String get explorerAddressUrl => solanaExplorerAddressUrl(address);
+
+  factory BountyWallet.fromJson(dynamic data) {
+    final source = data is Map<String, dynamic>
+        ? data
+        : data is Map
+        ? Map<String, dynamic>.from(data)
+        : const <String, dynamic>{};
+    return BountyWallet(
+      address: _firstModelString(source, const ['address', 'walletAddress']),
+      balanceLamports: _modelInt(source['balanceLamports']),
+      balanceSol: _modelDouble(source['balanceSol']),
+      payUri: _firstModelString(source, const ['uri', 'payUri']),
     );
   }
 }
