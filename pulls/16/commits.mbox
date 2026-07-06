@@ -1,0 +1,947 @@
+From f1b486c60abdec117ba03c8a3daa2a86d6ae8e01 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Mon, 6 Jul 2026 21:51:48 +0530
+Subject: [PATCH] feat(flutter): show payout readiness visibility
+
+---
+ flutter_app/lib/models/models.dart           | 147 +++++++-
+ flutter_app/lib/screens/activity_screen.dart | 334 ++++++++++++++++++-
+ flutter_app/lib/services/api_service.dart    |  24 +-
+ flutter_app/test/api_service_test.dart       | 108 ++++++
+ flutter_app/test/mock_auth_flow_test.dart    |  97 +++++-
+ flutter_app/test/models_test.dart            |  75 +++++
+ 6 files changed, 779 insertions(+), 6 deletions(-)
+
+diff --git a/flutter_app/lib/models/models.dart b/flutter_app/lib/models/models.dart
+index cf338d19..f4cbd95b 100644
+--- a/flutter_app/lib/models/models.dart
++++ b/flutter_app/lib/models/models.dart
+@@ -584,6 +584,12 @@ int _modelInt(dynamic value) => value is int
+ double _modelDouble(dynamic value) =>
+     value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+ 
++bool _modelBool(dynamic value) {
++  if (value is bool) return value;
++  final text = '$value'.trim().toLowerCase();
++  return text == 'true' || text == '1' || text == 'yes';
++}
++
+ String _modelString(dynamic value) => value == null ? '' : '$value';
+ 
+ String _firstModelString(Map<String, dynamic> json, List<String> keys) {
+@@ -1546,18 +1552,157 @@ class RepoRelease {
+ }
+ 
+ class NetworkStats {
+-  NetworkStats({this.nodesOnline = 0, this.hostsOnline = 0, this.repos = 0});
++  const NetworkStats({
++    this.nodesOnline = 0,
++    this.hostsOnline = 0,
++    this.repos = 0,
++    this.payoutNodes = const [],
++  });
++
+   final int nodesOnline;
+   final int hostsOnline;
+   final int repos;
++  final List<PayoutNode> payoutNodes;
+ 
+   factory NetworkStats.fromJson(Map<String, dynamic> j) {
+     int asInt(dynamic v) =>
+         v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
++    final payoutRaw = j['payoutNodes'] is List
++        ? j['payoutNodes'] as List
++        : j['payout_nodes'] is List
++        ? j['payout_nodes'] as List
++        : const [];
+     return NetworkStats(
+       nodesOnline: asInt(j['nodesOnline'] ?? j['clients'] ?? 0),
+       hostsOnline: asInt(j['hostsOnline'] ?? j['hosts'] ?? 0),
+       repos: asInt(j['repos'] ?? j['repositories'] ?? 0),
++      payoutNodes: payoutRaw
++          .whereType<Map>()
++          .map((item) => PayoutNode.fromJson(Map<String, dynamic>.from(item)))
++          .toList(),
+     );
+   }
+ }
++
++class PayoutNode {
++  const PayoutNode({
++    this.name = '',
++    this.wallet = '',
++    this.balanceLamports = 0,
++    this.balanceSol = 0,
++    this.online = false,
++    this.payoutEligible = false,
++    this.eligibilityReason = '',
++    this.relay = '',
++  });
++
++  final String name;
++  final String wallet;
++  final int balanceLamports;
++  final double balanceSol;
++  final bool online;
++  final bool payoutEligible;
++  final String eligibilityReason;
++  final String relay;
++
++  String get shortWallet {
++    final clean = wallet.trim();
++    if (clean.length <= 16) return clean;
++    return '${clean.substring(0, 6)}...${clean.substring(clean.length - 6)}';
++  }
++
++  String get eligibilityLabel {
++    final reason = eligibilityReason.trim();
++    if (reason.isNotEmpty) {
++      return reason.replaceAll('_', ' ').replaceAll('-', ' ');
++    }
++    return payoutEligible ? 'eligible' : 'not eligible';
++  }
++
++  String get balanceLabel {
++    if (balanceSol > 0) {
++      return '${_trimModelDouble(balanceSol)} SOL ($balanceLamports lamports)';
++    }
++    return '$balanceLamports lamports';
++  }
++
++  factory PayoutNode.fromJson(Map<String, dynamic> json) => PayoutNode(
++    name: _firstModelString(json, const ['name', 'node', 'id']),
++    wallet: _firstModelString(json, const [
++      'wallet',
++      'walletAddress',
++      'payoutWallet',
++      'address',
++    ]),
++    balanceLamports: _modelInt(json['balanceLamports']),
++    balanceSol: _modelDouble(json['balanceSol']),
++    online: _modelBool(json['online']),
++    payoutEligible: _modelBool(json['payoutEligible']),
++    eligibilityReason: _firstModelString(json, const [
++      'eligibilityReason',
++      'reason',
++    ]),
++    relay: _firstModelString(json, const ['relay']),
++  );
++}
++
++class NetworkLeaderboards {
++  const NetworkLeaderboards({
++    this.fundsMainnodes = const [],
++    this.fundsContributors = const [],
++    this.fundsProjects = const [],
++  });
++
++  final List<FundsReceivedEntry> fundsMainnodes;
++  final List<FundsReceivedEntry> fundsContributors;
++  final List<FundsReceivedEntry> fundsProjects;
++
++  bool get isEmpty =>
++      fundsMainnodes.isEmpty &&
++      fundsContributors.isEmpty &&
++      fundsProjects.isEmpty;
++
++  factory NetworkLeaderboards.fromJson(Map<String, dynamic> json) =>
++      NetworkLeaderboards(
++        fundsMainnodes: _fundsReceivedList(json['fundsMainnodes']),
++        fundsContributors: _fundsReceivedList(json['fundsContributors']),
++        fundsProjects: _fundsReceivedList(json['fundsProjects']),
++      );
++
++  static List<FundsReceivedEntry> _fundsReceivedList(dynamic raw) {
++    final items = raw is List ? raw : const [];
++    return items
++        .whereType<Map>()
++        .map(
++          (item) =>
++              FundsReceivedEntry.fromJson(Map<String, dynamic>.from(item)),
++        )
++        .toList();
++  }
++}
++
++class FundsReceivedEntry {
++  const FundsReceivedEntry({this.name = '', this.lamports = 0, this.sol = 0});
++
++  final String name;
++  final int lamports;
++  final double sol;
++
++  String get amountLabel {
++    if (sol > 0) return '${_trimModelDouble(sol)} SOL ($lamports lamports)';
++    return '$lamports lamports';
++  }
++
++  factory FundsReceivedEntry.fromJson(Map<String, dynamic> json) =>
++      FundsReceivedEntry(
++        name: _firstModelString(json, const [
++          'name',
++          'node',
++          'account',
++          'project',
++          'repo',
++        ]),
++        lamports: _modelInt(json['lamports']),
++        sol: _modelDouble(json['sol']),
++      );
++}
+diff --git a/flutter_app/lib/screens/activity_screen.dart b/flutter_app/lib/screens/activity_screen.dart
+index 71cbebb7..7b1e8d10 100644
+--- a/flutter_app/lib/screens/activity_screen.dart
++++ b/flutter_app/lib/screens/activity_screen.dart
+@@ -18,12 +18,15 @@ class ActivityScreen extends StatefulWidget {
+ class _ActivityScreenState extends State<ActivityScreen> {
+   static const _initialLogCount = 12;
+   late Future<NetworkStats> _stats;
++  late Future<NetworkLeaderboards> _leaderboards;
+   bool _showAllLogs = false;
+ 
+   @override
+   void initState() {
+     super.initState();
+-    _stats = context.read<ApiService>().networkStats();
++    final api = context.read<ApiService>();
++    _stats = api.networkStats();
++    _leaderboards = api.networkLeaderboards();
+   }
+ 
+   @override
+@@ -55,6 +58,20 @@ class _ActivityScreenState extends State<ActivityScreen> {
+           },
+         ),
+         const SizedBox(height: FmSpace.x5),
++        FutureBuilder<NetworkStats>(
++          future: _stats,
++          builder: (context, snap) => _PayoutReadinessSection(
++            nodes: snap.data?.payoutNodes ?? const [],
++          ),
++        ),
++        const SizedBox(height: FmSpace.x5),
++        FutureBuilder<NetworkLeaderboards>(
++          future: _leaderboards,
++          builder: (context, snap) => _FundsReceivedSection(
++            boards: snap.data ?? const NetworkLeaderboards(),
++          ),
++        ),
++        const SizedBox(height: FmSpace.x5),
+         FmSectionHeader(
+           title: 'Activity log',
+           trailing: Text(
+@@ -111,6 +128,321 @@ class _ActivityScreenState extends State<ActivityScreen> {
+   }
+ }
+ 
++class _PayoutReadinessSection extends StatelessWidget {
++  const _PayoutReadinessSection({required this.nodes});
++
++  final List<PayoutNode> nodes;
++
++  @override
++  Widget build(BuildContext context) {
++    final visibleNodes = nodes.take(5).toList();
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.stretch,
++      children: [
++        const FmSectionHeader(title: 'Payout readiness'),
++        const SizedBox(height: FmSpace.x2),
++        FmCard(
++          radius: FmRadius.lg,
++          color: FmTheme.bgRaised(context),
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.stretch,
++            children: [
++              Text(
++                'Public readiness and accounting visibility only. Mobile does not execute payouts.',
++                style: TextStyle(
++                  color: FmTheme.textSecondary(context),
++                  fontSize: 12,
++                  height: 1.35,
++                ),
++              ),
++              const SizedBox(height: FmSpace.x3),
++              if (visibleNodes.isEmpty)
++                const FmEmptyState(
++                  icon: Icons.account_balance_wallet_outlined,
++                  title: 'No payout-ready nodes reported',
++                  message:
++                      'Payout-eligible nodes appear here when the mainnode reports public payout readiness.',
++                )
++              else ...[
++                for (final node in visibleNodes) _PayoutNodeRow(node: node),
++                if (nodes.length > visibleNodes.length)
++                  Padding(
++                    padding: const EdgeInsets.only(top: FmSpace.x2),
++                    child: Text(
++                      '+${nodes.length - visibleNodes.length} more nodes',
++                      style: TextStyle(
++                        color: FmTheme.textTertiary(context),
++                        fontSize: 12,
++                        fontWeight: FontWeight.w700,
++                      ),
++                    ),
++                  ),
++              ],
++            ],
++          ),
++        ),
++      ],
++    );
++  }
++}
++
++class _PayoutNodeRow extends StatelessWidget {
++  const _PayoutNodeRow({required this.node});
++
++  final PayoutNode node;
++
++  @override
++  Widget build(BuildContext context) {
++    final details = <String>[
++      node.eligibilityLabel,
++      if (node.shortWallet.isNotEmpty) node.shortWallet,
++      if (node.balanceLamports > 0 || node.balanceSol > 0) node.balanceLabel,
++      if (node.relay.trim().isNotEmpty) node.relay.trim(),
++    ];
++
++    return Container(
++      margin: const EdgeInsets.only(bottom: FmSpace.x2),
++      padding: const EdgeInsets.all(FmSpace.x3),
++      decoration: BoxDecoration(
++        color: FmTheme.bgBase(context),
++        borderRadius: BorderRadius.circular(FmRadius.md),
++        border: Border.all(color: FmTheme.border(context)),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          Row(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Expanded(
++                child: Text(
++                  node.name.isEmpty ? 'Unnamed node' : node.name,
++                  maxLines: 1,
++                  overflow: TextOverflow.ellipsis,
++                  style: TextStyle(
++                    color: FmTheme.textPrimary(context),
++                    fontSize: 14,
++                    fontWeight: FontWeight.w800,
++                  ),
++                ),
++              ),
++              const SizedBox(width: FmSpace.x2),
++              _MiniBadge(
++                label: node.online ? 'online' : 'offline',
++                color: node.online
++                    ? FmTheme.success(context)
++                    : FmTheme.textTertiary(context),
++              ),
++              const SizedBox(width: FmSpace.x1),
++              _MiniBadge(
++                label: node.payoutEligible ? 'eligible' : 'not eligible',
++                color: node.payoutEligible
++                    ? FmTheme.success(context)
++                    : FmTheme.warning(context),
++              ),
++            ],
++          ),
++          if (details.isNotEmpty) ...[
++            const SizedBox(height: FmSpace.x2),
++            Wrap(
++              spacing: FmSpace.x2,
++              runSpacing: FmSpace.x1,
++              children: [
++                for (final detail in details) _DetailToken(label: detail),
++              ],
++            ),
++          ],
++        ],
++      ),
++    );
++  }
++}
++
++class _DetailToken extends StatelessWidget {
++  const _DetailToken({required this.label});
++
++  final String label;
++
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(
++      horizontal: FmSpace.x2,
++      vertical: FmSpace.x1,
++    ),
++    decoration: BoxDecoration(
++      color: FmTheme.bgRaised(context),
++      borderRadius: BorderRadius.circular(FmRadius.sm),
++      border: Border.all(color: FmTheme.border(context)),
++    ),
++    child: Text(
++      label,
++      style: TextStyle(
++        color: FmTheme.textSecondary(context),
++        fontSize: 11,
++        fontWeight: FontWeight.w700,
++        height: 1.1,
++      ),
++    ),
++  );
++}
++
++class _FundsReceivedSection extends StatelessWidget {
++  const _FundsReceivedSection({required this.boards});
++
++  final NetworkLeaderboards boards;
++
++  @override
++  Widget build(BuildContext context) => Column(
++    crossAxisAlignment: CrossAxisAlignment.stretch,
++    children: [
++      const FmSectionHeader(title: 'Funds received'),
++      const SizedBox(height: FmSpace.x2),
++      FmCard(
++        radius: FmRadius.lg,
++        color: FmTheme.bgRaised(context),
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.stretch,
++          children: [
++            Text(
++              'Accumulated public accounting boards, not a promise of current wallet balance.',
++              style: TextStyle(
++                color: FmTheme.textSecondary(context),
++                fontSize: 12,
++                height: 1.35,
++              ),
++            ),
++            const SizedBox(height: FmSpace.x3),
++            if (boards.isEmpty)
++              const FmEmptyState(
++                icon: Icons.leaderboard_outlined,
++                title: 'No funds received yet',
++                message:
++                    'Public funds-received totals appear here after the mainnode reports them.',
++              )
++            else ...[
++              _FundsGroup(title: 'Mainnodes', entries: boards.fundsMainnodes),
++              _FundsGroup(
++                title: 'Contributors',
++                entries: boards.fundsContributors,
++              ),
++              _FundsGroup(title: 'Projects', entries: boards.fundsProjects),
++            ],
++          ],
++        ),
++      ),
++    ],
++  );
++}
++
++class _FundsGroup extends StatelessWidget {
++  const _FundsGroup({required this.title, required this.entries});
++
++  final String title;
++  final List<FundsReceivedEntry> entries;
++
++  @override
++  Widget build(BuildContext context) {
++    final visibleEntries = entries.take(3).toList();
++    if (visibleEntries.isEmpty) return const SizedBox.shrink();
++
++    return Padding(
++      padding: const EdgeInsets.only(bottom: FmSpace.x3),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          Text(
++            title,
++            style: TextStyle(
++              color: FmTheme.textTertiary(context),
++              fontSize: 11,
++              fontWeight: FontWeight.w800,
++              letterSpacing: 0.5,
++            ),
++          ),
++          const SizedBox(height: FmSpace.x2),
++          for (final entry in visibleEntries)
++            _FundsRow(
++              name: entry.name.isEmpty ? 'Unnamed' : entry.name,
++              amount: entry.amountLabel,
++            ),
++        ],
++      ),
++    );
++  }
++}
++
++class _FundsRow extends StatelessWidget {
++  const _FundsRow({required this.name, required this.amount});
++
++  final String name;
++  final String amount;
++
++  @override
++  Widget build(BuildContext context) => Padding(
++    padding: const EdgeInsets.only(bottom: FmSpace.x1),
++    child: Row(
++      children: [
++        Expanded(
++          child: Text(
++            name,
++            maxLines: 1,
++            overflow: TextOverflow.ellipsis,
++            style: TextStyle(
++              color: FmTheme.textPrimary(context),
++              fontSize: 13,
++              fontWeight: FontWeight.w700,
++            ),
++          ),
++        ),
++        const SizedBox(width: FmSpace.x3),
++        Flexible(
++          child: Text(
++            amount,
++            maxLines: 1,
++            overflow: TextOverflow.ellipsis,
++            textAlign: TextAlign.right,
++            style: TextStyle(
++              color: FmTheme.textSecondary(context),
++              fontSize: 12,
++              fontWeight: FontWeight.w700,
++            ),
++          ),
++        ),
++      ],
++    ),
++  );
++}
++
++class _MiniBadge extends StatelessWidget {
++  const _MiniBadge({required this.label, required this.color});
++
++  final String label;
++  final Color color;
++
++  @override
++  Widget build(BuildContext context) => Container(
++    padding: const EdgeInsets.symmetric(
++      horizontal: FmSpace.x2,
++      vertical: FmSpace.x1,
++    ),
++    decoration: BoxDecoration(
++      color: color.withAlpha(31),
++      borderRadius: BorderRadius.circular(FmRadius.full),
++    ),
++    child: Text(
++      label,
++      maxLines: 1,
++      overflow: TextOverflow.ellipsis,
++      style: TextStyle(
++        color: color,
++        fontSize: 10,
++        fontWeight: FontWeight.w800,
++        height: 1,
++      ),
++    ),
++  );
++}
++
+ class _ActivityLogRow extends StatelessWidget {
+   const _ActivityLogRow({required this.line});
+ 
+diff --git a/flutter_app/lib/services/api_service.dart b/flutter_app/lib/services/api_service.dart
+index fe67ea89..95965250 100644
+--- a/flutter_app/lib/services/api_service.dart
++++ b/flutter_app/lib/services/api_service.dart
+@@ -21,6 +21,7 @@ class ApiService {
+   final PerformanceMonitorService? _performanceMonitor;
+   _CacheEntry<List<Repository>>? _repositoriesCache;
+   _CacheEntry<NetworkStats>? _networkStatsCache;
++  _CacheEntry<NetworkLeaderboards>? _networkLeaderboardsCache;
+   final Map<String, DateTime> _offlineRepoUntil = {};
+   final Map<String, _CacheEntry<RepoTree>> _treeCache = {};
+   final Map<String, _CacheEntry<RepoBlob>> _blobCache = {};
+@@ -127,15 +128,34 @@ class ApiService {
+     }
+     final future = () async {
+       try {
+-        final data = await _getJson(_base('/api/network/stats'));
++        final data = await _getJson(
++          _base('/api/network/stats', {'payouts': '1'}),
++        );
+         if (data is Map<String, dynamic>) return NetworkStats.fromJson(data);
+       } catch (_) {}
+-      return NetworkStats();
++      return const NetworkStats();
+     }();
+     _networkStatsCache = _CacheEntry(future, DateTime.now());
+     return future;
+   }
+ 
++  Future<NetworkLeaderboards> networkLeaderboards() async {
++    if (_isFresh(_networkLeaderboardsCache, catalogTtl)) {
++      return _networkLeaderboardsCache!.future;
++    }
++    final future = () async {
++      try {
++        final data = await _getJson(_base('/api/network/leaderboards'));
++        if (data is Map<String, dynamic>) {
++          return NetworkLeaderboards.fromJson(data);
++        }
++      } catch (_) {}
++      return const NetworkLeaderboards();
++    }();
++    _networkLeaderboardsCache = _CacheEntry(future, DateTime.now());
++    return future;
++  }
++
+   Future<NotificationPage> notifications(String node, {int limit = 40}) async {
+     final cleanNode = node.trim().toLowerCase();
+     if (cleanNode.isEmpty) {
+diff --git a/flutter_app/test/api_service_test.dart b/flutter_app/test/api_service_test.dart
+index 2e1fe08b..0673bf3a 100644
+--- a/flutter_app/test/api_service_test.dart
++++ b/flutter_app/test/api_service_test.dart
+@@ -108,6 +108,114 @@ void main() {
+     expect(repos.single.fullName, 'owner/forkmesh');
+   });
+ 
++  test(
++    'network stats requests payout readiness and parses payout nodes',
++    () async {
++      final requests = <Uri>[];
++      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++      final subscription = server.listen((request) async {
++        requests.add(request.uri);
++        request.response.headers.contentType = ContentType.json;
++        if (request.method == 'GET' &&
++            request.uri.path == '/api/network/stats') {
++          request.response.write(
++            jsonEncode({
++              'nodesOnline': 2,
++              'hostsOnline': 1,
++              'repos': 3,
++              'payoutNodes': [
++                {
++                  'name': 'mainnode-a',
++                  'wallet': 'Wallet11111111111111111111111111111111',
++                  'balanceLamports': '1250000000',
++                  'balanceSol': '1.25',
++                  'online': true,
++                  'payoutEligible': true,
++                  'eligibilityReason': 'eligible',
++                },
++              ],
++            }),
++          );
++        } else {
++          request.response.statusCode = HttpStatus.notFound;
++        }
++        await request.response.close();
++      });
++      addTearDown(() async {
++        await subscription.cancel();
++        await server.close(force: true);
++      });
++
++      SharedPreferences.setMockInitialValues({});
++      final settings = await SettingsService.create();
++      await settings.setServerUrl(
++        'ws://${server.address.host}:${server.port}/ws',
++      );
++      final api = ApiService(settings);
++
++      final stats = await api.networkStats();
++
++      expect(requests.single.path, '/api/network/stats');
++      expect(requests.single.queryParameters['payouts'], '1');
++      expect(stats.nodesOnline, 2);
++      expect(stats.payoutNodes.single.name, 'mainnode-a');
++      expect(stats.payoutNodes.single.payoutEligible, isTrue);
++      expect(
++        stats.payoutNodes.single.balanceLabel,
++        '1.25 SOL (1250000000 lamports)',
++      );
++    },
++  );
++
++  test('network leaderboards parse funds received boards', () async {
++    final requests = <Uri>[];
++    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++    final subscription = server.listen((request) async {
++      requests.add(request.uri);
++      request.response.headers.contentType = ContentType.json;
++      if (request.method == 'GET' &&
++          request.uri.path == '/api/network/leaderboards') {
++        request.response.write(
++          jsonEncode({
++            'fundsMainnodes': [
++              {'name': 'mainnode-a', 'lamports': '1250000000', 'sol': '1.25'},
++            ],
++            'fundsContributors': [
++              {'name': 'alice', 'lamports': 500000000, 'sol': 0.5},
++            ],
++            'fundsProjects': [
++              {'name': 'forkmesh/mobile', 'lamports': '42'},
++            ],
++          }),
++        );
++      } else {
++        request.response.statusCode = HttpStatus.notFound;
++      }
++      await request.response.close();
++    });
++    addTearDown(() async {
++      await subscription.cancel();
++      await server.close(force: true);
++    });
++
++    SharedPreferences.setMockInitialValues({});
++    final settings = await SettingsService.create();
++    await settings.setServerUrl(
++      'ws://${server.address.host}:${server.port}/ws',
++    );
++    final api = ApiService(settings);
++
++    final boards = await api.networkLeaderboards();
++
++    expect(requests.single.path, '/api/network/leaderboards');
++    expect(boards.fundsMainnodes.single.name, 'mainnode-a');
++    expect(
++      boards.fundsContributors.single.amountLabel,
++      '0.5 SOL (500000000 lamports)',
++    );
++    expect(boards.fundsProjects.single.amountLabel, '42 lamports');
++  });
++
+   test('published markdown issues include bounty and vote count', () async {
+     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+     final subscription = server.listen((request) async {
+diff --git a/flutter_app/test/mock_auth_flow_test.dart b/flutter_app/test/mock_auth_flow_test.dart
+index 1cf1e6fd..1e72e5a2 100644
+--- a/flutter_app/test/mock_auth_flow_test.dart
++++ b/flutter_app/test/mock_auth_flow_test.dart
+@@ -6,6 +6,7 @@ import 'package:forkmesh/fm_icons.dart';
+ import 'package:forkmesh/main.dart';
+ import 'package:forkmesh/models/models.dart';
+ import 'package:forkmesh/screens/auth_mock_flow.dart';
++import 'package:forkmesh/screens/activity_screen.dart';
+ import 'package:forkmesh/services/api_service.dart';
+ import 'package:forkmesh/services/auth_service.dart';
+ import 'package:forkmesh/services/identity.dart';
+@@ -21,18 +22,28 @@ class FakeApiService extends ApiService {
+     super.settings, {
+     List<Repository> repositories = const [],
+     List<ForkNotification> notifications = const [],
++    NetworkStats? networkStats,
++    NetworkLeaderboards? networkLeaderboards,
+   }) : _repositories = repositories,
+-       _notifications = notifications;
++       _notifications = notifications,
++       _networkStats = networkStats,
++       _networkLeaderboards = networkLeaderboards;
+ 
+   final List<Repository> _repositories;
+   final List<ForkNotification> _notifications;
++  final NetworkStats? _networkStats;
++  final NetworkLeaderboards? _networkLeaderboards;
+ 
+   @override
+   Future<List<Repository>> repositories() async => _repositories;
+ 
+   @override
+   Future<NetworkStats> networkStats() async =>
+-      NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
++      _networkStats ?? NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
++
++  @override
++  Future<NetworkLeaderboards> networkLeaderboards() async =>
++      _networkLeaderboards ?? const NetworkLeaderboards();
+ 
+   @override
+   Future<NotificationPage> notifications(String node, {int limit = 40}) async =>
+@@ -598,10 +609,92 @@ void main() {
+     await tester.pumpAndSettle();
+ 
+     expect(find.text('NETWORK'), findsOneWidget);
++    expect(find.text('PAYOUT READINESS'), findsOneWidget);
++    await tester.scrollUntilVisible(
++      find.text('ACTIVITY LOG'),
++      180,
++      scrollable: find.byType(Scrollable).last,
++    );
+     expect(find.text('ACTIVITY LOG'), findsOneWidget);
+     expect(find.text('NOTIFICATIONS'), findsNothing);
+   });
+ 
++  testWidgets(
++    'activity screen shows payout readiness and funds received visibility',
++    (tester) async {
++      usePhoneView(tester);
++      SharedPreferences.setMockInitialValues({});
++      final settings = await SettingsService.create();
++      final identity = await Identity.loadOrCreate();
++      final relay = RelayService(settings, identity);
++      final api = FakeApiService(
++        settings,
++        networkStats: NetworkStats(
++          nodesOnline: 2,
++          hostsOnline: 1,
++          repos: 3,
++          payoutNodes: const [
++            PayoutNode(
++              name: 'mainnode-a',
++              wallet: 'Wallet11111111111111111111111111111111',
++              balanceLamports: 1250000000,
++              balanceSol: 1.25,
++              online: true,
++              payoutEligible: true,
++              eligibilityReason: 'eligible',
++            ),
++          ],
++        ),
++        networkLeaderboards: const NetworkLeaderboards(
++          fundsMainnodes: [
++            FundsReceivedEntry(
++              name: 'mainnode-a',
++              lamports: 1250000000,
++              sol: 1.25,
++            ),
++          ],
++          fundsContributors: [
++            FundsReceivedEntry(name: 'alice', lamports: 500000000, sol: 0.5),
++          ],
++          fundsProjects: [
++            FundsReceivedEntry(name: 'forkmesh/mobile', lamports: 42),
++          ],
++        ),
++      );
++
++      await tester.pumpWidget(
++        MaterialApp(
++          home: MultiProvider(
++            providers: [
++              Provider<ApiService>.value(value: api),
++              ChangeNotifierProvider<RelayService>.value(value: relay),
++            ],
++            child: const Scaffold(body: ActivityScreen()),
++          ),
++        ),
++      );
++      await tester.pumpAndSettle();
++
++      expect(find.text('PAYOUT READINESS'), findsOneWidget);
++      expect(find.text('FUNDS RECEIVED'), findsOneWidget);
++      expect(find.text('mainnode-a'), findsWidgets);
++      expect(find.text('eligible'), findsWidgets);
++      expect(find.text('Wallet...111111'), findsOneWidget);
++      expect(find.text('1.25 SOL (1250000000 lamports)'), findsWidgets);
++      expect(find.text('alice'), findsOneWidget);
++      expect(find.text('forkmesh/mobile'), findsOneWidget);
++      expect(
++        find.textContaining('Mobile does not execute payouts.'),
++        findsOneWidget,
++      );
++      expect(
++        find.textContaining('not a promise of current wallet balance'),
++        findsOneWidget,
++      );
++      expect(tester.takeException(), isNull);
++    },
++  );
++
+   testWidgets('top bar bell opens the dedicated notifications page', (
+     tester,
+   ) async {
+diff --git a/flutter_app/test/models_test.dart b/flutter_app/test/models_test.dart
+index 742c4a0e..6b1bab5b 100644
+--- a/flutter_app/test/models_test.dart
++++ b/flutter_app/test/models_test.dart
+@@ -134,6 +134,81 @@ void main() {
+     expect(legacy.repos, 5);
+   });
+ 
++  test('NetworkStats.fromJson reads payout readiness nodes', () {
++    final stats = NetworkStats.fromJson({
++      'nodesOnline': 2,
++      'payoutNodes': [
++        {
++          'name': 'mainnode-a',
++          'wallet': 'Wallet11111111111111111111111111111111',
++          'balanceLamports': '1250000000',
++          'balanceSol': '1.25',
++          'online': true,
++          'payoutEligible': true,
++          'eligibilityReason': 'eligible',
++          'relay': 'us-east',
++        },
++        {
++          'name': 'mainnode-b',
++          'online': false,
++          'eligibilityReason': 'missing wallet',
++        },
++      ],
++    });
++
++    expect(stats.payoutNodes, hasLength(2));
++    expect(stats.payoutNodes.first.name, 'mainnode-a');
++    expect(
++      stats.payoutNodes.first.wallet,
++      'Wallet11111111111111111111111111111111',
++    );
++    expect(stats.payoutNodes.first.shortWallet, 'Wallet...111111');
++    expect(stats.payoutNodes.first.balanceLamports, 1250000000);
++    expect(stats.payoutNodes.first.balanceSol, 1.25);
++    expect(stats.payoutNodes.first.online, isTrue);
++    expect(stats.payoutNodes.first.payoutEligible, isTrue);
++    expect(stats.payoutNodes.first.eligibilityLabel, 'eligible');
++    expect(
++      stats.payoutNodes.first.balanceLabel,
++      '1.25 SOL (1250000000 lamports)',
++    );
++    expect(stats.payoutNodes.first.relay, 'us-east');
++    expect(stats.payoutNodes.last.name, 'mainnode-b');
++    expect(stats.payoutNodes.last.wallet, isEmpty);
++    expect(stats.payoutNodes.last.balanceLamports, 0);
++    expect(stats.payoutNodes.last.balanceSol, 0);
++    expect(stats.payoutNodes.last.payoutEligible, isFalse);
++    expect(stats.payoutNodes.last.eligibilityLabel, 'missing wallet');
++  });
++
++  test('NetworkLeaderboards.fromJson parses funds received boards', () {
++    final boards = NetworkLeaderboards.fromJson({
++      'fundsMainnodes': [
++        {'name': 'mainnode-a', 'lamports': '1250000000', 'sol': '1.25'},
++      ],
++      'fundsContributors': [
++        {'name': 'alice', 'lamports': 500000000, 'sol': 0.5},
++      ],
++      'fundsProjects': [
++        {'name': 'forkmesh/mobile', 'lamports': '42'},
++      ],
++    });
++
++    expect(boards.fundsMainnodes.single.name, 'mainnode-a');
++    expect(boards.fundsMainnodes.single.lamports, 1250000000);
++    expect(boards.fundsMainnodes.single.sol, 1.25);
++    expect(
++      boards.fundsMainnodes.single.amountLabel,
++      '1.25 SOL (1250000000 lamports)',
++    );
++    expect(
++      boards.fundsContributors.single.amountLabel,
++      '0.5 SOL (500000000 lamports)',
++    );
++    expect(boards.fundsProjects.single.amountLabel, '42 lamports');
++    expect(boards.isEmpty, isFalse);
++  });
++
+   test('ForkNotification.fromJson parses worker notification payloads', () {
+     final notification = ForkNotification.fromJson({
+       'id': 'dedupe-1',
+-- 
+2.50.1 (Apple Git-155)
+
