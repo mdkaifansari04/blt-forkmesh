@@ -339,6 +339,7 @@ void main() {
       await submitLogin(tester);
 
       expect(find.text('Code'), findsWidgets);
+      expect(find.text('Agents'), findsWidgets);
       expect(find.text('Chat'), findsWidgets);
       expect(find.text('Activity'), findsWidgets);
       expect(find.text('Settings'), findsWidgets);
@@ -479,6 +480,7 @@ void main() {
     expect(find.byIcon(Icons.chat_bubble_outline_rounded), findsWidgets);
     expect(find.byIcon(Icons.chat_bubble_outline), findsNothing);
     expect(find.text('Code'), findsWidgets);
+    expect(find.text('Agents'), findsWidgets);
     expect(find.text('Chat'), findsWidgets);
     expect(find.text('Activity'), findsWidgets);
     expect(find.text('Settings'), findsWidgets);

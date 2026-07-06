@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -1024,30 +1025,81 @@ class _AboutTab extends StatelessWidget {
   }
 }
 
-class _AgentsTab extends StatelessWidget {
+class _AgentsTab extends StatefulWidget {
   const _AgentsTab({required this.api, required this.repo});
 
   final ApiService api;
   final Repository repo;
 
+  @override
+  State<_AgentsTab> createState() => _AgentsTabState();
+}
+
+class _AgentsTabState extends State<_AgentsTab> {
+  static const _pollInterval = Duration(seconds: 10);
+
+  Future<List<AgentSession>>? _future;
+  Timer? _pollTimer;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _future ??= _loadSessions();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
   String _ownerAccount(BuildContext context) {
     final auth = context.read<AuthService?>();
     final node = auth?.session?.nodeName.trim().toLowerCase() ?? '';
-    return node.isNotEmpty ? node : repo.owner;
+    return node.isNotEmpty ? node : widget.repo.owner;
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _future = _loadSessions();
+    });
+    await _future;
+  }
+
+  Future<List<AgentSession>> _loadSessions() async {
+    final items = await widget.api.agentSessions(
+      widget.repo.owner,
+      widget.repo.name,
+      ownerAccount: _ownerAccount(context),
+    );
+    _syncPolling(items);
+    return items;
+  }
+
+  void _syncPolling(List<AgentSession> items) {
+    if (!mounted) return;
+    if (items.any((session) => session.isActive)) {
+      _pollTimer ??= Timer.periodic(_pollInterval, (_) {
+        if (!mounted) return;
+        setState(() {
+          _future = _loadSessions();
+        });
+      });
+    } else {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final ownerAccount = _ownerAccount(context);
-    final future = api.agentSessions(
-      repo.owner,
-      repo.name,
-      ownerAccount: ownerAccount,
-    );
+    final future = _future ??= _loadSessions();
     return FutureBuilder<List<AgentSession>>(
       future: future,
       builder: (context, snap) {
         final items = snap.data ?? const <AgentSession>[];
+        final polling =
+            _pollTimer != null || items.any((session) => session.isActive);
         return ListView(
           padding: const EdgeInsets.symmetric(vertical: 10),
           children: [
@@ -1060,10 +1112,35 @@ class _AgentsTab extends StatelessWidget {
               ),
               child: FmSectionHeader(
                 title: 'Agent sessions',
-                count: snap.hasData ? items.length : null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (snap.hasData)
+                      Text(
+                        '${items.length}',
+                        style: TextStyle(
+                          color: FmTheme.textSecondary(context),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    if (polling) ...[
+                      const SizedBox(width: FmSpace.x2),
+                      const Text('Live refresh on'),
+                    ],
+                    const SizedBox(width: FmSpace.x1),
+                    IconButton(
+                      tooltip: 'Refresh agent sessions',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _refresh,
+                      icon: const Icon(Icons.refresh, size: 18),
+                    ),
+                  ],
+                ),
               ),
             ),
-            if (snap.connectionState == ConnectionState.waiting)
+            if (snap.connectionState == ConnectionState.waiting &&
+                items.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(FmSpace.x4),
                 child: _LoadingCard(label: 'Loading agent sessions…'),
@@ -1094,10 +1171,10 @@ class _AgentsTab extends StatelessWidget {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => _AgentSessionDetailScreen(
-                        api: api,
-                        repo: repo,
+                        api: widget.api,
+                        repo: widget.repo,
                         session: session,
-                        ownerAccount: ownerAccount,
+                        ownerAccount: _ownerAccount(context),
                       ),
                     ),
                   ),
