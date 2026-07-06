@@ -4,7 +4,7 @@
 The home and network pages used to show blank placeholders ("Loading",
 "Checking…", "—") until the first network fetch returned. These contract tests
 pin the stale-while-revalidate behavior: the last-known counts are persisted to
-localStorage and rendered immediately on load, then refreshed by the live poll.
+localStorage and rendered immediately on load, then refreshed by one live fetch.
 """
 
 from pathlib import Path
@@ -12,23 +12,31 @@ from pathlib import Path
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 STATIC = (PUBLIC / "static-page.js").read_text(encoding="utf-8")
+MIRROR_PAYOUTS = (PUBLIC / "mirror-payouts.js").read_text(encoding="utf-8")
 
 
 def test_static_page_defines_and_primes_cached_stats():
     assert "function readCachedStat(" in STATIC
     assert "function writeCachedStat(" in STATIC
     assert "function primeCachedStats(" in STATIC
-    # Priming happens before the first poll kicks off.
-    assert STATIC.index("primeCachedStats();") < STATIC.rindex("startStats();")
+    # Priming happens before the first live fetch kicks off.
+    assert STATIC.index("primeCachedStats();") < STATIC.rindex("pollStats();")
+    assert "setInterval(" not in STATIC
+    assert "function startStats(" not in STATIC
 
 
 def test_static_page_persists_network_counts():
-    poll = STATIC[STATIC.index("async function pollStats") : STATIC.index("function startStats")]
+    poll = STATIC[STATIC.index("async function pollStats") : STATIC.index("function primeCachedStats")]
     assert 'writeCachedStat("clients", clients);' in poll
     assert 'writeCachedStat("hosts", hosts);' in poll
     assert 'writeCachedStat("repos", repos);' in poll
 
 
 def test_static_page_skips_priming_in_file_preview():
-    prime = STATIC[STATIC.index("function primeCachedStats") : STATIC.index("// Don't poll")]
+    prime = STATIC[STATIC.index("function primeCachedStats") : STATIC.index("primeCachedStats();")]
     assert 'location.protocol === "file:"' in prime
+
+
+def test_mirror_payouts_loads_stats_once_without_interval():
+    assert "loadStats();" in MIRROR_PAYOUTS
+    assert "setInterval(" not in MIRROR_PAYOUTS

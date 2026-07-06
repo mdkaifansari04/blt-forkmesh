@@ -93,5 +93,4 @@
 
   renderSession();
   loadStats();
-  setInterval(loadStats, 30000);
 })();

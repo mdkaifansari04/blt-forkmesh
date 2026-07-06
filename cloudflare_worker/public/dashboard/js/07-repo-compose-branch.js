@@ -596,15 +596,17 @@
   }
 
   function loadRepoFeaturePanels(repo) {
-    loadRepoCommits(repo);
     loadRepoMirrors(repo);
-    // Issue/PR/discussion lists load on their FIRST tab view (and reload here
-    // after a repo/branch switch): fetching them eagerly for every repo open
-    // fired blob reads for tabs nobody was looking at. The tab badges stay
-    // filled meanwhile from the root tree's bundled counts.
+    // Feature panels load on their FIRST tab view (and reload here after a
+    // repo/branch switch if that tab is already active): fetching hidden live
+    // data for every repo open fires Worker/host reads for tabs nobody opened.
+    // The tab badges stay filled meanwhile from the root tree's bundled counts.
     state.loadedRepoTabs = {};
     const active = state.activeRepoTab || "code";
-    if (active === "issues") {
+    if (active === "commits") {
+      state.loadedRepoTabs.commits = true;
+      loadRepoCommits(repo);
+    } else if (active === "issues") {
       state.loadedRepoTabs.issues = true;
       loadRepoIssues(repo);
     } else if (active === "pulls" || active === "discussions") {

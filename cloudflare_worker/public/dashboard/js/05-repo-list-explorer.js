@@ -272,7 +272,6 @@
     // The Agents auto-refresh poll only makes sense while that tab is the one
     // on screen; leaving it (to any other tab) stops the poll.
     if (tab !== "agents") {
-      stopRepoAgentsAutoRefresh();
       // Leaving the tab closes any open agent detail page (adhoc #259) so
       // returning to Agents lands on the session list, not a stale transcript.
       state.agentsView.selectedAgentId = null;
@@ -281,10 +280,11 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
-      if (tab === "issues") loadRepoIssues(state.selectedRepo);
+      if (tab === "commits") loadRepoCommits(state.selectedRepo);
+      else if (tab === "issues") loadRepoIssues(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
@@ -294,8 +294,7 @@
       // new-issue compose form was left open.
       renderRepoIssues();
     } else if (tab === "agents") {
-      // Resume polling instead of re-fetching immediately if already loaded.
-      startRepoAgentsAutoRefresh(state.selectedRepo);
+      loadRepoAgents(state.selectedRepo);
     }
   }
 

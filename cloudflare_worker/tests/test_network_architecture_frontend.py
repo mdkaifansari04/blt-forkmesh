@@ -92,7 +92,7 @@ def test_network_stats_bindings_update_all_metric_instances():
 def test_network_wallets_resolve_when_stats_api_is_unavailable():
     poll_stats = STATIC_PAGE[
         STATIC_PAGE.index("async function pollStats()"):
-        STATIC_PAGE.index("function startStats()")
+        STATIC_PAGE.index("function primeCachedStats(")
     ]
     catch_block = poll_stats[poll_stats.index("} catch (error) {"):]
 

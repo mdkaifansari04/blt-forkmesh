@@ -118,13 +118,14 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     ]
     assert "fetchRepoBlobs(" in records
     assert 'repoLiveUrl(repo, "blob"' not in records
-    # Issues are lazy like pulls/discussions: repo open loads commits+mirrors
-    # only; the issue list waits for the first Issues-tab view.
+    # Issues and commits are lazy like pulls/discussions: repo open loads the
+    # visible code view plus mirror summary; hidden tab data waits for the first
+    # tab view.
     panels = DASHBOARD_JS[
         DASHBOARD_JS.index("function loadRepoFeaturePanels")
         : DASHBOARD_JS.index("function updateRepoLiveCounts")
     ]
     assert "state.loadedRepoTabs = {};" in panels
-    assert '["issues", "pulls", "discussions", "releases", "agents"].includes(tab)' in DASHBOARD_JS
+    assert '["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab)' in DASHBOARD_JS
     # The tab badge still fills immediately from the root tree's bundled counts.
     assert 'setRepoTabCount("issues", Number(counts.issues));' in DASHBOARD_JS
