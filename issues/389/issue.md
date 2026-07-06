@@ -2,7 +2,7 @@
 schema: forkmesh-issue-v1
 number: 389
 title: UI: the window is not optimized for smaller screen size, its difficult to work with a lot of feature in smaller screen.
-status: open
+status: closed
 labels: []
 milestone: 
 priority: 0
