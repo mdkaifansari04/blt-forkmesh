@@ -1629,6 +1629,19 @@ class _IssueDetailScreen extends StatelessWidget {
                 _Chip(icon: Icons.label_outline, label: issue.status),
                 if (issue.author.isNotEmpty)
                   _Chip(icon: Icons.person_outline, label: issue.author),
+                for (final label in issue.labels)
+                  _Chip(icon: Icons.sell_outlined, label: label),
+                if (issue.votes > 0)
+                  _Chip(
+                    icon: Icons.how_to_vote_outlined,
+                    label:
+                        '${issue.votes} ${issue.votes == 1 ? 'vote' : 'votes'}',
+                  ),
+                if (issue.bountyUsd > 0)
+                  _Chip(
+                    icon: Icons.attach_money,
+                    label: '${_formatUsd(issue.bountyUsd)} bounty',
+                  ),
                 _Chip(icon: Icons.folder_outlined, label: repo.fullName),
               ],
             ),
@@ -1743,12 +1756,14 @@ class _IssueQuickActions extends StatelessWidget {
   Widget build(BuildContext context) => Wrap(
     spacing: 10,
     runSpacing: 10,
+    crossAxisAlignment: WrapCrossAlignment.center,
     children: [
       FilledButton.icon(
         onPressed: () => showIssueActions(context, repo, issue),
         icon: const Icon(Icons.add_comment_outlined),
         label: const Text('Comment / vote / status'),
       ),
+      const _PendingInboxNote(),
     ],
   );
 }
@@ -1782,6 +1797,8 @@ class _PullDetailScreen extends StatelessWidget {
                   ),
               ],
             ),
+            const SizedBox(height: 10),
+            const _PendingInboxNote(),
             const SizedBox(height: 16),
             SelectableText(
               pull.body.isEmpty ? 'No description provided.' : pull.body,
@@ -1803,11 +1820,18 @@ class _PullDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _InfoCard(
+          title: 'Timeline',
+          children: [_PullTimeline(pull: pull)],
+        ),
+        const SizedBox(height: 12),
+        _InfoCard(
           title: 'Review actions',
           children: [
             const Text(
               'Submit comments, approvals, or requested changes through the signed Worker pull inbox.',
             ),
+            const SizedBox(height: 8),
+            const _PendingInboxNote(),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -1826,6 +1850,88 @@ class _PullDetailScreen extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _PullTimeline extends StatelessWidget {
+  const _PullTimeline({required this.pull});
+
+  final PublishedPull pull;
+
+  @override
+  Widget build(BuildContext context) {
+    if (pull.events.isEmpty) {
+      return const Text('No review or comment events have been published yet.');
+    }
+    return Column(
+      children: pull.events
+          .map((event) => _PullTimelineTile(event: event))
+          .toList(),
+    );
+  }
+}
+
+class _PullTimelineTile extends StatelessWidget {
+  const _PullTimelineTile({required this.event});
+
+  final PullEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final isApproval = event.displayTitle == 'Approved';
+    final isRequestChanges = event.displayTitle == 'Requested changes';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: FmTheme.bgBase(context),
+        borderRadius: BorderRadius.circular(FmRadius.lg),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isApproval
+                ? Icons.check_circle_outline
+                : isRequestChanges
+                ? Icons.cancel_outlined
+                : Icons.rate_review_outlined,
+            color: isApproval
+                ? FmTheme.success(context)
+                : isRequestChanges
+                ? FmTheme.danger(context)
+                : FmTheme.textTertiary(context),
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  event.displayTitle,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                if (event.displayAuthor.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    event.displayAuthor,
+                    style: TextStyle(
+                      color: FmTheme.textSecondary(context),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                if (event.body.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  SelectableText(event.body.trim()),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _DiscussionDetailScreen extends StatelessWidget {
@@ -2844,6 +2950,49 @@ class _Chip extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _PendingInboxNote extends StatelessWidget {
+  const _PendingInboxNote();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(
+      horizontal: FmSpace.x3,
+      vertical: FmSpace.x2,
+    ),
+    decoration: BoxDecoration(
+      color: FmTheme.bgBase(context),
+      borderRadius: BorderRadius.circular(FmRadius.lg),
+      border: Border.all(color: FmTheme.border(context)),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.verified_user_outlined,
+          size: 14,
+          color: FmTheme.textTertiary(context),
+        ),
+        const SizedBox(width: FmSpace.x1),
+        Flexible(
+          child: Text(
+            'Signed inbox action - pending the repo owner applying it.',
+            style: TextStyle(
+              color: FmTheme.textSecondary(context),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+String _formatUsd(double value) {
+  if (value == value.roundToDouble()) return '\$${value.toInt()}';
+  return '\$${value.toStringAsFixed(2)}';
 }
 
 class _SourceChip extends StatelessWidget {
