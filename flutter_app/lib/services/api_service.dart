@@ -235,6 +235,30 @@ class ApiService {
     );
   }
 
+  Future<DesktopCommandResult> desktopCommand(
+    String owner,
+    String name, {
+    required String ownerAccount,
+    required String command,
+    required String target,
+    required String ts,
+    required String sig,
+    Map<String, Object?> payload = const {},
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/desktop-commands'), {
+          'ownerAccount': ownerAccount.trim().toLowerCase(),
+          'command': command.trim(),
+          'target': target.trim(),
+          'ts': ts.trim(),
+          'sig': sig.trim(),
+          'payload': payload,
+        });
+    return DesktopCommandResult.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
   Future<List<Issue>> issues(String owner, String name) async {
     final data = await _getJson(_base('/api/repo/$owner/$name/issues'));
     return _asList(

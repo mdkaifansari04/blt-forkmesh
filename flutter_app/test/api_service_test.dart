@@ -591,4 +591,58 @@ LGTM from mobile.''',
       expect(log.log, 'flutter test passed');
     },
   );
+
+  test(
+    'desktopCommand posts signed mobile request payload and parses queue status',
+    () async {
+      final requests = <Map<String, Object?>>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final body = await utf8.decoder.bind(request).join();
+        requests.add({
+          'method': request.method,
+          'path': request.uri.path,
+          'body': body,
+        });
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'ok': true, 'queued': 1}));
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final result = await api.desktopCommand(
+        'owner',
+        'repo',
+        ownerAccount: 'owner',
+        command: 'action.rerun',
+        target: 'run:7',
+        ts: '1000',
+        sig: 'signed-command',
+        payload: const {'runId': 7, 'workflowPath': '.forkmesh/test.yml'},
+      );
+
+      expect(result.ok, isTrue);
+      expect(result.queued, 1);
+      expect(requests.single['method'], 'POST');
+      expect(requests.single['path'], '/api/repo/owner/repo/desktop-commands');
+      expect(jsonDecode(requests.single['body'] as String), {
+        'ownerAccount': 'owner',
+        'command': 'action.rerun',
+        'target': 'run:7',
+        'ts': '1000',
+        'sig': 'signed-command',
+        'payload': {'runId': 7, 'workflowPath': '.forkmesh/test.yml'},
+      });
+    },
+  );
 }

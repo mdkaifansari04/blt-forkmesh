@@ -1294,6 +1294,60 @@ class _ActionRunDetailScreen extends StatelessWidget {
   final ActionRun run;
   final _ActionReadProof proof;
 
+  Future<void> _requestRerun(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final auth = context.read<AuthService?>();
+      final identity = context.read<Identity?>();
+      final session = auth?.session;
+      final account = session?.nodeName.trim().toLowerCase() ?? '';
+      if (session == null || identity == null || account.isEmpty) {
+        throw Exception(
+          'Sign in with the repo owner account to request desktop control.',
+        );
+      }
+      if (account != repo.owner.trim().toLowerCase()) {
+        throw Exception(
+          'Only the repo owner can request desktop control for this repo.',
+        );
+      }
+      if (session.pubkey.trim() != identity.publicKeyB64url) {
+        throw Exception(
+          'Pair this mobile device with the owner key before requesting desktop control.',
+        );
+      }
+      final target = 'run:${run.id}';
+      final ts = DateTime.now().millisecondsSinceEpoch.toString();
+      final canonical =
+          'forkmesh-desktop-command-v1\n${repo.owner}\n${repo.name}\naction.rerun\n$target\n$ts';
+      final sig = await identity.sign(utf8.encode(canonical));
+      final result = await api.desktopCommand(
+        repo.owner,
+        repo.name,
+        ownerAccount: account,
+        command: 'action.rerun',
+        target: target,
+        ts: ts,
+        sig: sig,
+        payload: {
+          'runId': run.id,
+          if (run.workflowPath.isNotEmpty) 'workflowPath': run.workflowPath,
+        },
+      );
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            result.ok
+                ? 'Desktop request queued. Approve it on the Qt desktop node to rerun.'
+                : 'Desktop request was not queued.',
+          ),
+        ),
+      );
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final logFuture = api.actionLog(
@@ -1333,8 +1387,14 @@ class _ActionRunDetailScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                'Desktop-controlled workflow. Mobile can inspect run output; rerun, cancel, approve changed workflows, and edit secrets stay on the desktop node until signed pairing is designed.',
+                'Desktop-controlled workflow. Mobile can inspect run output and queue signed requests; rerun, cancel, approval, and secret editing still require explicit approval on the desktop node.',
                 style: TextStyle(color: FmTheme.textSecondary(context)),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _requestRerun(context),
+                icon: const Icon(Icons.replay_outlined, size: 18),
+                label: const Text('Request rerun on desktop'),
               ),
             ],
           ),
