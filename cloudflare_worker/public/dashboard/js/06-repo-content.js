@@ -1149,40 +1149,17 @@
     window.lucide?.createIcons();
   }
 
-  // Open / close the detail page for one agent, wiring up the faster transcript
-  // poll so the pane stays live while it's on screen (adhoc #259).
+  // Open / close the detail page for one agent. Transcript refresh is explicit:
+  // opening the page, clicking Refresh, or sending a prompt triggers a fetch.
   function openRepoAgentDetail(repo, agentId) {
     state.agentsView.selectedAgentId = agentId;
     renderRepoAgentsList(state.agentsView.agents);
     loadRepoAgentTranscript(repo, agentId);
-    startRepoAgentTranscriptRefresh(repo, agentId);
   }
 
   function closeRepoAgentDetail(repo) {
-    stopRepoAgentTranscriptRefresh();
     state.agentsView.selectedAgentId = null;
     renderRepoAgentsList(state.agentsView.agents);
-  }
-
-  function stopRepoAgentTranscriptRefresh() {
-    if (repoAgentTranscriptTimer) {
-      window.clearInterval(repoAgentTranscriptTimer);
-      repoAgentTranscriptTimer = null;
-    }
-  }
-
-  function startRepoAgentTranscriptRefresh(repo, agentId) {
-    stopRepoAgentTranscriptRefresh();
-    if (!repo || agentId == null) return;
-    repoAgentTranscriptTimer = window.setInterval(() => {
-      if (!state.selectedRepo || repoKey(state.selectedRepo) !== repoKey(repo) ||
-          state.activeRepoTab !== "agents" ||
-          String(state.agentsView.selectedAgentId ?? "") !== String(agentId)) {
-        stopRepoAgentTranscriptRefresh();
-        return;
-      }
-      loadRepoAgentTranscript(repo, agentId);
-    }, 4000);
   }
 
   // Fetch + render one agent's transcript tail. Preserves the reader's scroll
@@ -1236,60 +1213,16 @@
     return Array.isArray(data.agents) ? data.agents : [];
   }
 
-  function stopRepoAgentsAutoRefresh() {
-    if (repoAgentsRefreshTimer) {
-      window.clearInterval(repoAgentsRefreshTimer);
-      repoAgentsRefreshTimer = null;
-    }
-    // The detail page's live-transcript poll is only meaningful while the Agents
-    // tab is showing, so tear it down alongside the list poll (adhoc #259).
-    stopRepoAgentTranscriptRefresh();
-  }
-
-  // Re-arms a fresh ~10s interval after every successful load, and self-stops
-  // the moment it's no longer applicable (repo switched, tab left) rather than
-  // trusting whoever started it to remember to clean up on every possible exit path.
-  function startRepoAgentsAutoRefresh(repo) {
-    stopRepoAgentsAutoRefresh();
-    if (!repo) return;
-    repoAgentsRefreshTimer = window.setInterval(() => {
-      if (!state.selectedRepo || repoKey(state.selectedRepo) !== repoKey(repo) ||
-          state.activeRepoTab !== "agents") {
-        stopRepoAgentsAutoRefresh();
-        return;
-      }
-      loadRepoAgents(repo, { silent: true });
-    }, 10000);
-  }
-
-  // silent=true is used by the auto-refresh poll: it re-fetches and re-renders
-  // the list in place without ever wiping it back to a "Loading..." placeholder
-  // first — doing that unconditionally every 10s was the source of the Agents
-  // tab's constant flicker, since the whole panel blanked out and popped back
-  // in on every poll even when nothing had changed.
-  async function loadRepoAgents(repo, { silent = false } = {}) {
+  async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    if (!silent) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
     try {
       const agents = await requestRepoAgentsList(repo);
-      const unchanged = silent && JSON.stringify(agents) === JSON.stringify(state.agentsView.agents);
       state.agentsView.agents = agents;
-      // Skip the re-render entirely when a background poll comes back
-      // identical to what's already on screen — rebuilding the same DOM every
-      // 10s still repaints (and can drop focus/caret out of an open prompt
-      // input) even though nothing actually changed. Also skip while a detail
-      // page is open (adhoc #259): its own transcript poll keeps it live, and
-      // rebuilding here would wipe the transcript scroll and prompt caret.
-      if (!unchanged && state.agentsView.selectedAgentId == null) renderRepoAgentsList(agents);
-      startRepoAgentsAutoRefresh(repo);
+      renderRepoAgentsList(agents);
     } catch (error) {
       const code = String(error?.message || "");
-      stopRepoAgentsAutoRefresh();
-      // A background poll failing shouldn't blow away an already-rendered
-      // list with an error message — just stop polling quietly and leave the
-      // last good render on screen.
-      if (silent) return;
       container.innerHTML = `<div class="px-4 py-3 text-sm text-destructive">${
         code === "not_authorized" ? "You don't have permission to view agents for this repository."
           : "Could not load agent sessions. Please try again."}</div>`;
@@ -1335,6 +1268,7 @@
       }
       if (input) input.value = "";
       setHint("Sent to the agent.", "good");
+      loadRepoAgentTranscript(repo, agentId);
     } catch (error) {
       const code = String(error?.message || "");
       setHint(
@@ -1387,6 +1321,7 @@
       }
       if (input) input.value = "";
       setHint("Sent — the node will start a new agent shortly.", "good");
+      if (state.activeRepoTab === "agents") loadRepoAgents(repo);
     } catch (error) {
       const code = String(error?.message || "");
       setHint(

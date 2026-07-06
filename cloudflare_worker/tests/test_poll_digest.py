@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Consolidated /api/poll status digest: one lightweight call the dashboard
-polls each tick instead of separately re-fetching the full profile and the
-full notification list, firing the heavier fetches only when a token moved."""
+"""Consolidated /api/poll status digest remains available for compatibility,
+but the dashboard no longer runs a periodic client poll."""
 from pathlib import Path
 
 from _dashboard_bundle import assembled_dashboard_js
@@ -38,25 +37,10 @@ def test_version_endpoint_shares_build_rev_helper():
     assert '"rev": _build_rev(self.env)' in ENTRY_TEXT
 
 
-def test_dashboard_polls_once_and_gates_heavy_fetches_on_change():
-    assert "async function pollStatus(" in DASHBOARD_JS
-    assert "`/api/poll?node=${encodeURIComponent(node)}`" in DASHBOARD_JS
-    # The 60s sync tick now drives the lightweight poll, not the full profile
-    # fetch directly.
-    sync = DASHBOARD_JS[
-        DASHBOARD_JS.index("function startProfileSync()")
-        : DASHBOARD_JS.index("function startProfileSync()") + 400
-    ]
-    assert "pollStatus()" in sync
-    assert "refreshPublicProfile(state.session)" not in sync
-    # Heavy fetches only fire when the corresponding token changed.
-    poll = DASHBOARD_JS[
-        DASHBOARD_JS.index("async function pollStatus(")
-        : DASHBOARD_JS.index("function startProfileSync()")
-    ]
-    assert "state.pollProfileToken" in poll
-    assert "state.pollNotifToken" in poll
-    assert "await refreshPublicProfile(state.session)" in poll
-    assert "await loadNotifications()" in poll
-    # Unread count rides along so the badge updates from the poll alone.
-    assert "state.notificationUnread = notif.unread" in poll
+def test_dashboard_does_not_run_periodic_profile_or_notification_polling():
+    assert "async function pollStatus(" not in DASHBOARD_JS
+    assert "`/api/poll?node=${encodeURIComponent(node)}`" not in DASHBOARD_JS
+    assert "function startProfileSync()" not in DASHBOARD_JS
+    assert "setInterval(" not in DASHBOARD_JS
+    assert "await refreshPublicProfile(session);" in DASHBOARD_JS
+    assert "await loadNotifications();" in DASHBOARD_JS

@@ -230,13 +230,9 @@
 
   const clientsCount = document.querySelector("#clients-count");
   const clientsDot = document.querySelector("#clients-dot");
-  // Live counts come from a single cached aggregate endpoint, polled on an
-  // interval. This replaces a per-visitor WebSocket (which pinned a Durable
-  // Object in memory for the life of every open tab) and an 80-way per-visit
-  // fan-out to each repo's host — both of which dominated Durable Object cost.
+  // Live counts come from a single cached aggregate endpoint. Fetch it once on
+  // load after rendering cached values; do not keep a periodic client timer open.
   const STATS_PATH = "/api/network/stats";
-  const STATS_INTERVAL_MS = 30000;
-  let statsTimer = null;
   const payoutWalletsEl = document.querySelector("#network-wallets");
 
   // The header pill reflects everything that is live on the network — open host
@@ -286,21 +282,10 @@
     }
   }
 
-  function startStats() {
-    if (statsTimer !== null) return;
-    pollStats();
-    statsTimer = setInterval(pollStats, STATS_INTERVAL_MS);
-  }
-
-  function stopStats() {
-    if (statsTimer === null) return;
-    clearInterval(statsTimer);
-    statsTimer = null;
-  }
-
   // Render the last-known counts immediately (stale-while-revalidate) so the
   // header pill and stat cards aren't blank "Checking…"/"—" placeholders on a
-  // cold load; the poll below refreshes them as soon as live data arrives.
+  // cold load; the one-shot fetch below refreshes them as soon as live data
+  // arrives.
   function primeCachedStats() {
     if (location.protocol === "file:") return;
     const clients = readCachedStat("clients");
@@ -312,12 +297,6 @@
     if (repos !== null) setText("#network-repos, [data-network-repos]", String(repos));
   }
 
-  // Don't poll while the tab is hidden; resume (and refresh immediately) on focus.
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopStats();
-    else startStats();
-  });
-
   primeCachedStats();
-  startStats();
+  pollStats();
 })();

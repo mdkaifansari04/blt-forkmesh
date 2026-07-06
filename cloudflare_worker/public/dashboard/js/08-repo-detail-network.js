@@ -6,7 +6,6 @@
     state.repoMirrors = [];
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
-    stopRepoAgentsAutoRefresh();
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
@@ -614,11 +613,8 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      // Seed the poll tokens and do the initial full profile + notification
-      // load in one pass; subsequent ticks poll /api/poll and only re-fetch
-      // what actually changed.
-      await pollStatus(true);
-      startProfileSync();
+      await refreshPublicProfile(session);
+      await loadNotifications();
     }
     try {
       const data = await fetchJson("/api/repositories", { fresh: true });

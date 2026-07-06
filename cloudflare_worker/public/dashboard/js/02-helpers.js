@@ -116,12 +116,6 @@
   }
 
   function logout() {
-    if (state.profileSyncTimer) {
-      window.clearInterval(state.profileSyncTimer);
-      state.profileSyncTimer = null;
-    }
-    state.pollProfileToken = null;
-    state.pollNotifToken = null;
     try {
       fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
       localStorage.removeItem("forkmesh.session");

@@ -117,9 +117,9 @@ def test_profile_endpoint_supports_verified_node_rename_and_hard_delete():
 
 
 def test_public_account_lookup_reports_email_verified_status():
-    # issue #320: the dashboard's periodic self-profile poll (refreshPublicProfile)
-    # reuses this same public GET lookup, so it must reflect a verification that
-    # happened in another tab or "verify your email" never clears.
+    # issue #320: the dashboard's profile refresh path reuses this same public
+    # GET lookup, so it must reflect a verification that happened in another tab
+    # or "verify your email" never clears.
     lookup_body = ENTRY_TEXT[
         ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)"):
         ENTRY_TEXT.index("# --- Repository submission inboxes")
@@ -156,7 +156,7 @@ def test_hard_delete_removes_account_identity_and_owned_namespace_state():
         "DELETE FROM notifications WHERE recipient_bi=?",
         "DELETE FROM login_attempts WHERE id_bi=?",
         "DELETE FROM accounts WHERE name_bi=?",
-        "edge_cache_delete(CATALOG_CACHE_KEY)",
+        "purge_catalog_related_caches()",
     ):
         assert required in delete_body
 
@@ -199,7 +199,7 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
         "UPDATE pending_verifications SET name_bi=? WHERE name_bi=?",
         "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
         "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
-        "edge_cache_delete(CATALOG_CACHE_KEY)",
+        "purge_catalog_related_caches()",
     ):
         assert required in rename_body
 

@@ -177,18 +177,15 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
     assert "avatarPng: body.avatarPng || \"\"" in login_js
 
 
-def test_dashboard_periodically_refreshes_worker_profile_for_qt_updates():
+def test_dashboard_loads_profile_once_without_periodic_polling():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    for marker in (
-        "PROFILE_SYNC_INTERVAL_MS",
-        "function startProfileSync()",
-        "state.profileSyncTimer = window.setInterval",
-        "document.visibilityState === \"hidden\"",
-        "refreshPublicProfile(state.session)",
-        "startProfileSync();",
-    ):
-        assert marker in dashboard_js
+    assert "await refreshPublicProfile(session);" in dashboard_js
+    assert "await loadNotifications();" in dashboard_js
+    assert "function startProfileSync()" not in dashboard_js
+    assert "async function pollStatus(" not in dashboard_js
+    assert "window.setInterval" not in dashboard_js
+    assert "setInterval(" not in dashboard_js
 
 
 def test_dashboard_defaults_to_repositories_and_hides_unready_home_desktop_nav():
