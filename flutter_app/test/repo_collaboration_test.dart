@@ -161,6 +161,27 @@ class CollaborationApiService extends ApiService {
           ],
         ),
       ];
+
+  @override
+  Future<List<RepoRelease>> releases(String owner, String name) async => [
+    RepoRelease(
+      tag: 'v1.2.3',
+      channel: 'latest',
+      tagCommit: 'abcdef1234567890',
+      createdAtMs: 1700000000000,
+      assets: const [
+        RepoReleaseAsset(
+          name: 'forkmesh-linux-x86_64',
+          sha256:
+              '1938916325d5839850fbc39db05a3a1f836b10615ac4467725b9f49e864884fb',
+          size: 14949672,
+          os: 'linux',
+          arch: 'x86_64',
+          downloads: 3,
+        ),
+      ],
+    ),
+  ];
 }
 
 Future<void> _pumpRepo(
@@ -170,7 +191,7 @@ Future<void> _pumpRepo(
   Identity? identity,
   AuthService? auth,
 }) async {
-  tester.view.physicalSize = const Size(900, 1200);
+  tester.view.physicalSize = const Size(900, 1800);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -395,7 +416,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Subscribe thread'), findsOneWidget);
-    await tester.ensureVisible(find.text('Subscribe thread'));
+    await tester.scrollUntilVisible(
+      find.text('Subscribe thread'),
+      500,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('Subscribe thread'));
     await tester.pumpAndSettle();
 
@@ -405,7 +430,11 @@ void main() {
     expect(inbox.subscriptionSubscribed, isTrue);
     expect(find.text('Unsubscribe thread'), findsOneWidget);
 
-    await tester.ensureVisible(find.text('Unsubscribe thread'));
+    await tester.scrollUntilVisible(
+      find.text('Unsubscribe thread'),
+      500,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('Unsubscribe thread'));
     await tester.pumpAndSettle();
 
@@ -432,25 +461,98 @@ void main() {
 
     expect(find.text('Request merge on desktop'), findsOneWidget);
     expect(
-      find.textContaining('desktop node will verify and run the Git merge'),
+      find.textContaining('desktop node will verify mergeability'),
       findsOneWidget,
     );
 
     await tester.tap(find.text('Request merge on desktop'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Request merge + delete branch'));
+    await tester.tap(find.text('Request merge + delete branch'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Request fix with agent'));
+    await tester.tap(find.text('Request fix with agent'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Request close on desktop'));
+    await tester.tap(find.text('Request close on desktop'));
+    await tester.pumpAndSettle();
 
-    expect(api.commandRequests.single['command'], 'pull.merge');
-    expect(api.commandRequests.single['target'], 'pull:7');
-    expect(api.commandRequests.single['ownerAccount'], 'owner');
-    expect((api.commandRequests.single['ts'] as String).isNotEmpty, isTrue);
-    expect((api.commandRequests.single['sig'] as String).isNotEmpty, isTrue);
-    expect(api.commandRequests.single['payload'], {
-      'pullNumber': 7,
-      'base': 'main',
-      'head': 'review/mobile',
-    });
-    expect(find.textContaining('Merge request queued'), findsOneWidget);
+    expect(api.commandRequests.map((r) => r['command']), [
+      'pull.merge',
+      'pull.merge_delete',
+      'pull.fix_agent',
+      'pull.close',
+    ]);
+    expect(api.commandRequests.map((r) => r['target']), [
+      'pull:7',
+      'pull:7',
+      'pull:7',
+      'pull:7',
+    ]);
+    expect(api.commandRequests.first['ownerAccount'], 'owner');
+    expect((api.commandRequests.first['ts'] as String).isNotEmpty, isTrue);
+    expect((api.commandRequests.first['sig'] as String).isNotEmpty, isTrue);
+    for (final request in api.commandRequests) {
+      expect(request['payload'], {
+        'pullNumber': 7,
+        'base': 'main',
+        'head': 'review/mobile',
+      });
+    }
+    expect(api.commandRequests.last['command'], 'pull.close');
   });
+
+  testWidgets(
+    'releases tab shows artifacts and queues desktop release requests',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      final identity = await Identity.loadOrCreate();
+      final auth = await _ownerAuth(settings, identity);
+      final api = CollaborationApiService(settings);
+      await _pumpRepo(tester, api, identity: identity, auth: auth);
+
+      await tester.ensureVisible(find.text('Releases'));
+      await tester.tap(find.text('Releases'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('v1.2.3'), findsOneWidget);
+      expect(find.text('forkmesh-linux-x86_64'), findsOneWidget);
+      expect(find.textContaining('sha256:'), findsOneWidget);
+      expect(find.textContaining('3 downloads'), findsOneWidget);
+      expect(find.textContaining('content-addressed'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Draft release'));
+      await tester.tap(find.text('Draft release'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Generate notes'));
+      await tester.tap(find.text('Generate notes'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Create release'));
+      await tester.tap(find.text('Create release'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Publish artifacts'));
+      await tester.tap(find.text('Publish artifacts'));
+      await tester.pumpAndSettle();
+
+      expect(api.commandRequests.map((r) => r['command']), [
+        'release.draft',
+        'release.notes',
+        'release.create',
+        'release.publish',
+      ]);
+      expect(api.commandRequests.map((r) => r['target']), [
+        'release:v1.2.3',
+        'release:v1.2.3',
+        'release:v1.2.3',
+        'release:v1.2.3',
+      ]);
+      for (final request in api.commandRequests) {
+        expect(request['payload'], {'tag': 'v1.2.3', 'channel': 'latest'});
+      }
+      expect(api.commandRequests.last['command'], 'release.publish');
+    },
+  );
 
   testWidgets('thread alert control is disabled without account signing key', (
     tester,
@@ -696,6 +798,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add signed review flow'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Review / comment'),
+      500,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('Review / comment'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Approve').last);
@@ -741,6 +848,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Add signed review flow'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Review / comment'),
+      500,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.tap(find.text('Review / comment'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Request changes'));

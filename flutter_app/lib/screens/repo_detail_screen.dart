@@ -130,6 +130,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           );
         case RepoDetailTab.code:
         case RepoDetailTab.mirrors:
+        case RepoDetailTab.releases:
         case RepoDetailTab.about:
         case RepoDetailTab.actions:
         case RepoDetailTab.agents:
@@ -221,6 +222,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
                 Tab(text: 'Discussions'),
                 Tab(text: 'Commits'),
                 Tab(text: 'Mirrors'),
+                Tab(text: 'Releases'),
                 Tab(text: 'About'),
                 Tab(text: 'Actions'),
                 Tab(text: 'Agents'),
@@ -239,6 +241,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           _DiscussionsTab(api: api, repo: repo),
           _CommitsTab(api: api, repo: repo),
           _MirrorsTab(api: api, repo: repo),
+          _ReleasesTab(api: api, repo: repo),
           _AboutTab(repo: repo),
           _ActionsTab(api: api, repo: repo),
           _AgentsTab(api: api, repo: repo),
@@ -2937,18 +2940,30 @@ class _PullDetailScreen extends StatelessWidget {
 
   bool get _canRequestMerge => pull.status.trim().toLowerCase() == 'open';
 
-  Future<void> _requestMerge(BuildContext context) async {
+  Future<void> _requestPullCommand(
+    BuildContext context, {
+    required String command,
+    required String successMessage,
+  }) async {
     await _requestDesktopCommand(
       context,
       context.read<ApiService>(),
       repo,
-      command: 'pull.merge',
+      command: command,
       target: 'pull:${pull.number}',
       payload: {
         'pullNumber': pull.number,
         if (pull.base.isNotEmpty) 'base': pull.base,
         if (pull.head.isNotEmpty) 'head': pull.head,
       },
+      successMessage: successMessage,
+    );
+  }
+
+  Future<void> _requestMerge(BuildContext context) async {
+    await _requestPullCommand(
+      context,
+      command: 'pull.merge',
       successMessage:
           'Merge request queued. Approve it on the Qt desktop node to merge PR #${pull.number}.',
     );
@@ -3005,19 +3020,79 @@ class _PullDetailScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _InfoCard(
-          title: 'Merge on desktop',
+          title: 'Ship controls',
           children: [
             Text(
               _canRequestMerge
-                  ? 'Queue a signed merge request. The desktop node will verify and run the Git merge with the repo owner approving locally.'
-                  : 'This pull request is ${pull.status}; merge requests are only available for open PRs.',
+                  ? 'Queue signed PR requests. The desktop node will verify mergeability, show conflicts if any, and run Git only after the repo owner approves locally.'
+                  : 'This pull request is ${pull.status}; merge/review-changing requests may be rejected by the desktop node if the local state does not support them.',
               style: TextStyle(color: FmTheme.textSecondary(context)),
             ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _canRequestMerge ? () => _requestMerge(context) : null,
-              icon: const Icon(Icons.call_merge_outlined),
-              label: const Text('Request merge on desktop'),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _canRequestMerge
+                      ? () => _requestMerge(context)
+                      : null,
+                  icon: const Icon(Icons.call_merge_outlined),
+                  label: const Text('Request merge on desktop'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _canRequestMerge
+                      ? () => _requestPullCommand(
+                          context,
+                          command: 'pull.merge_delete',
+                          successMessage:
+                              'Merge + delete request queued. Approve it on the Qt desktop node.',
+                        )
+                      : null,
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                  label: const Text('Request merge + delete branch'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _requestPullCommand(
+                    context,
+                    command: 'pull.fix_agent',
+                    successMessage:
+                        'Fix-with-agent request queued. Approve it on the Qt desktop node.',
+                  ),
+                  icon: const Icon(Icons.smart_toy_outlined),
+                  label: const Text('Request fix with agent'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _requestPullCommand(
+                    context,
+                    command: 'pull.close',
+                    successMessage:
+                        'Close request queued. Approve it on the Qt desktop node.',
+                  ),
+                  icon: const Icon(Icons.archive_outlined),
+                  label: const Text('Request close on desktop'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _requestPullCommand(
+                    context,
+                    command: 'pull.reopen',
+                    successMessage:
+                        'Reopen request queued. Approve it on the Qt desktop node.',
+                  ),
+                  icon: const Icon(Icons.lock_open_outlined),
+                  label: const Text('Request reopen on desktop'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _requestPullCommand(
+                    context,
+                    command: 'pull.delete',
+                    successMessage:
+                        'Delete request queued. Approve it on the Qt desktop node.',
+                  ),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Request delete on desktop'),
+                ),
+              ],
             ),
           ],
         ),
@@ -3344,6 +3419,216 @@ class _MirrorsTab extends StatelessWidget {
         title: m.label,
         subtitle: m.online ? 'Online mirror' : 'Offline or recently unseen',
         badge: m.online ? 'live' : 'offline',
+      ),
+    );
+  }
+}
+
+class _ReleasesTab extends StatelessWidget {
+  const _ReleasesTab({required this.api, required this.repo});
+
+  final ApiService api;
+  final Repository repo;
+
+  Future<void> _requestRelease(
+    BuildContext context,
+    RepoRelease release, {
+    required String command,
+    required String successMessage,
+  }) async {
+    await _requestDesktopCommand(
+      context,
+      api,
+      repo,
+      command: command,
+      target: 'release:${release.tag}',
+      payload: {
+        'tag': release.tag,
+        if (release.channel.isNotEmpty) 'channel': release.channel,
+      },
+      successMessage: successMessage,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<RepoRelease>>(
+      future: api.releases(repo.owner, repo.name),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return ListView(
+            padding: const EdgeInsets.all(FmSpace.x4),
+            children: const [_LoadingCard(label: 'Loading releases...')],
+          );
+        }
+        if (snap.hasError) {
+          return ListView(
+            padding: const EdgeInsets.all(FmSpace.x4),
+            children: [_EmptyCard(message: '${snap.error}')],
+          );
+        }
+        final releases = snap.data ?? const <RepoRelease>[];
+        if (releases.isEmpty) {
+          return ListView(
+            padding: const EdgeInsets.all(FmSpace.x4),
+            children: const [
+              _EmptyCard(
+                message:
+                    'No releases yet. Draft and publish from a paired desktop node.',
+              ),
+            ],
+          );
+        }
+        return ListView.separated(
+          padding: const EdgeInsets.all(FmSpace.x4),
+          itemCount: releases.length,
+          separatorBuilder: (context, index) => const SizedBox(height: 12),
+          itemBuilder: (context, index) {
+            final release = releases[index];
+            return _InfoCard(
+              title: release.tag,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (release.channel.isNotEmpty)
+                      _Chip(
+                        icon: Icons.local_offer_outlined,
+                        label: release.channel,
+                      ),
+                    if (release.shortCommit.isNotEmpty)
+                      _Chip(
+                        icon: Icons.commit_outlined,
+                        label: release.shortCommit,
+                      ),
+                    if (release.createdDate.isNotEmpty)
+                      _Chip(
+                        icon: Icons.calendar_today_outlined,
+                        label: release.createdDate,
+                      ),
+                    _Chip(
+                      icon: Icons.inventory_2_outlined,
+                      label: release.assetSummary,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Release artifacts are content-addressed and verified by sha256 integrity pins. Mobile can request desktop release work; the paired Qt node builds, signs, mirrors, and publishes locally.',
+                  style: TextStyle(color: FmTheme.textSecondary(context)),
+                ),
+                const SizedBox(height: 12),
+                if (release.assets.isEmpty)
+                  const Text('No artifacts are attached to this release yet.')
+                else
+                  ...release.assets.map(
+                    (asset) => _ReleaseAssetRow(asset: asset),
+                  ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => _requestRelease(
+                        context,
+                        release,
+                        command: 'release.draft',
+                        successMessage:
+                            'Draft release request queued. Approve it on the Qt desktop node.',
+                      ),
+                      icon: const Icon(Icons.edit_note_outlined),
+                      label: const Text('Draft release'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _requestRelease(
+                        context,
+                        release,
+                        command: 'release.notes',
+                        successMessage:
+                            'Generate notes request queued. Approve it on the Qt desktop node.',
+                      ),
+                      icon: const Icon(Icons.notes_outlined),
+                      label: const Text('Generate notes'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () => _requestRelease(
+                        context,
+                        release,
+                        command: 'release.create',
+                        successMessage:
+                            'Create release request queued. Approve it on the Qt desktop node.',
+                      ),
+                      icon: const Icon(Icons.new_releases_outlined),
+                      label: const Text('Create release'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () => _requestRelease(
+                        context,
+                        release,
+                        command: 'release.publish',
+                        successMessage:
+                            'Publish artifacts request queued. Approve it on the Qt desktop node.',
+                      ),
+                      icon: const Icon(Icons.cloud_upload_outlined),
+                      label: const Text('Publish artifacts'),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _ReleaseAssetRow extends StatelessWidget {
+  const _ReleaseAssetRow({required this.asset});
+
+  final RepoReleaseAsset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: FmTheme.bgBase(context),
+        borderRadius: BorderRadius.circular(FmRadius.lg),
+        border: Border.all(color: FmTheme.border(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            asset.name.isEmpty ? asset.shortSha : asset.name,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _Chip(icon: Icons.devices_outlined, label: asset.platformLabel),
+              _Chip(icon: Icons.storage_outlined, label: asset.sizeLabel),
+              _Chip(icon: Icons.download_outlined, label: asset.downloadLabel),
+            ],
+          ),
+          if (asset.sha256.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              'sha256: ${asset.sha256}',
+              style: TextStyle(
+                color: FmTheme.textSecondary(context),
+                fontFamily: 'monospace',
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
