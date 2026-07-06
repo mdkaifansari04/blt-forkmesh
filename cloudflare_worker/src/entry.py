@@ -155,6 +155,7 @@ from urls import (  # noqa: E402
     REPO_BOUNTY_RE,
     REPO_SHARES_RE,
     REPO_MIRRORS_RE,
+    REPO_ABOUT_RE,
     REPO_AGENTS_RE,
     REPO_AGENTS_LIST_RE,
     REPO_AGENTS_PROMPT_RE,
@@ -2513,6 +2514,87 @@ async def catalog_handler(env, request):
         return json_response({"ok": True, "deleted": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+def _repo_identity_from_clone_url(value):
+    raw = clean_string(value, 2048).strip()
+    if not raw:
+        return "", ""
+    path = raw
+    try:
+        if re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I):
+            path = urlparse(raw).path
+        elif raw.startswith("git@") and ":" in raw:
+            path = raw.split(":", 1)[1]
+    except Exception:
+        path = raw
+    path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        return "", ""
+    owner = safe_segment(unquote(parts[-2]))
+    name = safe_segment(unquote(parts[-1]))
+    if name.lower().endswith(".git"):
+        name = safe_segment(name[:-4])
+    return owner, name
+
+
+def _catalog_record_matches_identity(record, owner, repo):
+    if not record:
+        return False
+    owner_l = str(owner or "").lower()
+    repo_l = str(repo or "").lower()
+    if (str(record.get("owner", "")).lower() == owner_l and
+            str(record.get("name", "")).lower() == repo_l):
+        return True
+    clone_owner, clone_repo = _repo_identity_from_clone_url(record.get("cloneUrl", ""))
+    return clone_owner.lower() == owner_l and clone_repo.lower() == repo_l
+
+
+async def repo_about_handler(env, request, owner, repo):
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    actor = clean_string(data.get("ownerAccount", ""), 120).lower()
+    if actor != str(owner or "").lower():
+        return json_response({"error": "not_authorized"}, status=403)
+    if not await _owner_pubkey(env, owner):
+        return json_response({"error": "account_required"}, status=403)
+
+    description = clean_string(data.get("description", ""), 240)
+    rows = await d1_all(
+        env, "SELECT key_bi, data, is_private FROM repositories")
+    updated = 0
+    first = None
+    for row in rows:
+        record = await decrypt_row(env, row.get("data"))
+        if not _catalog_record_matches_identity(record, owner, repo):
+            continue
+        record["description"] = description
+        enc = await encrypt_row(env, record)
+        await d1_run(
+            env,
+            "UPDATE repositories SET data=?, is_private=? WHERE key_bi=?",
+            enc,
+            1 if record.get("visibility") == "private" else 0,
+            row.get("key_bi"),
+        )
+        updated += 1
+        if first is None:
+            first = record
+    if not updated:
+        return json_response({"error": "not_found"}, status=404)
+    await purge_catalog_related_caches()
+    return json_response({
+        "ok": True,
+        "description": description,
+        "updated": updated,
+        "repository": first,
+    })
 
 
 async def repo_mirrors_handler(env, request, owner, repo):
@@ -9461,6 +9543,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await repo_mirrors_handler(self.env, request, owner, repo)
+
+        about_match = REPO_ABOUT_RE.match(url.path)
+        if about_match:
+            owner = safe_segment(about_match.group(1))
+            repo = safe_segment(about_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_about_handler(self.env, request, owner, repo)
 
         agents_list_match = REPO_AGENTS_LIST_RE.match(url.path)
         if agents_list_match:

@@ -45,9 +45,13 @@
     const updatedAt = formatDate(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
+    const canEditAbout = sessionOwnsRepo(repo);
+    const readmePath = "README.md";
+    const readmeHref = repoPathUrl(repo, "blob", readmePath);
     const tabMeta = {
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
+      insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
@@ -76,7 +80,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -165,19 +169,32 @@
             ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
+            <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about class="min-w-0 rounded-lg border border-border bg-background p-4">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
-              <i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>
+              ${canEditAbout
+                ? `<button type="button" data-repo-about-edit aria-label="Edit About" class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5"></i></button>`
+                : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
-            <p class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <form data-repo-about-form class="mt-3 hidden grid gap-2">
+              <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
+                <span class="inline-flex items-center gap-2">
+                  <button type="button" data-repo-about-cancel class="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground">Cancel</button>
+                  <button type="submit" class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">Save</button>
+                </span>
+              </div>
+            </form>
             <div class="mt-4 grid gap-2 text-xs text-muted-foreground">
               <a href="${escapeHtml(cloneUrl(repo))}" class="dashboard-accent-link inline-flex min-w-0 items-center gap-2 hover:underline"><i data-lucide="link" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Open clean URL</span></a>
-              <div class="inline-flex items-center gap-2"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></div>
-              <div class="inline-flex items-center gap-2"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></div>
+              <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
+              <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
             <div class="mt-5 border-t border-border pt-4">
 	              <h4 class="text-xs font-semibold text-foreground">Repository metadata</h4>
@@ -850,6 +867,34 @@
         return;
       }
 
+      const aboutEditButton = event.target.closest("[data-repo-about-edit]");
+      if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
+        setRepoAboutStatus("");
+        setRepoAboutEditing(true);
+        return;
+      }
+
+      if (event.target.closest("[data-repo-about-cancel]")) {
+        setRepoAboutStatus("");
+        setRepoAboutEditing(false);
+        return;
+      }
+
+      const readmeLink = event.target.closest("[data-repo-readme-link]");
+      if (readmeLink && state.selectedRepo) {
+        event.preventDefault();
+        setRepoTab("code");
+        loadRepositoryBlob(state.selectedRepo, readmeLink.dataset.repoReadmePath || "README.md");
+        return;
+      }
+
+      const activityLink = event.target.closest("[data-repo-activity-link]");
+      if (activityLink && state.selectedRepo) {
+        event.preventDefault();
+        activateRepoTab("insights");
+        return;
+      }
+
       const commitButton = event.target.closest("[data-dashboard-commit-hash]");
       if (commitButton && state.selectedRepo) {
         loadRepoCommitDetail(state.selectedRepo, commitButton.dataset.dashboardCommitHash || "");
@@ -1012,7 +1057,32 @@
       }
   });
 
-  document.addEventListener("submit", (event) => {
+  document.addEventListener("submit", async (event) => {
+    const aboutForm = event.target.closest("[data-repo-about-form]");
+    if (aboutForm && state.selectedRepo) {
+      event.preventDefault();
+      const input = aboutForm.querySelector("[data-repo-about-input]");
+      const submit = aboutForm.querySelector('button[type="submit"]');
+      const description = String(input?.value || "").trim();
+      if (submit) submit.disabled = true;
+      setRepoAboutStatus("Saving...");
+      try {
+        const body = await saveRepoAboutFromWeb(state.selectedRepo, description);
+        applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
+        setRepoAboutStatus("Saved.", "good");
+        setRepoAboutEditing(false);
+      } catch (error) {
+        const code = String(error?.message || "");
+        setRepoAboutStatus(
+          code === "not_authorized" ? "Only the source node owner can edit About."
+            : code === "account_required" ? "Sign in as the source node owner first."
+            : "Could not save About.",
+          "bad");
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+      return;
+    }
     const issueForm = event.target.closest("[data-repo-issue-form]");
     if (issueForm && state.selectedRepo) {
       event.preventDefault();
