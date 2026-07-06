@@ -8,6 +8,7 @@ enum RepoDetailTab {
   commits,
   mirrors,
   about,
+  actions,
   agents,
 }
 
@@ -67,6 +68,8 @@ class NotificationDeepLink {
           tab = RepoDetailTab.mirrors;
         case 'about':
           tab = RepoDetailTab.about;
+        case 'actions':
+          tab = RepoDetailTab.actions;
         case 'agents':
           tab = RepoDetailTab.agents;
         case 'tree':

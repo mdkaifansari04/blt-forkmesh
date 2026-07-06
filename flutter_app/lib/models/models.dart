@@ -164,6 +164,181 @@ class ForkNotification {
   }
 }
 
+class RepoActions {
+  const RepoActions({this.workflows = const [], this.runs = const []});
+
+  final List<ActionWorkflow> workflows;
+  final List<ActionRun> runs;
+
+  factory RepoActions.fromJson(Map<String, dynamic> json) {
+    final workflowsRaw = json['workflows'] is List
+        ? json['workflows'] as List
+        : const [];
+    final runsRaw = json['runs'] is List ? json['runs'] as List : const [];
+    return RepoActions(
+      workflows: workflowsRaw
+          .whereType<Map>()
+          .map(
+            (item) => ActionWorkflow.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .toList(),
+      runs: runsRaw
+          .whereType<Map>()
+          .map((item) => ActionRun.fromJson(Map<String, dynamic>.from(item)))
+          .toList(),
+    );
+  }
+}
+
+class ActionWorkflow {
+  const ActionWorkflow({
+    this.path = '',
+    this.name = '',
+    this.triggers = const [],
+    this.stepCount = 0,
+    this.manual = false,
+    this.valid = true,
+    this.error = '',
+  });
+
+  final String path;
+  final String name;
+  final List<String> triggers;
+  final int stepCount;
+  final bool manual;
+  final bool valid;
+  final String error;
+
+  String get displayName => name.isNotEmpty ? name : path;
+  String get triggerLabel =>
+      triggers.isEmpty ? 'No triggers' : triggers.join(', ');
+
+  factory ActionWorkflow.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    final rawTriggers = json['on'] is List
+        ? json['on'] as List
+        : json['triggers'] is List
+        ? json['triggers'] as List
+        : json['on'] is String
+        ? [json['on']]
+        : const [];
+    return ActionWorkflow(
+      path: (json['path'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      triggers: rawTriggers.map((value) => value.toString()).toList(),
+      stepCount: asInt(json['stepCount'] ?? json['steps']),
+      manual: json['manual'] == true,
+      valid: json['valid'] != false,
+      error: (json['error'] ?? '').toString(),
+    );
+  }
+}
+
+class ActionRun {
+  const ActionRun({
+    required this.id,
+    this.workflowPath = '',
+    this.workflowName = '',
+    this.commit = '',
+    this.ref = '',
+    this.status = '',
+    this.createdAtMs = 0,
+    this.startedAtMs = 0,
+    this.finishedAtMs = 0,
+  });
+
+  final int id;
+  final String workflowPath;
+  final String workflowName;
+  final String commit;
+  final String ref;
+  final String status;
+  final int createdAtMs;
+  final int startedAtMs;
+  final int finishedAtMs;
+
+  bool get isActive {
+    final clean = status.toLowerCase().replaceAll('_', '-');
+    return clean == 'queued' ||
+        clean == 'running' ||
+        clean == 'awaiting-approval';
+  }
+
+  String get displayName =>
+      workflowName.isNotEmpty ? workflowName : 'Action run #$id';
+
+  String get statusLabel {
+    final clean = status.toLowerCase().replaceAll('_', '-');
+    return switch (clean) {
+      'awaiting-approval' => 'Awaiting approval',
+      'queued' => 'Queued',
+      'running' => 'Running',
+      'success' || 'passed' => 'Success',
+      'failed' || 'failure' || 'error' => 'Failed',
+      'rejected' => 'Rejected',
+      'cancelled' || 'canceled' || 'stopped' => 'Cancelled',
+      _ => status.isEmpty ? 'Unknown' : _titleCase(status),
+    };
+  }
+
+  String get refLabel {
+    if (ref.startsWith('refs/heads/')) {
+      return ref.substring('refs/heads/'.length);
+    }
+    if (ref.startsWith('refs/tags/')) return ref.substring('refs/tags/'.length);
+    return ref;
+  }
+
+  String get shortCommit =>
+      commit.length <= 8 ? commit : commit.substring(0, 8);
+
+  String get durationLabel {
+    if (startedAtMs <= 0 || finishedAtMs <= startedAtMs) return '';
+    final totalSeconds = (finishedAtMs - startedAtMs) ~/ 1000;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    if (minutes <= 0) return '${seconds}s';
+    return '${minutes}m ${seconds}s';
+  }
+
+  factory ActionRun.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return ActionRun(
+      id: asInt(json['id']),
+      workflowPath: (json['workflowPath'] ?? '').toString(),
+      workflowName: (json['workflowName'] ?? '').toString(),
+      commit: (json['commit'] ?? '').toString(),
+      ref: (json['ref'] ?? '').toString(),
+      status: (json['status'] ?? '').toString(),
+      createdAtMs: asInt(json['createdAtMs']),
+      startedAtMs: asInt(json['startedAtMs']),
+      finishedAtMs: asInt(json['finishedAtMs']),
+    );
+  }
+}
+
+class ActionLog {
+  const ActionLog({required this.id, this.status = '', this.log = ''});
+
+  final int id;
+  final String status;
+  final String log;
+
+  String get statusLabel => ActionRun(id: id, status: status).statusLabel;
+
+  factory ActionLog.fromJson(Map<String, dynamic> json) {
+    int asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    return ActionLog(
+      id: asInt(json['id']),
+      status: (json['status'] ?? '').toString(),
+      log: (json['log'] ?? '').toString(),
+    );
+  }
+}
+
 class AgentTranscript {
   const AgentTranscript({required this.status, required this.transcript});
 
