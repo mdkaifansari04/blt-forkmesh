@@ -15,6 +15,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ActionApiService extends ApiService {
   ActionApiService(super.settings);
 
+  final commandRequests = <Map<String, Object?>>[];
+
   @override
   Future<List<RepoBranch>> branches(String owner, String name) async => [
     RepoBranch(name: 'main', isDefault: true),
@@ -73,6 +75,30 @@ class ActionApiService extends ApiService {
     status: 'success',
     log: 'checkout\nflutter test passed\nartifact uploaded',
   );
+
+  @override
+  Future<DesktopCommandResult> desktopCommand(
+    String owner,
+    String name, {
+    required String ownerAccount,
+    required String command,
+    required String target,
+    required String ts,
+    required String sig,
+    Map<String, Object?> payload = const {},
+  }) async {
+    commandRequests.add({
+      'owner': owner,
+      'name': name,
+      'ownerAccount': ownerAccount,
+      'command': command,
+      'target': target,
+      'ts': ts,
+      'sig': sig,
+      'payload': payload,
+    });
+    return const DesktopCommandResult(ok: true, queued: 1);
+  }
 }
 
 class PollingActionApiService extends ActionApiService {
@@ -208,7 +234,8 @@ void main() {
   ) async {
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
-    await _pumpRepo(tester, ActionApiService(settings), settings);
+    final api = ActionApiService(settings);
+    await _pumpRepo(tester, api, settings);
 
     await tester.ensureVisible(find.text('Actions'));
     await tester.tap(find.text('Actions'));
@@ -227,7 +254,24 @@ void main() {
     expect(find.text('Action run #7'), findsOneWidget);
     expect(find.text('Run log'), findsOneWidget);
     expect(find.textContaining('flutter test passed'), findsOneWidget);
-    expect(find.textContaining('rerun, cancel, approve'), findsOneWidget);
+    expect(
+      find.textContaining('explicit approval on the desktop node'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Request rerun on desktop'));
+    await tester.pumpAndSettle();
+
+    expect(api.commandRequests.single['command'], 'action.rerun');
+    expect(api.commandRequests.single['target'], 'run:7');
+    expect(api.commandRequests.single['ownerAccount'], 'owner');
+    expect((api.commandRequests.single['ts'] as String).isNotEmpty, isTrue);
+    expect((api.commandRequests.single['sig'] as String).isNotEmpty, isTrue);
+    expect(api.commandRequests.single['payload'], {
+      'runId': 7,
+      'workflowPath': '.forkmesh/test.yml',
+    });
+    expect(find.textContaining('Desktop request queued'), findsOneWidget);
   });
 
   testWidgets('repo Actions tab auto-refreshes while runs are active', (

@@ -339,6 +339,23 @@ class ActionLog {
   }
 }
 
+class DesktopCommandResult {
+  const DesktopCommandResult({required this.ok, this.queued = 0});
+
+  final bool ok;
+  final int queued;
+
+  factory DesktopCommandResult.fromJson(Map<String, dynamic> json) {
+    final rawQueued = json['queued'];
+    final queued = rawQueued is int
+        ? rawQueued
+        : rawQueued is num
+        ? rawQueued.toInt()
+        : int.tryParse('$rawQueued') ?? 0;
+    return DesktopCommandResult(ok: json['ok'] == true, queued: queued);
+  }
+}
+
 class AgentTranscript {
   const AgentTranscript({required this.status, required this.transcript});
 
