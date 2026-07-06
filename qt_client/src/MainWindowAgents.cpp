@@ -382,7 +382,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *page = new QWidget;
 
     auto *listPane = new QWidget;
-    listPane->setMinimumWidth(380);
+    listPane->setMinimumWidth(260);
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
     auto *headingRow = new QHBoxLayout;
@@ -1146,7 +1146,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailPane->hide();
 
     auto *splitter = new QSplitter(Qt::Horizontal);
-    splitter->setChildrenCollapsible(false);
+    splitter->setChildrenCollapsible(true);
     // Non-opaque resize: dragging the divider tracks a lightweight rubber-band
     // line and the panes only resize once, on release. With opaque resize (the
     // Qt default) every mouse-move re-lays-out the detail pane, whose transcript
@@ -1155,6 +1155,8 @@ QWidget *MainWindow::buildAgentsTab()
     splitter->setOpaqueResize(false);
     splitter->addWidget(listPane);
     splitter->addWidget(detailPane);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, true);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     // Equal split so the divider sits in the middle of the screen (issue #85).

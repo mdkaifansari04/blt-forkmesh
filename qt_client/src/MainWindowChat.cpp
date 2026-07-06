@@ -411,6 +411,8 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      QStringLiteral("claude-code"));
     selectQuickAddAgentProvider(m_quickAddAgentProvider);
     m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
+    m_quickAddAgentProvider->setMinimumWidth(112);
+    m_quickAddAgentProvider->setMaximumWidth(150);
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -418,8 +420,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
-    m_quickAddClaudeModel->setMinimumWidth(170);
-    m_quickAddClaudeModel->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_quickAddClaudeModel->setMinimumWidth(130);
+    m_quickAddClaudeModel->setMaximumWidth(180);
+    m_quickAddClaudeModel->setMinimumContentsLength(10);
+    m_quickAddClaudeModel->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
@@ -479,7 +484,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     // drive per-tool approval headlessly.
     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_quickAddModeSelector->setMinimumWidth(118);
+    m_quickAddModeSelector->setMaximumWidth(170);
+    m_quickAddModeSelector->setMinimumContentsLength(10);
+    m_quickAddModeSelector->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
@@ -635,8 +644,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *quickAddSendButton = new QPushButton;
     quickAddSendButton->setObjectName("quickAddSendIcon");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(quickAddSendButton, "paper-airplane", 16);
-    quickAddSendButton->setFixedSize(28, 28);
+    setOcticon(quickAddSendButton, "paper-airplane", 15);
+    quickAddSendButton->setFixedSize(24, 24);
     quickAddSendButton->setToolTip("Send (Enter)");
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
@@ -648,8 +657,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton = new QPushButton;
     m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
     m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 16, -45.0);
-    m_quickAddSendToAgentButton->setFixedSize(28, 28);
+    setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 15, -45.0);
+    m_quickAddSendToAgentButton->setFixedSize(24, 24);
     m_quickAddSendToAgentButton->setToolTip(
         "Send to the agent open above, as a follow-up message");
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
@@ -707,8 +716,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // and they read as floating above the send icons instead of level with
     // them.
     auto *bottomBar = new QHBoxLayout;
-    bottomBar->setContentsMargins(8, 6, 6, 0);
-    bottomBar->setSpacing(6);
+    bottomBar->setContentsMargins(8, 4, 6, 0);
+    bottomBar->setSpacing(5);
     bottomBar->addWidget(m_quickAddImageButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddMicButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
@@ -725,6 +734,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
     bottomBar->addLayout(sendColumn);
 
+    auto *bottomBarHost = new QWidget;
+    bottomBarHost->setObjectName("quickAddBottomBarHost");
+    bottomBarHost->setLayout(bottomBar);
+    bottomBarHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    auto *bottomBarScroll = new QScrollArea;
+    bottomBarScroll->setObjectName("quickAddBottomBarScroll");
+    bottomBarScroll->setWidget(bottomBarHost);
+    bottomBarScroll->setWidgetResizable(false);
+    bottomBarScroll->setFrameShape(QFrame::NoFrame);
+    bottomBarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    bottomBarScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    bottomBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    bottomBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    bottomBarScroll->setMinimumWidth(0);
+    bottomBarScroll->setFixedHeight(56);
+
     // Prompt wrapper: the border lives on this frame; the text edit sits on
     // top with the bottom bar nested below it inside the same box, so the
     // controls read as an overlay along the foot of the prompt input rather
@@ -735,7 +760,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
     promptLayout->addWidget(m_issueQuickAdd);
-    promptLayout->addLayout(bottomBar);
+    promptLayout->addWidget(bottomBarScroll);
 
     // "Agents:" status strip above the prompt input (adhoc #111): a clickable
     // label plus one small colored dot per known agent session — a status
@@ -788,6 +813,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     cardLayout->setSpacing(4);
     cardLayout->addWidget(m_agentStatusRow);
     cardLayout->addWidget(promptWrapper);
+    card->setMinimumWidth(0);
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -802,6 +829,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_footerUpdateLog->setMinimumWidth(0);
     m_footerUpdateLog->setToolTip(
         "Live log \xE2\x80\x94 scroll up to search back through recent history.");
     // Bound the live buffer the same way the seed below is bounded, so it can't
@@ -3115,7 +3143,22 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_navTokenUsage);
     mainRow->addSpacing(4);
     mainRow->addWidget(m_avatarNavButton);
-    layout->addLayout(mainRow);
+    auto *mainRowHost = new QWidget;
+    mainRowHost->setLayout(mainRow);
+    mainRowHost->setMinimumWidth(0);
+    mainRowHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *mainRowScroll = new QScrollArea;
+    mainRowScroll->setObjectName("topBarScroll");
+    mainRowScroll->setWidget(mainRowHost);
+    mainRowScroll->setWidgetResizable(true);
+    mainRowScroll->setFrameShape(QFrame::NoFrame);
+    mainRowScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    mainRowScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    mainRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    mainRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    mainRowScroll->setMinimumWidth(0);
+    mainRowScroll->setFixedHeight(56);
+    layout->addWidget(mainRowScroll);
 
     // Hairline divider separating the relay/node row from the section nav below.
     auto *navDivider = new QFrame;
@@ -3151,7 +3194,22 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_navDrawButton);
     navRow->addWidget(m_navScreenshotButton);
     navRow->addWidget(m_navRebuildButton);
-    layout->addLayout(navRow);
+    auto *navRowHost = new QWidget;
+    navRowHost->setLayout(navRow);
+    navRowHost->setMinimumWidth(0);
+    navRowHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *navRowScroll = new QScrollArea;
+    navRowScroll->setObjectName("topBarScroll");
+    navRowScroll->setWidget(navRowHost);
+    navRowScroll->setWidgetResizable(true);
+    navRowScroll->setFrameShape(QFrame::NoFrame);
+    navRowScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    navRowScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    navRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    navRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    navRowScroll->setMinimumWidth(0);
+    navRowScroll->setFixedHeight(50);
+    layout->addWidget(navRowScroll);
     // Home/Code is the initial section, so show its nav button selected up front.
     m_repoViewButton->setChecked(true);
 

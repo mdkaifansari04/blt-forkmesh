@@ -794,8 +794,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 38px;
+    max-height: 38px;
 }
 #issueQuickAdd:focus { border-color: #58a6ff; }
 #promptWrapper {
@@ -804,7 +804,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
 #promptWrapper:focus-within { border-color: #39d353; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 46px; max-height: 46px;
+    min-height: 38px; max-height: 38px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {
@@ -1922,8 +1922,8 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border-radius: 8px;
     padding: 5px 8px;
     font-size: 12px;
-    min-height: 46px;
-    max-height: 46px;
+    min-height: 38px;
+    max-height: 38px;
 }
 #issueQuickAdd:focus { border-color: #0969da; }
 #promptWrapper {
@@ -1932,7 +1932,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
 #promptWrapper:focus-within { border-color: #1a7f37; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
-    min-height: 46px; max-height: 46px;
+    min-height: 38px; max-height: 38px;
 }
 #promptWrapper #issueQuickAdd:focus { border: none; }
 QPushButton#quickAddSendIcon {

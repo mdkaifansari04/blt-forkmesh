@@ -4395,11 +4395,9 @@ QWidget *MainWindow::createGlobalSearchBox()
     m_globalSearch->setObjectName("globalSearch");
     m_globalSearch->setClearButtonEnabled(true);
     m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
-    m_globalSearch->setMinimumWidth(220);
-    m_globalSearch->setMaximumWidth(440);
-    m_globalSearch->setFixedHeight(30);
-    m_globalSearch->setTextMargins(2, 0, 0, 0);
-    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 13),
+    m_globalSearch->setMinimumWidth(150);
+    m_globalSearch->setMaximumWidth(360);
+    m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
                               QLineEdit::LeadingPosition);
     m_globalSearch->setToolTip(QString::fromUtf8(
         "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "
@@ -6116,9 +6114,17 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     m_currentCommitHash = fullHash;
 
     // --- Header labels.
-    if (m_commitTitle)
+    if (m_commitTitle) {
+        QString breakableHash;
+        breakableHash.reserve(fullHash.size() + fullHash.size() / 8 * 7);
+        for (int i = 0; i < fullHash.size(); ++i) {
+            breakableHash += fullHash.mid(i, 1).toHtmlEscaped();
+            if ((i + 1) % 8 == 0 && i + 1 < fullHash.size())
+                breakableHash += QStringLiteral("&#8203;");
+        }
         m_commitTitle->setText(
-            QStringLiteral("Commit <code>%1</code>").arg(fullHash.toHtmlEscaped()));
+            QStringLiteral("Commit <code>%1</code>").arg(breakableHash));
+    }
     if (m_commitMessage) {
         QString msg =
             QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
@@ -7515,7 +7521,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
     tabRow->setContentsMargins(12, 0, 12, 0);
-    tabRow->setSpacing(2);
+    tabRow->setSpacing(10);
     for (int i = 0; i < tabs.size(); ++i) {
         // Commits (id 1) no longer gets a top-bar tab: its panel lives inside
         // the Code overview, toggled by the commit strip's "N Commits" button.
@@ -7560,6 +7566,19 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *tabBar = new QWidget;
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
+    tabBar->setMinimumWidth(0);
+    tabBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *tabBarScroll = new QScrollArea;
+    tabBarScroll->setObjectName("repoTabBarScroll");
+    tabBarScroll->setWidget(tabBar);
+    tabBarScroll->setWidgetResizable(true);
+    tabBarScroll->setFrameShape(QFrame::NoFrame);
+    tabBarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    tabBarScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    tabBarScroll->setMinimumWidth(0);
+    tabBarScroll->setFixedHeight(48);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin") no
     // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
@@ -7772,7 +7791,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addLayout(headerRow);
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
-    layout->addWidget(tabBar);
+    layout->addWidget(tabBarScroll);
     layout->addWidget(m_repoDetailStack, 1);
     return page;
 }
@@ -8002,6 +8021,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitTitle->setObjectName("repoHeaderTitle");
     m_commitTitle->setTextFormat(Qt::RichText);
     m_commitTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_commitTitle->setWordWrap(true);
+    m_commitTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     // Copy a forkmesh:// permalink to this commit (issue #154): pasted into a
     // comment it renders as a link back here via autolinkReferences().
@@ -8069,6 +8090,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
         if (!m_currentCommitHash.isEmpty())
             showCommit(m_currentCommitHash);
     });
+    for (QPushButton *b :
+         {commitCopyLinkButton, m_commitDownloadButton, m_commitDeleteButton,
+          m_commitRevertButton, m_commitPrevButton, m_commitNextButton}) {
+        b->setProperty("buttonSize", "sm");
+        b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        b->setFixedWidth(qMax(72, b->sizeHint().width()));
+    }
 
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
@@ -8077,20 +8105,20 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *prevNextRow = new QHBoxLayout;
     prevNextRow->setContentsMargins(0, 0, 0, 0);
     prevNextRow->setSpacing(4);
-    prevNextRow->addStretch();
+    prevNextRow->addWidget(m_commitDeleteButton);
+    prevNextRow->addWidget(m_commitRevertButton);
     prevNextRow->addWidget(m_commitSplitButton);
     prevNextRow->addWidget(commitCopyLinkButton);
     prevNextRow->addWidget(m_commitDownloadButton);
-    prevNextRow->addWidget(m_commitDeleteButton);
-    prevNextRow->addWidget(m_commitRevertButton);
     prevNextRow->addWidget(m_commitPrevButton);
     prevNextRow->addWidget(m_commitNextButton);
+    prevNextRow->addStretch();
     navCol->addLayout(prevNextRow);
 
-    auto *headerRow = new QHBoxLayout;
+    auto *headerRow = new QVBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);
-    headerRow->addWidget(m_commitTitle, 1, Qt::AlignTop);
     headerRow->addLayout(navCol);
+    headerRow->addWidget(m_commitTitle, 0, Qt::AlignTop);
 
     m_commitMessage = new QLabel;
     m_commitMessage->setObjectName("commitMessage");
@@ -8225,14 +8253,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *outerSplit = new QSplitter(Qt::Horizontal);
     outerSplit->addWidget(listPage);
     outerSplit->addWidget(m_commitsStack);
-    // #123: open the commit list to half the window width on first load so its
-    // columns aren't clipped (the right pane is just a placeholder until a commit
-    // is selected). Equal stretch factors keep it ~50/50 at any window width — a
-    // zero stretch on the list otherwise handed all the extra space on a wide
-    // window to the placeholder and left the list clipped. Still draggable.
+    // #123: open the commit list with enough room for its columns, without
+    // seeding a desktop-only 2000px splitter width on smaller windows. Equal
+    // stretch factors keep the divider comfortable as the user resizes it.
     outerSplit->setStretchFactor(0, 1);
     outerSplit->setStretchFactor(1, 1);
-    outerSplit->setSizes({1000, 1000});
+    outerSplit->setSizes({320, 780});
 
     // New top panel: a VSCode-style Source Control view for the working tree
     // (compose strip + changes tree + diff), sitting above the committed-history
