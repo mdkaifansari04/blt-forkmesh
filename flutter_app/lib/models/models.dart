@@ -1,6 +1,6 @@
 // ignore_for_file: dangling_library_doc_comments
 /// Plain data models mirroring the Qt client's structs (MemberInfo, ChatMessage,
-/// RepositoryRecord, Issue, PullRequest) — only the fields the Flutter UI needs.
+/// RepositoryRecord, Issue, PullRequest) - only the fields the Flutter UI needs.
 
 class Member {
   Member({
@@ -577,6 +577,23 @@ String _titleCase(String value) {
       .join(' ');
 }
 
+int _modelInt(dynamic value) => value is int
+    ? value
+    : (value is num ? value.toInt() : int.tryParse('$value') ?? 0);
+
+double _modelDouble(dynamic value) =>
+    value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+
+String _modelString(dynamic value) => value == null ? '' : '$value';
+
+String _firstModelString(Map<String, dynamic> json, List<String> keys) {
+  for (final key in keys) {
+    final value = _modelString(json[key]).trim();
+    if (value.isNotEmpty) return value;
+  }
+  return '';
+}
+
 class Repository {
   Repository({
     required this.owner,
@@ -591,6 +608,7 @@ class Repository {
     this.liveHost = false,
     this.cloneOnline = false,
     this.updatedMs = 0,
+    this.solana = '',
   });
 
   final String owner;
@@ -605,8 +623,10 @@ class Repository {
   final bool liveHost;
   final bool cloneOnline;
   final int updatedMs;
+  final String solana;
 
   String get fullName => '$owner/$name';
+  String get donationAddress => solana;
 
   factory Repository.fromJson(Map<String, dynamic> j) {
     int asInt(dynamic v) =>
@@ -624,8 +644,107 @@ class Repository {
       liveHost: j['liveHost'] == true,
       cloneOnline: j['cloneOnline'] == true,
       updatedMs: asInt(j['updatedAt'] ?? j['publishedAt'] ?? 0),
+      solana: _firstModelString(j, const [
+        'solana',
+        'donationAddress',
+        'payoutAddress',
+      ]),
     );
   }
+}
+
+class IssueBounty {
+  const IssueBounty({
+    this.address = '',
+    this.status = 'open',
+    this.amountUsd = 0,
+    this.requiredLamports = 0,
+    this.receivedLamports = 0,
+    this.amountSol = 0,
+    this.payUri = '',
+    this.payee = '',
+    this.payoutSig = '',
+    this.confirmed = false,
+  });
+
+  final String address;
+  final String status;
+  final double amountUsd;
+  final int requiredLamports;
+  final int receivedLamports;
+  final double amountSol;
+  final String payUri;
+  final String payee;
+  final String payoutSig;
+  final bool confirmed;
+
+  bool get hasFunding =>
+      address.isNotEmpty ||
+      amountUsd > 0 ||
+      requiredLamports > 0 ||
+      receivedLamports > 0 ||
+      payoutSig.isNotEmpty;
+
+  String get statusLabel {
+    final clean = status.trim();
+    if (clean.isNotEmpty) return clean;
+    if (payoutSig.isNotEmpty) return 'paid';
+    if (requiredLamports > 0 && receivedLamports >= requiredLamports) {
+      return 'funded';
+    }
+    return 'open';
+  }
+
+  String get progressLabel {
+    if (requiredLamports > 0) {
+      return '$receivedLamports / $requiredLamports lamports';
+    }
+    if (receivedLamports > 0) return '$receivedLamports lamports received';
+    return '';
+  }
+
+  factory IssueBounty.fromJson(dynamic data) {
+    final source = data is Map<String, dynamic>
+        ? data
+        : data is Map
+        ? Map<String, dynamic>.from(data)
+        : const <String, dynamic>{};
+    final nested = source['bounty'] is Map
+        ? Map<String, dynamic>.from(source['bounty'] as Map)
+        : source['funding'] is Map
+        ? Map<String, dynamic>.from(source['funding'] as Map)
+        : source;
+    return IssueBounty(
+      address: _firstModelString(nested, const ['address', 'bountyAddress']),
+      status: _firstModelString(nested, const [
+        'status',
+        'bountyStatus',
+      ]).ifEmpty('open'),
+      amountUsd: _modelDouble(nested['amountUsd'] ?? nested['bountyUsd']),
+      requiredLamports: _modelInt(
+        nested['requiredLamports'] ?? nested['bountyRequiredLamports'],
+      ),
+      receivedLamports: _modelInt(
+        nested['receivedLamports'] ?? nested['bountyReceivedLamports'],
+      ),
+      amountSol: _modelDouble(nested['amountSol'] ?? nested['bountyAmountSol']),
+      payUri: _firstModelString(nested, const [
+        'uri',
+        'payUri',
+        'bountyPayUri',
+      ]),
+      payee: _firstModelString(nested, const ['payee', 'bountyPayee']),
+      payoutSig: _firstModelString(nested, const [
+        'payoutSig',
+        'bountyPayoutSig',
+      ]),
+      confirmed: nested['confirmed'] == true,
+    );
+  }
+}
+
+extension _StringDefault on String {
+  String ifEmpty(String fallback) => isEmpty ? fallback : this;
 }
 
 class Issue {
@@ -642,6 +761,14 @@ class Issue {
     this.events = const [],
     this.votes = 0,
     this.bountyUsd = 0,
+    this.bountyAddress = '',
+    this.bountyStatus = '',
+    this.bountyRequiredLamports = 0,
+    this.bountyReceivedLamports = 0,
+    this.bountyAmountSol = 0,
+    this.bountyPayUri = '',
+    this.bountyPayee = '',
+    this.bountyPayoutSig = '',
   });
 
   final int number;
@@ -656,12 +783,79 @@ class Issue {
   final List<IssueEvent> events;
   final int votes;
   final double bountyUsd;
+  final String bountyAddress;
+  final String bountyStatus;
+  final int bountyRequiredLamports;
+  final int bountyReceivedLamports;
+  final double bountyAmountSol;
+  final String bountyPayUri;
+  final String bountyPayee;
+  final String bountyPayoutSig;
 
   bool get isOpen => status != 'closed';
+  IssueBounty get bounty => IssueBounty(
+    address: bountyAddress,
+    status: bountyStatus.isEmpty ? 'open' : bountyStatus,
+    amountUsd: bountyUsd,
+    requiredLamports: bountyRequiredLamports,
+    receivedLamports: bountyReceivedLamports,
+    amountSol: bountyAmountSol,
+    payUri: bountyPayUri,
+    payee: bountyPayee,
+    payoutSig: bountyPayoutSig,
+  );
+  String get bountyStatusLabel => bounty.statusLabel;
+  String get bountyProgressLabel => bounty.progressLabel;
+  bool get hasBountyFunding =>
+      bountyUsd > 0 ||
+      bountyAddress.isNotEmpty ||
+      bountyRequiredLamports > 0 ||
+      bountyReceivedLamports > 0 ||
+      bountyPayoutSig.isNotEmpty;
+
+  Issue copyWithBounty(IssueBounty bounty) => Issue(
+    number: number,
+    title: title,
+    status: status,
+    body: body,
+    author: author,
+    labels: labels,
+    milestone: milestone,
+    priority: priority,
+    assignees: assignees,
+    events: events,
+    votes: votes,
+    bountyUsd: bounty.amountUsd > 0 ? bounty.amountUsd : bountyUsd,
+    bountyAddress: bounty.address,
+    bountyStatus: bounty.statusLabel,
+    bountyRequiredLamports: bounty.requiredLamports,
+    bountyReceivedLamports: bounty.receivedLamports,
+    bountyAmountSol: bounty.amountSol,
+    bountyPayUri: bounty.payUri,
+    bountyPayee: bounty.payee,
+    bountyPayoutSig: bounty.payoutSig,
+  );
 
   factory Issue.fromJson(Map<String, dynamic> j) {
     int asInt(dynamic v) =>
         v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
+    final bounty = IssueBounty.fromJson(
+      j['bounty'] is Map
+          ? j['bounty']
+          : {
+              'address': j['bountyAddress'] ?? j['address'],
+              'status': j['bountyStatus'],
+              'amountUsd': j['bountyUsd'] ?? j['amountUsd'],
+              'requiredLamports':
+                  j['bountyRequiredLamports'] ?? j['requiredLamports'],
+              'receivedLamports':
+                  j['bountyReceivedLamports'] ?? j['receivedLamports'],
+              'amountSol': j['bountyAmountSol'] ?? j['amountSol'],
+              'uri': j['bountyPayUri'] ?? j['payUri'] ?? j['uri'],
+              'payee': j['bountyPayee'] ?? j['payee'],
+              'payoutSig': j['bountyPayoutSig'] ?? j['payoutSig'],
+            },
+    );
     return Issue(
       number: asInt(j['number']),
       title: (j['title'] ?? '').toString(),
@@ -684,7 +878,15 @@ class Issue {
       votes: asInt(j['votes']),
       bountyUsd: (j['bountyUsd'] is num)
           ? (j['bountyUsd'] as num).toDouble()
-          : 0,
+          : bounty.amountUsd,
+      bountyAddress: bounty.address,
+      bountyStatus: bounty.status,
+      bountyRequiredLamports: bounty.requiredLamports,
+      bountyReceivedLamports: bounty.receivedLamports,
+      bountyAmountSol: bounty.amountSol,
+      bountyPayUri: bounty.payUri,
+      bountyPayee: bounty.payee,
+      bountyPayoutSig: bounty.payoutSig,
     );
   }
 }

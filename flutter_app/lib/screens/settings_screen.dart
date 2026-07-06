@@ -69,18 +69,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _ProfileAccountCard(session: session),
               const SizedBox(height: FmSpace.x4),
               _field('Display name', _name, onSaved: _settings.setDisplayName),
-              _field(
-                'Solana address (payouts/donations, optional)',
-                _solana,
-                onSaved: _settings.setSolanaAddress,
-              ),
-              const SizedBox(height: FmSpace.x2),
               Text(
                 'Node id: ${identity.publicKeyB64url}',
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 12,
                   color: FmTheme.textTertiary(context),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: FmSpace.x5),
+
+        const FmSectionHeader(title: 'Funding and payouts'),
+        const SizedBox(height: FmSpace.x2),
+        FmCard(
+          radius: FmRadius.lg,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _FundingPayoutStatus(session: session),
+              const SizedBox(height: FmSpace.x3),
+              _field(
+                'Public Solana address (payouts/donations, optional)',
+                _solana,
+                onSaved: _settings.setSolanaAddress,
+              ),
+              Text(
+                'Payout and donation addresses are public profile metadata. Use a wallet address only; never paste private keys or seed phrases.',
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                  height: 1.35,
                 ),
               ),
             ],
@@ -354,6 +375,58 @@ class _RelayStateBadge extends StatelessWidget {
       RelayConnectionState.offline => FmColors.offline,
     };
     return FmStatusBadge(label: label, color: color);
+  }
+}
+
+class _FundingPayoutStatus extends StatelessWidget {
+  const _FundingPayoutStatus({required this.session});
+
+  final AuthSession? session;
+
+  @override
+  Widget build(BuildContext context) {
+    final connected = session?.hasPayoutAddress == true;
+    final address = session?.solana.trim() ?? '';
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          connected ? Icons.verified_outlined : Icons.info_outline,
+          color: connected
+              ? FmTheme.success(context)
+              : FmTheme.textTertiary(context),
+          size: 22,
+        ),
+        const SizedBox(width: FmSpace.x3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                connected
+                    ? 'Payout address connected'
+                    : 'No payout address connected',
+                style: TextStyle(
+                  color: FmTheme.textPrimary(context),
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: FmSpace.x1),
+              Text(
+                address.isNotEmpty
+                    ? address
+                    : 'Add a public Solana address if you want profile donations or bounty payout metadata.',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 }
 

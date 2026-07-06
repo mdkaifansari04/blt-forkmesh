@@ -2,11 +2,39 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/services/api_service.dart';
 import 'package:forkmesh/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('Issue.fromJson parses public bounty funding fields', () {
+    final issue = Issue.fromJson({
+      'number': 8,
+      'title': 'Pay a maintainer',
+      'bountyUsd': 75,
+      'bountyAddress': 'escrow111',
+      'bountyStatus': 'funded',
+      'bountyRequiredLamports': 9000,
+      'bountyReceivedLamports': 7000,
+      'bountyAmountSol': 0.000009,
+      'bountyPayUri': 'solana:escrow111?amount=0.000009',
+      'bountyPayee': 'maintainer-node',
+      'bountyPayoutSig': 'payout-sig',
+    });
+
+    expect(issue.bountyUsd, 75);
+    expect(issue.bountyAddress, 'escrow111');
+    expect(issue.bountyStatus, 'funded');
+    expect(issue.bountyRequiredLamports, 9000);
+    expect(issue.bountyReceivedLamports, 7000);
+    expect(issue.bountyAmountSol, 0.000009);
+    expect(issue.bountyPayUri, 'solana:escrow111?amount=0.000009');
+    expect(issue.bountyPayee, 'maintainer-node');
+    expect(issue.bountyPayoutSig, 'payout-sig');
+    expect(issue.bountyProgressLabel, '7000 / 9000 lamports');
+  });
+
   test('repositories retries after a failed catalog load', () async {
     var requestCount = 0;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -100,6 +128,14 @@ milestone: v2 mobile
 priority: 4
 assignees: [mona, kai]
 bountyUsd: 150
+bountyAddress: escrow-md
+bountyStatus: open
+bountyRequiredLamports: 4500
+bountyReceivedLamports: 1500
+bountyAmountSol: 0.0000045
+bountyPayUri: solana:escrow-md?amount=0.0000045
+bountyPayee: maintainer-node
+bountyPayoutSig: payout-md
 ---
 Mobile should make signed collaboration clear.''',
           }),
@@ -143,7 +179,150 @@ ts: 10
     expect(issues.single.assignees, ['mona', 'kai']);
     expect(issues.single.votes, 2);
     expect(issues.single.bountyUsd, 150);
+    expect(issues.single.bountyAddress, 'escrow-md');
+    expect(issues.single.bountyStatus, 'open');
+    expect(issues.single.bountyRequiredLamports, 4500);
+    expect(issues.single.bountyReceivedLamports, 1500);
+    expect(issues.single.bountyAmountSol, 0.0000045);
+    expect(issues.single.bountyPayUri, 'solana:escrow-md?amount=0.0000045');
+    expect(issues.single.bountyPayee, 'maintainer-node');
+    expect(issues.single.bountyPayoutSig, 'payout-md');
   });
+
+  test('issue bounty status posts body and parses funding state', () async {
+    final requests = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      requests.add({
+        'method': request.method,
+        'path': request.uri.path,
+        'body': await utf8.decoder.bind(request).join(),
+      });
+      request.response.headers.contentType = ContentType.json;
+      if (request.method == 'POST' &&
+          request.uri.path == '/api/repo/owner/repo/bounty') {
+        request.response.write(
+          jsonEncode({
+            'ok': true,
+            'bounty': {
+              'address': 'escrow-status',
+              'amountUsd': 25,
+              'requiredLamports': 250000000,
+              'amountSol': 0.25,
+              'receivedLamports': 125000000,
+              'confirmed': false,
+              'status': 'open',
+              'payee': 'dev-node',
+              'payoutSig': '',
+              'uri': 'solana:escrow-status?amount=0.25',
+            },
+          }),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final bounty = await api.issueBountyStatus('owner', 'repo', 12);
+
+    expect(jsonDecode(requests.single['body'] as String), {
+      'action': 'status',
+      'number': 12,
+    });
+    expect(bounty.address, 'escrow-status');
+    expect(bounty.amountUsd, 25);
+    expect(bounty.requiredLamports, 250000000);
+    expect(bounty.receivedLamports, 125000000);
+    expect(bounty.amountSol, 0.25);
+    expect(bounty.status, 'open');
+    expect(bounty.payee, 'dev-node');
+    expect(bounty.payUri, 'solana:escrow-status?amount=0.25');
+  });
+
+  test(
+    'create issue bounty posts provided proof and parses deposit state',
+    () async {
+      final requests = <Map<String, dynamic>>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        requests.add({
+          'method': request.method,
+          'path': request.uri.path,
+          'body': await utf8.decoder.bind(request).join(),
+        });
+        request.response.headers.contentType = ContentType.json;
+        if (request.method == 'POST' &&
+            request.uri.path == '/api/repo/owner/repo/bounty') {
+          request.response.write(
+            jsonEncode({
+              'ok': true,
+              'address': 'escrow-create',
+              'amountUsd': 150,
+              'requiredLamports': 1500000000,
+              'amountSol': 1.5,
+              'receivedLamports': 0,
+              'confirmed': false,
+              'status': 'open',
+              'payee': 'owner',
+              'uri': 'solana:escrow-create?amount=1.5',
+            }),
+          );
+        } else {
+          request.response.statusCode = HttpStatus.notFound;
+        }
+        await request.response.close();
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      await settings.setServerUrl(
+        'ws://${server.address.host}:${server.port}/ws',
+      );
+      final api = ApiService(settings);
+
+      final bounty = await api.createIssueBounty(
+        'owner',
+        'repo',
+        number: 12,
+        amountUsd: 150,
+        payee: 'owner',
+        ts: '1770000000000',
+        sig: 'sig-create',
+      );
+
+      expect(jsonDecode(requests.single['body'] as String), {
+        'action': 'create',
+        'number': 12,
+        'amountUsd': 150,
+        'payee': 'owner',
+        'ts': '1770000000000',
+        'sig': 'sig-create',
+      });
+      expect(bounty.address, 'escrow-create');
+      expect(bounty.amountUsd, 150);
+      expect(bounty.requiredLamports, 1500000000);
+      expect(bounty.receivedLamports, 0);
+      expect(bounty.amountSol, 1.5);
+      expect(bounty.status, 'open');
+      expect(bounty.payee, 'owner');
+    },
+  );
 
   test('published discussions include category and replies', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
