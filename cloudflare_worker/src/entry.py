@@ -79,6 +79,15 @@ TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
 TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
+# Anonymous website feedback from static pages. Bounded like telemetry and
+# install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
+MAX_FEEDBACK = 5000
+FEEDBACK_MAX_BODY = 16 * 1024
+FEEDBACK_MAX_MESSAGE = 2000
+FEEDBACK_MAX_PATH = 300
+FEEDBACK_MAX_USER_AGENT = 300
+FEEDBACK_SOURCES = frozenset({"docs"})
+FEEDBACK_VOTES = frozenset({"like", "dislike"})
 MAX_FILES = 5000
 # Issue inbox: a single signed event body is small text; cap it and the number
 # of un-merged submissions a repo's inbox will hold.
@@ -8352,6 +8361,38 @@ def _sanitize_diag_field(value, max_length=64):
         c for c in value if c.isalnum() or c in " ._:+-,/()"
     ).strip()
     return cleaned[:max_length]
+
+
+def _sanitize_feedback_text(value, max_length, allow_newlines=False):
+    if not isinstance(value, str):
+        value = "" if value is None else str(value)
+    allowed = []
+    for c in value:
+        if c == "\t":
+            allowed.append(c)
+        elif allow_newlines and c == "\n":
+            allowed.append(c)
+        elif c >= " " and c != "\x7f":
+            allowed.append(c)
+    return "".join(allowed).strip()[:max_length]
+
+
+def _feedback_fields(payload):
+    """Normalize a docs feedback payload into stored columns, or None."""
+    if not isinstance(payload, dict):
+        return None
+    source = _sanitize_feedback_text(payload.get("source"), 32).lower()
+    vote = _sanitize_feedback_text(payload.get("vote"), 16).lower()
+    if source not in FEEDBACK_SOURCES or vote not in FEEDBACK_VOTES:
+        return None
+    path = _sanitize_feedback_text(payload.get("path"), FEEDBACK_MAX_PATH)
+    if not path.startswith("/"):
+        path = "/"
+    message = ""
+    if vote == "dislike":
+        message = _sanitize_feedback_text(
+            payload.get("message"), FEEDBACK_MAX_MESSAGE, allow_newlines=True)
+    return source, vote, path, message
 
 
 def _install_diag_fields(payload):
