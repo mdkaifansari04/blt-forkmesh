@@ -69,7 +69,10 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
     # mirror-owned remote clones, the card/detail URL identity is inferred from
     # cloneUrl while the mirror rows remain aliases for direct route lookup.
     transformed = DASHBOARD_JS.replace(
-        "  applyDashboardTheme(readDashboardTheme());\n  renderLongDiffPreference();\n  init();",
+        "  applyDashboardTheme(readDashboardTheme());\n"
+        "  renderLongDiffPreference();\n"
+        "  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });\n"
+        "  init();",
         """  globalThis.__dashboardExports = {
     state,
     groupRepositories,

@@ -1127,6 +1127,11 @@
     state.page += 1;
     updateRepositoryPagination();
   });
+  $$("[data-view-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setRepositoryViewMode(button.dataset.viewMode);
+    });
+  });
 
 	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
 	    event.stopPropagation();
@@ -1240,5 +1245,6 @@
 
   applyDashboardTheme(readDashboardTheme());
   renderLongDiffPreference();
+  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });
   init();
 })();

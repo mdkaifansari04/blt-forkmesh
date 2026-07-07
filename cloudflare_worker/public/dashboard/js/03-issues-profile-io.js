@@ -343,7 +343,9 @@
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
       adminUrl: body.adminUrl || base.adminUrl || "",
-      solana: body.solana || base.solana || "",
+      solana: Object.prototype.hasOwnProperty.call(body, "solana")
+        ? (body.solana || "")
+        : (base.solana || ""),
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
         : Boolean(base.hasPayoutAddress),

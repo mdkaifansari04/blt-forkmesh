@@ -484,6 +484,20 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
     assert 'button.classList.toggle("bg-secondary", active);' not in tab_state
 
 
+def test_dashboard_repository_view_toggle_is_wired_in_composed_bundle():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert 'data-repo-view-toggle' in dashboard
+    assert 'data-view-mode="list"' in dashboard
+    assert 'data-view-mode="grid"' in dashboard
+    assert "function setRepositoryViewMode" in dashboard_js
+    assert "DASHBOARD_REPO_VIEW_KEY" in dashboard_js
+    assert "repoList.classList.toggle(\"grid-mode\", gridMode);" in dashboard_js
+    assert 'button.setAttribute("aria-pressed", active ? "true" : "false");' in dashboard_js
+    assert '$$("[data-view-mode]").forEach((button) => {' in dashboard_js
+
+
 def test_dashboard_repository_folder_icons_are_grey():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     tree_loader = dashboard_js[
