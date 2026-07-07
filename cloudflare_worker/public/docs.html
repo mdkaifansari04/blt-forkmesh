@@ -1041,13 +1041,17 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         <section
           class="mt-20 flex flex-wrap items-center justify-between gap-5 border-t border-[var(--docs-line)] pt-10"
         >
-          <p class="text-[0.95rem] font-semibold text-[var(--docs-muted)]">
+          <p
+            class="text-[0.95rem] font-semibold text-[var(--docs-muted)]"
+            data-feedback-status
+          >
             Was this page helpful?
           </p>
           <div class="flex gap-3">
             <button
               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
               type="button"
+              data-feedback-like
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M7 10v11"></path>
@@ -1061,6 +1065,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
             <button
               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
               type="button"
+              data-feedback-dislike
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M17 14V3"></path>
@@ -1159,6 +1164,66 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         </nav>
       </aside>
     </main>
+
+    <div
+      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/45 px-4 py-6"
+      data-feedback-modal
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="feedback-modal-title"
+    >
+      <div class="absolute inset-0" data-feedback-close aria-hidden="true"></div>
+      <form
+        class="relative w-full max-w-md rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] p-5 shadow-2xl"
+        data-feedback-form
+      >
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2
+              class="text-[1.1rem] font-black text-[var(--docs-fg)]"
+              id="feedback-modal-title"
+            >
+              What was confusing, missing, or could be improved?
+            </h2>
+            <p class="mt-2 text-sm font-semibold text-[var(--docs-muted)]">
+              Optional, but useful for improving the docs.
+            </p>
+          </div>
+          <button
+            class="icon-button -mr-2 -mt-2"
+            type="button"
+            data-feedback-close
+            aria-label="Close feedback"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18"></path>
+              <path d="m6 6 12 12"></path>
+            </svg>
+          </button>
+        </div>
+        <textarea
+          class="mt-4 min-h-32 w-full resize-y rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-bg)] p-3 text-sm font-semibold text-[var(--docs-fg)] outline-none focus:border-[var(--docs-fg)]"
+          data-feedback-message
+          maxlength="2000"
+          placeholder="Tell us what would have helped."
+        ></textarea>
+        <div class="mt-4 flex justify-end gap-3">
+          <button
+            class="inline-flex h-10 items-center rounded-2xl border border-[var(--docs-line-strong)] px-4 text-sm font-bold text-[var(--docs-muted)]"
+            type="button"
+            data-feedback-close
+          >
+            Cancel
+          </button>
+          <button
+            class="inline-flex h-10 items-center rounded-2xl bg-[var(--docs-button)] px-4 text-sm font-bold text-[var(--docs-button-fg)]"
+            type="submit"
+          >
+            Send feedback
+          </button>
+        </div>
+      </form>
+    </div>
 
     <script>
       (() => {
@@ -1331,6 +1396,90 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
             }, 1400);
           });
         }
+
+        const feedbackLike = document.querySelector("[data-feedback-like]");
+        const feedbackDislike = document.querySelector(
+          "[data-feedback-dislike]",
+        );
+        const feedbackStatus = document.querySelector("[data-feedback-status]");
+        const feedbackModal = document.querySelector("[data-feedback-modal]");
+        const feedbackForm = document.querySelector("[data-feedback-form]");
+        const feedbackMessage = document.querySelector(
+          "[data-feedback-message]",
+        );
+        const feedbackCloseButtons = document.querySelectorAll(
+          "[data-feedback-close]",
+        );
+
+        function setFeedbackStatus(message) {
+          if (feedbackStatus) feedbackStatus.textContent = message;
+        }
+
+        function setFeedbackDisabled(disabled) {
+          [feedbackLike, feedbackDislike].forEach((button) => {
+            if (button) button.disabled = disabled;
+          });
+        }
+
+        function setFeedbackModal(open) {
+          if (!feedbackModal) return;
+          feedbackModal.classList.toggle("hidden", !open);
+          feedbackModal.classList.toggle("flex", open);
+          if (open && feedbackMessage) feedbackMessage.focus();
+        }
+
+        async function submitFeedback({ vote, message = "" }) {
+          setFeedbackDisabled(true);
+          try {
+            const response = await fetch("/api/feedback", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                source: "docs",
+                vote,
+                path: window.location.pathname + window.location.hash,
+                message,
+              }),
+              keepalive: true,
+            });
+            if (!response.ok) throw new Error("feedback failed");
+            setFeedbackStatus("Thanks for the feedback.");
+            setFeedbackModal(false);
+          } catch (error) {
+            setFeedbackStatus("Was this page helpful?");
+            setFeedbackDisabled(false);
+          }
+        }
+
+        if (feedbackLike) {
+          feedbackLike.addEventListener("click", () => {
+            submitFeedback({ vote: "like" });
+          });
+        }
+
+        if (feedbackDislike) {
+          feedbackDislike.addEventListener("click", () => {
+            setFeedbackModal(true);
+          });
+        }
+
+        if (feedbackForm) {
+          feedbackForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            submitFeedback({
+              vote: "dislike",
+              message: feedbackMessage ? feedbackMessage.value : "",
+            });
+          });
+        }
+
+        feedbackCloseButtons.forEach((button) => {
+          button.addEventListener("click", () => setFeedbackModal(false));
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") setFeedbackModal(false);
+        });
       })();
     </script>
   </body>

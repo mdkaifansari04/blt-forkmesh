@@ -124,3 +124,23 @@ def test_docs_logo_keeps_same_pixels_across_theme_modes():
 
         assert "html.dark .brand-mark" not in html
         assert "filter: invert" not in html
+
+
+def test_docs_pages_wire_helpfulness_feedback():
+    for page in DOCS_PAGES:
+        html = _read(page)
+
+        for marker in (
+            "data-feedback-like",
+            "data-feedback-dislike",
+            "data-feedback-status",
+            "data-feedback-modal",
+            "data-feedback-form",
+            "data-feedback-message",
+            "What was confusing, missing, or could be improved?",
+            'fetch("/api/feedback"',
+            'source: "docs"',
+            'vote: "like"',
+            'vote: "dislike"',
+        ):
+            assert marker in html
