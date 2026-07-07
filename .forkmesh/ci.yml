@@ -7,7 +7,7 @@ jobs:
         run: |
           python3 -m venv .forkmesh-pytest-venv
           .forkmesh-pytest-venv/bin/python -m pip install pytest
-          .forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests
+          .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
       - name: Worker syntax + config
         run: |
           python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"

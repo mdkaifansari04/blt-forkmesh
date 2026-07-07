@@ -2,6 +2,7 @@
 
 #include <QMap>
 #include <QObject>
+#include <QtGlobal>
 #include <QString>
 #include <QStringList>
 
@@ -9,6 +10,7 @@
 #include "ActionStore.h"
 
 class QProcess;
+class QByteArray;
 
 // Executes a single approved workflow run. Checks the pushed commit out into a
 // detached worktree of the bare mirror, then runs each step's `run:` through a
@@ -50,6 +52,8 @@ private:
     void onProcessFinished(int exitCode);
     void runNextStep();
     void emitLog(const QString &text);
+    void emitProcessOutput(const QByteArray &bytes);
+    void emitProcessOutputTruncationNotice();
     void complete(bool ok, const QString &finalMessage);
     void cleanupWorktree();
     // For a release run (ref under refs/tags/), copy the release metadata the
@@ -80,5 +84,7 @@ private:
     QMap<QString, QString> m_variables;
     QStringList m_secrets; // values to redact from logs
     int m_stepIndex = 0;
+    qsizetype m_processOutputBytes = 0;
+    bool m_processOutputTruncated = false;
     QProcess *m_process = nullptr;
 };

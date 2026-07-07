@@ -35,7 +35,7 @@ jobs:
           [ -f .forkmesh-skip-deploy ] && exit 0
           python3 -m venv .forkmesh-pytest-venv
           .forkmesh-pytest-venv/bin/python -m pip install pytest
-          .forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests
+          .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
       # .env.production is gitignored, so materialize it from this node's ForkMesh
       # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
       # ${{ vars.NAME }} references below from that store before running the step;

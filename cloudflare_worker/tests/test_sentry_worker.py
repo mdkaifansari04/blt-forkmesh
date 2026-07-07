@@ -15,11 +15,15 @@ WRANGLER = ROOT / "wrangler.toml"
 CI_WORKFLOW = ROOT.parent / ".forkmesh" / "ci.yml"
 DEPLOY_WORKFLOW = ROOT.parent / ".forkmesh" / "deploy.yml"
 DEPLOY_SH = ROOT / "deploy.sh"
+ACTION_RUNNER_CPP = ROOT.parent / "qt_client" / "src" / "ActionRunner.cpp"
+ACTION_RUNNER_H = ROOT.parent / "qt_client" / "src" / "ActionRunner.h"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 WRANGLER_DATA = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
 CI_WORKFLOW_TEXT = CI_WORKFLOW.read_text(encoding="utf-8")
 DEPLOY_WORKFLOW_TEXT = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 DEPLOY_SH_TEXT = DEPLOY_SH.read_text(encoding="utf-8")
+ACTION_RUNNER_CPP_TEXT = ACTION_RUNNER_CPP.read_text(encoding="utf-8")
+ACTION_RUNNER_H_TEXT = ACTION_RUNNER_H.read_text(encoding="utf-8")
 
 
 def _load_sentry_dsn_parts():
@@ -199,14 +203,30 @@ def test_forkmesh_deploy_pushes_sentry_dsn_secret():
 def test_forkmesh_actions_run_full_worker_pytest_suite():
     assert "python3 -m venv .forkmesh-pytest-venv" in CI_WORKFLOW_TEXT
     assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in CI_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests" in CI_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests" in CI_WORKFLOW_TEXT
     assert "python3 -m venv .forkmesh-pytest-venv" in DEPLOY_WORKFLOW_TEXT
     assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in DEPLOY_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests" in DEPLOY_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests" in DEPLOY_WORKFLOW_TEXT
     assert "pip install --user" not in CI_WORKFLOW_TEXT
     assert "pip install --user" not in DEPLOY_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
+
+
+def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
+    assert "kActionProcessLogMaxBytes" in ACTION_RUNNER_CPP_TEXT
+    assert "kActionProcessLogChunkBytes" in ACTION_RUNNER_CPP_TEXT
+    assert "emitProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
+    assert "emitProcessOutputTruncationNotice()" in ACTION_RUNNER_CPP_TEXT
+    assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
+    assert "m_processOutputTruncated = false;" in ACTION_RUNNER_CPP_TEXT
+    assert "Action output truncated after %1 KiB" in ACTION_RUNNER_CPP_TEXT
+    assert "emitProcessOutput(m_process->readAllStandardOutput())" in ACTION_RUNNER_CPP_TEXT
+    assert "emitProcessOutput(tail)" in ACTION_RUNNER_CPP_TEXT
+    assert "emitLog(QString::fromUtf8(m_process->readAllStandardOutput()))" not in ACTION_RUNNER_CPP_TEXT
+    assert "emitLog(QString::fromUtf8(tail))" not in ACTION_RUNNER_CPP_TEXT
+    assert "void emitProcessOutput(const QByteArray &bytes);" in ACTION_RUNNER_H_TEXT
+    assert "bool m_processOutputTruncated = false;" in ACTION_RUNNER_H_TEXT
 
 
 def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():
