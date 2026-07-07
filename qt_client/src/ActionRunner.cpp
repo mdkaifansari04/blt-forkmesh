@@ -16,6 +16,13 @@
 #include <unistd.h>
 #endif
 
+namespace {
+
+constexpr qsizetype kActionProcessLogChunkBytes = 16 * 1024;
+constexpr qsizetype kActionProcessLogMaxBytes = 1024 * 1024;
+
+} // namespace
+
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
@@ -33,6 +40,8 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_repoWorkTree = workTreePath;
     m_variables = variables;
     m_stepIndex = 0;
+    m_processOutputBytes = 0;
+    m_processOutputTruncated = false;
 
     m_secrets.clear();
     for (const QString &value : variables.values())
@@ -144,7 +153,7 @@ void ActionRunner::launch(Phase phase, const QString &program,
     m_process->setProcessEnvironment(env);
 
     connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
-        emitLog(QString::fromUtf8(m_process->readAllStandardOutput()));
+        emitProcessOutput(m_process->readAllStandardOutput());
     });
     connect(m_process, &QProcess::finished, this,
             [this](int exitCode, QProcess::ExitStatus) {
@@ -168,7 +177,7 @@ void ActionRunner::onProcessFinished(int exitCode)
     if (m_process) {
         const QByteArray tail = m_process->readAllStandardOutput();
         if (!tail.isEmpty())
-            emitLog(QString::fromUtf8(tail));
+            emitProcessOutput(tail);
         m_process->deleteLater();
         m_process = nullptr;
     }
@@ -417,6 +426,43 @@ void ActionRunner::emitLog(const QString &text)
     const QString safe = redact(text);
     m_store->appendLog(m_run, safe);
     emit logLine(m_run.id, safe);
+}
+
+void ActionRunner::emitProcessOutput(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return;
+
+    if (m_processOutputBytes >= kActionProcessLogMaxBytes) {
+        emitProcessOutputTruncationNotice();
+        return;
+    }
+
+    const qsizetype remainingBytes =
+        kActionProcessLogMaxBytes - m_processOutputBytes;
+    const qsizetype keepBytes = qMin(bytes.size(), remainingBytes);
+    for (qsizetype offset = 0; offset < keepBytes;
+         offset += kActionProcessLogChunkBytes) {
+        const qsizetype chunkBytes =
+            qMin(kActionProcessLogChunkBytes, keepBytes - offset);
+        emitLog(QString::fromUtf8(bytes.constData() + offset, chunkBytes));
+    }
+
+    m_processOutputBytes += keepBytes;
+    if (keepBytes < bytes.size() ||
+        m_processOutputBytes >= kActionProcessLogMaxBytes)
+        emitProcessOutputTruncationNotice();
+}
+
+void ActionRunner::emitProcessOutputTruncationNotice()
+{
+    if (m_processOutputTruncated)
+        return;
+    m_processOutputTruncated = true;
+    emitLog(QStringLiteral(
+                "\n!! Action output truncated after %1 KiB. The process kept "
+                "running; only the live and persisted logs were capped.\n")
+                .arg(kActionProcessLogMaxBytes / 1024));
 }
 
 QString ActionRunner::redact(QString text) const
