@@ -1,59 +1,69 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 380,
-  "title": "Have a built in firewall / whitelist network tab to see and manage all connections",
-  "status": "open",
-  "labels": [
-    "infra"
-  ],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [
-    "Claude Code"
-  ],
-  "createdAt": 1783151491,
-  "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783151491",
-      "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-      "authorName": "jett",
-      "ts": 1783151491,
-      "title": "Have a built in firewall / whitelist network tab to see and manage all connections",
-      "body": "",
-      "attachments": [],
-      "sig": "OLetgEM5E_Rlb1sZJJZIdLJfKoAwGEAF7N8WkLfRqOm5bM7wj_foDCHGc188Uz0wpXYMAmPZmfpVcr02h0qbDg"
-    },
-    {
-      "type": "agent",
-      "id": "72c85ad3-0bb4-4325-aa75-078dfcbdbda0",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1783184412380,
-      "agentProvider": "claude-code",
-      "agentSessionId": 287,
-      "agentStatus": "queued",
-      "agentCreatePr": false,
-      "sig": "hEXHokeVM27RPwM0wwM66m12AEr3fFT1C91AyoAQ8MFaQoXUU2n1YAUmlopXzAFV5H8E6A0MyDcJpaQHseFSAQ"
-    },
-    {
-      "type": "assignees",
-      "id": "a096fb14-ef6d-47e8-b679-509e33e24f09",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1783184412478,
-      "assignees": [
+    "assignees": [
         "Claude Code"
-      ],
-      "sig": "z4hfxIhdefnPUOSjBKqeWiq9Tw5WiA6ihW6rBNGewu4QGuM9_kEU2jZL-nE7y6v02bno16Poh0zZIiu-N4lwCA"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783184412478
+    ],
+    "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783151491,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783151491",
+            "sig": "OLetgEM5E_Rlb1sZJJZIdLJfKoAwGEAF7N8WkLfRqOm5bM7wj_foDCHGc188Uz0wpXYMAmPZmfpVcr02h0qbDg",
+            "title": "Have a built in firewall / whitelist network tab to see and manage all connections",
+            "ts": 1783151491,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 287,
+            "agentStatus": "queued",
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "id": "72c85ad3-0bb4-4325-aa75-078dfcbdbda0",
+            "sig": "hEXHokeVM27RPwM0wwM66m12AEr3fFT1C91AyoAQ8MFaQoXUU2n1YAUmlopXzAFV5H8E6A0MyDcJpaQHseFSAQ",
+            "ts": 1783184412380,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "id": "a096fb14-ef6d-47e8-b679-509e33e24f09",
+            "sig": "z4hfxIhdefnPUOSjBKqeWiq9Tw5WiA6ihW6rBNGewu4QGuM9_kEU2jZL-nE7y6v02bno16Poh0zZIiu-N4lwCA",
+            "ts": 1783184412478,
+            "type": "assignees"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "117d644f-c955-4f01-8741-7f3710372c25",
+            "sig": "AEzpx7PxcBgmN8EzvR0X07tzFzVoKF4b1tFuh0xFO0FeSjg3huEKzIEo42fu3qi7yvY-6nbgTHGc6Cxcm6WdCQ",
+            "status": "closed",
+            "ts": 1783462387386,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra"
+    ],
+    "milestone": "",
+    "number": 380,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "Have a built in firewall / whitelist network tab to see and manage all connections",
+    "updatedAt": 1783462387386,
+    "votes": 0
 }
