@@ -6822,6 +6822,15 @@ async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     return bool(row and (row.get("c", 0) or 0) >= MAX_PENDING_PER_AUTHOR)
 
 
+async def _best_effort_inbox_side_effect(awaitable):
+    # Inbox acceptance is the durable D1 insert. Notification/subscription
+    # fan-out is useful, but it must not turn an accepted web submission into 500.
+    try:
+        await awaitable
+    except Exception:
+        pass
+
+
 async def enqueue_notification(env, recipient, kind, title, body="", repo="",
                                href="", actor="", source="", dedupe="",
                                ts=0, meta=None):
@@ -7428,20 +7437,31 @@ async def issues_handler(env, request, owner, repo):
         )
         await _record_contributor(env, event.get("author", ""), "issues")
         actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
-        await notify_pending_inbox(env, owner, repo, "issue", actor, item.get("titleIfNew", ""), number)
-        await notify_mentions(env, owner, repo, actor, item.get("titleIfNew", ""), event.get("body", ""),
-                              repo_web_href(owner, repo), "issue")
+        await _best_effort_inbox_side_effect(
+            notify_pending_inbox(
+                env, owner, repo, "issue", actor, item.get("titleIfNew", ""),
+                number))
+        await _best_effort_inbox_side_effect(
+            notify_mentions(
+                env, owner, repo, actor, item.get("titleIfNew", ""),
+                event.get("body", ""), repo_web_href(owner, repo), "issue"))
         assignees = list(meta.get("assignees", [])) if isinstance(meta, dict) else []
         if isinstance(event.get("assignees"), list):
             assignees.extend(event.get("assignees"))
-        await notify_issue_assignees(env, owner, repo, assignees, actor, item.get("titleIfNew", ""), number)
+        await _best_effort_inbox_side_effect(
+            notify_issue_assignees(
+                env, owner, repo, assignees, actor, item.get("titleIfNew", ""),
+                number))
         # Subscriptions (issue #361): tell everyone already following this issue
         # about the new activity, then auto-subscribe the commenter so they hear
         # about later replies. Both no-op for a brand-new issue (number 0).
-        await notify_subscribers(env, owner, repo, "issue", number, actor,
-                                 item.get("titleIfNew", ""), event.get("body", ""),
-                                 repo_web_href(owner, repo))
-        await subscribe_thread(env, owner, repo, "issue", number, actor)
+        await _best_effort_inbox_side_effect(
+            notify_subscribers(
+                env, owner, repo, "issue", number, actor,
+                item.get("titleIfNew", ""), event.get("body", ""),
+                repo_web_href(owner, repo)))
+        await _best_effort_inbox_side_effect(
+            subscribe_thread(env, owner, repo, "issue", number, actor))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
