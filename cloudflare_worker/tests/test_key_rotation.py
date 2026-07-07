@@ -38,7 +38,7 @@ def _json_response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _harness(rec, pubkey_lookup=None):
+def _harness(rec, pubkey_lookup=None, expected_canonical=None):
     saved = []
 
     async def _account_row(_env, name):
@@ -54,9 +54,13 @@ def _harness(rec, pubkey_lookup=None):
     async def _save_account(_env, name_bi, updated_rec, **_kwargs):
         saved.append((name_bi, dict(updated_rec)))
 
-    async def ed25519_verify(pubkey, sig, _canonical):
+    async def ed25519_verify(pubkey, sig, canonical):
         # Only the currently-bound old key with the sentinel signature verifies.
-        return sig == "goodsig" and pubkey == "old-pubkey"
+        if sig != "goodsig" or pubkey != "old-pubkey":
+            return False
+        if expected_canonical is not None:
+            return canonical == expected_canonical
+        return True
 
     class _Date:
         @staticmethod
@@ -107,6 +111,24 @@ def test_rotate_rebinds_to_successor_when_old_key_signs():
     assert rec["pubkey"] == "new-pubkey"
     assert rec["prev_pubkeys"] == ["old-pubkey"]
     assert rec["rotated_at"] == 1783000000000
+
+
+def test_rotate_accepts_desktop_rotation_record_signature_field():
+    canonical = b"forkmesh-rotate-v1\nold-pubkey\nnew-pubkey\n1783000000000"
+    handler, saved = _harness(_bound_account(), expected_canonical=canonical)
+    resp = _run(handler, {
+        "kind": "forkmesh.rotate",
+        "nodeName": "alice-node",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "signature": "goodsig",
+    })
+    assert resp["status"] == 200
+    assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
+    assert len(saved) == 1
+    _, rec = saved[0]
+    assert rec["pubkey"] == "new-pubkey"
 
 
 def test_rotate_rejects_successor_key_bound_to_another_account():

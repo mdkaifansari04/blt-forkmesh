@@ -5435,7 +5435,7 @@ async def _account_rotate(env, request):
     old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
     new_pubkey = clean_string(data.get("newPubkey", ""), 120)
     ts = clean_string(data.get("ts", ""), 20)
-    signature = clean_string(data.get("sig", ""), 200)
+    signature = clean_string(data.get("signature") or data.get("sig", ""), 200)
 
     if not valid_node_name(name):
         return json_response({"error": "invalid_node_id"}, status=400)
@@ -5454,8 +5454,8 @@ async def _account_rotate(env, request):
     if current_pubkey != old_pubkey:
         return json_response({"error": "not_bound"}, status=403)
 
-    canonical = ("forkmesh-account-rotate-v1\n" + name + "\n" +
-                 old_pubkey + "\n" + new_pubkey + "\n" + str(ts)).encode()
+    canonical = ("forkmesh-rotate-v1\n" + old_pubkey + "\n" +
+                 new_pubkey + "\n" + str(ts)).encode()
     if not await ed25519_verify(old_pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
