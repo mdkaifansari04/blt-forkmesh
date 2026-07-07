@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Docs feedback validation and storage contract checks."""
+
+import ast
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+SCHEMA = ROOT / "src" / "schema.py"
+MIGRATION = ROOT / "migrations" / "0026_feedback.sql"
+
+_WANT_FUNCS = ("_sanitize_feedback_text", "_feedback_fields")
+_WANT_CONSTS = (
+    "FEEDBACK_SOURCES",
+    "FEEDBACK_VOTES",
+    "FEEDBACK_MAX_MESSAGE",
+    "FEEDBACK_MAX_PATH",
+)
+
+
+def _load():
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in _WANT_FUNCS:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id in _WANT_CONSTS
+            for t in node.targets
+        ):
+            body.append(node)
+    module = ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))
+    namespace = {}
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace
+
+
+_NS = _load()
+_fields = _NS["_feedback_fields"]
+_sanitize = _NS["_sanitize_feedback_text"]
+MAX_MESSAGE = _NS["FEEDBACK_MAX_MESSAGE"]
+MAX_PATH = _NS["FEEDBACK_MAX_PATH"]
+
+
+def test_like_payload_is_normalized_without_message():
+    out = _fields({
+        "source": "docs",
+        "vote": "like",
+        "path": "/docs/",
+        "message": "ignored for likes",
+    })
+
+    assert out == ("docs", "like", "/docs/", "")
+
+
+def test_dislike_payload_accepts_optional_message():
+    out = _fields({
+        "source": "docs",
+        "vote": "dislike",
+        "path": "/docs/#install",
+        "message": "Install steps need screenshots.",
+    })
+
+    assert out == (
+        "docs",
+        "dislike",
+        "/docs/#install",
+        "Install steps need screenshots.",
+    )
+
+
+def test_dislike_payload_accepts_empty_message():
+    out = _fields({
+        "source": "docs",
+        "vote": "dislike",
+        "path": "/docs/",
+        "message": "",
+    })
+
+    assert out == ("docs", "dislike", "/docs/", "")
+
+
+def test_unknown_source_or_vote_is_rejected():
+    assert _fields({"source": "blog", "vote": "like", "path": "/docs/"}) is None
+    assert _fields({"source": "docs", "vote": "meh", "path": "/docs/"}) is None
+    assert _fields(None) is None
+    assert _fields([]) is None
+
+
+def test_path_defaults_to_root_when_missing_or_external():
+    assert _fields({"source": "docs", "vote": "like"}) == (
+        "docs",
+        "like",
+        "/",
+        "",
+    )
+    assert _fields({
+        "source": "docs",
+        "vote": "like",
+        "path": "https://example.com/docs",
+    }) == ("docs", "like", "/", "")
+
+
+def test_message_and_path_are_capped_and_control_scrubbed():
+    out = _fields({
+        "source": "docs",
+        "vote": "dislike",
+        "path": "/" + ("a" * (MAX_PATH + 50)),
+        "message": "line\x00one\x07\ttab\nnl" + ("x" * (MAX_MESSAGE + 50)),
+    })
+
+    assert out is not None
+    assert len(out[2]) <= MAX_PATH
+    assert len(out[3]) <= MAX_MESSAGE
+    assert "\x00" not in out[3]
+    assert "\x07" not in out[3]
+    assert "\t" in out[3]
+    assert "\n" in out[3]
+
+
+def test_feedback_text_sanitizer_handles_non_strings():
+    assert _sanitize(None, 20) == ""
+    assert _sanitize(12345, 20) == "12345"
