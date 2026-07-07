@@ -15,6 +15,30 @@ using namespace forkmesh::ui;
 
 namespace {
 
+enum MirrorNodeColumn {
+    MirrorNodeColNode = 0,
+    MirrorNodeColOwner,
+    MirrorNodeColCommit,
+    MirrorNodeColSynced,
+    MirrorNodeColSize,
+    MirrorNodeColIssues,
+    MirrorNodeColCommits,
+    MirrorNodeColBranches,
+    MirrorNodeColPulls,
+    MirrorNodeColDiscussions,
+    MirrorNodeColWorktrees,
+    MirrorNodeColCpu,
+    MirrorNodeColRam,
+    MirrorNodeColDisk,
+    MirrorNodeColPlatform,
+    MirrorNodeColVersion,
+    MirrorNodeColId,
+    MirrorNodeColClones,
+    MirrorNodeColWebsite,
+    MirrorNodeColArtifacts,
+    MirrorNodeColumnCount,
+};
+
 // Bake a release tag's version into the Qt client's source version — the
 // project(ForkMesh VERSION X.Y.Z ...) line in qt_client/CMakeLists.txt that
 // every "ForkMesh v" FORKMESH_VERSION display reads — and commit it, so cutting
@@ -964,12 +988,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // float just above the Mirror nodes tab instead (adhoc #197). The strip is
     // created with the tab row and anchored by positionMirrorActivityStrip.
 
-    m_mirrorNodesTable = new QTableWidget(0, 19);
+    m_mirrorNodesTable = new QTableWidget(0, MirrorNodeColumnCount);
     installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Latest commit", "Synced", "Size", "Issues", "Commits",
+        {"Node", "Owner", "Latest commit", "Synced", "Size", "Issues", "Commits",
          "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
          "Platform", "Version", "Node id", "Clones", "Website", "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
@@ -979,36 +1003,38 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setShowGrid(false);
     m_mirrorNodesTable->setWordWrap(false);
     m_mirrorNodesTable->setSortingEnabled(true);
-    m_mirrorNodesTable->sortByColumn(0, Qt::AscendingOrder); // source of truth first
+    m_mirrorNodesTable->sortByColumn(MirrorNodeColNode,
+                                     Qt::AscendingOrder); // source of truth first
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
-    mh->setSectionResizeMode(0, QHeaderView::Stretch);           // Node
-    mh->setSectionResizeMode(1, QHeaderView::ResizeToContents);  // Latest commit
-    mh->setSectionResizeMode(2, QHeaderView::ResizeToContents);  // Synced
-    mh->setSectionResizeMode(3, QHeaderView::ResizeToContents);  // Size
-    mh->setSectionResizeMode(4, QHeaderView::ResizeToContents);  // Issues
-    mh->setSectionResizeMode(5, QHeaderView::ResizeToContents);  // Commits
-    mh->setSectionResizeMode(6, QHeaderView::ResizeToContents);  // Branches
-    mh->setSectionResizeMode(7, QHeaderView::ResizeToContents);  // Pulls
-    mh->setSectionResizeMode(8, QHeaderView::ResizeToContents);  // Discussions
-    mh->setSectionResizeMode(9, QHeaderView::ResizeToContents);  // Worktrees
-    mh->setSectionResizeMode(10, QHeaderView::ResizeToContents); // CPU (bar)
-    mh->setSectionResizeMode(11, QHeaderView::ResizeToContents); // RAM (bar)
-    mh->setSectionResizeMode(12, QHeaderView::ResizeToContents); // Disk (bar)
-    mh->setSectionResizeMode(13, QHeaderView::ResizeToContents); // Platform
-    mh->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Version
-    mh->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Node id
-    mh->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Clones served
-    mh->setSectionResizeMode(17, QHeaderView::ResizeToContents); // Website serves
-    mh->setSectionResizeMode(18, QHeaderView::ResizeToContents); // Artifacts hosted
+    mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
+    mh->setSectionResizeMode(MirrorNodeColOwner, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColCommit, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColSynced, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColSize, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColIssues, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColCommits, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColWorktrees, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColDisk, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColPlatform, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColVersion, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColId, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColClones, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
     m_mirrorNodesTable->setItemDelegateForColumn(
-        2, new MirrorSyncDelegate(m_mirrorNodesTable));
+        MirrorNodeColSynced, new MirrorSyncDelegate(m_mirrorNodesTable));
     // CPU / RAM / disk columns render as little usage bars (details on hover).
     auto *resourceBars = new ResourceBarDelegate(m_mirrorNodesTable);
-    for (int col : {10, 11, 12})
+    for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
         m_mirrorNodesTable->setItemDelegateForColumn(col, resourceBars);
     auto *pacmanTick = new QTimer(m_mirrorNodesTable);
     pacmanTick->setInterval(1000);
@@ -1021,9 +1047,9 @@ QWidget *MainWindow::buildMirrorNodesTab()
         // nothing had changed and stalling the GUI thread on big node lists
         // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
         for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
-            if (m_mirrorNodesTable->item(r, 2))
+            if (m_mirrorNodesTable->item(r, MirrorNodeColSynced))
                 m_mirrorNodesTable->update(
-                    m_mirrorNodesTable->model()->index(r, 2));
+                    m_mirrorNodesTable->model()->index(r, MirrorNodeColSynced));
         }
     });
     pacmanTick->start();
@@ -1033,7 +1059,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     connect(m_mirrorNodesTable, &QTableWidget::itemActivated, this,
             [this](QTableWidgetItem *item) {
                 QTableWidgetItem *it =
-                    item ? m_mirrorNodesTable->item(item->row(), 0) : nullptr;
+                    item ? m_mirrorNodesTable->item(item->row(), MirrorNodeColNode)
+                         : nullptr;
                 if (it) {
                     const QString nid = it->data(Qt::UserRole).toString();
                     if (!nid.isEmpty())
@@ -1145,6 +1172,38 @@ void MainWindow::loadMirrorNodesPanel()
         return advert;
     };
 
+    auto advertisedNodeName = [](const MirrorAdvert *advert) {
+        if (!advert || advert->ownerName.trimmed().isEmpty())
+            return QString();
+        return advert->ownerName.section(QLatin1Char('/'), 0, 0).trimmed();
+    };
+    auto displayNodeName = [&](const MemberInfo &node,
+                               const MirrorAdvert *advert) {
+        QString name = advertisedNodeName(advert);
+        if (name.isEmpty() && !node.nodeName.trimmed().isEmpty())
+            name = node.nodeName.trimmed();
+        if (name.isEmpty() && node.self)
+            name = accountOwner().trimmed();
+        if (name.isEmpty())
+            name = node.name.trimmed();
+        return name;
+    };
+    auto displayOwnerName = [&](const MemberInfo &node) {
+        QString owner = node.ownerUser.trimmed();
+        if (owner.isEmpty() && node.self)
+            owner = nodeOwnerDisplayName();
+        return owner;
+    };
+    auto makeOwnerCell = [](const QString &owner) {
+        auto *item = new QTableWidgetItem(
+            owner.trimmed().isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
+                                      : owner.trimmed());
+        item->setForeground(QColor("#8b949e"));
+        if (!owner.trimmed().isEmpty())
+            item->setToolTip(QStringLiteral("Owned by user %1").arg(owner.trimmed()));
+        return item;
+    };
+
     // One row per node *name*: a node that re-registers (reinstall → new key)
     // can transiently sit in the roster under two identities — the old key's
     // session still heartbeating beside the new one — which listed the same
@@ -1158,7 +1217,7 @@ void MainWindow::loadMirrorNodesPanel()
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
             continue; // not mirroring this repo; the row loop skips these anyway
-        const QString nameKey = node.name.trimmed().toLower();
+        const QString nameKey = displayNodeName(node, advert).trimmed().toLower();
         if (nameKey.isEmpty()) {
             rosterNodes.append(node);
             continue;
@@ -1199,7 +1258,8 @@ void MainWindow::loadMirrorNodesPanel()
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert || advert->commit.isEmpty())
             continue;
-        if (advert->ownerName == source || node.name == sourceOwner)
+        if (advert->ownerName == source ||
+            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0)
             sourceCommit = advert->commit;
         if (advert->updatedMs > newestMs) {
             newestMs = advert->updatedMs;
@@ -1307,19 +1367,22 @@ void MainWindow::loadMirrorNodesPanel()
         // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
         const bool online = node.self ? (m_backend != nullptr) : node.online;
         const bool integrityFailing =
-            integrityByNode.value(node.name.trimmed().toLower()) ==
+            integrityByNode.value(displayNodeName(node, advert).trimmed().toLower()) ==
             QLatin1String("rejected");
         if (onlineOnly && !online)
             continue;
 
-        shownNames.insert(node.name.trimmed().toLower());
+        const QString nodeDisplay = displayNodeName(node, advert);
+        const QString ownerDisplay = displayOwnerName(node);
+        shownNames.insert(nodeDisplay.trimmed().toLower());
         if (!node.id.isEmpty())
             shownIds.insert(node.id);
 
         // The source of truth: the node whose clone identity equals the shared
         // source (the owner advertises ownerName == source); also match by name.
         const bool isSource =
-            (advert && advert->ownerName == source) || node.name == sourceOwner;
+            (advert && advert->ownerName == source) ||
+            nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0;
 
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
@@ -1329,9 +1392,9 @@ void MainWindow::loadMirrorNodesPanel()
         // from the strip (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
-                {node.id, node.name, online, node.self, integrityFailing});
+                {node.id, nodeDisplay, online, node.self, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
-            node.name + (node.self ? QStringLiteral("  (you)") : QString()) +
+            nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
         nameItem->setIcon(themedOcticon(
@@ -1340,14 +1403,20 @@ void MainWindow::loadMirrorNodesPanel()
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
-                              node.name.toLower());
+                              nodeDisplay.toLower());
         nameItem->setToolTip(isSource
                                  ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
                                        .arg(online ? "online" : "offline")
                                  : (online ? "Online now" : "Offline"));
+        if (!node.name.trimmed().isEmpty() &&
+            node.name.compare(nodeDisplay, Qt::CaseInsensitive) != 0)
+            nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
+                                 node.name.trimmed());
         if (integrityFailing)
             markPinRejected(nameItem);
-        m_mirrorNodesTable->setItem(row, 0, nameItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
+                                    makeOwnerCell(ownerDisplay));
 
         // Latest commit: short hash + branch; tooltip carries the subject/date
         // when we hold the same commit in our own mirror.
@@ -1380,7 +1449,7 @@ void MainWindow::loadMirrorNodesPanel()
         }
         auto *commitItem = new QTableWidgetItem(commitText);
         commitItem->setToolTip(commitTip);
-        m_mirrorNodesTable->setItem(row, 1, commitItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, commitItem);
 
         // Synced: relative time since the node last fetched from source.
         const qint64 syncedSecs = advert ? advert->updatedMs / 1000 : 0;
@@ -1414,7 +1483,7 @@ void MainWindow::loadMirrorNodesPanel()
                     .arg(pendingPush)
                     .arg(pendingPush == 1 ? "" : "s"));
         }
-        m_mirrorNodesTable->setItem(row, 2, syncedItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
 
         // Tally for the owner-only alert below: are we the source of truth, and
         // how many other nodes are serving a state that doesn't match it.
@@ -1432,7 +1501,7 @@ void MainWindow::loadMirrorNodesPanel()
                           : QString::fromUtf8("\xE2\x80\x94"));
         sizeItem->setData(kTableSortRole, double(nodeBytes));
         sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        m_mirrorNodesTable->setItem(row, 3, sizeItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColSize, sizeItem);
         if (nodeBytes > 0) {
             totalBytes += nodeBytes;
             maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
@@ -1451,47 +1520,49 @@ void MainWindow::loadMirrorNodesPanel()
                 QString::fromUtf8("Mirroring %1 issue%2")
                     .arg(nodeIssues)
                     .arg(nodeIssues == 1 ? "" : "s"));
-        m_mirrorNodesTable->setItem(row, 4, issuesItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, issuesItem);
 
         // Commits / Branches / Pulls / Discussions: more per-node tallies
         // advertised alongside the issue count, so the panel shows how much
         // history each node mirrors and how busy it is. Em-dash for older peers.
         m_mirrorNodesTable->setItem(
-            row, 5,
+            row, MirrorNodeColCommits,
             makeCountCell(advert ? advert->commitCount : -1, "commit", "commits"));
         m_mirrorNodesTable->setItem(
-            row, 6,
+            row, MirrorNodeColBranches,
             makeCountCell(advert ? advert->branchCount : -1, "branch", "branches"));
         m_mirrorNodesTable->setItem(
-            row, 7,
+            row, MirrorNodeColPulls,
             makeCountCell(advert ? advert->pullCount : -1, "pull request",
                           "pull requests"));
         m_mirrorNodesTable->setItem(
-            row, 8,
+            row, MirrorNodeColDiscussions,
             makeCountCell(advert ? advert->discussionCount : -1, "discussion",
                           "discussions"));
         m_mirrorNodesTable->setItem(
-            row, 9,
+            row, MirrorNodeColWorktrees,
             makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
                           "worktrees"));
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
-        m_mirrorNodesTable->setItem(row, 10, makeCpuUsageCell(node.cpuPercent));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColCpu,
+                                    makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
-            row, 11, makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
+            row, MirrorNodeColRam,
+            makeByteUsageCell("RAM", node.memUsedBytes, node.memTotalBytes));
         m_mirrorNodesTable->setItem(
-            row, 12,
+            row, MirrorNodeColDisk,
             makeByteUsageCell("Disk", node.diskUsedBytes, node.diskTotalBytes));
 
         m_mirrorNodesTable->setItem(
-            row, 13,
+            row, MirrorNodeColPlatform,
             new QTableWidgetItem(node.platform.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.platform));
         m_mirrorNodesTable->setItem(
-            row, 14,
+            row, MirrorNodeColVersion,
             new QTableWidgetItem(node.version.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : node.version));
@@ -1499,7 +1570,7 @@ void MainWindow::loadMirrorNodesPanel()
             node.id.left(12) + (node.id.size() > 12 ? QString::fromUtf8("\xE2\x80\xA6")
                                                     : QString()));
         idItem->setToolTip(node.id);
-        m_mirrorNodesTable->setItem(row, 15, idItem);
+        m_mirrorNodesTable->setItem(row, MirrorNodeColId, idItem);
 
         // Clones / website serves: per-node local counters. Our own row reads the
         // freshest count straight from the local tally (keyed as onRequestServed
@@ -1512,19 +1583,20 @@ void MainWindow::loadMirrorNodesPanel()
             nodeWebsite = qMax(0, s.first - s.second);
         } else {
             const QPair<int, int> s =
-                serveCounts.value(node.name.trimmed().toLower(), {-1, -1});
+                serveCounts.value(nodeDisplay.trimmed().toLower(), {-1, -1});
             nodeClones = s.first;
             nodeWebsite = s.second;
         }
-        m_mirrorNodesTable->setItem(row, 16,
+        m_mirrorNodesTable->setItem(row, MirrorNodeColClones,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
         m_mirrorNodesTable->setItem(
-            row, 17, makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
+            row, MirrorNodeColWebsite,
+            makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
         // Artifacts: how many release binaries this node is hosting for download
         // in its content-addressed store (issue #304). A mirror replicates these
         // separately from git, so the count reflects what it can actually serve.
         m_mirrorNodesTable->setItem(
-            row, 18,
+            row, MirrorNodeColArtifacts,
             makeCountCell(advert ? advert->artifactCount : -1, "artifact",
                           "artifacts"));
         ++count;
@@ -1567,6 +1639,9 @@ void MainWindow::loadMirrorNodesPanel()
                                         online, false, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
+            const QString ownerUser = m.value(QStringLiteral("ownerUser"))
+                                          .toString()
+                                          .trimmed();
             auto *nameItem = new SortTableWidgetItem(
                 nodeName + (isSource
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
@@ -1582,7 +1657,9 @@ void MainWindow::loadMirrorNodesPanel()
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
                 markPinRejected(nameItem);
-            m_mirrorNodesTable->setItem(row, 0, nameItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
+                                        makeOwnerCell(ownerUser));
             // Latest commit: the publishing node mirrors its served HEAD into the
             // catalog record, so even an offline node shows its commit (adhoc #56).
             const QString catCommit = m.value("commit").toString();
@@ -1596,7 +1673,7 @@ void MainWindow::loadMirrorNodesPanel()
             auto *catCommitItem = new QTableWidgetItem(catCommitText);
             if (!catCommit.isEmpty())
                 catCommitItem->setToolTip(catCommit);
-            m_mirrorNodesTable->setItem(row, 1, catCommitItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, catCommitItem);
             const qint64 syncedSecs = qint64(m.value("lastSync").toDouble()) / 1000;
             auto *syncedItem = new SortTableWidgetItem(
                 syncedSecs > 0 ? formatShortRelativeTime(syncedSecs) + " ago"
@@ -1605,14 +1682,14 @@ void MainWindow::loadMirrorNodesPanel()
             if (syncedSecs > 0)
                 syncedItem->setToolTip(
                     QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
-            m_mirrorNodesTable->setItem(row, 2, syncedItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
             const qint64 nodeBytes = qint64(m.value("sizeBytes").toDouble());
             auto *sizeItem = new SortTableWidgetItem(
                 nodeBytes > 0 ? formatByteSize(nodeBytes)
                               : QString::fromUtf8("\xE2\x80\x94"));
             sizeItem->setData(kTableSortRole, double(nodeBytes));
             sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            m_mirrorNodesTable->setItem(row, 3, sizeItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColSize, sizeItem);
             if (nodeBytes > 0) {
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
@@ -1632,39 +1709,39 @@ void MainWindow::loadMirrorNodesPanel()
                 catIssuesItem->setToolTip(QString::fromUtf8("Mirroring %1 issue%2")
                                               .arg(catIssues)
                                               .arg(catIssues == 1 ? "" : "s"));
-            m_mirrorNodesTable->setItem(row, 4, catIssuesItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, catIssuesItem);
             m_mirrorNodesTable->setItem(
-                row, 5,
+                row, MirrorNodeColCommits,
                 makeCountCell(m.value("commitCount").toInt(-1), "commit",
                               "commits"));
             m_mirrorNodesTable->setItem(
-                row, 6,
+                row, MirrorNodeColBranches,
                 makeCountCell(m.value("branchCount").toInt(-1), "branch",
                               "branches"));
             m_mirrorNodesTable->setItem(
-                row, 7,
+                row, MirrorNodeColPulls,
                 makeCountCell(m.value("pullCount").toInt(-1), "pull request",
                               "pull requests"));
             m_mirrorNodesTable->setItem(
-                row, 8,
+                row, MirrorNodeColDiscussions,
                 makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
                               "discussions"));
             m_mirrorNodesTable->setItem(
-                row, 9,
+                row, MirrorNodeColWorktrees,
                 makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
                               "worktrees"));
-            for (int col : {10, 11, 12})
+            for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
             const QString catPlatform = m.value("platform").toString();
             m_mirrorNodesTable->setItem(
-                row, 13,
+                row, MirrorNodeColPlatform,
                 new QTableWidgetItem(catPlatform.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catPlatform));
             const QString catVersion = m.value("version").toString();
             m_mirrorNodesTable->setItem(
-                row, 14,
+                row, MirrorNodeColVersion,
                 new QTableWidgetItem(catVersion.isEmpty()
                                          ? QString::fromUtf8("\xE2\x80\x94")
                                          : catVersion));
@@ -1677,19 +1754,21 @@ void MainWindow::loadMirrorNodesPanel()
                                             : QString()));
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
-            m_mirrorNodesTable->setItem(row, 15, catIdItem);
+            m_mirrorNodesTable->setItem(row, MirrorNodeColId, catIdItem);
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
             const int catWebsite = m.value("websiteServed").toInt(-1);
             m_mirrorNodesTable->setItem(
-                row, 16, makeServeCountCell(catClones, clonesTip(catClones)));
+                row, MirrorNodeColClones,
+                makeServeCountCell(catClones, clonesTip(catClones)));
             m_mirrorNodesTable->setItem(
-                row, 17, makeServeCountCell(catWebsite, websiteTip(catWebsite)));
+                row, MirrorNodeColWebsite,
+                makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             // Artifacts the publishing node reported hosting for download, so the
             // count shows for an offline node too.
             m_mirrorNodesTable->setItem(
-                row, 18,
+                row, MirrorNodeColArtifacts,
                 makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
                               "artifacts"));
             ++count;
@@ -1776,7 +1855,7 @@ void MainWindow::loadMirrorNodesPanel()
                 ? "No online nodes are advertising a mirror of this repository right now."
                 : "No other nodes are advertising a mirror of this repository yet.");
         empty->setForeground(QColor("#8b949e"));
-        m_mirrorNodesTable->setItem(0, 0, empty);
+        m_mirrorNodesTable->setItem(0, MirrorNodeColNode, empty);
     }
 }
 
@@ -2442,7 +2521,8 @@ QStringList MainWindow::testMirrorNodeRows() const
     if (!m_mirrorNodesTable)
         return rows;
     for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
-        const QTableWidgetItem *item = m_mirrorNodesTable->item(row, 0);
+        const QTableWidgetItem *item =
+            m_mirrorNodesTable->item(row, MirrorNodeColNode);
         if (!item)
             continue;
         rows.append(item->text() + QLatin1Char('|') +
@@ -2467,7 +2547,8 @@ QString MainWindow::testMirrorNodeCellText(const QString &nodeName, int column) 
     if (!m_mirrorNodesTable)
         return QString();
     for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
-        const QTableWidgetItem *name = m_mirrorNodesTable->item(row, 0);
+        const QTableWidgetItem *name =
+            m_mirrorNodesTable->item(row, MirrorNodeColNode);
         if (!name || !name->text().startsWith(nodeName))
             continue;
         const QTableWidgetItem *item = m_mirrorNodesTable->item(row, column);
@@ -2481,7 +2562,8 @@ QString MainWindow::testMirrorNodeCellToolTip(const QString &nodeName, int colum
     if (!m_mirrorNodesTable)
         return QString();
     for (int row = 0; row < m_mirrorNodesTable->rowCount(); ++row) {
-        const QTableWidgetItem *name = m_mirrorNodesTable->item(row, 0);
+        const QTableWidgetItem *name =
+            m_mirrorNodesTable->item(row, MirrorNodeColNode);
         if (!name || !name->text().startsWith(nodeName))
             continue;
         const QTableWidgetItem *item = m_mirrorNodesTable->item(row, column);

@@ -1017,6 +1017,59 @@ STATUS_SYSTEMS = [
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
 STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
+STATUS_HOUR_MS = 60 * 60 * 1000
+STATUS_DAY_MS = 24 * STATUS_HOUR_MS
+
+
+def _status_expected_checks_for_hour(hour_ts, now):
+    """How many minute samples should exist for an elapsed hourly bucket.
+
+    The current in-progress minute is not expected yet. This prevents the public
+    page from flashing degraded between the page load and the next cron tick, but
+    still treats missing completed minutes/hours as downtime.
+    """
+    hour_ts = int(hour_ts)
+    now = int(now)
+    if hour_ts > now:
+        return 0
+    if now >= hour_ts + STATUS_HOUR_MS:
+        return 60
+    return max(0, int((now - hour_ts) // STATUS_SAMPLE_WINDOW_MS))
+
+
+def _status_effective_hour(hour_ts, now, row):
+    checks, failures, reason = row or (0, 0, None)
+    checks = max(0, int(checks or 0))
+    failures = max(0, int(failures or 0))
+    expected = max(_status_expected_checks_for_hour(hour_ts, now), checks)
+    if expected <= 0:
+        return {
+            "hourTs": hour_ts, "status": "future", "checks": checks,
+            "failures": failures, "expectedChecks": 0, "missingChecks": 0,
+            "effectiveFailures": failures, "reason": None,
+        }
+    missing = max(0, expected - checks)
+    effective_failures = min(expected, failures + missing)
+    if effective_failures <= 0:
+        status = "operational"
+    elif effective_failures >= expected:
+        status = "down"
+    else:
+        status = "degraded"
+    hour_reason = reason if status != "operational" else None
+    if missing and status != "operational":
+        missing_reason = (
+            "No status sample recorded for %d expected minute%s; treated as downtime."
+            % (missing, "" if missing == 1 else "s")
+        )
+        hour_reason = (str(hour_reason) + " " + missing_reason) if hour_reason else missing_reason
+    return {
+        "hourTs": hour_ts, "status": status,
+        "checks": checks, "failures": failures,
+        "expectedChecks": expected, "missingChecks": missing,
+        "effectiveFailures": effective_failures,
+        "reason": hour_reason,
+    }
 
 
 async def record_status_sample(env):
@@ -1153,44 +1206,39 @@ async def status_history(env):
     systems = []
     for system_id, label in STATUS_SYSTEMS:
         days = []
-        total_checks = total_failures = 0
-        # Walked oldest-to-newest, so the last non-operational hour we see is
-        # also the most recent one — that becomes the headline "why" shown
-        # without requiring a hover, next to the system's current badge.
-        latest_reason = None
-        latest_reason_ts = None
+        total_expected = total_effective_failures = 0
+        total_24h_expected = total_24h_effective_failures = 0
+        current_hour = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
+        uptime_24h_start = current_hour - 23 * STATUS_HOUR_MS
         for i in range(STATUS_HISTORY_DAYS):
-            this_day = start + i * 86400000
+            this_day = start + i * STATUS_DAY_MS
             checks, failures = by_system.get(system_id, {}).get(this_day, (0, 0))
-            total_checks += checks
-            total_failures += failures
-            uptime = round(((checks - failures) / checks) * 100, 2) if checks else None
+            day_expected = day_effective_failures = 0
             hours = []
             for h in range(24):
-                hour_ts = this_day + h * 3600000
+                hour_ts = this_day + h * STATUS_HOUR_MS
                 if hour_ts > now:
                     break
-                h_checks, h_failures, h_reason = by_system_hour.get(
-                    system_id, {}).get(hour_ts, (0, 0, None))
-                if not h_checks:
-                    h_status = "unknown"
-                elif h_failures == 0:
-                    h_status = "operational"
-                elif h_failures >= h_checks:
-                    h_status = "down"
-                else:
-                    h_status = "degraded"
-                hour_reason = h_reason if h_status != "operational" else None
-                hours.append({
-                    "hourTs": hour_ts, "status": h_status,
-                    "checks": h_checks, "failures": h_failures,
-                    "reason": hour_reason,
-                })
-                if hour_reason:
-                    latest_reason = hour_reason
-                    latest_reason_ts = hour_ts
+                hour = _status_effective_hour(
+                    hour_ts, now, by_system_hour.get(system_id, {}).get(hour_ts),
+                )
+                if hour["expectedChecks"] > 0:
+                    day_expected += hour["expectedChecks"]
+                    day_effective_failures += hour["effectiveFailures"]
+                    total_expected += hour["expectedChecks"]
+                    total_effective_failures += hour["effectiveFailures"]
+                    if hour_ts >= uptime_24h_start:
+                        total_24h_expected += hour["expectedChecks"]
+                        total_24h_effective_failures += hour["effectiveFailures"]
+                hours.append(hour)
+            uptime = (
+                round(((day_expected - day_effective_failures) / day_expected) * 100, 2)
+                if day_expected else None
+            )
             days.append({
                 "dayTs": this_day, "checks": checks, "failures": failures,
+                "expectedChecks": day_expected,
+                "effectiveFailures": day_effective_failures,
                 "uptimePct": uptime, "hours": hours,
                 "hoursElapsed": len(hours),
             })
@@ -1201,7 +1249,7 @@ async def status_history(env):
         latest_hour = None
         for d in reversed(days):
             for h in reversed(d["hours"]):
-                if h["checks"]:
+                if h.get("expectedChecks") or h["checks"]:
                     latest_hour = h
                     break
             if latest_hour:
@@ -1221,14 +1269,23 @@ async def status_history(env):
             else:
                 status = "degraded"
         overall_uptime = (
-            round(((total_checks - total_failures) / total_checks) * 100, 2)
-            if total_checks else None
+            round(((total_expected - total_effective_failures) / total_expected) * 100, 2)
+            if total_expected else None
+        )
+        uptime_24h = (
+            round(
+                ((total_24h_expected - total_24h_effective_failures) /
+                 total_24h_expected) * 100,
+                2,
+            )
+            if total_24h_expected else None
         )
         systems.append({
             "id": system_id, "label": label, "status": status,
-            "uptimePct": overall_uptime, "days": days,
-            "reason": latest_reason if status != "operational" else None,
-            "reasonTs": latest_reason_ts if status != "operational" else None,
+            "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
+            "days": days,
+            "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
+            "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
         })
 
     # Current-state snapshot (issue #356): the headline health metrics rendered

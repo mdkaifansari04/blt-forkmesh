@@ -29,7 +29,8 @@ class ServerNode : public ChatBackend
 {
     Q_OBJECT
 public:
-    ServerNode(const QString &userName, const QString &stableNodeId,
+    ServerNode(const QString &userName, const QString &nodeName,
+               const QString &ownerUser, const QString &stableNodeId,
                const QUrl &serverUrl,
                const QString &roomName,
                const QString &solanaAddress,
@@ -62,6 +63,7 @@ public:
                           const QString &messageId) override;
     void setAvatar(const QByteArray &pngData) override;
     void setUserName(const QString &name) override;
+    void setNodeIdentity(const QString &nodeName, const QString &ownerUser) override;
     void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
@@ -80,6 +82,8 @@ public:
 private:
     struct Peer {
         QString name;
+        QString nodeName;
+        QString ownerUser;
         QString solanaAddress;
         QString platform;
         QString version;
@@ -127,6 +131,8 @@ private:
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
     void rememberPeer(const QString &peerId, const QString &name,
+                      const QString &nodeName = QString(),
+                      const QString &ownerUser = QString(),
                       const QString &solanaAddress = QString(),
                       const QString &platform = QString(),
                       const QString &version = QString(), bool online = true);
@@ -148,6 +154,8 @@ private:
     QJsonObject makeMessage(const QString &type) const;
 
     QString m_userName;
+    QString m_nodeName;
+    QString m_ownerUser;
     QUrl m_url; // the mainnode we're currently pointed at (m_endpoints[m_endpointIndex])
     // All mainnodes to try, in preference order (issue #364). Seeded to just the
     // constructor URL; setEndpoints() replaces it with the full failover list.

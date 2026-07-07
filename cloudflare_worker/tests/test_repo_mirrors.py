@@ -48,7 +48,7 @@ def _load(*names, extra_globals=None):
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
          node_id="", clones_served=None, website_served=None, artifact_count=None,
-         state_hash="", source="local-node"):
+         state_hash="", source="local-node", owner_user=""):
     data = {
         "owner": owner,
         "name": name,
@@ -76,6 +76,8 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         data["websiteServed"] = website_served
     if artifact_count is not None:
         data["artifactCount"] = artifact_count
+    if owner_user:
+        data["ownerUser"] = owner_user
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
@@ -225,7 +227,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10,
              commit="686d7ebd1ef0", branch="main", issue_count=302,
              platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz",
-             clones_served=42, website_served=118, artifact_count=3),
+             clones_served=42, website_served=118, artifact_count=3,
+             owner_user="alice"),
         _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
     ]
     payload = build_repo_mirrors_payload(
@@ -238,6 +241,7 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert rich["platform"] == "linux"
     assert rich["version"] == "0.5.22"
     assert rich["id"] == "7ZMh_2s_IOTPxYz"
+    assert rich["ownerUser"] == "alice"
     # Clone / website-serve tallies the node has provided (issue: mirror-node counts).
     assert rich["clonesServed"] == 42
     assert rich["websiteServed"] == 118
@@ -249,6 +253,7 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["platform"] == ""
     assert legacy["issueCount"] == -1
     assert legacy["id"] == ""
+    assert legacy["ownerUser"] == ""
     assert legacy["clonesServed"] == -1
     assert legacy["websiteServed"] == -1
     assert legacy["artifactCount"] == -1

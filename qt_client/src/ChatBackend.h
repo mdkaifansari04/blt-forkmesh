@@ -38,7 +38,9 @@ struct MirrorAdvert {
 // used to address direct messages.
 struct MemberInfo {
     QString id;
-    QString name;
+    QString name;      // chat/user display name
+    QString nodeName;  // registered node account name, when known
+    QString ownerUser; // user account that owns this node, when linked/known
     QString note;     // e.g. "(discovered)"
     bool self = false;
     bool online = false; // live link right now (green dot)
@@ -128,6 +130,11 @@ public:
     virtual void setAvatar(const QByteArray &pngData) = 0;
     // Update the single visible/account name used in outgoing messages.
     virtual void setUserName(const QString &name) { Q_UNUSED(name); }
+    // Update the infrastructure identity advertised beside the chat/user name.
+    virtual void setNodeIdentity(const QString &nodeName, const QString &ownerUser) {
+        Q_UNUSED(nodeName);
+        Q_UNUSED(ownerUser);
+    }
     // Forget a stale member locally; a later live hello can add them again.
     virtual void forgetMember(const QString &peerId) { Q_UNUSED(peerId); }
     // Tell peers we started/stopped typing in a conversation.
