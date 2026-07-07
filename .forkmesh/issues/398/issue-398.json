@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783446301200,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-398",
+            "sig": "JkvsO_yVeV7oSNQ1VK4Daej6nMeMAJ4NUH08zVa7Hdgd0A1Bhn_EfQAiqA9mghNNx3BoAl4B9QJ9g2xkZ4p7Bw",
+            "title": "have a checkbox when creating a release to delete all previous releases and artifacts so we save space",
+            "ts": 1783446301200,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 398,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "have a checkbox when creating a release to delete all previous releases and artifacts so we save space",
+    "updatedAt": 1783446301200,
+    "votes": 0
+}
