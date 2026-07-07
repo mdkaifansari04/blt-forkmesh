@@ -125,12 +125,12 @@
 		                  <div data-repo-tree-panel class="overflow-hidden rounded-lg border border-border bg-background">
 	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
 	                      <div class="flex min-w-0 items-center gap-2">
-	                        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
-	                        <span class="min-w-0 truncate text-foreground font-medium">${escapeHtml(repo.maintainer || repo.owner || "maintainer")}</span>
-	                        <span class="min-w-0 truncate text-muted-foreground">published latest mirror metadata</span>
+	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
+	                        <span data-repo-commit-author class="min-w-0 truncate text-foreground font-medium">${escapeHtml(repo.maintainer || repo.owner || "maintainer")}</span>
+	                        <span data-repo-commit-message class="min-w-0 truncate text-muted-foreground">published latest mirror metadata</span>
 	                      </div>
-	                      <span class="font-mono text-muted-foreground">${escapeHtml(commitId)}</span>
-	                      <span class="font-mono text-muted-foreground">${escapeHtml(updatedAt)}</span>
+	                      <span data-repo-commit-hash class="font-mono text-muted-foreground">${escapeHtml(commitId)}</span>
+	                      <span data-repo-commit-date class="font-mono text-muted-foreground">${escapeHtml(updatedAt)}</span>
 	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
 	                    </div>
 	                    <div class="grid grid-cols-[1.5rem_minmax(0,1fr)_auto] gap-3 border-b border-border bg-secondary/25 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
@@ -761,6 +761,16 @@
         buttonSelector: "[data-profile-page-save]",
         buttonText: "Save payout address",
       });
+      return;
+    }
+
+    if (event.target.closest("[data-profile-public-save]")) {
+      savePublicProfile();
+      return;
+    }
+
+    if (event.target.closest("[data-notification-preferences-save]")) {
+      saveNotificationPreferences();
       return;
     }
 

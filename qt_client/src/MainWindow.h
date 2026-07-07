@@ -555,6 +555,7 @@ private:
     // Periodic signed heartbeat that keeps this node eligible for the reward
     // split and refreshes its payout Solana address.
     void sendNodeHeartbeat();
+    QJsonObject emailNotificationPreferencesPayload() const;
     // A user on forkmesh.com claimed this node's ID (adhoc #53): the heartbeat
     // reply carried a confirmation code, shown on this machine so the person
     // standing at both screens can type it back into the website.
@@ -2548,8 +2549,10 @@ private:
     void openDirectChat(const QString &peerId, const QString &peerName);
     void refreshChannelList();
     void refreshDmList();
-    // Rebuild the chat's right-hand online-members column from m_homeRoster.
+    // Rebuild the chat's right-hand user column from live roster + directory.
     void refreshChatMembers();
+    void refreshChatUserDirectory();
+    void mergeChatUserDirectory(const QJsonArray &users);
     void promptAddChannel();
     // Create an invite-only room (see ServerNode::createPrivateChannel) and start
     // in it. Its name is remembered so it survives a reconnect/restart.
@@ -2927,8 +2930,8 @@ private:
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
-    // Right-hand online-members column in the chat view: a scroll area whose
-    // inner layout holds one card per online (or self) node.
+    // Right-hand users column in the chat view: live roster + offline account
+    // directory entries, rendered as people rather than nodes.
     QVBoxLayout *m_chatMembersLayout = nullptr;
     QLabel *m_chatMembersHeading = nullptr;
     QWidget *m_firewallBanner;
@@ -4600,6 +4603,9 @@ private:
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
     QList<MemberInfo> m_homeRoster;
+    QHash<QString, MemberInfo> m_chatDirectoryUsers; // lowercased user -> profile
+    bool m_chatDirectoryFetchInFlight = false;
+    qint64 m_chatDirectoryFetchedMs = 0;
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).

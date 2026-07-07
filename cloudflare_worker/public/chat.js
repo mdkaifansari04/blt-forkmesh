@@ -15,7 +15,7 @@ const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 // this page, so a self-hosted mainnode's own site talks to itself with zero
 // config. A separately-hosted static site can point at a different relay by
 // setting window.FORKMESH_RELAY_HOST (e.g. "relay.example.com") before this
-// script loads. See docs/protocol.md ("Self-hosting a mainnode").
+// script loads. See public docs: /docs#self-hosting.
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;

@@ -148,6 +148,16 @@
     return ($(selector || "[data-profile-password]")?.value || "").trim();
   }
 
+  function profileTxtValue(session = state.session) {
+    const name = String(session?.nodeName || "").trim().toLowerCase();
+    return name ? `forkmesh-profile=${name}` : "forkmesh-profile=username";
+  }
+
+  function profilePublicUrl(session = state.session) {
+    const name = String(session?.nodeName || "").trim().toLowerCase();
+    return name ? `${location.origin}/@${name}` : `${location.origin}/@username`;
+  }
+
   function validNodeName(value) {
     return /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value || ""));
   }
@@ -157,6 +167,54 @@
   // so the claim-node input below must accept it alongside the account name.
   function validNodePubkey(value) {
     return /^[A-Za-z0-9_-]{43}$/.test(String(value || ""));
+  }
+
+  const NOTIFICATION_PREFERENCE_DEFAULTS = {
+    mention: true,
+    subscribed: true,
+    pull_submitted: true,
+    issue_assigned: true,
+    repo_shared: true,
+    bounty_funded: true,
+    bounty_paid: true,
+    release_published: true,
+    pending_inbox: true,
+    credits_refilled: true,
+    general_chat: true,
+    host_online: false,
+    host_offline: false,
+  };
+
+  function normalizedNotificationPreferences(session = state.session) {
+    const raw = session?.notificationPreferences;
+    const prefs = { ...NOTIFICATION_PREFERENCE_DEFAULTS };
+    if (raw && typeof raw === "object") {
+      Object.keys(prefs).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(raw, key)) prefs[key] = Boolean(raw[key]);
+      });
+    }
+    return prefs;
+  }
+
+  function renderNotificationPreferences(session = state.session) {
+    const prefs = normalizedNotificationPreferences(session);
+    $$("[data-notification-pref]").forEach((input) => {
+      const key = input.dataset.notificationPref || "";
+      if (Object.prototype.hasOwnProperty.call(prefs, key)) {
+        input.checked = Boolean(prefs[key]);
+      }
+    });
+  }
+
+  function collectNotificationPreferences() {
+    const prefs = { ...NOTIFICATION_PREFERENCE_DEFAULTS };
+    $$("[data-notification-pref]").forEach((input) => {
+      const key = input.dataset.notificationPref || "";
+      if (Object.prototype.hasOwnProperty.call(prefs, key)) {
+        prefs[key] = Boolean(input.checked);
+      }
+    });
+    return prefs;
   }
 
   function setRenameStatus(text, cls) {
@@ -206,6 +264,11 @@
     const verifyButton = $("[data-profile-page-verify-email]");
     const solanaInput = $("[data-profile-page-solana]");
     const renameInput = $("[data-profile-rename-input]");
+    const bioInput = $("[data-profile-page-bio]");
+    const mastodonInput = $("[data-profile-page-mastodon]");
+    const privateInput = $("[data-profile-page-private]");
+    const publicUrl = $("[data-profile-public-url]");
+    const txtValue = $("[data-profile-txt-value]");
 
     applyAvatar(avatar, session);
     if (nameEl) nameEl.textContent = name;
@@ -229,6 +292,19 @@
     if (renameInput) {
       renameInput.placeholder = name;
     }
+    if (bioInput && document.activeElement !== bioInput) {
+      bioInput.value = session?.profileBio || "";
+    }
+    if (mastodonInput && document.activeElement !== mastodonInput) {
+      mastodonInput.value = session?.mastodon || "";
+    }
+    if (privateInput) {
+      privateInput.checked = Boolean(session?.profilePrivate);
+    }
+    if (publicUrl) publicUrl.textContent = profilePublicUrl(session);
+    if (txtValue) txtValue.textContent = profileTxtValue(session);
+    renderProfileLinksEditor(session);
+    renderNotificationPreferences(session);
     if (!session?.emailVerified) {
       state.nodeNameAvailability.available = false;
       setRenameStatus("Verify your email before changing your node name.", "bad");
@@ -238,6 +314,30 @@
     }
     updateRenameButton();
     renderClaimNodePanel(session);
+  }
+
+  function renderProfileLinksEditor(session = state.session) {
+    const links = Array.isArray(session?.profileLinks) ? session.profileLinks : [];
+    $$("[data-profile-link-row]").forEach((row, index) => {
+      const link = links[index] || {};
+      const label = row.querySelector("[data-profile-link-label]");
+      const url = row.querySelector("[data-profile-link-url]");
+      const status = row.querySelector("[data-profile-link-status]");
+      if (label && document.activeElement !== label) label.value = link.label || "";
+      if (url && document.activeElement !== url) url.value = link.url || "";
+      if (status) {
+        if (link.url) {
+          status.textContent = link.verified
+            ? `Verified for ${link.domain || "domain"}.`
+            : `Add TXT ${link.txtValue || profileTxtValue(session)} on ${link.txtName || link.domain || "the domain"} to verify.`;
+          status.className = "sm:col-span-2 text-[11px] " +
+            (link.verified ? "text-primary" : "text-muted-foreground");
+        } else {
+          status.textContent = "";
+          status.className = "sm:col-span-2 text-[11px] text-muted-foreground";
+        }
+      }
+    });
   }
 
   function profilePayload(extra = {}, passwordOverride) {
@@ -308,6 +408,52 @@
       if (button) {
         button.disabled = false;
         button.textContent = options.buttonText || "Save profile";
+      }
+    }
+  }
+
+  function collectProfileLinks() {
+    const links = [];
+    $$("[data-profile-link-row]").forEach((row) => {
+      const label = (row.querySelector("[data-profile-link-label]")?.value || "").trim();
+      const url = (row.querySelector("[data-profile-link-url]")?.value || "").trim();
+      if (!label && !url) return;
+      links.push({ label, url });
+    });
+    return links;
+  }
+
+  async function savePublicProfile() {
+    const password = profilePassword("[data-profile-public-password]");
+    if (!password) {
+      setProfilePageHint("[data-profile-public-hint]", "Enter your current password to save public profile changes.", "bad");
+      return;
+    }
+    const button = $("[data-profile-public-save]");
+    if (button) { button.disabled = true; button.textContent = "Saving…"; }
+    try {
+      await postProfile({
+        profileBio: ($("[data-profile-page-bio]")?.value || "").trim(),
+        mastodon: ($("[data-profile-page-mastodon]")?.value || "").trim(),
+        profilePrivate: Boolean($("[data-profile-page-private]")?.checked),
+        profileLinks: collectProfileLinks(),
+      }, password);
+      if ($("[data-profile-public-password]")) $("[data-profile-public-password]").value = "";
+      setProfilePageHint("[data-profile-public-hint]", "Public profile saved.", "good");
+    } catch (error) {
+      const messages = {
+        bad_mastodon: "Enter a Mastodon handle like @you@example.social.",
+        bad_profile_links: "Check your profile links and try again.",
+        bad_profile_link_url: "Profile links must be http or https URLs on a real domain.",
+      };
+      setProfilePageHint(
+        "[data-profile-public-hint]",
+        messages[error.message] || "Could not save public profile. Check your password and try again.",
+        "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Save public profile";
       }
     }
   }
@@ -675,6 +821,31 @@
         "bad");
     } finally {
       if (button) { button.disabled = false; button.textContent = "Authenticate & link"; }
+    }
+  }
+
+  async function saveNotificationPreferences() {
+    const password = profilePassword("[data-notification-preferences-password]");
+    if (!password) {
+      setProfilePageHint("[data-notification-preferences-hint]", "Enter your current password to save notification settings.", "bad");
+      return;
+    }
+    const button = $("[data-notification-preferences-save]");
+    if (button) { button.disabled = true; button.textContent = "Saving..."; }
+    try {
+      await postProfile({
+        emailNotifications: true,
+        notificationPreferences: collectNotificationPreferences(),
+      }, password);
+      if ($("[data-notification-preferences-password]")) $("[data-notification-preferences-password]").value = "";
+      setProfilePageHint("[data-notification-preferences-hint]", "Notification settings saved.", "good");
+    } catch (_) {
+      setProfilePageHint("[data-notification-preferences-hint]", "Could not save notification settings. Check your password and try again.", "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Save notifications";
+      }
     }
   }
 

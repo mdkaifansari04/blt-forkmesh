@@ -375,7 +375,7 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
         if (it.value()->senderId() == peerId)
             it.value()->setAvatar(pixmap);
     }
-    // Repaint the online-members column so its avatar tile picks up the image.
+    // Repaint the users column so its avatar tile picks up the image.
     refreshChatMembers();
 }
 
@@ -488,8 +488,7 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     // welcome room — once, ever (issue #192).
     maybeAnnounceWelcome();
     refreshChatMembers();
-    // The members list is gone (nodes are the members); keep DM tab titles in
-    // sync with renamed/rediscovered nodes.
+    // Keep DM tab titles in sync with renamed/rediscovered live members.
     for (const MemberInfo &member : members) {
         if (m_dmNames.contains(member.id) && m_dmNames.value(member.id) != member.name) {
             m_dmNames.insert(member.id, member.name);
@@ -574,6 +573,99 @@ void MainWindow::maybeAnnounceWelcome()
         QString::fromUtf8("\xF0\x9F\x91\x8B Just joined ForkMesh \xE2\x80\x94 hello!"));
 }
 
+static QString chatUserDisplayName(const MemberInfo &member)
+{
+    const QString owner = member.ownerUser.trimmed();
+    if (!owner.isEmpty())
+        return owner;
+    const QString name = member.name.trimmed();
+    if (!name.isEmpty())
+        return name;
+    return member.nodeName.trimmed();
+}
+
+static QString chatUserKey(const MemberInfo &member)
+{
+    if (member.self)
+        return QStringLiteral("\x01self");
+    return chatUserDisplayName(member).toLower();
+}
+
+void MainWindow::refreshChatUserDirectory()
+{
+    if (!m_networkAccess || m_chatDirectoryFetchInFlight)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_chatDirectoryFetchedMs > 0 &&
+        now - m_chatDirectoryFetchedMs < 5 * 60 * 1000)
+        return;
+
+    m_chatDirectoryFetchInFlight = true;
+    QNetworkRequest request(accountsApiUrl(QStringLiteral("users")));
+    request.setRawHeader("Accept", "application/json");
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_chatDirectoryFetchInFlight = false;
+        m_chatDirectoryFetchedMs = QDateTime::currentMSecsSinceEpoch();
+        const QByteArray body = reply->readAll();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!ok)
+            return;
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        if (!obj.value(QStringLiteral("ok")).toBool())
+            return;
+        mergeChatUserDirectory(obj.value(QStringLiteral("users")).toArray());
+    });
+}
+
+void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
+{
+    QHash<QString, MemberInfo> next;
+    const QString ownName = accountOwner().trimmed();
+    for (const QJsonValue &value : users) {
+        const QJsonObject obj = value.toObject();
+        if (obj.value(QStringLiteral("kind")).toString(QStringLiteral("user")) !=
+            QStringLiteral("user"))
+            continue;
+        const QString name =
+            obj.value(QStringLiteral("name"))
+                .toString(obj.value(QStringLiteral("nodeName")).toString())
+                .trimmed();
+        if (name.isEmpty())
+            continue;
+        const QString key = name.toLower();
+        MemberInfo member;
+        member.id = QStringLiteral("user:") + key;
+        member.name = name;
+        member.ownerUser = name;
+        member.self = !ownName.isEmpty() &&
+                      ownName.compare(name, Qt::CaseInsensitive) == 0;
+        member.online = false;
+        const QJsonArray nodes = obj.value(QStringLiteral("nodes")).toArray();
+        QStringList nodeNames;
+        for (const QJsonValue &nodeValue : nodes) {
+            const QString node = nodeValue.toString().trimmed();
+            if (!node.isEmpty())
+                nodeNames.append(node);
+        }
+        member.nodeName = nodeNames.join(QStringLiteral(", "));
+        if (!member.nodeName.isEmpty())
+            member.note = QStringLiteral("Nodes: ") + member.nodeName;
+
+        const QString avatarPng = obj.value(QStringLiteral("avatarPng")).toString();
+        if (!avatarPng.isEmpty()) {
+            QPixmap avatar;
+            if (avatar.loadFromData(QByteArray::fromBase64(avatarPng.toLatin1())))
+                m_avatars.insert(member.id, avatar);
+        }
+        next.insert(key, member);
+    }
+    m_chatDirectoryUsers = next;
+    refreshMentionCandidates();
+    refreshChatMembers();
+}
+
 void MainWindow::refreshChatMembers()
 {
     // Keep the @-mention candidates in step with the roster (this runs on every
@@ -590,50 +682,62 @@ void MainWindow::refreshChatMembers()
         delete item;
     }
 
-    // This column is titled "ONLINE": only list nodes that are actually online
-    // right now (m_homeRoster also carries stale/offline entries so the Node
-    // dropdown keeps them selectable — see setRoster), never a "last seen
-    // recently" ghost. ServerNode::flushRosterAndStatus already drops peers
-    // that haven't sent a frame in kPeerStaleMs (3 minutes, comfortably inside
-    // the 5-minute freshness window this panel promises), so member.online
-    // here is never more than a few minutes stale.
     QList<MemberInfo> members;
-    // De-duplicate by identity so one person running several nodes (or a node
-    // that re-registered under a new key while an old roster entry still
-    // heartbeats) shows up once, not four times. Key on the display name
-    // (case-insensitive) since that is "the person"; keep our own entry, and
-    // prefer the copy that already has a real avatar so the tile isn't a
-    // generated letter when a photo is available.
-    QHash<QString, int> seenByName; // lowercased name -> index in `members`
-    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+    QHash<QString, int> seenByUser; // lowercased user -> index in `members`
+    auto addMember = [&](MemberInfo member) {
         const bool online = member.self ? (m_backend != nullptr) : member.online;
-        if (!online)
-            continue;
-        const QString key = member.self
-                                ? QStringLiteral("\x01self")
-                                : member.name.trimmed().toLower();
+        member.online = online;
+        const QString display = chatUserDisplayName(member);
+        if (display.isEmpty())
+            return;
+        member.name = display;
+        const QString key = chatUserKey(member);
         if (key.isEmpty()) {
             members.append(member);
-            continue;
+            return;
         }
-        const auto it = seenByName.constFind(key);
-        if (it == seenByName.constEnd()) {
-            seenByName.insert(key, members.size());
+        const auto it = seenByUser.constFind(key);
+        if (it == seenByUser.constEnd()) {
+            seenByUser.insert(key, members.size());
             members.append(member);
-        } else if (m_avatars.value(members.at(*it).id).isNull() &&
-                   !m_avatars.value(member.id).isNull()) {
-            // Replace the earlier avatar-less duplicate with this richer one.
-            members[*it] = member;
+            return;
         }
+        MemberInfo &current = members[*it];
+        const bool currentHasAvatar = !m_avatars.value(current.id).isNull();
+        const bool candidateHasAvatar = !m_avatars.value(member.id).isNull();
+        if (!current.online && member.online) {
+            members[*it] = member;
+        } else if (current.online && !member.online && !currentHasAvatar &&
+                   candidateHasAvatar) {
+            m_avatars.insert(current.id, m_avatars.value(member.id));
+        } else if (current.online == member.online && !currentHasAvatar &&
+                   candidateHasAvatar) {
+            members[*it] = member;
+        } else if (currentHasAvatar && !candidateHasAvatar &&
+                   current.id.startsWith(QStringLiteral("user:")) &&
+                   !member.id.startsWith(QStringLiteral("user:"))) {
+            m_avatars.insert(member.id, m_avatars.value(current.id));
+        }
+    };
+    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+        addMember(member);
+    }
+    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers)) {
+        addMember(member);
     }
     std::sort(members.begin(), members.end(),
               [](const MemberInfo &a, const MemberInfo &b) {
+                  if (a.self != b.self)
+                      return a.self;
+                  if (a.online != b.online)
+                      return a.online;
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
 
     int onlineCount = 0;
     for (const MemberInfo &member : std::as_const(members)) {
-        ++onlineCount;
+        if (member.online)
+            ++onlineCount;
 
         auto *card = new QWidget;
         auto *row = new QHBoxLayout(card);
@@ -649,14 +753,20 @@ void MainWindow::refreshChatMembers()
         icon->setFixedSize(28, 28);
         row->addWidget(icon, 0);
 
-        // Name prefixed with a green status dot; every card here is online.
+        const QString dotColor = member.online ? QStringLiteral("#3fb950")
+                                               : QStringLiteral("#8b949e");
+        const QString state = member.online ? QStringLiteral("Online")
+                                            : QStringLiteral("Offline");
+        QString tooltip = state;
+        if (!member.note.isEmpty())
+            tooltip += QStringLiteral(" · ") + member.note;
         auto *nameLabel = new QLabel(
-            QString::fromUtf8("<span style='color:#3fb950'>\xE2\x97\x8F</span> %1%2")
-                .arg(member.name.toHtmlEscaped(),
+            QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2%3")
+                .arg(dotColor, member.name.toHtmlEscaped(),
                      member.self ? " <span style='color:#8b949e'>(you)</span>"
                                  : QString()));
         nameLabel->setTextFormat(Qt::RichText);
-        nameLabel->setToolTip(QStringLiteral("Online"));
+        nameLabel->setToolTip(tooltip);
         row->addWidget(nameLabel, 1);
 
         m_chatMembersLayout->insertWidget(m_chatMembersLayout->count() - 1, card);
@@ -664,7 +774,9 @@ void MainWindow::refreshChatMembers()
 
     if (m_chatMembersHeading)
         m_chatMembersHeading->setText(
-            QString::fromUtf8("ONLINE \xE2\x80\x94 %1").arg(onlineCount));
+            QString::fromUtf8("USERS \xE2\x80\x94 %1 \xC2\xB7 %2 online")
+                .arg(members.size())
+                .arg(onlineCount));
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)
@@ -855,8 +967,8 @@ void MainWindow::promptInviteToPrivateChannel()
         return;
     }
 
-    // Build the list of invitable members: every online node that isn't us,
-    // de-duplicated by name so one person's several nodes aren't offered twice.
+    // Invites still require a live backend peer id, so offer online members only,
+    // de-duplicated by user name so one person's several nodes appear once.
     QMenu menu(this);
     QSet<QString> seen;
     bool any = false;
@@ -932,23 +1044,6 @@ void MainWindow::onComposerEdited(const QString &text)
     m_typingStopTimer->start(2500);
 }
 
-// Names a message can @-mention: every roster node except ourselves, de-duped
-// and sorted so the popup is stable. Self is excluded — you don't ping yourself.
-void MainWindow::refreshMentionCandidates()
-{
-    if (!m_mentionModel)
-        return;
-    QStringList names;
-    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
-        if (member.self || member.name.trimmed().isEmpty())
-            continue;
-        if (!names.contains(member.name))
-            names.append(member.name);
-    }
-    names.sort(Qt::CaseInsensitive);
-    m_mentionModel->setStringList(names);
-}
-
 // The word ending at the caret that an @-mention is being typed into, or empty
 // when the caret isn't inside one. `tokenStart` (when given) receives the index
 // of the leading '@'. An '@' only opens a mention at the start of the line or
@@ -968,6 +1063,34 @@ static QString mentionTokenAt(const QString &text, int cursor, int *tokenStart)
     if (tokenStart)
         *tokenStart = start;
     return text.mid(start + 1, cursor - start - 1);
+}
+
+// Names a message can @-mention: every known user except ourselves, de-duped
+// and sorted so the popup is stable. Self is excluded — you don't ping yourself.
+void MainWindow::refreshMentionCandidates()
+{
+    if (!m_mentionModel)
+        return;
+    QStringList names;
+    auto addName = [&](const MemberInfo &member) {
+        const QString name = chatUserDisplayName(member);
+        if (member.self || name.isEmpty())
+            return;
+        if (!names.contains(name, Qt::CaseInsensitive))
+            names.append(name);
+    };
+    for (const MemberInfo &member : std::as_const(m_homeRoster))
+        addName(member);
+    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
+        addName(member);
+    const QString ownName = accountOwner().trimmed();
+    if (!ownName.isEmpty()) {
+        for (int i = names.size() - 1; i >= 0; --i)
+            if (names.at(i).compare(ownName, Qt::CaseInsensitive) == 0)
+                names.removeAt(i);
+    }
+    names.sort(Qt::CaseInsensitive);
+    m_mentionModel->setStringList(names);
 }
 
 void MainWindow::updateMentionPopup()

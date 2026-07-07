@@ -7,6 +7,7 @@ HEADER = QT_SRC / "MainWindow.h"
 SETUP = QT_SRC / "MainWindowSetup.cpp"
 SETTINGS = QT_SRC / "MainWindowSettings.cpp"
 REPOS = QT_SRC / "MainWindowRepos.cpp"
+MESSAGES = QT_SRC / "MainWindowMessages.cpp"
 
 
 def _body(source: str, start: str, end: str) -> str:
@@ -73,3 +74,25 @@ def test_user_avatar_prefers_chosen_avatar_before_generated_identicon():
     assert "if (!m_userAvatar.isEmpty())" in body
     assert "return m_userAvatar;" in body
     assert body.index("return m_userAvatar;") < body.index("forkMeshAvatarPng(seed)")
+
+
+def test_chat_member_column_is_user_directory_not_online_nodes():
+    header = HEADER.read_text(encoding="utf-8")
+    messages = MESSAGES.read_text(encoding="utf-8")
+    roster_body = _body(
+        messages,
+        "void MainWindow::refreshChatMembers()",
+        "void MainWindow::removeChatMember",
+    )
+    directory_body = _body(
+        messages,
+        "void MainWindow::refreshChatUserDirectory()",
+        "void MainWindow::mergeChatUserDirectory",
+    )
+
+    assert "QHash<QString, MemberInfo> m_chatDirectoryUsers" in header
+    assert 'accountsApiUrl(QStringLiteral("users"))' in directory_body
+    assert "for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))" in roster_body
+    assert "if (!online)" not in roster_body
+    assert "USERS \\xE2\\x80\\x94 %1 \\xC2\\xB7 %2 online" in roster_body
+    assert "chatUserDisplayName(member)" in roster_body

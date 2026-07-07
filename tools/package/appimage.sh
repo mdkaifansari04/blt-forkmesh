@@ -12,7 +12,7 @@
 #
 # Degrades gracefully: if linuxdeploy/appimagetool are unavailable, falls back to
 # a runnable AppDir tarball so the release still ships *something* downloadable.
-# See docs/design/signed-installers.md.
+# See /docs#installers-updates.
 set -euo pipefail
 
 binary="$1"; outdir="${2:-.}"

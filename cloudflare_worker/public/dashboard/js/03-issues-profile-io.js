@@ -349,6 +349,21 @@
         : Boolean(base.hasPayoutAddress),
       avatarPng: body.avatarPng || "",
       avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
+      profileBio: body.profileBio ?? base.profileBio ?? "",
+      profilePrivate: Object.prototype.hasOwnProperty.call(body, "profilePrivate")
+        ? Boolean(body.profilePrivate)
+        : Boolean(base.profilePrivate),
+      mastodon: body.mastodon ?? base.mastodon ?? "",
+      mastodonUrl: body.mastodonUrl ?? base.mastodonUrl ?? "",
+      profileLinks: Array.isArray(body.profileLinks)
+        ? body.profileLinks
+        : (base.profileLinks || []),
+      emailNotifications: Object.prototype.hasOwnProperty.call(body, "emailNotifications")
+        ? Boolean(body.emailNotifications)
+        : Boolean(base.emailNotifications ?? true),
+      notificationPreferences: body.notificationPreferences && typeof body.notificationPreferences === "object"
+        ? body.notificationPreferences
+        : (base.notificationPreferences || {}),
       kind: body.kind || base.kind || "",
       owner: body.owner ?? base.owner ?? "",
       nodes: Array.isArray(body.nodes) ? body.nodes : (base.nodes || []),

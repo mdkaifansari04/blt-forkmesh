@@ -291,6 +291,61 @@ QWidget *MainWindow::buildSettingsSection()
         "Admin: pop up a desktop notification when a new user signs up and needs "
         "email verification.");
 
+    auto *emailNotifyLabel = new QLabel("EMAIL DIGESTS");
+    emailNotifyLabel->setObjectName("sectionLabel");
+    auto emailPrefCheck = [this](const QString &label, const QString &key,
+                                 bool defaultOn, const QString &tip) {
+        auto *box = new QCheckBox(label);
+        box->setChecked(QSettings().value(key, defaultOn).toBool());
+        box->setToolTip(tip);
+        connect(box, &QCheckBox::toggled, this, [this, key](bool on) {
+            QSettings().setValue(key, on);
+            sendNodeHeartbeat();
+        });
+        return box;
+    };
+    auto *emailMentionCheck = emailPrefCheck(
+        "Email me when someone mentions me", kEmailNotifyMentionSetting, true,
+        "Email digest entry for @mentions.");
+    auto *emailSubscribedCheck = emailPrefCheck(
+        "Email me replies on subscribed threads", kEmailNotifySubscribedSetting,
+        true, "Email digest entry for watched issue and pull request replies.");
+    auto *emailPullCheck = emailPrefCheck(
+        "Email me submitted pull requests", kEmailNotifyPullSubmittedSetting,
+        true, "Email digest entry when a pull request is submitted.");
+    auto *emailIssueAssignedCheck = emailPrefCheck(
+        "Email me issue assignments", kEmailNotifyIssueAssignedSetting, true,
+        "Email digest entry when an issue is assigned to this account.");
+    auto *emailRepoSharedCheck = emailPrefCheck(
+        "Email me shared repositories", kEmailNotifyRepoSharedSetting, true,
+        "Email digest entry when a private repository is shared with this account.");
+    auto *emailPendingInboxCheck = emailPrefCheck(
+        "Email me pending inbox submissions", kEmailNotifyPendingInboxSetting,
+        true, "Email digest entry when signed submissions are waiting.");
+    auto *emailReleaseCheck = emailPrefCheck(
+        "Email me published releases", kEmailNotifyReleasePublishedSetting, true,
+        "Email digest entry when a release is published.");
+    auto *emailCreditsCheck = emailPrefCheck(
+        "Email me when credits refill", kEmailNotifyCreditsRefilledSetting, true,
+        "Email digest entry when this node reports Claude Code credits refilled.");
+    auto *emailBountyFundedCheck = emailPrefCheck(
+        "Email me funded bounties", kEmailNotifyBountyFundedSetting, true,
+        "Email digest entry when a bounty is funded.");
+    auto *emailBountyPaidCheck = emailPrefCheck(
+        "Email me paid bounties", kEmailNotifyBountyPaidSetting, true,
+        "Email digest entry when a bounty is paid.");
+    auto *emailGeneralChatCheck = emailPrefCheck(
+        "Email me a daily #general count", kEmailNotifyGeneralChatSetting, true,
+        "Daily email count of encrypted #general messages; message contents stay "
+        "out of email.");
+    auto *emailHostOnlineCheck = emailPrefCheck(
+        "Email me when a desktop host is reachable", kEmailNotifyHostOnlineSetting,
+        false, "Email digest entry when a hosted repository has a reachable desktop host.");
+    auto *emailHostOfflineCheck = emailPrefCheck(
+        "Email me when no live host has checked in",
+        kEmailNotifyHostOfflineSetting, false,
+        "Email digest entry when a hosted repository has no recent live host check-in.");
+
     auto *ideLabel = new QLabel("IDE INTEGRATION");
     ideLabel->setObjectName("sectionLabel");
     auto *ideIntegrationCheck = new QCheckBox(
@@ -1384,6 +1439,21 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addWidget(mirrorUpdateAlertCheck);
     notifyCol->addWidget(coveOpenAlertCheck);
     notifyCol->addWidget(newUserAlertCheck);
+    notifyCol->addSpacing(6);
+    notifyCol->addWidget(emailNotifyLabel);
+    notifyCol->addWidget(emailMentionCheck);
+    notifyCol->addWidget(emailSubscribedCheck);
+    notifyCol->addWidget(emailPullCheck);
+    notifyCol->addWidget(emailIssueAssignedCheck);
+    notifyCol->addWidget(emailRepoSharedCheck);
+    notifyCol->addWidget(emailPendingInboxCheck);
+    notifyCol->addWidget(emailReleaseCheck);
+    notifyCol->addWidget(emailCreditsCheck);
+    notifyCol->addWidget(emailBountyFundedCheck);
+    notifyCol->addWidget(emailBountyPaidCheck);
+    notifyCol->addWidget(emailGeneralChatCheck);
+    notifyCol->addWidget(emailHostOnlineCheck);
+    notifyCol->addWidget(emailHostOfflineCheck);
     notifyCol->addStretch();
     addTab(notifyTab, "Notifications");
 
@@ -1912,6 +1982,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     });
     // Let a headless console attach its live event feed to this backend.
     emit backendAttached(backend);
+    refreshChatUserDirectory();
 }
 
 // --- Headless / CLI support -------------------------------------------------

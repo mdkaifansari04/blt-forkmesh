@@ -3,8 +3,10 @@ on: [push]
 jobs:
   test:
     steps:
-      - name: Worker crypto algorithm tests (TOTP / PBKDF2 / blind index)
-        run: python3 cloudflare_worker/tests/test_crypto.py
+      - name: Cloudflare Worker test suite
+        run: |
+          python3 -m pytest --version >/dev/null 2>&1 || python3 -m pip install --user pytest
+          python3 -m pytest cloudflare_worker/tests
       - name: Worker syntax + config
         run: |
           python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"

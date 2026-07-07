@@ -11,7 +11,7 @@
 #     FORKMESH_WIN_TIMESTAMP_URL   RFC-3161 timestamp URL (default: DigiCert)
 #
 # Updates are handled in-app by WinSparkle, which polls the appcast written by
-# generate-appcast.sh. See docs/design/signed-installers.md.
+# generate-appcast.sh. See /docs#installers-updates.
 set -euo pipefail
 
 binary="$1"; outdir="${2:-.}"

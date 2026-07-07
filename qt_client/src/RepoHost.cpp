@@ -384,6 +384,111 @@ int countNumberedDirs(const QString &mirrorPath, const QString &ref,
     return count;
 }
 
+QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
+{
+    int commits = 0;
+    QByteArray output;
+    if (runGit(mirrorPath, {"rev-list", "--count", ref}, output))
+        commits = QString::fromUtf8(output).trimmed().toInt();
+    return QJsonObject{
+        {"issues",
+         countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
+        {"pulls", countNumberedDirs(mirrorPath, ref, QStringLiteral("pulls"))},
+        {"discussions",
+         countNumberedDirs(mirrorPath, ref, QStringLiteral("discussions"))},
+        {"commits", commits}};
+}
+
+QJsonObject commitSummaryForPath(const QString &mirrorPath, const QString &ref,
+                                 const QString &path = QString())
+{
+    QStringList args{"log", "-1", "--date=format:%Y-%m-%d",
+                     "--format=%H%x1f%an%x1f%ad%x1f%s", ref};
+    if (!path.isEmpty())
+        args << "--" << path;
+
+    QByteArray output;
+    if (!runGit(mirrorPath, args, output))
+        return {};
+    const QByteArray line = output.trimmed().split('\n').value(0);
+    const QList<QByteArray> fields = line.split('\x1f');
+    if (fields.size() < 4)
+        return {};
+
+    const QString hash = QString::fromUtf8(fields.value(0)).trimmed();
+    const QString author = QString::fromUtf8(fields.value(1)).trimmed();
+    const QString date = QString::fromUtf8(fields.value(2)).trimmed();
+    const QString subject = QString::fromUtf8(fields.value(3)).trimmed();
+    if (hash.isEmpty())
+        return {};
+    return QJsonObject{{"hash", hash},
+                       {"commit", hash},
+                       {"commitHash", hash},
+                       {"author", author},
+                       {"date", date},
+                       {"subject", subject},
+                       {"message", subject},
+                       {"commitMessage", subject}};
+}
+
+void insertEntryCommitSummary(QJsonObject &entry, const QJsonObject &commit)
+{
+    if (commit.isEmpty())
+        return;
+    entry.insert(QStringLiteral("commit"), commit.value(QStringLiteral("hash")));
+    entry.insert(QStringLiteral("commitHash"), commit.value(QStringLiteral("hash")));
+    entry.insert(QStringLiteral("author"), commit.value(QStringLiteral("author")));
+    entry.insert(QStringLiteral("date"), commit.value(QStringLiteral("date")));
+    entry.insert(QStringLiteral("subject"), commit.value(QStringLiteral("subject")));
+    entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));
+    entry.insert(QStringLiteral("commitMessage"),
+                 commit.value(QStringLiteral("subject")));
+}
+
+QJsonObject treeReplyFor(const QString &mirrorPath, const QString &path,
+                         const QString &branch)
+{
+    const QString ref = refForBranchIn(mirrorPath, branch);
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "empty_repo"}};
+    const QString treeish = path.isEmpty() ? ref : ref + ":" + path;
+    QByteArray output;
+    QString gitErr;
+    if (!runGit(mirrorPath, {"ls-tree", "-l", "-z", treeish}, output, &gitErr))
+        return {{"ok", false}, {"error", gitErr.isEmpty() ? "not_found" : gitErr}};
+
+    QJsonArray entries;
+    for (const QByteArray &record : output.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 4)
+            continue;
+        const QByteArray type = meta.at(1); // "tree" or "blob"
+        bool ok = false;
+        const qlonglong size = meta.at(3).toLongLong(&ok);
+        const QString name = QString::fromUtf8(record.mid(tab + 1));
+        const QString fullPath = path.isEmpty() ? name : path + "/" + name;
+        QJsonObject entry{{"name", name},
+                          {"type", QString::fromUtf8(type)},
+                          {"size", double(ok ? size : 0)}};
+        insertEntryCommitSummary(entry,
+                                 commitSummaryForPath(mirrorPath, ref, fullPath));
+        entries.append(entry);
+    }
+    QJsonObject reply{{"ok", true},
+                      {"entries", entries},
+                      {"latestCommit", commitSummaryForPath(mirrorPath, ref)}};
+    // The root listing carries the repo's issue/pull/discussion/commit tallies so
+    // the website updates every tab badge from this one reply (issue #93).
+    if (path.isEmpty())
+        reply.insert("counts", rootCountsFor(mirrorPath, ref));
+    return reply;
+}
+
 QString imageMimeForPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -924,6 +1029,32 @@ void RepoHost::handleRequest(const QJsonObject &request)
         return;
     }
 
+    // Tree replies include last-commit metadata for each visible entry, which
+    // means a listing can involve several git log calls. Keep that off the GUI
+    // thread for the same reason blob/search do their git work in the worker.
+    if (op == "tree") {
+        if (!isSafeRepoPath(path)) {
+            QJsonObject reply{{"ok", false}, {"error", "bad_path"}};
+            reply.insert("type", "response");
+            reply.insert("reqId", reqId);
+            reply.insert("op", op);
+            reply.insert("path", path);
+            sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            return;
+        }
+        const QString mirrorPath = m_mirrorPath;
+        runOffThread(
+            [mirrorPath, path, branch] { return treeReplyFor(mirrorPath, path, branch); },
+            [this, reqId, op, path](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", path);
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
+
     // Repo-scoped search (issue #360): `path` carries the query, not a repo path,
     // so it bypasses the isSafeRepoPath gate below and runs off-thread (git grep
     // can be slow) like "blob" does.
@@ -945,8 +1076,6 @@ void RepoHost::handleRequest(const QJsonObject &request)
     QJsonObject reply;
     if (!isSafeRepoPath(path)) {
         reply = QJsonObject{{"ok", false}, {"error", "bad_path"}};
-    } else if (op == "tree") {
-        reply = buildTreeReply(path, branch);
     } else if (op == "commits") {
         reply = buildCommitsReply(branch);
     } else if (op == "commit") {
@@ -1253,54 +1382,12 @@ QJsonObject RepoHost::buildBranchesReply() const
 
 QJsonObject RepoHost::buildTreeReply(const QString &path, const QString &branch) const
 {
-    const QString ref = refForBranch(branch);
-    if (ref.isEmpty())
-        return {{"ok", false}, {"error", "empty_repo"}};
-    const QString treeish = path.isEmpty() ? ref : ref + ":" + path;
-    QByteArray output;
-    QString gitErr;
-    if (!runGit(m_mirrorPath, {"ls-tree", "-l", "-z", treeish}, output, &gitErr))
-        return {{"ok", false}, {"error", gitErr.isEmpty() ? "not_found" : gitErr}};
-
-    QJsonArray entries;
-    for (const QByteArray &record : output.split('\0')) {
-        if (record.isEmpty())
-            continue;
-        const int tab = record.indexOf('\t');
-        if (tab < 0)
-            continue;
-        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
-        if (meta.size() < 4)
-            continue;
-        const QByteArray type = meta.at(1); // "tree" or "blob"
-        bool ok = false;
-        const qlonglong size = meta.at(3).toLongLong(&ok);
-        entries.append(QJsonObject{
-            {"name", QString::fromUtf8(record.mid(tab + 1))},
-            {"type", QString::fromUtf8(type)},
-            {"size", double(ok ? size : 0)}});
-    }
-    QJsonObject reply{{"ok", true}, {"entries", entries}};
-    // The root listing carries the repo's issue/pull/discussion/commit tallies so
-    // the website updates every tab badge from this one reply (issue #93).
-    if (path.isEmpty())
-        reply.insert("counts", buildRootCounts(ref));
-    return reply;
+    return treeReplyFor(m_mirrorPath, path, branch);
 }
 
 QJsonObject RepoHost::buildRootCounts(const QString &ref) const
 {
-    int commits = 0;
-    QByteArray output;
-    if (runGit(m_mirrorPath, {"rev-list", "--count", ref}, output))
-        commits = QString::fromUtf8(output).trimmed().toInt();
-    return QJsonObject{
-        {"issues",
-         countNumberedDirs(m_mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
-        {"pulls", countNumberedDirs(m_mirrorPath, ref, QStringLiteral("pulls"))},
-        {"discussions",
-         countNumberedDirs(m_mirrorPath, ref, QStringLiteral("discussions"))},
-        {"commits", commits}};
+    return rootCountsFor(m_mirrorPath, ref);
 }
 
 QJsonObject RepoHost::buildBlobReply(const QString &path, const QString &branch) const

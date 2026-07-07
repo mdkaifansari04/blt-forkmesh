@@ -7,7 +7,7 @@
 # installs, and this wraps it into the platform's native installer for desktop
 # users, then hands both to tools/forkmesh-release-publish.sh so the installer
 # lands in the same releases/<channel>/{SHASUMS256.txt,release.json,appcast.xml}
-# metadata. See docs/design/signed-installers.md.
+# metadata. See /docs#installers-updates.
 #
 # Signing is env-var driven (CI secrets); every packager degrades to an UNSIGNED
 # artifact with a warning when its toolchain or certificate is absent, so a
