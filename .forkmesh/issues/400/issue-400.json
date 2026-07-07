@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783463046778,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-400",
+            "sig": "NgTSTc2Btmm72ZmcwLiLFwSKq9JhZ4VNJ0xxri1iZVGm2Jg0cUKaIbFWP0iUHqT71t2YJzXAw04Sd4L1bPhgAw",
+            "title": "allow for deleting a comment from an issue",
+            "ts": 1783463046778,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 400,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "allow for deleting a comment from an issue",
+    "updatedAt": 1783463046778,
+    "votes": 0
+}
