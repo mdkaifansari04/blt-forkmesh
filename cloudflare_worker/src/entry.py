@@ -5459,6 +5459,10 @@ async def _account_rotate(env, request):
     if not await ed25519_verify(old_pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
+    existing_bi, _ = await _account_row_by_pubkey(env, new_pubkey)
+    if existing_bi and existing_bi != name_bi:
+        return json_response({"error": "pubkey_taken"}, status=409)
+
     prev_pubkeys = rec.get("prev_pubkeys")
     if not isinstance(prev_pubkeys, list):
         prev_pubkeys = []

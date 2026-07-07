@@ -38,13 +38,18 @@ def _json_response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _harness(rec):
+def _harness(rec, pubkey_lookup=None):
     saved = []
 
     async def _account_row(_env, name):
         if rec is None:
             return "bi:" + name, None
         return "bi:" + name, dict(rec)
+
+    async def _account_row_by_pubkey(_env, pubkey):
+        if pubkey_lookup and pubkey in pubkey_lookup:
+            return pubkey_lookup[pubkey]
+        return None, None
 
     async def _save_account(_env, name_bi, updated_rec, **_kwargs):
         saved.append((name_bi, dict(updated_rec)))
@@ -66,6 +71,7 @@ def _harness(rec):
             "valid_node_pubkey": lambda v: bool(v) and v != "invalid",
             "_ts_ok": lambda ts: ts != "stale",
             "_account_row": _account_row,
+            "_account_row_by_pubkey": _account_row_by_pubkey,
             "_save_account": _save_account,
             "ed25519_verify": ed25519_verify,
             "json_response": _json_response,
@@ -101,6 +107,28 @@ def test_rotate_rebinds_to_successor_when_old_key_signs():
     assert rec["pubkey"] == "new-pubkey"
     assert rec["prev_pubkeys"] == ["old-pubkey"]
     assert rec["rotated_at"] == 1783000000000
+
+
+def test_rotate_rejects_successor_key_bound_to_another_account():
+    handler, saved = _harness(
+        _bound_account(),
+        {
+            "new-pubkey": (
+                "bi:bob-node",
+                _bound_account(name="bob-node", pubkey="new-pubkey"),
+            )
+        },
+    )
+    resp = _run(handler, {
+        "nodeName": "alice-node",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "sig": "goodsig",
+    })
+    assert resp["status"] == 409
+    assert resp["data"]["error"] == "pubkey_taken"
+    assert saved == []
 
 
 def test_rotate_rejects_signature_from_a_non_bound_key():
