@@ -144,3 +144,25 @@ def test_feedback_migration_file_exists_with_matching_schema():
     assert "ip_hash TEXT" in text
     assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in text
     assert "idx_feedback_source_vote" in text
+
+
+def test_feedback_endpoint_is_registered():
+    entry_text = ENTRY.read_text(encoding="utf-8")
+
+    assert 'if url.path in ("/api/feedback", "/api/feedback/"):' in entry_text
+    assert "return await feedback_handler(self.env, request)" in entry_text
+
+
+def test_feedback_handler_hashes_ip_and_never_stores_raw_ip():
+    entry_text = ENTRY.read_text(encoding="utf-8")
+
+    assert "async def feedback_handler(env, request):" in entry_text
+    assert 'headers.get("cf-connecting-ip")' in entry_text
+    assert 'headers.get("x-forwarded-for")' in entry_text
+    assert "ip_hash = await blind_index(env, ip) if ip else \"\"" in entry_text
+    assert (
+        "INSERT INTO feedback "
+        "(ts, source, vote, path, message, ip_hash, user_agent)"
+    ) in entry_text
+    assert "VALUES (?,?,?,?,?,?,?)" in entry_text
+    assert "DELETE FROM feedback WHERE id NOT IN" in entry_text
