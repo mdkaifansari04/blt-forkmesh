@@ -18,9 +18,11 @@
     <script>
       (() => {
         const key = "forkmesh.dashboard.theme";
+        const siteKey = "forkmesh.theme";
         let theme = "dark";
         try {
-          theme = localStorage.getItem(key) === "light" ? "light" : "dark";
+          const stored = localStorage.getItem(key) || localStorage.getItem(siteKey);
+          theme = stored === "light" ? "light" : "dark";
         } catch (_) {}
         document.documentElement.dataset.dashboardTheme = theme;
         document.documentElement.style.colorScheme = theme;

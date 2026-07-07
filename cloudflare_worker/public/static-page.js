@@ -1,9 +1,12 @@
 (() => {
   function applyTheme(mode) {
-    const chosen = mode || localStorage.getItem("forkmesh.theme") ||
+    const chosen = mode ||
+      localStorage.getItem("forkmesh.dashboard.theme") ||
+      localStorage.getItem("forkmesh.theme") ||
       (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     document.documentElement.classList.toggle("dark", chosen === "dark");
     localStorage.setItem("forkmesh.theme", chosen);
+    localStorage.setItem("forkmesh.dashboard.theme", chosen);
   }
 
   async function copyText(text, button) {

@@ -1127,7 +1127,7 @@ void MainWindow::startSession()
     QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
     persistEditsToActiveServer();
     const QUrl url(fullServerUrl);
-    auto *server = new ServerNode(name, m_profileIdentity.publicKey(), url,
+    auto *server = new ServerNode(chatDisplayName(), m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
@@ -1155,9 +1155,9 @@ void MainWindow::startSession()
         // a restart doesn't fire an alert for every node that is already online.
         m_nodeAlertGraceUntilMs =
             QDateTime::currentMSecsSinceEpoch() + 12000;
-        // Broadcast the generated face avatar when no custom avatar is set, so
-        // peers always see a unique, identifiable face for this node.
-        m_backend->setAvatar(effectiveAvatar());
+        // Chat speaks as the linked/signed-in user, even though hosting and node
+        // profiles keep using this machine's node identity.
+        updateChatIdentity();
         // Fixed shared channels for the whole network — no per-repo rooms. Every
         // node joins #general, both split welcome rooms, and #random.
         m_backend->addChannel(QStringLiteral("general"));
@@ -1681,6 +1681,30 @@ QString MainWindow::topBarUserName() const
         return account;
 
     return accountNameFromInput(m_userName, QString());
+}
+
+QString MainWindow::chatDisplayName() const
+{
+    const QString user = topBarUserName().trimmed();
+    if (!user.isEmpty())
+        return user.left(80);
+    return accountNameFromInput(m_userName, QString()).left(80);
+}
+
+void MainWindow::updateChatIdentity()
+{
+    if (!m_backend)
+        return;
+    const QString name = chatDisplayName();
+    if (!name.isEmpty() && name != m_lastChatDisplayName) {
+        m_backend->setUserName(name);
+        m_lastChatDisplayName = name;
+    }
+    const QByteArray avatar = effectiveUserAvatar();
+    if (avatar != m_lastChatAvatar) {
+        m_backend->setAvatar(avatar);
+        m_lastChatAvatar = avatar;
+    }
 }
 
 bool MainWindow::accountEmailVerified(const QString &accountName) const

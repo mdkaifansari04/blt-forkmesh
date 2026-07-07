@@ -1626,6 +1626,8 @@ QByteArray MainWindow::effectiveAvatar()
 
 QByteArray MainWindow::effectiveUserAvatar()
 {
+    if (!m_userAvatar.isEmpty())
+        return m_userAvatar;
     QString seed = topBarUserName();
     if (seed.isEmpty())
         seed = m_profileIdentity.publicKey();
@@ -1865,6 +1867,8 @@ void MainWindow::attachBackend(ChatBackend *backend)
     if (m_backend)
         leaveSession();
     m_backend = backend;
+    m_lastChatDisplayName.clear();
+    m_lastChatAvatar.clear();
     // Force refreshRepositoryList to re-push the mirror adverts to this backend even
     // if the repo signature hasn't changed since the last one (adhoc #83 skip cache).
     m_mirrorAdvertSig.clear();

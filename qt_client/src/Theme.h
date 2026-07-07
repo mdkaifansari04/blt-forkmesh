@@ -570,6 +570,19 @@ QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,
 #nodeProfileContent { background-color: #0d1117; }
 #profileBanner { border-radius: 16px; }
 #profileName { font-size: 17px; font-weight: 800; }
+#profileUserCard {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+}
+#profileUserAvatar { border-radius: 12px; }
+#profileUserName { color: #e6edf3; font-size: 16px; font-weight: 800; }
+#profileNodeList {
+    background-color: transparent; border: none; color: #c9d1d9;
+    outline: none; font-weight: 600;
+}
+#profileNodeList::item {
+    background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 5px 8px; margin: 2px 0;
+}
 QPushButton#profileActionButton {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
     color: #c9d1d9;
@@ -1699,6 +1712,19 @@ QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,
 #nodeProfileContent { background-color: #ffffff; }
 #profileBanner { border-radius: 16px; }
 #profileName { font-size: 17px; font-weight: 800; }
+#profileUserCard {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
+}
+#profileUserAvatar { border-radius: 12px; }
+#profileUserName { color: #1f2328; font-size: 16px; font-weight: 800; }
+#profileNodeList {
+    background-color: transparent; border: none; color: #1f2328;
+    outline: none; font-weight: 600;
+}
+#profileNodeList::item {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
+    padding: 5px 8px; margin: 2px 0;
+}
 QPushButton#profileActionButton {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
     color: #1f2328;

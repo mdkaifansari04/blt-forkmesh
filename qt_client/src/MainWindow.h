@@ -669,6 +669,8 @@ private:
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
     QString topBarUserName() const; // linked user/account name shown in the top bar
+    QString chatDisplayName() const; // user identity used for chat sender names
+    void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
@@ -4523,7 +4525,10 @@ private:
     // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
     // owning user's name (empty = unlinked), learned from account lookups.
     QWidget *m_profileAccountSection = nullptr;
+    QLabel *m_profileUserAvatar = nullptr;
+    QLabel *m_profileUserName = nullptr;
     QLabel *m_profileAccountStatus = nullptr;
+    QListWidget *m_profileUserNodesList = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;
     // "Link this node to your account" next to the node ID: browser-based
     // linking via a node-signed grant URL (adhoc #120).
@@ -4648,6 +4653,8 @@ private:
     QHash<QString, int> m_unreadCounts;
     QString m_userName;
     QByteArray m_userAvatar;
+    QString m_lastChatDisplayName;
+    QByteArray m_lastChatAvatar;
     QString m_typingConversation;
     QTimer *m_typingStopTimer;
     QTimer *m_homeStatsTimer = nullptr;

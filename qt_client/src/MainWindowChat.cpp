@@ -3803,6 +3803,7 @@ void MainWindow::updateUserSwitcher()
                 : QStringLiteral("%1 user account").arg(user));
     }
     updateUserAvatarButton();
+    updateChatIdentity();
 }
 
 void MainWindow::cycleNavSolanaCurrency()
@@ -9418,15 +9419,30 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- User account: this node is key-bound on its own, but a person can own
-    // many nodes. "Log in as a user" here proves the user's password so the
-    // relay attaches this node to that user's account (self only).
+    // --- User profile: this node is key-bound on its own, but a person can own
+    // many nodes. Feature the user account first, then list the nodes attached
+    // to it with machine icons underneath.
     m_profileAccountSection = new QWidget;
-    auto *accountLabel = makeProfileSection("USER ACCOUNT");
+    m_profileAccountSection->setObjectName("profileUserCard");
+    auto *accountLabel = makeProfileSection("USER PROFILE");
+    m_profileUserAvatar = new QLabel;
+    m_profileUserAvatar->setObjectName("profileUserAvatar");
+    m_profileUserAvatar->setFixedSize(54, 54);
+    m_profileUserAvatar->setAlignment(Qt::AlignCenter);
+    m_profileUserName = new QLabel;
+    m_profileUserName->setObjectName("profileUserName");
+    m_profileUserName->setWordWrap(true);
     m_profileAccountStatus = new QLabel;
     m_profileAccountStatus->setObjectName("statusLine");
     m_profileAccountStatus->setWordWrap(true);
     m_profileAccountStatus->setTextFormat(Qt::RichText);
+    m_profileUserNodesList = new QListWidget;
+    m_profileUserNodesList->setObjectName("profileNodeList");
+    m_profileUserNodesList->setIconSize(QSize(28, 28));
+    m_profileUserNodesList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_profileUserNodesList->setFocusPolicy(Qt::NoFocus);
+    m_profileUserNodesList->setFrameShape(QFrame::NoFrame);
+    m_profileUserNodesList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_profileLinkUserButton = new QPushButton("Log in as a user");
     m_profileLinkUserButton->setObjectName("ghostButton");
     m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
@@ -9436,11 +9452,22 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "many nodes.");
     connect(m_profileLinkUserButton, &QPushButton::clicked, this,
             &MainWindow::promptLinkNodeToUser);
+    auto *accountIdentityRow = new QHBoxLayout;
+    accountIdentityRow->setContentsMargins(0, 0, 0, 0);
+    accountIdentityRow->setSpacing(10);
+    accountIdentityRow->addWidget(m_profileUserAvatar, 0, Qt::AlignTop);
+    auto *accountTextColumn = new QVBoxLayout;
+    accountTextColumn->setContentsMargins(0, 0, 0, 0);
+    accountTextColumn->setSpacing(2);
+    accountTextColumn->addWidget(m_profileUserName);
+    accountTextColumn->addWidget(m_profileAccountStatus);
+    accountIdentityRow->addLayout(accountTextColumn, 1);
     auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
-    accountLayout->setContentsMargins(0, 0, 0, 0);
+    accountLayout->setContentsMargins(10, 10, 10, 10);
     accountLayout->setSpacing(6);
     accountLayout->addWidget(accountLabel);
-    accountLayout->addWidget(m_profileAccountStatus);
+    accountLayout->addLayout(accountIdentityRow);
+    accountLayout->addWidget(m_profileUserNodesList);
     accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
 
     // --- Per-repo hosting stats relocated from the repo detail view.
@@ -9564,7 +9591,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
     leftColumn->addWidget(m_profileDetails);
     leftColumn->addWidget(m_profileMirrorsLabel);
     leftColumn->addWidget(m_profileMirrors);
-    leftColumn->addWidget(m_profileAccountSection);
     leftColumn->addStretch();
 
     auto *rightColumn = new QVBoxLayout;
@@ -9594,6 +9620,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(6);
     layout->addLayout(topRow);
+    layout->addWidget(m_profileAccountSection);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
     layout->addLayout(columnsRow);
 
@@ -9950,19 +9977,54 @@ void MainWindow::renderProfileAccountStatus()
         m_profileLinkBrowserButton->setVisible(true);
         m_profileLinkBrowserButton->setEnabled(true);
     }
-    const QString fleet = linkedNodesHtml();
-    const QString fleetLine =
-        fleet.isEmpty()
-            ? QString()
-            : QString::fromUtf8("<br><span style='color:#8b949e'>Nodes on "
-                                "this account:</span> %1").arg(fleet);
+    QString userName = m_nodeOwnerUser.trimmed().toLower();
+    if (userName.isEmpty() && (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()))
+        userName = accountOwner().trimmed().toLower();
+    const bool hasUserProfile = !userName.isEmpty();
+    if (m_profileUserName) {
+        m_profileUserName->setText(
+            hasUserProfile ? userName.toHtmlEscaped()
+                           : QStringLiteral("No user linked yet"));
+    }
+    if (m_profileUserAvatar) {
+        const QByteArray avatarBytes =
+            hasUserProfile ? effectiveUserAvatar()
+                           : forkMeshAvatarPng(accountOwner());
+        const QPixmap pm = roundedAvatar(avatarBytes, 54);
+        if (!pm.isNull())
+            m_profileUserAvatar->setPixmap(pm);
+        else
+            m_profileUserAvatar->clear();
+    }
+    if (m_profileUserNodesList) {
+        QStringList nodes = m_profileLinkedNodes;
+        const QString self = accountOwner();
+        if (hasUserProfile && !self.isEmpty() &&
+            !nodes.contains(self, Qt::CaseInsensitive))
+            nodes.prepend(self);
+        m_profileUserNodesList->clear();
+        for (const QString &nodeName : std::as_const(nodes)) {
+            auto *item = new QListWidgetItem;
+            const QPixmap icon =
+                roundedRectPixmap(nodeMachineFavicon(nodeName, 28), 28, 8);
+            item->setIcon(QIcon(icon));
+            item->setText(nodeName == self ? nodeName + QStringLiteral(" (this node)")
+                                           : nodeName);
+            m_profileUserNodesList->addItem(item);
+        }
+        const bool showNodes = !nodes.isEmpty();
+        m_profileUserNodesList->setVisible(showNodes);
+        if (showNodes)
+            m_profileUserNodesList->setFixedHeight(
+                qMin(156, qMax(42, nodes.size() * 36 + 8)));
+    }
     if (!m_nodeOwnerUser.trimmed().isEmpty()) {
         // A child node attached to a separate user account.
         m_profileAccountStatus->setText(
             QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
-                "<b>%1</b></span>%2")
-                .arg(m_nodeOwnerUser.toHtmlEscaped(), fleetLine));
+                "<b>%1</b></span>")
+                .arg(m_nodeOwnerUser.toHtmlEscaped()));
         m_profileLinkUserButton->setText("Linked to a user");
         m_profileLinkUserButton->setVisible(false);
     } else if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
@@ -9976,11 +10038,7 @@ void MainWindow::renderProfileAccountStatus()
                       "another node's app and use \"Log in as a user\" or "
                       "\"Link this node to your account\" there to attach it "
                       "to this account.")
-                : QString::fromUtf8(
-                      "<span style='color:#8b949e'>Nodes linked to this "
-                      "account (%1):</span> %2")
-                      .arg(m_profileLinkedNodes.size())
-                      .arg(fleet);
+                : QStringLiteral("Nodes linked to this account are listed below.");
         m_profileAccountStatus->setText(
             QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x94 This is your user "
