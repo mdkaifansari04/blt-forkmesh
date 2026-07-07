@@ -40,7 +40,7 @@ jobs:
       # exports CLOUDFLARE_* for wrangler, and pushes the Worker secrets. The
       # quoted 'EOF' writes the substituted values verbatim (no shell re-expansion),
       # so a token/password containing $ or backticks survives intact.
-      - name: Write production env (admin dashboard vars)
+      - name: Write production env
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
           cat > cloudflare_worker/.env.production <<'EOF'
@@ -52,6 +52,7 @@ jobs:
           TREASURY_SOLANA_ADDRESS=${{ vars.TREASURY_SOLANA_ADDRESS }}
           MAILTRAP_API_TOKEN=${{ vars.MAILTRAP_API_TOKEN }}
           DATA_KEY=${{ vars.DATA_KEY }}
+          SENTRY_DSN=${{ vars.SENTRY_DSN }}
           EOF
       - name: Deploy worker
         run: |

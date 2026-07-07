@@ -10,8 +10,12 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 WRANGLER = ROOT / "wrangler.toml"
+DEPLOY_WORKFLOW = ROOT.parent / ".forkmesh" / "deploy.yml"
+DEPLOY_SH = ROOT / "deploy.sh"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 WRANGLER_DATA = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
+DEPLOY_WORKFLOW_TEXT = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+DEPLOY_SH_TEXT = DEPLOY_SH.read_text(encoding="utf-8")
 
 
 def _load_sentry_dsn_parts():
@@ -83,3 +87,8 @@ def test_simulate_sentry_error_route_is_worker_owned_and_raises():
     assert "/simulate-sentry-error" in run_worker_first
     assert 'url.path in ("/simulate-sentry-error", "/simulate-sentry-error/")' in ENTRY_TEXT
     assert "division_by_zero = 1 / 0" in ENTRY_TEXT
+
+
+def test_forkmesh_deploy_pushes_sentry_dsn_secret():
+    assert "SENTRY_DSN=${{ vars.SENTRY_DSN }}" in DEPLOY_WORKFLOW_TEXT
+    assert "\n        push_secrets\n" in DEPLOY_SH_TEXT
