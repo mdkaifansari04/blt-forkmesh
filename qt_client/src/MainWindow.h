@@ -1840,6 +1840,7 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
     // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in
