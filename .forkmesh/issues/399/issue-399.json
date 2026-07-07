@@ -30,6 +30,18 @@
             "sig": "G7vmz5RHjEGA9H2V27z0fnujWDrib7Zv_aiDcj_UOI8VLO_V2-T3k3C5jxOJ5RvTh_9XovpFPUmBG-VC5BWYCg",
             "ts": 1783462948320,
             "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "```\nChange Forkmesh from a patch-to-main PR model to an isolated PR-ref model. Incoming fork submissions should create/update refs/pr/<id>/head or a review-side repo ref, not modify main or apply patches into pulls/ as pending main changes. Keep PR metadata in the DB temporarly simlar to issues until the source of truth is back online, allow review/edit/CI against the PR ref, preserve main as protected source of truth, and only update main when the PR is explicitly approved and merged.\n\n```",
+            "id": "d641061d-a312-464a-abe9-e08af8a84b5e",
+            "sig": "rI8yDOpmuve-bGMFb2frq1zkDwSi-IhQ2AXQ2kHCbdCpNAnDUJk0Bi5KYjSkj6YFO-fGNXkpP75zSLWc8L5nCg",
+            "target": "2d72e217-660d-4455-aae1-febdfa32e766",
+            "ts": 1783463004301,
+            "type": "edit"
         }
     ],
     "labels": [
@@ -41,6 +53,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "update the PR system",
-    "updatedAt": 1783462948320,
+    "updatedAt": 1783463004301,
     "votes": 0
 }
