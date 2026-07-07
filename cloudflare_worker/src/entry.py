@@ -5444,11 +5444,30 @@ async def _account_rotate(env, request):
         return json_response({"error": "invalid_pubkey"}, status=400)
     if not _ts_ok(ts):
         return json_response({"error": "stale_request"}, status=401)
+    canonical = ("forkmesh-rotate-v1\n" + old_pubkey + "\n" +
+                 new_pubkey + "\n" + str(ts)).encode()
 
     if name:
         name_bi, rec = await _account_row(env, name)
     else:
         name_bi, rec = await _account_row_by_pubkey(env, old_pubkey)
+        if not rec:
+            _, next_rec = await _account_row_by_pubkey(env, new_pubkey)
+            next_name = clean_string(
+                (next_rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+            next_current_pubkey = clean_string(
+                (next_rec or {}).get("pubkey", ""), 120)
+            next_prev_pubkeys = (next_rec or {}).get("prev_pubkeys")
+            if (next_rec and next_rec.get("status") == "active" and
+                    next_current_pubkey == new_pubkey and
+                    isinstance(next_prev_pubkeys, list) and
+                    old_pubkey in next_prev_pubkeys):
+                if not valid_node_name(next_name):
+                    return json_response({"error": "invalid_node_id"}, status=400)
+                if not await ed25519_verify(old_pubkey, signature, canonical):
+                    return json_response({"error": "bad_signature"}, status=401)
+                return json_response(
+                    {"ok": True, "nodeName": next_name, "pubkey": new_pubkey})
         if rec:
             name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
             if not valid_node_name(name):
@@ -5462,8 +5481,6 @@ async def _account_rotate(env, request):
     if current_pubkey != old_pubkey:
         return json_response({"error": "not_bound"}, status=403)
 
-    canonical = ("forkmesh-rotate-v1\n" + old_pubkey + "\n" +
-                 new_pubkey + "\n" + str(ts)).encode()
     if not await ed25519_verify(old_pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
