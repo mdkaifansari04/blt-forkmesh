@@ -34,11 +34,13 @@ def _load(*names, extra_globals=None):
 (
     select_clone_fallback,
     browse_mirror_candidates,
+    release_blob_mirror_candidates,
     _mirror_ms,
     repo_mirror_same_group,
 ) = _load(
     "select_clone_fallback",
     "browse_mirror_candidates",
+    "release_blob_mirror_candidates",
     "_mirror_ms",
     "repo_mirror_same_group",
 )
@@ -48,7 +50,7 @@ STALE = 10 * 60 * 1000  # HOST_PRESENCE_STALE_MS
 
 
 def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW,
-         clone_url="", source="local-node"):
+         clone_url="", source="local-node", artifact_count=None):
     data = {
         "owner": owner,
         "name": name,
@@ -59,6 +61,8 @@ def _row(key, owner, name, *, root="root1", visibility="public", synced=NOW,
     }
     if clone_url:
         data["cloneUrl"] = clone_url
+    if artifact_count is not None:
+        data["artifactCount"] = artifact_count
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
@@ -178,6 +182,10 @@ def _browse(owner, repo, rows, presence):
     return browse_mirror_candidates(owner, repo, rows, presence, NOW, STALE)
 
 
+def _release(owner, repo, rows, presence):
+    return release_blob_mirror_candidates(owner, repo, rows, presence, NOW, STALE)
+
+
 def test_browse_lists_the_online_source_itself():
     # Website browse rotates across EVERY live mirror, the named source included,
     # so a lone online source is a valid (single) serving node.
@@ -212,6 +220,33 @@ def test_browse_excludes_private_and_forked_mirrors():
     ]
     presence = {"kS": NOW, "kP": NOW, "kF": NOW}
     assert _browse("source", "forkmesh", rows, presence) == ["source"]
+
+
+def test_release_blob_candidates_prefer_artifact_hosts():
+    # Release blobs live outside git. A freshly-synced mirror can have the
+    # release manifest but not the CAS bytes yet, so the route should try online
+    # nodes that advertise stored artifacts before generic browse candidates.
+    rows = [
+        _row("kS", "source", "forkmesh", synced=NOW, artifact_count=0),
+        _row("kA", "alpha", "forkmesh", synced=NOW, artifact_count=0),
+        _row("kB", "bravo", "forkmesh", synced=NOW - 5000, artifact_count=2),
+        _row("kC", "charlie", "forkmesh", synced=NOW, artifact_count=3),
+    ]
+    presence = {"kS": NOW, "kA": NOW, "kB": NOW, "kC": NOW - 2 * STALE}
+    assert _release("source", "forkmesh", rows, presence)[:3] == [
+        "bravo", "alpha", "source"]
+
+
+def test_release_blob_route_uses_artifact_aware_mirror_selection():
+    src = _route_source()
+    release = src.split("RELEASE_BLOB_RE.match(url.path)")[-1].split(
+        "host_match = REPO_HOST_RE.match", 1)[0]
+    assert "_select_release_blob_mirror(" in release
+    selector = _worker_method_source("_select_release_blob_mirror")
+    assert "release_blob_mirror_candidates" in selector
+    helper = _WORKER_SRC.split("def release_blob_mirror_candidates", 1)[1].split(
+        "\n\n# How many recent", 1)[0]
+    assert "artifactCount" in helper
 
 
 def test_browse_includes_clone_url_mirror_with_bad_legacy_root():
@@ -348,7 +383,7 @@ def test_release_blob_route_retries_live_mirrors_before_failing_install():
     src = _route_source()
     release = src.split("RELEASE_BLOB_RE.match(url.path)")[-1].split(
         "host_match = REPO_HOST_RE.match", 1)[0]
-    assert "_select_browse_mirror(owner, repo, exclude=failed_release_nodes)" in release
+    assert "_select_release_blob_mirror(owner, repo, exclude=failed_release_nodes)" in release
     assert "_forward_to_node" in release
     assert "/api/repo/%s/%s/releases/blob/sha256/%s" in release
     assert "(404, 502, 503, 504)" in release

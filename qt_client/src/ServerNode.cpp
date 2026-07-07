@@ -870,7 +870,18 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
                   repos.at(i).source != m_mirroredRepos.at(i).source ||
                   repos.at(i).commit != m_mirroredRepos.at(i).commit ||
                   repos.at(i).branch != m_mirroredRepos.at(i).branch ||
-                  repos.at(i).updatedMs != m_mirroredRepos.at(i).updatedMs;
+                  repos.at(i).updatedMs != m_mirroredRepos.at(i).updatedMs ||
+                  repos.at(i).sizeBytes != m_mirroredRepos.at(i).sizeBytes ||
+                  repos.at(i).issueCount != m_mirroredRepos.at(i).issueCount ||
+                  repos.at(i).commitCount != m_mirroredRepos.at(i).commitCount ||
+                  repos.at(i).branchCount != m_mirroredRepos.at(i).branchCount ||
+                  repos.at(i).pullCount != m_mirroredRepos.at(i).pullCount ||
+                  repos.at(i).discussionCount !=
+                      m_mirroredRepos.at(i).discussionCount ||
+                  repos.at(i).worktreeCount !=
+                      m_mirroredRepos.at(i).worktreeCount ||
+                  repos.at(i).artifactCount !=
+                      m_mirroredRepos.at(i).artifactCount;
     if (!changed)
         return;
     m_mirroredRepos = repos;

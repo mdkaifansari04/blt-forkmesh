@@ -1856,10 +1856,10 @@ void MainWindow::replicateReleaseArtifacts(int index)
                   .arg(repo.owner, repo.name));
     // Pull them one at a time so a multi-asset release doesn't open a dozen
     // parallel binary streams at once.
-    downloadNextReleaseBlob(mirrorPath, pending);
+    downloadNextReleaseBlob(index, mirrorPath, pending);
 }
 
-void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
+void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                                          QMap<QString, QString> pending)
 {
     if (pending.isEmpty() || !m_networkAccess)
@@ -1871,7 +1871,7 @@ void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
 
     const int slash = downloadRepo.indexOf('/');
     if (slash <= 0) {
-        downloadNextReleaseBlob(mirrorPath, pending);
+        downloadNextReleaseBlob(index, mirrorPath, pending);
         return;
     }
     const QString owner = downloadRepo.left(slash);
@@ -1884,7 +1884,7 @@ void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
     QDir().mkpath(QFileInfo(blobPath).absolutePath());
     auto tmp = std::make_shared<QFile>(blobPath + QStringLiteral(".part"));
     if (!tmp->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        downloadNextReleaseBlob(mirrorPath, pending);
+        downloadNextReleaseBlob(index, mirrorPath, pending);
         return;
     }
     auto hasher = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
@@ -1900,7 +1900,7 @@ void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
         hasher->addData(chunk);
     });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, tmp, hasher, mirrorPath, hash, blobPath, pending]() {
+            [this, reply, tmp, hasher, index, mirrorPath, hash, blobPath, pending]() {
                 const QByteArray rest = reply->readAll();
                 tmp->write(rest);
                 hasher->addData(rest);
@@ -1913,8 +1913,18 @@ void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
                     QString::fromLatin1(hasher->result().toHex());
                 if (ok && actual == hash) {
                     QFile::remove(blobPath); // replace any stale/empty leftover
-                    if (!QFile::rename(partPath, blobPath))
+                    if (!QFile::rename(partPath, blobPath)) {
                         QFile::remove(partPath);
+                    } else if (index >= 0 && index < m_repositories.size() &&
+                               m_repositories.at(index).mirrorPath == mirrorPath) {
+                        // Artifact availability is advertised separately from git
+                        // refs. Publish/re-announce after the CAS changes so other
+                        // nodes and the relay learn this mirror can seed releases.
+                        m_mirrorAdvertSig.clear();
+                        refreshRepositoryList();
+                        if (m_repositories.at(index).publishToNetwork)
+                            publishRepository(index, false);
+                    }
                 } else {
                     QFile::remove(partPath);
                     if (!ok)
@@ -1930,7 +1940,7 @@ void MainWindow::downloadNextReleaseBlob(const QString &mirrorPath,
                 }
                 // Continue with the rest regardless of this one's outcome; a fresh
                 // panel load picks up the newly-hosted artifacts' count.
-                downloadNextReleaseBlob(mirrorPath, pending);
+                downloadNextReleaseBlob(index, mirrorPath, pending);
             });
 }
 

@@ -240,6 +240,7 @@ from mirrors import (  # noqa: E402
     build_repo_mirrors_payload,
     clone_state_pins,
     mirroring_owner_set,
+    release_blob_mirror_candidates,
     repo_clone_online,
     repo_mirror_group_key,
     repo_mirror_same_group,
@@ -9898,7 +9899,9 @@ class Default(WorkerEntrypoint):
             # Public, content-addressed download: forward to the repo's host DO,
             # which streams the blob from a serving node over the tunnel. If the
             # named source is offline or lacks that CAS blob, retry through live
-            # mirrors of the same logical repo before failing the installer.
+            # mirrors of the same logical repo before failing the installer. For
+            # release blobs, prefer mirrors that have published artifactCount > 0
+            # because CAS bytes sync separately from git metadata.
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
             response = await host_object.fetch(
@@ -9910,7 +9913,7 @@ class Default(WorkerEntrypoint):
             if status in (404, 502, 503, 504):
                 failed_release_nodes = [owner]
                 for _ in range(4):
-                    fallback = await self._select_browse_mirror(
+                    fallback = await self._select_release_blob_mirror(
                         owner, repo, exclude=failed_release_nodes)
                     if not fallback or fallback.lower() == owner.lower():
                         break
@@ -10269,6 +10272,57 @@ class Default(WorkerEntrypoint):
             # mirror to spread the browse across.
             rotate = await next_clone_rotation(self.env, repo_bi)
             return candidates[rotate % len(candidates)]
+        except Exception:
+            return None
+
+    async def _select_release_blob_mirror(self, owner, repo, exclude=None):
+        # Release blobs are out-of-git CAS files. A node can mirror the git
+        # release manifest without having the bytes yet, so prefer online mirrors
+        # that have published artifactCount > 0. Best-effort: any failure returns
+        # None so the caller falls back to the original host response.
+        try:
+            await ensure_schema(self.env)
+            now = int(Date.now())
+            presence_rows = await d1_all(
+                self.env, "SELECT repo_bi, ts FROM host_presence")
+            presence = {
+                str(r.get("repo_bi")): int(r.get("ts") or 0)
+                for r in presence_rows
+                if r.get("repo_bi")
+            }
+            rows = await d1_all(
+                self.env,
+                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+            try:
+                active_nodes = await active_registered_node_bis(self.env, now)
+            except Exception:
+                active_nodes = None
+            catalog_rows = []
+            for row in rows:
+                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+                    continue
+                rec = await decrypt_row(self.env, row.get("data"))
+                if not rec:
+                    continue
+                if _is_blocked_catalog_identity(
+                        self.env, rec.get("owner"), rec.get("name")):
+                    continue
+                catalog_rows.append({
+                    "key_bi": row.get("key_bi"),
+                    "is_private": int(row.get("is_private") or 0),
+                    "data": rec,
+                })
+            presence = await hydrate_repo_group_live_hosts(
+                self.env, owner, repo, catalog_rows, presence, now)
+            candidates = release_blob_mirror_candidates(
+                owner, repo, catalog_rows, presence, now,
+                HOST_PRESENCE_STALE_MS)
+            if exclude:
+                names = [exclude] if isinstance(exclude, str) else list(exclude)
+                excluded = {n.lower() for n in names if n}
+                candidates = [
+                    c for c in candidates if c.lower() not in excluded]
+            return candidates[0] if candidates else None
         except Exception:
             return None
 

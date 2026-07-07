@@ -568,6 +568,8 @@ void MainWindow::refreshRepositoryList()
                 QString::number(repo.lastSyncMs) + QLatin1Char('|') + repo.localPath +
                 QLatin1Char('|') + primaryTip.branch + QLatin1Char('|') +
                 primaryTip.commit + QLatin1Char('|') +
+                QString::number(mirrorArtifactCount(repo.mirrorPath)) +
+                QLatin1Char('|') +
                 QString::number(
                     QFileInfo(repo.localPath + QStringLiteral("/.git/worktrees"))
                         .lastModified()

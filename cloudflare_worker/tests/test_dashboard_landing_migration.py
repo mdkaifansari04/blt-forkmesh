@@ -108,6 +108,22 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
     assert '<span class="hidden sm:inline">Get paid to mirror</span>' in dashboard
 
 
+def test_dashboard_nav_links_to_web_chat():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+
+    assert dashboard == _read(PUBLIC / "dashboard.html")
+    top_nav = dashboard.split('data-top-nav', 1)[1].split("</nav>", 1)[0]
+    assert top_nav.index("Repositories") < top_nav.index("Network")
+    assert top_nav.index("Network") < top_nav.index('href="/chat"')
+    assert top_nav.index('href="/chat"') < top_nav.index('href="/docs"')
+    assert "Chat" in top_nav
+
+    mobile_nav = dashboard.split('data-mobile-sidebar-menu', 1)[1].split(
+        "</nav>", 1)[0]
+    assert 'href="/chat"' in mobile_nav
+    assert 'data-lucide="messages-square"' in mobile_nav
+
+
 def test_dashboard_uses_local_helvetica_without_affecting_code_or_site_fonts():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")

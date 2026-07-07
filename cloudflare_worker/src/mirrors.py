@@ -453,6 +453,62 @@ def browse_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
     return ordered
 
 
+def release_blob_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
+    # Ordered list of online nodes likely to serve a release CAS blob for
+    # owner/repo. This is intentionally close to browse_mirror_candidates, but
+    # release bytes live outside git, so prefer nodes that have published a
+    # positive artifactCount before falling back to legacy/unknown records. The
+    # caller still verifies by hash and retries on 404; artifactCount is a
+    # priority signal, not proof that this exact sha256 is present.
+    owner_l = (owner or "").strip().lower()
+    repo_l = (repo or "").strip().lower()
+    if not owner_l or not repo_l:
+        return []
+    public = []
+    target = None
+    for row in rows or []:
+        rec = row.get("data") or {}
+        if row.get("is_private") or rec.get("visibility") == "private":
+            continue
+        rec_owner = str(rec.get("owner") or "").strip()
+        rec_name = str(rec.get("name") or "").strip()
+        if not rec_owner or not rec_name:
+            continue
+        item = {"key_bi": row.get("key_bi"), "data": rec}
+        public.append(item)
+        if rec_owner.lower() == owner_l and rec_name.lower() == repo_l:
+            target = item
+    target_data = target["data"] if target else {
+        "owner": owner, "name": repo, "rootCommit": ""}
+    candidates = []
+    for item in public:
+        rec = item["data"]
+        rec_owner = str(rec.get("owner") or "").strip()
+        if not rec_owner:
+            continue
+        if not repo_mirror_same_group(target_data, rec):
+            continue
+        seen = _mirror_ms(presence.get(item.get("key_bi")))
+        if not (seen and now - seen <= stale_ms):
+            continue
+        sync = _mirror_ms(rec.get("lastSync")) or 0
+        try:
+            artifacts = int(rec.get("artifactCount") or 0)
+        except (TypeError, ValueError):
+            artifacts = 0
+        candidates.append((artifacts > 0, sync, seen, rec_owner))
+    candidates.sort(key=lambda c: (0 if c[0] else 1, -c[1], -c[2], c[3].lower()))
+    ordered = []
+    seen_owners = set()
+    for _has_artifacts, _sync, _seen, name in candidates:
+        low = name.lower()
+        if low in seen_owners:
+            continue
+        seen_owners.add(low)
+        ordered.append(name)
+    return ordered
+
+
 # How many recent owner-attested state pins are kept (and accepted) per repo.
 # The window is the availability/rollback trade: a mirror may lag the source by
 # up to this many publishes and still clone, while a rollback older than the
