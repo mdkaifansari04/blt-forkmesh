@@ -148,8 +148,14 @@
     }
   }
 
-  function displayName() {
+  function userSession() {
     const session = readSession();
+    if (!session || session.kind !== "user" || !session.nodeName) return null;
+    return session;
+  }
+
+  function displayName() {
+    const session = userSession() || readSession();
     const value = session?.nodeName || session?.email || "web-guest";
     return String(value).trim().slice(0, MAX_NAME) || "web-guest";
   }
@@ -178,7 +184,33 @@
     return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">Type to join #general.</div>';
   }
 
+  function fullUserOnlyHtml() {
+    return '<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the encrypted #general room.</div>';
+  }
+
+  function sideUserOnlyHtml() {
+    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">User login required for chat.</div>';
+  }
+
+  function setInputsEnabled(enabled) {
+    [fullInput, sideInput, fullSend, sideSend].forEach((el) => {
+      if (el) el.disabled = !enabled;
+    });
+  }
+
+  function showUserOnlyState() {
+    setStatus("User login required");
+    setInputsEnabled(false);
+    if (fullLog) fullLog.innerHTML = fullUserOnlyHtml();
+    if (sideLog) sideLog.innerHTML = sideUserOnlyHtml();
+  }
+
   function ensureEmptyState() {
+    if (!userSession()) {
+      showUserOnlyState();
+      return;
+    }
+    setInputsEnabled(true);
     if (fullLog && !fullLog.children.length) fullLog.innerHTML = fullEmptyHtml();
     if (sideLog && !sideLog.children.length) sideLog.innerHTML = sideEmptyHtml();
   }
@@ -274,6 +306,7 @@
           `${Math.random()}`.slice(2) + Date.now(),
         senderId: selfId,
         sender: displayName(),
+        accountKind: "user",
         ts: Date.now(),
       },
       extra || {}
@@ -287,6 +320,7 @@
   }
 
   function renderChatEntry(entry, kind) {
+    if (!entry || entry.accountKind !== "user") return;
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
@@ -323,6 +357,7 @@
 
   function handlePlain(plain) {
     const type = plain.type;
+    if (type !== "history" && plain.accountKind !== "user") return;
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
       renderChatEntry(plain, "peer");
@@ -371,6 +406,10 @@
   const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
 
   function send(plain) {
+    if (!userSession()) {
+      showUserOnlyState();
+      return Promise.resolve();
+    }
     return encryptObject(plain).then((envelope) => {
       if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
       if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope));
@@ -379,7 +418,12 @@
 
   async function connect() {
     if (socket || connecting) return;
+    if (!userSession()) {
+      showUserOnlyState();
+      return;
+    }
     connecting = true;
+    setInputsEnabled(true);
     setStatus("Connecting...");
     try {
       if (!roomKey) roomKey = await deriveRoomKey();
@@ -419,6 +463,10 @@
   }
 
   function sendFrom(inputEl) {
+    if (!userSession()) {
+      showUserOnlyState();
+      return;
+    }
     const text = (inputEl?.value || "").trim();
     if (!text) return;
     if (inputEl) inputEl.value = "";
@@ -443,10 +491,12 @@
   }
 
   ensureEmptyState();
-  setStatus("Not connected");
   wireInput(fullInput, fullSend);
   wireInput(sideInput, sideSend);
   // Connect right away so the room's message history (replayed by the relay
   // on WebSocket open) is visible without the visitor first focusing an input.
-  connect();
+  if (userSession()) {
+    setStatus("Not connected");
+    connect();
+  }
 })();

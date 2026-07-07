@@ -154,13 +154,51 @@ async function decryptObject(envelope) {
 
 // ---- UI ---------------------------------------------------------------------
 
+function readSession() {
+  try {
+    return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+  } catch (error) {
+    return null;
+  }
+}
+
+function userSession() {
+  const session = readSession();
+  if (!session || session.kind !== "user" || !session.nodeName) return null;
+  return session;
+}
+
 function displayName() {
+  const session = userSession();
+  if (session) return String(session.nodeName).trim().slice(0, MAX_NAME);
   const value = (nameInput.value || "").trim();
   return (value || "web-guest").slice(0, MAX_NAME);
 }
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
+}
+
+function lockChatForNonUser() {
+  setStatus("User login required");
+  [input, sendBtn, nameInput].forEach((el) => {
+    if (el) el.disabled = true;
+  });
+  if (logEl) {
+    const empty = logEl.querySelector(".chat-empty");
+    if (empty) empty.textContent = "Log in as a user to join the room.";
+  }
+}
+
+function unlockChatForUser() {
+  [input, sendBtn].forEach((el) => {
+    if (el) el.disabled = false;
+  });
+  const session = userSession();
+  if (nameInput && session) {
+    nameInput.value = session.nodeName || "";
+    nameInput.disabled = true;
+  }
 }
 
 function clearEmpty() {
@@ -204,7 +242,9 @@ function clearChat() {
   logEl.textContent = "";
   const empty = document.createElement("div");
   empty.className = "chat-empty";
-  empty.textContent = "Type below to join the room.";
+  empty.textContent = userSession()
+    ? "Type below to join the room."
+    : "Log in as a user to join the room.";
   logEl.append(empty);
 }
 
@@ -228,6 +268,7 @@ function makePlain(type, extra) {
         String(Math.random()).slice(2) + Date.now(),
       senderId: selfId,
       sender: displayName(),
+      accountKind: "user",
       ts: Date.now(),
     },
     extra || {}
@@ -241,6 +282,7 @@ function once(id) {
 }
 
 function renderChatEntry(entry, kind) {
+  if (!entry || entry.accountKind !== "user") return;
   if (!once(entry.id)) return;
   const who = (entry.sender || "peer").slice(0, MAX_NAME);
   const text = entry.fileName
@@ -282,6 +324,7 @@ async function verifyAdminDelete(plain) {
 
 function handlePlain(plain) {
   const type = plain.type;
+  if (type !== "history" && plain.accountKind !== "user") return;
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
   if (type === "chat") {
     renderChatEntry(plain, "peer");
@@ -329,6 +372,10 @@ async function onFrame(event) {
 }
 
 function send(plain) {
+  if (!userSession()) {
+    lockChatForNonUser();
+    return Promise.resolve();
+  }
   return encryptObject(plain).then((envelope) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(envelope));
@@ -338,8 +385,12 @@ function send(plain) {
 
 async function connect() {
   if (socket || connecting) return;
+  if (!userSession()) {
+    lockChatForNonUser();
+    return;
+  }
   connecting = true;
-  setStatus("Connecting…");
+  setStatus("Connecting...");
   try {
     if (!roomKey) roomKey = await deriveRoomKey();
   } catch (error) {
@@ -380,6 +431,10 @@ function runWhenConnected(callback) {
 }
 
 function sendCurrentMessage() {
+  if (!userSession()) {
+    lockChatForNonUser();
+    return;
+  }
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
@@ -392,10 +447,14 @@ function sendCurrentMessage() {
 }
 
 if (logEl && input && sendBtn) {
-  // Connect right away so the room's message history (replayed by the relay
-  // on WebSocket open) is visible to anyone who loads the page, not just
-  // people who start typing.
-  connect();
+  // Connect right away for signed-in users so retained room history is visible
+  // without first focusing an input.
+  if (userSession()) {
+    unlockChatForUser();
+    connect();
+  } else {
+    lockChatForNonUser();
+  }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
   input.addEventListener("keydown", (event) => {

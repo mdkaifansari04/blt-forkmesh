@@ -1212,12 +1212,12 @@ void MainWindow::ensureActionStrip()
 {
     if (m_actionStrip || !m_repoActionsTab)
         return;
-    QWidget *tabBar = m_repoActionsTab->parentWidget();
-    QWidget *page = tabBar ? tabBar->parentWidget() : nullptr;
+    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
     if (!page)
         return;
     // Parented to the repo-detail page so the bars can float over the meta band
-    // just above the Actions tab without being clipped to the tab button.
+    // just above the Actions tab without being clipped to the tab-bar scroll
+    // area's viewport.
     m_actionStrip = new QWidget(page);
     m_actionStrip->setObjectName("actionStrip");
     // The strip and its rows must stay hit-testable: Qt skips a
