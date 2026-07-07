@@ -393,17 +393,24 @@
             name.appendChild(document.createTextNode(system.label || system.id));
             head.appendChild(name);
 
-            const meta = document.createElement("div");
-            meta.className = "status-row-meta";
-            const uptime24 = typeof system.uptime24hPct === "number"
-              ? system.uptime24hPct.toFixed(2) + "% uptime (24h)"
-              : "No 24h data yet";
-            const uptime30 = typeof system.uptimePct === "number"
-              ? system.uptimePct.toFixed(2) + "% uptime (30d)"
-              : "No 30d data yet";
-            const uptimeText = uptime24 + " · " + uptime30;
-            meta.textContent = uptimeText;
-            head.appendChild(meta);
+            const metrics = document.createElement("div");
+            metrics.className = "status-row-metrics";
+            const addMetric = (label, value) => {
+              const metric = document.createElement("div");
+              metric.className = "status-row-metric";
+              const number = document.createElement("strong");
+              number.textContent = typeof value === "number"
+                ? value.toFixed(2) + "%"
+                : "—";
+              const caption = document.createElement("span");
+              caption.textContent = label;
+              metric.appendChild(number);
+              metric.appendChild(caption);
+              metrics.appendChild(metric);
+            };
+            addMetric("24h uptime", system.uptime24hPct);
+            addMetric("30d uptime", system.uptimePct);
+            head.appendChild(metrics);
             row.appendChild(head);
 
             if (system.status !== "operational" && system.reason) {
@@ -443,7 +450,7 @@
                 : effectiveFailures >= expectedChecks
                 ? "down"
                 : "degraded";
-              cell.className = "status-day is-" + state +
+              cell.className = "status-day is-" + state + " has-hours" +
                 (isPartialToday ? " is-partial" : "");
               const label = expectedChecks
                 ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime" +
@@ -455,42 +462,47 @@
 
               const hourBar = document.createElement("div");
               hourBar.className = "status-hour-bar";
-              const setDetail = (text) => {
-                cell.classList.add("is-hovered");
+              const setDetail = (text, marker) => {
+                if (marker) marker.classList.add("is-hovered");
                 detail.textContent = text;
               };
-              const clearDetail = () => {
-                cell.classList.remove("is-hovered");
+              const clearDetail = (marker) => {
+                if (marker) marker.classList.remove("is-hovered");
                 detail.textContent = defaultDetail;
               };
-              hours.forEach((hour) => {
+              const wireHourDetail = (target, tooltip, marker) => {
+                target.title = tooltip;
+                target.tabIndex = 0;
+                target.setAttribute("aria-label", tooltip);
+                target.addEventListener("mouseenter", () => setDetail(tooltip, marker));
+                target.addEventListener("mouseleave", () => clearDetail(marker));
+                target.addEventListener("focus", () => setDetail(tooltip, marker));
+                target.addEventListener("blur", () => clearDetail(marker));
+              };
+              const addHourMarker = (status, tooltip) => {
+                const marker = document.createElement("div");
+                marker.className = "status-day-hour is-" + (status || "unknown");
+                wireHourDetail(marker, tooltip, marker);
+                cell.appendChild(marker);
+                return marker;
+              };
+              const addHourSlice = (status, tooltip, marker) => {
                 const slice = document.createElement("div");
-                const tooltip = hourTooltip(day.dayTs, hour);
-                slice.className = "status-day-hour status-hour-slice is-" +
-                  (hour.status || "unknown");
-                slice.title = tooltip;
-                slice.tabIndex = 0;
-                slice.setAttribute("aria-label", tooltip);
-                slice.addEventListener("mouseenter", () => setDetail(tooltip));
-                slice.addEventListener("mouseleave", clearDetail);
-                slice.addEventListener("focus", () => setDetail(tooltip));
-                slice.addEventListener("blur", clearDetail);
+                slice.className = "status-hour-slice is-" + (status || "unknown");
+                wireHourDetail(slice, tooltip, marker);
                 hourBar.appendChild(slice);
+              };
+              hours.forEach((hour) => {
+                const tooltip = hourTooltip(day.dayTs, hour);
+                const marker = addHourMarker(hour.status, tooltip);
+                addHourSlice(hour.status, tooltip, marker);
               });
               if (isPartialToday) {
                 for (let h = hours.length; h < 24; h++) {
-                  const slice = document.createElement("div");
                   const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(day.dayTs + h * 3600000) +
                     ": hasn't happened yet";
-                  slice.className = "status-day-hour status-hour-slice is-future";
-                  slice.title = tooltip;
-                  slice.tabIndex = 0;
-                  slice.setAttribute("aria-label", tooltip);
-                  slice.addEventListener("mouseenter", () => setDetail(tooltip));
-                  slice.addEventListener("mouseleave", clearDetail);
-                  slice.addEventListener("focus", () => setDetail(tooltip));
-                  slice.addEventListener("blur", clearDetail);
-                  hourBar.appendChild(slice);
+                  const marker = addHourMarker("future", tooltip);
+                  addHourSlice("future", tooltip, marker);
                 }
               }
               if (!hours.length) {
@@ -499,16 +511,8 @@
                   if (hourTs > now) break;
                   const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(hourTs) +
                     ": Down — no status sample recorded; treated as downtime.";
-                  const slice = document.createElement("div");
-                  slice.className = "status-day-hour status-hour-slice is-down";
-                  slice.title = tooltip;
-                  slice.tabIndex = 0;
-                  slice.setAttribute("aria-label", tooltip);
-                  slice.addEventListener("mouseenter", () => setDetail(tooltip));
-                  slice.addEventListener("mouseleave", clearDetail);
-                  slice.addEventListener("focus", () => setDetail(tooltip));
-                  slice.addEventListener("blur", clearDetail);
-                  hourBar.appendChild(slice);
+                  const marker = addHourMarker("down", tooltip);
+                  addHourSlice("down", tooltip, marker);
                 }
               }
 

@@ -602,8 +602,11 @@ def test_status_page_asset_and_redirect_exist():
     assert "status-hour-detail" in status_html
     assert "hourTooltip" in status_html
     assert "uptime24hPct" in status_html
+    assert "status-row-metrics" in status_html
     assert "Missing elapsed samples count as downtime" in status_html
-    assert "cell.classList.add(\"is-hovered\")" in status_html
+    assert "marker.classList.add(\"is-hovered\")" in status_html
+    assert "status-day-hour is-" in status_html
+    assert "status-hour-slice is-" in status_html
 
     redirects = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
     assert "/status /status.html 200" in redirects

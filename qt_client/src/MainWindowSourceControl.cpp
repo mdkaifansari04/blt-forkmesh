@@ -170,7 +170,8 @@ QWidget *MainWindow::buildSourceControlPanel()
         b->setCursor(Qt::PointingHandCursor);
     }
 
-    auto *composeRow = new QHBoxLayout;
+    m_scmControlsPanel = new QWidget;
+    auto *composeRow = new QHBoxLayout(m_scmControlsPanel);
     composeRow->setContentsMargins(0, 0, 0, 0);
     composeRow->setSpacing(6);
     composeRow->addWidget(m_scmMessage, 1);
@@ -186,7 +187,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmCommitButton);
     composeRow->addWidget(m_scmCommitPushButton);
     composeRow->addWidget(m_scmStageCommitPushButton);
-    root->addLayout(composeRow);
+    root->addWidget(m_scmControlsPanel);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
@@ -250,19 +251,7 @@ QWidget *MainWindow::buildSourceControlPanel()
                             item->data(0, Qt::UserRole + 2).toBool());
             });
 
-    m_scmDiff = new QTextBrowser;
-    m_scmDiff->setObjectName("diffView");
-    m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
-    registerDiffView(m_scmDiff);
-
-    auto *bodySplit = new QSplitter(Qt::Horizontal);
-    bodySplit->setChildrenCollapsible(false);
-    bodySplit->addWidget(m_scmTree);
-    bodySplit->addWidget(m_scmDiff);
-    bodySplit->setStretchFactor(0, 0);
-    bodySplit->setStretchFactor(1, 1);
-    bodySplit->setSizes({360, 520});
-    root->addWidget(bodySplit, 1);
+    root->addWidget(m_scmTree, 1);
 
     m_scmEmptyNote =
         new QLabel("No working tree on this node \xE2\x80\x94 changes are read-only here.");
@@ -527,6 +516,8 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
 {
     if (!m_scmDiff)
         return;
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
     // Cache the rendered HTML per file so re-clicking a file (or walking the list
     // with the up/down buttons) is instant — the lag is the synchronous `git
     // diff` + render, which we only want to pay once per file per rescan. The
@@ -562,6 +553,8 @@ void MainWindow::showScmDiffAll(bool staged)
 {
     if (!m_scmDiff)
         return;
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return;
