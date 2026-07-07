@@ -2542,6 +2542,15 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
+    // User/account identity, shown separately from the node selector so linked
+    // nodes can expose both the owner account and the machine identity.
+    m_userMenuButton = new QPushButton;
+    m_userMenuButton->setObjectName("userMenuButton");
+    m_userMenuButton->setCursor(Qt::PointingHandCursor);
+    m_userMenuButton->setToolTip("Open your user account settings");
+    connect(m_userMenuButton, &QPushButton::clicked, this,
+            [this] { showSection(1); });
+
     // Node name shown above the wallet balance in the top-right cluster.
     m_navNodeName = new QLabel;
     m_navNodeName->setObjectName("navNodeName");
@@ -2779,8 +2788,18 @@ QWidget *MainWindow::buildBreadcrumb()
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
-    // User avatar, pinned to the top-right-most of the bar. Clicking it opens a
-    // dropdown with account-level actions.
+    // User avatar, next to the node avatar. Clicking it opens account settings.
+    m_userAvatarNavButton = new QPushButton;
+    m_userAvatarNavButton->setObjectName("serverFooterButton");
+    m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
+    m_userAvatarNavButton->setFixedSize(40, 40);
+    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setToolTip("Your user account");
+    connect(m_userAvatarNavButton, &QPushButton::clicked, this,
+            [this] { showSection(1); });
+
+    // Node avatar, pinned to the top-right-most of the bar. Clicking it opens
+    // the node profile.
     m_avatarNavButton = new QPushButton;
     m_avatarNavButton->setObjectName("serverFooterButton");
     m_avatarNavButton->setCursor(Qt::PointingHandCursor);
@@ -2793,6 +2812,7 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(0);
         showNodeProfile(m_profileIdentity.publicKey(), m_userName);
     });
+    updateUserSwitcher();
     updateAvatarButton();
 
     // Connection status dot, overlaid on the bottom-right of the avatar. It's
@@ -2812,6 +2832,7 @@ QWidget *MainWindow::buildBreadcrumb()
         return l;
     };
     m_relayLabel = makeCaption(QStringLiteral("Relay"));
+    m_userLabel = makeCaption(QStringLiteral("User"));
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
@@ -3101,6 +3122,9 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
+    mainRow->addWidget(m_userLabel);
+    mainRow->addWidget(m_userMenuButton);
+    mainRow->addSpacing(10);
     mainRow->addWidget(m_nodeLabel);
     mainRow->addWidget(m_nodeMenuButton);
     mainRow->addSpacing(10);
@@ -3142,6 +3166,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(2);
     mainRow->addWidget(m_navTokenUsage);
     mainRow->addSpacing(4);
+    mainRow->addWidget(m_userAvatarNavButton);
+    mainRow->addSpacing(2);
     mainRow->addWidget(m_avatarNavButton);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
@@ -3741,6 +3767,7 @@ QString lastSolanaBalanceSetting(const QString &address)
 
 void MainWindow::updateNodeSwitcher()
 {
+    updateUserSwitcher();
     if (!m_nodeMenuButton)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
@@ -3756,6 +3783,26 @@ void MainWindow::updateNodeSwitcher()
         }
     }
     m_nodeMenuButton->setIcon(QIcon());
+}
+
+void MainWindow::updateUserSwitcher()
+{
+    const QString user = topBarUserName();
+    const QString label = user.isEmpty() ? QStringLiteral("User") : user;
+    if (m_userMenuButton) {
+        m_userMenuButton->setText(label);
+        m_userMenuButton->setToolTip(
+            user.isEmpty()
+                ? QStringLiteral("Open your user account settings")
+                : QStringLiteral("User account: %1").arg(user));
+    }
+    if (m_userAvatarNavButton) {
+        m_userAvatarNavButton->setToolTip(
+            user.isEmpty()
+                ? QStringLiteral("Your user account")
+                : QStringLiteral("%1 user account").arg(user));
+    }
+    updateUserAvatarButton();
 }
 
 void MainWindow::cycleNavSolanaCurrency()
@@ -9972,6 +10019,7 @@ void MainWindow::refreshProfileAccountStatus()
         m_nodeOwnerUser.clear();
         m_profileLinkedNodes.clear();
         m_profileIsUserAccount = false;
+        updateUserSwitcher();
         m_profileAccountStatus->setText(QString::fromUtf8(
             "Register this node first (see \"Get paid to mirror\") to link it to "
             "a user account."));
@@ -10005,6 +10053,7 @@ void MainWindow::refreshProfileAccountStatus()
             QStringLiteral("user");
         m_profileLinkedNodes =
             profileNodesFromJson(resp.value(QStringLiteral("nodes")));
+        updateUserSwitcher();
         // A child node only knows its own account; fetch the owning user to list
         // the sibling nodes too, so the whole fleet shows on any node's profile.
         // (This second hop only repaints — it must NOT re-enter the GET above, or
@@ -10113,6 +10162,7 @@ void MainWindow::submitLinkNodeToUser(const QString &identifier,
             m_nodeOwnerUser = resp.value(QStringLiteral("user")).toString();
             m_profileLinkedNodes =
                 profileNodesFromJson(resp.value(QStringLiteral("nodes")));
+            updateUserSwitcher();
             logSystem("Account: this node is now linked to user \"" +
                       m_nodeOwnerUser + "\".");
             // refreshProfileAccountStatus repaints to the linked state (and picks

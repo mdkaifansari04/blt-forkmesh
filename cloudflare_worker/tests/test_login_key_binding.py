@@ -153,6 +153,8 @@ def _login_harness(rec):
             "_save_account": _save_account,
             "_is_admin": _is_admin,
             "_account_public_payload": _account_public_payload,
+            "_admin_session_cookie": lambda _env, _name: "admin-session",
+            "_clear_admin_session_cookie": lambda: "clear-admin-session",
             "json_response": _json_response,
             "Date": _Date,
             "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",

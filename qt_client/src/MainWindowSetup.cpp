@@ -1098,6 +1098,7 @@ void MainWindow::startSession()
     if (m_settingsNameEdit)
         m_settingsNameEdit->setText(m_userName);
     setSettingsAvatar(m_userAvatar);
+    updateUserSwitcher();
     updateAvatarButton();
 
     // Reset chat state.
@@ -1669,6 +1670,19 @@ QString MainWindow::settingsAccountName() const
     return QSettings().value(kAccountNameSetting).toString().trimmed().toLower();
 }
 
+QString MainWindow::topBarUserName() const
+{
+    const QString linkedOwner = m_nodeOwnerUser.trimmed().toLower();
+    if (!linkedOwner.isEmpty())
+        return linkedOwner;
+
+    const QString account = settingsAccountName();
+    if (!account.isEmpty())
+        return account;
+
+    return accountNameFromInput(m_userName, QString());
+}
+
 bool MainWindow::accountEmailVerified(const QString &accountName) const
 {
     const QString normalized = accountName.trimmed().toLower();
@@ -1686,6 +1700,7 @@ void MainWindow::applyAccountEmailVerified(const QString &accountName, bool veri
 
 void MainWindow::refreshSettingsEmailVerifiedBadge()
 {
+    updateUserSwitcher();
     if (!m_settingsEmailVerifiedBadge)
         return;
     const bool verified = accountEmailVerified(settingsAccountName());

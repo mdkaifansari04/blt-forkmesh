@@ -2732,6 +2732,10 @@ async def waitlist_handler(env, request):
 # --- Accounts (accounts table) — name + solana + password + TOTP ------------
 
 def _account_kind(rec):
+    rec = rec or {}
+    kind = clean_string(rec.get("kind", ""), 16).strip().lower()
+    if kind in ("user", "node"):
+        return kind
     return "user" if rec.get("pass_hash") else "node"
 
 
@@ -3499,6 +3503,7 @@ async def _account_signup(env, request):
     rec.update({
         "name": name,
         "email": email,
+        "kind": "user",
         "pass_salt": salt,
         "pass_hash": phash,
     })
@@ -3560,6 +3565,7 @@ async def _account_reserve(env, request):
     rec = existing or {}
     rec.update({
         "name": name,
+        "kind": "node" if pubkey else rec.get("kind", "node"),
         "status": "reserved",
         "created_at": int(rec.get("created_at") or Date.now()),
     })
@@ -3998,6 +4004,10 @@ async def _account_finalize(env, request):
         rec["email"] = email
         rec["pass_salt"] = salt
         rec["pass_hash"] = phash
+    if key_bound:
+        rec.setdefault("kind", "node")
+    else:
+        rec["kind"] = "user"
     rec["status"] = "active"
     # Optional payout address (where this node receives its share of the split).
     if solana and SOLANA_RE.match(solana):
@@ -8791,6 +8801,7 @@ ADMIN_STYLE = """
  button{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;
         padding:8px 14px;font:600 13px system-ui;cursor:pointer}
  button:hover{background:#2ea043}
+ button[disabled]{background:#30363d;border-color:#30363d;color:#8b949e;cursor:not-allowed}
  .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #2ea043;
          background:#11251a;color:#aff5c2;white-space:pre-wrap;font:13px ui-monospace,monospace}
  .layout{display:flex;align-items:flex-start}
@@ -8817,6 +8828,10 @@ ADMIN_STYLE = """
         border:1px solid #30363d;border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .tools .navlink{padding:8px 4px}
+ .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:180px}
+ .account-kind button{padding:4px 8px;font-size:12px}
+ .kindpill{border:1px solid #30363d;border-radius:999px;padding:3px 8px;
+        color:#c9d1d9;background:#161b22;font:600 12px system-ui,sans-serif}
  .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
  .diagcol{min-width:240px}
  .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
@@ -8849,8 +8864,9 @@ def _admin_cell(column, value, env_unused=None):
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
     return (
         '<form method="post" action="%s" '
-        'onsubmit="return confirm(\'Delete the selected row(s)? This cannot be '
-        'undone.\')">'
+        'onsubmit="if(event.submitter&amp;&amp;event.submitter.name==='
+        '\'account_migration\')return true;return confirm(\'Delete the selected '
+        'row(s)? This cannot be undone.\')">'
         '%s'
         '<div class="tools">'
         '<button type="submit">Delete selected</button>'
@@ -8870,6 +8886,33 @@ def _admin_select_all_th():
 def _admin_row_checkbox(rowid):
     return ('<td><input type="checkbox" name="ids" value="%s"></td>'
             % _html_escape(rowid))
+
+
+def _admin_account_migration_cell(row, rec, admin_query=""):
+    rec = rec if isinstance(rec, dict) else {}
+    name = clean_string(rec.get("name") or row.get("name") or "",
+                        MAX_NODE_NAME).strip().lower()
+    if not name:
+        return '<td><span class="meta">no account name</span></td>'
+    kind = _account_kind(rec)
+    action = _admin_href(admin_query, table="accounts", action="migrate_account")
+    buttons = []
+    for target, label in (("user", "Make user"), ("node", "Make node")):
+        disabled = ' disabled aria-disabled="true"' if target == kind else ""
+        onclick = (
+            ' onclick="return confirm(\'Migrate account %s to %s?\')"'
+            % (_html_escape(name), target)
+        ) if not disabled else ""
+        buttons.append(
+            '<button type="submit" formmethod="post" formaction="%s" '
+            'name="account_migration" value="%s"%s%s>%s</button>'
+            % (action, _html_escape(name + ":" + target), disabled, onclick,
+               label)
+        )
+    return (
+        '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
+        % (_html_escape(kind), "".join(buttons))
+    )
 
 
 async def _admin_table_columns(env, table):
@@ -9187,19 +9230,25 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     body = []
     for r in rows:
         rid = r.get("_rowid_", "")
+        decoded_data = None
+        if table == "accounts" and isinstance(r.get("data"), str) and r.get("data"):
+            decoded_data = await decrypt_row(env, r.get("data"))
         cells = [_admin_row_checkbox(rid),
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
+        if table == "accounts":
+            cells.append(_admin_account_migration_cell(r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
             if col == "data" and isinstance(value, str) and value:
-                decoded = await decrypt_row(env, value)
+                decoded = decoded_data if table == "accounts" else await decrypt_row(env, value)
                 if decoded is not None:
                     value = json.dumps(decoded, indent=2, sort_keys=True)
             cells.append("<td>%s</td>" % _admin_cell(col, value))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    head = _admin_select_all_th() + "<th>Edit</th>" + "".join(
+    head = (_admin_select_all_th() + "<th>Edit</th>" +
+            ("<th>Kind</th>" if table == "accounts" else "")) + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns)
     return (
         prefix
@@ -9308,6 +9357,36 @@ async def _admin_set_password(env, name, password):
     rec.setdefault("status", "active")
     await _save_account(env, name_bi, rec)
     return "Password updated for '%s'. The user can log in with it now." % name
+
+
+async def _admin_migrate_account_kind(env, name, kind):
+    name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
+    kind = clean_string(kind or "", 16).strip().lower()
+    if not name:
+        return "Account migration failed: an account name is required."
+    if kind not in ("user", "node"):
+        return "Account migration failed: target kind must be user or node."
+    if not valid_node_name(name):
+        return "Account migration failed: '%s' is not a valid account name." % name
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return "Account migration failed: no account named '%s'." % name
+    old_kind = _account_kind(rec)
+    already_pinned = old_kind == kind and rec.get("kind") == kind
+    if already_pinned:
+        return "Account '%s' is already pinned as a %s." % (name, kind)
+    rec["kind"] = kind
+    await _save_account(env, name_bi, rec)
+    verb = "Pinned" if old_kind == kind else "Migrated"
+    msg = "%s account '%s' as %s." % (verb, name, kind)
+    notes = []
+    if kind == "user" and not rec.get("pass_hash"):
+        notes.append("Set a password before this user can log in.")
+    if kind == "node" and _owned_nodes(rec):
+        notes.append("Linked nodes on this record were left unchanged; transfer them separately if needed.")
+    if notes:
+        msg += " " + " ".join(notes)
+    return msg
 
 
 async def _admin_console_request_ownership(env, target, owner):
@@ -9566,6 +9645,14 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Set password failed: " + repr(error)
+            elif action == "migrate_account":
+                try:
+                    raw = form.get("account_migration", [""])[0]
+                    name, _, kind = raw.partition(":")
+                    banner = await _admin_migrate_account_kind(
+                        self.env, name, kind)
+                except Exception as error:
+                    banner = "Account migration failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(

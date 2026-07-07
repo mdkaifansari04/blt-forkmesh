@@ -3007,6 +3007,9 @@ void MainWindow::syncMirrorsBehindRoster()
     // offline/just connected): the moment the roster shows the source moved, we
     // converge. syncRepository fetches refs/heads/* + refs/tags/*, so issue/PR
     // and commit-comment changes (which live on refs/heads) come along too.
+    // Release artifact blobs are advertised separately from git refs; if a peer
+    // has more CAS blobs than we do, pull those bytes even when the git mirror is
+    // already current.
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
         if (repo.previewOnly || m_syncingRepos.contains(i))
@@ -3024,7 +3027,9 @@ void MainWindow::syncMirrorsBehindRoster()
         const QString source = repoSegment(repo.owner, QStringLiteral("owner")) +
                                "/" + repoSegment(repo.name, QStringLiteral("repository"));
         const QString legacy = repo.owner + "/" + repo.name;
+        const int localArtifactCount = mirrorArtifactCount(repo.mirrorPath);
         bool behind = false;
+        bool artifactsBehind = false;
         for (const MemberInfo &node : std::as_const(m_homeRoster)) {
             if (node.self || !node.online)
                 continue;
@@ -3039,13 +3044,17 @@ void MainWindow::syncMirrorsBehindRoster()
                                     m.commit + QStringLiteral("^{commit}")},
                                    nullptr, nullptr))
                     behind = true;
+                if (m.artifactCount > localArtifactCount)
+                    artifactsBehind = true;
                 break; // one advert per node for this repo
             }
-            if (behind)
+            if (behind || artifactsBehind)
                 break;
         }
         if (behind)
             syncRepository(i, /*quiet=*/true);
+        else if (artifactsBehind)
+            replicateReleaseArtifacts(i);
     }
 }
 
@@ -3633,6 +3642,7 @@ void MainWindow::onProfileNameChanged(const QString &name)
     if (m_backend)
         m_backend->setUserName(trimmed);
     refreshSettingsEmailVerifiedBadge();
+    updateUserSwitcher();
     refreshRepositoryList();
     logSystem("Name changed to " + trimmed + ".");
 }
@@ -3644,6 +3654,7 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
     if (m_backend)
         m_backend->setAvatar(pngData);
     updateAvatarButton();
+    updateUserAvatarButton();
 }
 
 void MainWindow::logout()

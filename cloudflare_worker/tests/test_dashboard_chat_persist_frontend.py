@@ -15,6 +15,7 @@ from pathlib import Path
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
+PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 
 
 def test_send_marks_durable_frames_for_relay_retention():
@@ -28,3 +29,20 @@ def test_durable_type_set_matches_the_node():
     # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
         assert f'"{kind}"' in CHAT[CHAT.index("DURABLE_TYPES") : CHAT.index("function send(")]
+
+
+def test_dashboard_chat_requires_user_session_and_marks_user_frames():
+    assert "function userSession()" in CHAT
+    assert 'session.kind !== "user"' in CHAT
+    assert 'accountKind: "user"' in CHAT
+    assert 'plain.accountKind !== "user"' in CHAT
+    assert 'entry.accountKind !== "user"' in CHAT
+
+
+def test_public_chat_requires_user_session_and_marks_user_frames():
+    assert "function userSession()" in PUBLIC_CHAT
+    assert 'session.kind !== "user"' in PUBLIC_CHAT
+    assert 'accountKind: "user"' in PUBLIC_CHAT
+    assert 'plain.accountKind !== "user"' in PUBLIC_CHAT
+    assert 'entry.accountKind !== "user"' in PUBLIC_CHAT
+    assert "lockChatForNonUser" in PUBLIC_CHAT

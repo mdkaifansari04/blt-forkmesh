@@ -668,6 +668,8 @@ private:
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
+    QString topBarUserName() const; // linked user/account name shown in the top bar
+    void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
     void updateNavSolanaBalance(); // refresh top-bar balance for this node
     void cycleNavSolanaCurrency(); // SOL -> USD -> INR -> SOL on balance click
@@ -2453,7 +2455,9 @@ private:
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
     // generated identicon when the user hasn't set one.
     QByteArray effectiveAvatar();
+    QByteArray effectiveUserAvatar();
     void updateAvatarButton();
+    void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
     void logout();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
@@ -2721,8 +2725,9 @@ private:
                                            // backs off the confirm re-probe so a
                                            // persistently-slow link isn't polled
                                            // every second forever (adhoc #74)
-    // "Relay" / "Node" / "Repo" captions before each top-bar dropdown.
+    // "Relay" / "User" / "Node" / "Repo" captions before each top-bar dropdown.
     QLabel *m_relayLabel = nullptr;
+    QLabel *m_userLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
     QLabel *m_navNodeName = nullptr;     // node name shown above the balance
@@ -2811,6 +2816,7 @@ private:
     QLabel *m_encryptionLabel;
     QPushButton *m_inviteButton = nullptr; // "Invite" — shown only in private rooms
     QListWidget *m_channelList;
+    QPushButton *m_userMenuButton = nullptr; // top-bar user/account identity
     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
     QString m_navSolanaBalanceAddress;
     // One row per node, populated by refreshRepositoryList and shown in the
@@ -4670,8 +4676,10 @@ private:
     // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
     // while the request is still pending a decision.
     QString m_lastOwnershipTransferAdminShown;
-    // Avatar shown in the server rail (in place of the old settings gear); a
-    // click opens Settings.
+    // User/avatar controls in the top-right account cluster. m_avatarNavButton
+    // is the node avatar with the connection dot; m_userAvatarNavButton is the
+    // signed-in/linked user account avatar.
+    QPushButton *m_userAvatarNavButton = nullptr;
     QPushButton *m_avatarNavButton = nullptr;
 #ifdef FORKMESH_WINDOW_TESTS
     bool m_testUseAccountFlowResult = false;

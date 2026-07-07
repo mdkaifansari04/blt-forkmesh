@@ -1624,6 +1624,16 @@ QByteArray MainWindow::effectiveAvatar()
     return forkMeshNodeAvatarPng(seed);
 }
 
+QByteArray MainWindow::effectiveUserAvatar()
+{
+    QString seed = topBarUserName();
+    if (seed.isEmpty())
+        seed = m_profileIdentity.publicKey();
+    if (seed.isEmpty())
+        seed = QStringLiteral("forkmesh-user");
+    return forkMeshAvatarPng(seed);
+}
+
 void MainWindow::updateAvatarButton()
 {
     if (!m_avatarNavButton)
@@ -1631,7 +1641,20 @@ void MainWindow::updateAvatarButton()
     const QPixmap pm = roundedAvatar(effectiveAvatar(), 34);
     if (!pm.isNull())
         m_avatarNavButton->setIcon(QIcon(pm));
+    m_avatarNavButton->setIconSize(QSize(34, 34));
+    m_avatarNavButton->setText(QString());
     refreshIssueComposerAvatar();
+}
+
+void MainWindow::updateUserAvatarButton()
+{
+    if (!m_userAvatarNavButton)
+        return;
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34);
+    if (!pm.isNull())
+        m_userAvatarNavButton->setIcon(QIcon(pm));
+    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setText(QString());
 }
 
 void MainWindow::refreshIssueComposerAvatar()

@@ -59,3 +59,12 @@ def test_admin_page_requires_signed_login_cookie():
     assert "_clear_admin_session_cookie()" in ENTRY_TEXT
     assert 'url.path == "/api/accounts/logout"' in ENTRY_TEXT
     assert '\"location\": \"/login?next=\" + quote(next_path)' in ENTRY_TEXT
+
+
+def test_admin_accounts_table_can_migrate_account_kind():
+    assert "def _admin_account_migration_cell" in ENTRY_TEXT
+    assert 'name="account_migration"' in ENTRY_TEXT
+    assert 'action="migrate_account"' in ENTRY_TEXT
+    assert "elif action == \"migrate_account\":" in ENTRY_TEXT
+    assert "_admin_migrate_account_kind(" in ENTRY_TEXT
+    assert "event.submitter" in ENTRY_TEXT

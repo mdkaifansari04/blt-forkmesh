@@ -32,6 +32,7 @@ FUNCS = {
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
     "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
     "_account_ownership_transfer_confirm", "_park_ownership_transfer",
+    "_admin_migrate_account_kind",
 }
 
 
@@ -111,7 +112,8 @@ def _harness(accounts):
         if "FROM nodes WHERE pubkey" in sql:
             pubkey = args[0]
             for name, rec in accounts.items():
-                if rec.get("pubkey") == pubkey and not rec.get("pass_hash"):
+                if (rec.get("pubkey") == pubkey and
+                        (rec.get("kind") == "node" or not rec.get("pass_hash"))):
                     return {"node_bi": "bi:" + name, "data": dict(rec)}
             return None
         if "FROM link_codes" in sql:
@@ -205,6 +207,42 @@ def _node_rec(name="mirror1"):
 def _auth(extra):
     return {"identifier": "alice@example.com",
             "password": "correct horse battery staple", **extra}
+
+
+def test_account_kind_can_be_pinned_independently_of_password():
+    ns = _harness({})
+
+    assert ns["_account_kind"]({"pass_hash": "hash"}) == "user"
+    assert ns["_account_kind"]({"pubkey": "PK-node"}) == "node"
+    assert ns["_account_kind"]({"kind": "node", "pass_hash": "hash"}) == "node"
+    assert ns["_account_kind"]({"kind": "user", "pubkey": "PK-node"}) == "user"
+
+
+def test_admin_migrates_account_between_user_and_node_kinds():
+    accounts = {"alice": _user_rec()}
+    ns = _harness(accounts)
+    env = object()
+
+    migrated = asyncio.run(ns["_admin_migrate_account_kind"](env, "alice", "node"))
+    assert "Migrated account 'alice' as node." in migrated
+    assert accounts["alice"]["kind"] == "node"
+    assert ns["_account_kind"](accounts["alice"]) == "node"
+
+    migrated = asyncio.run(ns["_admin_migrate_account_kind"](env, "alice", "user"))
+    assert "Migrated account 'alice' as user." in migrated
+    assert accounts["alice"]["kind"] == "user"
+    assert ns["_account_kind"](accounts["alice"]) == "user"
+
+
+def test_admin_user_migration_warns_when_login_password_is_missing():
+    accounts = {"mirror1": _node_rec()}
+    ns = _harness(accounts)
+
+    migrated = asyncio.run(
+        ns["_admin_migrate_account_kind"](object(), "mirror1", "user"))
+
+    assert accounts["mirror1"]["kind"] == "user"
+    assert "Set a password before this user can log in." in migrated
 
 
 def test_claim_flow_links_node_via_heartbeat_code():
