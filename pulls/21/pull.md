@@ -4,7 +4,7 @@ number: 21
 title: Refresh feature blog content
 base: main
 head: api-pr/20260708-001118/feature-blog-content
-status: open
+status: merged
 ts: 1783449942745
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
