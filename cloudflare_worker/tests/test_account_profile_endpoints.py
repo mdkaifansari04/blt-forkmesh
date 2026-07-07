@@ -272,6 +272,26 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
     assert "pass_hash" in token_body
 
 
+def test_signup_verification_email_is_a_professional_welcome_email():
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _send_verification_email"):
+        ENTRY_TEXT.index("async def _password_reset_token")
+    ]
+    for marker in (
+        'subject = "Welcome to ForkMesh"',
+        "Confirm your email",
+        "https://forkmesh.com/docs",
+        "https://forkmesh.com/blogs",
+        "What was confusing",
+        "founders@forkmesh.com",
+        "background:#090909",
+        "background:#141416",
+        "color:#4ade80",
+        "/api/accounts/verify-email?node=",
+    ):
+        assert marker in body
+
+
 def test_login_page_links_to_password_reset():
     login_html = (Path(__file__).resolve().parents[1] /
                   "public" / "login.html").read_text(encoding="utf-8")
@@ -295,6 +315,7 @@ if __name__ == "__main__":
         test_worker_exposes_password_reset_flow,
         test_forgot_password_does_not_leak_account_existence,
         test_reset_password_validates_token_expiry_and_hashes_new_password,
+        test_signup_verification_email_is_a_professional_welcome_email,
         test_login_page_links_to_password_reset,
     ):
         test()
