@@ -5280,7 +5280,7 @@ void MainWindow::updateSearchStatus()
 void MainWindow::showCommitList()
 {
     if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(0);
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
 }
 
 // Select the newest commit (row 0 — the table sorts Date-descending) and open
@@ -6025,7 +6025,7 @@ void MainWindow::showCommit(const QString &hash)
 
     // Land on the diff page and paint a spinner straight away; all git below is
     // asynchronous, so the click itself never blocks the GUI thread.
-    m_commitsStack->setCurrentIndex(1);
+    m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
     startCommitDiffSpin();
 
     m_currentCommitHash = hash; // refined to the full hash when metadata lands
@@ -6206,7 +6206,7 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     renderCommitThread(m_currentCommitHash);
     stopCommitDiffSpin();
     if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(1);
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::renderCommitThread(const QString &sha)
@@ -7988,12 +7988,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // --- Page 1: the GitHub-style commit diff view.
     auto *detailPage = new QWidget;
 
-    auto *backButton = new QPushButton("Commits");
-    backButton->setObjectName("ghostButton");
-    backButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(backButton, "arrow-left", 16);
-    connect(backButton, &QPushButton::clicked, this, &MainWindow::showCommitList);
-
     // Prev/Next walk the commit list (newest first): Prev = newer, Next = older.
     m_commitPrevButton = new QPushButton("Prev");
     m_commitNextButton = new QPushButton("Next");
@@ -8101,7 +8095,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
     auto *navCol = new QVBoxLayout;
     navCol->setContentsMargins(0, 0, 0, 0);
     navCol->setSpacing(4);
-    navCol->addWidget(backButton, 0, Qt::AlignRight);
     auto *prevNextRow = new QHBoxLayout;
     prevNextRow->setContentsMargins(0, 0, 0, 0);
     prevNextRow->setSpacing(4);
@@ -8241,41 +8234,49 @@ QWidget *MainWindow::buildRepoCommitsTab()
     detailLayout->addWidget(m_commitMeta);
     detailLayout->addWidget(commitVSplit, 1);
 
-    // Right side: a placeholder until a commit is picked, then the diff view.
-    // The commit list (listPage) stays visible in the left splitter pane the
-    // whole time, so clicking a commit no longer hides it.
-    auto *placeholder = new QLabel("Select a commit to view its diff.");
-    placeholder->setObjectName("statusLine");
-    placeholder->setAlignment(Qt::AlignCenter);
-    m_commitsStack->addWidget(placeholder); // 0
-    m_commitsStack->addWidget(detailPage);  // 1
-
-    auto *outerSplit = new QSplitter(Qt::Horizontal);
-    outerSplit->addWidget(listPage);
-    outerSplit->addWidget(m_commitsStack);
-    // #123: open the commit list with enough room for its columns, without
-    // seeding a desktop-only 2000px splitter width on smaller windows. Equal
-    // stretch factors keep the divider comfortable as the user resizes it.
-    outerSplit->setStretchFactor(0, 1);
-    outerSplit->setStretchFactor(1, 1);
-    outerSplit->setSizes({320, 780});
-
-    // New top panel: a VSCode-style Source Control view for the working tree
-    // (compose strip + changes tree + diff), sitting above the committed-history
-    // UI (list | diff) in a vertical split.
+    // Left column: working-tree changes above commit history. The column is one
+    // resizable splitter pane, so the user can give lists just enough room and
+    // keep the right side dedicated to the active diff/detail view.
     auto *scmPanel = buildSourceControlPanel();
-    auto *commitsVSplit = new QSplitter(Qt::Vertical);
-    commitsVSplit->setChildrenCollapsible(false);
-    commitsVSplit->addWidget(scmPanel);
-    commitsVSplit->addWidget(outerSplit);
-    commitsVSplit->setStretchFactor(0, 2);
-    commitsVSplit->setStretchFactor(1, 3);
-    commitsVSplit->setSizes({320, 520});
+    auto *leftSplit = new QSplitter(Qt::Vertical);
+    leftSplit->setChildrenCollapsible(false);
+    leftSplit->addWidget(scmPanel);
+    leftSplit->addWidget(listPage);
+    leftSplit->setStretchFactor(0, 2);
+    leftSplit->setStretchFactor(1, 3);
+    leftSplit->setSizes({320, 520});
+
+    // Right column: one active detail surface. Page 0 is the working-tree
+    // controls + diff; page 1 is the selected commit metadata/actions + diff.
+    auto *changesPage = new QWidget;
+    auto *changesLayout = new QVBoxLayout(changesPage);
+    changesLayout->setContentsMargins(16, 12, 16, 16);
+    changesLayout->setSpacing(8);
+    m_scmDiff = new QTextBrowser;
+    m_scmDiff->setObjectName("diffView");
+    m_scmDiff->setLineWrapMode(QTextEdit::NoWrap);
+    registerDiffView(m_scmDiff);
+    m_scmDiff->setHtml(QStringLiteral(
+        "<p style='color:#8b949e'>Select a change or open all changes to view "
+        "the diff.</p>"));
+    changesLayout->addWidget(m_scmDiff, 1);
+
+    m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage
+    m_commitsStack->addWidget(detailPage);  // kCommitWorkspaceCommitPage
+    m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+
+    auto *workspaceSplit = new QSplitter(Qt::Horizontal);
+    workspaceSplit->setChildrenCollapsible(false);
+    workspaceSplit->addWidget(leftSplit);
+    workspaceSplit->addWidget(m_commitsStack);
+    workspaceSplit->setStretchFactor(0, 0);
+    workspaceSplit->setStretchFactor(1, 1);
+    workspaceSplit->setSizes({430, 950});
 
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(commitsVSplit);
+    layout->addWidget(workspaceSplit);
     return page;
 }
 

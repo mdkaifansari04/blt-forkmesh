@@ -959,7 +959,7 @@ private:
     void renderCommitDetail(const QString &dir, const QString &hash,
                             const QStringList &metaFields,
                             const QByteArray &patchRaw);
-    void showCommitList();                // back to the commits list
+    void showCommitList();                // reset the right pane to working changes
     void openMostRecentCommit();          // select newest commit + expand its diff
     // Remove a commit from the browsed branch's history (source-of-truth only),
     // replaying its descendants onto its parent. Rewrites local history.
@@ -3451,8 +3451,11 @@ private:
     QComboBox *m_insightsRangeCombo = nullptr; // activity time window selector
     QLabel *m_insightsActivityAxis = nullptr;  // "oldest <- ... -> newest" caption
     QPushButton *m_insightsRefreshButton = nullptr;
-    // Source Control panel (top of the Commits tab).
+    // Source Control panel (left side of the Commits tab).
+    static constexpr int kCommitWorkspaceChangesPage = 0;
+    static constexpr int kCommitWorkspaceCommitPage = 1;
     QWidget *m_scmPanel = nullptr;
+    QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
     QLineEdit *m_scmMessage = nullptr;
     QTextBrowser *m_scmDiff = nullptr;
