@@ -1,0 +1,840 @@
+From bbbb00a76e9565d7adf95ee9afab5458574e5842 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 7 Jul 2026 23:56:26 +0530
+Subject: [PATCH 1/4] feat: normalize docs feedback payloads
+
+---
+ cloudflare_worker/src/entry.py           |  41 ++++++++
+ cloudflare_worker/tests/test_feedback.py | 124 +++++++++++++++++++++++
+ 2 files changed, 165 insertions(+)
+ create mode 100644 cloudflare_worker/tests/test_feedback.py
+
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 22ec4c0c..ac709441 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -79,6 +79,15 @@ TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
+ TELEMETRY_KINDS = frozenset({"crash", "stall"})
+ # Private vulnerability reports: bounded so the open endpoint can't grow D1.
+ MAX_SECURITY_REPORTS = 1000
++# Anonymous website feedback from static pages. Bounded like telemetry and
++# install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
++MAX_FEEDBACK = 5000
++FEEDBACK_MAX_BODY = 16 * 1024
++FEEDBACK_MAX_MESSAGE = 2000
++FEEDBACK_MAX_PATH = 300
++FEEDBACK_MAX_USER_AGENT = 300
++FEEDBACK_SOURCES = frozenset({"docs"})
++FEEDBACK_VOTES = frozenset({"like", "dislike"})
+ MAX_FILES = 5000
+ # Issue inbox: a single signed event body is small text; cap it and the number
+ # of un-merged submissions a repo's inbox will hold.
+@@ -8314,6 +8323,38 @@ def _sanitize_diag_field(value, max_length=64):
+     return cleaned[:max_length]
+ 
+ 
++def _sanitize_feedback_text(value, max_length, allow_newlines=False):
++    if not isinstance(value, str):
++        value = "" if value is None else str(value)
++    allowed = []
++    for c in value:
++        if c == "\t":
++            allowed.append(c)
++        elif allow_newlines and c == "\n":
++            allowed.append(c)
++        elif c >= " " and c != "\x7f":
++            allowed.append(c)
++    return "".join(allowed).strip()[:max_length]
++
++
++def _feedback_fields(payload):
++    """Normalize a docs feedback payload into stored columns, or None."""
++    if not isinstance(payload, dict):
++        return None
++    source = _sanitize_feedback_text(payload.get("source"), 32).lower()
++    vote = _sanitize_feedback_text(payload.get("vote"), 16).lower()
++    if source not in FEEDBACK_SOURCES or vote not in FEEDBACK_VOTES:
++        return None
++    path = _sanitize_feedback_text(payload.get("path"), FEEDBACK_MAX_PATH)
++    if not path.startswith("/"):
++        path = "/"
++    message = ""
++    if vote == "dislike":
++        message = _sanitize_feedback_text(
++            payload.get("message"), FEEDBACK_MAX_MESSAGE, allow_newlines=True)
++    return source, vote, path, message
++
++
+ def _install_diag_fields(payload):
+     """Normalize a posted install-diag event into stored columns, or None.
+ 
+diff --git a/cloudflare_worker/tests/test_feedback.py b/cloudflare_worker/tests/test_feedback.py
+new file mode 100644
+index 00000000..d83befb0
+--- /dev/null
++++ b/cloudflare_worker/tests/test_feedback.py
+@@ -0,0 +1,124 @@
++#!/usr/bin/env python3
++"""Docs feedback validation and storage contract checks."""
++
++import ast
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++ENTRY = ROOT / "src" / "entry.py"
++SCHEMA = ROOT / "src" / "schema.py"
++MIGRATION = ROOT / "migrations" / "0026_feedback.sql"
++
++_WANT_FUNCS = ("_sanitize_feedback_text", "_feedback_fields")
++_WANT_CONSTS = (
++    "FEEDBACK_SOURCES",
++    "FEEDBACK_VOTES",
++    "FEEDBACK_MAX_MESSAGE",
++    "FEEDBACK_MAX_PATH",
++)
++
++
++def _load():
++    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
++    body = []
++    for node in tree.body:
++        if isinstance(node, ast.FunctionDef) and node.name in _WANT_FUNCS:
++            body.append(node)
++        elif isinstance(node, ast.Assign) and any(
++            isinstance(t, ast.Name) and t.id in _WANT_CONSTS
++            for t in node.targets
++        ):
++            body.append(node)
++    module = ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))
++    namespace = {}
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return namespace
++
++
++_NS = _load()
++_fields = _NS["_feedback_fields"]
++_sanitize = _NS["_sanitize_feedback_text"]
++MAX_MESSAGE = _NS["FEEDBACK_MAX_MESSAGE"]
++MAX_PATH = _NS["FEEDBACK_MAX_PATH"]
++
++
++def test_like_payload_is_normalized_without_message():
++    out = _fields({
++        "source": "docs",
++        "vote": "like",
++        "path": "/docs/",
++        "message": "ignored for likes",
++    })
++
++    assert out == ("docs", "like", "/docs/", "")
++
++
++def test_dislike_payload_accepts_optional_message():
++    out = _fields({
++        "source": "docs",
++        "vote": "dislike",
++        "path": "/docs/#install",
++        "message": "Install steps need screenshots.",
++    })
++
++    assert out == (
++        "docs",
++        "dislike",
++        "/docs/#install",
++        "Install steps need screenshots.",
++    )
++
++
++def test_dislike_payload_accepts_empty_message():
++    out = _fields({
++        "source": "docs",
++        "vote": "dislike",
++        "path": "/docs/",
++        "message": "",
++    })
++
++    assert out == ("docs", "dislike", "/docs/", "")
++
++
++def test_unknown_source_or_vote_is_rejected():
++    assert _fields({"source": "blog", "vote": "like", "path": "/docs/"}) is None
++    assert _fields({"source": "docs", "vote": "meh", "path": "/docs/"}) is None
++    assert _fields(None) is None
++    assert _fields([]) is None
++
++
++def test_path_defaults_to_root_when_missing_or_external():
++    assert _fields({"source": "docs", "vote": "like"}) == (
++        "docs",
++        "like",
++        "/",
++        "",
++    )
++    assert _fields({
++        "source": "docs",
++        "vote": "like",
++        "path": "https://example.com/docs",
++    }) == ("docs", "like", "/", "")
++
++
++def test_message_and_path_are_capped_and_control_scrubbed():
++    out = _fields({
++        "source": "docs",
++        "vote": "dislike",
++        "path": "/" + ("a" * (MAX_PATH + 50)),
++        "message": "line\x00one\x07\ttab\nnl" + ("x" * (MAX_MESSAGE + 50)),
++    })
++
++    assert out is not None
++    assert len(out[2]) <= MAX_PATH
++    assert len(out[3]) <= MAX_MESSAGE
++    assert "\x00" not in out[3]
++    assert "\x07" not in out[3]
++    assert "\t" in out[3]
++    assert "\n" in out[3]
++
++
++def test_feedback_text_sanitizer_handles_non_strings():
++    assert _sanitize(None, 20) == ""
++    assert _sanitize(12345, 20) == "12345"
+-- 
+2.50.1 (Apple Git-155)
+
+
+From f6f89b9df59241ca603c3cc9a9dd538cc7f1da15 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 7 Jul 2026 23:57:00 +0530
+Subject: [PATCH 2/4] feat: add feedback d1 schema
+
+---
+ .../migrations/0026_feedback.sql              | 18 +++++++++++++++
+ cloudflare_worker/src/schema.py               | 14 ++++++++++++
+ cloudflare_worker/tests/test_feedback.py      | 22 +++++++++++++++++++
+ 3 files changed, 54 insertions(+)
+ create mode 100644 cloudflare_worker/migrations/0026_feedback.sql
+
+diff --git a/cloudflare_worker/migrations/0026_feedback.sql b/cloudflare_worker/migrations/0026_feedback.sql
+new file mode 100644
+index 00000000..7a57ec70
+--- /dev/null
++++ b/cloudflare_worker/migrations/0026_feedback.sql
+@@ -0,0 +1,18 @@
++-- ForkMesh D1 migration 0026 - anonymous website feedback.
++-- One row per like/dislike click from static pages such as /docs.
++-- The worker stores a keyed blind index of the request IP when available, not
++-- the raw IP address. The table is bounded by MAX_FEEDBACK in feedback_handler.
++
++CREATE TABLE IF NOT EXISTS feedback (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    ts INTEGER NOT NULL,
++    source TEXT NOT NULL,
++    vote TEXT NOT NULL,
++    path TEXT NOT NULL,
++    message TEXT,
++    ip_hash TEXT,
++    user_agent TEXT
++);
++
++CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts);
++CREATE INDEX IF NOT EXISTS idx_feedback_source_vote ON feedback(source, vote, ts);
+diff --git a/cloudflare_worker/src/schema.py b/cloudflare_worker/src/schema.py
+index 482228e0..eb933cca 100644
+--- a/cloudflare_worker/src/schema.py
++++ b/cloudflare_worker/src/schema.py
+@@ -301,6 +301,20 @@ SCHEMA_STATEMENTS = [
+         ts INTEGER NOT NULL,
+         data TEXT NOT NULL)""",
+     "CREATE INDEX IF NOT EXISTS idx_security_reports_ts ON security_reports(ts)",
++    # Anonymous website feedback. One row per like/dislike click from static
++    # pages. `ip_hash` is a keyed blind index of the request IP when present,
++    # never the raw address. Bounded by MAX_FEEDBACK in feedback_handler.
++    """CREATE TABLE IF NOT EXISTS feedback (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        ts INTEGER NOT NULL,
++        source TEXT NOT NULL,
++        vote TEXT NOT NULL,
++        path TEXT NOT NULL,
++        message TEXT,
++        ip_hash TEXT,
++        user_agent TEXT)""",
++    "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)",
++    "CREATE INDEX IF NOT EXISTS idx_feedback_source_vote ON feedback(source, vote, ts)",
+     # Public /status page (30-day history per system). A per-minute cron folds
+     # one health check per system into today's UTC-day bucket; checks/failures
+     # let the page compute an uptime percentage per day without storing every
+diff --git a/cloudflare_worker/tests/test_feedback.py b/cloudflare_worker/tests/test_feedback.py
+index d83befb0..d113556e 100644
+--- a/cloudflare_worker/tests/test_feedback.py
++++ b/cloudflare_worker/tests/test_feedback.py
+@@ -122,3 +122,25 @@ def test_message_and_path_are_capped_and_control_scrubbed():
+ def test_feedback_text_sanitizer_handles_non_strings():
+     assert _sanitize(None, 20) == ""
+     assert _sanitize(12345, 20) == "12345"
++
++
++def test_feedback_table_is_defined_in_lazy_schema():
++    schema_text = SCHEMA.read_text(encoding="utf-8")
++
++    assert "CREATE TABLE IF NOT EXISTS feedback" in schema_text
++    assert "ip_hash TEXT" in schema_text
++    assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in schema_text
++    assert (
++        "CREATE INDEX IF NOT EXISTS idx_feedback_source_vote "
++        "ON feedback(source, vote, ts)"
++    ) in schema_text
++
++
++def test_feedback_migration_file_exists_with_matching_schema():
++    assert MIGRATION.exists()
++    text = MIGRATION.read_text(encoding="utf-8")
++
++    assert "CREATE TABLE IF NOT EXISTS feedback" in text
++    assert "ip_hash TEXT" in text
++    assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in text
++    assert "idx_feedback_source_vote" in text
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 61eff49a93e99368f9a6bd65cdcc1f2474705df1 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 7 Jul 2026 23:57:34 +0530
+Subject: [PATCH 3/4] feat: add docs feedback endpoint
+
+---
+ cloudflare_worker/src/entry.py           | 59 ++++++++++++++++++++++++
+ cloudflare_worker/tests/test_feedback.py | 22 +++++++++
+ 2 files changed, 81 insertions(+)
+
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index ac709441..5a56132b 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -8513,6 +8513,61 @@ async def telemetry_handler(env, request):
+     return json_response({"ok": True}, cache_control="no-store")
+ 
+ 
++async def feedback_handler(env, request):
++    # Anonymous website feedback from static pages. This is intentionally
++    # unauthenticated: the goal is click-level docs usefulness tracking, not user
++    # identity. The body is capped before JSON parsing and the table is pruned
++    # after inserts so this open endpoint cannot grow D1 without limit.
++    if method_name(request) != "POST":
++        return json_response({"error": "method_not_allowed"}, status=405)
++    try:
++        raw = await request.text()
++    except Exception:
++        raw = ""
++    if len(raw) > FEEDBACK_MAX_BODY:
++        return json_response({"error": "payload_too_large"}, status=413,
++                             cache_control="no-store")
++    try:
++        payload = json.loads(raw) if raw else None
++    except Exception:
++        payload = None
++    fields = _feedback_fields(payload)
++    if not fields:
++        return json_response({"error": "invalid_feedback"}, status=400,
++                             cache_control="no-store")
++
++    source, vote, path, message = fields
++    try:
++        headers = request.headers
++    except Exception:
++        headers = {}
++    ip = (headers.get("cf-connecting-ip") or "").strip()
++    if not ip:
++        fwd = (headers.get("x-forwarded-for") or "").strip()
++        ip = fwd.split(",")[0].strip() if fwd else ""
++    ip = ip[:64]
++    user_agent = _sanitize_feedback_text(
++        headers.get("user-agent") or "", FEEDBACK_MAX_USER_AGENT)
++    try:
++        await ensure_schema(env)
++        ip_hash = await blind_index(env, ip) if ip else ""
++        await d1_run(
++            env,
++            """INSERT INTO feedback (ts, source, vote, path, message, ip_hash, user_agent)
++               VALUES (?,?,?,?,?,?,?)""",
++            int(Date.now()), source, vote, path, message, ip_hash, user_agent,
++        )
++        await d1_run(
++            env,
++            """DELETE FROM feedback WHERE id NOT IN
++               (SELECT id FROM feedback ORDER BY id DESC LIMIT ?)""",
++            MAX_FEEDBACK,
++        )
++    except Exception:
++        pass
++    return json_response({"ok": True}, cache_control="no-store")
++
++
+ def _validate_security_report(payload):
+     """Validate and sanitize a vulnerability report payload. Pure (no I/O).
+ 
+@@ -9877,6 +9932,10 @@ class Default(WorkerEntrypoint):
+         if url.path in ("/api/telemetry", "/api/telemetry/"):
+             return await telemetry_handler(self.env, request)
+ 
++        # Anonymous docs/page feedback: like/dislike clicks with optional text.
++        if url.path in ("/api/feedback", "/api/feedback/"):
++            return await feedback_handler(self.env, request)
++
+         # Private vulnerability reports — stored encrypted, emailed to security@.
+         if url.path in ("/api/security/report", "/api/security/report/"):
+             return await security_report_handler(self.env, request)
+diff --git a/cloudflare_worker/tests/test_feedback.py b/cloudflare_worker/tests/test_feedback.py
+index d113556e..40b5c6e8 100644
+--- a/cloudflare_worker/tests/test_feedback.py
++++ b/cloudflare_worker/tests/test_feedback.py
+@@ -144,3 +144,25 @@ def test_feedback_migration_file_exists_with_matching_schema():
+     assert "ip_hash TEXT" in text
+     assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in text
+     assert "idx_feedback_source_vote" in text
++
++
++def test_feedback_endpoint_is_registered():
++    entry_text = ENTRY.read_text(encoding="utf-8")
++
++    assert 'if url.path in ("/api/feedback", "/api/feedback/"):' in entry_text
++    assert "return await feedback_handler(self.env, request)" in entry_text
++
++
++def test_feedback_handler_hashes_ip_and_never_stores_raw_ip():
++    entry_text = ENTRY.read_text(encoding="utf-8")
++
++    assert "async def feedback_handler(env, request):" in entry_text
++    assert 'headers.get("cf-connecting-ip")' in entry_text
++    assert 'headers.get("x-forwarded-for")' in entry_text
++    assert "ip_hash = await blind_index(env, ip) if ip else \"\"" in entry_text
++    assert (
++        "INSERT INTO feedback "
++        "(ts, source, vote, path, message, ip_hash, user_agent)"
++    ) in entry_text
++    assert "VALUES (?,?,?,?,?,?,?)" in entry_text
++    assert "DELETE FROM feedback WHERE id NOT IN" in entry_text
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 92abe416802e37b64cdee4b24ea49d40cbee7ceb Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 7 Jul 2026 23:58:13 +0530
+Subject: [PATCH 4/4] feat: wire docs feedback ui
+
+---
+ cloudflare_worker/public/docs.html            | 151 +++++++++++++++++-
+ cloudflare_worker/public/docs/index.html      | 151 +++++++++++++++++-
+ cloudflare_worker/tests/test_docs_frontend.py |  20 +++
+ 3 files changed, 320 insertions(+), 2 deletions(-)
+
+diff --git a/cloudflare_worker/public/docs.html b/cloudflare_worker/public/docs.html
+index 0e6cfcb2..6bc6f7b2 100644
+--- a/cloudflare_worker/public/docs.html
++++ b/cloudflare_worker/public/docs.html
+@@ -1041,13 +1041,17 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+         <section
+           class="mt-20 flex flex-wrap items-center justify-between gap-5 border-t border-[var(--docs-line)] pt-10"
+         >
+-          <p class="text-[0.95rem] font-semibold text-[var(--docs-muted)]">
++          <p
++            class="text-[0.95rem] font-semibold text-[var(--docs-muted)]"
++            data-feedback-status
++          >
+             Was this page helpful?
+           </p>
+           <div class="flex gap-3">
+             <button
+               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
+               type="button"
++              data-feedback-like
+             >
+               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                 <path d="M7 10v11"></path>
+@@ -1061,6 +1065,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+             <button
+               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
+               type="button"
++              data-feedback-dislike
+             >
+               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                 <path d="M17 14V3"></path>
+@@ -1160,6 +1165,66 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+       </aside>
+     </main>
+ 
++    <div
++      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/45 px-4 py-6"
++      data-feedback-modal
++      role="dialog"
++      aria-modal="true"
++      aria-labelledby="feedback-modal-title"
++    >
++      <div class="absolute inset-0" data-feedback-close aria-hidden="true"></div>
++      <form
++        class="relative w-full max-w-md rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] p-5 shadow-2xl"
++        data-feedback-form
++      >
++        <div class="flex items-start justify-between gap-4">
++          <div>
++            <h2
++              class="text-[1.1rem] font-black text-[var(--docs-fg)]"
++              id="feedback-modal-title"
++            >
++              What was confusing, missing, or could be improved?
++            </h2>
++            <p class="mt-2 text-sm font-semibold text-[var(--docs-muted)]">
++              Optional, but useful for improving the docs.
++            </p>
++          </div>
++          <button
++            class="icon-button -mr-2 -mt-2"
++            type="button"
++            data-feedback-close
++            aria-label="Close feedback"
++          >
++            <svg viewBox="0 0 24 24" aria-hidden="true">
++              <path d="M18 6 6 18"></path>
++              <path d="m6 6 12 12"></path>
++            </svg>
++          </button>
++        </div>
++        <textarea
++          class="mt-4 min-h-32 w-full resize-y rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-bg)] p-3 text-sm font-semibold text-[var(--docs-fg)] outline-none focus:border-[var(--docs-fg)]"
++          data-feedback-message
++          maxlength="2000"
++          placeholder="Tell us what would have helped."
++        ></textarea>
++        <div class="mt-4 flex justify-end gap-3">
++          <button
++            class="inline-flex h-10 items-center rounded-2xl border border-[var(--docs-line-strong)] px-4 text-sm font-bold text-[var(--docs-muted)]"
++            type="button"
++            data-feedback-close
++          >
++            Cancel
++          </button>
++          <button
++            class="inline-flex h-10 items-center rounded-2xl bg-[var(--docs-button)] px-4 text-sm font-bold text-[var(--docs-button-fg)]"
++            type="submit"
++          >
++            Send feedback
++          </button>
++        </div>
++      </form>
++    </div>
++
+     <script>
+       (() => {
+         function applyTheme(mode) {
+@@ -1329,6 +1394,90 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+             }, 1400);
+           });
+         }
++
++        const feedbackLike = document.querySelector("[data-feedback-like]");
++        const feedbackDislike = document.querySelector(
++          "[data-feedback-dislike]",
++        );
++        const feedbackStatus = document.querySelector("[data-feedback-status]");
++        const feedbackModal = document.querySelector("[data-feedback-modal]");
++        const feedbackForm = document.querySelector("[data-feedback-form]");
++        const feedbackMessage = document.querySelector(
++          "[data-feedback-message]",
++        );
++        const feedbackCloseButtons = document.querySelectorAll(
++          "[data-feedback-close]",
++        );
++
++        function setFeedbackStatus(message) {
++          if (feedbackStatus) feedbackStatus.textContent = message;
++        }
++
++        function setFeedbackDisabled(disabled) {
++          [feedbackLike, feedbackDislike].forEach((button) => {
++            if (button) button.disabled = disabled;
++          });
++        }
++
++        function setFeedbackModal(open) {
++          if (!feedbackModal) return;
++          feedbackModal.classList.toggle("hidden", !open);
++          feedbackModal.classList.toggle("flex", open);
++          if (open && feedbackMessage) feedbackMessage.focus();
++        }
++
++        async function submitFeedback({ vote, message = "" }) {
++          setFeedbackDisabled(true);
++          try {
++            const response = await fetch("/api/feedback", {
++              method: "POST",
++              headers: { "content-type": "application/json" },
++              body: JSON.stringify({
++                source: "docs",
++                vote,
++                path: window.location.pathname + window.location.hash,
++                message,
++              }),
++              keepalive: true,
++            });
++            if (!response.ok) throw new Error("feedback failed");
++            setFeedbackStatus("Thanks for the feedback.");
++            setFeedbackModal(false);
++          } catch (error) {
++            setFeedbackStatus("Was this page helpful?");
++            setFeedbackDisabled(false);
++          }
++        }
++
++        if (feedbackLike) {
++          feedbackLike.addEventListener("click", () => {
++            submitFeedback({ vote: "like" });
++          });
++        }
++
++        if (feedbackDislike) {
++          feedbackDislike.addEventListener("click", () => {
++            setFeedbackModal(true);
++          });
++        }
++
++        if (feedbackForm) {
++          feedbackForm.addEventListener("submit", (event) => {
++            event.preventDefault();
++            submitFeedback({
++              vote: "dislike",
++              message: feedbackMessage ? feedbackMessage.value : "",
++            });
++          });
++        }
++
++        feedbackCloseButtons.forEach((button) => {
++          button.addEventListener("click", () => setFeedbackModal(false));
++        });
++
++        document.addEventListener("keydown", (event) => {
++          if (event.key === "Escape") setFeedbackModal(false);
++        });
+       })();
+     </script>
+   </body>
+diff --git a/cloudflare_worker/public/docs/index.html b/cloudflare_worker/public/docs/index.html
+index 0e6cfcb2..6bc6f7b2 100644
+--- a/cloudflare_worker/public/docs/index.html
++++ b/cloudflare_worker/public/docs/index.html
+@@ -1041,13 +1041,17 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+         <section
+           class="mt-20 flex flex-wrap items-center justify-between gap-5 border-t border-[var(--docs-line)] pt-10"
+         >
+-          <p class="text-[0.95rem] font-semibold text-[var(--docs-muted)]">
++          <p
++            class="text-[0.95rem] font-semibold text-[var(--docs-muted)]"
++            data-feedback-status
++          >
+             Was this page helpful?
+           </p>
+           <div class="flex gap-3">
+             <button
+               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
+               type="button"
++              data-feedback-like
+             >
+               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                 <path d="M7 10v11"></path>
+@@ -1061,6 +1065,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+             <button
+               class="inline-flex h-10 items-center gap-2 rounded-2xl border border-[var(--docs-line-strong)] px-4 text-[0.95rem] font-bold text-[var(--docs-muted)]"
+               type="button"
++              data-feedback-dislike
+             >
+               <svg class="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+                 <path d="M17 14V3"></path>
+@@ -1160,6 +1165,66 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+       </aside>
+     </main>
+ 
++    <div
++      class="fixed inset-0 z-50 hidden items-center justify-center bg-black/45 px-4 py-6"
++      data-feedback-modal
++      role="dialog"
++      aria-modal="true"
++      aria-labelledby="feedback-modal-title"
++    >
++      <div class="absolute inset-0" data-feedback-close aria-hidden="true"></div>
++      <form
++        class="relative w-full max-w-md rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] p-5 shadow-2xl"
++        data-feedback-form
++      >
++        <div class="flex items-start justify-between gap-4">
++          <div>
++            <h2
++              class="text-[1.1rem] font-black text-[var(--docs-fg)]"
++              id="feedback-modal-title"
++            >
++              What was confusing, missing, or could be improved?
++            </h2>
++            <p class="mt-2 text-sm font-semibold text-[var(--docs-muted)]">
++              Optional, but useful for improving the docs.
++            </p>
++          </div>
++          <button
++            class="icon-button -mr-2 -mt-2"
++            type="button"
++            data-feedback-close
++            aria-label="Close feedback"
++          >
++            <svg viewBox="0 0 24 24" aria-hidden="true">
++              <path d="M18 6 6 18"></path>
++              <path d="m6 6 12 12"></path>
++            </svg>
++          </button>
++        </div>
++        <textarea
++          class="mt-4 min-h-32 w-full resize-y rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-bg)] p-3 text-sm font-semibold text-[var(--docs-fg)] outline-none focus:border-[var(--docs-fg)]"
++          data-feedback-message
++          maxlength="2000"
++          placeholder="Tell us what would have helped."
++        ></textarea>
++        <div class="mt-4 flex justify-end gap-3">
++          <button
++            class="inline-flex h-10 items-center rounded-2xl border border-[var(--docs-line-strong)] px-4 text-sm font-bold text-[var(--docs-muted)]"
++            type="button"
++            data-feedback-close
++          >
++            Cancel
++          </button>
++          <button
++            class="inline-flex h-10 items-center rounded-2xl bg-[var(--docs-button)] px-4 text-sm font-bold text-[var(--docs-button-fg)]"
++            type="submit"
++          >
++            Send feedback
++          </button>
++        </div>
++      </form>
++    </div>
++
+     <script>
+       (() => {
+         function applyTheme(mode) {
+@@ -1329,6 +1394,90 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+             }, 1400);
+           });
+         }
++
++        const feedbackLike = document.querySelector("[data-feedback-like]");
++        const feedbackDislike = document.querySelector(
++          "[data-feedback-dislike]",
++        );
++        const feedbackStatus = document.querySelector("[data-feedback-status]");
++        const feedbackModal = document.querySelector("[data-feedback-modal]");
++        const feedbackForm = document.querySelector("[data-feedback-form]");
++        const feedbackMessage = document.querySelector(
++          "[data-feedback-message]",
++        );
++        const feedbackCloseButtons = document.querySelectorAll(
++          "[data-feedback-close]",
++        );
++
++        function setFeedbackStatus(message) {
++          if (feedbackStatus) feedbackStatus.textContent = message;
++        }
++
++        function setFeedbackDisabled(disabled) {
++          [feedbackLike, feedbackDislike].forEach((button) => {
++            if (button) button.disabled = disabled;
++          });
++        }
++
++        function setFeedbackModal(open) {
++          if (!feedbackModal) return;
++          feedbackModal.classList.toggle("hidden", !open);
++          feedbackModal.classList.toggle("flex", open);
++          if (open && feedbackMessage) feedbackMessage.focus();
++        }
++
++        async function submitFeedback({ vote, message = "" }) {
++          setFeedbackDisabled(true);
++          try {
++            const response = await fetch("/api/feedback", {
++              method: "POST",
++              headers: { "content-type": "application/json" },
++              body: JSON.stringify({
++                source: "docs",
++                vote,
++                path: window.location.pathname + window.location.hash,
++                message,
++              }),
++              keepalive: true,
++            });
++            if (!response.ok) throw new Error("feedback failed");
++            setFeedbackStatus("Thanks for the feedback.");
++            setFeedbackModal(false);
++          } catch (error) {
++            setFeedbackStatus("Was this page helpful?");
++            setFeedbackDisabled(false);
++          }
++        }
++
++        if (feedbackLike) {
++          feedbackLike.addEventListener("click", () => {
++            submitFeedback({ vote: "like" });
++          });
++        }
++
++        if (feedbackDislike) {
++          feedbackDislike.addEventListener("click", () => {
++            setFeedbackModal(true);
++          });
++        }
++
++        if (feedbackForm) {
++          feedbackForm.addEventListener("submit", (event) => {
++            event.preventDefault();
++            submitFeedback({
++              vote: "dislike",
++              message: feedbackMessage ? feedbackMessage.value : "",
++            });
++          });
++        }
++
++        feedbackCloseButtons.forEach((button) => {
++          button.addEventListener("click", () => setFeedbackModal(false));
++        });
++
++        document.addEventListener("keydown", (event) => {
++          if (event.key === "Escape") setFeedbackModal(false);
++        });
+       })();
+     </script>
+   </body>
+diff --git a/cloudflare_worker/tests/test_docs_frontend.py b/cloudflare_worker/tests/test_docs_frontend.py
+index a57bc610..bcd31f93 100644
+--- a/cloudflare_worker/tests/test_docs_frontend.py
++++ b/cloudflare_worker/tests/test_docs_frontend.py
+@@ -124,3 +124,23 @@ def test_docs_logo_keeps_same_pixels_across_theme_modes():
+ 
+         assert "html.dark .brand-mark" not in html
+         assert "filter: invert" not in html
++
++
++def test_docs_pages_wire_helpfulness_feedback():
++    for page in DOCS_PAGES:
++        html = _read(page)
++
++        for marker in (
++            "data-feedback-like",
++            "data-feedback-dislike",
++            "data-feedback-status",
++            "data-feedback-modal",
++            "data-feedback-form",
++            "data-feedback-message",
++            "What was confusing, missing, or could be improved?",
++            'fetch("/api/feedback"',
++            'source: "docs"',
++            'vote: "like"',
++            'vote: "dislike"',
++        ):
++            assert marker in html
+-- 
+2.50.1 (Apple Git-155)
+
