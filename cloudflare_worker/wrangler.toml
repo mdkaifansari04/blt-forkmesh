@@ -122,7 +122,7 @@ class_name = "ForkMeshHost"
 [[d1_databases]]
 binding = "DB"
 database_name = "forkmesh"
-database_id = "54bb594f-a90c-4794-a8ea-7ad0cc9bff83"
+database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
 migrations_dir = "migrations"
 
 # Separate D1 database for a "dev" environment (`pywrangler dev --env dev` /
