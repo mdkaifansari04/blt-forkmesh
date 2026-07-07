@@ -12,6 +12,7 @@
       title: "Company",
       links: [
         { href: "/about", label: "About" },
+        { href: "/press", label: "Press" },
         { href: "/careers", label: "Careers" },
         { href: "/changelog", label: "Changelog" },
         { href: "/terms", label: "Terms" },
