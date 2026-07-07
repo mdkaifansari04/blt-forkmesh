@@ -154,6 +154,19 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
     assert "forkmesh_session=; Path=/; Max-Age=0" in dashboard_js
 
 
+def test_dashboard_repository_list_has_loading_state_before_empty_filter():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "Loading repositories from an online node..." in dashboard
+    assert "repositoriesLoading: true" in dashboard_js
+    assert "if (state.repositoriesLoading)" in dashboard_js
+    assert "Loading repositories from an online node..." in dashboard_js
+    assert "No repositories match this filter." in dashboard_js
+    assert dashboard_js.index("if (state.repositoriesLoading)") < \
+        dashboard_js.index("No repositories match this filter.")
+
+
 def test_dashboard_profile_page_removes_secondary_profile_picture_card():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
