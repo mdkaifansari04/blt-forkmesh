@@ -1,34 +1,45 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 381,
-  "title": "allow pasting in images from the prompt",
-  "status": "open",
-  "labels": [
-    "feature"
-  ],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783197573314,
-  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-  "authorName": "newnewnode",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-381",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1783197573314,
-      "title": "allow pasting in images from the prompt",
-      "body": "",
-      "attachments": [],
-      "sig": "iNqvN176I7DHpa6s2KQfFByfROd76HmZHT3rUm5tvs8pz3gEVhUnOXfn12EtAqaaah5zrM2B6OuNPvbVvns0Ag"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783197573314
+    "assignees": [
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783197573314,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "",
+            "id": "open-381",
+            "sig": "iNqvN176I7DHpa6s2KQfFByfROd76HmZHT3rUm5tvs8pz3gEVhUnOXfn12EtAqaaah5zrM2B6OuNPvbVvns0Ag",
+            "title": "allow pasting in images from the prompt",
+            "ts": 1783197573314,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3ac95693-5a79-436f-a31c-e016c2d1c225",
+            "sig": "TGUK_cV4cFirkiH00ty94bRUeSzv37bCytbDuCn02EIj6fO_d3LluWHx5789vW4Bc__PPxt7Y3KiXci3sRLGAQ",
+            "status": "closed",
+            "ts": 1783462403685,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "",
+    "number": 381,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "allow pasting in images from the prompt",
+    "updatedAt": 1783462403685,
+    "votes": 0
 }
