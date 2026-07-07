@@ -498,6 +498,17 @@ def test_dashboard_repository_view_toggle_is_wired_in_composed_bundle():
     assert '$$("[data-view-mode]").forEach((button) => {' in dashboard_js
 
 
+def test_dashboard_repository_grid_cards_keep_reviewable_width():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    grid_styles = dashboard[
+        dashboard.index(".repo-list.grid-mode {")
+        : dashboard.index(".repo-list.grid-mode .repo-card")
+    ]
+
+    assert "minmax(280px, 1fr)" not in grid_styles
+    assert "minmax(22rem, 1fr)" in grid_styles
+
+
 def test_dashboard_repository_folder_icons_are_grey():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     tree_loader = dashboard_js[
