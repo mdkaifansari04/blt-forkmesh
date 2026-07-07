@@ -297,7 +297,10 @@ from events import (  # noqa: E402
 # the relay's ~1 MiB message cap.
 GIT_REQ_CHUNK = 256 * 1024
 TUNNEL_TIMEOUT_MS = 20000
+HOST_COUNT_TIMEOUT_MS = 5000
 GIT_TIMEOUT_MS = 60000
+GIT_ADVERTISE_TIMEOUT_MS = 15000
+GIT_ADVERTISE_ROUTE_TIMEOUT_MS = 20000
 # Most files one /blobs batch may read. One batched request replaces the
 # website's per-record /blob fan-out (50+ parallel HTTP calls per page view,
 # which tripped the per-repo rate limit); the DO spreads the reads over the
@@ -564,8 +567,11 @@ async def repo_live_host_count(env, owner, repo):
     try:
         host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = env.FORKMESH_HOST.get(host_id)
-        response = await host_object.fetch(
-            f"https://forkmesh.internal/api/repo/{owner}/{repo}/host"
+        response = await asyncio.wait_for(
+            host_object.fetch(
+                f"https://forkmesh.internal/api/repo/{owner}/{repo}/host"
+            ),
+            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
         )
         status = await response.json()
         hosts = (status.get("hosts", 0) if isinstance(status, dict)
@@ -1658,8 +1664,11 @@ async def install_source(env):
         try:
             host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/forkmesh")
             host_object = env.FORKMESH_HOST.get(host_id)
-            response = await host_object.fetch(
-                f"https://forkmesh.internal/api/repo/{owner}/forkmesh/host"
+            response = await asyncio.wait_for(
+                host_object.fetch(
+                    f"https://forkmesh.internal/api/repo/{owner}/forkmesh/host"
+                ),
+                timeout=HOST_COUNT_TIMEOUT_MS / 1000,
             )
             status = await response.json()
             # workers.Response.json() may cross the Python/JS boundary as either
@@ -10131,12 +10140,20 @@ class Default(WorkerEntrypoint):
             # because CAS bytes sync separately from git metadata.
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            response = await host_object.fetch(
-                await durable_object_request(request))
             try:
-                status = int(response.status)
+                response = await host_object.fetch(
+                    await durable_object_request(request))
+                try:
+                    status = int(response.status)
+                except Exception:
+                    status = 0
             except Exception:
-                status = 0
+                # A host DO can abort internally while streaming a CAS blob
+                # (Cloudflare surfaces this as pyodide.http.AbortError). Treat
+                # it like a transient 503 so the public release route still gets
+                # to try healthy mirrors instead of leaking the Worker traceback.
+                response = json_response({"error": "unavailable"}, status=503)
+                status = 503
             if status in (404, 502, 503, 504):
                 failed_release_nodes = [owner]
                 for _ in range(4):
@@ -10563,7 +10580,8 @@ class Default(WorkerEntrypoint):
         # Private repos clone only with an owner-key-signed view token carried in
         # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
         # supplies credentials from the clone URL or a credential helper.
-        if await _repo_is_private(self.env, owner, repo):
+        repo_private = await _repo_is_private(self.env, owner, repo)
+        if repo_private:
             if not await _basic_auth_view_ok(self.env, owner, repo, request):
                 return _basic_auth_challenge()
         else:
@@ -10599,7 +10617,9 @@ class Default(WorkerEntrypoint):
                 try:
                     return await self._forward_to_node(
                         request, url, src_repo, src_owner,
-                        "/%s/%s/%s" % (src_owner, src_repo, tail))
+                        "/%s/%s/%s" % (src_owner, src_repo, tail),
+                        timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
+                        if is_info else None)
                 except Exception:
                     # Best-effort: fall through to the normal route (which may
                     # still mirror-fallback) rather than take the request down.
@@ -10611,7 +10631,8 @@ class Default(WorkerEntrypoint):
                     try:
                         forwarded = await self._forward_to_node(
                             request, url, repo, serving,
-                            "/%s/%s/info/refs" % (serving, repo))
+                            "/%s/%s/info/refs" % (serving, repo),
+                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS)
                         fstatus = int(forwarded.status)
                     except Exception:
                         fstatus = 0
@@ -10630,7 +10651,9 @@ class Default(WorkerEntrypoint):
                     try:
                         return await self._forward_to_node(
                             request, url, repo, serving,
-                            "/%s/%s/%s" % (serving, repo, tail))
+                            "/%s/%s/%s" % (serving, repo, tail),
+                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
+                            if is_info else None)
                     except Exception:
                         # Best-effort: fall through to the named owner's route,
                         # which answers with git's clean "no host" advertisement
@@ -10654,18 +10677,25 @@ class Default(WorkerEntrypoint):
                         pass
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
-        response = await host_object.fetch(
-            await durable_object_request(request, include_body=not is_info))
+        try:
+            host_fetch = host_object.fetch(
+                await durable_object_request(request, include_body=not is_info))
+            if is_info:
+                response = await asyncio.wait_for(
+                    host_fetch, timeout=GIT_ADVERTISE_ROUTE_TIMEOUT_MS / 1000)
+            else:
+                response = await host_fetch
+        except Exception:
+            response = Response("Host timed out.", status=504)
         # The named source's host is connected but stalled answering the (small,
-        # idempotent) info/refs advertisement — GIT_TIMEOUT_MS elapses and its
-        # host DO returns 504. The upfront liveness check above sees the live
-        # WebSocket and never fails over, so the client's clone dead-ends. Retry
-        # the advertisement once from a live mirror and pin it (clone_sticky), so
-        # the paired upload-pack POST follows the same node. Only info/refs (a
-        # bodyless GET) is safe to replay this way; the POST body is already in
-        # flight, so it relies on the pin instead. Private repos are excluded —
-        # they never fall a clone over to a mirror.
-        if is_info and not await _repo_is_private(self.env, owner, repo):
+        # idempotent) info/refs advertisement. The route-level advertise timeout
+        # turns a hung host DO into a 504 before Workers cancels this fetch, then
+        # the retry below serves the advertisement from a live mirror and pins it
+        # (clone_sticky), so the paired upload-pack POST follows the same node.
+        # Only info/refs (a bodyless GET) is safe to replay this way; the POST
+        # body is already in flight, so it relies on the pin instead. Private
+        # repos are excluded — they never fall a clone over to a mirror.
+        if is_info and not repo_private:
             try:
                 status = int(response.status)
             except Exception:
@@ -10677,7 +10707,8 @@ class Default(WorkerEntrypoint):
                     try:
                         return await self._forward_to_node(
                             request, url, repo, serving,
-                            "/%s/%s/info/refs" % (serving, repo))
+                            "/%s/%s/info/refs" % (serving, repo),
+                            timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS)
                     except Exception:
                         pass
         return response
@@ -10712,8 +10743,12 @@ class Default(WorkerEntrypoint):
         try:
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            resp = await host_object.fetch(
-                "https://forkmesh.internal/api/repo/%s/%s/host" % (owner, repo))
+            resp = await asyncio.wait_for(
+                host_object.fetch(
+                    "https://forkmesh.internal/api/repo/%s/%s/host" % (
+                        owner, repo)),
+                timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+            )
             if int(getattr(resp, "status", 0) or 0) != 200:
                 return False
             data = await resp.json()
@@ -10786,7 +10821,8 @@ class Default(WorkerEntrypoint):
         except Exception:
             return None, None
 
-    async def _forward_to_node(self, request, url, repo, node, new_path):
+    async def _forward_to_node(self, request, url, repo, node, new_path,
+                               timeout_ms=None):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host
         # DO with the path rewritten into its namespace. The client never sees a
         # redirect — the mirror's bytes stream back on the URL that was asked
@@ -10808,14 +10844,18 @@ class Default(WorkerEntrypoint):
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{node}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         if method_name(request) != "POST":
-            return await host_object.fetch(target)
+            host_fetch = host_object.fetch(target)
+            if timeout_ms:
+                return await asyncio.wait_for(
+                    host_fetch, timeout=timeout_ms / 1000)
+            return await host_fetch
         body = bytes(await request.bytes())
         headers = {}
         for name in ("content-type", "content-encoding"):
             value = request.headers.get(name)
             if value:
                 headers[name] = value
-        return await host_object.fetch(JsRequest.new(target, to_js({
+        host_fetch = host_object.fetch(JsRequest.new(target, to_js({
             "method": "POST",
             "headers": headers,
             # Copy the body into a JS-owned buffer: a to_js view into Python's
@@ -10824,6 +10864,10 @@ class Default(WorkerEntrypoint):
             # held"), not an exception.
             "body": Uint8Array.new(_to_js(body)),
         })))
+        if timeout_ms:
+            return await asyncio.wait_for(
+                host_fetch, timeout=timeout_ms / 1000)
+        return await host_fetch
 
     async def _set_clone_pin(self, owner, repo, serving):
         try:
@@ -11964,7 +12008,9 @@ class ForkMeshHost(DurableObject):
             return Response("Host unavailable.", status=503)
 
         try:
-            result = await asyncio.wait_for(future, timeout=GIT_TIMEOUT_MS / 1000)
+            timeout_ms = (
+                GIT_ADVERTISE_TIMEOUT_MS if is_advertise else GIT_TIMEOUT_MS)
+            result = await asyncio.wait_for(future, timeout=timeout_ms / 1000)
         except Exception:
             self.pending.pop(req_id, None)
             self.git_buffers.pop(req_id, None)

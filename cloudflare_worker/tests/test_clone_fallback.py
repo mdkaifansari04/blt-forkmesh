@@ -387,6 +387,8 @@ def test_release_blob_route_retries_live_mirrors_before_failing_install():
     assert "_forward_to_node" in release
     assert "/api/repo/%s/%s/releases/blob/sha256/%s" in release
     assert "(404, 502, 503, 504)" in release
+    assert "except Exception:" in release
+    assert "json_response({'error': 'unavailable'}, status=503)" in release
 
 
 def test_select_browse_mirror_drops_the_excluded_node():
@@ -524,19 +526,21 @@ def test_public_clone_info_refs_round_robins_to_live_mirrors():
 
 
 def test_clone_falls_back_when_a_live_source_stalls_info_refs():
-    # A connected-but-stalled host answers info/refs with a 504 (GIT_TIMEOUT_MS
-    # elapses in its host DO). The upfront liveness check sees the live socket
-    # and never fails over, so without a post-fetch retry the clone dead-ends on
-    # exactly the reported "504 on /owner/repo/info/refs". _git_host must inspect
-    # the response status and, on 503/504 for the (idempotent, bodyless) info/refs
-    # GET, serve the advertisement from a live mirror and pin it so the paired
-    # upload-pack POST follows the same node.
+    # A connected-but-stalled host can hang the outer Worker fetch before the
+    # host DO's own timeout response comes back. _git_host must bound the
+    # bodyless info/refs fetch, treat timeout/abort as 504, then serve the
+    # advertisement from a live mirror and pin it so the paired upload-pack POST
+    # follows the same node.
     src = _worker_method_source("_git_host")
-    assert "response = await host_object.fetch(" in src
+    assert "host_fetch = host_object.fetch(" in src
     assert "durable_object_request(request, include_body=not is_info)" in src
+    assert "GIT_ADVERTISE_ROUTE_TIMEOUT_MS" in src
+    assert "asyncio.wait_for" in src
+    assert "Response('Host timed out.', status=504)" in src
     assert "response.status" in src
     assert "(503, 504)" in src
     assert "is_info" in src
+    assert "repo_private" in src
     assert "_fresh_clone_pin" in src  # POST follows the mirror info/refs pinned
     assert "return response" in src   # normal path still returns the source's reply
 
@@ -575,8 +579,10 @@ def test_forward_to_node_serves_through_the_original_url():
     # the isolate (Cloudflare error 1101) on every forwarded browse/clone.
     src = _worker_method_source("_forward_to_node")
     assert "host:{node}/{repo}" in src
+    assert "timeout_ms=None" in src
     assert "url.query" in src
     assert "host_object.fetch(target)" in src        # GET: bare URL string
+    assert "asyncio.wait_for" in src                 # bounded advertise hops
     assert "JsRequest.new(target, request)" not in src
     assert "to_js" in src and "'body'" in src        # POST: primitive init dict
     assert "content-encoding" in src                 # DO decodes the pack body
@@ -601,6 +607,8 @@ def test_source_has_live_host_probes_the_host_do_not_presence():
     # the clone.
     src = _worker_method_source("_source_has_live_host")
     assert "/host" in src
+    assert "asyncio.wait_for" in src
+    assert "HOST_COUNT_TIMEOUT_MS" in src
     assert '"hosts"' in src or "'hosts'" in src
     assert "return False" in src  # fail-closed on any error/non-200
 
