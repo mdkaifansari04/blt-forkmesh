@@ -562,7 +562,7 @@ case "${1:-deploy}" in
         pywrangler deploy --env "" --var "BUILD_REV:${BUILD_REV}" --var "APP_VERSION:${APP_VERSION}"
         # Secrets are set after the Worker exists; unlike plaintext vars they
         # survive this and future deploys, so the admin dashboard keeps working.
-        # push_secrets
+        push_secrets
         # Prove the public origin is actually serving what we just uploaded. A
         # failed/no-op/wrong-account deploy now aborts here instead of printing a
         # phantom success.
