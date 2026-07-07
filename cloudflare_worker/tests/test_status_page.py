@@ -585,10 +585,15 @@ def test_status_page_names_cloudflare_rate_limiting_on_429():
     assert "Rate limited by Cloudflare" in render
     assert "not an outage" in render
     assert "resets automatically" in render
-    # The 429 banner uses the outage styling, and other fetch failures keep
-    # the generic message.
+    # The 429 banner uses the outage styling, and other fetch failures show
+    # their actual HTTP/content/body details instead of a generic message.
     assert 'banner.classList.add("is-down");' in render
-    assert "Status unavailable right now." in render
+    assert "Status unavailable right now." not in render
+    assert "failedStatusDetail" in render
+    assert "Status API unavailable" in render
+    assert "Content-Type:" in status_html
+    assert "Body:" in status_html
+    assert "escapeHtml(issue.detail)" in render
 
 
 def test_migration_file_matches_worker_schema():

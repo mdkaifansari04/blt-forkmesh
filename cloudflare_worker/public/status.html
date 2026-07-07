@@ -145,6 +145,47 @@
           future: "Not yet elapsed",
         };
 
+        function escapeHtml(value) {
+          return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          })[ch]);
+        }
+
+        function normalizeBodySnippet(text) {
+          return String(text || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 500);
+        }
+
+        async function failedStatusDetail(res, error) {
+          if (!res) {
+            return {
+              title: "Status API request failed.",
+              detail: error?.message || "The browser could not reach /api/status.",
+            };
+          }
+          const contentType = res.headers.get("content-type") || "unknown content type";
+          let body = "";
+          try {
+            body = normalizeBodySnippet(await res.text());
+          } catch (bodyError) {
+            body = "Could not read response body: " + (bodyError?.message || bodyError);
+          }
+          const statusLine = "HTTP " + res.status + " " + (res.statusText || "").trim();
+          const reason = res.ok
+            ? "The status API returned a response, but the page could not parse it as JSON."
+            : "The status API returned a non-OK response.";
+          return {
+            title: statusLine.trim(),
+            detail: reason + " Content-Type: " + contentType + (body ? ". Body: " + body : ". No response body."),
+          };
+        }
+
         function hourTooltip(dayTs, hour) {
           const when = fmtDay(dayTs) + ", " + fmtHourRange(hour.hourTs);
           const label = HOUR_STATUS_LABEL[hour.status] || "No data";
@@ -166,14 +207,20 @@
         async function render() {
           let data;
           let rateLimited = false;
+          let failedResponse = null;
+          let failedError = null;
           try {
             const res = await fetch("/api/status", {
               headers: { accept: "application/json" },
             });
+            failedResponse = typeof res.clone === "function" ? res.clone() : res;
             if (res.status === 429) rateLimited = true;
-            if (!res.ok) throw new Error("HTTP " + res.status);
+            if (!res.ok) {
+              throw new Error("HTTP " + res.status);
+            }
             data = await res.json();
-          } catch (_) {
+          } catch (error) {
+            failedError = error;
             banner.classList.remove("is-operational", "is-degraded");
             if (rateLimited) {
               banner.classList.add("is-down");
@@ -183,9 +230,14 @@
               list.innerHTML =
                 '<div class="status-empty">Status data is temporarily unavailable because Cloudflare is rate limiting requests to forkmesh.com.</div>';
             } else {
-              bannerText.textContent = "Status unavailable right now.";
+              banner.classList.add("is-down");
+              const issue = await failedStatusDetail(failedResponse, failedError);
+              bannerText.textContent = "Status API unavailable";
+              bannerSub.textContent = issue.title + " — " + issue.detail;
               list.innerHTML =
-                '<div class="status-empty">Could not load status data.</div>';
+                '<div class="status-empty"><strong>Status data could not load.</strong><br>' +
+                escapeHtml(issue.title) + '<br>' + escapeHtml(issue.detail) +
+                '</div>';
             }
             return;
           }
