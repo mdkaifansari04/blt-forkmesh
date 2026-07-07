@@ -1929,7 +1929,7 @@ private:
     // Download the next missing release blob in `pending` (hash -> "owner/name" to
     // pull it from) from the relay's public content-addressed route, verify its
     // sha256, store it in the mirror's release CAS, then recurse to the rest.
-    void downloadNextReleaseBlob(const QString &mirrorPath,
+    void downloadNextReleaseBlob(int index, const QString &mirrorPath,
                                  QMap<QString, QString> pending);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
