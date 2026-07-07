@@ -20,6 +20,7 @@ ACTION_RUNNER_CPP = ROOT.parent / "qt_client" / "src" / "ActionRunner.cpp"
 ACTION_RUNNER_H = ROOT.parent / "qt_client" / "src" / "ActionRunner.h"
 CRASH_HANDLER_CPP = ROOT.parent / "qt_client" / "src" / "CrashHandler.cpp"
 CRASH_HANDLER_H = ROOT.parent / "qt_client" / "src" / "CrashHandler.h"
+HEADLESS_CONSOLE_CPP = ROOT.parent / "qt_client" / "src" / "HeadlessConsole.cpp"
 MAIN_WINDOW_INTERNAL_H = ROOT.parent / "qt_client" / "src" / "MainWindowInternal.h"
 MAIN_WINDOW_CPP = ROOT.parent / "qt_client" / "src" / "MainWindow.cpp"
 MAIN_WINDOW_H = ROOT.parent / "qt_client" / "src" / "MainWindow.h"
@@ -35,6 +36,7 @@ ACTION_RUNNER_CPP_TEXT = ACTION_RUNNER_CPP.read_text(encoding="utf-8")
 ACTION_RUNNER_H_TEXT = ACTION_RUNNER_H.read_text(encoding="utf-8")
 CRASH_HANDLER_CPP_TEXT = CRASH_HANDLER_CPP.read_text(encoding="utf-8")
 CRASH_HANDLER_H_TEXT = CRASH_HANDLER_H.read_text(encoding="utf-8")
+HEADLESS_CONSOLE_CPP_TEXT = HEADLESS_CONSOLE_CPP.read_text(encoding="utf-8")
 MAIN_WINDOW_INTERNAL_H_TEXT = MAIN_WINDOW_INTERNAL_H.read_text(encoding="utf-8")
 MAIN_WINDOW_CPP_TEXT = MAIN_WINDOW_CPP.read_text(encoding="utf-8")
 MAIN_WINDOW_H_TEXT = MAIN_WINDOW_H.read_text(encoding="utf-8")
@@ -287,6 +289,19 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "bool m_processOutputTruncated = false;" in ACTION_RUNNER_H_TEXT
     assert "g_crashContext" in CRASH_HANDLER_CPP_TEXT
     assert "safeWriteCrashContext()" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGTERM (terminated)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGINT (interrupt)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGHUP (hangup)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGQUIT (quit)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGXCPU (CPU time limit exceeded)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGXFSZ (file size limit exceeded)" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGTERM, SIGINT" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGKILL or SIGSTOP" in CRASH_HANDLER_CPP_TEXT
+    assert "SIGINT/SIGTERM stay owned by CrashHandler" in HEADLESS_CONSOLE_CPP_TEXT
+    assert "::sigaction(SIGTERM" not in HEADLESS_CONSOLE_CPP_TEXT
+    assert "::sigaction(SIGINT" not in HEADLESS_CONSOLE_CPP_TEXT
+    assert "appendDiagnosticToMainLog" in CRASH_HANDLER_CPP_TEXT
+    assert "network_log.txt" in CRASH_HANDLER_CPP_TEXT
     assert "void setCrashContext(const QString &context)" in CRASH_HANDLER_H_TEXT
     assert "void logDiagnosticEvent(const QString &context, const QString &details)" in CRASH_HANDLER_H_TEXT
     assert "displaySafePlainLog" in MAIN_WINDOW_INTERNAL_H_TEXT
@@ -300,6 +315,18 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "MainWindow teardown" in MAIN_WINDOW_CPP_TEXT
     assert "QObject::disconnect(view, nullptr, this, nullptr)" in MAIN_WINDOW_CPP_TEXT
     assert "m_diffViews.clear();" in MAIN_WINDOW_CPP_TEXT
+    assert "INTERRUPTED: ForkMesh exited while this " in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "run was still running" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "actionRunLogPath(const ActionRun &run)" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "Run log: %7" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "void MainWindow::refreshCommitBarStatusGlyph()" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "void MainWindow::refreshCommitTableStatusGlyphs()" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "refreshCommitBarStatusGlyph();" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "refreshCommitTableStatusGlyphs();" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "m_commitBarStatusHash" in MAIN_WINDOW_H_TEXT
+    assert "m_commitBarBodyHtml" in MAIN_WINDOW_H_TEXT
+    assert "m_overviewLoadedKey.clear();\n        loadRepoOverview(m_overviewPath);" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "case 1: // Commits list\n        loadCommits();" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
 
 
 def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():

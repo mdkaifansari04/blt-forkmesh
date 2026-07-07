@@ -30,7 +30,6 @@ public:
 
 private slots:
     void onStdinActivated();
-    void onSignal();
 
 private:
     void printBanner();
@@ -42,7 +41,6 @@ private:
     void attachFeed(ChatBackend *backend);
     void detachStdin();          // stop reading stdin but keep the node running
     void shutdown(const QString &reason); // explicit stop: close + quit the loop
-    void installSignalHandlers();
     // Run the nightly end-to-end mesh-loop self-test (issue #352): the sibling
     // `forkmesh-e2e` binary, streamed to this console. Used by the `e2e` command.
     void runMeshLoopSelfTest();
@@ -51,12 +49,6 @@ private:
     QCoreApplication *m_app;
     QTextStream m_out;
     QSocketNotifier *m_stdin = nullptr;
-    QSocketNotifier *m_signalNotifier = nullptr;
     QByteArray m_inBuf;
     bool m_echoEvents = true;
-
-    // Self-pipe so an async SIGINT/SIGTERM handler can hand off to the event loop
-    // (only async-signal-safe ::write happens in the handler).
-    static int s_signalFd[2];
-    static void unixSignalHandler(int sig);
 };

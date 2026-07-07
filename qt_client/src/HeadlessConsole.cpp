@@ -15,12 +15,8 @@
 #include <QStringList>
 
 #if defined(Q_OS_UNIX)
-#include <csignal>
-#include <sys/socket.h>
 #include <unistd.h>
 #endif
-
-int HeadlessConsole::s_signalFd[2] = {-1, -1};
 
 HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
                                  QObject *parent)
@@ -36,8 +32,8 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
         attachFeed(backend);
 
     // A durable daemon must stop only on an explicit signal, never on a stray
-    // terminal hang-up. Catch SIGINT/SIGTERM for a clean shutdown.
-    installSignalHandlers();
+    // terminal hang-up. SIGINT/SIGTERM stay owned by CrashHandler so external
+    // service-manager stops leave a durable signal record in crashes.log.
 
 #if defined(Q_OS_UNIX)
     m_stdin = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
@@ -49,37 +45,6 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
              "log-streaming daemon (stop with SIGINT/SIGTERM)."
           << Qt::endl;
     m_out.flush();
-#endif
-}
-
-void HeadlessConsole::unixSignalHandler(int sig)
-{
-#if defined(Q_OS_UNIX)
-    // Async-signal-safe: only poke the self-pipe; the real work runs in onSignal.
-    const char byte = static_cast<char>(sig);
-    const ssize_t n = ::write(s_signalFd[0], &byte, 1);
-    (void)n;
-#else
-    (void)sig;
-#endif
-}
-
-void HeadlessConsole::installSignalHandlers()
-{
-#if defined(Q_OS_UNIX)
-    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, s_signalFd) != 0)
-        return;
-    m_signalNotifier =
-        new QSocketNotifier(s_signalFd[1], QSocketNotifier::Read, this);
-    connect(m_signalNotifier, &QSocketNotifier::activated, this,
-            &HeadlessConsole::onSignal);
-
-    struct sigaction sa = {};
-    sa.sa_handler = &HeadlessConsole::unixSignalHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    ::sigaction(SIGINT, &sa, nullptr);
-    ::sigaction(SIGTERM, &sa, nullptr);
 #endif
 }
 
@@ -110,7 +75,8 @@ void HeadlessConsole::printHelp()
              "  quit | exit         shut down the node\n"
              "\n"
              "Durable daemon: the node keeps running until you `quit`/`exit` or send\n"
-             "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop). Closing stdin does NOT\n"
+             "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop; recorded in the\n"
+             "crash diagnostics). Closing stdin does NOT\n"
              "stop it — run it detached with `forkmesh --headless </dev/null &`, nohup\n"
              "or a systemd service and it stays up. The `daemon` command does the same\n"
              "on demand: it releases the prompt so you can exit the shell while the\n"
@@ -279,21 +245,6 @@ void HeadlessConsole::detachStdin()
         m_stdin->deleteLater();
         m_stdin = nullptr;
     }
-}
-
-void HeadlessConsole::onSignal()
-{
-#if defined(Q_OS_UNIX)
-    if (m_signalNotifier)
-        m_signalNotifier->setEnabled(false);
-    char sig = 0;
-    const ssize_t n = ::read(s_signalFd[1], &sig, 1);
-    (void)n;
-    if (m_signalNotifier)
-        m_signalNotifier->setEnabled(true);
-    shutdown(QStringLiteral("received signal %1; shutting down…")
-                 .arg(int(static_cast<unsigned char>(sig))));
-#endif
 }
 
 void HeadlessConsole::runMeshLoopSelfTest()

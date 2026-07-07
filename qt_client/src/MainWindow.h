@@ -2069,6 +2069,11 @@ private:
     int commitStatusCode(const QString &sha) const;
     // The same as HTML (coloured check / x / running dot) for rich-text labels.
     QString commitStatusGlyph(const QString &sha) const;
+    // Cheaply update action/check glyphs without rebuilding repo views. Used by
+    // action status changes, which can fire while a long test process is still
+    // streaming output.
+    void refreshCommitBarStatusGlyph();
+    void refreshCommitTableStatusGlyphs();
     // Spin the Actions tab label while a run for the open repo is active.
     void updateActionsTabIndicator();
     // Lazily build the floating strip and place it just above the Actions tab.
@@ -3532,6 +3537,8 @@ private:
     // 1 = the commits panel (list + diff), toggled by m_historyButton.
     QStackedWidget *m_overviewBodyStack = nullptr;
     QLabel *m_overviewCrumb = nullptr;
+    QString m_commitBarStatusHash;
+    QString m_commitBarBodyHtml;
     // Code overview file list: a small table per directory (name, size bar, last
     // commit, when). Rows are cached so re-sorting doesn't re-shell out to git.
     QTreeWidget *m_overviewList = nullptr;

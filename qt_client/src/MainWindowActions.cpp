@@ -15,6 +15,13 @@ using namespace forkmesh::ui;
 
 namespace {
 
+QString actionRunLogPath(const ActionRun &run)
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           QStringLiteral("/actions/runs/") + run.repoKey() + QLatin1Char('/') +
+           QString::number(run.id) + QStringLiteral("/log.txt");
+}
+
 } // namespace
 
 void MainWindow::initActions()
@@ -38,8 +45,25 @@ void MainWindow::initActions()
     for (int i = 0; i < m_actionRuns.size(); ++i) {
         ActionRun &run = m_actionRuns[i];
         if (run.status == ActionStatus::Running) {
+            const qint64 interruptedAt = QDateTime::currentMSecsSinceEpoch();
+            m_actionStore->appendLog(
+                run,
+                QString::fromUtf8(
+                    "\n==> \xE2\x9A\xA0 INTERRUPTED: ForkMesh exited while this "
+                    "run was still running. Check the main Log view plus "
+                    "~/.forkmesh/diagnostics/crashes.log and stalls.log for the "
+                    "app-side failure.\n"));
             run.status = ActionStatus::Failed;
+            run.finishedAtMs = interruptedAt;
             m_actionStore->saveRun(run);
+            logSystem(QStringLiteral(
+                          "Actions: run #%1 \"%2\" for %3/%4 @ %5 was "
+                          "interrupted because ForkMesh exited while it was "
+                          "running. Run log: %6")
+                          .arg(run.id)
+                          .arg(run.workflowName, run.owner, run.name,
+                               run.commit.left(8),
+                               actionRunLogPath(run)));
         } else if (run.status == ActionStatus::Queued) {
             m_actionQueue.append(run.id);
         }
@@ -609,6 +633,14 @@ void MainWindow::onRunFinished(int runId, bool ok)
         const QString title = ok ? QStringLiteral("Action succeeded")
                                  : cancelled ? QStringLiteral("Action stopped")
                                              : QStringLiteral("Action failed");
+        logSystem(QStringLiteral("Actions: %1 run #%2 \"%3\" for %4/%5 @ %6. "
+                                 "Run log: %7")
+                      .arg(ok ? QStringLiteral("succeeded")
+                              : cancelled ? QStringLiteral("stopped")
+                                          : QStringLiteral("failed"))
+                      .arg(run->id)
+                      .arg(run->workflowName, run->owner, run->name,
+                           run->commit.left(8), actionRunLogPath(*run)));
         notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
@@ -1175,19 +1207,68 @@ QString MainWindow::commitStatusGlyph(const QString &sha) const
     }
 }
 
+void MainWindow::refreshCommitBarStatusGlyph()
+{
+    if (!m_commitBar || m_commitBarStatusHash.isEmpty() ||
+        m_commitBarBodyHtml.isEmpty())
+        return;
+    m_commitBar->setText(commitStatusGlyph(m_commitBarStatusHash) +
+                         m_commitBarBodyHtml);
+}
+
+void MainWindow::refreshCommitTableStatusGlyphs()
+{
+    if (!m_commitsTable)
+        return;
+    for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
+        QTableWidgetItem *summary = m_commitsTable->item(row, kCommitSummaryCol);
+        if (!summary)
+            continue;
+        const QString sha = summary->data(Qt::UserRole).toString();
+        if (sha.isEmpty())
+            continue;
+        QString shortHash = sha.left(8);
+        if (const QTableWidgetItem *hashItem =
+                m_commitsTable->item(row, kCommitHashCol)) {
+            const QString sortHash = hashItem->data(kTableSortRole).toString();
+            if (!sortHash.isEmpty())
+                shortHash = sortHash;
+        }
+        switch (commitStatusCode(sha)) {
+        case 1:
+            summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
+            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1")
+                                    .arg(shortHash));
+            break;
+        case 2:
+            summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
+            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1")
+                                    .arg(shortHash));
+            break;
+        case 3:
+            summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
+            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1")
+                                    .arg(shortHash));
+            break;
+        default:
+            summary->setIcon(QIcon());
+            summary->setToolTip(
+                QStringLiteral("Click to view the diff for %1").arg(shortHash));
+            break;
+        }
+    }
+}
+
 void MainWindow::refreshCommitStatusGlyphs()
 {
     if (!m_repoDetailStack)
         return;
     switch (m_repoDetailStack->currentIndex()) {
     case 0: // Code overview: refresh the latest-commit strip
-        // The check-status glyph can change while HEAD stays put, so bypass the
-        // unchanged-overview cache and force the strip to re-render.
-        m_overviewLoadedKey.clear();
-        loadRepoOverview(m_overviewPath);
+        refreshCommitBarStatusGlyph();
         break;
     case 1: // Commits list
-        loadCommits();
+        refreshCommitTableStatusGlyphs();
         break;
     default:
         break;

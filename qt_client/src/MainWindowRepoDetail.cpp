@@ -3412,13 +3412,16 @@ void MainWindow::loadRepoOverview(const QString &path)
             const QString subject = f.value(3);
             // Latest commit: subject, author and "x ago", plus the action/check
             // status glyph for this (the first/most-recent) commit.
-            commitBarText =
-                QStringLiteral("%1<b>%2</b> &nbsp; <span style='color:#8b949e'>%3 "
-                               "committed %4</span>")
-                    .arg(commitStatusGlyph(fullHash),
-                         subject.toHtmlEscaped(), author.toHtmlEscaped(),
+            m_commitBarStatusHash = fullHash;
+            m_commitBarBodyHtml =
+                QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
+                               "committed %3</span>")
+                    .arg(subject.toHtmlEscaped(), author.toHtmlEscaped(),
                          when.toHtmlEscaped());
+            commitBarText = commitStatusGlyph(fullHash) + m_commitBarBodyHtml;
         } else {
+            m_commitBarStatusHash.clear();
+            m_commitBarBodyHtml.clear();
             commitBarText = "<span style='color:#8b949e'>No commits yet</span>";
         }
     }
