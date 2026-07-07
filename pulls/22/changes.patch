@@ -1,0 +1,9 @@
+diff --git a/cloudflare_worker/.gitignore b/cloudflare_worker/.gitignore
+index 7653e8d4..4ff6b3a3 100644
+--- a/cloudflare_worker/.gitignore
++++ b/cloudflare_worker/.gitignore
+@@ -4,3 +4,4 @@
+ __pycache__/
+ .mypy_cache/
+ .dev.vars
++.worktrees/
