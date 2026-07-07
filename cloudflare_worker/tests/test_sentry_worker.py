@@ -92,3 +92,20 @@ def test_simulate_sentry_error_route_is_worker_owned_and_raises():
 def test_forkmesh_deploy_pushes_sentry_dsn_secret():
     assert "SENTRY_DSN=${{ vars.SENTRY_DSN }}" in DEPLOY_WORKFLOW_TEXT
     assert "\n        push_secrets\n" in DEPLOY_SH_TEXT
+
+
+def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():
+    observability = WRANGLER_DATA["observability"]
+    assert observability["enabled"] is True
+    assert observability["head_sampling_rate"] == 1
+
+    logs = observability["logs"]
+    assert logs["enabled"] is True
+    assert logs["head_sampling_rate"] == 1
+    assert logs["invocation_logs"] is True
+    assert logs["destinations"] == ["sentry-logs"]
+
+    traces = observability["traces"]
+    assert traces["enabled"] is True
+    assert traces["head_sampling_rate"] == 1
+    assert traces["destinations"] == ["sentry-traces"]

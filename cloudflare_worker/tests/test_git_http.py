@@ -107,6 +107,17 @@ def test_stream_request_guards_the_transfer():
     assert "abort" in watchdog
 
 
+def test_git_advertisements_use_short_timeout_before_buffering():
+    # info/refs is buffered for integrity checking, so it must fail faster than
+    # a long streaming pack. Otherwise the outer Worker can be canceled as hung
+    # before the DO returns its 504 and the router can fail over to a mirror.
+    src = _method_source("ForkMeshHost", "_git")
+    assert "is_advertise" in src
+    assert "GIT_ADVERTISE_TIMEOUT_MS" in src
+    assert "GIT_TIMEOUT_MS" in src
+    assert "timeout_ms / 1000" in src
+
+
 def test_host_disconnect_aborts_inflight_streams():
     src = _method_source("ForkMeshHost", "_host_disconnected")
     assert "git_streams" in src
