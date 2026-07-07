@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Resilient hosting starts with ordinary machines carrying real copies. This feature keeps repository availability tied to a live mesh of nodes instead of a single vendor account or storage bucket.</p>
-          <p>A live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional CPU, RAM, and disk telemetry.</p>
+          <p>Public network map gives ForkMesh a concrete mechanism for making live node availability and mirror health visible. A live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional CPU, RAM, and disk telemetry.</p>
+          <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, public network map addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh uses Git-native mirrors, signed catalog records, and relay coordination so each node can advertise what it serves while the relay routes clone and browse traffic without becoming the place where history lives.</p>
-          <p>In practice, <strong>Public network map</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles public network map through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>The behavior is intentionally narrow: A live network page shows every online node, what it mirrors, how in-sync it is, and its platform, version, and optional CPU, RAM, and disk telemetry. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
+          <div class="note">Title focus: Public network map stays tied to making live node availability and mirror health visible and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when a repository needs to stay cloneable through outages, account loss, platform churn, or team handoffs.</p>
-          <p>Together with the other features in Distributed hosting &amp; preservation, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use public network map when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
+          <p>It pairs with the rest of Distributed hosting &amp; preservation because Public network map keeps making live node availability and mirror health visible connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/headless-mirror-nodes/">← Headless mirror nodes</a>

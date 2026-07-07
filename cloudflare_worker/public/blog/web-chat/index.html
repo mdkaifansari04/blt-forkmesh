@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Web chat · ForkMesh Blog</title>
-    <meta name="description" content="Join the conversation from the browser too — the website speaks the same room protocol as the desktop app.">
+    <meta name="description" content="Join the conversation from the browser too, the website speaks the same room protocol as the desktop app.">
     <link rel="canonical" href="https://forkmesh.com/blog/web-chat/">
     <link rel="icon" href="/favicon/favicon.ico" sizes="any">
     <link rel="stylesheet" href="/styles.css">
@@ -13,7 +13,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/web-chat/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Web chat">
-    <meta property="og:description" content="Join the conversation from the browser too — the website speaks the same room protocol as the desktop app.">
+    <meta property="og:description" content="Join the conversation from the browser too, the website speaks the same room protocol as the desktop app.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/web-chat.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/web-chat.webp">
@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Chat &amp; private sharing</p>
             <h1>Web chat</h1>
-            <p class="lede">Join the conversation from the browser too — the website speaks the same room protocol as the desktop app.</p>
+            <p class="lede">Join the conversation from the browser too, the website speaks the same room protocol as the desktop app.</p>
             <div class="meta"><span class="pill">Feature 51 of 72</span><span>Feature</span><span>Chat &amp; private sharing</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/web-chat.webp" alt="Abstract ForkMesh artwork for Web chat">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Coordination often contains context that should not be readable by infrastructure. This feature gives teams private rooms, direct messages, and repo-linked discussion without central plaintext custody.</p>
-          <p>Join the conversation from the browser too — the website speaks the same room protocol as the desktop app.</p>
+          <p>Web chat gives ForkMesh a concrete mechanism for browser participation in the same room protocol as the desktop app. Join the conversation from the browser too, the website speaks the same room protocol as the desktop app.</p>
+          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, web chat addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh pairs encrypted rooms and local identity with repository-aware chat surfaces, so conversation can sit beside the code while sensitive material stays protected.</p>
-          <p>In practice, <strong>Web chat</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles web chat through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
+          <p>The behavior is intentionally narrow: Join the conversation from the browser too, the website speaks the same room protocol as the desktop app. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <div class="note">Title focus: Web chat stays tied to browser participation in the same room protocol as the desktop app and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when project discussion, sharing, and private collaboration should live near the repository but remain under participant control.</p>
-          <p>Together with the other features in Chat &amp; private sharing, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use web chat when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>It pairs with the rest of Chat &amp; private sharing because Web chat keeps browser participation in the same room protocol as the desktop app connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/discussions/">← Discussions</a>

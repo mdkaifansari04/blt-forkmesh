@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Resilient hosting starts with ordinary machines carrying real copies. This feature keeps repository availability tied to a live mesh of nodes instead of a single vendor account or storage bucket.</p>
-          <p>git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</p>
+          <p>Live clone routing gives ForkMesh a concrete mechanism for Git Smart HTTP requests routed to the node that actually serves the repository. git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly.</p>
+          <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, live clone routing addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh uses Git-native mirrors, signed catalog records, and relay coordination so each node can advertise what it serves while the relay routes clone and browse traffic without becoming the place where history lives.</p>
-          <p>In practice, <strong>Live clone routing</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles live clone routing through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>The behavior is intentionally narrow: git clone https://forkmesh.com/owner/repo just works. Smart-HTTP requests are routed over an outbound tunnel to the hosting desktop node, which serves the pack directly. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
+          <div class="note">Title focus: Live clone routing stays tied to Git Smart HTTP requests routed to the node that actually serves the repository and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when a repository needs to stay cloneable through outages, account loss, platform churn, or team handoffs.</p>
-          <p>Together with the other features in Distributed hosting &amp; preservation, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use live clone routing when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
+          <p>It pairs with the rest of Distributed hosting &amp; preservation because Live clone routing keeps Git Smart HTTP requests routed to the node that actually serves the repository connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/zero-custody-relay/">← Zero-custody relay</a>

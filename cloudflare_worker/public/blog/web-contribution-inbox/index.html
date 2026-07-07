@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Collaboration data should be portable and verifiable. This feature turns issues, pull requests, and identity into signed records that can travel with the repository instead of being trapped in one web database.</p>
-          <p>Visitors can file issues and pull requests from the website even while the owner is offline. Signed submissions wait in an inbox; the owner reviews, commits, and the mesh syncs back.</p>
+          <p>Web contribution inbox gives ForkMesh a concrete mechanism for offline owners receiving signed web submissions for later review. Visitors can file issues and pull requests from the website even while the owner is offline. Signed submissions wait in an inbox; the owner reviews, commits, and the mesh syncs back.</p>
+          <p>Collaboration data becomes fragile when issues, reviews, and authorship only exist inside one hosted database. In ForkMesh, web contribution inbox addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>The desktop app signs events with local identity keys and stores the resulting records in Git-backed stores, letting mirrors verify provenance before accepting or displaying collaboration updates.</p>
-          <p>In practice, <strong>Web contribution inbox</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles web contribution inbox through the same split it uses across the product: local identities sign issue events, patch PRs, catalog records, and contribution inbox items before they travel through mirrors.</p>
+          <p>The behavior is intentionally narrow: Visitors can file issues and pull requests from the website even while the owner is offline. Signed submissions wait in an inbox; the owner reviews, commits, and the mesh syncs back. Mirrors can verify provenance before accepting or displaying collaboration records.</p>
+          <div class="note">Title focus: Web contribution inbox stays tied to offline owners receiving signed web submissions for later review and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when teams need durable project context that survives migrations, forks, and mirror failover.</p>
-          <p>Together with the other features in Signed, portable collaboration, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use web contribution inbox when project context needs to survive migrations, forks, offline work, and mirror failover.</p>
+          <p>It pairs with the rest of Signed, portable collaboration because Web contribution inbox keeps offline owners receiving signed web submissions for later review connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/everything-lives-in-git/">← Everything lives in Git</a>

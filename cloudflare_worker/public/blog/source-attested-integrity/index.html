@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Distributed hosting</p>
             <h1>Source-attested integrity</h1>
-            <p class="lede">Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it&#x27;s handing you the same history the author published.</p>
+            <p class="lede">Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published.</p>
             <div class="meta"><span class="pill">Feature 06 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/source-attested-integrity.webp" alt="Abstract ForkMesh artwork for Source-attested integrity">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Resilient hosting starts with ordinary machines carrying real copies. This feature keeps repository availability tied to a live mesh of nodes instead of a single vendor account or storage bucket.</p>
-          <p>Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it&#x27;s handing you the same history the author published.</p>
+          <p>Source-attested integrity gives ForkMesh a concrete mechanism for fallback mirrors proving they match the state published by the source. Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published.</p>
+          <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, source-attested integrity addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh uses Git-native mirrors, signed catalog records, and relay coordination so each node can advertise what it serves while the relay routes clone and browse traffic without becoming the place where history lives.</p>
-          <p>In practice, <strong>Source-attested integrity</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles source-attested integrity through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>The behavior is intentionally narrow: Fallback serving is checked against integrity pins attested by the source of truth, so a mirror can prove it's handing you the same history the author published. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
+          <div class="note">Title focus: Source-attested integrity stays tied to fallback mirrors proving they match the state published by the source and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when a repository needs to stay cloneable through outages, account loss, platform churn, or team handoffs.</p>
-          <p>Together with the other features in Distributed hosting &amp; preservation, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use source-attested integrity when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
+          <p>It pairs with the rest of Distributed hosting &amp; preservation because Source-attested integrity keeps fallback mirrors proving they match the state published by the source connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/mirror-failover/">← Mirror failover</a>

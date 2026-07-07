@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Discussions · ForkMesh Blog</title>
-    <meta name="description" content="Longer-form threaded conversations per repository — signed, synced, and browsable like issues.">
+    <meta name="description" content="Longer-form threaded conversations per repository, signed, synced, and browsable like issues.">
     <link rel="canonical" href="https://forkmesh.com/blog/discussions/">
     <link rel="icon" href="/favicon/favicon.ico" sizes="any">
     <link rel="stylesheet" href="/styles.css">
@@ -13,7 +13,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/discussions/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Discussions">
-    <meta property="og:description" content="Longer-form threaded conversations per repository — signed, synced, and browsable like issues.">
+    <meta property="og:description" content="Longer-form threaded conversations per repository, signed, synced, and browsable like issues.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/discussions.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/discussions.webp">
@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Chat &amp; private sharing</p>
             <h1>Discussions</h1>
-            <p class="lede">Longer-form threaded conversations per repository — signed, synced, and browsable like issues.</p>
+            <p class="lede">Longer-form threaded conversations per repository, signed, synced, and browsable like issues.</p>
             <div class="meta"><span class="pill">Feature 50 of 72</span><span>Feature</span><span>Chat &amp; private sharing</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/discussions.webp" alt="Abstract ForkMesh artwork for Discussions">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Coordination often contains context that should not be readable by infrastructure. This feature gives teams private rooms, direct messages, and repo-linked discussion without central plaintext custody.</p>
-          <p>Longer-form threaded conversations per repository — signed, synced, and browsable like issues.</p>
+          <p>Discussions gives ForkMesh a concrete mechanism for long-form signed conversations that sync like other collaboration records. Longer-form threaded conversations per repository, signed, synced, and browsable like issues.</p>
+          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, discussions addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh pairs encrypted rooms and local identity with repository-aware chat surfaces, so conversation can sit beside the code while sensitive material stays protected.</p>
-          <p>In practice, <strong>Discussions</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles discussions through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
+          <p>The behavior is intentionally narrow: Longer-form threaded conversations per repository, signed, synced, and browsable like issues. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <div class="note">Title focus: Discussions stays tied to long-form signed conversations that sync like other collaboration records and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when project discussion, sharing, and private collaboration should live near the repository but remain under participant control.</p>
-          <p>Together with the other features in Chat &amp; private sharing, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use discussions when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>It pairs with the rest of Chat &amp; private sharing because Discussions keeps long-form signed conversations that sync like other collaboration records connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/coves/">← Coves</a>

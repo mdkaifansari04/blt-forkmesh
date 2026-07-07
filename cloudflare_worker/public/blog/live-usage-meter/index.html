@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>AI coding works best when it can see the real repo and leave auditable changes. This feature gives agents isolated workspaces and a live path back to review.</p>
-          <p>See your Claude 5-hour and weekly usage right in the app, updated every minute, so you always know how much agent runway is left.</p>
+          <p>Live usage meter gives ForkMesh a concrete mechanism for agent runway displayed where assignment and review happen. See your Claude 5-hour and weekly usage right in the app, updated every minute, so you always know how much agent runway is left.</p>
+          <p>AI coding only helps when the agent can work in a real repository without trampling human state or hiding what it did. In ForkMesh, live usage meter addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh starts agent sessions in dedicated worktrees, streams transcripts into the app, tracks diffs, and routes questions back to the person supervising the task.</p>
-          <p>In practice, <strong>Live usage meter</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles live usage meter through the same split it uses across the product: ForkMesh runs agents beside the repository, capturing transcripts, branches, diffs, prompts, usage, questions, and handoffs in the desktop app.</p>
+          <p>The behavior is intentionally narrow: See your Claude 5-hour and weekly usage right in the app, updated every minute, so you always know how much agent runway is left. Humans keep control of instructions, answers, review, and merge decisions.</p>
+          <div class="note">Title focus: Live usage meter stays tied to agent runway displayed where assignment and review happen and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when issues can be delegated safely while humans keep control of prompts, sessions, branches, and merges.</p>
-          <p>Together with the other features in AI agents, built in, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use live usage meter when agent work should be reviewable, resumable, and connected to the same repo UI humans use.</p>
+          <p>It pairs with the rest of AI agents, built in because Live usage meter keeps agent runway displayed where assignment and review happen connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/your-app-is-the-ide/">← Your app is the IDE</a>

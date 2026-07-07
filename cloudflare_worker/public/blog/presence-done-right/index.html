@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Presence done right · ForkMesh Blog</title>
-    <meta name="description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate — failover kicks in the moment a host actually drops.">
+    <meta name="description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate, failover kicks in the moment a host actually drops.">
     <link rel="canonical" href="https://forkmesh.com/blog/presence-done-right/">
     <link rel="icon" href="/favicon/favicon.ico" sizes="any">
     <link rel="stylesheet" href="/styles.css">
@@ -13,7 +13,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/presence-done-right/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Presence done right">
-    <meta property="og:description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate — failover kicks in the moment a host actually drops.">
+    <meta property="og:description" content="Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate, failover kicks in the moment a host actually drops.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/presence-done-right.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/presence-done-right.webp">
@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Distributed hosting</p>
             <h1>Presence done right</h1>
-            <p class="lede">Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate — failover kicks in the moment a host actually drops.</p>
+            <p class="lede">Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</p>
             <div class="meta"><span class="pill">Feature 10 of 72</span><span>Feature</span><span>Distributed hosting &amp; preservation</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/presence-done-right.webp" alt="Abstract ForkMesh artwork for Presence done right">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Resilient hosting starts with ordinary machines carrying real copies. This feature keeps repository availability tied to a live mesh of nodes instead of a single vendor account or storage bucket.</p>
-          <p>Heartbeats, presence expiry on disconnect, and live host probes mean the network&#x27;s view of who is online is accurate — failover kicks in the moment a host actually drops.</p>
+          <p>Presence done right gives ForkMesh a concrete mechanism for using heartbeats, expiry, and probes so routing decisions reflect reality. Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops.</p>
+          <p>Code disappears from a network when one hosted account, one VM, or one storage path becomes the only way to reach it. In ForkMesh, presence done right addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh uses Git-native mirrors, signed catalog records, and relay coordination so each node can advertise what it serves while the relay routes clone and browse traffic without becoming the place where history lives.</p>
-          <p>In practice, <strong>Presence done right</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles presence done right through the same split it uses across the product: desktop nodes keep real Git mirrors, while mainnodes coordinate discovery, relay tunnels, presence, account lookup, and clone routing.</p>
+          <p>The behavior is intentionally narrow: Heartbeats, presence expiry on disconnect, and live host probes mean the network's view of who is online is accurate, failover kicks in the moment a host actually drops. The Worker helps find and route a live host, but it is not canonical Git storage.</p>
+          <div class="note">Title focus: Presence done right stays tied to using heartbeats, expiry, and probes so routing decisions reflect reality and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when a repository needs to stay cloneable through outages, account loss, platform churn, or team handoffs.</p>
-          <p>Together with the other features in Distributed hosting &amp; preservation, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use presence done right when availability, clone routing, and preservation need to be handled by the mesh instead of by a single origin.</p>
+          <p>It pairs with the rest of Distributed hosting &amp; preservation because Presence done right keeps using heartbeats, expiry, and probes so routing decisions reflect reality connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/public-network-map/">← Public network map</a>

@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Coordination often contains context that should not be readable by infrastructure. This feature gives teams private rooms, direct messages, and repo-linked discussion without central plaintext custody.</p>
-          <p>Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</p>
+          <p>Direct messages gives ForkMesh a concrete mechanism for private node-to-node coordination with encrypt-before-send semantics. Message any node operator directly, with the same encrypt-before-send guarantee as rooms.</p>
+          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, direct messages addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh pairs encrypted rooms and local identity with repository-aware chat surfaces, so conversation can sit beside the code while sensitive material stays protected.</p>
-          <p>In practice, <strong>Direct messages</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles direct messages through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
+          <p>The behavior is intentionally narrow: Message any node operator directly, with the same encrypt-before-send guarantee as rooms. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <div class="note">Title focus: Direct messages stays tied to private node-to-node coordination with encrypt-before-send semantics and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when project discussion, sharing, and private collaboration should live near the repository but remain under participant control.</p>
-          <p>Together with the other features in Chat &amp; private sharing, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use direct messages when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>It pairs with the rest of Chat &amp; private sharing because Direct messages keeps private node-to-node coordination with encrypt-before-send semantics connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/encrypted-repo-rooms/">← Encrypted repo rooms</a>
