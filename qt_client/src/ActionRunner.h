@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QMap>
 #include <QObject>
 #include <QtGlobal>
@@ -10,7 +11,6 @@
 #include "ActionStore.h"
 
 class QProcess;
-class QByteArray;
 
 // Executes a single approved workflow run. Checks the pushed commit out into a
 // detached worktree of the bare mirror, then runs each step's `run:` through a
@@ -54,6 +54,8 @@ private:
     void emitLog(const QString &text);
     void emitProcessOutput(const QByteArray &bytes);
     void emitProcessOutputTruncationNotice();
+    void rememberSuppressedProcessOutput(const QByteArray &bytes);
+    void emitSuppressedProcessOutputTail();
     void complete(bool ok, const QString &finalMessage);
     void cleanupWorktree();
     // For a release run (ref under refs/tags/), copy the release metadata the
@@ -85,6 +87,8 @@ private:
     QStringList m_secrets; // values to redact from logs
     int m_stepIndex = 0;
     qsizetype m_processOutputBytes = 0;
+    qsizetype m_processOutputSuppressedBytes = 0;
+    QByteArray m_processOutputTail;
     bool m_processOutputTruncated = false;
     QProcess *m_process = nullptr;
 };

@@ -216,16 +216,24 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
 def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "kActionProcessLogMaxBytes" in ACTION_RUNNER_CPP_TEXT
     assert "kActionProcessLogChunkBytes" in ACTION_RUNNER_CPP_TEXT
+    assert "kActionProcessLogTailBytes" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutputTruncationNotice()" in ACTION_RUNNER_CPP_TEXT
+    assert "rememberSuppressedProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
+    assert "emitSuppressedProcessOutputTail()" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
+    assert "m_processOutputSuppressedBytes = 0;" in ACTION_RUNNER_CPP_TEXT
+    assert "m_processOutputTail.clear();" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputTruncated = false;" in ACTION_RUNNER_CPP_TEXT
-    assert "Action output truncated after %1 KiB" in ACTION_RUNNER_CPP_TEXT
+    assert "Action output exceeded %1 KiB" in ACTION_RUNNER_CPP_TEXT
+    assert "Showing the final %1 KiB of suppressed process output" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(m_process->readAllStandardOutput())" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(tail)" in ACTION_RUNNER_CPP_TEXT
+    assert "emitSuppressedProcessOutputTail();" in ACTION_RUNNER_CPP_TEXT
     assert "emitLog(QString::fromUtf8(m_process->readAllStandardOutput()))" not in ACTION_RUNNER_CPP_TEXT
     assert "emitLog(QString::fromUtf8(tail))" not in ACTION_RUNNER_CPP_TEXT
     assert "void emitProcessOutput(const QByteArray &bytes);" in ACTION_RUNNER_H_TEXT
+    assert "QByteArray m_processOutputTail;" in ACTION_RUNNER_H_TEXT
     assert "bool m_processOutputTruncated = false;" in ACTION_RUNNER_H_TEXT
 
 
