@@ -1,34 +1,45 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 378,
-  "title": "Remove the admin basic auth",
-  "status": "open",
-  "labels": [
-    "security"
-  ],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783151248,
-  "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783151248",
-      "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-      "authorName": "jett",
-      "ts": 1783151248,
-      "title": "Remove the admin basic auth",
-      "body": "",
-      "attachments": [],
-      "sig": "fMXfMoPptFrhTMfx_X6Hv1qbOphDAP5I4rvJd0DASMCDR2uk3mpZV88J3eljnxWqHsQ6EEV1gMvOCXgW-EdkCw"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783151248
+    "assignees": [
+    ],
+    "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783151248,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783151248",
+            "sig": "fMXfMoPptFrhTMfx_X6Hv1qbOphDAP5I4rvJd0DASMCDR2uk3mpZV88J3eljnxWqHsQ6EEV1gMvOCXgW-EdkCw",
+            "title": "Remove the admin basic auth",
+            "ts": 1783151248,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e80be4fb-9a42-4ce8-b458-6ed3ad28d5f1",
+            "sig": "mX9Sbjwz1DL3CKhRshdeY5lyZbxV989CPL_37tubFuDDVvT6oJGfg0Q2po6H0-mhcctglc9hNCf7KQDC55cvDA",
+            "status": "closed",
+            "ts": 1783462369416,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security"
+    ],
+    "milestone": "",
+    "number": 378,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "Remove the admin basic auth",
+    "updatedAt": 1783462369416,
+    "votes": 0
 }
