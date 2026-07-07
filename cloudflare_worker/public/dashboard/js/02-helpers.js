@@ -12,7 +12,10 @@
 
   function readDashboardTheme() {
     try {
-      return normalizeDashboardTheme(localStorage.getItem(DASHBOARD_THEME_KEY));
+      return normalizeDashboardTheme(
+        localStorage.getItem(DASHBOARD_THEME_KEY) ||
+        localStorage.getItem("forkmesh.theme")
+      );
     } catch (_) {
       return "dark";
     }
@@ -52,6 +55,7 @@
     const nextTheme = normalizeDashboardTheme(theme);
     try {
       localStorage.setItem(DASHBOARD_THEME_KEY, nextTheme);
+      localStorage.setItem("forkmesh.theme", nextTheme);
     } catch (_) {}
     applyDashboardTheme(nextTheme);
   }

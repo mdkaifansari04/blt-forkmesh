@@ -79,12 +79,14 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
 
 
-def test_qt_client_publishes_effective_avatar_to_peers():
+def test_qt_client_publishes_user_chat_avatar_to_peers():
     # The desktop's avatar reaches peers through the chat backend broadcast
     # (the signed heartbeat carries no avatar; the worker-side avatarPng comes
-    # from the dashboard profile flow, pinned above). effectiveAvatar() falls
-    # back to a generated face so every node stays identifiable.
-    assert "m_backend->setAvatar(effectiveAvatar());" in QT_TEXT
+    # from the dashboard profile flow, pinned above). Chat uses the user avatar
+    # so messages do not show up as the node profile.
+    assert "updateChatIdentity();" in QT_TEXT
+    assert "m_backend->setAvatar(avatar);" in QT_TEXT
+    assert "effectiveUserAvatar();" in QT_TEXT
 
     heartbeat_body = QT_TEXT[
         QT_TEXT.index("void MainWindow::sendNodeHeartbeat()"):

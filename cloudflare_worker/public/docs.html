@@ -1165,6 +1165,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         function applyTheme(mode) {
           const chosen =
             mode ||
+            localStorage.getItem("forkmesh.dashboard.theme") ||
             localStorage.getItem("forkmesh.theme") ||
             (window.matchMedia &&
             window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -1172,6 +1173,7 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
               : "light");
           document.documentElement.classList.toggle("dark", chosen === "dark");
           localStorage.setItem("forkmesh.theme", chosen);
+          localStorage.setItem("forkmesh.dashboard.theme", chosen);
         }
 
         applyTheme();

@@ -9,12 +9,24 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script>
+      (() => {
+        const keys = ["forkmesh.dashboard.theme", "forkmesh.theme"];
+        let theme = "dark";
+        try {
+          theme = keys.map((key) => localStorage.getItem(key)).find((value) => value === "light" || value === "dark") || theme;
+        } catch (_) {}
+        document.documentElement.classList.toggle("dark", theme !== "light");
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+      })();
+    </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -31,6 +43,18 @@
         --radius: 10px;
         --nav-h: 52px;
         --input-h: 64px;
+      }
+
+      html:not(.dark) {
+        --bg: #f6f8fb;
+        --surface: #ffffff;
+        --surface2: #eef2f7;
+        --border: #d0d7de;
+        --fg: #1f2328;
+        --muted: #656d76;
+        --accent: #1f883d;
+        --accent-dim: rgba(31, 136, 61, 0.11);
+        --danger: #d1242f;
       }
 
       html, body {

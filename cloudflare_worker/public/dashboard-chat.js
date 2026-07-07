@@ -35,6 +35,7 @@
   let socket = null;
   let connecting = false;
   let openCallbacks = [];
+  let cachedUserSession = null;
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
@@ -148,10 +149,67 @@
     }
   }
 
-  function userSession() {
+  function writeSession(session) {
+    try {
+      localStorage.setItem("forkmesh.session", JSON.stringify(session));
+    } catch (_) {}
+  }
+
+  function isUserLikeSession(session) {
+    if (!session || !session.nodeName) return false;
+    if (session.kind === "user") return true;
+    if (session.kind === "node") return false;
+    return Boolean(session.email);
+  }
+
+  async function hydrateUserSession() {
     const session = readSession();
-    if (!session || session.kind !== "user" || !session.nodeName) return null;
-    return session;
+    if (isUserLikeSession(session)) {
+      cachedUserSession = session;
+      if (session.kind === "user") return session;
+    } else if (!session || !session.nodeName || session.kind === "node") {
+      cachedUserSession = null;
+      return null;
+    }
+    try {
+      const res = await fetch("/api/accounts/" + encodeURIComponent(session.nodeName), {
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) return cachedUserSession;
+      const body = await res.json();
+      if (!body || body.kind !== "user") {
+        cachedUserSession = null;
+        return null;
+      }
+      cachedUserSession = {
+        ...session,
+        nodeName: body.nodeName || session.nodeName,
+        email: body.email || session.email || "",
+        status: body.status || session.status || "active",
+        pubkey: body.pubkey || session.pubkey || "",
+        emailVerified: Boolean(body.emailVerified),
+        isAdmin: Boolean(body.isAdmin),
+        adminUrl: body.adminUrl || session.adminUrl || "",
+        solana: body.solana || session.solana || "",
+        hasPayoutAddress: Boolean(body.hasPayoutAddress),
+        avatarPng: body.avatarPng || session.avatarPng || "",
+        avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
+        kind: "user",
+        owner: body.owner || "",
+        nodes: Array.isArray(body.nodes) ? body.nodes : [],
+        at: Date.now(),
+      };
+      writeSession(cachedUserSession);
+      return cachedUserSession;
+    } catch (_) {
+      return cachedUserSession;
+    }
+  }
+
+  function userSession() {
+    if (isUserLikeSession(cachedUserSession)) return cachedUserSession;
+    const session = readSession();
+    return isUserLikeSession(session) ? session : null;
   }
 
   function displayName() {
@@ -490,13 +548,18 @@
     });
   }
 
-  ensureEmptyState();
-  wireInput(fullInput, fullSend);
-  wireInput(sideInput, sideSend);
-  // Connect right away so the room's message history (replayed by the relay
-  // on WebSocket open) is visible without the visitor first focusing an input.
-  if (userSession()) {
-    setStatus("Not connected");
-    connect();
+  async function initChat() {
+    await hydrateUserSession();
+    ensureEmptyState();
+    wireInput(fullInput, fullSend);
+    wireInput(sideInput, sideSend);
+    // Connect right away so the room's message history (replayed by the relay
+    // on WebSocket open) is visible without the visitor first focusing an input.
+    if (userSession()) {
+      setStatus("Not connected");
+      connect();
+    }
   }
+
+  initChat();
 })();

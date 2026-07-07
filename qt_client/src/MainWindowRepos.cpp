@@ -3639,10 +3639,9 @@ void MainWindow::onProfileNameChanged(const QString &name)
     m_accountName = trimmed;
     saveProfileName(trimmed);
     migrateReposForProfileName(oldOwner, trimmed);
-    if (m_backend)
-        m_backend->setUserName(trimmed);
     refreshSettingsEmailVerifiedBadge();
     updateUserSwitcher();
+    updateChatIdentity();
     refreshRepositoryList();
     logSystem("Name changed to " + trimmed + ".");
 }
@@ -3651,10 +3650,9 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
 {
     m_userAvatar = pngData;
     QSettings().setValue(kAvatarSetting, pngData);
-    if (m_backend)
-        m_backend->setAvatar(pngData);
     updateAvatarButton();
     updateUserAvatarButton();
+    updateChatIdentity();
 }
 
 void MainWindow::logout()
