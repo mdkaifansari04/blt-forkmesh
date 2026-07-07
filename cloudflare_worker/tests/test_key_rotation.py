@@ -131,6 +131,36 @@ def test_rotate_accepts_desktop_rotation_record_signature_field():
     assert rec["pubkey"] == "new-pubkey"
 
 
+def test_rotate_accepts_desktop_rotation_record_without_node_name():
+    canonical = b"forkmesh-rotate-v1\nold-pubkey\nnew-pubkey\n1783000000000"
+    handler, saved = _harness(
+        _bound_account(),
+        {"old-pubkey": ("bi:alice-node", _bound_account())},
+        expected_canonical=canonical,
+    )
+    resp = _run(handler, {
+        "kind": "forkmesh.rotate",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "signature": "goodsig",
+    })
+    assert resp["status"] == 200
+    assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
+    assert saved == [
+        (
+            "bi:alice-node",
+            {
+                "name": "alice-node",
+                "status": "active",
+                "pubkey": "new-pubkey",
+                "prev_pubkeys": ["old-pubkey"],
+                "rotated_at": 1783000000000,
+            },
+        )
+    ]
+
+
 def test_rotate_rejects_successor_key_bound_to_another_account():
     handler, saved = _harness(
         _bound_account(),
