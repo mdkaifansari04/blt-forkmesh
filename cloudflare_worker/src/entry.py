@@ -56,6 +56,7 @@ CATALOG_MAX_RECORDS_PER_OWNER = 50
 # handful of requests; this only blunts floods).
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
+SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -7930,6 +7931,173 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
 
 # --- Error log + admin dashboard -------------------------------------------
 
+def _sentry_dsn_parts(dsn):
+    dsn = str(dsn or "").strip()
+    if not dsn:
+        return None
+    try:
+        parsed = urlparse(dsn)
+    except Exception:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    public_key = parsed.username or ""
+    host = parsed.hostname or ""
+    if parsed.port:
+        host += ":" + str(parsed.port)
+    path_parts = [p for p in (parsed.path or "").split("/") if p]
+    if not public_key or not host or not path_parts:
+        return None
+    project_id = path_parts[-1]
+    path_prefix = "/" + "/".join(path_parts[:-1]) if len(path_parts) > 1 else ""
+    return {
+        "dsn": dsn,
+        "endpoint": "%s://%s%s/api/%s/envelope/" % (
+            parsed.scheme, host, path_prefix, project_id),
+        "auth": (
+            "Sentry sentry_version=7, sentry_key=%s, sentry_client=%s" %
+            (public_key, SENTRY_CLIENT)
+        ),
+    }
+
+
+def _sentry_event_id():
+    try:
+        rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+        return "".join("%02x" % int(rnd[i]) for i in range(16))
+    except Exception:
+        return ("%032x" % int(Date.now()))[-32:]
+
+
+def _sentry_header(request, name):
+    try:
+        return str(request.headers.get(name) or "")
+    except Exception:
+        return ""
+
+
+def _sentry_request_payload(request):
+    if request is None:
+        return None
+    headers = {}
+    for name in ("user-agent", "accept", "referer", "cf-ray"):
+        value = _sentry_header(request, name)
+        if value:
+            headers[name] = value
+    return {
+        "url": str(getattr(request, "url", "") or ""),
+        "method": method_name(request),
+        "headers": headers,
+    }
+
+
+def _sentry_cloudflare_context(request, ray=""):
+    ctx = {"ray": str(ray or "")}
+    if ctx["ray"] and "-" in ctx["ray"]:
+        ctx["colo"] = ctx["ray"].rsplit("-", 1)[-1]
+    cf = getattr(request, "cf", None) if request is not None else None
+    if cf is not None:
+        for key in (
+            "colo", "country", "timezone", "httpProtocol", "tlsVersion",
+            "tlsCipher", "clientTcpRtt", "requestPriority",
+        ):
+            try:
+                value = getattr(cf, key)
+            except Exception:
+                value = None
+            if value is not None:
+                ctx[key] = str(value)[:120]
+    return ctx
+
+
+def _sentry_stack_frames(error):
+    tb = getattr(error, "__traceback__", None)
+    if tb is None:
+        return []
+    frames = []
+    try:
+        extracted = traceback.extract_tb(tb)
+    except Exception:
+        return []
+    for frame in extracted[-50:]:
+        item = {
+            "filename": frame.filename,
+            "function": frame.name,
+            "lineno": frame.lineno,
+        }
+        if frame.line:
+            item["context_line"] = frame.line
+        frames.append(item)
+    return frames
+
+
+def _sentry_event_payload(env, status, method, path, message, ray="",
+                          request=None, error=None):
+    text = str(message or "")
+    event = {
+        "event_id": _sentry_event_id(),
+        "timestamp": int(Date.now()) / 1000,
+        "platform": "python",
+        "logger": "forkmesh.cloudflare_worker",
+        "level": "error" if int(status or 0) >= 500 else "warning",
+        "message": text[:1000] or ("HTTP " + str(status)),
+        "transaction": str(path or ""),
+        "server_name": str(getattr(env, "NODE_NAME", "") or "cloudflare-worker"),
+        "release": _build_rev(env),
+        "tags": {
+            "runtime": "cloudflare-python-worker",
+            "method": str(method or ""),
+            "status": str(status or ""),
+        },
+        "contexts": {
+            "cloudflare": _sentry_cloudflare_context(request, ray),
+            "runtime": {"name": "Cloudflare Python Workers"},
+        },
+        "extra": {"error_log_message": text[:8000]},
+    }
+    req = _sentry_request_payload(request)
+    if req:
+        event["request"] = req
+    if error is not None:
+        exception = {
+            "type": type(error).__name__,
+            "value": _safe_error_text(error)[:1000],
+        }
+        frames = _sentry_stack_frames(error)
+        if frames:
+            exception["stacktrace"] = {"frames": frames}
+        event["exception"] = {"values": [exception]}
+    return event
+
+
+async def capture_sentry_error(env, status, method, path, message, ray="",
+                               request=None, error=None):
+    """Send one Sentry event with vanilla Python + Worker fetch. Best-effort."""
+    try:
+        parts = _sentry_dsn_parts(getattr(env, "SENTRY_DSN", ""))
+        if not parts:
+            return False
+        event = _sentry_event_payload(
+            env, status, method, path, message, ray, request, error)
+        envelope = (
+            json.dumps({"event_id": event["event_id"], "dsn": parts["dsn"]}) +
+            "\n" + json.dumps({"type": "event"}) +
+            "\n" + json.dumps(event) + "\n"
+        )
+        from js import fetch as js_fetch
+        resp = await js_fetch(parts["endpoint"], to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/x-sentry-envelope",
+                "x-sentry-auth": parts["auth"],
+            },
+            "body": envelope,
+        }))
+        return 200 <= int(getattr(resp, "status", 0)) < 300
+    except Exception:
+        return False
+
+
 def _html_escape(value):
     return (
         str(value)
@@ -7940,8 +8108,11 @@ def _html_escape(value):
     )
 
 
-async def log_error(env, status, method, path, message, ray=""):
+async def log_error(env, status, method, path, message, ray="", request=None,
+                    error=None):
     """Record a 5xx / unhandled error. Best-effort: never raises."""
+    await capture_sentry_error(
+        env, status, method, path, message, ray, request=request, error=error)
     try:
         await ensure_schema(env)
         await d1_run(
@@ -9226,6 +9397,8 @@ class Default(WorkerEntrypoint):
                 self.env, 500, method_name(request), url.path,
                 (repr(error) + "\n" + traceback.format_exc()),
                 request.headers.get("cf-ray") or "",
+                request=request,
+                error=error,
             )
             return json_response({"error": "internal_error"}, status=500)
         try:
@@ -9236,6 +9409,7 @@ class Default(WorkerEntrypoint):
             await log_error(
                 self.env, status, method_name(request), url.path,
                 "response status %d" % status, request.headers.get("cf-ray") or "",
+                request=request,
             )
         return response
 
@@ -9437,6 +9611,10 @@ class Default(WorkerEntrypoint):
                     "now": Date.now(),
                 }
             )
+
+        if url.path in ("/simulate-sentry-error", "/simulate-sentry-error/"):
+            division_by_zero = 1 / 0
+            return json_response({"ok": False, "value": division_by_zero})
 
         # Cached aggregate stats for the homepage/network page. Served before the
         # per-repo handlers so a burst of visitors collapses to one computation

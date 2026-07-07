@@ -27,6 +27,7 @@ not_found_handling = "404-page"
 run_worker_first = [
   "/api/*",
   "/health",
+  "/simulate-sentry-error",
   "/admin-*",
   "/dashboard",
   "/dashboard.js",
