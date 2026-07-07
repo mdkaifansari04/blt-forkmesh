@@ -19,6 +19,15 @@
             "title": "create a button on the account row in the admin to migrate the account to either a user or a node  nodes will no longer join the chat but users will show all users in the chat",
             "ts": 1783439476548,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "62c8b354-8702-4958-9598-10bd687cc244",
+            "sig": "zyFBozuR8_xw1eSvsZTRg8z1V5dduTA7O9BswuUAv9ms81f7-2pv8al2xUZW9YdexO85gnx5OpONXeflVD4DAQ",
+            "status": "closed",
+            "ts": 1783446271459,
+            "type": "status"
         }
     ],
     "labels": [
@@ -28,8 +37,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "create a button on the account row in the admin to migrate the account to either a user or a node  nodes will no longer join the chat but users will show all users in the chat",
-    "updatedAt": 1783439476548,
+    "updatedAt": 1783446271459,
     "votes": 0
 }
