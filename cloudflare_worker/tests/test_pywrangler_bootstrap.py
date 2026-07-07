@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_pywrangler_wrapper_does_not_detect_itself_as_path_binary():
     script = """
         set -eu
+        PATH='/usr/bin:/bin'
         . ./pywrangler.sh
         if type -P pywrangler >/dev/null 2>&1; then
             exit 77

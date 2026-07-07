@@ -5425,6 +5425,52 @@ async def _account_login(env, request):
     )
 
 
+async def _account_rotate(env, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
+    new_pubkey = clean_string(data.get("newPubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
+        return json_response({"error": "invalid_pubkey"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+
+    name_bi, rec = await _account_row(env, name)
+    if not rec or rec.get("status") != "active":
+        return json_response({"error": "no_account"}, status=404)
+
+    current_pubkey = clean_string(rec.get("pubkey", ""), 120)
+    if current_pubkey == new_pubkey:
+        return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+    if current_pubkey != old_pubkey:
+        return json_response({"error": "not_bound"}, status=403)
+
+    canonical = ("forkmesh-account-rotate-v1\n" + name + "\n" +
+                 old_pubkey + "\n" + new_pubkey + "\n" + str(ts)).encode()
+    if not await ed25519_verify(old_pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    prev_pubkeys = rec.get("prev_pubkeys")
+    if not isinstance(prev_pubkeys, list):
+        prev_pubkeys = []
+    if old_pubkey not in prev_pubkeys:
+        prev_pubkeys.append(old_pubkey)
+    rec["pubkey"] = new_pubkey
+    rec["prev_pubkeys"] = prev_pubkeys
+    rec["rotated_at"] = int(Date.now())
+    await _save_account(env, name_bi, rec)
+    return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+
+
 async def _account_logout(env, request):
     return json_response(
         {"ok": True},
@@ -7483,6 +7529,8 @@ async def accounts_handler(env, request):
         return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
+    if url.path == "/api/accounts/rotate" and method == "POST":
+        return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":

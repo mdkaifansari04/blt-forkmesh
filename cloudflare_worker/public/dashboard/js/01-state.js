@@ -45,6 +45,7 @@
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
+    repositoryViewMode: "list",
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -54,4 +55,5 @@
   const REPO_COLLECTION_PAGE_SIZE = 5;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
   const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
+  const DASHBOARD_REPO_VIEW_KEY = "forkmesh.dashboard.repoView";
   const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;

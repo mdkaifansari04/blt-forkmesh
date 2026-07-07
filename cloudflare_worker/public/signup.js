@@ -134,13 +134,25 @@
 
     createButton.disabled = true;
     createButton.textContent = "Creating…";
-    const { ok, body } = await api("/api/accounts/signup", {
-      method: "POST",
-      body: JSON.stringify({ nodeName, email, password }),
-    });
-    createButton.textContent = "Create account";
+    let result = null;
+    let created = false;
+    try {
+      result = await api("/api/accounts/signup", {
+        method: "POST",
+        body: JSON.stringify({ nodeName, email, password }),
+      });
+      created = Boolean(result.ok);
+    } catch (_) {
+      setSignupHint("Network error - please try again.", "bad");
+      return;
+    } finally {
+      if (!created) {
+        createButton.disabled = false;
+        createButton.textContent = "Create account";
+      }
+    }
+    const { ok, body } = result;
     if (!ok) {
-      createButton.disabled = false;
       setSignupHint(
         body.error === "node_name_taken" ? "That username was just taken - try another."
           : body.error === "email_taken" ? "That email is already registered."
@@ -149,6 +161,8 @@
         "bad");
       return;
     }
+    createButton.disabled = true;
+    createButton.textContent = "Opening dashboard…";
     storeSession(body);
     setSignupHint("Account created. Opening your dashboard…", "good");
     window.setTimeout(() => { location.href = "/dashboard"; }, 500);
