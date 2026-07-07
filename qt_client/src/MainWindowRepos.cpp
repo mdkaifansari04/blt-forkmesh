@@ -2747,6 +2747,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const int websiteServed = qMax(0, serveStats.first - serveStats.second);
     QJsonObject metadata{{"owner", owner},
                          {"name", name},
+                         {"ownerUser", nodeOwnerDisplayName()},
                          {"commit", headCommit},
                          {"branch", headBranch},
                          {"issueCount", QString::number(issueCount)},

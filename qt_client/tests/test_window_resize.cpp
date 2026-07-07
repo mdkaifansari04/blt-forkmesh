@@ -871,13 +871,16 @@ int main(int argc, char *argv[])
                 QStringLiteral("1111111111111111111111111111111111111111");
             advert.updatedMs = 1000;
             MemberInfo oldIdentity = testMember(QStringLiteral("mirror1-old-key"),
-                                                QStringLiteral("mirror1"));
+                                                QStringLiteral("alice"));
+            oldIdentity.nodeName = QStringLiteral("mirror1");
             oldIdentity.version = QStringLiteral("0.5.9");
             oldIdentity.mirrorDetails.append(advert);
             MemberInfo newIdentity = testMember(QStringLiteral("mirror1-new-key"),
-                                                QStringLiteral("mirror1"));
+                                                QStringLiteral("alice"));
+            newIdentity.nodeName = QStringLiteral("mirror1");
             newIdentity.version = QStringLiteral("0.5.30");
             newIdentity.platform = QStringLiteral("linux");
+            newIdentity.ownerUser = QStringLiteral("alice");
             newIdentity.diskUsedBytes = 40 * 1024 * 1024;
             newIdentity.diskTotalBytes = 100 * 1024 * 1024;
             advert.worktreeCount = 3;
@@ -885,7 +888,9 @@ int main(int argc, char *argv[])
             MemberInfo offlineNode = testMember(QStringLiteral("offline-key"),
                                                 QStringLiteral("offline-node"));
             offlineNode.online = false;
-            offlineNode.mirrorDetails.append(advert);
+            MirrorAdvert offlineAdvert = advert;
+            offlineAdvert.ownerName = QStringLiteral("offline-node/wtrepo");
+            offlineNode.mirrorDetails.append(offlineAdvert);
             dupRoster.append(oldIdentity);
             dupRoster.append(newIdentity);
             dupRoster.append(offlineNode);
@@ -919,13 +924,16 @@ int main(int argc, char *argv[])
                           "(got id %1)").arg(mirror1Id));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 9) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+                      QStringLiteral("alice"),
+                  QStringLiteral("Mirror nodes Owner column shows the node owner"));
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 10) ==
                       QStringLiteral("3"),
                   QStringLiteral("Mirror nodes Worktrees column is populated before CPU/RAM/Disk"));
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 12)
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 13)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 13) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 14) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);

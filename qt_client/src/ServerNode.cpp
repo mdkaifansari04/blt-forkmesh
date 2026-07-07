@@ -233,13 +233,16 @@ QString stableOrRandomNodeId(const QString &stableNodeId)
 
 } // namespace
 
-ServerNode::ServerNode(const QString &userName, const QString &stableNodeId,
+ServerNode::ServerNode(const QString &userName, const QString &nodeName,
+                       const QString &ownerUser, const QString &stableNodeId,
                        const QUrl &serverUrl,
                        const QString &roomName,
                        const QString &solanaAddress,
                        QObject *parent)
     : ChatBackend(parent),
       m_userName(userName),
+      m_nodeName(nodeName.trimmed().left(kMaxDisplayNameChars)),
+      m_ownerUser(ownerUser.trimmed().left(kMaxDisplayNameChars)),
       m_url(serverUrl),
       m_roomName(roomName.trimmed()),
       m_solanaAddress(solanaAddress.trimmed().left(kMaxSolanaAddressChars)),
@@ -716,6 +719,10 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
                         {"senderId", m_nodeId},
                         {"sender", m_userName.left(kMaxDisplayNameChars)},
                         {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
+    if (!m_nodeName.isEmpty())
+        message.insert("nodeName", m_nodeName);
+    if (!m_ownerUser.isEmpty())
+        message.insert("ownerUser", m_ownerUser);
     if (!m_solanaAddress.isEmpty())
         message.insert("solana", m_solanaAddress);
     if (!m_platform.isEmpty())
@@ -1069,6 +1076,19 @@ void ServerNode::setUserName(const QString &name)
         sendHello();
 }
 
+void ServerNode::setNodeIdentity(const QString &nodeName, const QString &ownerUser)
+{
+    const QString node = nodeName.trimmed().left(kMaxDisplayNameChars);
+    const QString owner = ownerUser.trimmed().left(kMaxDisplayNameChars);
+    if (node == m_nodeName && owner == m_ownerUser)
+        return;
+    m_nodeName = node;
+    m_ownerUser = owner;
+    updateRosterAndStatus();
+    if (m_wsReady)
+        sendHello();
+}
+
 void ServerNode::forgetMember(const QString &peerId)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
@@ -1175,11 +1195,14 @@ void ServerNode::handlePlain(const QJsonObject &message)
         return;
     const QString senderId = message.value("senderId").toString();
     const QString sender = message.value("sender").toString();
+    const QString nodeName = boundedText(message, "nodeName", kMaxDisplayNameChars);
+    const QString ownerUser = boundedText(message, "ownerUser", kMaxDisplayNameChars);
     const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
     const QString platform = message.value("platform").toString().left(16);
     const QString version = boundedText(message, "version", kMaxVersionChars);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, solanaAddress, platform, version);
+        rememberPeer(senderId, sender, nodeName, ownerUser, solanaAddress, platform,
+                     version);
 
     // Host resource telemetry (CPU/RAM/disk) the sender advertised; refresh the
     // peer's cached figures so the Mirror nodes view's bars track live load.
@@ -1444,13 +1467,19 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
 }
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
-                              const QString &solanaAddress, const QString &platform,
+                              const QString &nodeName, const QString &ownerUser,
+                              const QString &solanaAddress,
+                              const QString &platform,
                               const QString &version, bool online)
 {
     if (peerId.isEmpty() || peerId == m_nodeId)
         return;
     Peer &peer = m_peers[peerId];
     peer.name = name.isEmpty() ? peer.name : name;
+    if (!nodeName.trimmed().isEmpty())
+        peer.nodeName = nodeName.trimmed().left(kMaxDisplayNameChars);
+    if (!ownerUser.trimmed().isEmpty())
+        peer.ownerUser = ownerUser.trimmed().left(kMaxDisplayNameChars);
     if (!solanaAddress.trimmed().isEmpty())
         peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
     if (!platform.isEmpty())
@@ -1486,6 +1515,8 @@ void ServerNode::flushRosterAndStatus()
     MemberInfo self;
     self.id = m_nodeId;
     self.name = m_userName;
+    self.nodeName = m_nodeName.isEmpty() ? m_userName : m_nodeName;
+    self.ownerUser = m_ownerUser;
     self.self = true;
     self.online = m_wsReady;
     self.solanaAddress = m_solanaAddress;
@@ -1511,6 +1542,8 @@ void ServerNode::flushRosterAndStatus()
         MemberInfo member;
         member.id = it.key();
         member.name = it->name;
+        member.nodeName = it->nodeName;
+        member.ownerUser = it->ownerUser;
         member.note = QString();
         member.online = it->online;
         member.solanaAddress = it->solanaAddress;

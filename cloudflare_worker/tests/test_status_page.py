@@ -35,6 +35,10 @@ def _load(*names, extra_globals=None):
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
+        "STATUS_HOUR_MS", "STATUS_DAY_MS",
+    }
+    helper_names = {
+        "_status_expected_checks_for_hour", "_status_effective_hour",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -46,7 +50,10 @@ def _load(*names, extra_globals=None):
             targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
             if targets & want_assigns:
                 selected.append(node)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in set(names) | helper_names
+        ):
             selected.append(node)
     found = {n.name for n in selected if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     missing = set(names) - found
@@ -211,27 +218,38 @@ def _run_history(rows, hour_rows=()):
     return captured
 
 
-def test_no_data_yields_unknown_status_and_null_uptime():
+def test_no_data_counts_as_downtime():
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
-    assert by_id["website"]["status"] == "unknown"
-    assert by_id["website"]["uptimePct"] is None
+    assert by_id["website"]["status"] == "down"
+    assert by_id["website"]["uptimePct"] == 0.0
+    assert by_id["website"]["uptime24hPct"] == 0.0
     assert len(by_id["website"]["days"]) == 30
 
 
 def test_all_checks_passing_today_is_operational():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     rows = [{"day_ts": cur_day, "system": "website", "checks": 60, "failures": 0}]
-    out = _run_history(rows)
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "website", "checks": 60,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["website"]["status"] == "operational"
-    assert by_id["website"]["uptimePct"] == 100.0
+    assert by_id["website"]["uptime24hPct"] < 100.0
 
 
 def test_all_checks_failing_today_is_down():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     rows = [{"day_ts": cur_day, "system": "api", "checks": 10, "failures": 10}]
-    out = _run_history(rows)
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "api", "checks": 60,
+         "failures": 60, "reason": "all checks failed"},
+    ]
+    out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["api"]["status"] == "down"
     assert by_id["api"]["uptimePct"] == 0.0
@@ -239,11 +257,16 @@ def test_all_checks_failing_today_is_down():
 
 def test_some_checks_failing_today_is_degraded():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     rows = [{"day_ts": cur_day, "system": "database", "checks": 10, "failures": 3}]
-    out = _run_history(rows)
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "database", "checks": 60,
+         "failures": 18, "reason": "db timeouts"},
+    ]
+    out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["database"]["status"] == "degraded"
-    assert by_id["database"]["uptimePct"] == 70.0
+    assert by_id["database"]["uptime24hPct"] < 100.0
 
 
 def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
@@ -253,7 +276,14 @@ def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
         {"day_ts": old_day, "system": "website", "checks": 60, "failures": 60},
         {"day_ts": cur_day, "system": "website", "checks": 60, "failures": 0},
     ]
-    out = _run_history(rows)
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {"hour_ts": old_day, "system": "website", "checks": 60,
+         "failures": 60, "reason": "old outage"},
+        {"hour_ts": cur_hour, "system": "website", "checks": 60,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     # Status reflects today (operational), even though the 30-day aggregate
     # uptime is dragged down by the old incident.
@@ -269,11 +299,11 @@ def test_current_status_uses_latest_hour_not_the_whole_days_aggregate():
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     rows = [{"day_ts": cur_day, "system": "api", "checks": 3, "failures": 1}]
     hour_rows = [
-        {"hour_ts": cur_hour - 2 * HOUR_MS, "system": "api", "checks": 1,
-         "failures": 1, "reason": "502 on /api/x: boom"},
-        {"hour_ts": cur_hour - 1 * HOUR_MS, "system": "api", "checks": 1,
+        {"hour_ts": cur_hour - 2 * HOUR_MS, "system": "api", "checks": 60,
+         "failures": 60, "reason": "502 on /api/x: boom"},
+        {"hour_ts": cur_hour - 1 * HOUR_MS, "system": "api", "checks": 60,
          "failures": 0, "reason": None},
-        {"hour_ts": cur_hour, "system": "api", "checks": 1,
+        {"hour_ts": cur_hour, "system": "api", "checks": 60,
          "failures": 0, "reason": None},
     ]
     out = _run_history(rows, hour_rows)
@@ -313,9 +343,9 @@ def test_recovered_git_hosting_earlier_today_clears_the_badge():
 def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
-    rows = [{"day_ts": cur_day, "system": "api", "checks": 2, "failures": 1}]
+    rows = [{"day_ts": cur_day, "system": "api", "checks": 60, "failures": 30}]
     hour_rows = [
-        {"hour_ts": cur_hour, "system": "api", "checks": 2, "failures": 1,
+        {"hour_ts": cur_hour, "system": "api", "checks": 60, "failures": 30,
          "reason": "500 on /api/x: boom"},
     ]
     out = _run_history(rows, hour_rows)
@@ -328,20 +358,22 @@ def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     assert this_hour["reason"] == "500 on /api/x: boom"
 
 
-def test_hour_with_no_checks_is_unknown_and_has_no_reason():
+def test_hour_with_no_checks_is_down_and_explains_missing_samples():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     out = _run_history([], hour_rows=())
     by_id = {s["id"]: s for s in out["systems"]}
     today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
-    assert all(h["status"] == "unknown" for h in today["hours"])
-    assert all(h["reason"] is None for h in today["hours"])
+    elapsed = [h for h in today["hours"] if h["expectedChecks"]]
+    assert elapsed
+    assert all(h["status"] == "down" for h in elapsed)
+    assert all("treated as downtime" in h["reason"] for h in elapsed)
 
 
 def test_operational_hour_does_not_carry_a_stale_reason():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     hour_rows = [
-        {"hour_ts": cur_hour, "system": "website", "checks": 1, "failures": 0,
+        {"hour_ts": cur_hour, "system": "website", "checks": 60, "failures": 0,
          "reason": "stale reason from an earlier failure this hour"},
     ]
     out = _run_history([], hour_rows)
@@ -565,7 +597,13 @@ def test_status_page_asset_and_redirect_exist():
     assert 'fetch("/api/status"' in status_html
     assert "status-day" in status_html
     assert "status-day-hour" in status_html
+    assert "status-day-stack" in status_html
+    assert "status-hour-bar" in status_html
+    assert "status-hour-detail" in status_html
     assert "hourTooltip" in status_html
+    assert "uptime24hPct" in status_html
+    assert "Missing elapsed samples count as downtime" in status_html
+    assert "cell.classList.add(\"is-hovered\")" in status_html
 
     redirects = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
     assert "/status /status.html 200" in redirects

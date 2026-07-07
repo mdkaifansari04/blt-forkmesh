@@ -20,8 +20,11 @@ def test_chat_backend_starts_with_user_display_name_not_node_name():
     setup = SETUP.read_text(encoding="utf-8")
 
     assert "QString chatDisplayName() const;" in header
+    assert "QString nodeOwnerDisplayName() const;" in header
     assert "void updateChatIdentity();" in header
-    assert "new ServerNode(chatDisplayName(), m_profileIdentity.publicKey()" in setup
+    assert "new ServerNode(chatDisplayName(), accountOwner()," in setup
+    assert "nodeOwnerDisplayName()," in setup
+    assert "m_profileIdentity.publicKey()" in setup
 
 
 def test_chat_identity_pushes_user_name_and_user_avatar():
@@ -34,6 +37,7 @@ def test_chat_identity_pushes_user_name_and_user_avatar():
 
     assert "const QString name = chatDisplayName();" in body
     assert "m_backend->setUserName(name);" in body
+    assert "m_backend->setNodeIdentity(accountOwner(), nodeOwnerDisplayName());" in body
     assert "const QByteArray avatar = effectiveUserAvatar();" in body
     assert "m_backend->setAvatar(avatar);" in body
     assert "effectiveAvatar()" not in body

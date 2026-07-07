@@ -36,7 +36,7 @@
           <p class="hero-copy">
             Live status for the website, API, database, git hosting network, and
             realtime sync — each with a 30-day uptime history, sampled once a
-            minute.
+            minute. Missing elapsed samples count as downtime.
           </p>
         </div>
       </section>
@@ -76,7 +76,7 @@
         <div class="panel-header">
           <div>
             <h2 id="status-systems-title">Systems</h2>
-            <p>Each bar is one day, split into hourly slivers. Hover an hour for its status and, if degraded or down, why.</p>
+            <p>Each top bar is one day; the strip below it is that day split into 24 hourly checks. Hover an hour for its status and reason.</p>
           </div>
         </div>
         <div style="padding: 4px 16px 16px">
@@ -87,7 +87,7 @@
             <span class="status-legend-item"><span class="status-dot is-operational"></span>Operational</span>
             <span class="status-legend-item"><span class="status-dot is-degraded"></span>Degraded</span>
             <span class="status-legend-item"><span class="status-dot is-down"></span>Down</span>
-            <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data</span>
+            <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data (counts as down)</span>
             <span class="status-legend-item"><span class="status-day-hour-swatch is-future"></span>Later today (not elapsed)</span>
           </div>
         </div>
@@ -190,7 +190,17 @@
           const when = fmtDay(dayTs) + ", " + fmtHourRange(hour.hourTs);
           const label = HOUR_STATUS_LABEL[hour.status] || "No data";
           let text = when + ": " + label;
-          if (hour.status !== "unknown" && hour.checks) {
+          if (hour.expectedChecks) {
+            const failed = typeof hour.effectiveFailures === "number"
+              ? hour.effectiveFailures
+              : hour.failures || 0;
+            const passed = Math.max(0, hour.expectedChecks - failed);
+            text += " (" + passed + "/" + hour.expectedChecks + " expected samples passed";
+            if (hour.missingChecks) {
+              text += "; " + hour.missingChecks + " missing counted as down";
+            }
+            text += ")";
+          } else if (hour.status !== "future" && hour.checks) {
             text += " (" + (hour.checks - hour.failures) + "/" + hour.checks + " checks passed)";
           }
           if (hour.reason) text += " — " + hour.reason;
@@ -385,9 +395,13 @@
 
             const meta = document.createElement("div");
             meta.className = "status-row-meta";
-            const uptimeText = typeof system.uptimePct === "number"
+            const uptime24 = typeof system.uptime24hPct === "number"
+              ? system.uptime24hPct.toFixed(2) + "% uptime (24h)"
+              : "No 24h data yet";
+            const uptime30 = typeof system.uptimePct === "number"
               ? system.uptimePct.toFixed(2) + "% uptime (30d)"
-              : "No data yet";
+              : "No 30d data yet";
+            const uptimeText = uptime24 + " · " + uptime30;
             meta.textContent = uptimeText;
             head.appendChild(meta);
             row.appendChild(head);
@@ -402,9 +416,15 @@
 
             const days = document.createElement("div");
             days.className = "status-days";
+            const detail = document.createElement("div");
+            detail.className = "status-hour-detail";
+            const defaultDetail = "Hover an hourly strip for details. Missing elapsed samples count as downtime.";
+            detail.textContent = defaultDetail;
             const dayList = system.days || [];
             dayList.forEach((day, dayIndex) => {
               const isLastDay = dayIndex === dayList.length - 1;
+              const stack = document.createElement("div");
+              stack.className = "status-day-stack";
               const cell = document.createElement("div");
               const hours = day.hours && day.hours.length ? day.hours : [];
               // A day only ever has < 24 hours when it's the current, still-
@@ -412,43 +432,91 @@
               // "no data": render the elapsed hours plus dimmed placeholders
               // for the hours that simply haven't happened yet.
               const isPartialToday = isLastDay && hours.length > 0 && hours.length < 24;
-              const state = !day.checks
+              const expectedChecks = day.expectedChecks || day.checks || 0;
+              const effectiveFailures = typeof day.effectiveFailures === "number"
+                ? day.effectiveFailures
+                : day.failures || 0;
+              const state = !expectedChecks
                 ? "unknown"
-                : day.failures === 0
+                : effectiveFailures === 0
                 ? "operational"
-                : day.failures >= day.checks
+                : effectiveFailures >= expectedChecks
                 ? "down"
                 : "degraded";
               cell.className = "status-day is-" + state +
-                (hours.length ? " has-hours" : "") +
                 (isPartialToday ? " is-partial" : "");
-              const label = day.checks
+              const label = expectedChecks
                 ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime" +
                   (isPartialToday ? " so far (" + hours.length + "/24h elapsed)" : "")
                 : fmtDay(day.dayTs) + ": no data";
               cell.setAttribute("aria-label", label);
+              cell.title = label;
+              stack.appendChild(cell);
 
+              const hourBar = document.createElement("div");
+              hourBar.className = "status-hour-bar";
+              const setDetail = (text) => {
+                cell.classList.add("is-hovered");
+                detail.textContent = text;
+              };
+              const clearDetail = () => {
+                cell.classList.remove("is-hovered");
+                detail.textContent = defaultDetail;
+              };
               hours.forEach((hour) => {
                 const slice = document.createElement("div");
-                slice.className = "status-day-hour is-" + (hour.status || "unknown");
-                slice.title = hourTooltip(day.dayTs, hour);
-                cell.appendChild(slice);
+                const tooltip = hourTooltip(day.dayTs, hour);
+                slice.className = "status-day-hour status-hour-slice is-" +
+                  (hour.status || "unknown");
+                slice.title = tooltip;
+                slice.tabIndex = 0;
+                slice.setAttribute("aria-label", tooltip);
+                slice.addEventListener("mouseenter", () => setDetail(tooltip));
+                slice.addEventListener("mouseleave", clearDetail);
+                slice.addEventListener("focus", () => setDetail(tooltip));
+                slice.addEventListener("blur", clearDetail);
+                hourBar.appendChild(slice);
               });
               if (isPartialToday) {
                 for (let h = hours.length; h < 24; h++) {
                   const slice = document.createElement("div");
-                  slice.className = "status-day-hour is-future";
-                  slice.title = fmtDay(day.dayTs) + ", " + fmtHourRange(day.dayTs + h * 3600000) +
+                  const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(day.dayTs + h * 3600000) +
                     ": hasn't happened yet";
-                  cell.appendChild(slice);
+                  slice.className = "status-day-hour status-hour-slice is-future";
+                  slice.title = tooltip;
+                  slice.tabIndex = 0;
+                  slice.setAttribute("aria-label", tooltip);
+                  slice.addEventListener("mouseenter", () => setDetail(tooltip));
+                  slice.addEventListener("mouseleave", clearDetail);
+                  slice.addEventListener("focus", () => setDetail(tooltip));
+                  slice.addEventListener("blur", clearDetail);
+                  hourBar.appendChild(slice);
                 }
               }
-              if (!hours.length) cell.title = label;
-              else if (isPartialToday) cell.title = label;
+              if (!hours.length) {
+                for (let h = 0; h < 24; h++) {
+                  const hourTs = day.dayTs + h * 3600000;
+                  if (hourTs > now) break;
+                  const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(hourTs) +
+                    ": Down — no status sample recorded; treated as downtime.";
+                  const slice = document.createElement("div");
+                  slice.className = "status-day-hour status-hour-slice is-down";
+                  slice.title = tooltip;
+                  slice.tabIndex = 0;
+                  slice.setAttribute("aria-label", tooltip);
+                  slice.addEventListener("mouseenter", () => setDetail(tooltip));
+                  slice.addEventListener("mouseleave", clearDetail);
+                  slice.addEventListener("focus", () => setDetail(tooltip));
+                  slice.addEventListener("blur", clearDetail);
+                  hourBar.appendChild(slice);
+                }
+              }
 
-              days.appendChild(cell);
+              stack.appendChild(hourBar);
+              days.appendChild(stack);
             });
             row.appendChild(days);
+            row.appendChild(detail);
 
             list.appendChild(row);
           });

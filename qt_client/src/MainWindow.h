@@ -669,6 +669,7 @@ private:
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, earnings
     QString topBarUserName() const; // linked user/account name shown in the top bar
+    QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar

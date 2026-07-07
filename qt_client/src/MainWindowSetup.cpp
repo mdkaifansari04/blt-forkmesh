@@ -1127,7 +1127,9 @@ void MainWindow::startSession()
     QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
     persistEditsToActiveServer();
     const QUrl url(fullServerUrl);
-    auto *server = new ServerNode(chatDisplayName(), m_profileIdentity.publicKey(), url,
+    auto *server = new ServerNode(chatDisplayName(), accountOwner(),
+                                  nodeOwnerDisplayName(),
+                                  m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
                                   m_solanaEdit->text().trimmed(), this);
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
@@ -1683,6 +1685,24 @@ QString MainWindow::topBarUserName() const
     return accountNameFromInput(m_userName, QString());
 }
 
+QString MainWindow::nodeOwnerDisplayName() const
+{
+    const QString linkedOwner = m_nodeOwnerUser.trimmed().toLower();
+    if (!linkedOwner.isEmpty())
+        return linkedOwner;
+
+    const QString account = accountOwner().trimmed().toLower();
+    if (account.isEmpty())
+        return QString();
+
+    // User accounts own their node fleet directly. Bare node accounts leave this
+    // blank until the relay tells us which user owns them.
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
+        return account;
+
+    return QString();
+}
+
 QString MainWindow::chatDisplayName() const
 {
     const QString user = topBarUserName().trimmed();
@@ -1700,6 +1720,7 @@ void MainWindow::updateChatIdentity()
         m_backend->setUserName(name);
         m_lastChatDisplayName = name;
     }
+    m_backend->setNodeIdentity(accountOwner(), nodeOwnerDisplayName());
     const QByteArray avatar = effectiveUserAvatar();
     if (avatar != m_lastChatAvatar) {
         m_backend->setAvatar(avatar);

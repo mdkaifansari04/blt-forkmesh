@@ -282,6 +282,7 @@ def build_repo_mirrors_payload(
         mirrors.append({
             "node": str(rec.get("owner") or "").strip(),
             "owner": str(rec.get("owner") or "").strip(),
+            "ownerUser": str(rec.get("ownerUser") or "").strip(),
             "repo": str(rec.get("name") or "").strip(),
             "status": "online" if online else "offline",
             "lastSeen": seen if online else None,
