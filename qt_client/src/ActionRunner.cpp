@@ -20,6 +20,7 @@ namespace {
 
 constexpr qsizetype kActionProcessLogChunkBytes = 16 * 1024;
 constexpr qsizetype kActionProcessLogMaxBytes = 1024 * 1024;
+constexpr qsizetype kActionProcessLogTailBytes = 128 * 1024;
 
 } // namespace
 
@@ -41,6 +42,8 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_variables = variables;
     m_stepIndex = 0;
     m_processOutputBytes = 0;
+    m_processOutputSuppressedBytes = 0;
+    m_processOutputTail.clear();
     m_processOutputTruncated = false;
 
     m_secrets.clear();
@@ -106,6 +109,10 @@ void ActionRunner::launch(Phase phase, const QString &program,
                           const QStringList &args, const QString &workingDir)
 {
     m_phase = phase;
+    m_processOutputBytes = 0;
+    m_processOutputSuppressedBytes = 0;
+    m_processOutputTail.clear();
+    m_processOutputTruncated = false;
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
     if (!workingDir.isEmpty())
@@ -178,6 +185,7 @@ void ActionRunner::onProcessFinished(int exitCode)
         const QByteArray tail = m_process->readAllStandardOutput();
         if (!tail.isEmpty())
             emitProcessOutput(tail);
+        emitSuppressedProcessOutputTail();
         m_process->deleteLater();
         m_process = nullptr;
     }
@@ -435,6 +443,7 @@ void ActionRunner::emitProcessOutput(const QByteArray &bytes)
 
     if (m_processOutputBytes >= kActionProcessLogMaxBytes) {
         emitProcessOutputTruncationNotice();
+        rememberSuppressedProcessOutput(bytes);
         return;
     }
 
@@ -449,9 +458,10 @@ void ActionRunner::emitProcessOutput(const QByteArray &bytes)
     }
 
     m_processOutputBytes += keepBytes;
-    if (keepBytes < bytes.size() ||
-        m_processOutputBytes >= kActionProcessLogMaxBytes)
+    if (keepBytes < bytes.size()) {
         emitProcessOutputTruncationNotice();
+        rememberSuppressedProcessOutput(bytes.sliced(keepBytes));
+    }
 }
 
 void ActionRunner::emitProcessOutputTruncationNotice()
@@ -460,9 +470,45 @@ void ActionRunner::emitProcessOutputTruncationNotice()
         return;
     m_processOutputTruncated = true;
     emitLog(QStringLiteral(
-                "\n!! Action output truncated after %1 KiB. The process kept "
-                "running; only the live and persisted logs were capped.\n")
-                .arg(kActionProcessLogMaxBytes / 1024));
+                "\n!! Action output exceeded %1 KiB. Suppressing middle output "
+                "to keep the app responsive; the last %2 KiB will be shown "
+                "when this step exits.\n")
+                .arg(kActionProcessLogMaxBytes / 1024)
+                .arg(kActionProcessLogTailBytes / 1024));
+}
+
+void ActionRunner::rememberSuppressedProcessOutput(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return;
+
+    m_processOutputSuppressedBytes += bytes.size();
+    m_processOutputTail.append(bytes);
+    if (m_processOutputTail.size() > kActionProcessLogTailBytes)
+        m_processOutputTail =
+            m_processOutputTail.right(kActionProcessLogTailBytes);
+}
+
+void ActionRunner::emitSuppressedProcessOutputTail()
+{
+    if (!m_processOutputTruncated || m_processOutputTail.isEmpty())
+        return;
+
+    emitLog(QStringLiteral(
+                "\n!! Showing the final %1 KiB of suppressed process output "
+                "(%2 KiB omitted).\n")
+                .arg((m_processOutputTail.size() + 1023) / 1024)
+                .arg((m_processOutputSuppressedBytes + 1023) / 1024));
+    for (qsizetype offset = 0; offset < m_processOutputTail.size();
+         offset += kActionProcessLogChunkBytes) {
+        const qsizetype chunkBytes =
+            qMin(kActionProcessLogChunkBytes,
+                 m_processOutputTail.size() - offset);
+        emitLog(QString::fromUtf8(m_processOutputTail.constData() + offset,
+                                  chunkBytes));
+    }
+    emitLog(QStringLiteral("\n!! End of suppressed process output.\n"));
+    m_processOutputTail.clear();
 }
 
 QString ActionRunner::redact(QString text) const
