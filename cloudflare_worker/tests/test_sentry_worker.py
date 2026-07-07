@@ -197,10 +197,14 @@ def test_forkmesh_deploy_pushes_sentry_dsn_secret():
 
 
 def test_forkmesh_actions_run_full_worker_pytest_suite():
-    assert "python3 -m pip install --user pytest" in CI_WORKFLOW_TEXT
-    assert "python3 -m pytest cloudflare_worker/tests" in CI_WORKFLOW_TEXT
-    assert "python3 -m pip install --user pytest" in DEPLOY_WORKFLOW_TEXT
-    assert "python3 -m pytest cloudflare_worker/tests" in DEPLOY_WORKFLOW_TEXT
+    assert "python3 -m venv .forkmesh-pytest-venv" in CI_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in CI_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests" in CI_WORKFLOW_TEXT
+    assert "python3 -m venv .forkmesh-pytest-venv" in DEPLOY_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in DEPLOY_WORKFLOW_TEXT
+    assert ".forkmesh-pytest-venv/bin/python -m pytest cloudflare_worker/tests" in DEPLOY_WORKFLOW_TEXT
+    assert "pip install --user" not in CI_WORKFLOW_TEXT
+    assert "pip install --user" not in DEPLOY_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
 
