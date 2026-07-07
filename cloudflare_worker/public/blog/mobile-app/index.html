@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>A mesh is only useful if people can reach it from the tools they already use. This feature makes ForkMesh visible across web, mobile, docs, and editor surfaces.</p>
-          <p>Carry the mesh in your pocket: browse repositories, follow activity, chat, and get notifications from a native mobile app.</p>
+          <p>Mobile app gives ForkMesh a concrete mechanism for a native pocket surface for repository activity and chat. Carry the mesh in your pocket: browse repositories, follow activity, chat, and get notifications from a native mobile app.</p>
+          <p>A distributed forge still needs clean entry points for readers, contributors, mobile users, and editor workflows. In ForkMesh, mobile app addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh exposes clean URLs, static pages, browser views, mobile clients, and IDE integrations on top of the same repository and relay model.</p>
-          <p>In practice, <strong>Mobile app</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles mobile app through the same split it uses across the product: ForkMesh exposes web, mobile, editor, docs, status, and clean URL surfaces on top of the desktop-node and mainnode model.</p>
+          <p>The behavior is intentionally narrow: Carry the mesh in your pocket: browse repositories, follow activity, chat, and get notifications from a native mobile app. Those surfaces route to live or mirrored data; they are access layers, not the canonical Git store.</p>
+          <div class="note">Title focus: Mobile app stays tied to a native pocket surface for repository activity and chat and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when discovery, browsing, and contribution need to work beyond the main desktop window.</p>
-          <p>Together with the other features in Mobile, web &amp; IDE, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use mobile app when people need to browse, contribute, learn, and receive updates outside the main desktop window.</p>
+          <p>It pairs with the rest of Mobile, web &amp; IDE because Mobile app keeps a native pocket surface for repository activity and chat connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/clean-repo-urls/">← Clean repo URLs</a>

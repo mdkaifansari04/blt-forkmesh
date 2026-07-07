@@ -5,7 +5,7 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Encrypted repo rooms · ForkMesh Blog</title>
-    <meta name="description" content="Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies — ever.">
+    <meta name="description" content="Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.">
     <link rel="canonical" href="https://forkmesh.com/blog/encrypted-repo-rooms/">
     <link rel="icon" href="/favicon/favicon.ico" sizes="any">
     <link rel="stylesheet" href="/styles.css">
@@ -13,7 +13,7 @@
     <meta property="og:url" content="https://forkmesh.com/blog/encrypted-repo-rooms/">
     <meta property="og:site_name" content="ForkMesh">
     <meta property="og:title" content="Encrypted repo rooms">
-    <meta property="og:description" content="Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies — ever.">
+    <meta property="og:description" content="Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.">
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/encrypted-repo-rooms.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/encrypted-repo-rooms.webp">
@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Chat &amp; private sharing</p>
             <h1>Encrypted repo rooms</h1>
-            <p class="lede">Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies — ever.</p>
+            <p class="lede">Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.</p>
             <div class="meta"><span class="pill">Feature 47 of 72</span><span>E2E</span><span>Chat &amp; private sharing</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/encrypted-repo-rooms.webp" alt="Abstract ForkMesh artwork for Encrypted repo rooms">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Coordination often contains context that should not be readable by infrastructure. This feature gives teams private rooms, direct messages, and repo-linked discussion without central plaintext custody.</p>
-          <p>Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies — ever.</p>
+          <p>Encrypted repo rooms gives ForkMesh a concrete mechanism for repo-scoped rooms encrypted before they touch the relay. Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever.</p>
+          <p>Project conversations often carry design, access, and coordination context that infrastructure should not read. In ForkMesh, encrypted repo rooms addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh pairs encrypted rooms and local identity with repository-aware chat surfaces, so conversation can sit beside the code while sensitive material stays protected.</p>
-          <p>In practice, <strong>Encrypted repo rooms</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles encrypted repo rooms through the same split it uses across the product: ForkMesh attaches rooms, direct messages, discussions, and browser chat to repository identity while encrypting sensitive payloads before relay.</p>
+          <p>The behavior is intentionally narrow: Every repository gets chat rooms encrypted end-to-end. The relay sees only ciphertext and persists no message bodies, ever. The mainnode can coordinate reachability and relay traffic without custody of plaintext message bodies.</p>
+          <div class="note">Title focus: Encrypted repo rooms stays tied to repo-scoped rooms encrypted before they touch the relay and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when project discussion, sharing, and private collaboration should live near the repository but remain under participant control.</p>
-          <p>Together with the other features in Chat &amp; private sharing, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use encrypted repo rooms when teams need repository-aware conversation without central plaintext custody.</p>
+          <p>It pairs with the rest of Chat &amp; private sharing because Encrypted repo rooms keeps repo-scoped rooms encrypted before they touch the relay connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/insights/">← Insights</a>

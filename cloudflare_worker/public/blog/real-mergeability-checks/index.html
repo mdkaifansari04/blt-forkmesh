@@ -59,22 +59,22 @@
           <div>
             <p class="eyebrow">Pull requests &amp; review</p>
             <h1>Real mergeability checks</h1>
-            <p class="lede">Every PR is checked with a true three-way merge against the live base branch, so &quot;can merge&quot; means it will actually merge.</p>
+            <p class="lede">Every PR is checked with a true three-way merge against the live base branch, so "can merge" means it will actually merge.</p>
             <div class="meta"><span class="pill">Feature 25 of 72</span><span>Feature</span><span>Pull requests &amp; review</span><span>3 min read</span></div>
           </div>
           <img class="hero-img" src="/assets/blog/features/real-mergeability-checks.webp" alt="Abstract ForkMesh artwork for Real mergeability checks">
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Code review is where trust and velocity meet. This feature makes review portable while preserving the familiar mechanics developers expect from modern forges.</p>
-          <p>Every PR is checked with a true three-way merge against the live base branch, so &quot;can merge&quot; means it will actually merge.</p>
+          <p>Real mergeability checks gives ForkMesh a concrete mechanism for true three-way merge checks against the live base branch. Every PR is checked with a true three-way merge against the live base branch, so "can merge" means it will actually merge.</p>
+          <p>Review becomes risky when merge state, discussion, and final application are trapped in a central service. In ForkMesh, real mergeability checks addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh combines Git branches, patch records, mergeability checks, review threads, and optional AI help inside the desktop repository workspace.</p>
-          <p>In practice, <strong>Real mergeability checks</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles real mergeability checks through the same split it uses across the product: ForkMesh derives diffs from live branches or signed patches, checks mergeability against the live base, and records review activity as portable data.</p>
+          <p>The behavior is intentionally narrow: Every PR is checked with a true three-way merge against the live base branch, so "can merge" means it will actually merge. Maintainers can verify what changed, who proposed it, and whether it will merge before touching the base branch.</p>
+          <div class="note">Title focus: Real mergeability checks stays tied to true three-way merge checks against the live base branch and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when contributors need to propose, discuss, merge, and recover changes without depending on one hosted pull-request database.</p>
-          <p>Together with the other features in Pull requests &amp; review, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use real mergeability checks when contributors need familiar review mechanics without making one hosted PR database the source of truth.</p>
+          <p>It pairs with the rest of Pull requests &amp; review because Real mergeability checks keeps true three-way merge checks against the live base branch connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/rich-diffs/">← Rich diffs</a>

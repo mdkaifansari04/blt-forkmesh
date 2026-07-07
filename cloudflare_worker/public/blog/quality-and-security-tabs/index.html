@@ -66,15 +66,15 @@
         </section>
         <article class="body">
           <h2>Why it matters</h2>
-          <p>Shipping should stay attached to the mesh, not to one CI account. This feature keeps validation, artifacts, releases, and installers close to the mirrored repo.</p>
-          <p>Per-repository quality and security views keep checks, advisories, and repository health next to the code they describe.</p>
+          <p>Quality &amp; Security tabs gives ForkMesh a concrete mechanism for repository health, checks, and advisories presented next to the code. Per-repository quality and security views keep checks, advisories, and repository health next to the code they describe.</p>
+          <p>Delivery metadata is part of a project, not a separate dashboard that should disappear during a migration. In ForkMesh, quality &amp; Security tabs addresses that need at the feature level, keeping the behavior close to the repository instead of buried in a detached hosted layer.</p>
           <h2>How ForkMesh handles it</h2>
-          <p>ForkMesh runs actions from repository metadata, records artifacts, tracks releases and tags, and can distribute content-addressed files from nodes that host them.</p>
-          <p>In practice, <strong>Quality &amp; Security tabs</strong> is designed as part of the same local-first workflow as the rest of ForkMesh: the desktop node owns the data, the relay coordinates reachability, and the repository remains the durable unit of collaboration.</p>
-          <div class="note">This post is generated from the live ForkMesh feature catalog so the blog stays aligned with <a href="/features">/features</a> as the product surface grows.</div>
+          <p>ForkMesh handles quality &amp; Security tabs through the same split it uses across the product: ForkMesh keeps runs, logs, artifacts, releases, quality signals, installers, and downloads close to the mirrored repository.</p>
+          <p>The behavior is intentionally narrow: Per-repository quality and security views keep checks, advisories, and repository health next to the code they describe. Outputs can be linked to commits and served by nodes instead of becoming opaque hosted-only assets.</p>
+          <div class="note">Title focus: Quality &amp; Security tabs stays tied to repository health, checks, and advisories presented next to the code and the local-first repository model.</div>
           <h2>Where it fits</h2>
-          <p>Use it when a project needs repeatable delivery without handing the release path to a single centralized service.</p>
-          <p>Together with the other features in CI, releases &amp; distribution, it pushes ForkMesh toward a code forge that can be hosted, mirrored, reviewed, and funded by the people using it.</p>
+          <p>Use quality &amp; Security tabs when shipping, validation, and release assets need to remain attached to the preserved repository.</p>
+          <p>It pairs with the rest of CI, releases &amp; distribution because Quality &amp; Security tabs keeps repository health, checks, and advisories presented next to the code connected to the repository, its signatures, and the nodes that serve it.</p>
         </article>
         <nav class="next" aria-label="Feature posts">
           <a href="/blog/one-line-installer/">← One-line installer</a>
