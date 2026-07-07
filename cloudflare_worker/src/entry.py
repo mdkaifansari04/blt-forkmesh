@@ -8553,6 +8553,61 @@ async def telemetry_handler(env, request):
     return json_response({"ok": True}, cache_control="no-store")
 
 
+async def feedback_handler(env, request):
+    # Anonymous website feedback from static pages. This is intentionally
+    # unauthenticated: the goal is click-level docs usefulness tracking, not user
+    # identity. The body is capped before JSON parsing and the table is pruned
+    # after inserts so this open endpoint cannot grow D1 without limit.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        raw = await request.text()
+    except Exception:
+        raw = ""
+    if len(raw) > FEEDBACK_MAX_BODY:
+        return json_response({"error": "payload_too_large"}, status=413,
+                             cache_control="no-store")
+    try:
+        payload = json.loads(raw) if raw else None
+    except Exception:
+        payload = None
+    fields = _feedback_fields(payload)
+    if not fields:
+        return json_response({"error": "invalid_feedback"}, status=400,
+                             cache_control="no-store")
+
+    source, vote, path, message = fields
+    try:
+        headers = request.headers
+    except Exception:
+        headers = {}
+    ip = (headers.get("cf-connecting-ip") or "").strip()
+    if not ip:
+        fwd = (headers.get("x-forwarded-for") or "").strip()
+        ip = fwd.split(",")[0].strip() if fwd else ""
+    ip = ip[:64]
+    user_agent = _sanitize_feedback_text(
+        headers.get("user-agent") or "", FEEDBACK_MAX_USER_AGENT)
+    try:
+        await ensure_schema(env)
+        ip_hash = await blind_index(env, ip) if ip else ""
+        await d1_run(
+            env,
+            """INSERT INTO feedback (ts, source, vote, path, message, ip_hash, user_agent)
+               VALUES (?,?,?,?,?,?,?)""",
+            int(Date.now()), source, vote, path, message, ip_hash, user_agent,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM feedback WHERE id NOT IN
+               (SELECT id FROM feedback ORDER BY id DESC LIMIT ?)""",
+            MAX_FEEDBACK,
+        )
+    except Exception:
+        pass
+    return json_response({"ok": True}, cache_control="no-store")
+
+
 def _validate_security_report(payload):
     """Validate and sanitize a vulnerability report payload. Pure (no I/O).
 
@@ -9916,6 +9971,10 @@ class Default(WorkerEntrypoint):
         # anonymized node hash only). See telemetry_handler / issue #354.
         if url.path in ("/api/telemetry", "/api/telemetry/"):
             return await telemetry_handler(self.env, request)
+
+        # Anonymous docs/page feedback: like/dislike clicks with optional text.
+        if url.path in ("/api/feedback", "/api/feedback/"):
+            return await feedback_handler(self.env, request)
 
         # Private vulnerability reports — stored encrypted, emailed to security@.
         if url.path in ("/api/security/report", "/api/security/report/"):
