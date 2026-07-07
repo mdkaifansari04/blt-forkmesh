@@ -88,6 +88,11 @@ FEEDBACK_MAX_PATH = 300
 FEEDBACK_MAX_USER_AGENT = 300
 FEEDBACK_SOURCES = frozenset({"docs"})
 FEEDBACK_VOTES = frozenset({"like", "dislike"})
+MAX_PROFILE_BIO = 500
+MAX_PROFILE_LINKS = 4
+MAX_PROFILE_LINK_LABEL = 60
+MAX_PROFILE_LINK_URL = 300
+PROFILE_TXT_PREFIX = "forkmesh-profile="
 MAX_FILES = 5000
 # Issue inbox: a single signed event body is small text; cap it and the number
 # of un-merged submissions a repo's inbox will hold.
@@ -138,6 +143,36 @@ NOTIFICATION_KINDS = frozenset({
     "credits_refilled",
     "pending_inbox",
 })
+NOTIFICATION_EMAIL_KINDS = (
+    "mention",
+    "subscribed",
+    "pull_submitted",
+    "issue_assigned",
+    "repo_shared",
+    "bounty_funded",
+    "bounty_paid",
+    "release_published",
+    "pending_inbox",
+    "credits_refilled",
+    "general_chat",
+    "host_online",
+    "host_offline",
+)
+NOTIFICATION_EMAIL_DEFAULTS = {
+    "mention": True,
+    "subscribed": True,
+    "pull_submitted": True,
+    "issue_assigned": True,
+    "repo_shared": True,
+    "bounty_funded": True,
+    "bounty_paid": True,
+    "release_published": True,
+    "pending_inbox": True,
+    "credits_refilled": True,
+    "general_chat": True,
+    "host_online": False,
+    "host_offline": False,
+}
 # Email digest bridge (issue #361): the cron rolls a recipient's unread
 # notifications into one email so a reply reaches people who don't have the app
 # open. Only recipients with a *verified* email get one (issue #320 fixed the
@@ -149,6 +184,9 @@ NOTIFICATION_DIGEST_INTERVAL_MS = 60 * 60 * 1000
 NOTIFICATION_DIGEST_MIN_AGE_MS = 3 * 60 * 1000
 NOTIFICATION_DIGEST_MAX_ITEMS = 20
 NOTIFICATION_DIGEST_MAX_RECIPIENTS = 200
+GENERAL_CHAT_EMAIL_INTERVAL_MS = 24 * 60 * 60 * 1000
+GENERAL_CHAT_EMAIL_LOOKBACK_MS = 24 * 60 * 60 * 1000
+GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 # HTTP route patterns (git smart-HTTP, repo APIs, accounts) live in urls.py so the
 # router's match table is one small, scannable module instead of buried in this
 # 11k-line file. The Worker runtime bundles sibling modules in src/, so this
@@ -337,6 +375,10 @@ CLONE_STICKY_MS = 5 * 60 * 1000
 # clients.
 NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b")
+DOMAIN_NAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
+MASTODON_HANDLE_RE = re.compile(
+    r"^@?[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,62}[A-Za-z0-9_])?@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$")
 MAX_NODE_NAME = 63
 
 # A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) — the value
@@ -409,6 +451,33 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
         "readAt": 0,
         "meta": meta if isinstance(meta, dict) else {},
     }
+
+
+def notification_email_preferences(rec):
+    prefs = dict(NOTIFICATION_EMAIL_DEFAULTS)
+    raw = rec.get("notification_preferences") if isinstance(rec, dict) else {}
+    if isinstance(raw, dict):
+        for key in NOTIFICATION_EMAIL_KINDS:
+            if key in raw:
+                prefs[key] = bool(raw.get(key))
+    return prefs
+
+
+def notification_email_enabled(rec, kind):
+    kind = clean_string(kind, 40)
+    if kind not in NOTIFICATION_EMAIL_DEFAULTS:
+        return False
+    return bool(notification_email_preferences(rec).get(kind))
+
+
+def _clean_notification_preferences(raw, rec=None):
+    prefs = notification_email_preferences(rec or {})
+    if not isinstance(raw, dict):
+        return prefs
+    for key in NOTIFICATION_EMAIL_KINDS:
+        if key in raw:
+            prefs[key] = bool(raw.get(key))
+    return prefs
 
 
 def repo_web_href(owner, repo):
@@ -2379,7 +2448,7 @@ async def catalog_handler(env, request):
                 viewer_bi, viewer_bi)
         else:
             rows = await d1_all(
-                env, "SELECT key_bi, owner_bi, data FROM repositories WHERE is_private = 0")
+                env, "SELECT key_bi, data FROM repositories WHERE is_private = 0")
         # Annotate each repo with whether a host is currently live, computed once
         # here from the presence table (keyed by the same blind index as the repo)
         # instead of the catalog page probing every repo's tunnel DO per visit.
@@ -2390,10 +2459,15 @@ async def catalog_handler(env, request):
         live = {r["repo_bi"] for r in live_rows}
         repos = []
         for r in rows:
-            if active_nodes is not None and str(r.get("owner_bi") or "") not in active_nodes:
-                continue
             rec = await decrypt_row(env, r["data"])
             if rec:
+                owner_bi = r.get("owner_bi")
+                if active_nodes is not None:
+                    if not owner_bi:
+                        owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
+                        owner_bi = await blind_index(env, owner) if owner else ""
+                    if str(owner_bi or "") not in active_nodes:
+                        continue
                 # Defense in depth: never surface a blocked identity even if a
                 # row slipped in before the purge ran.
                 if _is_blocked_catalog_identity(
@@ -2424,7 +2498,9 @@ async def catalog_handler(env, request):
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
         # Per-viewer responses (with private repos) must not be cached at the shared
         # edge; only the public-only list is cacheable.
-        if authed_viewer or bypass_cache:
+        if authed_viewer:
+            return json_response(payload)
+        if bypass_cache:
             return json_response(
                 payload,
                 cache_control="no-store, max-age=0, must-revalidate")
@@ -3463,6 +3539,158 @@ def _owned_nodes(rec):
     return [n for n in nodes if isinstance(n, str) and n]
 
 
+def _profile_txt_value(name):
+    return PROFILE_TXT_PREFIX + clean_string(name, MAX_NODE_NAME).lower()
+
+
+def _profile_link_domain(url):
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    return host if DOMAIN_NAME_RE.match(host) else ""
+
+
+def _clean_profile_url(raw):
+    value = clean_string(raw, MAX_PROFILE_LINK_URL).strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not DOMAIN_NAME_RE.match(host):
+        return ""
+    return parsed.geturl()
+
+
+def _clean_mastodon_handle(raw):
+    value = clean_string(raw, 120).strip()
+    if not value:
+        return ""
+    if not MASTODON_HANDLE_RE.match(value):
+        return ""
+    if not value.startswith("@"):
+        value = "@" + value
+    return value
+
+
+def _mastodon_url(handle):
+    if not handle:
+        return ""
+    clean = handle[1:] if handle.startswith("@") else handle
+    if "@" not in clean:
+        return ""
+    user, domain = clean.split("@", 1)
+    if not user or not DOMAIN_NAME_RE.match(domain):
+        return ""
+    return "https://" + domain + "/@" + quote(user)
+
+
+def _profile_links_public(rec):
+    links = rec.get("profile_links")
+    if not isinstance(links, list):
+        return []
+    out = []
+    for link in links[:MAX_PROFILE_LINKS]:
+        if not isinstance(link, dict):
+            continue
+        url = _clean_profile_url(link.get("url", ""))
+        if not url:
+            continue
+        domain = _profile_link_domain(url)
+        out.append({
+            "label": clean_string(link.get("label", ""), MAX_PROFILE_LINK_LABEL),
+            "url": url,
+            "domain": domain,
+            "verified": bool(link.get("verified")),
+            "verifiedAt": int(link.get("verified_at", 0) or 0),
+            "txtName": domain,
+            "txtValue": _profile_txt_value(rec.get("name", "")),
+        })
+    return out
+
+
+def _account_profile_fields(rec):
+    bio = clean_string(rec.get("profile_bio", ""), MAX_PROFILE_BIO).strip()
+    mastodon = _clean_mastodon_handle(rec.get("mastodon", ""))
+    return {
+        "profileBio": bio,
+        "profilePrivate": bool(rec.get("profile_private")),
+        "mastodon": mastodon,
+        "mastodonUrl": _mastodon_url(mastodon),
+        "profileLinks": _profile_links_public(rec),
+    }
+
+
+async def _dns_txt_has_profile_token(domain, token):
+    domain = clean_string(domain, 253).strip().lower().rstrip(".")
+    if not DOMAIN_NAME_RE.match(domain) or not token:
+        return False
+    from js import fetch as js_fetch
+    url = "https://cloudflare-dns.com/dns-query?name=" + quote(domain) + "&type=TXT"
+    try:
+        resp = await js_fetch(url, to_js({
+            "method": "GET",
+            "headers": {"accept": "application/dns-json"},
+        }))
+        if int(getattr(resp, "status", 0)) != 200:
+            return False
+        data = json.loads(await resp.text())
+    except Exception:
+        return False
+    answers = data.get("Answer") if isinstance(data, dict) else None
+    if not isinstance(answers, list):
+        return False
+    wanted = token.lower()
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        text = str(answer.get("data", "") or "").replace('" "', "").replace('"', "")
+        if wanted in text.lower():
+            return True
+    return False
+
+
+async def _clean_profile_links(env, rec, raw_links):
+    if raw_links is None:
+        return None, None
+    if not isinstance(raw_links, list):
+        return None, "bad_profile_links"
+    prev = {}
+    for link in rec.get("profile_links") or []:
+        if isinstance(link, dict) and link.get("url"):
+            prev[link.get("url")] = link
+    token = _profile_txt_value(rec.get("name", ""))
+    out = []
+    seen = set()
+    for item in raw_links[:MAX_PROFILE_LINKS]:
+        if not isinstance(item, dict):
+            return None, "bad_profile_links"
+        url = _clean_profile_url(item.get("url", ""))
+        label = clean_string(item.get("label", ""), MAX_PROFILE_LINK_LABEL).strip()
+        if not url and not label:
+            continue
+        if not url:
+            return None, "bad_profile_link_url"
+        if url in seen:
+            continue
+        seen.add(url)
+        domain = _profile_link_domain(url)
+        prior = prev.get(url) or {}
+        verified = bool(prior.get("verified"))
+        verified_at = int(prior.get("verified_at", 0) or 0)
+        if not verified and await _dns_txt_has_profile_token(domain, token):
+            verified = True
+            verified_at = int(Date.now())
+        out.append({
+            "label": label,
+            "url": url,
+            "domain": domain,
+            "verified": verified,
+            "verified_at": verified_at,
+        })
+    return out, None
+
+
 async def _account_public_payload(env, rec):
     name = rec.get("name", "")
     solana = (rec.get("solana") or "").strip()
@@ -3483,12 +3711,167 @@ async def _account_public_payload(env, rec):
         "kind": _account_kind(rec),
         "owner": rec.get("owner", ""),
         "nodes": _owned_nodes(rec),
+        "emailNotifications": rec.get("email_notifications") is not False,
+        "notificationPreferences": notification_email_preferences(rec),
     }
+    payload.update(_account_profile_fields(rec))
     if is_admin:
         admin_path = _admin_path(env)
         if admin_path:
             payload["adminUrl"] = "/" + admin_path + "?admin=" + quote(name)
     return payload
+
+
+def _account_chat_user_payload(rec):
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    return {
+        "name": name,
+        "status": rec.get("status", "active"),
+        "avatarPng": rec.get("avatar_png", ""),
+        "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+        "createdAt": rec.get("created_at", 0),
+        "kind": "user",
+        "nodes": _owned_nodes(rec),
+    }
+
+
+async def _account_users_directory(env, request):
+    # Public chat roster directory: user profiles only, with no email, password,
+    # device, admin, or signature material. Live node presence is still carried
+    # by the encrypted room roster; this endpoint fills in offline users.
+    del request
+    out = []
+    seen = set()
+    rows = await d1_all(
+        env,
+        "SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?",
+        1000,
+    )
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or _account_kind(rec) != "user" or rec.get("status") != "active":
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(_account_chat_user_payload(rec))
+
+    # Legacy fallback while older rows are still being mirrored into users.
+    rows = await d1_all(env, "SELECT data FROM accounts")
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or _account_kind(rec) != "user" or rec.get("status") != "active":
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(_account_chat_user_payload(rec))
+        if len(out) >= 1000:
+            break
+
+    return json_response({"ok": True, "users": out})
+
+
+def _public_profile_html(rec, host):
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+    fields = _account_profile_fields(rec)
+    bio = fields["profileBio"]
+    links = fields["profileLinks"]
+    mastodon = fields["mastodon"]
+    mastodon_url = fields["mastodonUrl"]
+    avatar = rec.get("avatar_png", "")
+    initial = (name[:1] or "F").upper()
+    link_rows = []
+    for link in links:
+        badge = (
+            '<span class="verified">Verified</span>'
+            if link.get("verified") else
+            '<span class="unverified">Unverified</span>'
+        )
+        label = link.get("label") or link.get("domain") or link.get("url")
+        link_rows.append(
+            '<a class="profile-link" href="' + _html_escape(link.get("url", "")) +
+            '" rel="me noopener" target="_blank"><span><strong>' +
+            _html_escape(label) + '</strong><small>' +
+            _html_escape(link.get("domain", "")) + '</small></span>' + badge + '</a>'
+        )
+    mastodon_html = ""
+    if mastodon and mastodon_url:
+        mastodon_html = (
+            '<a class="mastodon" href="' + _html_escape(mastodon_url) +
+            '" rel="me noopener" target="_blank">' + _html_escape(mastodon) + '</a>'
+        )
+    avatar_html = (
+        '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
+        '" alt="' + _html_escape(name) + ' avatar">'
+        if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
+    )
+    canonical = "https://" + host + "/@" + quote(name)
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>@%s - ForkMesh</title>
+  <link rel="canonical" href="%s">
+  <style>
+    :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
+    @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width:min(38rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
+    header { display:flex; gap:16px; align-items:center; }
+    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); }
+    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
+    h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
+    .handle, .bio, small { color:var(--muted); }
+    .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
+    .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
+    .links { display:grid; gap:10px; margin-top:24px; }
+    .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
+    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%, var(--border)); }
+    .profile-link span { display:grid; min-width:0; }
+    .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
+    .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
+    footer { margin-top:24px; color:var(--muted); font-size:12px; }
+    footer a { color:var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
+    %s
+    <section class="links">%s</section>
+    <footer><a href="/">ForkMesh</a></footer>
+  </main>
+</body>
+</html>""" % (
+        _html_escape(name), _html_escape(canonical), avatar_html,
+        _html_escape(name), _html_escape(canonical), mastodon_html,
+        ('<p class="bio">' + _html_escape(bio) + '</p>') if bio else "",
+        "".join(link_rows),
+    )
+
+
+async def public_profile_handler(env, request, username):
+    name = clean_string(username, MAX_NODE_NAME).lower()
+    if not valid_node_name(name):
+        return json_response({"error": "not_found"}, status=404)
+    _, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active" or
+            _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
+        return json_response({"error": "not_found"}, status=404)
+    host = clean_string(urlparse(request.url).netloc, 253)
+    return Response(
+        _public_profile_html(rec, host),
+        status=200,
+        headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+        },
+    )
 
 
 def _donation_expiry_fields(rec, now):
@@ -4182,6 +4565,64 @@ async def _account_profile(env, request):
         elif rec.get("avatar_png"):
             rec.pop("avatar_png", None)
             rec["avatar_updated_at"] = int(Date.now())
+            changed = True
+
+    if "profileBio" in data:
+        bio = clean_string(data.get("profileBio", ""), MAX_PROFILE_BIO).strip()
+        if rec.get("profile_bio", "") != bio:
+            if bio:
+                rec["profile_bio"] = bio
+            else:
+                rec.pop("profile_bio", None)
+            changed = True
+
+    if "profilePrivate" in data:
+        profile_private = bool(data.get("profilePrivate"))
+        if bool(rec.get("profile_private")) != profile_private:
+            if profile_private:
+                rec["profile_private"] = True
+            else:
+                rec.pop("profile_private", None)
+            changed = True
+
+    if "mastodon" in data:
+        raw_mastodon = clean_string(data.get("mastodon", ""), 120).strip()
+        mastodon = _clean_mastodon_handle(raw_mastodon)
+        if raw_mastodon and not mastodon:
+            return json_response({"error": "bad_mastodon"}, status=400)
+        if rec.get("mastodon", "") != mastodon:
+            if mastodon:
+                rec["mastodon"] = mastodon
+            else:
+                rec.pop("mastodon", None)
+            changed = True
+
+    if "profileLinks" in data:
+        links, link_error = await _clean_profile_links(
+            env, rec, data.get("profileLinks"))
+        if link_error:
+            return json_response({"error": link_error}, status=400)
+        if rec.get("profile_links", []) != links:
+            if links:
+                rec["profile_links"] = links
+            else:
+                rec.pop("profile_links", None)
+            changed = True
+
+    if "emailNotifications" in data:
+        email_notifications = bool(data.get("emailNotifications"))
+        if bool(rec.get("email_notifications", True)) != email_notifications:
+            if email_notifications:
+                rec.pop("email_notifications", None)
+            else:
+                rec["email_notifications"] = False
+            changed = True
+
+    if "notificationPreferences" in data:
+        prefs = _clean_notification_preferences(
+            data.get("notificationPreferences"), rec)
+        if rec.get("notification_preferences", {}) != prefs:
+            rec["notification_preferences"] = prefs
             changed = True
 
     verification_sent = False
@@ -4891,6 +5332,51 @@ async def _account_logout(env, request):
     )
 
 
+async def _account_rotate(env, request):
+    # Rebind an account/node identity to a successor Ed25519 key. The currently
+    # bound key must sign the rotation so a fresh installer cannot seize an
+    # existing name unless it controls the old key.
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
+    new_pubkey = clean_string(data.get("newPubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("sig", ""), 200)
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_node_id"}, status=400)
+    if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
+        return json_response({"error": "bad_pubkey"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+    name_bi, rec = await _account_row(env, name)
+    if not rec or rec.get("status") != "active":
+        return json_response({"error": "no_account"}, status=404)
+    bound = clean_string(rec.get("pubkey", ""), 120)
+    if bound == new_pubkey:
+        return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+    if bound != old_pubkey:
+        return json_response({"error": "not_bound"}, status=403)
+    canonical = (
+        "forkmesh-key-rotate-v1\n" + name + "\n" + old_pubkey + "\n" +
+        new_pubkey + "\n" + ts
+    ).encode()
+    if not await ed25519_verify(old_pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+    prev = rec.get("prev_pubkeys")
+    if not isinstance(prev, list):
+        prev = []
+    if old_pubkey not in prev:
+        prev.append(old_pubkey)
+    rec["pubkey"] = new_pubkey
+    rec["prev_pubkeys"] = prev[-8:]
+    rec["rotated_at"] = int(Date.now())
+    await _save_account(env, name_bi, rec)
+    return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+
+
 def _random_bytes(n):
     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
 
@@ -4945,6 +5431,42 @@ async def _account_heartbeat(env, request):
             dedupe="credits_refilled:" + credits_kind,
         )
 
+    # Nodes can update the email preferences for the user account that owns
+    # them. A linked owner controls all owned-node digest behavior from one
+    # account record; unowned nodes update themselves.
+    prefs_bi = name_bi
+    prefs_rec = rec
+    owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
+    if owner:
+        owner_bi, owner_rec = await _account_row(env, owner)
+        if owner_rec and owner_rec.get("status") == "active":
+            prefs_bi = owner_bi
+            prefs_rec = owner_rec
+    prefs_changed = False
+    if "emailNotifications" in data:
+        email_notifications = bool(data.get("emailNotifications"))
+        if bool(prefs_rec.get("email_notifications", True)) != email_notifications:
+            if email_notifications:
+                prefs_rec.pop("email_notifications", None)
+            else:
+                prefs_rec["email_notifications"] = False
+            prefs_changed = True
+    if "notificationPreferences" in data:
+        cleaner = globals().get("_clean_notification_preferences")
+        if callable(cleaner):
+            prefs = cleaner(data.get("notificationPreferences"), prefs_rec)
+        elif isinstance(data.get("notificationPreferences"), dict):
+            prefs = dict(data.get("notificationPreferences"))
+        else:
+            prefs = dict(prefs_rec.get("notification_preferences") or {})
+        if prefs_rec.get("notification_preferences", {}) != prefs:
+            prefs_rec["notification_preferences"] = prefs
+            prefs_changed = True
+    if prefs_changed:
+        await _save_account(env, prefs_bi, prefs_rec)
+        if prefs_bi == name_bi:
+            rec = prefs_rec
+
     # Keep the payout address current if the node sent a valid one.
     if solana and SOLANA_RE.match(solana) and rec.get("solana") != solana:
         rec["solana"] = solana
@@ -4982,9 +5504,17 @@ async def _account_heartbeat(env, request):
                 rec["last_balance_lamports"] = balance_lamports
                 await _save_account(env, name_bi, rec)
 
+    prefs_reader = globals().get("notification_email_preferences")
+    if callable(prefs_reader):
+        notification_preferences = prefs_reader(prefs_rec)
+    else:
+        notification_preferences = dict(
+            prefs_rec.get("notification_preferences") or {})
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
-                "isAdmin": await _is_admin(env, name)}
+                "isAdmin": await _is_admin(env, name),
+                "emailNotifications": prefs_rec.get("email_notifications") is not False,
+                "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["donationReceived"] = donation_received
@@ -6848,6 +7378,8 @@ async def accounts_handler(env, request):
         return await _account_login(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
+    if url.path == "/api/accounts/rotate" and method == "POST":
+        return await _account_rotate(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
         return await _account_forgot_password(env, request)
     if url.path == "/api/accounts/reset-password" and method == "POST":
@@ -6864,6 +7396,8 @@ async def accounts_handler(env, request):
         return await _account_link_self(env, request)
     if url.path == "/api/accounts/link-grant" and method == "POST":
         return await _account_link_grant(env, request)
+    if url.path == "/api/accounts/users" and method == "GET":
+        return await _account_users_directory(env, request)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
@@ -6885,19 +7419,19 @@ async def accounts_handler(env, request):
         # periodic self-profile poll (refreshPublicProfile, which reuses this
         # same lookup) can pick up a verification that happened in another
         # tab instead of showing "verify your email" forever (issue #320).
-        return json_response(
-            {"ok": True, "exists": True, "available": not taken,
-             "name": rec.get("name", name), "status": rec.get("status", ""),
-             "pubkey": rec.get("pubkey", ""),
-             "isAdmin": await _is_admin(env, rec.get("name", name)),
-             "emailVerified": bool(rec.get("email_verified")),
-             "avatarPng": rec.get("avatar_png", ""),
-             "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
-             "createdAt": rec.get("created_at", 0),
-             "kind": _account_kind(rec),
-             "owner": rec.get("owner", ""),
-             "nodes": _owned_nodes(rec)}
-        )
+        payload = {"ok": True, "exists": True, "available": not taken,
+                   "name": rec.get("name", name), "status": rec.get("status", ""),
+                   "pubkey": rec.get("pubkey", ""),
+                   "isAdmin": await _is_admin(env, rec.get("name", name)),
+                   "emailVerified": bool(rec.get("email_verified")),
+                   "avatarPng": rec.get("avatar_png", ""),
+                   "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
+                   "createdAt": rec.get("created_at", 0),
+                   "kind": _account_kind(rec),
+                   "owner": rec.get("owner", ""),
+                   "nodes": _owned_nodes(rec)}
+        payload = {**payload, **_account_profile_fields(rec)}
+        return json_response(payload)
     return json_response({"error": "not_found"}, status=404)
 
 
@@ -7369,19 +7903,99 @@ async def send_notification_digests(env):
             recipient_bi, last, max_age_cut, NOTIFICATION_DIGEST_MAX_ITEMS)
         items = []
         newest = last
+        prefs = notification_email_preferences(email_rec)
         for row in rows or []:
+            row_ts = int(row.get("ts") or 0)
+            newest = max(newest, row_ts)
             payload = await decrypt_row(env, row.get("data", ""))
             if not payload:
                 continue
+            kind = clean_string(payload.get("kind", ""), 40)
+            if not prefs.get(kind, False):
+                continue
             items.append(payload)
-            newest = max(newest, int(row.get("ts") or 0))
         if not items:
+            if newest > last:
+                rec["last_digest_ts"] = newest
+                await _save_account(env, recipient_bi, rec)
             continue
         node = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         subject, text, html = _notification_digest_email(node, items)
         if await _send_email(env, email, subject, text, html):
             rec["last_digest_ts"] = newest
             await _save_account(env, recipient_bi, rec)
+    await send_general_chat_digests(env)
+
+
+async def _general_chat_encrypted_message_count(env, since_ts, until_ts):
+    await ensure_schema(env)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM chat_history "
+        "WHERE room_key=? AND ts>? AND ts<=?",
+        FLAGSHIP_ROOM_KEY, int(since_ts or 0), int(until_ts or 0),
+    )
+    return int((row or {}).get("c") or 0)
+
+
+async def send_general_chat_digests(env):
+    # The #general room history is retained as encrypted frames. The daily email
+    # intentionally reports only a count since the recipient's last digest; it
+    # never decrypts or embeds message text.
+    if not _is_main_relay(env):
+        return
+    await ensure_schema(env)
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT name_bi, data FROM accounts ORDER BY name LIMIT ?",
+        GENERAL_CHAT_EMAIL_MAX_RECIPIENTS,
+    )
+    for row in rows or []:
+        name_bi = row.get("name_bi")
+        if not name_bi:
+            continue
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or rec.get("status") != "active" or _account_kind(rec) != "user":
+            continue
+        email = clean_string(rec.get("email", ""), 254).strip()
+        if not email or not rec.get("email_verified"):
+            continue
+        if rec.get("email_notifications") is False:
+            continue
+        if not notification_email_enabled(rec, "general_chat"):
+            continue
+        last = int(rec.get("last_general_chat_digest_ts", 0) or 0)
+        if last and now - last < GENERAL_CHAT_EMAIL_INTERVAL_MS:
+            continue
+        since = max(last, now - GENERAL_CHAT_EMAIL_LOOKBACK_MS)
+        count = await _general_chat_encrypted_message_count(env, since, now)
+        if count <= 0:
+            rec["last_general_chat_digest_ts"] = now
+            await _save_account(env, name_bi, rec)
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        subject, text, html = _general_chat_digest_email(name, count)
+        if await _send_email(env, email, subject, text, html):
+            rec["last_general_chat_digest_ts"] = now
+            await _save_account(env, name_bi, rec)
+
+
+def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
+    return (
+        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
+        "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
+        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
+        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
+        "border-radius:8px;background:#141416;padding:24px\">"
+        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "letter-spacing:0;font-weight:700\">ForkMesh</p>"
+        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "line-height:1.25;font-weight:800\">" + heading + "</h1>"
+        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        intro_html + "</p>" + body_html +
+        (footer_html if footer_html else "") +
+        "</div></div>")
 
 
 def _notification_digest_email(node, items):
@@ -7401,19 +8015,62 @@ def _notification_digest_email(node, items):
         if body:
             lines.append("    " + body)
         html_items.append(
-            "<li><strong>" + _html_escape(prefix + title) + "</strong>" +
-            ("<br><span style=\"color:#666\">" + _html_escape(body) + "</span>"
-             if body else "") + "</li>")
+            "<div style=\"border:1px solid #313134;border-radius:8px;"
+            "background:#0f0f11;padding:12px 14px;margin:0 0 10px\">"
+            "<p style=\"margin:0;color:#f5f5f5;font-size:14px;"
+            "font-weight:800\">" + _html_escape(prefix + title) + "</p>" +
+            ("<p style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
+             "line-height:1.45\">" + _html_escape(body) + "</p>"
+             if body else "") + "</div>")
     lines += ["", "Open ForkMesh to read and reply.",
               "To stop these emails, turn off email notifications in your "
               "profile settings."]
     text = "\n".join(lines)
-    html = ("<p>Hi " + _html_escape(node) + ",</p>"
-            "<p>You have " + str(n) + " unread ForkMesh notification" +
-            ("s" if n != 1 else "") + ":</p><ul>" + "".join(html_items) +
-            "</ul><p>Open ForkMesh to read and reply.</p>"
-            "<p style=\"color:#888;font-size:13px\">To stop these emails, turn "
-            "off email notifications in your profile settings.</p>")
+    html = _forkmesh_email_card_html(
+        _html_escape(str(n) + " new notification" + ("s" if n != 1 else "")),
+        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "</strong>, you have " + str(n) + " unread ForkMesh notification" +
+        ("s" if n != 1 else "") + ".",
+        "<div style=\"margin:0 0 18px\">" + "".join(html_items) + "</div>"
+        "<p style=\"margin:0 0 16px;color:#d4d4d8;font-size:14px\">Open "
+        "ForkMesh to read and reply.</p>",
+        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "these emails, update email notifications in your profile settings."
+        "</p>",
+    )
+    return subject, text, html
+
+
+def _general_chat_digest_email(node, count):
+    n = int(count or 0)
+    subject = ("ForkMesh: " + str(n) + " encrypted #general message" +
+               ("s" if n != 1 else ""))
+    text = (
+        "Hi " + (node or "there") + ",\n\n"
+        "You have " + str(n) + " encrypted #general message" +
+        ("s" if n != 1 else "") + " since your last digest.\n\n"
+        "Message contents are not sent over email. Log in on the web or open "
+        "the ForkMesh app to read and reply.\n\n"
+        "To stop these emails, update email notifications in your profile settings.")
+    html = _forkmesh_email_card_html(
+        _html_escape(str(n) + " encrypted #general message" +
+                     ("s" if n != 1 else "")),
+        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "</strong>, #general has encrypted activity since your last digest.",
+        "<div style=\"border:1px solid #313134;border-radius:8px;"
+        "background:#0f0f11;padding:14px;margin:0 0 18px\">"
+        "<p style=\"margin:0;color:#f5f5f5;font-size:28px;font-weight:800;line-height:1\">"
+        + str(n) + "</p>"
+        "<p style=\"margin:8px 0 0;color:#d4d4d8;font-size:14px\">encrypted "
+        "#general message" + ("s" if n != 1 else "") + " waiting</p>"
+        "</div>"
+        "<p style=\"margin:0;color:#d4d4d8;font-size:14px\">Message contents "
+        "are not sent over email. Log in on the web or open the ForkMesh app "
+        "to read and reply.</p>",
+        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "these emails, update email notifications in your profile settings."
+        "</p>",
+    )
     return subject, text, html
 
 
@@ -8300,6 +8957,39 @@ def _console_error(message):
         pass
 
 
+def _consume_background_task(task, label):
+    try:
+        task.result()
+    except BaseException as error:
+        if type(error).__name__ == "CancelledError":
+            return
+        _console_error(
+            "Background task failed (%s): %s" %
+            (str(label or "background"), _safe_error_text(error)))
+
+
+def _fire_and_forget(coro, label="background"):
+    try:
+        task = asyncio.ensure_future(coro)
+    except BaseException as error:
+        try:
+            close = getattr(coro, "close", None)
+            if close is not None:
+                close()
+        except BaseException:
+            pass
+        _console_error(
+            "Failed to schedule background task (%s): %s" %
+            (str(label or "background"), _safe_error_text(error)))
+        return None
+    try:
+        task.add_done_callback(
+            lambda done: _consume_background_task(done, label))
+    except BaseException:
+        pass
+    return task
+
+
 async def _write_error_log(env, status, method, path, message, ray=""):
     try:
         await ensure_schema(env)
@@ -8323,23 +9013,46 @@ async def _write_error_log(env, status, method, path, message, ray=""):
 
 async def capture_worker_exception(env, request, url, error):
     """Capture the Python exception that Cloudflare will surface as Error 1101."""
-    ray = _sentry_header(request, "cf-ray")
-    method = method_name(request)
-    path = getattr(url, "path", "") or _sentry_safe_url(request)
-    message = repr(error) + "\n" + traceback.format_exc()
-    sentry_configured = _sentry_dsn_parts(getattr(env, "SENTRY_DSN", "")) is not None
-    sentry_ok = await capture_sentry_error(
-        env, 500, method, path, message, ray,
-        request=request,
-        error=error,
-        cloudflare_error_code="1101",
-        service="forkmesh",
-    )
+    try:
+        ray = _sentry_header(request, "cf-ray")
+    except BaseException:
+        ray = ""
+    try:
+        method = method_name(request)
+    except BaseException:
+        method = "GET"
+    try:
+        path = getattr(url, "path", "") or _sentry_safe_url(request)
+    except BaseException:
+        path = ""
+    try:
+        message = repr(error) + "\n" + traceback.format_exc()
+    except BaseException:
+        message = _safe_error_text(error)
+    try:
+        sentry_configured = (
+            _sentry_dsn_parts(getattr(env, "SENTRY_DSN", "")) is not None
+        )
+    except BaseException:
+        sentry_configured = False
+    try:
+        sentry_ok = await capture_sentry_error(
+            env, 500, method, path, message, ray,
+            request=request,
+            error=error,
+            cloudflare_error_code="1101",
+            service="forkmesh",
+        )
+    except BaseException:
+        sentry_ok = False
     if not sentry_ok and sentry_configured:
         _console_error(
             "Sentry capture failed for Cloudflare Worker exception 1101; "
             "re-raising original exception.")
-    await _write_error_log(env, 500, method, path, message, ray)
+    try:
+        await _write_error_log(env, 500, method, path, message, ray)
+    except BaseException:
+        pass
 
 
 def _html_escape(value):
@@ -9775,7 +10488,12 @@ class Default(WorkerEntrypoint):
 
             response = await self._route(request, url)
         except Exception as error:
-            await capture_worker_exception(self.env, request, url, error)
+            try:
+                await capture_worker_exception(self.env, request, url, error)
+            except BaseException as handler_error:
+                _console_error(
+                    "Worker exception capture failed before re-raise: " +
+                    _safe_error_text(handler_error))
             # Re-raise so Cloudflare records the native Worker failure/Error 1101
             # while Sentry keeps the underlying Python exception and stack trace.
             raise
@@ -10067,6 +10785,14 @@ class Default(WorkerEntrypoint):
 
         if ACCOUNTS_RE.match(url.path):
             return await accounts_handler(self.env, request)
+
+        public_profile = re.match(r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$", url.path)
+        if public_profile:
+            profile_response = await public_profile_handler(
+                self.env, request, public_profile.group(1))
+            if int(profile_response.status) == 404:
+                return await self._serve_not_found_page(url)
+            return profile_response
 
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
@@ -11718,7 +12444,7 @@ class ForkMeshHost(DurableObject):
                 except Exception:
                     pass
             return None, result
-        asyncio.ensure_future(self._stream_watchdog(req_id))
+        _fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")
         return JsResponse.new(
             transform.readable,
             to_js({"status": 200, "headers": headers}),
@@ -11791,7 +12517,7 @@ class ForkMeshHost(DurableObject):
                 except Exception:
                     pass
             return None, result
-        asyncio.ensure_future(self._stream_watchdog(req_id))
+        _fire_and_forget(self._stream_watchdog(req_id), "git stream watchdog")
         return JsResponse.new(
             transform.readable,
             to_js({"status": 200, "headers": headers}),
@@ -11855,8 +12581,9 @@ class ForkMeshHost(DurableObject):
             if repo_bi:
                 # Fire-and-forget: log the download without delaying the
                 # already-streaming response on a D1 round-trip.
-                asyncio.ensure_future(
-                    record_release_download(self.env, repo_bi, sha256.lower()))
+                _fire_and_forget(
+                    record_release_download(self.env, repo_bi, sha256.lower()),
+                    "release download log")
             return response
         status = 404 if str(err.get("error", "")) in (
             "not_found", "bad_hash") else 502

@@ -76,7 +76,7 @@
         <div class="panel-header">
           <div>
             <h2 id="status-systems-title">Systems</h2>
-            <p>Each top bar is one day; the strip below it is that day split into 24 hourly checks. Hover an hour for its status and reason.</p>
+            <p>Each top bar is one day; the strip below shows the last 24 hourly checks. Hover an hour for its status and reason.</p>
           </div>
         </div>
         <div style="padding: 4px 16px 16px">
@@ -187,7 +187,10 @@
         }
 
         function hourTooltip(dayTs, hour) {
-          const when = fmtDay(dayTs) + ", " + fmtHourRange(hour.hourTs);
+          const hourDay = typeof hour.hourTs === "number"
+            ? Math.floor(hour.hourTs / 86400000) * 86400000
+            : dayTs;
+          const when = fmtDay(hourDay) + ", " + fmtHourRange(hour.hourTs);
           const label = HOUR_STATUS_LABEL[hour.status] || "No data";
           let text = when + ": " + label;
           if (hour.expectedChecks) {
@@ -425,8 +428,25 @@
             days.className = "status-days";
             const detail = document.createElement("div");
             detail.className = "status-hour-detail";
-            const defaultDetail = "Hover an hourly strip for details. Missing elapsed samples count as downtime.";
+            const defaultDetail = "Hover a last-24-hours square for details. Missing elapsed samples count as downtime.";
             detail.textContent = defaultDetail;
+            const setDetail = (text, marker) => {
+              if (marker) marker.classList.add("is-hovered");
+              detail.textContent = text;
+            };
+            const clearDetail = (marker) => {
+              if (marker) marker.classList.remove("is-hovered");
+              detail.textContent = defaultDetail;
+            };
+            const wireHourDetail = (target, tooltip, marker) => {
+              target.title = tooltip;
+              target.tabIndex = 0;
+              target.setAttribute("aria-label", tooltip);
+              target.addEventListener("mouseenter", () => setDetail(tooltip, marker));
+              target.addEventListener("mouseleave", () => clearDetail(marker));
+              target.addEventListener("focus", () => setDetail(tooltip, marker));
+              target.addEventListener("blur", () => clearDetail(marker));
+            };
             const dayList = system.days || [];
             dayList.forEach((day, dayIndex) => {
               const isLastDay = dayIndex === dayList.length - 1;
@@ -458,27 +478,6 @@
                 : fmtDay(day.dayTs) + ": no data";
               cell.setAttribute("aria-label", label);
               cell.title = label;
-              stack.appendChild(cell);
-
-              const hourBar = document.createElement("div");
-              hourBar.className = "status-hour-bar";
-              const setDetail = (text, marker) => {
-                if (marker) marker.classList.add("is-hovered");
-                detail.textContent = text;
-              };
-              const clearDetail = (marker) => {
-                if (marker) marker.classList.remove("is-hovered");
-                detail.textContent = defaultDetail;
-              };
-              const wireHourDetail = (target, tooltip, marker) => {
-                target.title = tooltip;
-                target.tabIndex = 0;
-                target.setAttribute("aria-label", tooltip);
-                target.addEventListener("mouseenter", () => setDetail(tooltip, marker));
-                target.addEventListener("mouseleave", () => clearDetail(marker));
-                target.addEventListener("focus", () => setDetail(tooltip, marker));
-                target.addEventListener("blur", () => clearDetail(marker));
-              };
               const addHourMarker = (status, tooltip) => {
                 const marker = document.createElement("div");
                 marker.className = "status-day-hour is-" + (status || "unknown");
@@ -486,23 +485,14 @@
                 cell.appendChild(marker);
                 return marker;
               };
-              const addHourSlice = (status, tooltip, marker) => {
-                const slice = document.createElement("div");
-                slice.className = "status-hour-slice is-" + (status || "unknown");
-                wireHourDetail(slice, tooltip, marker);
-                hourBar.appendChild(slice);
-              };
               hours.forEach((hour) => {
-                const tooltip = hourTooltip(day.dayTs, hour);
-                const marker = addHourMarker(hour.status, tooltip);
-                addHourSlice(hour.status, tooltip, marker);
+                addHourMarker(hour.status, hourTooltip(day.dayTs, hour));
               });
               if (isPartialToday) {
                 for (let h = hours.length; h < 24; h++) {
                   const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(day.dayTs + h * 3600000) +
                     ": hasn't happened yet";
-                  const marker = addHourMarker("future", tooltip);
-                  addHourSlice("future", tooltip, marker);
+                  addHourMarker("future", tooltip);
                 }
               }
               if (!hours.length) {
@@ -511,15 +501,45 @@
                   if (hourTs > now) break;
                   const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(hourTs) +
                     ": Down — no status sample recorded; treated as downtime.";
-                  const marker = addHourMarker("down", tooltip);
-                  addHourSlice("down", tooltip, marker);
+                  addHourMarker("down", tooltip);
                 }
               }
-
-              stack.appendChild(hourBar);
+              stack.appendChild(cell);
               days.appendChild(stack);
             });
             row.appendChild(days);
+
+            const hourBar = document.createElement("div");
+            hourBar.className = "status-hour-bar";
+            const hoursByTs = new Map();
+            dayList.forEach((day) => {
+              (day.hours || []).forEach((hour) => {
+                if (typeof hour.hourTs === "number") hoursByTs.set(hour.hourTs, hour);
+              });
+            });
+            const currentHour = Math.floor(now / 3600000) * 3600000;
+            const startHour = currentHour - 23 * 3600000;
+            for (let hourTs = startHour; hourTs <= currentHour; hourTs += 3600000) {
+              const elapsedMinutes = Math.max(0, Math.floor((now - hourTs) / 60000));
+              const expectedChecks = Math.min(60, elapsedMinutes);
+              const hour = hoursByTs.get(hourTs) || {
+                hourTs,
+                status: expectedChecks ? "down" : "unknown",
+                checks: 0,
+                failures: 0,
+                expectedChecks,
+                missingChecks: expectedChecks,
+                effectiveFailures: expectedChecks,
+                reason: expectedChecks
+                  ? "No status sample recorded for this elapsed hour; treated as downtime."
+                  : null,
+              };
+              const slice = document.createElement("div");
+              slice.className = "status-hour-slice is-" + (hour.status || "unknown");
+              wireHourDetail(slice, hourTooltip(hourTs, hour));
+              hourBar.appendChild(slice);
+            }
+            row.appendChild(hourBar);
             row.appendChild(detail);
 
             list.appendChild(row);

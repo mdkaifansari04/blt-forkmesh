@@ -378,6 +378,71 @@
 
                   <section class="rounded-lg border border-border bg-card overflow-hidden">
                     <div class="border-b border-border px-4 py-3">
+                      <h2 class="text-sm font-semibold text-foreground">Public profile</h2>
+                      <p class="mt-1 text-xs text-muted-foreground">Shown at <span data-profile-public-url class="font-mono">/@username</span> unless private.</p>
+                    </div>
+                    <div class="grid gap-4 p-4">
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Bio
+                        <textarea data-profile-page-bio maxlength="500" rows="4" placeholder="Short bio" class="min-h-24 resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"></textarea>
+                      </label>
+
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Mastodon handle
+                        <input data-profile-page-mastodon type="text" inputmode="latin" autocomplete="off" placeholder="@you@mastodon.social" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                      </label>
+
+                      <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                        <input data-profile-page-private type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                        <span>
+                          <span class="block font-medium text-foreground">Private profile</span>
+                          <span class="mt-1 block leading-4">When enabled, your <span class="font-mono">/@username</span> page returns 404.</span>
+                        </span>
+                      </label>
+
+                      <div class="grid gap-2">
+                        <div class="flex items-center justify-between gap-3">
+                          <p class="text-xs font-medium text-foreground">Links</p>
+                          <p class="text-[11px] text-muted-foreground">TXT: <span data-profile-txt-value class="font-mono">forkmesh-profile=username</span></p>
+                        </div>
+                        <div data-profile-links-editor class="grid gap-2">
+                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
+                          </div>
+                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
+                          </div>
+                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
+                          </div>
+                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Current password
+                        <input data-profile-public-password type="password" autocomplete="current-password" placeholder="Required for profile changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                      </label>
+
+                      <p data-profile-public-hint class="min-h-4 text-xs text-muted-foreground"></p>
+                      <button data-profile-public-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                        Save public profile
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="rounded-lg border border-border bg-card overflow-hidden">
+                    <div class="border-b border-border px-4 py-3">
                       <h2 class="text-sm font-semibold text-foreground">Verification and payout</h2>
                     </div>
                     <div class="grid gap-4 p-4">
@@ -407,6 +472,79 @@
                       <p data-profile-page-hint class="min-h-4 text-xs text-muted-foreground"></p>
                       <button data-profile-page-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
                         Save payout address
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="rounded-lg border border-border bg-card overflow-hidden">
+                    <div class="border-b border-border px-4 py-3">
+                      <h2 class="text-sm font-semibold text-foreground">Email notifications</h2>
+                      <p class="mt-1 text-xs text-muted-foreground">Applies to this account and linked nodes.</p>
+                    </div>
+                    <div class="grid gap-4 p-4">
+                      <div data-notification-preferences class="grid gap-2 sm:grid-cols-2">
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="mention" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Mentions</span><span class="mt-1 block leading-4">Email when someone mentions you.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="subscribed" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Subscribed threads</span><span class="mt-1 block leading-4">Email replies on watched issues and pull requests.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="pull_submitted" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Pull requests</span><span class="mt-1 block leading-4">Email when a pull request is submitted.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="issue_assigned" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Assignments</span><span class="mt-1 block leading-4">Email when an issue is assigned to you.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="repo_shared" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Shared repositories</span><span class="mt-1 block leading-4">Email when a private repo is shared with you.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="pending_inbox" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Pending inbox</span><span class="mt-1 block leading-4">Email when signed submissions are waiting.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="release_published" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Releases</span><span class="mt-1 block leading-4">Email when a release is published.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="credits_refilled" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Credits refilled</span><span class="mt-1 block leading-4">Email when a node reports Claude Code credits refilled.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="bounty_funded" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Bounty funded</span><span class="mt-1 block leading-4">Email when a bounty is funded.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="bounty_paid" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Bounty paid</span><span class="mt-1 block leading-4">Email when a bounty is paid.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="general_chat" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Daily #general digest</span><span class="mt-1 block leading-4">Email a daily count of encrypted #general messages.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+                          <input data-notification-pref="host_online" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">Host reachable</span><span class="mt-1 block leading-4">Email when a desktop host is reachable.</span></span>
+                        </label>
+                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground sm:col-span-2">
+                          <input data-notification-pref="host_offline" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                          <span><span class="block font-medium text-foreground">No live host checked in</span><span class="mt-1 block leading-4">Email when no live host has checked in recently.</span></span>
+                        </label>
+                      </div>
+
+                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        Current password
+                        <input data-notification-preferences-password type="password" autocomplete="current-password" placeholder="Required for notification changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                      </label>
+
+                      <p data-notification-preferences-hint class="min-h-4 text-xs text-muted-foreground"></p>
+                      <button data-notification-preferences-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                        Save notifications
                       </button>
                     </div>
                   </section>

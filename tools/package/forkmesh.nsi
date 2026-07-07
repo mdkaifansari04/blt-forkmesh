@@ -1,7 +1,7 @@
 ; NSIS installer template for the ForkMesh desktop client (issue #370).
 ; Driven by tools/package/windows.sh, which passes:
 ;   /DFORKMESH_VERSION=X.Y.Z  /DFORKMESH_SRCEXE=<built exe>  /DFORKMESH_OUTFILE=<setup exe>
-; See docs/design/signed-installers.md.
+; See /docs#installers-updates.
 
 !ifndef FORKMESH_VERSION
   !define FORKMESH_VERSION "0.0.0"

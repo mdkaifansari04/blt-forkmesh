@@ -215,6 +215,74 @@ def test_email_digest_bridge_is_wired_to_the_cron_and_verified_email():
         assert marker in ENTRY_TEXT
 
 
+def test_notification_email_preferences_are_editable_and_host_alerts_default_off():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("# --- Users vs nodes")
+    ]
+    heartbeat_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_heartbeat"):
+        ENTRY_TEXT.index("async def _mirroring_owners")
+    ]
+    dashboard = assembled_dashboard()
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    for marker in (
+        '"host_online": False',
+        '"host_offline": False',
+        '"general_chat": True',
+        '"notificationPreferences": notification_email_preferences(rec)',
+        '"emailNotifications": rec.get("email_notifications") is not False',
+        '"notificationPreferences" in data',
+        "notification_email_preferences(email_rec)",
+    ):
+        assert marker in ENTRY_TEXT
+
+    assert '"notificationPreferences" in data' in profile_body
+    assert '"notificationPreferences" in data' in heartbeat_body
+    assert "prefs_bi = owner_bi" in heartbeat_body
+    assert "data-notification-preferences" in dashboard
+    assert 'data-notification-pref="host_online"' in dashboard
+    assert 'data-notification-pref="host_offline"' in dashboard
+    assert 'data-notification-pref="general_chat"' in dashboard
+    assert "host_online: false" in dashboard_js
+    assert "host_offline: false" in dashboard_js
+    assert "general_chat: true" in dashboard_js
+    assert "saveNotificationPreferences" in dashboard_js
+
+
+def test_daily_general_chat_digest_counts_encrypted_messages_without_emailing_contents():
+    for marker in (
+        "GENERAL_CHAT_EMAIL_INTERVAL_MS",
+        "async def send_general_chat_digests",
+        "await send_general_chat_digests(env)",
+        "SELECT COUNT(*) AS c FROM chat_history",
+        "FLAGSHIP_ROOM_KEY",
+        "Message contents are not sent over email",
+        "notification_email_enabled(rec, \"general_chat\")",
+    ):
+        assert marker in ENTRY_TEXT
+    assert "GENERAL_CHAT_ROOM_PASSPHRASE" not in ENTRY_TEXT
+    assert "decrypt_general_chat" not in ENTRY_TEXT
+
+
+def test_qt_node_syncs_email_notification_preferences_over_heartbeat():
+    qt_src = ROOT.parent / "qt_client" / "src"
+    header = (qt_src / "MainWindowInternal.h").read_text(encoding="utf-8")
+    setup = (qt_src / "MainWindowSetup.cpp").read_text(encoding="utf-8")
+    settings = (qt_src / "MainWindowSettings.cpp").read_text(encoding="utf-8")
+
+    assert "kEmailNotifyGeneralChatSetting" in header
+    assert "kEmailNotifyHostOnlineSetting" in header
+    assert "kEmailNotifyHostOfflineSetting" in header
+    assert "QJsonObject MainWindow::emailNotificationPreferencesPayload() const" in setup
+    assert 'body.insert(QStringLiteral("notificationPreferences")' in setup
+    assert "enabled(kEmailNotifyGeneralChatSetting, true)" in setup
+    assert "enabled(kEmailNotifyHostOnlineSetting, false)" in setup
+    assert "enabled(kEmailNotifyHostOfflineSetting, false)" in setup
+    assert "Email me a daily #general count" in settings
+
+
 def test_thread_key_is_stable_and_scoped():
     ns = _load_notification_helpers()
     key = ns["_thread_key"]("alice", "repo", "issue", 7)
@@ -241,6 +309,9 @@ if __name__ == "__main__":
         test_worker_auto_subscribes_commenters_and_fans_out_to_followers,
         test_subscribed_notification_kind_exists,
         test_email_digest_bridge_is_wired_to_the_cron_and_verified_email,
+        test_notification_email_preferences_are_editable_and_host_alerts_default_off,
+        test_daily_general_chat_digest_counts_encrypted_messages_without_emailing_contents,
+        test_qt_node_syncs_email_notification_preferences_over_heartbeat,
         test_thread_key_is_stable_and_scoped,
         test_digest_html_escapes_untrusted_notification_text,
     ):

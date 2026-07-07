@@ -12,7 +12,7 @@
 #   FORKMESH_SPARKLE_ED_KEY     Ed25519 pub key (SUPublicEDKey) baked into Info.plist
 #
 # Updates are handled in-app by Sparkle 2, which polls the EdDSA-signed appcast
-# written by generate-appcast.sh. See docs/design/signed-installers.md.
+# written by generate-appcast.sh. See /docs#installers-updates.
 set -euo pipefail
 
 src="$1"; outdir="${2:-.}"

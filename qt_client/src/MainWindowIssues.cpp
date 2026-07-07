@@ -7091,8 +7091,8 @@ QWidget *MainWindow::buildChatSection()
     auto *dmsLabel = new QLabel("DIRECT MESSAGES");
     dmsLabel->setObjectName("sectionLabel");
     m_dmList = new QListWidget;
-    // Members list removed: nodes are the members. Use the Node dropdown and the
-    // node profile's "Message" button to start a direct chat.
+    // Direct messages still route to live peer ids. The right-side users column
+    // shows all known people, including offline account-directory users.
 
     auto *sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(14, 16, 14, 12);
@@ -7239,12 +7239,13 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);
 
-    // Right column: online members, each with avatar + green/grey status dot.
-    // Mirrors the node-card look used elsewhere; refreshed from setRoster().
+    // Right column: users, with live/offline status and profile avatars.
+    // Live roster updates come from setRoster(); offline users come from the
+    // account directory and stay chat-only so node views are unaffected.
     auto *membersPanel = new QWidget;
     membersPanel->setObjectName("sidebar");
     membersPanel->setFixedWidth(220);
-    m_chatMembersHeading = new QLabel("ONLINE \xE2\x80\x94 0");
+    m_chatMembersHeading = new QLabel("USERS \xE2\x80\x94 0 \xC2\xB7 0 online");
     m_chatMembersHeading->setObjectName("sectionLabel");
     auto *membersScroll = new QScrollArea;
     membersScroll->setObjectName("messageView");
@@ -7271,6 +7272,7 @@ QWidget *MainWindow::buildChatSection()
     layout->addWidget(membersPanel);
 
     refreshChatMembers();
+    refreshChatUserDirectory();
 
     connect(m_channelList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {

@@ -79,6 +79,68 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
 
 
+def test_worker_profile_contract_includes_bio_links_mastodon_and_privacy():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _account_claim_node")
+    ]
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+
+    assert "MAX_PROFILE_BIO = 500" in ENTRY_TEXT
+    assert "MAX_PROFILE_LINKS = 4" in ENTRY_TEXT
+    assert 'PROFILE_TXT_PREFIX = "forkmesh-profile="' in ENTRY_TEXT
+    assert '"profileBio": bio' in ENTRY_TEXT
+    assert '"profilePrivate": bool(rec.get("profile_private"))' in ENTRY_TEXT
+    assert '"mastodon": mastodon' in ENTRY_TEXT
+    assert '"profileLinks": _profile_links_public(rec)' in ENTRY_TEXT
+    assert '"profileBio" in data' in profile_body
+    assert '"profilePrivate" in data' in profile_body
+    assert '"mastodon" in data' in profile_body
+    assert '"profileLinks" in data' in profile_body
+    assert "cloudflare-dns.com/dns-query" in ENTRY_TEXT
+    assert "**_account_profile_fields(rec)" in public_lookup_body
+
+
+def test_worker_serves_public_at_profiles_and_private_profiles_404():
+    assert "async def public_profile_handler" in ENTRY_TEXT
+    route_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _route"):
+        ENTRY_TEXT.index("issues_match = REPO_ISSUES_RE.match", ENTRY_TEXT.index("async def _route"))
+    ]
+
+    assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$"' in route_body
+    assert "public_profile_handler(" in route_body
+    assert '_account_kind(rec) != "user"' in ENTRY_TEXT
+    assert 'bool(rec.get("profile_private"))' in ENTRY_TEXT
+    assert 'return json_response({"error": "not_found"}, status=404)' in ENTRY_TEXT
+    assert 'rel="me noopener"' in ENTRY_TEXT
+    assert "cache-control" in ENTRY_TEXT
+
+
+def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
+    assert 'url.path == "/api/accounts/users" and method == "GET"' in ENTRY_TEXT
+    assert "async def _account_users_directory" in ENTRY_TEXT
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("def _account_chat_user_payload"):
+        ENTRY_TEXT.index("def _donation_expiry_fields")
+    ]
+
+    assert '"SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?"' in body
+    assert '"SELECT data FROM accounts"' in body
+    assert '_account_kind(rec) != "user"' in body
+    assert 'rec.get("status") != "active"' in body
+    assert '"avatarPng": rec.get("avatar_png", "")' in body
+    assert '"nodes": _owned_nodes(rec)' in body
+    assert '"email"' not in body
+    assert '"pubkey"' not in body
+    assert '"isAdmin"' not in body
+    assert '"pass_hash"' not in body
+
+
 def test_qt_client_publishes_user_chat_avatar_to_peers():
     # The desktop's avatar reaches peers through the chat backend broadcast
     # (the signed heartbeat carries no avatar; the worker-side avatarPng comes

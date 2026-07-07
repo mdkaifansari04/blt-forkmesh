@@ -618,6 +618,51 @@ def test_dashboard_latest_commit_history_button_opens_commits_tab():
     assert "return;" in click_handler
 
 
+def test_dashboard_code_tree_rows_use_live_commit_messages():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    repo_host = (ROOT.parent / "qt_client" / "src" / "RepoHost.cpp").read_text(encoding="utf-8")
+    render = dashboard_js[
+        dashboard_js.index("function renderRepoDetail")
+        : dashboard_js.index("function findRepository")
+    ]
+    tree_loader = dashboard_js[
+        dashboard_js.index("async function loadRepositoryTree")
+        : dashboard_js.index("async function loadRepositoryBlob")
+    ]
+
+    for marker in (
+        "function updateRepoCommitSummary(commit, repo)",
+        "updateRepoCommitSummary(data.latestCommit, repo);",
+        'const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";',
+        "${escapeHtml(message)}",
+    ):
+        assert marker in dashboard_js
+
+    for marker in (
+        "data-repo-commit-avatar",
+        "data-repo-commit-author",
+        "data-repo-commit-message",
+        "data-repo-commit-hash",
+        "data-repo-commit-date",
+    ):
+        assert marker in render
+
+    for marker in (
+        "QJsonObject commitSummaryForPath",
+        '"log", "-1", "--date=format:%Y-%m-%d"',
+        '"--format=%H%x1f%an%x1f%ad%x1f%s"',
+        'args << "--" << path;',
+        'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',
+        'entry.insert(QStringLiteral("commitMessage"),',
+        '{"latestCommit", commitSummaryForPath(mirrorPath, ref)}',
+        "return treeReplyFor(m_mirrorPath, path, branch);",
+    ):
+        assert marker in repo_host
+
+    assert "published latest mirror metadata" in render
+    assert 'entry.message || entry.commitMessage || "mirrored repository object"' not in tree_loader
+
+
 def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_create_buttons():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
@@ -1148,7 +1193,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
         'void RepoHost::streamRawBlob(const QString &reqId, const QString &path, const QString &branch)',
         'else if (op == "branches")',
         'streamRawBlob(reqId, path, branch);',
-        'reply = buildTreeReply(path, branch);',
+        'treeReplyFor(mirrorPath, path, branch)',
         # Blob replies build off-thread so large files don't stall the GUI.
         'return blobReplyFor(mirrorPath, path, branch);',
         'reply = buildCommitsReply(branch);',

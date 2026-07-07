@@ -1220,6 +1220,42 @@ void MainWindow::startSession()
 
 // ---- Account / node registration (staged join + reward heartbeat) ----------
 
+QJsonObject MainWindow::emailNotificationPreferencesPayload() const
+{
+    const QSettings settings;
+    auto enabled = [&settings](const QString &key, bool defaultOn) {
+        return settings.value(key, defaultOn).toBool();
+    };
+    QJsonObject prefs;
+    prefs.insert(QStringLiteral("mention"),
+                 enabled(kEmailNotifyMentionSetting, true));
+    prefs.insert(QStringLiteral("subscribed"),
+                 enabled(kEmailNotifySubscribedSetting, true));
+    prefs.insert(QStringLiteral("pull_submitted"),
+                 enabled(kEmailNotifyPullSubmittedSetting, true));
+    prefs.insert(QStringLiteral("issue_assigned"),
+                 enabled(kEmailNotifyIssueAssignedSetting, true));
+    prefs.insert(QStringLiteral("repo_shared"),
+                 enabled(kEmailNotifyRepoSharedSetting, true));
+    prefs.insert(QStringLiteral("bounty_funded"),
+                 enabled(kEmailNotifyBountyFundedSetting, true));
+    prefs.insert(QStringLiteral("bounty_paid"),
+                 enabled(kEmailNotifyBountyPaidSetting, true));
+    prefs.insert(QStringLiteral("release_published"),
+                 enabled(kEmailNotifyReleasePublishedSetting, true));
+    prefs.insert(QStringLiteral("pending_inbox"),
+                 enabled(kEmailNotifyPendingInboxSetting, true));
+    prefs.insert(QStringLiteral("credits_refilled"),
+                 enabled(kEmailNotifyCreditsRefilledSetting, true));
+    prefs.insert(QStringLiteral("general_chat"),
+                 enabled(kEmailNotifyGeneralChatSetting, true));
+    prefs.insert(QStringLiteral("host_online"),
+                 enabled(kEmailNotifyHostOnlineSetting, false));
+    prefs.insert(QStringLiteral("host_offline"),
+                 enabled(kEmailNotifyHostOfflineSetting, false));
+    return prefs;
+}
+
 void MainWindow::sendNodeHeartbeat()
 {
     const QString name = m_accountName.isEmpty()
@@ -1244,6 +1280,8 @@ void MainWindow::sendNodeHeartbeat()
         : (m_pendingCreditsRefilledWeekly ? QStringLiteral("weekly") : QString());
     QJsonObject body{{"nodeName", name}, {"solana", solana}, {"ts", ts},
                      {"sig", m_profileIdentity.signData(canonical)}};
+    body.insert(QStringLiteral("notificationPreferences"),
+                emailNotificationPreferencesPayload());
     if (!creditsRefilled.isEmpty())
         body.insert(QStringLiteral("creditsRefilled"), creditsRefilled);
     QNetworkRequest request(accountsApiUrl("heartbeat"));

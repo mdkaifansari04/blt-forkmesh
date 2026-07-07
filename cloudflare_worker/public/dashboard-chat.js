@@ -10,7 +10,7 @@
   // Mainnode base host for the room WebSocket. Defaults to the origin that
   // served the dashboard, so a self-hosted mainnode talks to itself. Override
   // with window.FORKMESH_RELAY_HOST to target a different relay (see
-  // docs/protocol.md, "Self-hosting a mainnode").
+  // public docs, "Self-hosting and development" (/docs#self-hosting).
   const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
   const MAX_TEXT = 16000;
   const MAX_NAME = 32;

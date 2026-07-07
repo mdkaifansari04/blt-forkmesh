@@ -144,3 +144,24 @@ def test_docs_pages_wire_helpfulness_feedback():
             'vote: "dislike"',
         ):
             assert marker in html
+
+
+def test_docs_pages_publish_api_and_operational_reference():
+    for page in DOCS_PAGES:
+        html = _read(page)
+
+        for marker in (
+            'id="api-websockets"',
+            "APIs and WebSockets",
+            "/api/repo/&lt;owner&gt;/&lt;repo&gt;/host",
+            "/api/poll",
+            'id="bounty-custody"',
+            "Bounty custody and payouts",
+            'id="installers-updates"',
+            "Installers and updates",
+            'id="developer-integrations"',
+            "Developer integrations",
+            'id="self-hosting"',
+            "Self-hosting and development",
+        ):
+            assert marker in html

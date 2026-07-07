@@ -7,7 +7,7 @@
     <title>Docs · ForkMesh</title>
     <meta
       name="description"
-      content="ForkMesh documentation for desktop mirrors, host tunnels, Git clone, issues, pull requests, accounts, and encrypted rooms."
+      content="ForkMesh documentation for desktop mirrors, host tunnels, Git clone, APIs, WebSocket endpoints, issues, pull requests, accounts, and encrypted rooms."
     />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
@@ -474,6 +474,11 @@
             <a class="nav-link" href="#pull-requests">Pull requests</a>
             <a class="nav-link" href="#accounts">Accounts</a>
             <a class="nav-link" href="#chat">Encrypted rooms</a>
+            <a class="nav-link" href="#api-websockets">APIs and WebSockets</a>
+            <a class="nav-link" href="#bounty-custody">Bounty custody</a>
+            <a class="nav-link" href="#installers-updates">Installers and updates</a>
+            <a class="nav-link" href="#developer-integrations">Developer integrations</a>
+            <a class="nav-link" href="#self-hosting">Self-hosting</a>
             <a class="nav-link" href="#limitations">Limitations</a>
           </div>
         </nav>
@@ -1006,6 +1011,759 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         </section>
 
         <section
+          id="api-websockets"
+          class="mt-16 scroll-mt-44"
+          data-search-title="APIs and WebSockets"
+          data-search-body="API WebSocket endpoint reference Worker Durable Object D1 host tunnel repository catalog signed inboxes agents notifications accounts network status telemetry improvement event driven polling"
+        >
+          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
+            APIs and WebSockets
+          </h2>
+          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
+            The public API is served by the Cloudflare Worker. Durable Objects
+            hold transient WebSocket state for encrypted rooms and per-repo host
+            tunnels. D1 stores encrypted records, blind indexes, inboxes,
+            notifications, status samples, telemetry, and small control-plane
+            state. Desktop and headless nodes keep the Git data and connect
+            outbound.
+          </p>
+
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Realtime and host tunnels
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              These paths are the live data plane. Chat and repo serving are
+              already WebSocket based, while presence summaries still use HTTP
+              snapshots and periodic heartbeats as a durable fallback.
+            </p>
+            <div class="mt-5">
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >WS</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Desktop host tunnel; signed by the owner key</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Connected host count used for liveness probes</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blobs,blob,raw,history,commit,branches,search}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Website browse requests forwarded to a live host</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >WS</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Repo-scoped encrypted chat room</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/clients</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Room client-count snapshot</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >WS/GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/room/&lt;room&gt;/{ws,clients}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Legacy bare-room compatibility path</span
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Git, catalog, mirrors, and releases
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              The Worker coordinates discovery and routing, but Git objects and
+              release blobs stream from live desktop nodes. Catalog rows are
+              signed, encrypted at rest, and cached briefly at the edge.
+            </p>
+            <div class="mt-5">
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/&lt;owner&gt;/&lt;repo&gt;/info/refs?service=git-upload-pack</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Clone/fetch ref advertisement</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/&lt;owner&gt;/&lt;repo&gt;/git-upload-pack</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Clone/fetch pack negotiation</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET/POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/&lt;owner&gt;/&lt;repo&gt;/info/refs?service=git-receive-pack and /git-receive-pack</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Owner-token-gated Git push path</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET/POST/DELETE</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repositories</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >List, publish, or delete signed catalog records</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/mirrors</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Logical repo mirror health and state-pin status</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/about</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Owner updates catalog-facing description metadata</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/releases/blob/sha256/&lt;hash&gt;</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Content-addressed release asset stream</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/releases/downloads</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Per-artifact release download counts</span
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Collaboration, agents, and private access
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              Cross-user work is staged as signed records in D1, then the repo
+              owner drains and merges it into Git. Today the desktop polls owned
+              inboxes every minute and agent prompts every 30 seconds, with
+              exponential backoff on relay failures.
+            </p>
+            <div class="mt-5">
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST/GET/DELETE</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/{issues,pulls,commits,discussions}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Signed pending inboxes for collaboration events</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/subscribe</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Signed issue or PR thread subscription state</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/bounty</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Bounty wallet, create, status, and payout actions</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET/POST/DELETE</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/shares</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Owner-signed private-repo collaborator ACL</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET/POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Desktop pushes session snapshots and drains prompts</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/list</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Website reads owner agent session list</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/&lt;id&gt;/transcript</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Website reads one stored transcript tail</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/repo/&lt;owner&gt;/&lt;repo&gt;/agents/&lt;id&gt;/prompt</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Website queues a prompt for desktop drain</span
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Accounts, notifications, and platform
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              Account APIs bind names to Ed25519 keys, handle signup and
+              recovery, and carry node liveness. The dashboard consolidates
+              some periodic reads through <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">/api/poll</code>
+              so it does not re-fetch full profile and notification payloads on
+              every tick.
+            </p>
+            <div class="mt-5">
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/accounts/{signup,reserve,donation-address,finalize,login,logout,forgot-password,reset-password,profile,heartbeat}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Signup, auth, profile, and signed node heartbeat flows</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/accounts/{donation-status,treasury-address,central-fund,verify-email,admin-pending,admin-relays,users,&lt;name&gt;}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Account lookup, payment status, admin lists, and directories</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/accounts/{admin-verify-email,admin-relay-approve,admin-request-ownership,ownership-transfer-confirm,claim-node,claim-confirm,reclaim-node,link-node,link-self,link-grant}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Admin, ownership, claim, and user-node linking actions</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET/POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/notifications</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Encrypted notification list and read-state updates</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/poll</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Lightweight dashboard digest and change tokens</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/federation/{register,donation-address,donation-status,nodes,treasury-address,central-fund}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Signed relay-to-main federation control plane</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/{version,mainnode,status,install-source} and /health</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Build marker, capabilities, public status, and installer source</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >GET</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/network/{overview,stats,online-history,leaderboards}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Cached network aggregates and historical samples</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >POST</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >/api/{install-diag,telemetry,feedback,security/report}</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Bounded diagnostics, opt-in telemetry, docs feedback, and reports</span
+                >
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Event-driven improvement map
+            </h3>
+            <ul
+              class="mt-4 grid gap-4 text-[0.95rem] leading-7 text-[var(--docs-muted)]"
+            >
+              <li>
+                <strong class="text-[var(--docs-fg)]">Catalog and mirrors:</strong>
+                add catalog version tokens, ETags, or a repo-scoped event stream
+                so dashboards update on publish/delete/presence changes instead
+                of refreshing <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">/api/repositories</code>
+                and <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">/mirrors</code>
+                on a timer.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Owner inboxes:</strong>
+                notify the owner node when issue, pull, commit-comment, or
+                discussion rows are inserted. Keep GET/DELETE drains for
+                recovery and manual sync.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Agent control:</strong>
+                replace full session snapshots and prompt polling with
+                per-agent deltas and push-to-node prompts over the host tunnel
+                or an account control WebSocket.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Account control:</strong>
+                move claim codes, link grants, admin review alerts, and
+                ownership-transfer prompts off the one-minute heartbeat path.
+                The heartbeat should prove liveness and act as a fallback.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Notifications:</strong>
+                keep <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">/api/poll</code>
+                as a compact fallback, but add long-poll, SSE, or WebSocket
+                delivery for notification and profile-token changes.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Cron jobs:</strong>
+                keep minute-level status, uptime history, cleanup, and email
+                digest cron tasks as backstops because they are aggregate or
+                retention work, not user-facing live state.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="bounty-custody"
+          class="mt-16 scroll-mt-44"
+          data-search-title="Bounty custody and payouts"
+          data-search-body="Solana bounty custody payout escrow treasury contributor idempotency mainnet worker encrypted D1 security audit"
+        >
+          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
+            Bounty custody and payouts
+          </h2>
+          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
+            ForkMesh bounties use per-issue, worker-custodied Solana escrow
+            accounts on mainnet. A funded bounty pays the contributor when the
+            owner-approved pull request merges, with the treasury receiving the
+            protocol share.
+          </p>
+          <div class="doc-card mt-6 p-6">
+            <ul
+              class="grid gap-4 text-[0.95rem] leading-7 text-[var(--docs-muted)]"
+            >
+              <li>
+                <strong class="text-[var(--docs-fg)]">Custody model:</strong>
+                each bounty gets a fresh Solana keypair. The seed is encrypted
+                in D1 and never returned to clients; the public address, amount,
+                status, payee, and payout signature are the public fields.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Funding:</strong>
+                USD bounty amounts are converted to lamports using the live
+                SOL/USD price. The escrow is funded when its balance reaches the
+                required lamports, with a small fee reserve left in the account.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Authorization:</strong>
+                only an owner-signed request can choose the payee. The Worker
+                refuses auto-payout unless that payee was authorized by the repo
+                owner key.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Split:</strong>
+                the payout path sends about 90% to the contributor and 10% to
+                the treasury in one transaction.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Idempotency:</strong>
+                ForkMesh records the signed transaction before broadcasting it.
+                If a Worker or RPC call fails mid-payout, retries resume the
+                same transaction instead of issuing a second transfer.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Residual risk:</strong>
+                this is custodial escrow. Compromise of the Worker runtime or
+                data-encryption key can expose escrow seeds; there is no on-chain
+                multisig program limiting the Worker's authority today.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="installers-updates"
+          class="mt-16 scroll-mt-44"
+          data-search-title="Installers and updates"
+          data-search-body="signed installers auto update release.json appcast sha256 AppImage Windows macOS Sparkle WinSparkle release verification"
+        >
+          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
+            Installers and updates
+          </h2>
+          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
+            ForkMesh releases are published as content-addressed assets with
+            small committed metadata. The same manifest drives the installer,
+            update checks, and release download pages so they agree on the
+            current version.
+          </p>
+          <div class="doc-card mt-6 p-6">
+            <div class="route-row">
+              <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                >Linux</strong
+              >
+              <code class="break-words text-sm text-[var(--docs-fg)]"
+                >.AppImage + .zsync</code
+              >
+              <span class="text-[var(--docs-muted)]"
+                >AppImageUpdate applies zsync deltas and verifies sha256 metadata</span
+              >
+            </div>
+            <div class="route-row">
+              <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                >Windows</strong
+              >
+              <code class="break-words text-sm text-[var(--docs-fg)]"
+                >NSIS setup.exe</code
+              >
+              <span class="text-[var(--docs-muted)]"
+                >WinSparkle reads the appcast and verifies signed update assets</span
+              >
+            </div>
+            <div class="route-row">
+              <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                >macOS</strong
+              >
+              <code class="break-words text-sm text-[var(--docs-fg)]"
+                >notarized dmg</code
+              >
+              <span class="text-[var(--docs-muted)]"
+                >Sparkle 2 verifies appcast signatures and native code signing</span
+              >
+            </div>
+          </div>
+          <div class="doc-card mt-4 p-6">
+            <ul
+              class="grid gap-4 text-[0.95rem] leading-7 text-[var(--docs-muted)]"
+            >
+              <li>
+                <strong class="text-[var(--docs-fg)]">Manifest:</strong>
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">releases/&lt;channel&gt;/release.json</code>
+                lists the version, artifacts, sizes, sha256 hashes, and
+                content-addressed blob URLs.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Appcast:</strong>
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">appcast.xml</code>
+                is generated from the same release manifest and carries the
+                signed installer enclosure for native updaters.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Verification chain:</strong>
+                install scripts check sha256 sums; AppImage checks sha256 and
+                optional GPG signatures; Sparkle and WinSparkle verify EdDSA
+                appcast signatures; the operating system verifies native code
+                signing where certificates are configured.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Source installs:</strong>
+                a source checkout keeps using the existing rebuild-from-tag path.
+                Installer-based installs defer to the native updater instead.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="developer-integrations"
+          class="mt-16 scroll-mt-44"
+          data-search-title="Developer integrations"
+          data-search-body="VS Code extension IDE integration Claude Code Codex MCP server issue tracker actions mobile Flutter encrypted relay signed inbox"
+        >
+          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
+            Developer integrations
+          </h2>
+          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
+            ForkMesh integrations use the same local files, signed inboxes, and
+            encrypted relay protocol as the desktop node. They do not get a
+            privileged side door into issues, pull requests, or agents.
+          </p>
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              VS Code and compatible IDEs
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              The IDE extension lists ForkMesh issues from the repository's
+              file-based tracker and can start Claude Code or Codex with an
+              issue-specific prompt. The desktop app and extension handshake
+              through files under <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">~/.forkmesh/ide/</code>;
+              no sockets or ports are required.
+            </p>
+            <div class="mt-5">
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >Heartbeat</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >registration.json</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Extension identity, workspaces, agent availability, and timestamp</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >Request</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >requests/&lt;id&gt;.json</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Desktop asks the IDE to start an issue with Claude or Codex</span
+                >
+              </div>
+              <div class="route-row">
+                <strong class="text-xs font-black uppercase text-[var(--docs-fg)]"
+                  >Response</strong
+                >
+                <code class="break-words text-sm text-[var(--docs-fg)]"
+                  >responses/&lt;id&gt;.json</code
+                >
+                <span class="text-[var(--docs-muted)]"
+                  >Extension acknowledges that the task was started or failed</span
+                >
+              </div>
+            </div>
+          </div>
+          <div class="doc-card mt-4 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              MCP and mobile clients
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              The MCP server exposes repository and issue operations to
+              MCP-capable agents. Write tools sign with the local node identity
+              and produce the same native issue and pull files as the desktop.
+              The Flutter mobile client speaks the same encrypted room protocol
+              and signed inbox format for chat, catalog reads, issues, and pull
+              request submissions.
+            </p>
+          </div>
+        </section>
+
+        <section
+          id="self-hosting"
+          class="mt-16 scroll-mt-44"
+          data-search-title="Self-hosting and development"
+          data-search-body="self hosting mainnode Cloudflare Worker Qt desktop build local relay pywrangler deploy requirements headless node"
+        >
+          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
+            Self-hosting and development
+          </h2>
+          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
+            A ForkMesh deployment has two main pieces: the Qt desktop/headless
+            node that owns and serves repositories, and the Cloudflare Worker
+            relay that hosts the public website, route table, Durable Objects,
+            D1 state, and static assets.
+          </p>
+          <div class="doc-card mt-6 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Desktop node
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              Build requirements are Qt 6.4 or newer, CMake 3.16 or newer, Git,
+              OpenSSL development headers, the OpenSSL CLI at runtime, and a C++17
+              compiler.
+            </p>
+            <pre
+              class="mt-5 overflow-x-auto rounded-xl bg-[var(--docs-code)] p-4 text-sm leading-7 text-[var(--docs-fg)]"
+            ><code>cd qt_client
+./run.sh
+./run.sh test</code></pre>
+          </div>
+          <div class="doc-card mt-4 p-6">
+            <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">
+              Worker relay
+            </h3>
+            <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
+              The relay is a Python Cloudflare Worker. It serves the public
+              website from static assets and runs API, WebSocket, health, and
+              dashboard routes through the Worker first.
+            </p>
+            <pre
+              class="mt-5 overflow-x-auto rounded-xl bg-[var(--docs-code)] p-4 text-sm leading-7 text-[var(--docs-fg)]"
+            ><code>cd cloudflare_worker
+uvx --from workers-py pywrangler dev
+./deploy.sh dry-run
+./deploy.sh</code></pre>
+          </div>
+          <div class="doc-card mt-4 p-6">
+            <ul
+              class="grid gap-4 text-[0.95rem] leading-7 text-[var(--docs-muted)]"
+            >
+              <li>
+                <strong class="text-[var(--docs-fg)]">Local relay URL:</strong>
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws</code>
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Production room URL:</strong>
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws</code>
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Static site and APIs:</strong>
+                website HTML lives in <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">cloudflare_worker/public/</code>,
+                while Worker routes and Durable Objects live in
+                <code class="rounded-md bg-[var(--docs-code)] px-2 py-1">cloudflare_worker/src/</code>.
+              </li>
+              <li>
+                <strong class="text-[var(--docs-fg)]">Environment:</strong>
+                set relay variables such as node name, Solana address, data key,
+                treasury address, and admin path through Cloudflare Worker
+                configuration for production deployments.
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section
           id="limitations"
           class="mt-16 scroll-mt-44"
           data-search-title="Current limitations"
@@ -1160,6 +1918,31 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
             class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
             href="#git-clone"
             >Git clone</a
+          >
+          <a
+            class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
+            href="#api-websockets"
+            >APIs and WebSockets</a
+          >
+          <a
+            class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
+            href="#bounty-custody"
+            >Bounty custody</a
+          >
+          <a
+            class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
+            href="#installers-updates"
+            >Installers and updates</a
+          >
+          <a
+            class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
+            href="#developer-integrations"
+            >Developer integrations</a
+          >
+          <a
+            class="mb-4 block font-bold text-[var(--docs-muted)] no-underline"
+            href="#self-hosting"
+            >Self-hosting</a
           >
         </nav>
       </aside>

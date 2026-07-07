@@ -3,7 +3,7 @@
 # The appcast is the in-app update manifest: Sparkle 2 (macOS) and WinSparkle
 # (Windows) poll it, verify each enclosure's EdDSA signature, and offer the
 # update. Deriving it from release.json keeps a single source of truth for
-# "what is the latest release" — see docs/design/signed-installers.md §2.
+# "what is the latest release" — see /docs#installers-updates.
 #
 # Emits: releases/<channel>/appcast.xml
 #

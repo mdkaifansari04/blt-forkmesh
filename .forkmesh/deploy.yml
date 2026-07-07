@@ -27,11 +27,14 @@ jobs:
             echo "Deploying; cloudflare_worker/ changes detected:"
             printf '%s\n' "$worker_changes"
           fi
-      # CI/CD gate: run the crypto tests first; a failure aborts before deploy. they are set now
-      - name: Run tests
+      # CI/CD gate: run the full Worker test suite first; a failure aborts before
+      # deploy. This catches static public-page contracts, endpoint AST contracts,
+      # and Sentry/error-handler regressions before they reach Cloudflare.
+      - name: Run Cloudflare Worker tests
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
-          python3 cloudflare_worker/tests/test_crypto.py
+          python3 -m pytest --version >/dev/null 2>&1 || python3 -m pip install --user pytest
+          python3 -m pytest cloudflare_worker/tests
       # .env.production is gitignored, so materialize it from this node's ForkMesh
       # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
       # ${{ vars.NAME }} references below from that store before running the step;

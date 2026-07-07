@@ -1,3 +1,36 @@
+  function commitSummaryField(commit, ...keys) {
+    for (const key of keys) {
+      const value = commit?.[key];
+      if (value !== undefined && value !== null && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+    return "";
+  }
+
+  function updateRepoCommitSummary(commit, repo) {
+    const summary = $("[data-repo-commit-summary]");
+    if (!summary) return;
+    const data = commit && typeof commit === "object" ? commit : {};
+    const hash = commitSummaryField(data, "hash", "commitHash", "commit")
+      || String(repo.rootCommit || repo.latestCommit || repo.commit || "");
+    const subject = commitSummaryField(data, "subject", "message", "commitMessage");
+    const author = commitSummaryField(data, "author", "committer", "name")
+      || String(repo.maintainer || repo.owner || "maintainer");
+    const date = commitSummaryField(data, "date", "committedAt", "updatedAt")
+      || String(repo.updatedAt || repo.lastSync || "");
+    const avatar = summary.querySelector("[data-repo-commit-avatar]");
+    const authorNode = summary.querySelector("[data-repo-commit-author]");
+    const messageNode = summary.querySelector("[data-repo-commit-message]");
+    const hashNode = summary.querySelector("[data-repo-commit-hash]");
+    const dateNode = summary.querySelector("[data-repo-commit-date]");
+    if (avatar) avatar.textContent = (author[0] || repo.owner?.[0] || "F").toUpperCase();
+    if (authorNode) authorNode.textContent = author;
+    if (messageNode) messageNode.textContent = subject || "published latest mirror metadata";
+    if (hashNode) hashNode.textContent = hash ? hash.slice(0, 7) : "live";
+    if (dateNode) dateNode.textContent = formatDate(date);
+  }
+
   async function loadRepositoryTree(repo, path = "") {
     const detail = $("[data-repo-detail]");
     if (!detail) return;
@@ -20,6 +53,7 @@
       const requestedAt = performance.now();
       const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
+      updateRepoCommitSummary(data.latestCommit, repo);
       const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
       if (!path && data.counts) { updateRepoLiveCounts(repo, data.counts); applyServedCounts(data.counts); }
       entries.sort((a, b) => {
@@ -37,11 +71,12 @@
       treeBody.innerHTML = entries.map((entry) => {
         const childPath = repoChildPath(path, entry.name);
         const isTree = entry.type === "tree";
+        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
               <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
               <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
-              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(entry.message || entry.commitMessage || "mirrored repository object")}</span>
+              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
               <span class="shrink-0 text-xs text-muted-foreground font-mono">${isTree ? "dir" : escapeHtml(formatSize(entry.size))}</span>
             </button>`;
       }).join("");

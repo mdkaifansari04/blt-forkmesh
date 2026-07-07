@@ -2114,7 +2114,7 @@ const QString kServerUrlSetting = QStringLiteral("server/url");
 // The mainnode is ForkMesh's canonical coordination point: a well-known
 // owner/repo/room triple that every node's shared rooms and inbox routes
 // converge on. The *host* is fully configurable (the first-run Relay server
-// field; self-hosting one is a first-class target — see docs/protocol.md), but
+    // field; self-hosting one is a first-class target — see /docs#self-hosting), but
 // this path shape is a network-wide protocol constant, so it lives in one place
 // instead of being spelled out at each call site.
 const QString kMainnodeDefaultHost = QStringLiteral("forkmesh.com");
@@ -2202,6 +2202,19 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
+const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
+const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");
+const QString kEmailNotifyIssueAssignedSetting = QStringLiteral("notifications/email/issueAssigned");
+const QString kEmailNotifyRepoSharedSetting = QStringLiteral("notifications/email/repoShared");
+const QString kEmailNotifyBountyFundedSetting = QStringLiteral("notifications/email/bountyFunded");
+const QString kEmailNotifyBountyPaidSetting = QStringLiteral("notifications/email/bountyPaid");
+const QString kEmailNotifyReleasePublishedSetting = QStringLiteral("notifications/email/releasePublished");
+const QString kEmailNotifyPendingInboxSetting = QStringLiteral("notifications/email/pendingInbox");
+const QString kEmailNotifyCreditsRefilledSetting = QStringLiteral("notifications/email/creditsRefilled");
+const QString kEmailNotifyGeneralChatSetting = QStringLiteral("notifications/email/generalChat");
+const QString kEmailNotifyHostOnlineSetting = QStringLiteral("notifications/email/hostOnline");
+const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/email/hostOffline");
 // Split welcome rooms by identity type:
 // - #welcome-users for user-account nodes
 // - #welcome-nodes for regular nodes

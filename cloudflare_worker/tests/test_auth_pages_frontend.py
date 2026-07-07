@@ -163,6 +163,27 @@ def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
     assert "Type DELETE" in dashboard
 
 
+def test_dashboard_profile_page_exposes_public_profile_controls():
+    dashboard = assembled_dashboard()
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "data-profile-page-bio" in dashboard
+    assert "data-profile-page-mastodon" in dashboard
+    assert "data-profile-page-private" in dashboard
+    assert "data-profile-links-editor" in dashboard
+    assert "data-profile-link-label" in dashboard
+    assert "data-profile-link-url" in dashboard
+    assert "data-profile-txt-value" in dashboard
+    assert "data-profile-public-password" in dashboard
+    assert "data-profile-public-save" in dashboard
+    assert "Save public profile" in dashboard
+    assert "profileBio" in dashboard_js
+    assert "mastodon" in dashboard_js
+    assert "profilePrivate" in dashboard_js
+    assert "profileLinks: collectProfileLinks()" in dashboard_js
+    assert "savePublicProfile" in dashboard_js
+
+
 def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_account():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
