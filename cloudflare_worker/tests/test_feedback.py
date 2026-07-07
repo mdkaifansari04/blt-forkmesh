@@ -122,3 +122,25 @@ def test_message_and_path_are_capped_and_control_scrubbed():
 def test_feedback_text_sanitizer_handles_non_strings():
     assert _sanitize(None, 20) == ""
     assert _sanitize(12345, 20) == "12345"
+
+
+def test_feedback_table_is_defined_in_lazy_schema():
+    schema_text = SCHEMA.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS feedback" in schema_text
+    assert "ip_hash TEXT" in schema_text
+    assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in schema_text
+    assert (
+        "CREATE INDEX IF NOT EXISTS idx_feedback_source_vote "
+        "ON feedback(source, vote, ts)"
+    ) in schema_text
+
+
+def test_feedback_migration_file_exists_with_matching_schema():
+    assert MIGRATION.exists()
+    text = MIGRATION.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS feedback" in text
+    assert "ip_hash TEXT" in text
+    assert "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)" in text
+    assert "idx_feedback_source_vote" in text
