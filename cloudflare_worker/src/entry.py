@@ -5437,14 +5437,22 @@ async def _account_rotate(env, request):
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("signature") or data.get("sig", ""), 200)
 
-    if not valid_node_name(name):
-        return json_response({"error": "invalid_node_id"}, status=400)
+    if name:
+        if not valid_node_name(name):
+            return json_response({"error": "invalid_node_id"}, status=400)
     if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
         return json_response({"error": "invalid_pubkey"}, status=400)
     if not _ts_ok(ts):
         return json_response({"error": "stale_request"}, status=401)
 
-    name_bi, rec = await _account_row(env, name)
+    if name:
+        name_bi, rec = await _account_row(env, name)
+    else:
+        name_bi, rec = await _account_row_by_pubkey(env, old_pubkey)
+        if rec:
+            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+            if not valid_node_name(name):
+                return json_response({"error": "invalid_node_id"}, status=400)
     if not rec or rec.get("status") != "active":
         return json_response({"error": "no_account"}, status=404)
 
