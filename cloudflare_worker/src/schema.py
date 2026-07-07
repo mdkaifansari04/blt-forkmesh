@@ -301,6 +301,20 @@ SCHEMA_STATEMENTS = [
         ts INTEGER NOT NULL,
         data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_security_reports_ts ON security_reports(ts)",
+    # Anonymous website feedback. One row per like/dislike click from static
+    # pages. `ip_hash` is a keyed blind index of the request IP when present,
+    # never the raw address. Bounded by MAX_FEEDBACK in feedback_handler.
+    """CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        vote TEXT NOT NULL,
+        path TEXT NOT NULL,
+        message TEXT,
+        ip_hash TEXT,
+        user_agent TEXT)""",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_source_vote ON feedback(source, vote, ts)",
     # Public /status page (30-day history per system). A per-minute cron folds
     # one health check per system into today's UTC-day bucket; checks/failures
     # let the page compute an uptime percentage per day without storing every
