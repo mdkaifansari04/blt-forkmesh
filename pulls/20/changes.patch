@@ -1,0 +1,278 @@
+diff --git a/cloudflare_worker/docs/superpowers/plans/2026-07-07-welcome-email.md b/cloudflare_worker/docs/superpowers/plans/2026-07-07-welcome-email.md
+new file mode 100644
+index 00000000..005e5c4b
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/plans/2026-07-07-welcome-email.md
+@@ -0,0 +1,109 @@
++# Welcome Email Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
++> Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Replace the signup verification-only email with a professional welcome email that still confirms the user's email address.
++
++**Architecture:** Keep the existing Mailtrap transport and signup/finalize call sites unchanged.
++Update `_send_verification_email` so the first account creation email contains welcome copy, the verification CTA, docs and blog links, and a feedback prompt.
++Add a focused account endpoint contract test that fails before the helper content changes.
++
++**Tech Stack:** Python Worker source in `src/entry.py`, string-contract tests in `tests/test_account_profile_endpoints.py`, pytest.
++
++---
++
++### File Structure
++
++- Modify `tests/test_account_profile_endpoints.py`.
++  This file owns account signup/profile endpoint contract tests.
++- Modify `src/entry.py`.
++  This file currently owns the Mailtrap email helpers and signup/finalize flow.
++
++### Task 1: Signup Welcome Email Contract
++
++**Files:**
++- Modify: `tests/test_account_profile_endpoints.py`
++- Modify: `src/entry.py`
++
++- [ ] **Step 1: Write the failing test**
++
++Add this test near the existing password reset email tests in `tests/test_account_profile_endpoints.py`:
++
++```python
++def test_signup_verification_email_is_a_professional_welcome_email():
++    body = ENTRY_TEXT[
++        ENTRY_TEXT.index("async def _send_verification_email"):
++        ENTRY_TEXT.index("async def _password_reset_token")
++    ]
++    for marker in (
++        'subject = "Welcome to ForkMesh"',
++        "Confirm your email",
++        "https://forkmesh.com/docs",
++        "https://forkmesh.com/blogs",
++        "What was confusing",
++        "founders@forkmesh.com",
++        "/api/accounts/verify-email?node=",
++    ):
++        assert marker in body
++```
++
++Also add the new test to the `if __name__ == "__main__"` runner tuple:
++
++```python
++        test_signup_verification_email_is_a_professional_welcome_email,
++```
++
++- [ ] **Step 2: Run the test to verify it fails**
++
++Run:
++
++```bash
++uv run --with pytest pytest tests/test_account_profile_endpoints.py::test_signup_verification_email_is_a_professional_welcome_email -q
++```
++
++Expected: FAIL because `_send_verification_email` still uses `Confirm your ForkMesh email` and does not include the docs, blog, or feedback copy.
++
++- [ ] **Step 3: Update the email helper**
++
++Replace only the subject, text body, and HTML body inside `_send_verification_email` in `src/entry.py`.
++Keep token generation, link generation, and `_send_email` unchanged.
++The implementation should use `_html_escape(name)` for the HTML greeting and should include:
++
++```python
++    docs_url = "https://forkmesh.com/docs"
++    blogs_url = "https://forkmesh.com/blogs"
++    feedback_email = "founders@forkmesh.com"
++    safe_name = _html_escape(name or "there")
++    subject = "Welcome to ForkMesh"
++```
++
++- [ ] **Step 4: Run the focused test to verify it passes**
++
++Run:
++
++```bash
++uv run --with pytest pytest tests/test_account_profile_endpoints.py::test_signup_verification_email_is_a_professional_welcome_email -q
++```
++
++Expected: PASS.
++
++- [ ] **Step 5: Run the account endpoint contract tests**
++
++Run:
++
++```bash
++uv run --with pytest pytest tests/test_account_profile_endpoints.py -q
++```
++
++Expected: all tests in the file PASS.
++
++- [ ] **Step 6: Review the diff**
++
++Run:
++
++```bash
++git diff -- tests/test_account_profile_endpoints.py src/entry.py docs/superpowers/plans/2026-07-07-welcome-email.md
++```
++
++Expected: diff only includes the new test, the welcome email helper content, and this plan.
+diff --git a/cloudflare_worker/docs/superpowers/specs/2026-07-07-welcome-email-design.md b/cloudflare_worker/docs/superpowers/specs/2026-07-07-welcome-email-design.md
+new file mode 100644
+index 00000000..83e83f3a
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/specs/2026-07-07-welcome-email-design.md
+@@ -0,0 +1,46 @@
++# Welcome Email Design
++
++## Goal
++
++Send a professional welcome email when a user creates an account through signup.
++The email should help the user take the next step immediately, ask for feedback, and point them to the ForkMesh docs and blog.
++
++## Trigger
++
++The email sends on account creation/signup.
++It does not send on later login, profile updates, verification resends, or password resets.
++
++## Recommended Behavior
++
++The existing signup verification email becomes a combined welcome and verification email.
++This keeps the first signup experience to one message instead of sending a separate welcome email and verification email at the same time.
++The existing confirmation link remains the primary call to action because email verification is still part of account activation.
++
++## Email Content
++
++The subject is `Welcome to ForkMesh`.
++The message greets the user by node name when available.
++The primary call to action is the email confirmation link.
++The body includes direct links to `https://forkmesh.com/docs` and `https://forkmesh.com/blogs`.
++The body asks for feedback about what was confusing, what felt missing, and what the user wants ForkMesh to support next.
++The message keeps a professional tone and avoids marketing-heavy copy.
++
++## Runtime Flow
++
++The Worker already routes signup and finalize flows through `_send_verification_email`.
++That helper will continue generating the deterministic verification token and confirmation URL.
++The helper will change the subject, plain text body, and HTML body to the new welcome email.
++The lower-level `_send_email` Mailtrap integration stays unchanged.
++If Mailtrap is not configured or the send fails, signup still succeeds and the existing admin verification queue fallback remains in place.
++
++## Testing
++
++Add a focused contract test for the welcome email helper.
++The test should assert that signup verification email content now includes the welcome subject, confirmation link, docs link, blog link, and feedback prompt.
++Run the targeted account endpoint tests after implementation.
++
++## Out Of Scope
++
++This change does not add a second email provider.
++This change does not add a new database flag for welcome emails because the email is replacing the current signup verification message.
++This change does not alter Cloudflare secrets or deployment configuration.
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 22ec4c0c..9311e71f 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -5890,17 +5890,57 @@ async def _send_verification_email(env, request, name, email):
+     token = await _email_verify_token(env, name, email)
+     link = (_public_base_url(env, request) +
+             "/api/accounts/verify-email?node=" + quote(name) + "&token=" + token)
+-    subject = "Confirm your ForkMesh email"
+-    text = ("Welcome to ForkMesh!\n\n"
+-            "Confirm the email for your node \"" + name + "\" by opening:\n" +
+-            link + "\n\n"
+-            "If you didn't create this account, you can ignore this email.")
++    docs_url = "https://forkmesh.com/docs"
++    blogs_url = "https://forkmesh.com/blogs"
++    feedback_email = "founders@forkmesh.com"
++    safe_name = _html_escape(name or "there")
++    safe_link = _html_escape(link)
++    subject = "Welcome to ForkMesh"
++    text = ("Hi " + (name or "there") + ",\n\n"
++            "Welcome to ForkMesh. Confirm your email to finish setting up your "
++            "account:\n" + link + "\n\n"
++            "Next steps:\n"
++            "- Read the docs: " + docs_url + "\n"
++            "- Browse product notes and guides: " + blogs_url + "\n\n"
++            "What was confusing, missing, or most useful as you got started? "
++            "Send feedback to " + feedback_email + ".\n\n"
++            "If you did not create this account, you can ignore this email.")
+     html = (
+-        "<p>Welcome to ForkMesh!</p>"
+-        "<p>Confirm the email for your node <strong>" + name + "</strong>:</p>"
+-        "<p><a href=\"" + link + "\">Confirm my email</a></p>"
+-        "<p style=\"color:#888;font-size:13px\">If you didn't create this account, "
+-        "you can ignore this email.</p>")
++        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
++        "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
++        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
++        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
++        "border-radius:8px;background:#141416;padding:24px\">"
++        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
++        "letter-spacing:0;font-weight:700\">ForkMesh</p>"
++        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
++        "line-height:1.25;font-weight:800\">Welcome to ForkMesh</h1>"
++        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">Hi "
++        "<strong style=\"color:#f5f5f5\">" + safe_name + "</strong>, confirm "
++        "your email to finish setting up your account.</p>"
++        "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
++        "style=\"display:inline-block;background:#4ade80;color:#052e16;"
++        "text-decoration:none;border-radius:8px;padding:10px 14px;"
++        "font-size:14px;font-weight:800\">Confirm your email</a></p>"
++        "<div style=\"border-top:1px solid #313134;padding-top:18px;"
++        "margin-top:4px\">"
++        "<p style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
++        "font-weight:700\">Next steps</p>"
++        "<p style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
++        "<a href=\"" + docs_url + "\" style=\"color:#4ade80;"
++        "text-decoration:none\">ForkMesh docs</a>.</p>"
++        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
++        "<a href=\"" + blogs_url + "\" style=\"color:#4ade80;"
++        "text-decoration:none\">product notes and guides</a>.</p>"
++        "<p style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
++        "missing, or most useful as you got started? Send feedback to "
++        "<a href=\"mailto:" + feedback_email + "\" style=\"color:#4ade80;"
++        "text-decoration:none\">" + feedback_email + "</a>.</p>"
++        "</div>"
++        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
++        "not create this account, you can ignore this email.</p>"
++        "</div>"
++        "</div>")
+     return await _send_email(env, email, subject, text, html)
+ 
+ 
+diff --git a/cloudflare_worker/tests/test_account_profile_endpoints.py b/cloudflare_worker/tests/test_account_profile_endpoints.py
+index 49388dd0..2d208d4e 100644
+--- a/cloudflare_worker/tests/test_account_profile_endpoints.py
++++ b/cloudflare_worker/tests/test_account_profile_endpoints.py
+@@ -270,6 +270,26 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
+     assert "pass_hash" in token_body
+ 
+ 
++def test_signup_verification_email_is_a_professional_welcome_email():
++    body = ENTRY_TEXT[
++        ENTRY_TEXT.index("async def _send_verification_email"):
++        ENTRY_TEXT.index("async def _password_reset_token")
++    ]
++    for marker in (
++        'subject = "Welcome to ForkMesh"',
++        "Confirm your email",
++        "https://forkmesh.com/docs",
++        "https://forkmesh.com/blogs",
++        "What was confusing",
++        "founders@forkmesh.com",
++        "background:#090909",
++        "background:#141416",
++        "color:#4ade80",
++        "/api/accounts/verify-email?node=",
++    ):
++        assert marker in body
++
++
+ def test_login_page_links_to_password_reset():
+     login_html = (Path(__file__).resolve().parents[1] /
+                   "public" / "login.html").read_text(encoding="utf-8")
+@@ -293,6 +313,7 @@ if __name__ == "__main__":
+         test_worker_exposes_password_reset_flow,
+         test_forgot_password_does_not_leak_account_existence,
+         test_reset_password_validates_token_expiry_and_hashes_new_password,
++        test_signup_verification_email_is_a_professional_welcome_email,
+         test_login_page_links_to_password_reset,
+     ):
+         test()
