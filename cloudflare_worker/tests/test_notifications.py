@@ -96,13 +96,14 @@ def test_notification_mentions_extract_node_handles_once_without_false_positives
 
 
 def test_worker_indexes_notifications_from_existing_event_sources():
+    assert "_best_effort_inbox_side_effect(\n            notify_pending_inbox(" in ENTRY_TEXT
+    assert 'env, owner, repo, "issue", actor' in ENTRY_TEXT
+    assert "_best_effort_inbox_side_effect(\n            notify_issue_assignees(" in ENTRY_TEXT
     for marker in (
-        "await notify_pending_inbox(env, owner, repo, \"issue\"",
         "await notify_pending_inbox(env, owner, repo, \"pull\"",
         "await notify_pending_inbox(env, owner, repo, \"commit_comment\"",
         "await notify_pending_inbox(env, owner, repo, \"discussion\"",
         "await notify_mentions(env, owner, repo,",
-        "await notify_issue_assignees(env, owner, repo,",
         "await enqueue_notification(env, grantee, \"repo_shared\"",
         "await notify_bounty_event(env, rec, \"bounty_funded\"",
         "await notify_bounty_event(env, rec, \"bounty_paid\"",
@@ -156,9 +157,11 @@ def test_worker_exposes_signed_thread_subscription_route_and_schema():
 def test_worker_auto_subscribes_commenters_and_fans_out_to_followers():
     # Anyone who comments is auto-subscribed and existing followers are notified,
     # for both issues and PRs.
+    assert "_best_effort_inbox_side_effect(\n            notify_subscribers(" in ENTRY_TEXT
+    assert 'env, owner, repo, "issue", number, actor' in ENTRY_TEXT
+    assert "_best_effort_inbox_side_effect(\n            subscribe_thread(" in ENTRY_TEXT
+    assert 'subscribe_thread(env, owner, repo, "issue", number, actor)' in ENTRY_TEXT
     for marker in (
-        'await notify_subscribers(env, owner, repo, "issue"',
-        'await subscribe_thread(env, owner, repo, "issue"',
         'await notify_subscribers(env, owner, repo, "pull"',
         'await subscribe_thread(env, owner, repo, "pull"',
         "async def subscribe_thread",
