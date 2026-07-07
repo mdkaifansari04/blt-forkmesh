@@ -1,54 +1,66 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 323,
-  "title": "move the issues into .forkmesh/issues/ and have that be the new locationn they are stored - use one issue-##.json file and have all of the data stored in there instead of separate md files so no more md files only the json file and any images / videos stored in the issue oolder",
-  "status": "open",
-  "labels": [
-    "feature"
-  ],
-  "milestone": "",
-  "priority": 27,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1782922688061,
-  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-  "authorName": "newnewnode",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-323",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1782922688061,
-      "title": "move the issues into .forkmesh/issues/ and have that be the new locationn they are stored - use one issue-##.json file and have all of the data stored in there instead of separate md files so no more md files only the json file and any images / videos stored in the issue oolder",
-      "body": "",
-      "attachments": [],
-      "sig": "yjYuVs2WYY08uoA_NplttmthsQuN0qgy8JxpgNTXtt6VifZM0rD7PjVzPgl7BWbvsu6fP6lTx-pVpsB0z1mUBA"
-    },
-    {
-      "type": "priority",
-      "id": "ab1a74cf-4b13-469c-b091-82d3321fd196",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1783116818273,
-      "priority": 27,
-      "sig": "aXNkNy9Zq2Cs_q8Gruxe-iUOjNZHV0sEMfBcjmCjZGN-NKcTF1A5qcDOUqbQu3lJ7rMlzsV1kZIjft8huS4fAg"
-    },
-    {
-      "type": "edit",
-      "id": "6dd23478-dc9f-4e42-a612-e70b71d04dd6",
-      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
-      "authorName": "newnewnode",
-      "ts": 1783141188443,
-      "body": "save for Fable",
-      "attachments": [],
-      "target": "open-323",
-      "sig": "BYOpB4zIuFdVyj9yHbS1GJ79O2m1zg1Cw28xegi9iIYINkFp1wJAbv5buIfnIic8wKblW3L9BqZNf8oQ4HWXDQ"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783141188443
+    "assignees": [
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1782922688061,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "",
+            "id": "open-323",
+            "sig": "yjYuVs2WYY08uoA_NplttmthsQuN0qgy8JxpgNTXtt6VifZM0rD7PjVzPgl7BWbvsu6fP6lTx-pVpsB0z1mUBA",
+            "title": "move the issues into .forkmesh/issues/ and have that be the new locationn they are stored - use one issue-##.json file and have all of the data stored in there instead of separate md files so no more md files only the json file and any images / videos stored in the issue oolder",
+            "ts": 1782922688061,
+            "type": "open"
+        },
+        {
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "id": "ab1a74cf-4b13-469c-b091-82d3321fd196",
+            "priority": 27,
+            "sig": "aXNkNy9Zq2Cs_q8Gruxe-iUOjNZHV0sEMfBcjmCjZGN-NKcTF1A5qcDOUqbQu3lJ7rMlzsV1kZIjft8huS4fAg",
+            "ts": 1783116818273,
+            "type": "priority"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "save for Fable",
+            "id": "6dd23478-dc9f-4e42-a612-e70b71d04dd6",
+            "sig": "BYOpB4zIuFdVyj9yHbS1GJ79O2m1zg1Cw28xegi9iIYINkFp1wJAbv5buIfnIic8wKblW3L9BqZNf8oQ4HWXDQ",
+            "target": "open-323",
+            "ts": 1783141188443,
+            "type": "edit"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "cd11bdaf-ee64-43ac-95a6-50c8dbd74462",
+            "sig": "PRUnS-r2IWTZgXycbvNUViJHkuX8lsGq3ZmcdV-vhcAsn0SV9XdpvtTKaZNiw8ZAKmjACJp1rh5jnhTawVzLCQ",
+            "status": "closed",
+            "ts": 1783441868762,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "",
+    "number": 323,
+    "priority": 27,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "move the issues into .forkmesh/issues/ and have that be the new locationn they are stored - use one issue-##.json file and have all of the data stored in there instead of separate md files so no more md files only the json file and any images / videos stored in the issue oolder",
+    "updatedAt": 1783441868762,
+    "votes": 0
 }
