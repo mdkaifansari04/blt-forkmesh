@@ -389,6 +389,87 @@ void MainWindow::deleteArtifact(const QString &hash, const QString &label)
         loadMirrorNodesPanel();
 }
 
+void MainWindow::pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    const QString mirrorPath = repo.mirrorPath;
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists()) {
+        setRepoDetailNotice(
+            QStringLiteral("Release %1 published, but no local artifact store was found to prune.")
+                .arg(releaseTag),
+            true);
+        return;
+    }
+
+    const QList<MirrorReleaseBlob> blobs = mirrorReleaseBlobs(mirrorPath);
+    if (blobs.isEmpty()) {
+        logSystem(QStringLiteral("Artifacts: no previous release artifacts to delete for %1.")
+                      .arg(releaseTag));
+        return;
+    }
+
+    int deleted = 0;
+    int failed = 0;
+    qint64 bytesDeleted = 0;
+    for (const MirrorReleaseBlob &blob : blobs) {
+        const QFileInfo info(blob.path);
+        QDir hashDir = info.absoluteDir();
+        if (hashDir.removeRecursively()) {
+            ++deleted;
+            bytesDeleted += blob.size;
+            QDir shardDir = hashDir;
+            if (shardDir.cdUp() && shardDir.isEmpty())
+                shardDir.rmdir(QStringLiteral("."));
+        } else {
+            ++failed;
+        }
+    }
+
+    if (deleted > 0) {
+        logSystem(
+            QStringLiteral("Artifacts: deleted %1 previous release artifact%2 (%3) before publishing %4.")
+                .arg(deleted)
+                .arg(deleted == 1 ? QString() : QStringLiteral("s"))
+                .arg(QLocale().formattedDataSize(bytesDeleted), releaseTag));
+    }
+    if (failed > 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Published release %1, but %2 previous artifact%3 could not be deleted.")
+                .arg(releaseTag)
+                .arg(failed)
+                .arg(failed == 1 ? QString() : QStringLiteral("s")),
+            true);
+    } else if (deleted > 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Published release %1 and deleted %2 previous artifact%3 (%4).")
+                .arg(releaseTag)
+                .arg(deleted)
+                .arg(deleted == 1 ? QString() : QStringLiteral("s"))
+                .arg(QLocale().formattedDataSize(bytesDeleted)));
+    }
+
+    if (m_repoDetailStack && m_artifactsTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_artifactsTabIndex)
+        loadArtifactsPanel();
+    if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
+        loadMirrorNodesPanel();
+    m_mirrorAdvertSig.clear();
+    refreshRepositoryList();
+    if (repo.publishToNetwork) {
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            const RepositoryRecord &candidate = m_repositories.at(i);
+            if (candidate.owner == repo.owner && candidate.name == repo.name &&
+                candidate.mirrorPath == mirrorPath) {
+                publishRepository(i, false);
+                break;
+            }
+        }
+    }
+}
+
 void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
@@ -2033,6 +2114,12 @@ void MainWindow::promptNewRelease()
     auto *notesEdit = new QPlainTextEdit;
     notesEdit->setPlaceholderText("Describe this release...");
     notesEdit->setMinimumHeight(120);
+    auto *pruneArtifactsCheck = new QCheckBox(
+        QStringLiteral("Delete previous release artifacts from this node"));
+    pruneArtifactsCheck->setToolTip(QStringLiteral(
+        "After the release tag is created, delete every artifact currently stored "
+        "under this repo's local forkmesh-releases/sha256 store. New artifacts "
+        "from the release workflow will be written after this."));
     auto *genNotesButton = new QPushButton("Generate release notes");
     genNotesButton->setObjectName("ghostButton");
     genNotesButton->setCursor(Qt::PointingHandCursor);
@@ -2093,6 +2180,7 @@ void MainWindow::promptNewRelease()
     form->addRow("Title", titleEdit);
     form->addRow(QString(), genNotesButton);
     form->addRow("Notes", notesEdit);
+    form->addRow(QString(), pruneArtifactsCheck);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText("Publish release");
     form->addRow(buttons);
@@ -2143,6 +2231,8 @@ void MainWindow::promptNewRelease()
     logSystem(QStringLiteral("Git: tagged release %1 at %2.").arg(tag, targetRef));
     setRepoDetailNotice(QStringLiteral("Published release %1.").arg(tag));
     loadBranchesAndTags();
+    if (pruneArtifactsCheck->isChecked())
+        pruneReleaseArtifactsForCurrentRepo(tag);
 
     // Trigger any `on: release` workflow (e.g. .forkmesh/release.yml, which
     // builds and publishes the desktop binary for this platform). Resolve the
