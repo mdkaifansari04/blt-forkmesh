@@ -4,7 +4,7 @@ number: 24
 title: Add docs feedback capture
 base: main
 head: api-pr/20260708-001118/docs-feedback-implementation
-status: open
+status: merged
 ts: 1783449942885
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
