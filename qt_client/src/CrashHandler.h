@@ -25,6 +25,15 @@ namespace forkmesh {
 // is created if needed.
 void installCrashHandler(const QString &crashLogPath = QString());
 
+// Best-effort context included in the next fatal crash record. Keep it compact:
+// it is copied into a fixed buffer so the signal handler can dump it without
+// allocating. Passing an empty string clears the context.
+void setCrashContext(const QString &context);
+
+// Write a non-fatal diagnostic block to stderr and the durable crash log. This
+// is for breadcrumbs that should survive if the UI dies immediately afterward.
+void logDiagnosticEvent(const QString &context, const QString &details);
+
 // Record a non-fatal fault that was caught rather than allowed to abort the
 // process — e.g. a C++ exception thrown out of a slot during Qt event delivery
 // (the classic "app vanishes when I click a tab"). Writes a timestamped block to

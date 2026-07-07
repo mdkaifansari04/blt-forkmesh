@@ -15,15 +15,31 @@ WRANGLER = ROOT / "wrangler.toml"
 CI_WORKFLOW = ROOT.parent / ".forkmesh" / "ci.yml"
 DEPLOY_WORKFLOW = ROOT.parent / ".forkmesh" / "deploy.yml"
 DEPLOY_SH = ROOT / "deploy.sh"
+ENV_EXAMPLE = ROOT / ".env.production.example"
 ACTION_RUNNER_CPP = ROOT.parent / "qt_client" / "src" / "ActionRunner.cpp"
 ACTION_RUNNER_H = ROOT.parent / "qt_client" / "src" / "ActionRunner.h"
+CRASH_HANDLER_CPP = ROOT.parent / "qt_client" / "src" / "CrashHandler.cpp"
+CRASH_HANDLER_H = ROOT.parent / "qt_client" / "src" / "CrashHandler.h"
+MAIN_WINDOW_INTERNAL_H = ROOT.parent / "qt_client" / "src" / "MainWindowInternal.h"
+MAIN_WINDOW_CPP = ROOT.parent / "qt_client" / "src" / "MainWindow.cpp"
+MAIN_WINDOW_H = ROOT.parent / "qt_client" / "src" / "MainWindow.h"
+MAIN_WINDOW_ACTIONS_CPP = ROOT.parent / "qt_client" / "src" / "MainWindowActions.cpp"
+MAIN_WINDOW_PULLS_CPP = ROOT.parent / "qt_client" / "src" / "MainWindowPulls.cpp"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 WRANGLER_DATA = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
 CI_WORKFLOW_TEXT = CI_WORKFLOW.read_text(encoding="utf-8")
 DEPLOY_WORKFLOW_TEXT = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 DEPLOY_SH_TEXT = DEPLOY_SH.read_text(encoding="utf-8")
+ENV_EXAMPLE_TEXT = ENV_EXAMPLE.read_text(encoding="utf-8")
 ACTION_RUNNER_CPP_TEXT = ACTION_RUNNER_CPP.read_text(encoding="utf-8")
 ACTION_RUNNER_H_TEXT = ACTION_RUNNER_H.read_text(encoding="utf-8")
+CRASH_HANDLER_CPP_TEXT = CRASH_HANDLER_CPP.read_text(encoding="utf-8")
+CRASH_HANDLER_H_TEXT = CRASH_HANDLER_H.read_text(encoding="utf-8")
+MAIN_WINDOW_INTERNAL_H_TEXT = MAIN_WINDOW_INTERNAL_H.read_text(encoding="utf-8")
+MAIN_WINDOW_CPP_TEXT = MAIN_WINDOW_CPP.read_text(encoding="utf-8")
+MAIN_WINDOW_H_TEXT = MAIN_WINDOW_H.read_text(encoding="utf-8")
+MAIN_WINDOW_ACTIONS_CPP_TEXT = MAIN_WINDOW_ACTIONS_CPP.read_text(encoding="utf-8")
+MAIN_WINDOW_PULLS_CPP_TEXT = MAIN_WINDOW_PULLS_CPP.read_text(encoding="utf-8")
 
 
 def _load_sentry_dsn_parts():
@@ -110,6 +126,31 @@ def test_worker_error_log_reports_to_sentry_and_preserves_d1_log():
     assert "request=request" in ENTRY_TEXT
     assert "error=error" in ENTRY_TEXT
     assert '"cloudflare": cf_context' in ENTRY_TEXT
+
+
+def test_cron_failures_emit_sentry_cron_monitor_checkins():
+    assert 'SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"' in ENTRY_TEXT
+    assert "async def capture_sentry_cron_check_in" in ENTRY_TEXT
+    assert '"type": "check_in"' in ENTRY_TEXT
+    assert '"monitor_slug": _sentry_cron_monitor_slug(env)' in ENTRY_TEXT
+    assert '"status": status' in ENTRY_TEXT
+    assert '"monitor_config": _sentry_cron_monitor_config(env, cron)' in ENTRY_TEXT
+    assert '"schedule": {"type": "crontab", "value": cron[:120]}' in ENTRY_TEXT
+    assert '"checkin_margin": _sentry_int_env(' in ENTRY_TEXT
+    assert '"max_runtime": _sentry_int_env(' in ENTRY_TEXT
+
+    scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
+        .split("async def fetch", 1)[0]
+    assert 'await capture_sentry_cron_check_in(' in scheduled
+    assert '"in_progress"' in scheduled
+    assert 'final_cron_status = "error" if cron_failures else "ok"' in scheduled
+    assert "duration=(int(Date.now()) - cron_started_ms) / 1000" in scheduled
+    assert "await log_cron_error(" in scheduled
+    assert "error=error, failures=cron_failures" in scheduled
+
+    assert "SENTRY_CRON_MONITOR_SLUG=forkmesh-relay" in ENV_EXAMPLE_TEXT
+    assert "SENTRY_CRON_CHECKIN_MARGIN_MINUTES=1" in ENV_EXAMPLE_TEXT
+    assert "SENTRY_CRON_MAX_RUNTIME_MINUTES=5" in ENV_EXAMPLE_TEXT
 
 
 def test_worker_1101_exceptions_are_captured_then_reraised():
@@ -217,16 +258,24 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "kActionProcessLogMaxBytes" in ACTION_RUNNER_CPP_TEXT
     assert "kActionProcessLogChunkBytes" in ACTION_RUNNER_CPP_TEXT
     assert "kActionProcessLogTailBytes" in ACTION_RUNNER_CPP_TEXT
+    assert "kActionProcessLogMaxLineChars" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutputTruncationNotice()" in ACTION_RUNNER_CPP_TEXT
+    assert "normalizeProcessOutputForLog(const QString &text)" in ACTION_RUNNER_CPP_TEXT
     assert "rememberSuppressedProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "emitSuppressedProcessOutputTail()" in ACTION_RUNNER_CPP_TEXT
+    assert "rememberCrashProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
+    assert "updateCrashContext()" in ACTION_RUNNER_CPP_TEXT
+    assert "logFailureDiagnostic(finalMessage)" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputSuppressedBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputTail.clear();" in ACTION_RUNNER_CPP_TEXT
+    assert "m_processOutputLineChars = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputTruncated = false;" in ACTION_RUNNER_CPP_TEXT
     assert "Action output exceeded %1 KiB" in ACTION_RUNNER_CPP_TEXT
     assert "Showing the final %1 KiB of suppressed process output" in ACTION_RUNNER_CPP_TEXT
+    assert "recent process output tail:" in ACTION_RUNNER_CPP_TEXT
+    assert "forkmesh::setCrashContext(crashContext())" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(m_process->readAllStandardOutput())" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(tail)" in ACTION_RUNNER_CPP_TEXT
     assert "emitSuppressedProcessOutputTail();" in ACTION_RUNNER_CPP_TEXT
@@ -234,7 +283,23 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "emitLog(QString::fromUtf8(tail))" not in ACTION_RUNNER_CPP_TEXT
     assert "void emitProcessOutput(const QByteArray &bytes);" in ACTION_RUNNER_H_TEXT
     assert "QByteArray m_processOutputTail;" in ACTION_RUNNER_H_TEXT
+    assert "QByteArray m_crashOutputTail;" in ACTION_RUNNER_H_TEXT
     assert "bool m_processOutputTruncated = false;" in ACTION_RUNNER_H_TEXT
+    assert "g_crashContext" in CRASH_HANDLER_CPP_TEXT
+    assert "safeWriteCrashContext()" in CRASH_HANDLER_CPP_TEXT
+    assert "void setCrashContext(const QString &context)" in CRASH_HANDLER_H_TEXT
+    assert "void logDiagnosticEvent(const QString &context, const QString &details)" in CRASH_HANDLER_H_TEXT
+    assert "displaySafePlainLog" in MAIN_WINDOW_INTERNAL_H_TEXT
+    assert "text.size() > 8192" in MAIN_WINDOW_INTERNAL_H_TEXT
+    assert "m_actionLog->setLineWrapMode(QPlainTextEdit::NoWrap)" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "m_actionLog->insertPlainText(displaySafePlainLog(text))" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "displaySafePlainLog(m_actionStore->readLog(*run))" in MAIN_WINDOW_ACTIONS_CPP_TEXT
+    assert "displaySafePlainLog(" in MAIN_WINDOW_PULLS_CPP_TEXT
+    assert "~MainWindow() override;" in MAIN_WINDOW_H_TEXT
+    assert "MainWindow::~MainWindow()" in MAIN_WINDOW_CPP_TEXT
+    assert "MainWindow teardown" in MAIN_WINDOW_CPP_TEXT
+    assert "QObject::disconnect(view, nullptr, this, nullptr)" in MAIN_WINDOW_CPP_TEXT
+    assert "m_diffViews.clear();" in MAIN_WINDOW_CPP_TEXT
 
 
 def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():

@@ -31,6 +31,7 @@ namespace {
 // the handler itself only calls async-signal-safe functions. Fixed C buffers,
 // no QString/std::string, so there's no allocation on the crash path.
 char g_buildInfo[512] = {0};
+char g_crashContext[4096] = {0};
 
 // A dedicated stack so the SIGSEGV handler still runs when the crash *is* a
 // stack overflow (the normal stack is then unusable). A fixed 64 KiB: modern
@@ -89,6 +90,15 @@ void safeWriteNum(unsigned long v)
     (void)r;
 }
 
+void safeWriteCrashContext()
+{
+    if (!g_crashContext[0])
+        return;
+    safeWrite("context:\n");
+    safeWrite(g_crashContext);
+    safeWrite("\n");
+}
+
 // backtrace_symbols_fd targets one fd, so emit the frames to stderr and the
 // durable log separately.
 void safeBacktrace(void *const *frames, int n)
@@ -128,6 +138,8 @@ void crashHandler(int sig)
     safeWrite(signalName(sig));
     safeWrite("\nbuild: ");
     safeWrite(g_buildInfo);
+    safeWrite("\n");
+    safeWriteCrashContext();
     safeWrite("\nbacktrace:\n");
     void *frames[64];
     int n = backtrace(frames, 64);
@@ -159,6 +171,7 @@ void terminateHandler()
     safeWrite("what: ");
     safeWrite(what ? what : "(unknown / no active exception)");
     safeWrite("\n");
+    safeWriteCrashContext();
     std::abort(); // -> SIGABRT -> crashHandler() logs the backtrace
 }
 
@@ -213,6 +226,44 @@ void installCrashHandler(const QString &crashLogPath)
 #endif
 }
 
+void setCrashContext(const QString &context)
+{
+#ifdef FORKMESH_CRASH_HANDLER
+    const QByteArray utf8 = context.toUtf8();
+    const int n = qMin<int>(utf8.size(), int(sizeof(g_crashContext)) - 1);
+    if (n > 0)
+        memcpy(g_crashContext, utf8.constData() + utf8.size() - n, size_t(n));
+    g_crashContext[n] = '\0';
+#else
+    Q_UNUSED(context);
+#endif
+}
+
+void logDiagnosticEvent(const QString &context, const QString &details)
+{
+    const QString block =
+        QStringLiteral("\n===== ForkMesh diagnostic =====\n")
+        + QStringLiteral("when (epoch): ")
+        + QString::number(QDateTime::currentSecsSinceEpoch()) + QLatin1Char('\n')
+        + QStringLiteral("context: ") + context + QLatin1Char('\n')
+        + details + QLatin1Char('\n')
+        + QStringLiteral("===============================\n");
+
+    // Main application log (stderr). qCritical keeps it visible at default log
+    // levels and alongside the startup timing / node log.
+    qCritical().noquote() << block;
+
+#ifdef FORKMESH_CRASH_HANDLER
+    // Mirror into the durable crash log, when one was opened, so the breadcrumb
+    // survives if the UI dies while handling the failure.
+    if (g_crashFd >= 0) {
+        const QByteArray utf8 = block.toUtf8();
+        ssize_t r = ::write(g_crashFd, utf8.constData(), size_t(utf8.size()));
+        (void)r;
+    }
+#endif
+}
+
 void logCaughtFault(const QString &context, const QString &what)
 {
     const QString block =
@@ -223,13 +274,9 @@ void logCaughtFault(const QString &context, const QString &what)
         + QStringLiteral("what: ") + what + QLatin1Char('\n')
         + QStringLiteral("=================================\n");
 
-    // Main application log (stderr). qCritical keeps it visible at default log
-    // levels and alongside the startup timing / node log.
     qCritical().noquote() << block;
 
 #ifdef FORKMESH_CRASH_HANDLER
-    // Mirror into the durable crash log, when one was opened, so a caught fault
-    // is captured for the next-startup telemetry upload just like a real crash.
     if (g_crashFd >= 0) {
         const QByteArray utf8 = block.toUtf8();
         ssize_t r = ::write(g_crashFd, utf8.constData(), size_t(utf8.size()));

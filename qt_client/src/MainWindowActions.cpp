@@ -570,7 +570,7 @@ void MainWindow::onRunLog(int runId, const QString &text)
     if (runId != m_selectedRunId || !m_actionLog)
         return;
     m_actionLog->moveCursor(QTextCursor::End);
-    m_actionLog->insertPlainText(text);
+    m_actionLog->insertPlainText(displaySafePlainLog(text));
     m_actionLog->moveCursor(QTextCursor::End);
 }
 
@@ -2014,7 +2014,7 @@ void MainWindow::showRun(int runId)
                              "approved workflow.</p>");
         setDiffHtml(m_actionDiff, html);
     } else if (m_actionLog) {
-        m_actionLog->setPlainText(m_actionStore->readLog(*run));
+        m_actionLog->setPlainText(displaySafePlainLog(m_actionStore->readLog(*run)));
         m_actionLog->moveCursor(QTextCursor::End);
     }
 }
@@ -2391,6 +2391,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionLog->setReadOnly(true);
     m_actionLog->setObjectName("actionLog");
     applyLogFont(m_actionLog);
+    m_actionLog->setLineWrapMode(QPlainTextEdit::NoWrap);
     new AgentLogHighlighter(m_actionLog->document());
     m_actionLog->setMaximumBlockCount(20000);
 
