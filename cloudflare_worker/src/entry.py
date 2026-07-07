@@ -57,6 +57,9 @@ CATALOG_MAX_RECORDS_PER_OWNER = 50
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
 SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
+SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
+SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
+SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
@@ -8949,6 +8952,112 @@ async def capture_sentry_error(env, status, method, path, message, ray="",
         return False
 
 
+def _sentry_int_env(env, name, default, minimum=1, maximum=1440):
+    try:
+        raw = getattr(env, name)
+    except Exception:
+        raw = None
+    try:
+        value = int(str(raw or "").strip())
+    except Exception:
+        value = int(default)
+    if value < minimum:
+        return int(minimum)
+    if value > maximum:
+        return int(maximum)
+    return value
+
+
+def _sentry_cron_monitor_slug(env):
+    for name in ("SENTRY_CRON_MONITOR_SLUG", "SENTRY_MONITOR_SLUG"):
+        try:
+            value = getattr(env, name)
+        except Exception:
+            value = None
+        value = str(value or "").strip()
+        if value:
+            return value[:200]
+    return SENTRY_CRON_MONITOR_SLUG
+
+
+def _scheduled_cron_expression(controller):
+    for name in ("cron", "schedule"):
+        try:
+            value = getattr(controller, name)
+        except Exception:
+            value = None
+        value = str(value or "").strip()
+        if value:
+            return value[:120]
+    return "* * * * *"
+
+
+def _sentry_cron_monitor_config(env, cron):
+    cron = str(cron or "").strip() or "* * * * *"
+    try:
+        timezone = str(getattr(env, "SENTRY_CRON_TIMEZONE", "") or "UTC")
+    except Exception:
+        timezone = "UTC"
+    return {
+        "schedule": {"type": "crontab", "value": cron[:120]},
+        "checkin_margin": _sentry_int_env(
+            env, "SENTRY_CRON_CHECKIN_MARGIN_MINUTES",
+            SENTRY_CRON_CHECKIN_MARGIN_MINUTES),
+        "max_runtime": _sentry_int_env(
+            env, "SENTRY_CRON_MAX_RUNTIME_MINUTES",
+            SENTRY_CRON_MAX_RUNTIME_MINUTES),
+        "timezone": timezone[:120] or "UTC",
+    }
+
+
+async def capture_sentry_cron_check_in(env, status, check_in_id="",
+                                       cron="", duration=None):
+    """Send a Sentry Cron Monitoring check-in. Best-effort."""
+    try:
+        parts = _sentry_dsn_parts(getattr(env, "SENTRY_DSN", ""))
+        if not parts:
+            return False
+        status = str(status or "").strip().lower()
+        if status not in ("in_progress", "ok", "error"):
+            return False
+        check_in_id = str(check_in_id or "").strip() or _sentry_event_id()
+        cron = str(cron or "").strip() or "* * * * *"
+        payload = {
+            "check_in_id": check_in_id[:64],
+            "monitor_slug": _sentry_cron_monitor_slug(env),
+            "status": status,
+            "monitor_config": _sentry_cron_monitor_config(env, cron),
+        }
+        environment = _sentry_environment(env)
+        if environment:
+            payload["environment"] = environment
+        release = _build_rev(env)
+        if release:
+            payload["release"] = release
+        if duration is not None:
+            try:
+                payload["duration"] = max(0.0, float(duration))
+            except Exception:
+                pass
+        envelope = (
+            json.dumps({"event_id": check_in_id[:32], "dsn": parts["dsn"]}) +
+            "\n" + json.dumps({"type": "check_in"}) +
+            "\n" + json.dumps(payload) + "\n"
+        )
+        from js import fetch as js_fetch
+        resp = await js_fetch(parts["endpoint"], to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/x-sentry-envelope",
+                "x-sentry-auth": parts["auth"],
+            },
+            "body": envelope,
+        }))
+        return 200 <= int(getattr(resp, "status", 0)) < 300
+    except Exception:
+        return False
+
+
 def _console_error(message):
     try:
         from js import console
@@ -9071,6 +9180,16 @@ async def log_error(env, status, method, path, message, ray="", request=None,
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
     await _write_error_log(env, status, method, path, message, ray)
+
+
+async def log_cron_error(env, path, message, error=None, failures=None):
+    try:
+        if failures is not None:
+            failures.append(str(message or "")[:1000])
+    except Exception:
+        pass
+    await log_error(
+        env, 500, "scheduled", path, message, "", error=error)
 
 
 def _safe_error_text(error):
@@ -10380,52 +10499,54 @@ class Default(WorkerEntrypoint):
         # Cron trigger (every minute, see [triggers] in wrangler.toml): sample how
         # many nodes are online and fold it into the current hour's bucket for the
         # /network/ activity graph. Best-effort — never raise from the cron
+        cron_expression = _scheduled_cron_expression(controller)
+        cron_check_in_id = _sentry_event_id()
+        cron_started_ms = int(Date.now())
+        cron_failures = []
+        await capture_sentry_cron_check_in(
+            self.env, "in_progress", check_in_id=cron_check_in_id,
+            cron=cron_expression)
         try:
             await record_online_sample(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/record-online-sample",
+            await log_cron_error(
+                self.env, "/cron/record-online-sample",
                 "record_online_sample failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Fold one health check per system into today's bucket for the public
         # /status page's 30-day history.
         try:
             await record_status_sample(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/record-status-sample",
+            await log_cron_error(
+                self.env, "/cron/record-status-sample",
                 "record_status_sample failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Keep blocked phantom catalog entries (and their host presence) purged
         # even if no one loads /network/.
         try:
             await purge_blocked_catalog(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/purge-blocked-catalog",
+            await log_cron_error(
+                self.env, "/cron/purge-blocked-catalog",
                 "purge_blocked_catalog failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         try:
             await purge_stale_registered_nodes(self.env, force=True)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/purge-stale-nodes",
+            await log_cron_error(
+                self.env, "/cron/purge-stale-nodes",
                 "purge_stale_registered_nodes failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Backstop the bounty escrow split so a funded bounty pays out to the
         # author + treasury even if no client polls its status.
         try:
             await sweep_funded_bounties(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/sweep-funded-bounties",
+            await log_cron_error(
+                self.env, "/cron/sweep-funded-bounties",
                 "sweep_funded_bounties failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Central donation fund: once an hour, sweep the fund wallet out to the
         # currently-online nodes (issue #308). The interval gate inside makes the
         # per-minute cron a no-op until an hour has elapsed.
@@ -10433,11 +10554,10 @@ class Default(WorkerEntrypoint):
             await ensure_schema(self.env)
             await _distribute_central_fund(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/distribute-central-fund",
+            await log_cron_error(
+                self.env, "/cron/distribute-central-fund",
                 "distribute_central_fund failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Relay federation: a federated relay registers + reports its online nodes
         # to the main relay; the main relay expires stale federated presence and
         # sweeps confirmed federated signups.
@@ -10445,22 +10565,20 @@ class Default(WorkerEntrypoint):
             await ensure_schema(self.env)
             await _federation_cron(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/federation-cron",
+            await log_cron_error(
+                self.env, "/cron/federation-cron",
                 "federation_cron failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Retained chat history is only pruned per-room on client join
         # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
         # gets its 7-day-old messages deleted.
         try:
             await chat_history_prune_expired(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/chat-history-prune-expired",
+            await log_cron_error(
+                self.env, "/cron/chat-history-prune-expired",
                 "chat_history_prune_expired failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
         # Email digest bridge (issue #361): roll each recipient's unread
         # notifications into one email so a reply reaches people who don't have
         # the app open. Per-recipient interval + min-age gates inside keep the
@@ -10469,11 +10587,15 @@ class Default(WorkerEntrypoint):
         try:
             await send_notification_digests(self.env)
         except BaseException as error:
-            await log_error(
-                self.env, 500, "scheduled", "/cron/send-notification-digests",
+            await log_cron_error(
+                self.env, "/cron/send-notification-digests",
                 "send_notification_digests failed: " + _safe_error_text(error),
-                "",
-            )
+                error=error, failures=cron_failures)
+        final_cron_status = "error" if cron_failures else "ok"
+        await capture_sentry_cron_check_in(
+            self.env, final_cron_status, check_in_id=cron_check_in_id,
+            cron=cron_expression,
+            duration=(int(Date.now()) - cron_started_ms) / 1000)
 
     async def fetch(self, request):
         url = None

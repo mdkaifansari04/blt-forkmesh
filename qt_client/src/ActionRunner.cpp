@@ -1,5 +1,7 @@
 #include "ActionRunner.h"
 
+#include "CrashHandler.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -21,6 +23,52 @@ namespace {
 constexpr qsizetype kActionProcessLogChunkBytes = 16 * 1024;
 constexpr qsizetype kActionProcessLogMaxBytes = 1024 * 1024;
 constexpr qsizetype kActionProcessLogTailBytes = 128 * 1024;
+constexpr qsizetype kActionProcessLogMaxLineChars = 4096;
+constexpr qsizetype kActionCrashOutputTailBytes = 12 * 1024;
+constexpr qsizetype kActionCrashContextMaxChars = 12000;
+
+QString oneLine(QString text)
+{
+    text.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    text.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    return text.simplified();
+}
+
+QString diagnosticSafeText(const QString &input, qsizetype maxChars)
+{
+    QString text = input;
+    QString prefix;
+    if (text.size() > maxChars) {
+        text = text.right(maxChars);
+        prefix = QStringLiteral("...(diagnostic text truncated; showing tail)...\n");
+    }
+
+    QString out;
+    out.reserve(text.size() + prefix.size());
+    qsizetype col = 0;
+    for (QChar ch : text) {
+        const ushort u = ch.unicode();
+        if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+            out += QLatin1Char('\n');
+            col = 0;
+            continue;
+        }
+        if (ch == QLatin1Char('\t')) {
+            out += ch;
+            col += 4;
+        } else if (u < 0x20 || (u >= 0x7f && u <= 0x9f)) {
+            continue;
+        } else {
+            out += ch;
+            ++col;
+        }
+        if (col >= kActionProcessLogMaxLineChars) {
+            out += QStringLiteral("\n...[long line wrapped for display]...\n");
+            col = 0;
+        }
+    }
+    return prefix + out;
+}
 
 } // namespace
 
@@ -44,6 +92,10 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_processOutputBytes = 0;
     m_processOutputSuppressedBytes = 0;
     m_processOutputTail.clear();
+    m_processOutputLineChars = 0;
+    m_crashOutputTail.clear();
+    m_currentStepLabel = QStringLiteral("Checkout");
+    m_currentCommand.clear();
     m_processOutputTruncated = false;
 
     m_secrets.clear();
@@ -112,7 +164,16 @@ void ActionRunner::launch(Phase phase, const QString &program,
     m_processOutputBytes = 0;
     m_processOutputSuppressedBytes = 0;
     m_processOutputTail.clear();
+    m_processOutputLineChars = 0;
     m_processOutputTruncated = false;
+    if (m_currentStepLabel.isEmpty())
+        m_currentStepLabel = phase == Phase::Checkout
+                                 ? QStringLiteral("Checkout")
+                                 : QStringLiteral("Step %1").arg(m_stepIndex + 1);
+    m_currentCommand = program;
+    for (const QString &arg : args)
+        m_currentCommand += QLatin1Char(' ') + arg;
+    updateCrashContext();
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
     if (!workingDir.isEmpty())
@@ -228,6 +289,9 @@ void ActionRunner::runNextStep()
     const QString label =
         step.name.isEmpty() ? QStringLiteral("Step %1").arg(m_stepIndex + 1)
                             : step.name;
+    m_currentStepLabel = label;
+    m_currentCommand = command;
+    updateCrashContext();
     emitLog(QString());
     emitLog(QString::fromUtf8("==> \xF0\x9F\x94\xA7 %1").arg(label)); // 🔧
 
@@ -244,6 +308,9 @@ void ActionRunner::runNextStep()
 
 void ActionRunner::complete(bool ok, const QString &finalMessage)
 {
+    if (!ok && !m_stopping)
+        logFailureDiagnostic(finalMessage);
+
     emitLog(QString());
     emitLog((m_stopping ? QString::fromUtf8("==> \xF0\x9F\x9B\x91 STOPPED: ") // 🛑
                         : ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ") // ✅
@@ -271,6 +338,7 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
     emit finished(m_run.id, ok);
     if (landed)
         emit releaseMetadataLanded(m_run.id);
+    forkmesh::setCrashContext(QString());
 }
 
 bool ActionRunner::isReleaseRun() const
@@ -441,6 +509,9 @@ void ActionRunner::emitProcessOutput(const QByteArray &bytes)
     if (bytes.isEmpty())
         return;
 
+    rememberCrashProcessOutput(bytes);
+    updateCrashContext();
+
     if (m_processOutputBytes >= kActionProcessLogMaxBytes) {
         emitProcessOutputTruncationNotice();
         rememberSuppressedProcessOutput(bytes);
@@ -454,7 +525,11 @@ void ActionRunner::emitProcessOutput(const QByteArray &bytes)
          offset += kActionProcessLogChunkBytes) {
         const qsizetype chunkBytes =
             qMin(kActionProcessLogChunkBytes, keepBytes - offset);
-        emitLog(QString::fromUtf8(bytes.constData() + offset, chunkBytes));
+        const QString safe =
+            normalizeProcessOutputForLog(QString::fromUtf8(bytes.constData() + offset,
+                                                           chunkBytes));
+        if (!safe.isEmpty())
+            emitLog(safe);
     }
 
     m_processOutputBytes += keepBytes;
@@ -499,16 +574,98 @@ void ActionRunner::emitSuppressedProcessOutputTail()
                 "(%2 KiB omitted).\n")
                 .arg((m_processOutputTail.size() + 1023) / 1024)
                 .arg((m_processOutputSuppressedBytes + 1023) / 1024));
+    m_processOutputLineChars = 0;
     for (qsizetype offset = 0; offset < m_processOutputTail.size();
          offset += kActionProcessLogChunkBytes) {
         const qsizetype chunkBytes =
             qMin(kActionProcessLogChunkBytes,
                  m_processOutputTail.size() - offset);
-        emitLog(QString::fromUtf8(m_processOutputTail.constData() + offset,
-                                  chunkBytes));
+        const QString safe =
+            normalizeProcessOutputForLog(QString::fromUtf8(
+                m_processOutputTail.constData() + offset, chunkBytes));
+        if (!safe.isEmpty())
+            emitLog(safe);
     }
     emitLog(QStringLiteral("\n!! End of suppressed process output.\n"));
     m_processOutputTail.clear();
+}
+
+QString ActionRunner::normalizeProcessOutputForLog(const QString &text)
+{
+    QString out;
+    out.reserve(text.size());
+    for (QChar ch : text) {
+        const ushort u = ch.unicode();
+        if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+            out += QLatin1Char('\n');
+            m_processOutputLineChars = 0;
+            continue;
+        }
+        if (ch == QLatin1Char('\t')) {
+            out += ch;
+            m_processOutputLineChars += 4;
+        } else if (u < 0x20 || (u >= 0x7f && u <= 0x9f)) {
+            continue;
+        } else {
+            out += ch;
+            ++m_processOutputLineChars;
+        }
+        if (m_processOutputLineChars >= kActionProcessLogMaxLineChars) {
+            out += QStringLiteral("\n...[long line wrapped for display]...\n");
+            m_processOutputLineChars = 0;
+        }
+    }
+    return out;
+}
+
+void ActionRunner::rememberCrashProcessOutput(const QByteArray &bytes)
+{
+    m_crashOutputTail.append(bytes);
+    if (m_crashOutputTail.size() > kActionCrashOutputTailBytes)
+        m_crashOutputTail = m_crashOutputTail.right(kActionCrashOutputTailBytes);
+}
+
+QString ActionRunner::phaseName() const
+{
+    switch (m_phase) {
+    case Phase::Idle: return QStringLiteral("idle");
+    case Phase::Checkout: return QStringLiteral("checkout");
+    case Phase::Step: return QStringLiteral("step");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString ActionRunner::crashContext() const
+{
+    QString out =
+        QStringLiteral("action run id: %1\nworkflow: %2 (%3)\nrepo: %4/%5\n"
+                       "commit: %6\nref: %7\nphase: %8\nstep: %9\ncommand: %10\n"
+                       "worktree: %11\n")
+            .arg(m_run.id)
+            .arg(oneLine(m_workflow.name), oneLine(m_workflow.path),
+                 oneLine(m_run.owner), oneLine(m_run.name), oneLine(m_run.commit),
+                 oneLine(m_run.ref), phaseName(), oneLine(m_currentStepLabel),
+                 oneLine(m_currentCommand), oneLine(m_worktree));
+    const QString tail = diagnosticSafeText(
+        redact(QString::fromUtf8(m_crashOutputTail)), 8000);
+    if (!tail.trimmed().isEmpty())
+        out += QStringLiteral("recent process output tail:\n") + tail + QLatin1Char('\n');
+    if (out.size() > kActionCrashContextMaxChars)
+        out = QStringLiteral("...(crash context truncated; showing tail)...\n") +
+              out.right(kActionCrashContextMaxChars);
+    return out;
+}
+
+void ActionRunner::updateCrashContext() const
+{
+    forkmesh::setCrashContext(crashContext());
+}
+
+void ActionRunner::logFailureDiagnostic(const QString &finalMessage) const
+{
+    forkmesh::logDiagnosticEvent(
+        QStringLiteral("Action failed before UI refresh"),
+        crashContext() + QStringLiteral("final message: ") + finalMessage);
 }
 
 QString ActionRunner::redact(QString text) const

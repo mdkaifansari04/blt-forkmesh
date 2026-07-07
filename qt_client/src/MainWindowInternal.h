@@ -4614,6 +4614,44 @@ inline void applyLogFont(QPlainTextEdit *view)
     view->setTabStopDistance(4 * QFontMetricsF(mono).horizontalAdvance(QLatin1Char(' ')));
 }
 
+inline QString displaySafePlainLog(QString text)
+{
+    constexpr qsizetype kMaxChars = 2 * 1024 * 1024;
+    constexpr qsizetype kMaxLineChars = 4096;
+
+    QString prefix;
+    if (text.size() > kMaxChars) {
+        text = text.right(kMaxChars);
+        prefix = QStringLiteral("...[log truncated for display; showing tail]...\n");
+    }
+
+    QString out;
+    out.reserve(prefix.size() + text.size());
+    qsizetype col = 0;
+    for (QChar ch : text) {
+        const ushort u = ch.unicode();
+        if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+            out += QLatin1Char('\n');
+            col = 0;
+            continue;
+        }
+        if (ch == QLatin1Char('\t')) {
+            out += ch;
+            col += 4;
+        } else if (u < 0x20 || (u >= 0x7f && u <= 0x9f)) {
+            continue;
+        } else {
+            out += ch;
+            ++col;
+        }
+        if (col >= kMaxLineChars) {
+            out += QStringLiteral("\n...[long line wrapped for display]...\n");
+            col = 0;
+        }
+    }
+    return prefix + out;
+}
+
 // Colourises agent / workflow logs so streamed Claude & Codex output reads like
 // a modern editor terminal: system markers, shell commands, tool results,
 // network traffic, and errors each get a distinct style. Works incrementally as
@@ -4645,6 +4683,8 @@ public:
 protected:
     void highlightBlock(const QString &text) override
     {
+        if (text.size() > 8192)
+            return;
         const QString trimmed = text.trimmed();
         const int len = text.length();
         if (trimmed.startsWith(QLatin1String("==> [net]")) ||

@@ -56,6 +56,12 @@ private:
     void emitProcessOutputTruncationNotice();
     void rememberSuppressedProcessOutput(const QByteArray &bytes);
     void emitSuppressedProcessOutputTail();
+    QString normalizeProcessOutputForLog(const QString &text);
+    void rememberCrashProcessOutput(const QByteArray &bytes);
+    QString phaseName() const;
+    QString crashContext() const;
+    void updateCrashContext() const;
+    void logFailureDiagnostic(const QString &finalMessage) const;
     void complete(bool ok, const QString &finalMessage);
     void cleanupWorktree();
     // For a release run (ref under refs/tags/), copy the release metadata the
@@ -83,12 +89,16 @@ private:
     QString m_mirror;
     QString m_worktree;
     QString m_repoWorkTree; // owner's working copy (may be empty on a mirror-only node)
+    QString m_currentStepLabel;
+    QString m_currentCommand;
     QMap<QString, QString> m_variables;
     QStringList m_secrets; // values to redact from logs
     int m_stepIndex = 0;
     qsizetype m_processOutputBytes = 0;
     qsizetype m_processOutputSuppressedBytes = 0;
+    qsizetype m_processOutputLineChars = 0;
     QByteArray m_processOutputTail;
+    QByteArray m_crashOutputTail;
     bool m_processOutputTruncated = false;
     QProcess *m_process = nullptr;
 };

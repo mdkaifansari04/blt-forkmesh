@@ -188,6 +188,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();

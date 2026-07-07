@@ -2809,9 +2809,9 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
                 }
         m_pullChecksTable->selectRow(keepRow);
     } else if (m_pullChecksLog)
-        m_pullChecksLog->setPlainText(
+        m_pullChecksLog->setPlainText(displaySafePlainLog(
             "No checks have run for this pull request yet. Use \"Run checks against "
-            "this PR\" to queue this repository's push workflows.");
+            "this PR\" to queue this repository's push workflows."));
 }
 
 // Compact pass/fail/running line shown inline at the end of the Conversation,
@@ -2873,8 +2873,8 @@ void MainWindow::showPullCheckLog(int runId)
         m_pullChecksLog->clear();
         return;
     }
-    m_pullChecksLog->setPlainText(m_actionStore ? m_actionStore->readLog(*run)
-                                                : QString());
+    m_pullChecksLog->setPlainText(displaySafePlainLog(
+        m_actionStore ? m_actionStore->readLog(*run) : QString()));
     m_pullChecksLog->moveCursor(QTextCursor::End);
 }
 

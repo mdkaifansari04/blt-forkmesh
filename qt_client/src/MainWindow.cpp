@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CrashHandler.h"
 #include "MainWindowInternal.h"
 
 using namespace forkmesh::ui;
@@ -66,6 +67,26 @@ QString describeNewCrashes(const QString &path, qint64 seenOffset, qint64 *newSi
 }
 
 } // namespace
+
+MainWindow::~MainWindow()
+{
+    forkmesh::setCrashContext(
+        QStringLiteral("MainWindow teardown\nregistered diff views: %1")
+            .arg(m_diffViews.size()));
+
+    // Diff viewers are QObject children. During QMainWindow/QObject teardown they
+    // emit destroyed() after MainWindow's QList members are already being
+    // destroyed, so the registerDiffView() destroyed-lambda must not fire then.
+    const QList<QTextEdit *> views = m_diffViews;
+    for (QTextEdit *view : views) {
+        if (!view)
+            continue;
+        if (QWidget *vp = view->viewport())
+            vp->removeEventFilter(this);
+        QObject::disconnect(view, nullptr, this, nullptr);
+    }
+    m_diffViews.clear();
+}
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
