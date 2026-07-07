@@ -5890,17 +5890,57 @@ async def _send_verification_email(env, request, name, email):
     token = await _email_verify_token(env, name, email)
     link = (_public_base_url(env, request) +
             "/api/accounts/verify-email?node=" + quote(name) + "&token=" + token)
-    subject = "Confirm your ForkMesh email"
-    text = ("Welcome to ForkMesh!\n\n"
-            "Confirm the email for your node \"" + name + "\" by opening:\n" +
-            link + "\n\n"
-            "If you didn't create this account, you can ignore this email.")
+    docs_url = "https://forkmesh.com/docs"
+    blogs_url = "https://forkmesh.com/blogs"
+    feedback_email = "founders@forkmesh.com"
+    safe_name = _html_escape(name or "there")
+    safe_link = _html_escape(link)
+    subject = "Welcome to ForkMesh"
+    text = ("Hi " + (name or "there") + ",\n\n"
+            "Welcome to ForkMesh. Confirm your email to finish setting up your "
+            "account:\n" + link + "\n\n"
+            "Next steps:\n"
+            "- Read the docs: " + docs_url + "\n"
+            "- Browse product notes and guides: " + blogs_url + "\n\n"
+            "What was confusing, missing, or most useful as you got started? "
+            "Send feedback to " + feedback_email + ".\n\n"
+            "If you did not create this account, you can ignore this email.")
     html = (
-        "<p>Welcome to ForkMesh!</p>"
-        "<p>Confirm the email for your node <strong>" + name + "</strong>:</p>"
-        "<p><a href=\"" + link + "\">Confirm my email</a></p>"
-        "<p style=\"color:#888;font-size:13px\">If you didn't create this account, "
-        "you can ignore this email.</p>")
+        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
+        "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
+        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
+        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
+        "border-radius:8px;background:#141416;padding:24px\">"
+        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "letter-spacing:0;font-weight:700\">ForkMesh</p>"
+        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "line-height:1.25;font-weight:800\">Welcome to ForkMesh</h1>"
+        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">Hi "
+        "<strong style=\"color:#f5f5f5\">" + safe_name + "</strong>, confirm "
+        "your email to finish setting up your account.</p>"
+        "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
+        "style=\"display:inline-block;background:#4ade80;color:#052e16;"
+        "text-decoration:none;border-radius:8px;padding:10px 14px;"
+        "font-size:14px;font-weight:800\">Confirm your email</a></p>"
+        "<div style=\"border-top:1px solid #313134;padding-top:18px;"
+        "margin-top:4px\">"
+        "<p style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
+        "font-weight:700\">Next steps</p>"
+        "<p style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
+        "<a href=\"" + docs_url + "\" style=\"color:#4ade80;"
+        "text-decoration:none\">ForkMesh docs</a>.</p>"
+        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
+        "<a href=\"" + blogs_url + "\" style=\"color:#4ade80;"
+        "text-decoration:none\">product notes and guides</a>.</p>"
+        "<p style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
+        "missing, or most useful as you got started? Send feedback to "
+        "<a href=\"mailto:" + feedback_email + "\" style=\"color:#4ade80;"
+        "text-decoration:none\">" + feedback_email + "</a>.</p>"
+        "</div>"
+        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
+        "not create this account, you can ignore this email.</p>"
+        "</div>"
+        "</div>")
     return await _send_email(env, email, subject, text, html)
 
 
