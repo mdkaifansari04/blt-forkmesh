@@ -5426,6 +5426,12 @@ async def _account_login(env, request):
 
 
 async def _account_rotate(env, request):
+    """Rotate an active account's bound Ed25519 key after old-key approval.
+
+    The desktop client may omit nodeName in its rotation record; in that case
+    the relay resolves the account by oldPubkey, or treats an already-finished
+    newPubkey binding plus prev_pubkeys entry as an idempotent retry.
+    """
     try:
         data = await request.json()
     except Exception:
