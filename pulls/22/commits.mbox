@@ -1,0 +1,21 @@
+From 928fda47055f966cd1b7c0f220dde02f75cb5863 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Tue, 7 Jul 2026 23:48:29 +0530
+Subject: [PATCH] chore: ignore local worktrees
+
+---
+ cloudflare_worker/.gitignore | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cloudflare_worker/.gitignore b/cloudflare_worker/.gitignore
+index 7653e8d4..4ff6b3a3 100644
+--- a/cloudflare_worker/.gitignore
++++ b/cloudflare_worker/.gitignore
+@@ -4,3 +4,4 @@
+ __pycache__/
+ .mypy_cache/
+ .dev.vars
++.worktrees/
+-- 
+2.50.1 (Apple Git-155)
+
