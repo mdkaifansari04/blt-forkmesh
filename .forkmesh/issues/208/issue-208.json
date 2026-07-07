@@ -1,0 +1,208 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 208,
+  "title": "when there are changes show a small numbedr above the comimts tab",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 32,
+  "progress": 5,
+  "assignees": [
+    "mdkaifansari04"
+  ],
+  "createdAt": 1782349642460,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-208",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782349642460,
+      "title": "when there are changes show a small numbedr above the comimts tab",
+      "body": "",
+      "attachments": [],
+      "sig": "mPfLXKlCgpPCbURg62jFxhmjTuckL1mu-C4jvTkaS-4rxB7cDDeFAZ24Sz8eTo9-44KFvzsCBbpC2OISb7_rAg"
+    },
+    {
+      "type": "priority",
+      "id": "d9378f40-ab02-4845-be19-553468db6030",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482629,
+      "priority": 31,
+      "sig": "7moRuji7d52izPhpZ1pi59DYKaPYy4LgT4yuo3ghFwP-P7MwJP6Ns77AzxtTNCp9e7XzwTF2y4XMOR3-0KSqAw"
+    },
+    {
+      "type": "bounty",
+      "id": "70163f04-3b7f-413e-8e1c-b88fc4d8d857",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359967415,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "mcI5iyZ8ano78qHIKH909J1QwNbKl2xSaVcSRiEc736pon7_NFj3gZ6MijdB8CZE89Z1bsbbaKB_0eeoA3kSAQ"
+    },
+    {
+      "type": "priority",
+      "id": "ae3a01c3-1ce5-4c0d-819b-da0d1e16061f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650959,
+      "priority": 90,
+      "sig": "oQKd9VUKejU7nZ5FjvjD32cpHDaJmOH0AVgcpfwT4Fmu2D0rkZSi9fgXXizDwNOz6Mq57UxwRPS4MymtBZO9DA"
+    },
+    {
+      "type": "labels",
+      "id": "8a3b1a99-6f83-4947-867c-a91bf3577a9b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283522,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "_VcrH9vGDCBoJjbZCD5nPBN8RX3umzA9b1fAyyUvHdLjO2u6kzTzGL2WDGF9RjueqZd-ah1UJcPFKUiYTI2_BA"
+    },
+    {
+      "type": "progress",
+      "id": "24373998-4502-426b-ada9-7550bcb34193",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283591,
+      "progress": 70,
+      "sig": "DKq6r3c-zFb4-VMQlNIJh2qGllNDzh5OMNhpg-bN29msixDm5JhH2wvf9ik0Zbbz1uG4rYrbvyxFVirdmjmgBg"
+    },
+    {
+      "type": "priority",
+      "id": "a8ac21fd-303b-4d0d-9e14-bd7f6beac06e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486896,
+      "priority": 21,
+      "sig": "NwzBm2B0wwbFcUqizI4r6NnzzjDcsaO34HUbwk1qM0nApNu6GojX4aVwDgabH0BVAphj2BEvPkSb3ZQcCklsCQ"
+    },
+    {
+      "type": "labels",
+      "id": "53fe57ce-4ec2-4cb0-849a-bf2c8eaaad2b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666741,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "wlhlyM51SgEZZDW2RcyzzHWhtAzsKtP-8jir6538ZpKhCPHXl1WTf_hcSYR4gjSL2D5DKbmpXICZfBLNj69UDw"
+    },
+    {
+      "type": "progress",
+      "id": "5dc7eb65-a94f-4614-9a16-9d7ffd54f1cc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666766,
+      "progress": 5,
+      "sig": "HtU_rvjgGvQRnzGOO0EUnkrC0lPupS3_WPGugF6kDPJVaWZIsK8OxAYPzHfAvNaFwYlq2crndXd2vpfast8RDQ"
+    },
+    {
+      "type": "comment",
+      "id": "cb66682d-ca38-4e04-af06-a3fbc6da91fd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666791,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nno change-count badge on commits tab evidenced",
+      "attachments": [],
+      "sig": "biMMj_uEuA1bvdPK0lrY9ieoj7OChONTkTUOTxNaSrDyw5likq6ehRYqY46K22NQouGpHrOAGxt9wfTufb5gDg"
+    },
+    {
+      "type": "priority",
+      "id": "6563eae5-911a-450b-b4d8-c2ea3d64acd7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835248,
+      "priority": 32,
+      "sig": "z7JgBgKJYPbNMn72zsb62USqA5pLu4gWiJWF_6pFjuGICqFNC2QOqEkO6Q8AMtwD-pjA-suLJz09DJH__PUsCA"
+    },
+    {
+      "type": "comment",
+      "id": "2f886da0-e4d6-4c1b-abdf-34af136695cc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796310722,
+      "body": "Also currently it says sync changes update. Just make it say sync changes and have the count of the number of changes.",
+      "attachments": [],
+      "sig": "h3YfR1n-fQP40KESLKGF1peA697uXq0Mp8qsi27uVOp5wEzuOpLobLMKXWO0Q64Ga-mkftM_mdtUe_KRULEOCA"
+    },
+    {
+      "type": "agent",
+      "id": "c1803341-d94e-438d-9f1e-e31685143ef7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796317401,
+      "agentProvider": "claude-code",
+      "agentSessionId": 37,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "83g7_GwT_t57YeJm0UXcmyTTKMu97BXlzY_W-BPSaFbSMHw3ZWm8GEBx5dxLbU6_lt4LjBmPKKJSOMnd-jTnBg"
+    },
+    {
+      "type": "assignees",
+      "id": "f1bcdbac-5f8f-45f1-9240-ec612cc7087c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796317459,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "XPNA2O0bHr_iIrq1YM_gfPmwD_cUfn4096HvWQZ31w6vckJp06N761VfGuTYasDVhk4NgXFcy3noxVX_JFDABQ"
+    },
+    {
+      "type": "comment",
+      "id": "3d78dd56-6348-41d9-884f-2689ee4de3a6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796511571,
+      "body": "Closed by merged branch \"agent/issue-208-when-there-are-changes-show-a-small-numbedr-abov\".",
+      "attachments": [],
+      "sig": "U_ebpU-rIkDmiDlLZerqbRyKkzh-M1_OTf_ehgFL_x5CjaKfqnpSiJZpldFn4_6P4axilTxHJ0-hLlfVvULJDA"
+    },
+    {
+      "type": "status",
+      "id": "3bd6f282-530e-4054-8f79-5a946b2c8dfe",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796511670,
+      "status": "closed",
+      "sig": "CCL_YTtPjQBD8vAN1twglIZOv1WgNFr_0b6dWWZqBjrlOvuUI1W7pcNs2PTraltT1pP_ZlTQdb5xPaZevEo6CA"
+    },
+    {
+      "type": "assignees",
+      "id": "8207df30-8c22-4c17-a7c3-955809837210",
+      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+      "authorName": "mdkaifansari04",
+      "ts": 1782831857142,
+      "assignees": [
+        "mdkaifansari04"
+      ],
+      "sig": "IxZuwnXAkF3y7VLvDujY8J4azfxY4J13mRjQ_dJ1ECL-guRBAz7Y2rW-jTE_MdgKwaUMypZodOCKbQqY1FZgBw"
+    },
+    {
+      "type": "agent",
+      "id": "2d726791-57fe-4b74-a16e-5eee8414905f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782834057068,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ThgPs0kJdNt84P316ebbVEHEoKeSwylwcFnGOdJZKNuWnhhgE0WT1gIUQRgzB7pqWk7tTYXodgAq9i-TIo8vCA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782834057068
+}

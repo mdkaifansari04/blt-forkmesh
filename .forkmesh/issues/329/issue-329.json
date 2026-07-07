@@ -1,0 +1,99 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 329,
+  "title": "Fix the layout of the web so that it looks better on mobile and everything is accessible",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 61,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782960503,
+  "author": "wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1782960503",
+      "author": "wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4",
+      "authorName": "jett",
+      "ts": 1782960503,
+      "title": "Fix the layout of the web so that it looks better on mobile and everything is accessible",
+      "body": "",
+      "attachments": [],
+      "sig": "_cy0w2sU3EQEl6R_5JbYYtBs0p1-0DNHEIj2tbbc3B62Jfs1NsSTFIuxsH2v7lA6IFK2lGNAyiFag5zFW_xHBA"
+    },
+    {
+      "type": "priority",
+      "id": "b976a607-40b1-4708-a01e-b584ade1b500",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818276,
+      "priority": 61,
+      "sig": "iY0omAuEBUkLU7awQAM-f0lY5Ot2zdeHyvTpvolCueda3wEykW6AtDHtHyX8M18zs3iA_8uZuHK_vccRq-iLAg"
+    },
+    {
+      "type": "agent",
+      "id": "9649f8ca-8e6b-4be4-8cae-a58b89537366",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141430779,
+      "agentProvider": "claude-code",
+      "agentSessionId": 248,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "NhwHqbN9c-FrurhfjCOXlQC8Fs1bztEREwni-CBtIIBQrPMnbfUC_mEfeWYyKGuO6cIz0SL9xTmoQdA9Wg0KAQ"
+    },
+    {
+      "type": "assignees",
+      "id": "87612736-9927-4151-b608-51cc7ac93672",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141430869,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "GyODGb8QsTnG8ZfILq7uLvgw1WfNnisyuuKP2hxTsUEi0gwb0r_zcawktaOM66D6KVrxw2lZNED5iQa9l-YHBA"
+    },
+    {
+      "type": "comment",
+      "id": "eb22597e-d3b2-4a29-9fd2-3d0ba784e856",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142102057,
+      "body": "Closed by merged branch \"agent/issue-329-fix-the-layout-of-the-web-so-that-it-looks-bette\".",
+      "attachments": [],
+      "sig": "kqBGPFBtEg2Q68ze0HHjVo7sJUY-mUHnQycHUvz-5dHxZP-IVOUTWnb03oK-Sj5n384KoBnFW-HymPFIGOQeDQ"
+    },
+    {
+      "type": "status",
+      "id": "84193823-df60-4574-9bc1-a935fa107f33",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142102138,
+      "status": "closed",
+      "sig": "rJFOrs7eGarmIYLCLREHEjldUg-1uVjya4kd4BNZjmE_xvLCHm47KcDQjsbbaSXtLXeTPyO7Tykg-TIVPdDdBA"
+    },
+    {
+      "type": "agent",
+      "id": "f0318871-4da1-4d43-86e1-2b206927a691",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149299894,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "Jr4iy7ep-8Nc1Sdh-tcuSgGBbfdmkddp_Iq5CTsgZS1mq8aOtPFA9SUqq2JXVagCht4D-X5jWfhH7FLg6JjqCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149299894
+}

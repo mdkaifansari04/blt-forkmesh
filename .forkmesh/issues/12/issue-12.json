@@ -1,0 +1,70 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 12,
+  "title": "Mirror storage location setting",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "MVP launch",
+  "priority": 12,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781642499090,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-12",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781642499090,
+      "title": "Mirror storage location setting",
+      "body": "Let the user choose which directory mirrors are stored in.",
+      "attachments": [],
+      "sig": "LjLveASGUcajsKQ9v9Dy8B8PNcI3gZ1J6ox8QJbGb0gryre7s10YHX5fqbzef6dm62ERoxC7muXpeG6vp4gRBQ"
+    },
+    {
+      "type": "milestone",
+      "id": "9581bac2-a416-44c8-b0b5-74e8eddde5d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198377,
+      "milestone": "MVP launch",
+      "sig": "AxposcKxyct07OqFithKX4VHczmbbkiN2IZGY7Dgq1VEh1hNytPTLHGhiyv5p-bKP-hTX_9TEs6y2qXHBUKDBg"
+    },
+    {
+      "type": "priority",
+      "id": "2f5f30ea-54ad-47df-a9fd-fa501f13336b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198377,
+      "priority": 12,
+      "sig": "5RfomlzGycQgfWb4Tq685n7f6KWWbjoZwB1fiMg4AK9bzJWKM4dd3oh_rLdzOvX5umGyZqkZ7oTQlLhep5tpBA"
+    },
+    {
+      "type": "status",
+      "id": "8542f5f0-bc2e-4c4a-b472-b3173c87fde9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782180486301,
+      "status": "closed",
+      "sig": "ixX5o1H1LCBYPqu4pvEY2U0P76qEWM2PtRvBIl7cc9xQghjoSFwnKAhm9wMIjWt2HLD4guBPnw8SZMAiPD5lCw"
+    },
+    {
+      "type": "progress",
+      "id": "2272a6ee-2dfb-4b73-8fcc-df4d5254f560",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189925634,
+      "progress": 100,
+      "sig": "Yuma6Rxoj72hYyRDN8E5JDW5n9W_P084kRciukXyj4fIruvcEy7zA3dwPOnow5rmTyyJoU4qfP0o-SW0fnyRCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189925634
+}

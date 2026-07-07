@@ -1,0 +1,140 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 220,
+  "title": "show the time on the when column in workflows and have the width of the table expand more",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 18,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782354120269,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-220",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782354120269,
+      "title": "show the time on the when column in workflows and have the width of the table expand more",
+      "body": "",
+      "attachments": [],
+      "sig": "CpZjk2eDQWBXbSebFvNL7mim9MUjhmPcrQvHlzZOK8w908mWFmFHIC_foV219emfYisVwrIfTS8sKR4W0ms_Dg"
+    },
+    {
+      "type": "priority",
+      "id": "dec97c74-7b8e-4bbb-be91-47e6d116705e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482638,
+      "priority": 34,
+      "sig": "OPUql0ka1vzFYSDKdHSnmm5gp_Z_sJOuYzR9uNv5_f_r7csT2eF92w58jFi6lLKC5H-KIFiso31eFVw4Hb-2Ag"
+    },
+    {
+      "type": "bounty",
+      "id": "4665a077-8438-4fb6-b39e-bc5a5635f874",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359967895,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "J73z-nflgbtGEHWJ-ZIBp13qFpvOVDqtIvshwl44043gPKVMTD2VdSbNnwSqbh4oR_t4WYmXDVr68kwgCCKkBw"
+    },
+    {
+      "type": "priority",
+      "id": "db14e49a-5a1d-47e4-9997-d42950d21277",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522651008,
+      "priority": 92,
+      "sig": "Trf3av-2cCqYmJEV9I_n2ZwyXoISKilIxjrZ0kJ2VDH-et_zYgCFMzey1uAry8P3feZyKvr5YUZ9I5k2j5ANCg"
+    },
+    {
+      "type": "labels",
+      "id": "7b80844c-6808-4b51-97ec-50700fc0b3e6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284067,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "xGhRgS9qboG9zkuRmRSfn2aOs2CTPnSTi_xI9Hlk57y9IMayhsYRTAcCVBqxZ04ml8bEvMrP9SLPamFNpiswDw"
+    },
+    {
+      "type": "progress",
+      "id": "1d6c0be4-3b1d-44a7-8414-3b37224ae020",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284122,
+      "progress": 60,
+      "sig": "4G2VZlH6894juIx8Szf8JDTT4PWzc-UPnaXBrGOY2J2RbTZqyjc0AqoTHTImF1rHLE66sLimJqF_geoghfBaAg"
+    },
+    {
+      "type": "priority",
+      "id": "196e33f5-e939-4a4e-b0d1-f4475c186967",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487648,
+      "priority": 53,
+      "sig": "Yz7c9RB35BfF9s6zT1ot457ZWnpi9DC8sMg5uQ4w0oTwPGJKYPzX9P5YV7QZICUNExEH3CJIUqWdj080WrDjBA"
+    },
+    {
+      "type": "labels",
+      "id": "c5869062-b694-415e-8052-5b3465c61a0b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667044,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "thsCImCjUGltYWrZOj7ImxJZsivZr9z_v--IEo5oKQE4nP0IN6Iiv_h5kcsImIcnZAyHoRqMJGndzfqjTpSMDw"
+    },
+    {
+      "type": "progress",
+      "id": "a2301417-4bbe-4510-89dc-9f201190682b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667070,
+      "progress": 5,
+      "sig": "I6VEdAYnYpsZw7L471DkasbnglDMi_vFg037Puh_6zvur_YPrP_Z4Bu903pCPxzAsZ2npwsX42FVlpv12lflDA"
+    },
+    {
+      "type": "comment",
+      "id": "da981ab0-e33a-4800-90e0-c9c28c5a2b5d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667093,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nworkflow table time column and width expansion not evidenced",
+      "attachments": [],
+      "sig": "a3ErnSOHf-gu7SSMlVV1rccDPs7hlJfE8YOLjyj1pRfpFHymC1yrEfPrrZ-nh9K8qUKrhc--m9dzSbw31gQ5CQ"
+    },
+    {
+      "type": "priority",
+      "id": "974c5b43-7cad-47fd-866f-f67ff4e247f9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834914,
+      "priority": 18,
+      "sig": "01zfVGTko68_s5g5uAQV6QuW3MuO64vCTuEqLClvX9StFlmuBQ17P84PMbgwN-iTLIKdnfqfc5ls64aJdMeqBA"
+    },
+    {
+      "type": "status",
+      "id": "30c53d78-cbb9-49e9-8d6c-d4e97ad48500",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792461172,
+      "status": "closed",
+      "sig": "kNnJyAf0OAjJQybvtv5ZOBrBkSdDCsZqtZYHcNp_mXsrni8Zsbts__1_dCQgaOmLYLH5tUTDJV-kjuPI30EkCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782792461172
+}

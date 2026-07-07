@@ -1,0 +1,110 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 336,
+  "title": "Fix open closed count on web",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 7,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783048785,
+  "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1783048785",
+      "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+      "authorName": "jett",
+      "ts": 1783048785,
+      "title": "Fix open closed count on web",
+      "body": "",
+      "attachments": [],
+      "sig": "gZaEw8Zgv-Mu810vCo3ULovSg0abh1EMdI24ItqlGxh0pgKCbuF0xqefw-kIDmWcB8U3fW5rPSg8DFnOgW9HDA"
+    },
+    {
+      "type": "priority",
+      "id": "9bc11d69-abb6-4b8b-8c85-c9d7a2776f22",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818279,
+      "priority": 7,
+      "sig": "65zTjcFcyezl7Mazp5_QUPcdQC1KabeF2Yv-0loczt6vt1X5wIC6XtJgRpadcIpmipbyZP07TZqpUtCGAG6wBg"
+    },
+    {
+      "type": "edit",
+      "id": "4f3c9c25-e107-4634-bc0a-dbf1fb5fdbff",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122037119,
+      "body": "for the issues",
+      "attachments": [],
+      "target": "open-web-1783048785",
+      "sig": "yVx1qD-QrTqSa1Q6B4lmyDfIfbQvXHIue9YnVu0ZWl7z_Crl0U5CjwWdVOQigw4zaLxm5w1bbvtYPI_XqGaqDQ"
+    },
+    {
+      "type": "agent",
+      "id": "e076ff62-2a52-488c-9787-d917c888d37b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122044260,
+      "agentProvider": "claude-code",
+      "agentSessionId": 148,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "g7s0DAJWRVaSqBrK7nJFiu3uWss4R4j9z4zlxb0Uaj-jsvMdFDbNpDG3D8I_uvJw868oRBJl7EwaSts2a2JECg"
+    },
+    {
+      "type": "assignees",
+      "id": "1547813f-c47e-40d8-ac65-d987c86d6cd5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122044345,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "5KUoJoKZGuXwDDrQGLe1nNL8r8tXyTq0nAerTsP0FKJuphm9QHJ1mbCoAZ20wqMInjzOl4pnHurWxIBrDYqwDg"
+    },
+    {
+      "type": "comment",
+      "id": "1b0f3469-9edc-46ab-83bc-e64c1a1a4bb3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122262320,
+      "body": "Closed by merged branch \"agent/issue-336-fix-open-closed-count-on-web\".",
+      "attachments": [],
+      "sig": "h-8zRwyQB_S2T7u0wn1hLrk_-N53opQmKmhTAS8mRnCGJY4y9yfLbbITnMK0uIoN6PsolgJUTXreRRblR9x-AQ"
+    },
+    {
+      "type": "status",
+      "id": "6c1e0cc8-d090-4cb0-8f69-5c14ef7ce017",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122262399,
+      "status": "closed",
+      "sig": "A94pAnKf--jYaFozGg8TOwhYm_zCz4CfGEO6jqQ7Yy_G1ZKhF_DMsuHIu4xwSw5beTRgQclEUEOIAqm-CSQLAQ"
+    },
+    {
+      "type": "agent",
+      "id": "5a4dfb8f-f2a7-4e9e-bdd2-551e98366ae6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138445598,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "wUtamWg5gVp-b-Cn7aKaAmHz03bMs06kuZpOqLvCDFgqgzRZAuwgH1IbxwDsfnZ3lth28Czk9QeVwRmh6d3zBg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138445598
+}

@@ -1,0 +1,140 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 229,
+  "title": "have insights show the number of contributors in the tab",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 28,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782355015749,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-229",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782355015749,
+      "title": "have insights show the number of contributors in the tab",
+      "body": "",
+      "attachments": [],
+      "sig": "w1aSL3sKndBDrSxhQmKdixYP2rETh6Ti1m9_IR7mBj_THR3okSmU0cfND6Qh2yJ75Vq5qNzE75mqmXtqLeKGCw"
+    },
+    {
+      "type": "priority",
+      "id": "ac1484f9-e5be-4fe1-86db-82f024653876",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482647,
+      "priority": 44,
+      "sig": "6YaKbzOidNds61aDqg2ay7YM-Vc7ZXxZs5st54KEi6fU9HvCID2RhWXbvfk4ToUBdK4wfAAcU_6e-0xnYiyhDA"
+    },
+    {
+      "type": "bounty",
+      "id": "65fa7997-959b-4835-98e1-f01025abd166",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359968376,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "rDHT1ogXB8FN3uF1h3J3h2UAZq2aJ2ffUloI9x_lEyTGH22tolLYnVwexZ5Ykq7dKaw2xGF8oH1bsH_WiOjHAw"
+    },
+    {
+      "type": "priority",
+      "id": "ded13926-a058-4d44-ae63-6e26c000935e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649786,
+      "priority": 36,
+      "sig": "GRZv2Y6Mw8Oj0VgpEjNnTb0zxcJgMLNKoJyUttL7Xeh0X85T5dPzOJBjKyRGKxYKOw4tMVUJ3tp5_5RgBgq5DQ"
+    },
+    {
+      "type": "labels",
+      "id": "0ebdc53b-87d5-4d3b-87a4-fc53638a6d22",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284672,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "8qqmsrM21h0By508C6nbCYEyYFq0YxNibhJSkruHHBw2LVZkPQq_p38fnhOAbm-tinInKq23Sr_GQX7zSoJMDw"
+    },
+    {
+      "type": "progress",
+      "id": "d68bf854-af0d-489a-af89-3c6e2df7575b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284725,
+      "progress": 70,
+      "sig": "lE71DoNPOyoTosBR6wEfjeQjthT0niKAt_0sv9N113Sc1tqmfsBv2jTRobwBwZIQ6A8z0dr7A4820w-fuc5oAQ"
+    },
+    {
+      "type": "priority",
+      "id": "798cc02b-2776-4a6c-bb99-31407fa10b3a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487543,
+      "priority": 49,
+      "sig": "0R2z4ZRfWJeg3y7_cEbmBDNDb7yiP8Q_s1Ww72EYTEboFjaCsVqfuLIgTJSS9m52bJQHVPGagh3DZ1cbgttHBg"
+    },
+    {
+      "type": "labels",
+      "id": "ba4e6505-6d6c-4dba-ae71-b7416657ec7e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667406,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "FiPqPP4jSZ35HH0QX1PgxzYluvJViF1LengvZ9TNc-XWGou5xhkGFX8EjcLeS7A2faDtS9lEBDASMA7hzsOhDw"
+    },
+    {
+      "type": "progress",
+      "id": "e9ccaf23-9b5e-4f99-803f-93795d925ede",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667430,
+      "progress": 5,
+      "sig": "4Xf6-iHevvEf3P514c6wfhX1eYEvmYx6i0-9c8Ni8szImrPXJ2LAuAGy8cOK_tQOwYNXp3LzgvgWpCuJYJhYBg"
+    },
+    {
+      "type": "comment",
+      "id": "7e7b3fee-e70d-4f54-8d0f-842f270717b7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667454,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ncontributor count in insights tab not evidenced",
+      "attachments": [],
+      "sig": "i083TU6HjcC5pwibl1Q9II_LgXQZwmEzxF7-fcXcg06osFLC_81kF-6GR0XEacUdcMHUgI0ERpA3yTLuEXofBw"
+    },
+    {
+      "type": "priority",
+      "id": "795aee70-0372-4018-be57-a2b51d3ba803",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835148,
+      "priority": 28,
+      "sig": "SJ-v2x5H4IPEQlaxpG4exDJghx3kZJDLOGJdeWhq80vadNYboYLvrEbGByAdHJAOpCxmo-4W4hY0Mkmwqp0jCw"
+    },
+    {
+      "type": "status",
+      "id": "00a479f7-51af-45f5-bf76-4c5237f2520f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796233664,
+      "status": "closed",
+      "sig": "oaHUyvLMTIIV8HxLFcpa4sFQmmgkzQ6ACCtOcbterFCGMYb_fcnl9kfXfkZBG6a6Lvxdv9G1i1d62Rrfbgr8Cg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782796233664
+}

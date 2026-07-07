@@ -1,0 +1,91 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 356,
+  "title": "Public status page with uptime history",
+  "status": "closed",
+  "labels": [
+    "feature",
+    "infra"
+  ],
+  "milestone": "MVP launch",
+  "priority": 8,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818255,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-356",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818255,
+      "title": "Public status page with uptime history",
+      "body": "**Roadmap Phase 1.** An error budget starts with a place to see it. `/api/version` already self-reports the live build rev; extend the idea.\n\n- `GET /api/status` in `cloudflare_worker/src/entry.py`: mainnode health, online node count (reuse the `onlineNodes` logic — distinct online nodes, **not** raw `host_presence` rows, which over-count), catalog size, last-24h error counters.\n- Persist hourly snapshots in a small Durable Object ring buffer (fixed size — free-plan safe).\n- Static page `cloudflare_worker/public/status/index.html` rendering current state + the history sparkline, using the existing dark palette in `styles.css`.\n\nKeep it to one DO read per page view. This also becomes the first thing to check during incidents instead of tailing logs.",
+      "attachments": [],
+      "sig": "4QF1L9m67C-GeAuuO9kN2TgtVfiOz4fd_LNgljf313SdRQXah_OynROUhHYKILVY_BMvwMZFg16YZoEFuqSoBQ"
+    },
+    {
+      "type": "agent",
+      "id": "78243fea-9506-4f6e-aae2-02d3b5d69844",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122155896,
+      "agentProvider": "claude-code",
+      "agentSessionId": 150,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "DaSDrRkRtW1CYN__RVRKz3FgkDyYt9wafPCsA_1jMFCDap7hG9fsDdtYuz37vLGX5vzo2W61trPaVtKwlpdYAg"
+    },
+    {
+      "type": "assignees",
+      "id": "caadca76-1319-42c4-965f-6cbbd5ccf756",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122155981,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "zfE0UZ66NxOxrii8Opks3Ia3CmF5N-onWv59olK2nwvkq6BPRhCREsGKeR7418r-cYrbCJCs5lyfJ2Rsp6tFCA"
+    },
+    {
+      "type": "comment",
+      "id": "7cab07fc-52bf-4529-9e9e-93d223afd59e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122895747,
+      "body": "Closed by merged branch \"agent/issue-356-public-status-page-with-uptime-history\".",
+      "attachments": [],
+      "sig": "FX0fWuOV3JsbV5Kxmj5oi1LKNxtqCHBXwI_WUlNeLc24lEVSKs_0odtSO8ug9JucQjscqIe00WSuZ3TPQ5f4AA"
+    },
+    {
+      "type": "status",
+      "id": "9ebd9e2a-0adb-48db-b3e3-c4159dcb17f8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122895815,
+      "status": "closed",
+      "sig": "O0iFjGUPb_2ihcsvHKkqB-zZVS-7I2dKNN5s4xpZ2fhBx-T6wzqJV_5viA_usxZe8OG61r4D7-CLNeGO8kE_Dw"
+    },
+    {
+      "type": "agent",
+      "id": "28bb32ed-181b-49ed-b215-82065564a630",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138437273,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "I4fTRxsmbpLQZbcFkDcGZxMYZ1auJdgRsf1BBJakeU4GGCNgit0pcaq_3oYPq6Zb4PSfz6NeDBYB3nmv8StfDw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138437273
+}

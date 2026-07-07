@@ -1,0 +1,155 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 231,
+  "title": "have the ability to show the cove password on the source of truth node also don't show the filenames in the cove",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 15,
+  "progress": 15,
+  "assignees": [],
+  "createdAt": 1782355389527,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-231",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782355389527,
+      "title": "have the ability to show the cove password on the source of truth node also don't show the filenames in the cove",
+      "body": "",
+      "attachments": [],
+      "sig": "7hMvMkIcDcUuhH8okgR5VRfA-J9TUaFNfKjr_lWisuyHBz0gakHnFxtJQGd1JXG2fjFOxXGzKJVA_hlXJANMAg"
+    },
+    {
+      "type": "priority",
+      "id": "f8c4cdd4-7179-42f7-bfcb-b436df1aaf6b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482649,
+      "priority": 42,
+      "sig": "7hOvGmqOiOs1P8U6TwS8bkqVBjm5kCzQ_uYo9Iyltgy2BkrcqgKgkQTrpj-vmGI4a_AW-N9gFEj6sg22cJUJBA"
+    },
+    {
+      "type": "bounty",
+      "id": "2e8b10a5-c2e8-4e2e-8a1b-25a5e29007f8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359968503,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "j9AYg_zdxWyu6RCHvOYCoCM1_j0Uce4liDroUNOicxCEemzQtvr2sLM631IbjIe09exO6zsLCkW2G3Pmi_8_DA"
+    },
+    {
+      "type": "priority",
+      "id": "66fd58e8-7728-46eb-9a2b-21cab4057e19",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649809,
+      "priority": 37,
+      "sig": "W8hsbIQWpzuA6fj1MqSf59kqERiYBvu9mLfHREMyejehZeuN0VA4GLQL1NWQ2eYPVSACMPY5OId_P14v1rTnDA"
+    },
+    {
+      "type": "labels",
+      "id": "5868b607-c132-4023-9a02-2778bb52cea5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284770,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "GpzLCPTVm65Sb6LqU0jDSS8OQZe7vX-k-YrDw4031L8nG3s4k1OWUubr-AgFzy2QpOCIaGzVNrsTZNTzZszVDA"
+    },
+    {
+      "type": "progress",
+      "id": "f898b825-cd6e-4bb7-896d-d6024397ec49",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284828,
+      "progress": 45,
+      "sig": "-BnX3-IRsDM8Gw3eE0TYXUJyM1umy8wgxr-p9AwEBQwOqDJ4KnhDziUpVYmf7rfIIfhitekG9-_DRiPw2QQ-DQ"
+    },
+    {
+      "type": "priority",
+      "id": "5c16806d-0b38-436d-80a7-2d215d352e54",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486753,
+      "priority": 15,
+      "sig": "roTBs-ph-qr324XYuvTbFGmz5GHmXEppjL-2MO2kJxzg0l9UvMOmK3wfo_aLFWNLLJICNzGPm2HVJEoSpTY9DA"
+    },
+    {
+      "type": "labels",
+      "id": "dad29497-47bd-4054-a6c5-ed25feffd5c8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667482,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "FSAMsNKTfV73GIAVBUqn-hB24g5DoWQuaHDWMPxdtRjdMjMsAwPJlAe-eq8WHNYYIWZNv6uw-KlkGTo8JUusBw"
+    },
+    {
+      "type": "progress",
+      "id": "bfb54663-c5c5-4b06-bddc-dc8355deee9b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667506,
+      "progress": 15,
+      "sig": "OXRV875OaoBnv7gMC81mjMjxXDLy4UE_dcWnu-QdytMPWQ2YX9mPx0o5uU5cadkfrklrxo3pHQdpJtfzcZFSCA"
+    },
+    {
+      "type": "comment",
+      "id": "c66c0a35-d2ae-4f01-9f13-37e527d3b824",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667529,
+      "body": "**Completeness analysis:** Partial (15%)\n\ncoves exist in .forkmesh but show-password and hide-filenames features not evidenced",
+      "attachments": [],
+      "sig": "N1hTgN-DWyxnlXMxqRU7ESjpHpj6IgDNFttTW5oTlMBimxg75Cg53B03lkYKUzb6n4UE9MoPoIpDh-V6yRljAg"
+    },
+    {
+      "type": "agent",
+      "id": "19cc255c-6855-4ea4-9462-89adac62a637",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782762364287,
+      "agentProvider": "claude-code",
+      "agentSessionId": 37,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "CxxzmstoX-IHfikcE6Hl94PmzfgKx5jfmKlGxt1nDbkAPV11FPW1cehe6-O_lQf8-_nIJf2t9Pr41LAuz3yuAA"
+    },
+    {
+      "type": "agent",
+      "id": "2559e214-72d4-4fdd-9cf4-619817242137",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782764417679,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "XYkxS0YDcxnS8Wh3fwsgAx3EknS_tNInCQyDVGVFYg5kwtvBMsCBpkLD6GOj7NQRu4DfXd88LhTjYADizqDUDA"
+    },
+    {
+      "type": "status",
+      "id": "f1b23229-dbc1-430b-abd2-e4dd9ba52078",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782764417936,
+      "status": "closed",
+      "sig": "AlmD9AFFD7qA5JoqCaIAEHOwr76sdD18msy50hVAZdyFcCIypAaCNACNjO3V4ZxeZQexeOA3Wml3P7Xv0Jo_CQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782764417936
+}

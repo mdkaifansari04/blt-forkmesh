@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 48,
+  "title": "move the node / user avatar to above the refresh button and let the user change it in their profile edit view from a right panel profile / node view",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781731583918,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-48",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781731583918,
+      "title": "move the node / user avatar to above the refresh button and let the user change it in their profile edit view from a right panel profile / node view",
+      "body": "",
+      "attachments": [],
+      "sig": "qAEaj-9Z6j45MsJhF76DZPeTOtJruXh1RL8mLkOf95Ax8091uGUmQLbC0yEeZN_KP6hKxsF3gGcdmE6_a_N_DA"
+    },
+    {
+      "type": "status",
+      "id": "b83f10da-1bda-45c2-b309-5bbf0ac81b40",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782099513242,
+      "status": "closed",
+      "sig": "V3DNLN57hqcu4NkDMVHGAVF2BeFUAcd1l8umshbc6MNQljjmIjQ-VtH0ucK5K1FWM720I-zthYlhiSKuUIxnDw"
+    },
+    {
+      "type": "progress",
+      "id": "540acfbf-f3c5-4b12-8001-f86fdbf322ab",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189927020,
+      "progress": 100,
+      "sig": "pvCC_dwLFhG3bD0O9157X-D6SszTJWWfwEfJiCZgllVPip-b8LAcggkyZebS21jFheOlpe9qq4cOtAdF1Y35CA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189927020
+}

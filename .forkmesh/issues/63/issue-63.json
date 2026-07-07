@@ -1,0 +1,172 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 63,
+  "title": "always show the latest run live log output when we click on actions",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782011829812,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-63",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782011829812,
+      "title": "always show the latest run live log output when we click on actions",
+      "body": "",
+      "attachments": [],
+      "sig": "1HyOGg0B6_ZQLFKzHc0Za5qFgHAkQ4yAOyiiFVOhQRIVZXTM9vxPZJrN3QIwTuy5HIPkpaZuMIXWbNVTWSBFAg"
+    },
+    {
+      "type": "agent",
+      "id": "b165b49d-4507-4121-9603-b897f30396dc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782013278977,
+      "agentProvider": "codex",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "OA8GBCUIQNg3Q-VsiorLYS4Tal9n-chEgRQc20JRBsEoy2-cTMiF7-Rf-2JtswtrccQKK9518CIj7G65P1OvDQ"
+    },
+    {
+      "type": "agent",
+      "id": "2e66634f-b2a6-4a77-b5ac-09b4987bef1b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782014407965,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "JlHXxzcoTJASTJS9s_rSwlcBG4UIromjI9ANAiobNuq_d9R9nao_Q-lAvU2T0xo-k46YTr9Mh0mIqIH6a0ZrDw"
+    },
+    {
+      "type": "agent",
+      "id": "f5f95d69-c271-487a-bed2-e9f095971459",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782014425636,
+      "agentProvider": "codex",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "fI5-6T768EgBCKQA6QmNqSuduj5mSCIm11yZrMXjpTYqY-dKm4wjghNUi1KV_pVq8N_AvZXliCgpX3SyDOYlCA"
+    },
+    {
+      "type": "agent",
+      "id": "066106e3-d892-4e73-bcae-ca20ef3e9eaf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782014686648,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "miryuZqbObGApXX9J9jufxAyOBlQ0xpaBIBmSjg77wWqsiKKPOzXp3-XPC7905A9DB3eIhhpX-LQstivcrVYDA"
+    },
+    {
+      "type": "agent",
+      "id": "4e37fdbf-9382-4a49-a3f9-d8c5748c832a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782014693398,
+      "agentProvider": "codex",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "_lk1SsH8NwqpEQMnm1wzrV9Gv_7brCkdtIqZrcrNtlx9zcbT30YFNUz9KCQoNT_2VZJohDNVnBrIa_lAZLrbBw"
+    },
+    {
+      "type": "agent",
+      "id": "58fbfa13-3347-4ca2-9196-bb1cb50c683c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782015047290,
+      "agentProvider": "codex",
+      "agentSessionId": 2,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "TWX_cPmOpmJd14ILnzKM1B6tsSPROc3Z0-CKtWTQYc1QVeEM4feBr1FqclVrufC8zp1Rr0m-jb2lEipbvAlgBw"
+    },
+    {
+      "type": "agent",
+      "id": "f8c48aa7-9dd6-4278-a1ff-1a1aebc4b0a4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782015216204,
+      "agentProvider": "codex",
+      "agentSessionId": 3,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "64UowxODj0qeInsyT3bxsHwumYbVaQJjhBQibt_WeTolWJtCN-otvhUTjqpatzrmTo0AddKDESeH7cY8jD-4Dw"
+    },
+    {
+      "type": "agent",
+      "id": "d75067ac-febd-4008-82d1-eab2d9ce12ed",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782063171376,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ZRlzqaLReVb9bFaVa3Hx9YRa_5yJoRRGzPptLwODlKsw5UFWVCh8z2GGbA7PYfQpOapa5bce9iBMiP86Q8FSDg"
+    },
+    {
+      "type": "agent",
+      "id": "dc26ef7b-7d5b-418a-90f0-62837816c5e6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782063173836,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ubp5vksmp5ujIKkxBMsHgs1MBZ9sKROEPhnBPtRDrPX8EHwS62mDmexRL5jpfHNDnUlJU-Dx3YOebUHR_It5Cw"
+    },
+    {
+      "type": "agent",
+      "id": "37fe2add-9f33-4e66-bc72-55e420ba3417",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782063194206,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ySBz7-zC1YH2nKutOgBSSPWWygRumWg66KdPWPCoYX1N-HonhFY4i23RN1TCmtrhsm5qpWDLOBACcDGXNnzcBQ"
+    },
+    {
+      "type": "status",
+      "id": "dbc056e1-3b15-4a66-9a9a-2bd4d841c059",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782078491546,
+      "status": "closed",
+      "sig": "lb9iydFn8iubhOtfWqtLAoGzexzG2OAjGv751Yh133ItEB8ISkjDO7ZHXqNgxp_GwTd10vObG-NzFOKV4mVEAQ"
+    },
+    {
+      "type": "progress",
+      "id": "a52238b5-31fd-4132-ae9e-16316ff29eeb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189927680,
+      "progress": 100,
+      "sig": "BuiEEAgbgtoyIEKXb1woZCeeLT2XWpuvj9w-GcnWdzs-fq7zRxqGVzNYHYv6QGNVODndxMLoUjmcQvnCxgkUCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189927680
+}

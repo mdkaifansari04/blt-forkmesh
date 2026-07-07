@@ -1,0 +1,111 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 281,
+  "title": "when I click to add to the discussion it does not click",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 7,
+  "progress": 20,
+  "assignees": [],
+  "createdAt": 1782487418815,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-281",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782487418815,
+      "title": "when I click to add to the discussion it does not click",
+      "body": "",
+      "attachments": [],
+      "sig": "NyZKNEoDHgXpV5C0leIgN4Z1pxuPL2J-nlu5dsXl9rhdvpRYrjqOlpTs2fZfDD3ABT1lFQ78Q7NwIx1piZE7CQ"
+    },
+    {
+      "type": "priority",
+      "id": "68497c77-80f7-4b42-b50f-a5cb17dcb995",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650462,
+      "priority": 67,
+      "sig": "7tr5wJ-v4ibvHl8sRdX1FMbq6_vTEob0_So6fg0LjP7bPWbpmB1bw4VeMKE9pkeJG8fp3Pl5K-2jtSyUaGuRBA"
+    },
+    {
+      "type": "labels",
+      "id": "1c66f866-4afe-48b6-b895-20946c5db8f8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287735,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "-HWyTuLq0Q-LlURw91gtDXZWfS-S4Sr4nYJp-n5BfwVF9f8PQvHpLD_ckGMD3zAxCbtqzkwcJ4Hn8Qyh-Z9IDg"
+    },
+    {
+      "type": "progress",
+      "id": "60751bf3-adad-4bbd-af5f-822779ac6681",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287780,
+      "progress": 35,
+      "sig": "sl95VslRqTrpsNB6GvvQj5WG8Z-ffCC06HGfGi0iEpEeWgONNk4Tt0KzE7EKaFlXIqUnM_v114i6pLSvc7GPCw"
+    },
+    {
+      "type": "labels",
+      "id": "7a77678d-f3fc-422f-b06d-13389c75e5f2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669354,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "xtyW1kBDP-OJRm3xjjVI3HwTptuPVFVAkjZcoenZes_SC8FRcnYjVwqrJkUj091k-YRCAvXztcV58lmXuiQVCw"
+    },
+    {
+      "type": "progress",
+      "id": "7a38ec62-4cb5-43f6-bc82-e9ac0fb28d2b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669377,
+      "progress": 20,
+      "sig": "UnsnWi-7Z17EzhoPHd-5DP1SADazu6-c92qM7cBBRciuUreJ7Sr1NtNmBVMyM3T3lzuurozfVyDgfd9adGLbDg"
+    },
+    {
+      "type": "comment",
+      "id": "731a2b4d-693d-4890-ad45-0dc69f17f866",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669403,
+      "body": "**Completeness analysis:** Partial (20%)\n\ndiscussions inbox migration exists but the add-to-discussion click fix not evidenced",
+      "attachments": [],
+      "sig": "NdaxoaPuHaJstIQR9ri8NN65OQJ31rvVefgvMj2r3y-13mdvUIAtAkgok23_p8I_8M5U9-uVtW35VNT76HRbCA"
+    },
+    {
+      "type": "priority",
+      "id": "a73e5e3a-a128-42b7-b609-1d69929add7b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834598,
+      "priority": 7,
+      "sig": "iWCNBIntwQ7OA_kGVM0d4pFhw9sG1CGrpc0U_B-FK-62XNfNtHaHEECqF9Gczy4rr8-ZC--bErafEhEDhCCIDw"
+    },
+    {
+      "type": "status",
+      "id": "b265a9e1-850a-4ddc-931f-b11d32fa9f10",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782789036188,
+      "status": "closed",
+      "sig": "4IX-cmfPkVTA1wWucbaLs2UFOS7KYhWUHLfDcw13b7roPztRNSbncCz4WBp173uwiFpu3nhnLhN7gWFBjfQ-AA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782789036188
+}

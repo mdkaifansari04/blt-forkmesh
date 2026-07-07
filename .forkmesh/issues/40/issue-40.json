@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 40,
+  "title": "show binary diffs if they are images show images side by side in the diff viewer / commits",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781719786996,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-40",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781719786996,
+      "title": "show binary diffs if they are images show images side by side in the diff viewer / commits",
+      "body": "",
+      "attachments": [],
+      "sig": "Sh3Dv4jxKZjSeQUeygKG1bgUjTAV7qE0uziqoqTXZfdkYOIWJ8yw08KzARyxkJAqwGVYRsgxwKg8qO-E9e51CA"
+    },
+    {
+      "type": "agent",
+      "id": "3d43a961-b2eb-4025-999a-454ef35615f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782070901467,
+      "agentProvider": "codex",
+      "agentSessionId": 18,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "JYSE26I1RkCsMWls9200e2Yzt_zjHMo_8j87DelzfDaeGfDNIvuUjIYxl7igfPVmbvjIjwyXf2_8pe7WrV23AA"
+    },
+    {
+      "type": "comment",
+      "id": "c6d15a81-fe0e-4c4c-85f6-a4df4435a6c3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071167976,
+      "body": "Closed by merged pull request #20.",
+      "attachments": [],
+      "sig": "jdS6uIllY_txlYhRbg672iJAmxxHAgYrY27jSMdtQJM5TkFYL6Xl7D7_PngBENLnGzk4HZ2sQ12fKShyBVmnCA"
+    },
+    {
+      "type": "status",
+      "id": "4a537440-26a7-4f28-81a1-acb6f82facf5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071168025,
+      "status": "closed",
+      "sig": "fHaNgh4hz76eTrPn_L0zxpyEEfiL4AL3RxP20k4KFJOShI02mlG67hN-W4QwAQUSh4l7xCRNSxOoXS6APdE0AQ"
+    },
+    {
+      "type": "agent",
+      "id": "3e2bdf56-eb31-4aba-902c-e54dc23204f9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097171708,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "P7nXOhbgLI1_6Z0yTR0IJgUFwjdmBewtMEzC33RIVwpWk611fHotIA6ygp5TXFPe_T0JavNDTA53NAehFkt5Bg"
+    },
+    {
+      "type": "progress",
+      "id": "8f88e2f4-7eb6-426f-87fb-ed0a7cb16180",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926712,
+      "progress": 100,
+      "sig": "lnyDBZkDQKRwnE5tmpGhlpa2n-vf1qyZ0Zyhc8jZodu6sxJ6gg2MJEVkYI8AlO8SBU_1s8Wkwk77WHEYROpxAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189926712
+}

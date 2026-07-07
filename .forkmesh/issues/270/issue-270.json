@@ -1,0 +1,201 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 270,
+  "title": "on the website only show open issues by default",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 21,
+  "progress": 30,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782482034249,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-270",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782482034249,
+      "title": "on the website only show open issues by default",
+      "body": "",
+      "attachments": [],
+      "sig": "z2MVbdxIOkV9VBvMkxcA6JqyWZ9rHk13D9ZfWeetwDmje1XXdu9VwvXNYRUmTb-ONrG4SQyT2pE1g7zHAIPPDw"
+    },
+    {
+      "type": "agent",
+      "id": "b1070fe6-b78b-493b-84b4-27cb5ad8649f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782482034357,
+      "agentProvider": "claude-code",
+      "agentSessionId": 16,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "AgT48Qi3TwTvmzYXj4AfcKuDaHYd9GMTKOWxX5WEVASZXZUfclMFnyltWLyg8P_4n-Y1faGrNt3Y-xP8WmB_BQ"
+    },
+    {
+      "type": "agent",
+      "id": "5bcfcd9d-72b5-4644-968b-ae8d2d5192ca",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782483010189,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "yJIeViDbknJrYleQmufr62yTgG1Ko8P_ZR9sZpkMuTKbnocqLLXpnR98t2DyE1b8KbW1IO6vEfetUDJFwwUTCg"
+    },
+    {
+      "type": "priority",
+      "id": "dc15b9e6-e5da-4903-bd26-d0b57c00d768",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650264,
+      "priority": 58,
+      "sig": "LaEL_jIJAZFf1goywJm9aqWSOx4JxNbXdjVFq3iSVJzYFvBYDwCubA6OQfIIATFBYMQUj-rfwNnT4Z8i780LAA"
+    },
+    {
+      "type": "labels",
+      "id": "777df292-4b22-456d-9e9f-34ff03194249",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287021,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "5Tv-UfwtVgfau4jzrVglGdrgwg9-5jGGvYQJp8x3YbFTO3aVtMh5uhmFxdIk5an4j1NewLR9a5OyarQPDzCdBg"
+    },
+    {
+      "type": "progress",
+      "id": "875c0ac4-a80b-4fa4-b472-5ef6f3135296",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287060,
+      "progress": 75,
+      "sig": "vlBDzBfp7QqkBd17ZZ_9kn7r_JzoSzeKBk-SFa38v3aQQzd5AA3GxnJ9qQRaRjIgoWMPAonYaz_F_I8JrcC-Ag"
+    },
+    {
+      "type": "priority",
+      "id": "5100ddd0-c41c-4ce9-825a-288ae7e7d1e1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487211,
+      "priority": 35,
+      "sig": "wcRJ4oGft5lBa4zaklXixQTmo5bmDYDnBPBWfuS9iKpcbVU07zK2SOJdNIXOkMMIa0KD2hz6YDdFC9AOflXUDA"
+    },
+    {
+      "type": "labels",
+      "id": "04d2914f-557f-48d8-9520-333e37ec8a8a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668701,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "VKb8nia36qbLEFwnEvmwO8UJWa-6xHFD84luDLZ0C-6hpaFIOlchxaYoOY0lKlACQXgZeBGVNe3r-FVZb-WAAg"
+    },
+    {
+      "type": "progress",
+      "id": "cb2bab22-d45d-4f83-9fac-7e27182769c2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668725,
+      "progress": 30,
+      "sig": "13FcuqJSVVSpiMpdcwZ8sJeJZIRLZI33BVpTLszF9Jn9P1Hp4reQuTQ6mVBEk12I0jcIbrp_AESmjD9sk1f2Cg"
+    },
+    {
+      "type": "comment",
+      "id": "72bed958-ba1e-4648-8716-bcd9c28de39b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668751,
+      "body": "**Completeness analysis:** Partial (30%)\n\nissue filter frontend test exists but default open-only filter on website not confirmed",
+      "attachments": [],
+      "sig": "4pSmUBIcnY-4A9dQIxjT9c_uE-vlReWJUREseqShlxNT9KNzWP2zlQ4UPOzmCq2HrQSDv45vTdoTxUd3WJarBQ"
+    },
+    {
+      "type": "priority",
+      "id": "25c0dbd1-8a3a-40bb-a73c-3704a2a13c7c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834987,
+      "priority": 21,
+      "sig": "Tcd5RjhTuQdrb7uAPYO2T4JcyCSSdxgWUmW_QEh8G3LG1-1Bnm8tGfPBmX-JRnx1Z4drwBhwKBgTExhcr8l6DA"
+    },
+    {
+      "type": "comment",
+      "id": "65b611b9-4cef-449f-a7c6-66c5fdedec8a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792778651,
+      "body": "Also add the counts of each tab and show a link from the homepage to show the active nodes.",
+      "attachments": [],
+      "sig": "-yc4kLrDkRNFF9EGsfiFJ_uB_0fioWoR0qi3mow1jeTyuh0sxalXh0varbEjRMeK0ydXppbs8oy9BlnUJMPYAA"
+    },
+    {
+      "type": "agent",
+      "id": "ce4f0661-2b31-4b5e-afa5-5e0dd0d51b07",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792790017,
+      "agentProvider": "claude-code",
+      "agentSessionId": 15,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "FRbfH-t3WTV6ZmQqZut2CW2mT1bDu6gf_ahLTg4lHV0FkZtqM4joooz1BvaxMWHAf9wTjMWEVFTh4ScA3yr7BA"
+    },
+    {
+      "type": "assignees",
+      "id": "29d592f1-c224-464e-95db-fb5793503c88",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792790107,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "HkRzA6kBjZgxbMcaJUXRbu7LC4c-o8AhSTSu4JhnWPni8KJ3lzWeTD5kZk7J3NBiyOlgFE50TqljDs0KQY5dDg"
+    },
+    {
+      "type": "comment",
+      "id": "88c8a0a5-4d6a-423b-90d5-755a1423c6d6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794060991,
+      "body": "Closed by merged branch \"agent/issue-270-on-the-website-only-show-open-issues-by-default\".",
+      "attachments": [],
+      "sig": "mdmch1u0iQElBiS2pks_udXyfRTXuXXP__YDgFBn9hII2YcWO7oK2IWtMHFLHzyFW-aHEv4Wj1NF0otVDD3EBA"
+    },
+    {
+      "type": "status",
+      "id": "5d8abe2f-9ce7-4713-8049-02285241c6fb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794061073,
+      "status": "closed",
+      "sig": "J0RyV5dU-mUc_xJvl7pQUQtCWr2L2x6fyFFYSwXOs4zwq2xDjewjCv1stQmCjug5d71E08nqzzxjPRkyM9H_Bw"
+    },
+    {
+      "type": "agent",
+      "id": "a96c419f-145b-445d-9194-5a0d0f0c5a03",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794416601,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "JBEWUUX7lrf9BdISF4hF75w9bDGWtFAHDRECmmDOsJgUoylaYNsTvu-y0SS6DENi8g_A2iKAjRS2vefHcatYBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782794416601
+}

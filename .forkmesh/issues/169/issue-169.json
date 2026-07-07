@@ -1,0 +1,77 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 169,
+  "title": "when you click on the avatar in the app show the whole page and don't show the code",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782199212552,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-169",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782199212552,
+      "title": "when you click on the avatar in the app show the whole page and don't show the code",
+      "body": "",
+      "attachments": [],
+      "sig": "t1uZ4p0ivif4-IOaMTTx5ZMq9VMf71cNLFIlCLy5ZefSAfWzuXLwALP5IatnJM1k8_eBwmLDG1U93YDu9L-MAA"
+    },
+    {
+      "type": "agent",
+      "id": "eaa67187-7d81-4eca-902f-4ee17dab4390",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782199212726,
+      "agentProvider": "claude-api",
+      "agentSessionId": 14,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "zPAzlEXypPZXXbNu-iE8nUYoHfG6NNu7jqKuE1cbiMo4lw7rZE1XmzNdgwdLSD9Ume8zuM-Plp4Kv0jiVwfSCg"
+    },
+    {
+      "type": "comment",
+      "id": "23a0d41a-6f20-4260-82ac-fb0c716f7bad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782199768043,
+      "body": "Closed by merged pull request #2.",
+      "attachments": [],
+      "sig": "1SvGFFYPVIFb7OmTwPiXZh7-f28szOMYuJ-cdOTTeEhSpQVO2DObWPu0-6BUtdel86ee_1AgshCzUMQsBWIJBg"
+    },
+    {
+      "type": "status",
+      "id": "bb56412b-4f83-43b2-9256-0540b62b48b8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782199768093,
+      "status": "closed",
+      "sig": "Y5WUwr7XZL9rCnaMwslbpqx7mOsOm0NDm8h8c0e-qt_zafBEhUzudMhlbv3JZNVCJcHUXjjkYu-a6KaTD9NABw"
+    },
+    {
+      "type": "agent",
+      "id": "200a74de-d460-4618-ba0e-4c7b172fcf0e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212065697,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "SuOwfcHGyAwX4Zf8-dlHmcmIb8cz_tTISBLEdXC13WQs9DvFYirQR0izq0a60gBA_fe7DOgoZV72ZIc4RszSBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212065697
+}

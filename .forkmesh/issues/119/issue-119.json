@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 119,
+  "title": "when I merge a pr then sync to main it doesn't seem to be triggering the build to deploy, please fix that",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782091707650,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-119",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782091707650,
+      "title": "when I merge a pr then sync to main it doesn't seem to be triggering the build to deploy, please fix that",
+      "body": "",
+      "attachments": [],
+      "sig": "xuC1EVGtGxOvpU7-SKFTVEuOI5qSCppnH_ARq7dioDki_-gJZxlaHK_dAffWKJhX2bYb5thPdljr9J6XxmLQCA"
+    },
+    {
+      "type": "agent",
+      "id": "ad9a66c6-f99a-416c-a601-8af8da75693c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782091707732,
+      "agentProvider": "codex",
+      "agentSessionId": 48,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "xpnqnFZxEez-K1ERCkYAXq4Gz-RHVKocH8YGsSlmPgt5oc_ZajjxsKmJ6xKmCCKoQKAiOSbtLBBOGYRYkLqTAA"
+    },
+    {
+      "type": "comment",
+      "id": "1f52a811-7d45-412f-8731-8679f228897b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782091867829,
+      "body": "Closed by merged pull request #49.",
+      "attachments": [],
+      "sig": "q8pkMOkSGccP1-hZoF3EBiFQ3_H8VX9VRRBonRHRogHINoHmqShZAkiiWANSBNJLCM5mIDGn0RJg3o5iFg39CQ"
+    },
+    {
+      "type": "status",
+      "id": "88d5c2c3-99ab-4149-a653-8a3a8750fa47",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782091867884,
+      "status": "closed",
+      "sig": "EdeLcpdnhPl-6EcO1xKYIeMw1EpvTWmWm2y765b3yAr7caaBctVOGs4r_hJj9j68UERDdB6iACZo8lgh4-uXBg"
+    },
+    {
+      "type": "agent",
+      "id": "7746cf69-bd57-4667-8cdf-7bb3b4ecf500",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097146627,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "GOIPumgH22BNix2UeKm_AAhcOf5BDRfVGwkVVVReyCn00VkhlLA-EKJvbhegDtFWUqWoPobPU7oTDg-XQvENCw"
+    },
+    {
+      "type": "progress",
+      "id": "346c681a-1d4a-4c3a-9f2b-035cc7afd5f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930622,
+      "progress": 100,
+      "sig": "LMBGYmqPPmCtYZyyt3n_redPXXBvkzX_iyDXdQ86I4mnHag6sEVjJUar3ToUnAYmYCdB1slwdHzsm3Dy76yQDA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189930622
+}

@@ -1,0 +1,67 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 304,
+  "title": "Design a release-binary publishing system",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782703519749,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-304",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782703519749,
+      "title": "Design a release-binary publishing system",
+      "body": "Use this method:\n\n- Release binaries must not be committed into Git repositories.\n- Releases are based on immutable Git tags, such as v1.2.3.\n- CI builds binaries from a tag.\n- CI makes then available for donwload in a similar way the repo is available\n- Each release should include checksums, optional signatures, release notes, and per-platform artifacts.\n- The Git server should provide a release page with stable download links.\n\nPlease design the system architecture, database model, storage layout, API endpoints, permissions model, and CI integration flow.\n\nAssume the Git server already supports:\n- repositories\n- users and organizations\n- Git refs and tags\n- authentication tokens\n\nInclude:\n\n1. Recommended user workflow:\n   - create tag\n   - CI builds artifacts\n   - CI creates or updates release\n   - CI uploads assets\n   - users download assets\n\n2. Data model:\n   - releases\n   - release_assets\n   - artifact files\n   - checksums\n   - signatures\n   - audit events\n\n3. Storage strategy:\n   - local disk option\n   - content-addressed storage if useful\n   - deduplication considerations\n   - cleanup and retention rules\n\n5. Security:\n   - token scopes\n   - who can publish releases\n   - validating that releases match Git tags\n   - immutable releases vs editable metadata\n   - checksum generation\n\n6. Download behavior:\n   - stable URLs\n   - rate limits\n   - bandwidth accounting\n\n7. Edge cases:\n   - re-uploading an asset with the same name\n   - deleting a tag after a release exists\n   - force-pushed tags\n   - partially failed uploads\n   - very large files\n   - interrupted downloads\n   - concurrent CI jobs",
+      "attachments": [],
+      "sig": "pZZtt6fTdJdPpQ7HfhdpTkAYiXGztCCQcZXQxuMbmOxXuI9Gim1E9zXeQCIf-pVpeK7oQ7G1kGh6--noA6afCg"
+    },
+    {
+      "type": "agent",
+      "id": "97eeee45-7163-446a-bb4a-4c31662d47b4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782703522466,
+      "agentProvider": "claude-code",
+      "agentSessionId": 258,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "y9l53I9dpOGiovl7mCDnDbt6cbpXgdGatRX2g3sJZBHUQdECRwNWGI3S72ajtwBT5lwajuaUYXbPvVsLu715Dg"
+    },
+    {
+      "type": "agent",
+      "id": "66b8c34d-62bb-4bf9-a515-fe00ecf85050",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782703689095,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "-pVNpHoZQtreo9-lK36i5GV-Cd0EHokilnIkqxnuryvQAHh_FI8YZoBp3zTdGnOJTiQRmw8IQqMGesxGb_17Cg"
+    },
+    {
+      "type": "status",
+      "id": "6b53532c-78df-4ef9-b564-52ac7f8a6b0a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782703689199,
+      "status": "closed",
+      "sig": "fktEIw60xvHSWSUVncJmhYKqCdsM8UC9njB-tW1cAJAOKQxG8FcMM0ULo1nOlfOmHq7erT63ewor5zI8FCzmDA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782703689199
+}

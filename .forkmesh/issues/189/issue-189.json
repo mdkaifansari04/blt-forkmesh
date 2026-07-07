@@ -1,0 +1,77 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 189,
+  "title": "add color to the agent activity indicator when an agent it working show a little activer agent head above the agents tab and show their status when active / don",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782251894746,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-189",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782251894746,
+      "title": "add color to the agent activity indicator when an agent it working show a little activer agent head above the agents tab and show their status when active / don",
+      "body": "",
+      "attachments": [],
+      "sig": "-YE6hXH5eHtybtCRwMokiLqe1V9PVu7TnlynYTDitsnlSA94qwJinIjvVhMm1_EEhg1svfl6gzcUBiyuj1VOAg"
+    },
+    {
+      "type": "agent",
+      "id": "7cc4c37c-1e9a-4b83-98af-d7ee2aa65354",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782251894908,
+      "agentProvider": "claude-api",
+      "agentSessionId": 3,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "c1ZQx-k_Mv0NyF_IPGcFMKP3-HQupIPootFaq_EfuMi3aAlzexBoT7zv3HC2wzcl5ocqbgXngAtlu00bljYQDQ"
+    },
+    {
+      "type": "comment",
+      "id": "37c1bfe5-45c4-4c63-80de-3bc3435aedfa",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782252407550,
+      "body": "Closed by merged pull request #2.",
+      "attachments": [],
+      "sig": "A-nAyhUJQDHYdgJsAsaSArth5wWRk5x8X28IUDU3qOc0Hw4ZnxbLRtnroU5Xymv7XbldMKaL0CKV8n1ODQwqCQ"
+    },
+    {
+      "type": "status",
+      "id": "aa835e67-2e11-41d5-b950-e455a7452e07",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782252407615,
+      "status": "closed",
+      "sig": "S6X3iPWKKrTFp72HzrsAPuX4IKhM6a-8tYNhXjywvq5pFjMRG4SQyu46a89LX2tCC5y30JskzsqXXZdzBz52Aw"
+    },
+    {
+      "type": "agent",
+      "id": "3fd255be-4f71-4a85-815f-0a5820092d7c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256884016,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "2hX2Jpuers0DAlpAHfRYTUqaLItdNlz6m4ys3g9ATXp0jdxtHBItGutz3--M-PVYNz0S3T-yFH2Mb77vKIzZDw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782256884016
+}

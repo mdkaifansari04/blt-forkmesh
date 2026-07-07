@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 361,
+  "title": "Notifications: mentions, subscriptions, and an email bridge",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "v1",
+  "priority": 24,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818260,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-361",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818260,
+      "title": "Notifications: mentions, subscriptions, and an email bridge",
+      "body": "**Roadmap Phase 3.** Today nobody learns about a reply unless the app is open on the right tab.\n\n- Subscriptions: signed `subscribe` events per issue/PR; auto-subscribe the author and anyone who comments.\n- Mentions: parse `@nodename` in issue/PR comment bodies during the render pass (`MainWindowIssues.cpp`, `MainWindowPulls.cpp`).\n- Delivery: a small per-pubkey pending-notification queue on the worker (new DO route in `cloudflare_worker/src/entry.py`) that nodes drain on their existing heartbeat; a notification inbox in the left nav with unread counts.\n- Email bridge: digest emails through the verified-email machinery — but open issue #320 says email verification is currently broken, so fix that first; it is a hard dependency. Open issue #346 (email when Claude credits refill) should ride the same delivery rail rather than building its own.",
+      "attachments": [],
+      "sig": "nDYK-2ltat1czJYENJY7Iz0ZXQ_8KCU_4-iKWWBvWpI0-jt4GG_uhWnM3S-VxgsbFjJJYn_afcnO1-ZmMP6uBw"
+    },
+    {
+      "type": "agent",
+      "id": "77ac83be-7620-4bec-ae72-3d4f374feb75",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783125722135,
+      "agentProvider": "claude-code",
+      "agentSessionId": 168,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "TQmPDM_9bM0vt-Qwv69jd0T2sUpMy-NdMBPzTUB6-DWUVqk6Pmc067Jdh_5rmh94rFso5tmXbmOakVeerljKBw"
+    },
+    {
+      "type": "assignees",
+      "id": "624759fb-5f14-4d60-90d9-958546afd355",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783125722214,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "fTA4W9dwYa8g0oyFt_N9O7GFwaX2XISkQr4GruJJqKLSDlBnLZREAAtvMoSXVxpesHkYOzXB1IWoK1Bw7UQ1Bg"
+    },
+    {
+      "type": "comment",
+      "id": "38b43e4e-9b47-462b-b64f-3b81b97c9cab",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783126695686,
+      "body": "Closed by merged branch \"agent/issue-361-notifications-mentions-subscriptions-and-an-emai\".",
+      "attachments": [],
+      "sig": "Fad9Q7pfI3PadtflRkRBNpXYhQmue3kWbGKgZcEpOO8_lCy1WIaWdmian6ybRV2-c12NotJR461roZoWlQJOCw"
+    },
+    {
+      "type": "status",
+      "id": "6e9fc31d-00a4-4c9d-9ee2-a7a3898434aa",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783126695751,
+      "status": "closed",
+      "sig": "n3-qFkjBRg0qdfPYRLua6nfa9-QUEVh_ni9CknkYn9D0I_sWOW9XkQXylR-B-iTTdoZe5ePx3ZpyCDz1GCYADg"
+    },
+    {
+      "type": "agent",
+      "id": "5ac3bcad-88aa-4b2b-b257-949115386090",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138325277,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "0o1v__yjEtb4jAqid7QpX3EBT80K2dgpgQXk5lE5gEMK5I47uOaq2XmTYGRPLwdB2OZR5S9336vJ12PtrNGiAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138325277
+}

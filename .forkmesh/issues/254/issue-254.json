@@ -1,0 +1,177 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 254,
+  "title": "have a text size increase / decrease on the diff views on commits prs woktrees",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 24,
+  "progress": 5,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782425252067,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-254",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782425252067,
+      "title": "have a text size increase / decrease on the diff views on commits prs woktrees",
+      "body": "",
+      "attachments": [],
+      "sig": "lZuQB3NizmZgNHBshPEEWdkYfdsz6yWE4OvQ_o5UpX_nLYyXhAaB58pIpBz2MiUBgwVhW1TDmVAqlW59ggexAg"
+    },
+    {
+      "type": "priority",
+      "id": "9cf7dea2-59f7-4707-94f5-feba081edd3b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650018,
+      "priority": 46,
+      "sig": "ikfIQeeD84PGhn8PdBqBtS06RxYqs1vDAZ9c0_F82b9shTeueH7ouN9xfkEplL-Pr6BbDEhDu38SftDKmHQrDA"
+    },
+    {
+      "type": "labels",
+      "id": "369c4c44-4c35-463c-81fb-59de5b9dffcc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285800,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "PuKfhjDEe8yyn5ZKGDb9zhfAEHsHPOGacBKOVeRCTAI-ClKUvBxiRHUce7q2vP8fIWsObL_37wtKL0bSlX5eAw"
+    },
+    {
+      "type": "progress",
+      "id": "80891d88-9447-4b64-b13a-f05b31c359f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285850,
+      "progress": 70,
+      "sig": "I41mF6gD8Slw4FrNl0nB0b7NxQB5iWMp1ElA97Tx1LJ5YGU923XhGict-bV2Ef8BGviSC6SYqKUYXlNQeI2UAQ"
+    },
+    {
+      "type": "priority",
+      "id": "5e7d2d73-47e1-4103-8f32-77d863bb0547",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487396,
+      "priority": 43,
+      "sig": "JLPC-T-RW_lFNr_x2tayl8fyXrYh0vPDeZWiaXcMptUrmmQmVT-0VRFdxIYJ8qOD8s2V9mAMSMO2WOdGp9KeAg"
+    },
+    {
+      "type": "labels",
+      "id": "b74de393-e8cd-4018-86f8-922b8837b29b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668063,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "fzwjahx7afaMn5grPj-w81P9HhITY6rQTDziFXSe1hFL-Vb5Az47Ko9pm_u1ZhnU07S6xl6EGBNqm_0R05TVCA"
+    },
+    {
+      "type": "progress",
+      "id": "3a1ca2fc-7cc3-48e2-bd81-0349b619aa1b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668085,
+      "progress": 5,
+      "sig": "Xba89Rk74uz-0YzdDvsMuDj4n1lA65GlTp8ysFzqYD81DDFxIolLSH-0Vn0hjcV4APKYECdcSqDPWkA6EKQwDg"
+    },
+    {
+      "type": "comment",
+      "id": "7ab613b8-0ef9-4a67-a7ef-0cd7cea88cd6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668110,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ntext-size controls on diff views not evidenced",
+      "attachments": [],
+      "sig": "6gqymWWYcptbobABeavgggnqfDS6kvXbLFqfdSfrQjFeJd_MQufoQMoUSeoDrP7WlVWUQdZnrKPBeF849bCXDg"
+    },
+    {
+      "type": "priority",
+      "id": "20a66ea6-fecb-4d7a-8bce-75af45e4f0af",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835057,
+      "priority": 24,
+      "sig": "yOQ5gkIrWosipDEZOXFHczAq3h3p9lGHjy7rsExts9fS62cSCXu2zJriu6XdIZudkq82ddEJLaIjQuCKPm7ZAA"
+    },
+    {
+      "type": "comment",
+      "id": "5acaf99d-df85-4050-a4a4-0e2af9ec7f0f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794535664,
+      "body": "Add this to all of the diff viewers please and also make it so it responds to control mouse wheel.",
+      "attachments": [],
+      "sig": "yxUfkcq5RquYEns2EUHF6h1QsEuOU99d4vY8DDDNka6mL06ltuyVAITnz9gcsZhAuQV_v59-WNYWTMgcXGB7Bg"
+    },
+    {
+      "type": "agent",
+      "id": "21d0866b-ca77-42f1-9b10-1ac81495fa1d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794539982,
+      "agentProvider": "claude-code",
+      "agentSessionId": 27,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "KcWMtuGGEjSfyCJCckR2ETvQHxhc2kQUddra0zidxntzue49SkEUb4GGKYaP9zY9ndr5iuQu8K2ARiDJOLOiCg"
+    },
+    {
+      "type": "assignees",
+      "id": "373f3dec-831c-4cc7-8b60-ad8ed7b0230a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782794540056,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "FACclc7u5d3EIMiCsX1N-_ZYVDoluuB3hC34-kIfYr-9vZw4LjDDFUwncsdZImYimQcX0iNFCQ-9Xb-zE_5TDA"
+    },
+    {
+      "type": "comment",
+      "id": "911ce209-97cb-40a4-8f76-132934fc45ee",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782862922881,
+      "body": "Closed by merged branch \"agent/issue-254-have-a-text-size-increase-decrease-on-the-diff-v\".",
+      "attachments": [],
+      "sig": "5b_w_g6jY_R3R05Aq9I6ce-TIYgSDi6rKLyXFIZEmWxar51G3fIEGbsqLbN3AcCbOTqley3NSE-BV8ZRJHIgAg"
+    },
+    {
+      "type": "status",
+      "id": "4d529620-026e-4a11-9450-92ca2380735e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782862922919,
+      "status": "closed",
+      "sig": "xgQ69aebmHQERa4sWPwLTL7D7VLYmyFlpg4lLyebkA6PNvwAmw0lYSAEETnRuCTUQcjDSVgCqTmrlBJJ36SuAA"
+    },
+    {
+      "type": "agent",
+      "id": "fd2c25c1-a84e-45af-8e4c-7f6a74a27afa",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782863118858,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "2xyU0tk65-hgNfWfvSrAJGP20gI96ij16MZsK_rlWsN6mRN9Leadr-yDO-2cUAYD_yKOQvb0u6UNOIsZlTvxDA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782863118858
+}

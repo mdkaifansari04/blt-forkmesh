@@ -1,0 +1,43 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 311,
+  "title": "Update the history item to show the real author username instead of the node id.",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782865835782,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-311",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782865835782,
+      "title": "Update the history item to show the real author username instead of the node id.",
+      "body": "",
+      "attachments": [],
+      "sig": "bGk_oKpBOKz8EaI3VqalSFn5wu6YN3Bp0jPnT71y5f-s1vYXOH3eMlm7IkZOTmQR6g3fRzQjIU88BVLKIurXBQ"
+    },
+    {
+      "type": "status",
+      "id": "8dcd164f-f08c-4fb8-af8c-d4cc7ae97bac",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783094464630,
+      "status": "closed",
+      "sig": "xyt95kCRU6910MzFNppH6RMBPPNe7FvrQZHQqv84Vc8ZT14AFq09GyPk3KeWgVN82ZHYaL3w8FCuI2wC74qfCA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783094464630
+}

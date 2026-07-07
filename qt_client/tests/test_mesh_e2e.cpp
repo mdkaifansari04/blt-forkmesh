@@ -31,6 +31,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -670,22 +671,16 @@ int main(int argc, char **argv)
         if (relay.inbox().size() == 1) {
             const QJsonObject item = relay.inbox().first();
             const QJsonObject eventJson = item.value("event").toObject();
-            const QString issueDir =
-                QDir(workDir).filePath(QStringLiteral("issues/%1").arg(issueNumber));
-            QDir().mkpath(issueDir);
-            QFile f(issueDir + "/issue.md");
-            if (f.open(QIODevice::WriteOnly)) {
-                f.write(("# " + eventJson.value("title").toString() + "\n\n" +
-                         eventJson.value("body").toString() + "\n")
-                            .toUtf8());
-                f.close();
-                drained = runGit(workDir, {"add", "-A"}) &&
-                          runGit(workDir, {"commit", "-q", "-m",
-                                           QStringLiteral("Drain issue #%1 from inbox")
-                                               .arg(issueNumber)});
-            }
+            IssueStore store(workDir, mirrorDir, &identity, QStringLiteral("e2e"));
+            QString drainError;
+            drained = store.applyRemoteEvent(
+                item.value("number").toInt(), IssueEvent::fromJson(eventJson),
+                item.value("titleIfNew").toString(), &drainError);
         }
         check(drained, QStringLiteral("owner drains inbox and commits the issue"));
+        check(QFileInfo::exists(
+                  QDir(workDir).filePath(QStringLiteral(".forkmesh/issues/1/issue-1.json"))),
+              QStringLiteral("drained issue is stored as one JSON file under .forkmesh"));
     }
 
     // --- Step 6: run the stub agent -> it produces a PR branch --------------

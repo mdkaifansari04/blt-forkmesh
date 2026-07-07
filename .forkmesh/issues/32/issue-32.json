@@ -1,0 +1,218 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 32,
+  "title": "add another tab for milestones and list the milestones with their open / closed issues and progress bars",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "MVP launch",
+  "priority": 68,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781667187357,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-32",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781667187357,
+      "title": "add another tab for milestones and list the milestones with their open / closed issues and progress bars",
+      "body": "",
+      "attachments": [],
+      "sig": "beC4lV6Jmeaqr0xaiiycH3YZn92eu4VrHzDlyFALFo-MuCBwmregCrdiewPIhEMjw6akEVcnc7k37Hlb3QcZDQ"
+    },
+    {
+      "type": "edit",
+      "id": "dd72ed8b-a13f-4dd2-b11f-f6c4e1ffa9d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782009272873,
+      "body": "also add labels so we can see what is labled and edit labels ",
+      "attachments": [],
+      "target": "open-32",
+      "sig": "xn3-n-z7GvvVnlnWp27dvfy0o7o9Mz4dKubbsiLJiQGdSE4a7BIU-5skSBt03qRFsKQNUezhrenGoHnMI1V9Bg"
+    },
+    {
+      "type": "vote",
+      "id": "bbb1e209-14ba-4f59-908e-1d2068bb0318",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782078517578,
+      "sig": "1xqFAcCC7KhajmrGjuNLqG9dLKL6OvMiV4QWizb0px3HsL9daJp_WNUvbnBMA6g6NrlMrr1ep3bbpQ8p5xdwAg"
+    },
+    {
+      "type": "vote",
+      "id": "f2482ed1-4957-47bd-b852-d566537cbce7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782078518307,
+      "sig": "n0VQ1szT2Vlz6lxw__0PzCTlba7GQDvWbKy83n3ppa8GZzHMmwV71eYb0CfclQ1YKI28FJieG6F73PlV0q0cCA"
+    },
+    {
+      "type": "vote",
+      "id": "87e4b15e-a2d5-4241-b6c8-27cbb07a50d1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782078520143,
+      "sig": "bB9uKqZ5Z5SpSFiqe5WSJOR2GMh-VFu-kh2hsW6uSxV9QtQqsiBUcZ1Y9gul4XaOoGGOGpAv8EiUPF1jsnYKBQ"
+    },
+    {
+      "type": "labels",
+      "id": "846f0974-5ee0-46ab-b858-d772a026cd74",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198383,
+      "labels": [
+        "feature"
+      ],
+      "sig": "iKCu211wp3F0_ZKwTUT476FcwJFr_ZXD1hROOVjZsO8speLj5y4SV5x5_K-iSxEjSbecY1wPf7Ib7Sykny-qBw"
+    },
+    {
+      "type": "milestone",
+      "id": "c20bbd5f-418a-4d9a-8608-79984b358f22",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198383,
+      "milestone": "MVP launch",
+      "sig": "t4oW9FSxCjFZUQ8YrUcVIfIWyMfQHK0MOnpUr1ISNaSTZVdBeayw3XpOe6Oz5nXJj8TVk4dZqraxjyZWj5vGCQ"
+    },
+    {
+      "type": "priority",
+      "id": "7f295586-1441-4017-9b85-d51687bda11b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198383,
+      "priority": 68,
+      "sig": "l-60yGsEU-O0JluHg9ZwWd2wMwmdF4K8QAJYKYvn2etq3NNVFS-aJjfyu3hReoqGghd5ZLA_5IesxYtNHsC9Aw"
+    },
+    {
+      "type": "comment",
+      "id": "85c8b34a-2eec-4d6d-9dad-d81bf5642954",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782185813281,
+      "body": "add the tab for milestones under the issues tab so on the top right above the search have the title issues be a icon button then milestones, then labels on lables show how many issues each label has and let us be able to edit it ",
+      "attachments": [],
+      "sig": "Sy7zWhA-9YvaI3oB7GpCwUnvs3N6zGDCHsVy2Rz6Ah1cJLRj-Tnx2YYHrKNkpDenEVkwtzBX_mw8PyYqRIf5Bg"
+    },
+    {
+      "type": "agent",
+      "id": "da52d106-efca-4dcd-a7d6-b45e58aa2845",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782185825028,
+      "agentProvider": "claude-code",
+      "agentSessionId": 10,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "IG5_cJM08svsSeCRWR7vw2HzWHGgxRgP8TraYo_8lXGAX0JCAgcYd3OqSksGVbPusWeukeTrO8sXW5gwamcGCg"
+    },
+    {
+      "type": "agent",
+      "id": "c1e20e8a-0f0c-4820-a105-9b07042abf67",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186592031,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "xCApnGQlJ9kB0IcwxpGt52sTWPLnDmnZxgeXzEHDYYGtZdjse9qCctvQrCtR-OdFyzqOhDa24f5vtpitl6LRDA"
+    },
+    {
+      "type": "agent",
+      "id": "05907c28-4cde-451a-9a19-8b88acc345d0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186598415,
+      "agentProvider": "openai",
+      "agentSessionId": 10,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "wPfL7YCoWn71jZSVTZg5RGMY96GVDm7UpO1hRl_IfBG3Y8u5Sq3_hxU0m23_HPqUTi00bZSDDBOgwDI7c4miDA"
+    },
+    {
+      "type": "agent",
+      "id": "b1df207a-2142-4ddd-a00d-5e190925053b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186692880,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "HKdDLP-8QahZefEMpXNkrP67ycMbeF88ylGj2WlUrjNfZnHHTXV4uNuQ3ZS-c1pvOctwyJacBjILqPi8LOQDDQ"
+    },
+    {
+      "type": "comment",
+      "id": "097b44f9-db6a-4058-9473-06b95d2ce098",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186715478,
+      "body": "we want this to be in the qt application please not the web",
+      "attachments": [],
+      "sig": "qt6xJFds0bfvFcq1bdllXohOp2GBaT-Tf0dYBrUkkMVuCiAFaZvQuZTAxtqPRj9HvYlnClvh0552YafdHRreDA"
+    },
+    {
+      "type": "agent",
+      "id": "c79e5058-a8cd-4532-a2c0-65f10afde5dc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186723010,
+      "agentProvider": "openai",
+      "agentSessionId": 10,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "kFatuYTV69x0NwtdFyzNkhdOULXbv8lFYrVM_2kd0mRgfb_M3k5YzogQxJkgitD4fzUW3L27q0ysbtBV_93kDw"
+    },
+    {
+      "type": "comment",
+      "id": "25fca151-c20f-4b66-9eb0-849c8f385df9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186959881,
+      "body": "Closed by merged pull request #8.",
+      "attachments": [],
+      "sig": "RGMCeiO5dq4I5cKRH_E5MaHKl0zgR0jOg1q5oguANA4cUNzSeOrYgqO3FcA07ORRZQuX1NZozqINT94guJUrDQ"
+    },
+    {
+      "type": "status",
+      "id": "81b9f76d-cfe5-4d81-bc77-490b4a301578",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782186959934,
+      "status": "closed",
+      "sig": "63TMW_q4eqSzNPHBWiGHh3ozDeqpU7rhWGMuQnuJZlxFkogdLGi37BOlXMktc3UIMwyfiQwb2M7CTYl9Nl_EAQ"
+    },
+    {
+      "type": "progress",
+      "id": "d5bcb171-1e5e-47ae-b191-c9a83fc23463",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926386,
+      "progress": 100,
+      "sig": "iEel1HVgJxiMPjLP6vK0h67Whmv2PwovLjnc9surEBWiGfg_v-yAOjrxyUUiA67tULe1zYUZXNbWQQm-z15kAA"
+    },
+    {
+      "type": "agent",
+      "id": "1d271e5b-9e71-467f-9114-a374391318ab",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212067626,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "e4sIUxShxIHIvnpKeuuOMOJIWZP7ATGvi1tYosMNuPVEy8vePo2nPrKx_H3ciXihs0dQOhYHZO-DzRCcDc-0CQ"
+    }
+  ],
+  "votes": 3,
+  "updatedAt": 1782212067626
+}

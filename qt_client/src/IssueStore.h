@@ -10,7 +10,7 @@
 class ForkMeshIdentity;
 
 // One entry in an issue's append-only, signed history. Different event types use
-// different fields (see issues/README.md). Signatures are raw Ed25519 over an
+// different fields. Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
     QString type;          // open | comment | edit | status | labels | milestone | priority | progress | assignees | agent | bounty | delete
@@ -18,9 +18,8 @@ struct IssueEvent {
     QString author;        // signer pubkey (base64url)
     QString authorName;
     qint64 ts = 0;
-    QString title;         // open
-    QString bodyFile;      // open/comment/edit: markdown path relative to issue dir
-    QString body;          // in-memory body text loaded from bodyFile (not stored in info.json)
+    QString title;         // open/title
+    QString body;          // open/comment/edit body stored in issue JSON
     QStringList attachments; // open/comment/edit (issue-folder-relative paths)
     QString target;        // edit/delete (event id, or "self" for delete-issue)
     QString status;        // status: open|closed
@@ -101,9 +100,9 @@ struct IssueMilestone {
     QString description;
 };
 
-// Repo-scoped issue tracker backed by the on-disk issues/ folder. For repos with
-// a local working tree the store reads/writes/commits files directly; for repos
-// available only as a bare mirror it reads issues read-only via `git show`.
+// Repo-scoped issue tracker backed by .forkmesh/issues/<n>/issue-<n>.json. For
+// repos with a local working tree the store reads/writes/commits files directly;
+// for repos available only as a bare mirror it reads issues read-only via `git show`.
 class IssueStore
 {
 public:
@@ -125,16 +124,17 @@ public:
     QList<IssueLabel> loadLabels() const;
     QList<IssueMilestone> loadMilestones() const;
 
-    // A cheap content signature of the issues/ subtree: its git tree oid (plus the
-    // source path, so a different repo can't collide). Two calls return an equal,
-    // non-empty value iff loadAll()/loadLabels()/loadMilestones() would return the
-    // same data, so the UI can skip re-reading and rebuilding the issue list when
-    // nothing changed. Returns empty when it can't be computed (no source) — treat
-    // empty as "unknown" and don't skip. One fast `git rev-parse`, no blob reads.
+    // A cheap content signature of the issue metadata subtree: its git tree oid
+    // (plus the source path, so a different repo can't collide). Two calls return
+    // an equal, non-empty value iff loadAll()/loadLabels()/loadMilestones() would
+    // return the same data, so the UI can skip re-reading and rebuilding the issue
+    // list when nothing changed. Returns empty when it can't be computed (no
+    // source) — treat empty as "unknown" and don't skip. One fast `git rev-parse`,
+    // no blob reads.
     QString contentSignature() const;
 
-    // Mutations (require canWrite()). Each writes the issue's info.json (and the
-    // label/milestone def files when relevant), then commits the issues/ folder.
+    // Mutations (require canWrite()). Each writes the issue JSON (and the
+    // label/milestone def files when relevant), then commits .forkmesh/issues/.
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
                     int priority,
@@ -199,7 +199,7 @@ public:
     IssueEvent makeSignedEvent(int number, IssueEvent ev) const;
 
     // Merge a signature-bearing event received from the relay inbox into the
-    // local issues/ folder (used by cross-user sync). The event must already be
+    // local issue store (used by cross-user sync). The event must already be
     // signed and verified by the caller.
     bool applyRemoteEvent(int number, const IssueEvent &ev, const QString &titleIfNew,
                           QString *error = nullptr,
@@ -211,8 +211,9 @@ public:
     static QString contentForSigning(const IssueEvent &ev);
 
 private:
-    QString issuesDir() const;                 // <workTree>/issues
-    QString issueDir(int number) const;        // <workTree>/issues/<n>
+    QString issuesDir() const;                 // <workTree>/.forkmesh/issues
+    QString issueDir(int number) const;        // <workTree>/.forkmesh/issues/<n>
+    QString issueFilePath(int number) const;   // <workTree>/.forkmesh/issues/<n>/issue-<n>.json
     bool readIssueFile(int number, Issue &out) const;
     bool writeIssueFile(const Issue &issue, QString *error) const;
     void recomputeMetadata(Issue &issue) const; // fold events into top-level fields
@@ -220,7 +221,7 @@ private:
     int nextNumber() const;
     bool commit(const QString &message, QString *error) const;
 
-    // Read-only access from a bare mirror via `git show <ref>:issues/...`.
+    // Read-only access from a bare mirror via `git show`.
     QList<Issue> loadFromMirror(QString *error) const;
     QByteArray showFromMirror(const QString &repoRelPath, bool *ok) const;
     QString mirrorRef() const;

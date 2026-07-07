@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 124,
+  "title": "the repo url is crashing when we access it directly - it works when we click from the homepage - please fix that",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782101722288,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-124",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782101722288,
+      "title": "the repo url is crashing when we access it directly - it works when we click from the homepage - please fix that",
+      "body": "",
+      "attachments": [],
+      "sig": "PJTBUc6R0l7ckO3-CIZqSpnYavAhO80hFmssGa112r9fhAXlT6XBxLjFzHiwkDuyCpaL-5V6wSlqKkesR3TLCg"
+    },
+    {
+      "type": "agent",
+      "id": "7147d903-601b-44f3-a558-28831302422e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782101722363,
+      "agentProvider": "codex",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "Egr5xR_IVREEhCOumpBb8LpyAgnaI_rHMWHIMAxrJb0qeoGQu3KxCe8haKr4Eu9PWFEjCGgknzHD5NZNsBcyBA"
+    },
+    {
+      "type": "comment",
+      "id": "76b8378d-1826-4749-acfe-85f4697b46bd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782101774462,
+      "body": "Closed by merged pull request #1.",
+      "attachments": [],
+      "sig": "qTCxy-QJrLYnBpKrqq2GCLkpQGsk5WflQT_ObRA5n0ZaRMcg-OPh_e1liVO3ObyZivaeNA74MtT3B8f7X2QnBA"
+    },
+    {
+      "type": "status",
+      "id": "c9a99666-5fb9-4344-93ce-697ffdd6d826",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782101774510,
+      "status": "closed",
+      "sig": "898_XvP15kl4CXAyxaPLxoLsf93pbShNGIacXhyzANOpDSYbmR59JSV3v81Y4ElhU5pDcuDuSwBIKua92dZiAw"
+    },
+    {
+      "type": "progress",
+      "id": "5d715ffe-f19d-47f5-a41c-ea96c3453f9e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930843,
+      "progress": 100,
+      "sig": "w32Se5VXATudj8KBg1V-WgI7qK91an5RIpyTn3Phj5CvgK6T3dAJak8xlCHaA_v4fHHEI7jxP0jHm4KEvSGyBA"
+    },
+    {
+      "type": "agent",
+      "id": "81d92e38-a75e-4369-8a7f-fc72cd2ff039",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212074810,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "T3Wq_jLYUcfSGIYCCR1MIFuWACyThonrDHOriXsJPCBXWDlfvq-M9Akr8sylwT3OsY98FQAqcGJ91zC772kcAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212074810
+}

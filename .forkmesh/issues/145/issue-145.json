@@ -1,0 +1,93 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 145,
+  "title": "when serving a repo from a mirror make sure it wasn't tampered with - keep track on the relay what the latest commit is and hash the whole repo somehow",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 12,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782158497694,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-145",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782158497694,
+      "title": "when serving a repo from a mirror make sure it wasn't tampered with - keep track on the relay what the latest commit is and hash the whole repo somehow",
+      "body": "",
+      "attachments": [],
+      "sig": "GFI5RtthOmZqRTRbyVcSQBDICSSw5-c3z_KMkkmtxUJVb-WcmlPKrt2vURP6aCZLzPzxWPd08D7_-riPFx5gDg"
+    },
+    {
+      "type": "labels",
+      "id": "24ce0ee4-eb3a-4c89-8510-846e399e056c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923659,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "LiFosRM37XDGIQs2gL1ZpM9gxzaHBzdZp3ol13KYglOx4B3CGK2Tmprlv9klOx0AvNnTcDQGowyYEBIhr8uaCQ"
+    },
+    {
+      "type": "priority",
+      "id": "ab0837b2-1e09-456f-b741-47003ef0149a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923717,
+      "priority": 12,
+      "sig": "HGt-K1Zc7TAg7BjsIppF5C9HsMHKNfjuE6X1g-KjkYEeGcrAH6T8URNHT2EfHqwzn-T--MefSEQMGRFJ0HawDw"
+    },
+    {
+      "type": "bounty",
+      "id": "a2a914d4-05e5-4247-8442-8502b8c9d5f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058419,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "eJz2tuEWLkrXzwZBESi5h9ToemO8J7s5xcHd3l2uGlszR3Z04nNDmmomlueLuWxVgeVJQpwH87PfcjHSHHF_DQ"
+    },
+    {
+      "type": "milestone",
+      "id": "f99df215-08e4-4a0c-b6e8-9a2a55ce4d75",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180253,
+      "milestone": "Phase 2",
+      "sig": "Tvu8AiVS8eRF7xKxz6PxGZsJtLygc23jaLN6WNcwXsazU5oX711TSRIGDZ3fcF7X2sRiRXZXnmOccpdpOnCgAg"
+    },
+    {
+      "type": "comment",
+      "id": "9b8ec3a1-85ee-4d02-8382-561eb7d6e98a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782270495991,
+      "body": "thsi was done",
+      "attachments": [],
+      "sig": "t3i9X-7uH-tU2u34PkY5jKB92B8d_UQ6UgGz6Goarf1U77a4m5nAvIq3MOAO508JXKxF43Y0IJ7VBILly_OJAw"
+    },
+    {
+      "type": "status",
+      "id": "4b6c72f5-66b2-48db-9b44-9eb65cc04284",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782270496050,
+      "status": "closed",
+      "sig": "vCo81_s-ClVWyxroPeBcdPc0P3i-OV95-aEqd8tj86f6cNPXIlzUgI7gQyPUYFMGlEKSlHBM_WVnca_6ksOYAQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782270496050
+}

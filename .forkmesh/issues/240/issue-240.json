@@ -1,0 +1,63 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 240,
+  "title": "Branch port/clipboard-image-paste — needs merge into main",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 14,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782356525339,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-240",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356525339,
+      "title": "Branch port/clipboard-image-paste — needs merge into main",
+      "body": "Tracking issue for the **`port/clipboard-image-paste`** feature branch (auto-created so its work can be prioritized alongside the issue backlog).\n\n**Summary:** Paste clipboard images directly into markdown editors.\n\n**Why this priority:** Nice editor UX; touches MarkdownEditor.cpp. Low risk once conflicts resolved.\n\n**Branch state (snapshot 2026-06-24):**\n- Tip: `671d465 Merge branch 'main' into port/clipboard-image-paste`\n- vs `main`: 615 ahead, 712 behind (counts inflated by ForkMesh sync churn).\n- Local and `origin` copies are in sync (0 ahead / 0 behind).\n- Merge into `main`: **CONFLICT** — must be resolved before it can land.\n\n**Code conflicts vs main (need real review):**\n- `qt_client/src/MainWindow.cpp`\n- `qt_client/src/MainWindow.h`\n- `qt_client/src/MarkdownEditor.cpp`\n- `qt_client/src/Theme.h`\n\n**ForkMesh metadata conflicts (mechanical — take the union of signed events / newer side):**\n- `AGENTS.md`\n- `issues/130/issue.md`\n- `issues/191/issue.md`\n- `issues/192/issue.md`\n- `issues/193/issue.md`\n- `issues/194/issue.md`\n- `pulls/1/changes.patch`\n- `pulls/1/pull.md`\n- `pulls/2/changes.patch`\n- `pulls/2/commits.mbox`\n- `pulls/2/pull.md`\n- `pulls/5/changes.patch`\n- `pulls/5/pull.md`\n\n**Recommendation:** merge (or rebase) `main` into the branch, resolve the code conflicts above, rebuild, then open a ForkMesh PR. The metadata conflicts are signed append-only logs — keep both sides' events.",
+      "attachments": [],
+      "sig": "WbwigKG93SeOtNEC36ZgNw_BDUukneiMi69K7Q41ebQR7rrofpSmaBtB1qtnmYpxksgCgNH09LWiy5FCkVjIAg"
+    },
+    {
+      "type": "bounty",
+      "id": "c8ba6f20-bdfe-4d66-9af2-3dc91c552647",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359969026,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "FGHNsgSzGJ11JnEpoVMlCXTEU99uJeemHp9bLUmes6Ui07CqwfUq_9U_prgWR4zDwoai0sbhujEBkbivdqdFCQ"
+    },
+    {
+      "type": "priority",
+      "id": "b0c97758-ab0d-4ee6-bd71-bdb6dedcfa0b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649276,
+      "priority": 14,
+      "sig": "C8O1ISvlzuv-Zj0jDCbMSUiwsTP7iGsy3Q49WypYPtHd3u0uT7EmZxdOMj6LgqNPKvio9rWNyTHHZsBr3QaIDg"
+    },
+    {
+      "type": "status",
+      "id": "b4d221b9-8b69-49ed-a1a6-39ef9c53e263",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782596054288,
+      "status": "closed",
+      "sig": "vLA6rnW0yIszKLFGr_5OaCmmR6fqKPy7dAMd_oYkLP_3mtRItAvmlUZm0Ge5wtKMKCc5YZT-DMGbmdrT06drBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782596054288
+}

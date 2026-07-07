@@ -1,0 +1,84 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 139,
+  "title": "when switching between nodes in the top menu the app freezes sometimes - lets show what we're doing in the network log (rename to log)",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "",
+  "priority": 6,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782151989335,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-139",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782151989335,
+      "title": "when switching between nodes in the top menu the app freezes sometimes - lets show what we're doing in the network log (rename to log)",
+      "body": "",
+      "attachments": [],
+      "sig": "kvkCzcclKkRUykznxGK_lWQ4VSTA10lvNAkbqoUI6tu1IC6AIOzO05bO4OSqwcL3AHMeGGKAjVLw7KWjQLC-Bw"
+    },
+    {
+      "type": "comment",
+      "id": "90658c59-8eb8-49a0-96b9-81809305bc24",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782183852914,
+      "body": "I think this is fixed, plesae verify ",
+      "attachments": [],
+      "sig": "_TbspuWHSXPEr38cN4UxgPG_GJdv_pRkM3TXEvSJgqlq5v3duE_Vnx0F6HShnX1gJQv9gNwHiw8pmOmMNM2KDg"
+    },
+    {
+      "type": "labels",
+      "id": "ed895aaa-1bd7-43a3-9a9e-add1aa0d7444",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923013,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "PfisCI8yAn5oFysGA2iSCMoT7qXL3x6WV73iq5VlKd7VZ9lxepwXbtJ7QKp-8tQvVnXqMeQqmikNO_JrrjqMCQ"
+    },
+    {
+      "type": "priority",
+      "id": "9b1d7828-0d70-4a04-92b6-a8ec1b71d82a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923064,
+      "priority": 6,
+      "sig": "vglUnanLN-Vr6Aif8QxRppyLm04g7MNMuSoB4H9LDpIUpXOzmW5dOHcpCLweGiq_7-ifbfvfHAk51-NCAwz3CQ"
+    },
+    {
+      "type": "bounty",
+      "id": "a8420325-1b78-4b3c-8186-54c7b98a9b53",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058154,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "1x-esngAHUkAOlHE-mG5sXYWVM0NwYVo2TVgRgQbL06PhvmlgY1gs_4HGfPEulfK58Gk6HZJf4sG1BOhT9MnDA"
+    },
+    {
+      "type": "status",
+      "id": "4fb000de-ed3c-4bb4-8d2a-6f8586c20710",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782207041055,
+      "status": "closed",
+      "sig": "cLc2TuOTzo8F4Q77xDVsNKH1kpz_5_Emc5fp7o3BasQcxgyAEU1sZ-DgUMAgoiuYN4YuIMkZQgHKpTd51kiMBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782207041055
+}

@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 109,
+  "title": "when any agent is working please show an activity indicator similar to the actions indicator - but don't replace the count - fix actions tab button too like tha",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782083839322,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-109",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782083839322,
+      "title": "when any agent is working please show an activity indicator similar to the actions indicator - but don't replace the count - fix actions tab button too like tha",
+      "body": "",
+      "attachments": [],
+      "sig": "JLyASgUlwgu7ZXabzBI7Y6TEeAep4ea8aP1zI7rL9TWaK1A7Zak2JAG_5kKAN-MIMeqz1CciIp1tmqaTSIxXAQ"
+    },
+    {
+      "type": "agent",
+      "id": "a61c960f-4c3f-4e83-a1b9-3be01295e19b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782083839407,
+      "agentProvider": "claude",
+      "agentSessionId": 40,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "PiJ2y1syRHSFzJlI17T3DRp-BDUVat10yTyTbvftsip_eoBrbrvDVUyHkZWOWYxJRaHeu1NsiDQNr2_z2y2vBw"
+    },
+    {
+      "type": "comment",
+      "id": "e3d38f8d-210a-46f4-a94e-d588a1b4ba8e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084020562,
+      "body": "Closed by merged pull request #41.",
+      "attachments": [],
+      "sig": "rj0D4TwniXjvaYk_-wU3kn4toGwHahVNg5D-J9L7my9A6OOkAn07WmjSHP9fyGQRe23rvbANBeK1D2t6g0W2Aw"
+    },
+    {
+      "type": "status",
+      "id": "bf4cfea8-4141-4aa9-b6d7-e5209a1e1d06",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084020617,
+      "status": "closed",
+      "sig": "i8mU3jmMPHEk_u6i6fDB1Bftu1UIebzhQzW5h027YckhEOdRgjODX2UQFyfZysi-ymEtJo6Xp7D4bQAYZSA6Aw"
+    },
+    {
+      "type": "agent",
+      "id": "2723f59d-cf74-4555-96ba-8c38e1727d2d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097150594,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "BWGOD7UYlbwGj3OXMP-UK7OwkQJoaFhAdiVWlR4gRbW0Vlmv0ulP7V2y7yeAaD62Q0ao7XwVV8hzxbGyCp2DCQ"
+    },
+    {
+      "type": "progress",
+      "id": "931df769-a429-48d7-b97e-2f3d823a24f0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930150,
+      "progress": 100,
+      "sig": "jDSAIEUhKRMgX023Lifx8ON6vz34rdOrxIMgaEGnZOPtuoTjyTng-0yGRYZi6vYMg3WBZtyQF0oWRn2x8mIPBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189930150
+}

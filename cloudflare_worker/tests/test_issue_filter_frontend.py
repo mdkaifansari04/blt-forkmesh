@@ -71,8 +71,10 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
         DASHBOARD_JS.index("async function loadRepoIssues")
         : DASHBOARD_JS.index("async function loadRepoCollection")
     ]
-    # Published issues come from the repo's issues/ git folder, not the inbox.
-    assert "/tree?path=" in load and "issues/${number}/issue.md" in load
+    # Published issues come from the repo's .forkmesh/issues/ git folder, not the inbox.
+    assert 'repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" })' in load
+    assert "issueJsonPath(Number(entry.name))" in load
+    assert "parseIssueJson(blobText(blob), number)" in load
     # The default Open view is rendered through the filter, and the tab badge
     # counts the open issues.
     assert 'issuesView.filter = "open";' in load
@@ -97,7 +99,7 @@ def test_homepage_links_to_active_nodes():
 
 
 def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
-    # Record lists (issues/pulls/discussions) must fetch their markdown files
+    # Record lists (issues/pulls/discussions) must fetch their record files
     # through ONE batched /blobs request — fetching each record as its own
     # /blob call fired 50+ parallel requests per page view and tripped the
     # relay's per-repo rate limit — and must only load on the tab's FIRST

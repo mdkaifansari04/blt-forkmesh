@@ -1,0 +1,43 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 324,
+  "title": "testing create issue from web",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782954808,
+  "author": "Ojsl0an_h-ZI6QF0wokSpBxyHB7_gHH9whheSHAjXR0",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1782954808",
+      "author": "Ojsl0an_h-ZI6QF0wokSpBxyHB7_gHH9whheSHAjXR0",
+      "authorName": "jett",
+      "ts": 1782954808,
+      "title": "testing create issue from web",
+      "body": "creating an issue from the web",
+      "attachments": [],
+      "sig": "c6caMINkxZ3YNvPvz8x_gsQwVNABH16iApdMwJpXYgiJDIEBjGU7oe3z6fxU-u4JvwbgcN32FEztlUSc67bNCA"
+    },
+    {
+      "type": "status",
+      "id": "d6e78fc4-9a3d-4d3d-b894-429900ecccae",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782959263232,
+      "status": "closed",
+      "sig": "wSMhJ8kJsag0AJF1WGYhSYGnE3EAb4Niy7FrehUVVKOxhz_G_nHZP4WBRqXcMqRxAy9Az3g04M4lHAKYhy_BBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782959263232
+}

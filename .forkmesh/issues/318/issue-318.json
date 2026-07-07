@@ -1,0 +1,108 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 318,
+  "title": "Show that three dots on all tables headers so that they can all be sorted and configured like the issues table.",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 64,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782919997330,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-318",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782919997330,
+      "title": "Show that three dots on all tables headers so that they can all be sorted and configured like the issues table.",
+      "body": "",
+      "attachments": [],
+      "sig": "8AmXELAxWDHzmJE1AucXZFSVddd16y3zwpM1bVA940USaDnfRAimAuXh7yO_qx6Pl-7MCUjDB0wZ58lOiBC7Dw"
+    },
+    {
+      "type": "priority",
+      "id": "2316820e-ebeb-4324-8724-943973d418b7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818270,
+      "priority": 64,
+      "sig": "CnlcK0ZgDHIiH9Dx-S7j9tjo6kGRzzCtC9RmztFRq3Dsyvwxqx2AXT6zQNNDz8_WVHVtwNtr2Fwkc1gcjCs1Cw"
+    },
+    {
+      "type": "title",
+      "id": "aeb2df5e-98c7-4c2f-887e-26e240d454b7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141477767,
+      "title": "Show that three dots on all tables headers so that they can all be sorted and configured like the issues table.",
+      "sig": "P7FAsp3_71cgYIoVDaIFSBtE4PJnsp_t2lViXHijZXtw8uRoIFd18Mo8-4vxlekikosRl21C2FaFAJMYyStYBg"
+    },
+    {
+      "type": "agent",
+      "id": "f9edefcb-79e4-44c6-bf37-af0530aa07a0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141479906,
+      "agentProvider": "claude-code",
+      "agentSessionId": 251,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "kdcso_2QI5YA6ASXHUEt7lqc4999xm8XKFnYVHnsiTihi6d8YfFH7uVq6APkbX46ZYsxOEuPIenuM-MzEcx0Bw"
+    },
+    {
+      "type": "assignees",
+      "id": "0c35d080-ee20-4230-b405-52b255953053",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141479983,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "WoXgPIp-DaMlxduM2jatn6-WgXFTXsyBLROC2HtkGCW_SwPosEQEyz0pUS1oWZwywJ6HUtdbLFn-07nfPE5YCA"
+    },
+    {
+      "type": "comment",
+      "id": "4d1495d8-080c-468c-a8cf-6c27e6b526db",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142051210,
+      "body": "Closed by merged branch \"agent/issue-318-show-that-three-dots-on-all-tables-headers-so-th\".",
+      "attachments": [],
+      "sig": "1EWiLnFzgEARUefdXRXktSVIAn3bk_9M5-gpNW-9q08AaSj-dVZz3Uvpu8nbPTYt37J-Qg8h3-Rxh5rfqaP1Cg"
+    },
+    {
+      "type": "status",
+      "id": "907e49cd-f7a4-4dc4-9662-79cfee7abe79",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142051278,
+      "status": "closed",
+      "sig": "_TJxeF7hSIyCMtPqseUg06JyEIbZC2101HIl_x1ccqNUeyyLHMNfWdldtFYfrqEemkk2wo5RAyK6Z8_l2__DAQ"
+    },
+    {
+      "type": "agent",
+      "id": "0d1ba2fb-a1f3-41c7-9bb1-baac7a95a604",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149298250,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "I-6khwDc0yVHop66XS9a64V-NFgw79LQEdRLe2hi0pNWw8O-uc75MWZFbchN9qZ1GBJk9NeMY6g120r58xv5Aw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149298250
+}

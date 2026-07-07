@@ -518,11 +518,11 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         # discussions read it lazily through loadRepoCollection on tab view.
         "loadRepoIssues(repo)",
         "loadRepoCollection(state.selectedRepo, tab,",
-        'dir: "issues", file: "issue.md"',
+        'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
         'dir: "pulls", file: "pull.md"',
         'dir: "discussions", file: "discussion.md"',
         "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir }))",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath }))",
+        "fetchRepoBlobs(repo, dirs.map(recordPath))",
         "Create from desktop client for signed submissions",
     ):
         assert marker in dashboard_js

@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 322,
+  "title": "show an icon on the failed status in the agent list",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782922526018,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-322",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782922526018,
+      "title": "show an icon on the failed status in the agent list",
+      "body": "",
+      "attachments": [],
+      "sig": "l-RUPt9NbXyTlXB0JhsfO8a4ZpulAyZX0O_QHheUGyDd4fjqkUIYuQQeXeU-qGdz0Tos5nhVZR07l9C9ZafoBg"
+    },
+    {
+      "type": "agent",
+      "id": "6c0cfd0f-62e1-4427-a7ca-1ab9866e03fc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782934463335,
+      "agentProvider": "claude-code",
+      "agentSessionId": 106,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "6XFIXZvXj7whLooxd6anXrWYqcKJSfaTLMAteQ3qP6sE-um5PoGnrXv1-DBT_3Knyp8mlTMHdx2fUEpW00pWAQ"
+    },
+    {
+      "type": "assignees",
+      "id": "a280f79e-349d-4798-a018-de6da82b9135",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782934463363,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "8Jm6-me3OllCMKn4jPMlsrQCrEYiWrM97NIQqWU1yLBt4pzpYO0rDTY9KvfzPca8hnt6TDge8CrWnEu3fHaCDQ"
+    },
+    {
+      "type": "comment",
+      "id": "3105b9fa-7052-4680-9d38-f535a7d9f872",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782943988764,
+      "body": "Closed by merged branch \"agent/issue-322-show-an-icon-on-the-failed-status-in-the-agent-l\".",
+      "attachments": [],
+      "sig": "xS9gyh_EA9TBqXTRLJCrdzWeJnsT99hG2lcax5ZTJpse4f5OdSlP4AE358mq4v7AGcxp6tvH1XOzPdoX6VdcAw"
+    },
+    {
+      "type": "status",
+      "id": "2df8c15d-99bc-4300-aadd-5f00d8f9c08f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782943988833,
+      "status": "closed",
+      "sig": "RQdLmgvLNoBz2kv686kR9KGhhugWJEGeUnMP815q2O8SJWQNfjHAo9XbAl591GeME2t6om2pAgeJqFeegPpWCQ"
+    },
+    {
+      "type": "agent",
+      "id": "a4dbc339-be08-4461-b044-007b2a7a910b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782944656863,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "Hywd6eWivpAeDgtnTNX53clkBdXxPQUtYd1xinH9eHGuckvI-IK8thd0i81N7Q_kIUeAZdETJG221PJNnfUrDQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782944656863
+}

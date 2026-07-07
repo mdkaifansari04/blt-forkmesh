@@ -1,0 +1,43 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 180,
+  "title": "if there is a conflict on a pr have a conflict editor that lets us edit the files and click accept incoming etc...",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782212045966,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-180",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212045966,
+      "title": "if there is a conflict on a pr have a conflict editor that lets us edit the files and click accept incoming etc...",
+      "body": "",
+      "attachments": [],
+      "sig": "LIKTSYHiSsU-7tPuaTaMjcYoawKZ7CVAzDCZrWmyegkHQiGNKJ4OJrplmqLBDEmgDW3floXI-EhylpIzQs2HBw"
+    },
+    {
+      "type": "status",
+      "id": "402c965d-6ec3-48ed-aac6-a73f01278e2f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782284150911,
+      "status": "closed",
+      "sig": "RhlVCImWKMHNAjAIZF7OhbOeCVbcQ6hgZFaPSA9itZd7jafXzo7QlKoobJ1UkUat9PiRJLQmYV5MiwW-35ECAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782284150911
+}

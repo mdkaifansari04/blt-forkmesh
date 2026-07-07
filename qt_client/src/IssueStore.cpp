@@ -11,10 +11,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMap>
-#include <QPair>
 #include <QProcess>
 #include <QProcessEnvironment>
-#include <QRegularExpression>
 #include <QSet>
 #include <QUuid>
 
@@ -24,6 +22,18 @@ namespace {
 
 constexpr int kGitTimeoutMs = 10000;
 constexpr int kGitRewriteTimeoutMs = 120000;
+
+QString issuesRootRel() { return QStringLiteral(".forkmesh/issues"); }
+
+QString issueJsonFileName(int number)
+{
+    return QStringLiteral("issue-%1.json").arg(number);
+}
+
+QString issueMediaDirName(int number)
+{
+    return QString::number(number);
+}
 
 // Run git in `dir`, capturing stdout. Returns false (with optional error text)
 // on non-zero exit or timeout. Mirrors RepoHost's helper.
@@ -111,52 +121,6 @@ QString newId()
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-// ---- Minimal frontmatter (a constrained YAML subset we fully control) ------
-// A file is "---\n<key: value lines>\n---\n\n<markdown body>". Lists are inline
-// "[a, b]". This is deliberately simple so the C++ client, the Python seed/tool,
-// and hand-editing all agree.
-struct FrontMatter {
-    QHash<QString, QString> values;
-    QString body;
-    QString get(const QString &key) const { return values.value(key); }
-    qint64 num(const QString &key) const { return values.value(key).toLongLong(); }
-    double dbl(const QString &key) const { return values.value(key).toDouble(); }
-    QStringList list(const QString &key) const
-    {
-        QString v = values.value(key).trimmed();
-        if (v.startsWith('[') && v.endsWith(']'))
-            v = v.mid(1, v.size() - 2);
-        QStringList out;
-        for (const QString &part : v.split(',', Qt::SkipEmptyParts))
-            out << part.trimmed();
-        return out;
-    }
-};
-
-FrontMatter parseFrontMatter(const QByteArray &bytes)
-{
-    FrontMatter fm;
-    const QString text = QString::fromUtf8(bytes);
-    const QStringList lines = text.split('\n');
-    if (lines.isEmpty() || lines.first().trimmed() != "---") {
-        fm.body = text;
-        return fm;
-    }
-    int i = 1;
-    for (; i < lines.size() && lines.at(i) != "---"; ++i) {
-        const QString &line = lines.at(i);
-        const int sep = line.indexOf(": ");
-        if (sep >= 0)
-            fm.values.insert(line.left(sep), line.mid(sep + 2));
-        else if (line.endsWith(':'))
-            fm.values.insert(line.left(line.size() - 1), QString());
-    }
-    fm.body = stripEdgeNewlines(lines.mid(i + 1).join('\n'));
-    return fm;
-}
-
-QString serializeList(const QStringList &list) { return "[" + list.join(", ") + "]"; }
-
 bool writeTextFile(const QString &path, const QString &text, QString *error)
 {
     QFile file(path);
@@ -194,7 +158,18 @@ bool removeOriginalRefs(const QString &workTree, QString *error)
     return true;
 }
 
-bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
+bool isAllowedTrackedPath(const QString &path, const QStringList &allowedRelPaths)
+{
+    for (const QString &relPath : allowedRelPaths) {
+        const QString prefix = relPath + QLatin1Char('/');
+        if (path == relPath || path.startsWith(prefix))
+            return true;
+    }
+    return false;
+}
+
+bool hasUnrelatedTrackedChanges(const QString &workTree,
+                                const QStringList &allowedRelPaths,
                                 QString *error)
 {
     QByteArray status;
@@ -205,13 +180,12 @@ bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
             *error = QStringLiteral("git status failed: ") + err;
         return true;
     }
-    const QString prefix = relPath + "/";
     const QList<QByteArray> lines = status.split('\n');
     for (const QByteArray &line : lines) {
         if (line.size() < 4)
             continue;
         const QString path = QString::fromUtf8(line.mid(3)).trimmed();
-        if (path != relPath && !path.startsWith(prefix)) {
+        if (!isAllowedTrackedPath(path, allowedRelPaths)) {
             if (error) {
                 *error = QStringLiteral(
                     "Commit or stash unrelated tracked changes before deleting an issue.");
@@ -220,12 +194,6 @@ bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
         }
     }
     return false;
-}
-
-const QRegularExpression &eventFileRe()
-{
-    static const QRegularExpression re(QStringLiteral("^\\d{4}-.+\\.md$"));
-    return re;
 }
 
 QString pendingAttachmentPlaceholder(int index)
@@ -290,8 +258,10 @@ QJsonObject IssueEvent::toJson() const
                     {"ts", double(ts)}};
     if (type == "open" || type == "title")
         obj.insert("title", title);
-    if (type == "open" || type == "comment" || type == "edit")
+    if (type == "open" || type == "comment" || type == "edit") {
+        obj.insert("body", body);
         obj.insert("attachments", fromStringList(attachments));
+    }
     if (type == "edit" || type == "delete")
         obj.insert("target", target);
     if (type == "status")
@@ -330,6 +300,7 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     ev.authorName = obj.value("authorName").toString();
     ev.ts = qint64(obj.value("ts").toDouble());
     ev.title = obj.value("title").toString();
+    ev.body = obj.value("body").toString();
     ev.attachments = toStringList(obj.value("attachments").toArray());
     ev.target = obj.value("target").toString();
     ev.status = obj.value("status").toString();
@@ -354,15 +325,24 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
 QJsonObject Issue::toJson() const
 {
     QJsonArray eventsArray;
-    for (const IssueEvent &ev : events)
+    qint64 updatedAt = createdAt;
+    int voteCount = 0;
+    for (const IssueEvent &ev : events) {
         eventsArray.append(ev.toJson());
+        if (ev.ts > updatedAt)
+            updatedAt = ev.ts;
+        if (ev.type == QLatin1String("vote"))
+            ++voteCount;
+    }
     return {{"schema", "forkmesh-issue-v1"}, {"number", number}, {"title", title},
             {"status", status}, {"labels", fromStringList(labels)},
             {"milestone", milestone}, {"priority", priority}, {"progress", progress},
             {"assignees", fromStringList(assignees)},
-            {"createdAt", double(createdAt)}, {"author", author},
+            {"createdAt", double(createdAt)}, {"updatedAt", double(updatedAt)},
+            {"author", author},
             {"authorName", authorName}, {"bountyUsd", bountyUsd},
             {"bountyAddress", bountyAddress}, {"bountyStatus", bountyStatus},
+            {"votes", voteCount},
             {"events", eventsArray}};
 }
 
@@ -412,11 +392,19 @@ bool IssueStore::canWrite() const
     return QFileInfo::exists(m_workTree + "/.git");
 }
 
-QString IssueStore::issuesDir() const { return m_workTree + "/issues"; }
+QString IssueStore::issuesDir() const
+{
+    return QDir(m_workTree).filePath(issuesRootRel());
+}
 
 QString IssueStore::issueDir(int number) const
 {
-    return issuesDir() + "/" + QString::number(number);
+    return QDir(issuesDir()).filePath(issueMediaDirName(number));
+}
+
+QString IssueStore::issueFilePath(int number) const
+{
+    return QDir(issueDir(number)).filePath(issueJsonFileName(number));
 }
 
 // ---- Signing ---------------------------------------------------------------
@@ -481,82 +469,6 @@ IssueEvent IssueStore::makeSignedEvent(int number, IssueEvent ev) const
     return ev;
 }
 
-// ---- Frontmatter (de)serialization for one event ---------------------------
-
-namespace {
-
-// Serialize the event-specific frontmatter lines (without the issue-level
-// metadata, which the open event shares with issue.md).
-void appendEventFields(QStringList &lines, const IssueEvent &ev)
-{
-    lines << "type: " + ev.type;
-    lines << "id: " + ev.id;
-    lines << "author: " + ev.author;
-    lines << "authorName: " + ev.authorName;
-    lines << "ts: " + QString::number(ev.ts);
-    if (ev.type == "edit" || ev.type == "delete")
-        lines << "target: " + ev.target;
-    if (ev.type == "title")
-        lines << "title: " + ev.title;
-    if (ev.type == "status")
-        lines << "status: " + ev.status;
-    if (ev.type == "labels")
-        lines << "labels: " + serializeList(ev.labels);
-    if (ev.type == "milestone")
-        lines << "milestone: " + ev.milestone;
-    if (ev.type == "priority")
-        lines << "priority: " + QString::number(ev.priority);
-    if (ev.type == "progress")
-        lines << "progress: " + QString::number(ev.progress);
-    if (ev.type == "bounty") {
-        lines << "bountyUsd: " + QString::number(ev.bountyUsd, 'f', 2);
-        lines << "bountyAddress: " + ev.bountyAddress;
-        lines << "bountyStatus: " + ev.bountyStatus;
-    }
-    if (ev.type == "assignees")
-        lines << "assignees: " + serializeList(ev.assignees);
-    if (ev.type == "agent") {
-        lines << "agentProvider: " + ev.agentProvider;
-        lines << "agentSessionId: " + QString::number(ev.agentSessionId);
-        lines << "agentStatus: " + ev.agentStatus;
-        lines << "agentCreatePr: " + QString(ev.agentCreatePr ? "true" : "false");
-    }
-    if (ev.type == "open" || ev.type == "comment" || ev.type == "edit")
-        lines << "attachments: " + serializeList(ev.attachments);
-    lines << "sig: " + ev.sig;
-}
-
-IssueEvent eventFromFrontMatter(const FrontMatter &fm)
-{
-    IssueEvent ev;
-    ev.type = fm.get("type");
-    ev.id = fm.get("id");
-    ev.author = fm.get("author");
-    ev.authorName = fm.get("authorName");
-    ev.ts = fm.num("ts");
-    ev.title = fm.get("title"); // open + title events
-    ev.target = fm.get("target");
-    ev.status = fm.get("status");
-    ev.labels = fm.list("labels");
-    ev.milestone = fm.get("milestone");
-    ev.priority = int(fm.num("priority"));
-    ev.progress = int(fm.num("progress"));
-    ev.bountyUsd = fm.dbl("bountyUsd");
-    ev.bountyAddress = fm.get("bountyAddress");
-    ev.bountyStatus = fm.get("bountyStatus");
-    ev.assignees = fm.list("assignees");
-    ev.agentProvider = fm.get("agentProvider");
-    ev.agentSessionId = fm.num("agentSessionId");
-    ev.agentStatus = fm.get("agentStatus");
-    ev.agentCreatePr = fm.get("agentCreatePr") == QLatin1String("true");
-    ev.attachments = fm.list("attachments");
-    ev.sig = fm.get("sig");
-    ev.body = fm.body;
-    return ev;
-}
-
-} // namespace
-
 // ---- Loading ---------------------------------------------------------------
 
 QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &tick) const
@@ -575,12 +487,10 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
         Issue issue;
         if (readIssueFile(number, issue) && !issue.isDeleted())
             issues.append(issue);
-        // readIssueFile opens issue.md plus every event file; across a big repo
-        // (hundreds of issues, thousands of files) this loop blocks the GUI long
-        // enough to trip the stall watchdog. Let an interactive caller pump.
         if (tick)
             tick();
     }
+
     std::sort(issues.begin(), issues.end(),
               [](const Issue &a, const Issue &b) { return a.number < b.number; });
     return issues;
@@ -588,66 +498,42 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
 
 QString IssueStore::contentSignature() const
 {
-    // Resolve the issues/ subtree to its git object id. The oid is a content hash
-    // of the whole subtree, so it moves iff some issue/event/label/milestone file
-    // changed — exactly when a reload would surface something new. A writable store
-    // commits every mutation (createIssue / applyRemoteEvent / set*), so HEAD:issues
-    // matches the on-disk issues/ that loadAll() reads there; the mirror case reads
-    // the same ref it loads blobs from.
+    // Resolve the issue metadata subtree to its git object id. The oid is a
+    // content hash of the whole subtree, so it moves iff some issue/event/label/
+    // milestone file changed — exactly when a reload would surface something new.
     const QString dir = canWrite() ? m_workTree : m_mirror;
     if (dir.isEmpty())
         return QString();
     const QString ref = canWrite() ? QStringLiteral("HEAD") : mirrorRef();
     if (ref.isEmpty())
         return QString();
-    // -q + non-zero exit when issues/ doesn't exist yet (no issues): we ignore the
-    // bool and fold the empty oid into a stable "no issues" signature.
+    QStringList parts;
     QByteArray oid;
-    runGit(dir, {"rev-parse", "--verify", "-q", ref + QStringLiteral(":issues")}, &oid);
+    runGit(dir,
+           {"rev-parse", "--verify", "-q",
+            ref + QLatin1Char(':') + issuesRootRel()},
+           &oid);
+    const QString trimmed = QString::fromUtf8(oid).trimmed();
+    if (!trimmed.isEmpty())
+        parts << issuesRootRel() + QLatin1Char('=') + trimmed;
     // Prefix with the source path so two repos with no issues (both empty oid) — or
     // a coincidental oid match — can't be mistaken for "unchanged" across a switch.
-    return dir + QLatin1Char('\n') + QString::fromUtf8(oid).trimmed();
+    return dir + QLatin1Char('\n') + parts.join(QLatin1Char('\n'));
 }
 
 bool IssueStore::readIssueFile(int number, Issue &out) const
 {
-    QFile file(issueDir(number) + "/issue.md");
-    if (!file.open(QIODevice::ReadOnly))
+    QFile jsonFile(issueFilePath(number));
+    if (!jsonFile.open(QIODevice::ReadOnly))
         return false;
-    const FrontMatter fm = parseFrontMatter(file.readAll());
-
-    out = Issue();
-    out.number = number;
-    out.title = fm.get("title");
-    out.status = fm.values.contains("status") ? fm.get("status") : QStringLiteral("open");
-    out.labels = fm.list("labels");
-    out.milestone = fm.get("milestone");
-    out.priority = int(fm.num("priority"));
-    out.progress = int(fm.num("progress"));
-    out.assignees = fm.list("assignees");
-    out.createdAt = fm.num("createdAt");
-    out.author = fm.get("author");
-    out.authorName = fm.get("authorName");
-    out.bountyUsd = fm.dbl("bountyUsd");
-    out.bountyAddress = fm.get("bountyAddress");
-    out.bountyStatus = fm.get("bountyStatus");
-
-    IssueEvent open = eventFromFrontMatter(fm);
-    open.type = "open";
-    open.title = out.title;
-    out.events.append(open);
-
-    // Subsequent events: NNNN-<type>.md, in filename (chronological) order.
-    QStringList eventFiles =
-        QDir(issueDir(number)).entryList(QDir::Files, QDir::Name);
-    for (const QString &name : eventFiles) {
-        if (!eventFileRe().match(name).hasMatch())
-            continue;
-        QFile ef(issueDir(number) + "/" + name);
-        if (ef.open(QIODevice::ReadOnly))
-            out.events.append(eventFromFrontMatter(parseFrontMatter(ef.readAll())));
-    }
-    recomputeMetadata(out); // also tallies votes
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(jsonFile.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+        return false;
+    out = Issue::fromJson(doc.object());
+    if (out.number <= 0)
+        out.number = number;
+    recomputeMetadata(out);
     return true;
 }
 
@@ -698,121 +584,93 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
     if (ref.isEmpty())
         return issues;
 
-    // Read the whole issues/ subtree in one recursive listing, then fetch every
-    // needed blob in a single `git cat-file --batch`. The old code spawned a
-    // `git show` per file (plus a per-issue `ls-tree`), which stalled the GUI
-    // thread for seconds on repos with many issues/events.
-    QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", "-r", ref, "issues/"}, &listing))
-        return issues;
+    auto fetchOids = [&](const QSet<QString> &wantedOids) {
+        QHash<QString, QByteArray> contentByOid;
+        if (wantedOids.isEmpty())
+            return contentByOid;
 
-    struct MirrorIssue {
-        QString issueOid;                          // blob oid of issue.md
-        QList<QPair<QString, QString>> eventBlobs; // (filename, oid)
+        // Batch-fetch every blob in one process. Output framing per object is
+        // "<oid> <type> <size>\n<size bytes>\n".
+        QByteArray batchInput;
+        for (const QString &oid : wantedOids)
+            batchInput += oid.toUtf8() + '\n';
+        QByteArray batch;
+        if (!runGitInput(m_mirror, {"cat-file", "--batch"}, batchInput, &batch))
+            return contentByOid;
+
+        contentByOid.reserve(wantedOids.size());
+        for (int pos = 0; pos < batch.size();) {
+            const int nl = batch.indexOf('\n', pos);
+            if (nl < 0)
+                break;
+            const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
+            pos = nl + 1;
+            if (header.size() < 3) // "<oid> missing" or malformed — no body follows
+                continue;
+            bool sizeOk = false;
+            const int size = header.at(2).toInt(&sizeOk);
+            if (!sizeOk || pos + size > batch.size())
+                break;
+            contentByOid.insert(QString::fromUtf8(header.at(0)),
+                                batch.mid(pos, size));
+            pos += size + 1; // skip body and its trailing newline
+        }
+        return contentByOid;
     };
-    QMap<int, MirrorIssue> byNumber; // keyed (and thus sorted) by issue number
-    QSet<QString> wantedOids;
-    for (const QString &line :
-         QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
-        const int tab = line.indexOf('\t');
-        if (tab < 0)
-            continue;
-        const QStringList meta = line.left(tab).split(' ', Qt::SkipEmptyParts);
-        if (meta.size() < 3 || meta.at(1) != QStringLiteral("blob"))
-            continue;
-        const QString oid = meta.at(2);
-        // path is "issues/<n>/<file>"; ignore top-level files (labels.json …)
-        // and anything nested deeper (attachments/…).
-        const QString rel = line.mid(tab + 1).section('/', 1); // strip "issues/"
-        const int slash = rel.indexOf('/');
-        if (slash < 0)
-            continue;
-        bool numeric = false;
-        const int number = rel.left(slash).toInt(&numeric);
-        if (!numeric)
-            continue;
-        const QString fname = rel.mid(slash + 1);
-        if (fname.contains('/'))
-            continue;
-        if (fname == QStringLiteral("issue.md")) {
-            byNumber[number].issueOid = oid;
-            wantedOids.insert(oid);
-        } else if (eventFileRe().match(fname).hasMatch()) {
-            byNumber[number].eventBlobs.append({fname, oid});
-            wantedOids.insert(oid);
+
+    // One JSON blob per issue at .forkmesh/issues/<n>/issue-<n>.json.
+    QByteArray listing;
+    if (runGit(m_mirror, {"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
+        QMap<int, QString> issueJsonOids;
+        QSet<QString> wantedOids;
+        const QString prefix = issuesRootRel() + QLatin1Char('/');
+        for (const QString &line :
+             QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+            const int tab = line.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QStringList meta = line.left(tab).split(' ', Qt::SkipEmptyParts);
+            if (meta.size() < 3 || meta.at(1) != QStringLiteral("blob"))
+                continue;
+            const QString path = line.mid(tab + 1);
+            if (!path.startsWith(prefix))
+                continue;
+            const QString rel = path.mid(prefix.size());
+            const int slash = rel.indexOf('/');
+            if (slash < 0)
+                continue;
+            bool numeric = false;
+            const int number = rel.left(slash).toInt(&numeric);
+            if (!numeric)
+                continue;
+            const QString fileName = rel.mid(slash + 1);
+            if (fileName == issueJsonFileName(number)) {
+                const QString oid = meta.at(2);
+                issueJsonOids.insert(number, oid);
+                wantedOids.insert(oid);
+            }
+        }
+
+        const QHash<QString, QByteArray> contentByOid = fetchOids(wantedOids);
+        for (auto it = issueJsonOids.constBegin(); it != issueJsonOids.constEnd(); ++it) {
+            if (!contentByOid.contains(it.value()))
+                continue;
+            QJsonParseError parseError;
+            const QJsonDocument doc =
+                QJsonDocument::fromJson(contentByOid.value(it.value()), &parseError);
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+                continue;
+            Issue issue = Issue::fromJson(doc.object());
+            if (issue.number <= 0)
+                issue.number = it.key();
+            recomputeMetadata(issue);
+            if (!issue.isDeleted())
+                issues.append(issue);
         }
     }
-    if (byNumber.isEmpty())
-        return issues;
 
-    // Batch-fetch every blob in one process. Output framing per object is
-    // "<oid> <type> <size>\n<size bytes>\n".
-    QByteArray batchInput;
-    for (const QString &oid : wantedOids)
-        batchInput += oid.toUtf8() + '\n';
-    QByteArray batch;
-    if (!runGitInput(m_mirror, {"cat-file", "--batch"}, batchInput, &batch))
-        return issues;
-
-    QHash<QString, QByteArray> contentByOid;
-    contentByOid.reserve(wantedOids.size());
-    for (int pos = 0; pos < batch.size();) {
-        const int nl = batch.indexOf('\n', pos);
-        if (nl < 0)
-            break;
-        const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
-        pos = nl + 1;
-        if (header.size() < 3) // "<oid> missing" or malformed — no body follows
-            continue;
-        bool sizeOk = false;
-        const int size = header.at(2).toInt(&sizeOk);
-        if (!sizeOk || pos + size > batch.size())
-            break;
-        contentByOid.insert(QString::fromUtf8(header.at(0)), batch.mid(pos, size));
-        pos += size + 1; // skip body and its trailing newline
-    }
-
-    for (auto it = byNumber.constBegin(); it != byNumber.constEnd(); ++it) {
-        const MirrorIssue &files = it.value();
-        if (files.issueOid.isEmpty() || !contentByOid.contains(files.issueOid))
-            continue;
-        const FrontMatter fm = parseFrontMatter(contentByOid.value(files.issueOid));
-        Issue issue;
-        issue.number = it.key();
-        issue.title = fm.get("title");
-        issue.status = fm.values.contains("status") ? fm.get("status")
-                                                    : QStringLiteral("open");
-        issue.labels = fm.list("labels");
-        issue.milestone = fm.get("milestone");
-        issue.priority = int(fm.num("priority"));
-        issue.progress = int(fm.num("progress"));
-        issue.assignees = fm.list("assignees");
-        issue.createdAt = fm.num("createdAt");
-        issue.author = fm.get("author");
-        issue.authorName = fm.get("authorName");
-        issue.bountyUsd = fm.dbl("bountyUsd");
-        issue.bountyAddress = fm.get("bountyAddress");
-        issue.bountyStatus = fm.get("bountyStatus");
-        IssueEvent open = eventFromFrontMatter(fm);
-        open.type = "open";
-        open.title = issue.title;
-        issue.events.append(open);
-
-        // Subsequent events in filename (chronological) order.
-        QList<QPair<QString, QString>> events = files.eventBlobs;
-        std::sort(events.begin(), events.end(),
-                  [](const QPair<QString, QString> &a,
-                     const QPair<QString, QString> &b) { return a.first < b.first; });
-        for (const QPair<QString, QString> &ev : events) {
-            if (contentByOid.contains(ev.second))
-                issue.events.append(
-                    eventFromFrontMatter(parseFrontMatter(contentByOid.value(ev.second))));
-        }
-        recomputeMetadata(issue); // tally votes (and fold event metadata)
-        if (!issue.isDeleted())
-            issues.append(issue);
-    }
-    // byNumber iterates in ascending key order, so issues is already sorted.
+    std::sort(issues.begin(), issues.end(),
+              [](const Issue &a, const Issue &b) { return a.number < b.number; });
     return issues;
 }
 
@@ -825,7 +683,7 @@ QList<IssueLabel> IssueStore::loadLabels() const
             bytes = file.readAll();
     } else {
         bool ok = false;
-        bytes = showFromMirror("issues/labels.json", &ok);
+        bytes = showFromMirror(issuesRootRel() + "/labels.json", &ok);
     }
     QList<IssueLabel> labels;
     for (const QJsonValue &value : QJsonDocument::fromJson(bytes).array()) {
@@ -844,7 +702,7 @@ QList<IssueMilestone> IssueStore::loadMilestones() const
             bytes = file.readAll();
     } else {
         bool ok = false;
-        bytes = showFromMirror("issues/milestones.json", &ok);
+        bytes = showFromMirror(issuesRootRel() + "/milestones.json", &ok);
     }
     QList<IssueMilestone> milestones;
     for (const QJsonValue &value : QJsonDocument::fromJson(bytes).array()) {
@@ -862,55 +720,16 @@ QList<IssueMilestone> IssueStore::loadMilestones() const
 bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
 {
     QDir().mkpath(issueDir(issue.number));
-    if (issue.events.isEmpty())
+    if (issue.events.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Issue #%1 has no events.").arg(issue.number);
         return false;
-    const IssueEvent &open = issue.events.first();
-
-    // issue.md: issue-level metadata + the open event + the description body.
-    QStringList lines;
-    lines << "---";
-    lines << "schema: forkmesh-issue-v1";
-    lines << "number: " + QString::number(issue.number);
-    lines << "title: " + issue.title;
-    lines << "status: " + issue.status;
-    lines << "labels: " + serializeList(issue.labels);
-    lines << "milestone: " + issue.milestone;
-    lines << "priority: " + QString::number(issue.priority);
-    lines << "progress: " + QString::number(issue.progress);
-    lines << "assignees: " + serializeList(issue.assignees);
-    lines << "createdAt: " + QString::number(issue.createdAt);
-    lines << "author: " + issue.author;
-    lines << "authorName: " + issue.authorName;
-    lines << "bountyUsd: " + QString::number(issue.bountyUsd, 'f', 2);
-    lines << "bountyAddress: " + issue.bountyAddress;
-    lines << "bountyStatus: " + issue.bountyStatus;
-    lines << "type: open";
-    lines << "id: " + open.id;
-    lines << "ts: " + QString::number(open.ts);
-    lines << "attachments: " + serializeList(open.attachments);
-    lines << "sig: " + open.sig;
-    lines << "---";
-    lines << "";
-    const QString issueText = lines.join('\n') + "\n" + open.body + "\n";
-    if (!writeTextFile(issueDir(issue.number) + "/issue.md", issueText, error))
-        return false;
-
-    // Each subsequent event is its own NNNN-<type>.md file.
-    for (int i = 1; i < issue.events.size(); ++i) {
-        const IssueEvent &ev = issue.events.at(i);
-        QStringList evLines;
-        evLines << "---";
-        appendEventFields(evLines, ev);
-        evLines << "---";
-        evLines << "";
-        const QString body = (ev.type == "comment" || ev.type == "edit") ? ev.body
-                                                                          : QString();
-        const QString text = evLines.join('\n') + "\n" + body + "\n";
-        const QString name =
-            QStringLiteral("%1-%2.md").arg(i + 1, 4, 10, QChar('0')).arg(ev.type);
-        if (!writeTextFile(issueDir(issue.number) + "/" + name, text, error))
-            return false;
     }
+    Issue stored = issue;
+    recomputeMetadata(stored);
+    const QByteArray bytes = QJsonDocument(stored.toJson()).toJson(QJsonDocument::Indented);
+    if (!writeTextFile(issueFilePath(issue.number), QString::fromUtf8(bytes), error))
+        return false;
     return true;
 }
 
@@ -974,13 +793,15 @@ QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths)
 bool IssueStore::commit(const QString &message, QString *error) const
 {
     QString err;
-    if (!runGit(m_workTree, {"add", "issues"}, nullptr, &err)) {
+    QStringList paths{issuesRootRel()};
+    if (!runGit(m_workTree, QStringList{"add", "-A", "--"} + paths, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
     QByteArray out;
-    if (!runGit(m_workTree, {"commit", "-m", message, "--", "issues"}, &out, &err)) {
+    if (!runGit(m_workTree, QStringList{"commit", "-m", message, "--"} + paths, &out,
+                &err)) {
         if (err.contains("nothing to commit") || err.isEmpty())
             return true;
         if (error)
@@ -1393,15 +1214,17 @@ bool IssueStore::deleteIssue(int number, QString *error)
 {
     if (!canWrite())
         return false;
-    const QString relPath = QStringLiteral("issues/%1").arg(number);
+    const QString relPath = issuesRootRel() + QLatin1Char('/') + QString::number(number);
+    QStringList relPaths{relPath};
     QString err;
-    if (hasUnrelatedTrackedChanges(m_workTree, relPath, error))
+    if (hasUnrelatedTrackedChanges(m_workTree, relPaths, error))
         return false;
 
     // First commit a normal deletion so the work tree is clean for history
     // rewriting. The rewrite below prunes this commit along with prior
     // issue-only commits.
-    runGit(m_workTree, {"rm", "-r", "--ignore-unmatch", "--", relPath}, nullptr,
+    runGit(m_workTree,
+           QStringList{"rm", "-r", "--ignore-unmatch", "--"} + relPaths, nullptr,
            nullptr);
     if (QDir(issueDir(number)).exists() &&
         !QDir(issueDir(number)).removeRecursively()) {
@@ -1409,8 +1232,9 @@ bool IssueStore::deleteIssue(int number, QString *error)
             *error = QStringLiteral("Could not remove issue folder.");
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", QStringLiteral("delete issue"),
-                             "--", relPath},
+    if (!runGit(m_workTree,
+                QStringList{"commit", "-m", QStringLiteral("delete issue"), "--"} +
+                    relPaths,
                 nullptr, &err)) {
         if (!err.contains(QStringLiteral("nothing to commit")) && !err.isEmpty()) {
             if (error)

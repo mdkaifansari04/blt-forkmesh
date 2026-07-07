@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 360,
+  "title": "Search across issues, PRs, and repo code",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "v1",
+  "priority": 22,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818259,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-360",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818259,
+      "title": "Search across issues, PRs, and repo code",
+      "body": "**Roadmap Phase 3.** Nothing is searchable today beyond per-table filters.\n\n- Desktop: `IssueStore.cpp` / `PullStore.cpp` already hold parsed events in memory — add a global search (Ctrl+K) over titles, bodies, and comments, plus `git grep` over the selected repo's mirror for code (run via `runOffThread`, never on the GUI thread).\n- Website: `GET /api/repo/<owner>/<repo>/search?q=` in `cloudflare_worker/src/entry.py`. Issues live in the git tree (`issues/<N>/issue.md`), so the DO can gather over the host tunnel the same way the batched `/blobs` endpoint does. Cap result counts and payload sizes hard — the per-record fan-out rate-limit incident is the cautionary tale.\n- Scope: repo-scoped search only for v1. Full-mesh code search is explicitly out (cost/DO limits).\n\nNote: open issue #333 (search PR text in the review pane) is a subset of this; whichever lands first should reference the other.",
+      "attachments": [],
+      "sig": "nW0hk2bzrCnJdCSYw77qFxL_pgQGXjjmnS048-QoE2UmTzyogEZ0F7vnNJwF2cLaqDvvjpgwMT6pjCY0rFH0BA"
+    },
+    {
+      "type": "agent",
+      "id": "a400dba2-5e90-4ee6-a0bc-0f389a161bec",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124236449,
+      "agentProvider": "claude-code",
+      "agentSessionId": 161,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "o_nlAN4U0YX_bPTVfG0QAujHFnMieC_-_MaYcdAhnFzT03vVUpW1G41RjlwsVo8tm7I5KRdCi0nbjuFoTziSBw"
+    },
+    {
+      "type": "assignees",
+      "id": "d85ca1b9-e12c-495b-9fcb-bcbd7e3dff50",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124236524,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "EuhWzRxXg_P_LiyYcLCdqhdHLiU2hNL8D9HOxfYXs7RhrOs2_ot4pSediuggPdzfElx0ZH_kEZiFSC1ulnemBA"
+    },
+    {
+      "type": "comment",
+      "id": "93aad555-3dfd-4122-a8aa-ceb4051199fc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124954791,
+      "body": "Closed by merged branch \"agent/issue-360-search-across-issues-prs-and-repo-code\".",
+      "attachments": [],
+      "sig": "tBKHc-vdfZP1lZ0aALaZtsYAU-i4LedCjvRMwqdHuytvlDGzKhkzW7n2W1P3NwPGvrcOAv_l9zaVSCR81BZjBQ"
+    },
+    {
+      "type": "status",
+      "id": "02f93418-8dab-4cf4-a47a-39ddcaad69e4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124954854,
+      "status": "closed",
+      "sig": "HtZB1Tcn6dU5PnnsT095ZwjBGZD5m1oWW-eGZrEH-f7GjL_5Xw0J83lWD9EsnM0eBm0NPyDNrchJ1HwuHGgpCA"
+    },
+    {
+      "type": "agent",
+      "id": "e2762958-fe16-4338-b50b-3db80015bc7a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783126236634,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "3_2boC5fU0PSuekF5FBfM8_8SJ82k8UA1Qy9Km2PyQMIT1V1EoY7DLhDv4hT-2V_13WcDIhSilj32XvaaEVNDw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783126236634
+}

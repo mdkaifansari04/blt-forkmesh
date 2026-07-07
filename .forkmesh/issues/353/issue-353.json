@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 353,
+  "title": "Eliminate remaining GUI-thread git calls (zero StallWatchdog events in normal use)",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "MVP launch",
+  "priority": 4,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818252,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-353",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818252,
+      "title": "Eliminate remaining GUI-thread git calls (zero StallWatchdog events in normal use)",
+      "body": "**Roadmap Phase 1.** Every UI freeze we've debugged traced back to synchronous git on the GUI thread. The instrumentation already exists — finish the job.\n\n- `qt_client/src/StallWatchdog.cpp` + `noteBlockingCall(...)` (`StallWatchdog.h:16`) name the slow command in each freeze; `~/.forkmesh/diagnostics/stalls.log` is the hotspot ledger (filter out window-tests records).\n- The `runOffThread` helper (used in `RepoHost.cpp`, `MainWindowAgents.cpp`, `MainWindowSourceControl.cpp`) is the target pattern. `GitKeepAlive` (`qt_client/src/MainWindowInternal.h` ~5836) pumps the event loop for legacy paths — acceptable as a stopgap, but pumping invites re-entrancy; prefer moving the work off-thread.\n\nTask: grep `MainWindow*.cpp` for `waitForFinished` and synchronous git invocations reachable from slots; convert each to `runOffThread` with a completion callback, or a skip-when-unchanged fast path. Acceptance: opening every repo-detail tab on a large repo produces zero stall records over 200 ms.",
+      "attachments": [],
+      "sig": "kEgA28bHeZtpt1SvV-KU5F0WFZU2mrw18hBejt3TRsjlMZscJzrUHw6k2ceZ6CWjtwFDtmy87vKPwbUfyz9fBw"
+    },
+    {
+      "type": "agent",
+      "id": "88a71a54-ab26-4595-b717-0c0c13f4438c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121368605,
+      "agentProvider": "claude-code",
+      "agentSessionId": 145,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "QkfcmacxZ_Ln87w_2ozbOPBA9gGbyJbzh8g1DJTdw9eC_fh1a69xd9_pPprwRK_-NhJEFDPjlGp8dWumO0JFDw"
+    },
+    {
+      "type": "assignees",
+      "id": "3a13d1bd-ce64-4fec-8b84-cf36f642b6e0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121368682,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "HcEYQF07BwJNmLo2ACOZmx58ZIiri7dDe44SS00Bw9U4cu8PPDM4kWMpt_2U5guAj04QSWnLmPorbIoLCZuQCw"
+    },
+    {
+      "type": "comment",
+      "id": "44e7ad94-df6d-4dde-b090-939cd6565130",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124009377,
+      "body": "Closed by merged branch \"agent/issue-353-eliminate-remaining-gui-thread-git-calls-zero-st\".",
+      "attachments": [],
+      "sig": "J71yP3VVjOOdD9mZFyFu0TqCxQEvO24EwIBYL5obhLCqvg0M_hUUu1gRwNyKigLnn30ae-J49j2ButfsaQbzBg"
+    },
+    {
+      "type": "status",
+      "id": "d3bc567c-67ad-45c0-8d5b-ea3e29c436f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124009458,
+      "status": "closed",
+      "sig": "0Bg3kOxlaVVkbF7mXaSeJnvSWt0K5z_wbxwVZ5l473f1PyAXbESHbbG0UcxqPOfWbkbo9_utmtutEkSwNhxqBg"
+    },
+    {
+      "type": "agent",
+      "id": "db0daa6a-b3c0-4a45-adc5-5e82cd62b5bc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138461587,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "l8sI6Qg2gdqBgx5EZJCZS_ImtqMtsiYsN_qkh7sqGo5EgUX8tAe7dFpqgFsqAWMmmEmyx4PEg-344Z9x2LKlAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138461587
+}

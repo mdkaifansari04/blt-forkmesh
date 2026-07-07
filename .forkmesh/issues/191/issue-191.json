@@ -1,0 +1,63 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 191,
+  "title": "Native Claude Code IDE integration: have the app act as the IDE the claude CLI connects to (in-app diffs, selection, open-file context)",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 1,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782335051280,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-191",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782335051280,
+      "title": "Native Claude Code IDE integration: have the app act as the IDE the claude CLI connects to (in-app diffs, selection, open-file context)",
+      "body": "## Goal\n\nBring the Claude Code VS Code extension's *editor-integration* features into the\nQt desktop app **without embedding VS Code**. A `.vsix` can't be loaded into a\nnative Qt app, and Anthropic's extension is really just a thin UI shell over the\nlocal `claude` CLI: it discovers a running `claude` process and talks to it over\na WebSocket + JSON-RPC (MCP variant), coordinated by a lockfile at\n`~/.claude/ide/<port>.lock`. So instead of hosting the extension, ForkMesh\nshould *be* the IDE that `claude` connects to.\n\n## Approach (implement the IDE-integration protocol natively)\n\n1. **WebSocket + JSON-RPC server** — new `ClaudeIdeBridge` class using\n   `Qt6::WebSockets` (add to qt_client/CMakeLists.txt). Bind 127.0.0.1 on an\n   ephemeral port; speak JSON-RPC 2.0 (the MCP variant); validate the auth token\n   from the lockfile on handshake.\n2. **Lockfile + env injection** — write `~/.claude/ide/<port>.lock` (port,\n   workspace folders, IDE name, transport, random auth token) and inject the env\n   vars the CLI looks for when launching `claude` in TerminalWidget. Then the CLI\n   auto-connects (or the user runs `/ide`).\n3. **IDE-side tool handlers**, wired to existing widgets:\n   - `openDiff` (the high-value one: inline accept/reject of proposed changes)\n   - `getCurrentSelection` / `getLatestSelection`\n   - `getOpenEditors` / `getWorkspaceFolders`\n   - `openFile`, `closeAllDiffTabs`, `getDiagnostics`\n4. **Notifications** — push `selection_changed` (and `at_mentioned` for \"send\n   selection to Claude\") from the editor up to the CLI.\n\n## Reference implementation\n\ncoder/claudecode.nvim is a clean-room implementation of this exact protocol and\nis authoritative for the lockfile JSON shape, env var names, the auth header, and\neach tool's request/response schema. Port its `lockfile`, `server`, and `tools`\nmodules to C++. Docs: https://code.claude.com/docs/en/vs-code\n\n## Why this fits ForkMesh\n\nThe app already runs `claude` in a forkpty terminal (TerminalWidget) and has an\nAgentRunner; this adds the editor *surface* the CLI talks back to — no Electron,\nno Node, no marketplace licensing. Rough effort: the WS + lockfile + env plumbing\nis ~1-2 days; the real value is how rich `openDiff` and selection sync are made.\n\n## Out of scope\n\nEmbedding a full VS Code surface (code-server / Theia / VSCodium) — rejected for\nthe same reasons the xterm `-into` embedding was dropped for a custom terminal.",
+      "attachments": [],
+      "sig": "YeGjvTdg7OXZaLWl5fotGCMkJJpFsKtiLU2h7zJePVEWddStLRFpyXe7F0NsGqbFdqakqijZhfll_C9nutI0Aw"
+    },
+    {
+      "type": "priority",
+      "id": "dc855001-7414-442f-8bf2-10cbfd302c67",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782347165581,
+      "priority": 1,
+      "sig": "7_fX8x2kR3ijMdLSLPALQtJKQYWleC672jFfpk1IfzY1BoQ0GlhhxIAdNpGLZD94qJM3GC-5cCc6nRBjlzFRDg"
+    },
+    {
+      "type": "bounty",
+      "id": "5f70f489-4e77-48ce-99e1-413a23bee68a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359966576,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "tuIIMMNfKfS75O4FsiZKiTFRFi50Tgj6ywXCWmyA9mGi_8DYiavRwTCo_4aE5BOlWYfelQDmmYTZvhTQe5_QCA"
+    },
+    {
+      "type": "status",
+      "id": "9150dd42-e318-4390-b600-5a47b3eaaa61",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782429272916,
+      "status": "closed",
+      "sig": "m-wn_MMPjUecU5R7RtQRskvR3JhOEDDcTRwCZfB-c4ZKPOlngNALxj_9Npe_HkWKghjFdJ0Z0pEKetB1A8nICQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782429272916
+}

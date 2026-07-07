@@ -1,0 +1,99 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 345,
+  "title": "on code overview show the number of files in each folder in the list please next to LoC",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 62,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783093988722,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-345",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783093988722,
+      "title": "on code overview show the number of files in each folder in the list please next to LoC",
+      "body": "",
+      "attachments": [],
+      "sig": "m04uBgSLTL_n6KzWV8pUdf0iDFRqtkEiox65a00R73KRsuaqArqw78UatXX-eEMXFB51e1CKdGgcfhTAiBQ5Cw"
+    },
+    {
+      "type": "priority",
+      "id": "aace0df1-a710-42f0-b85e-abe094076dc9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818286,
+      "priority": 62,
+      "sig": "agwPrASDXj302qumxwgItR_n_j6U4fot8L-bvHJACz8fx1fFT-IfUN0PpJuJKZDaO6SaugsEX1RIOJKdi-Z4Dw"
+    },
+    {
+      "type": "agent",
+      "id": "129eb539-dfe9-41e4-9efa-79dccbbf9b67",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141441505,
+      "agentProvider": "claude-code",
+      "agentSessionId": 249,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "kiVQObiVWOhq9gXFgQLnCMcrJWgQccs19Ezpj8JeZhcq-6SqPh_PzcUiUdnOJR3HQzJS8v3D8RqFTejb1MjnBQ"
+    },
+    {
+      "type": "assignees",
+      "id": "583cf21d-27e3-4419-8c4e-ed5267633e23",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141441580,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "Q6o--vLXwjG-XMsbcs4hcBHVGJdwOZIfzZr32yH8pKUpiGpZVsPfKEgbImHCuaNY4POZ6Rd0uEh1bLL33C1MDw"
+    },
+    {
+      "type": "comment",
+      "id": "122e1eb2-abf4-4641-902b-6e7c2a2fd502",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141603641,
+      "body": "Closed by merged branch \"agent/issue-345-on-code-overview-show-the-number-of-files-in-eac\".",
+      "attachments": [],
+      "sig": "Mx992_Zz3HSBzugsgpGMTKTS7cIxXbjSeiAVxvnMhxnyiK1BEopNPsBOQIxZdhNMW9qI9k1PS5Avu540_pqFAA"
+    },
+    {
+      "type": "status",
+      "id": "f2fdd6d9-210d-428b-99b1-b501a9d7f8d5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141603719,
+      "status": "closed",
+      "sig": "TASNS4yY0uyJnkKhHrK69oI3NwEgSly4PSO3HIMWMaNjl__7sFfeMawRH_lnurvNmqMuBRnGjWtbjOEcOBHNAg"
+    },
+    {
+      "type": "agent",
+      "id": "6d3ce872-91e0-4f92-8dd9-862822f1fac0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149299334,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ksjFPiTTJPSn6wldMU0iPqA4XXmAYhNkmI2E-bXDNm3qbAbW8ywz9QJQ4FZvyNpPXDaU1VHqSV7vVpQvcaATCA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149299334
+}

@@ -1,0 +1,43 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 374,
+  "title": "testing detail",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1783137435,
+  "author": "Ojsl0an_h-ZI6QF0wokSpBxyHB7_gHH9whheSHAjXR0",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1783137435",
+      "author": "Ojsl0an_h-ZI6QF0wokSpBxyHB7_gHH9whheSHAjXR0",
+      "authorName": "jett",
+      "ts": 1783137435,
+      "title": "testing detail",
+      "body": "",
+      "attachments": [],
+      "sig": "3e9q1elVQ_cwnZPVcSuAOv28gulP5oP2Audn-GONv-3POYvI2mYpkbdyXqSx-eCTDEMSLsiQMNCL3lm8MNVJCQ"
+    },
+    {
+      "type": "status",
+      "id": "2643c5cb-ee7b-409e-a3c5-c3930e409963",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141547544,
+      "status": "closed",
+      "sig": "O0uy-sRrdeQsP7BOUDHb52nWfrxPCXIUn0BEtilLQymW9ZIyRdyaj5F6eyF2tkj5BK23MMW3Tvm71LCGXvEOAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783141547544
+}

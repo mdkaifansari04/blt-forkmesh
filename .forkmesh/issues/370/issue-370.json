@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 370,
+  "title": "[build infra + ops: needs signing certs] Signed installers and auto-update for Windows/macOS/Linux",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "Phase 2",
+  "priority": 60,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818269,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-370",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818269,
+      "title": "[build infra + ops: needs signing certs] Signed installers and auto-update for Windows/macOS/Linux",
+      "body": "**Roadmap Phase 7 (something people choose).** The app must be a download, not a CMake invocation.\n\nThe release plumbing already exists — content-addressed blobs (`node release-blob` op, worker `/releases/blob/<sha256>` route, sha256-verified `install.sh`, `tools/forkmesh-release-publish.sh`). Extend it per-platform:\n\n- Linux: AppImage + zsync delta updates (<https://appimage.org>).\n- Windows: NSIS or MSIX installer + WinSparkle for updates.\n- macOS: notarized dmg + Sparkle 2 (<https://sparkle-project.org>) — Sparkle appcasts are EdDSA-signed, a natural fit since we already run Ed25519 everywhere.\n- In-app update check against `release.json`; mind the stale-release.json pitfall — the bump commit/tag must land in the bare mirror before the publish queue runs.\n\nOps (not code): purchasing the Apple Developer ID and Windows code-signing certificates and wiring them into CI secrets.",
+      "attachments": [],
+      "sig": "bCvKzOIjLc0kP6m63iZSdo7Qv26gxnFZKrbicdvLtaOGZv-r4FHdWidO-3BPsXTR844Y84k3aak0uFL8i4OpBg"
+    },
+    {
+      "type": "agent",
+      "id": "a60141e1-db63-4673-888a-77440eced64d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141421525,
+      "agentProvider": "claude-code",
+      "agentSessionId": 247,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "lZsdoZ9EQCIs2NgNII5qhcQ1C2ArVFnxSZTqOeqjl-395iySxxx_WhEhCDegpzF378anMLmME_J5fy1slsVxDA"
+    },
+    {
+      "type": "assignees",
+      "id": "41aecf03-2ecd-4898-944a-58c0f414ec35",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141421606,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "J8GgWhoFL78Kf66rJXXc1JUP0hv_KKHG4PPkSflR9baiaHeUPqNEKU7yVBi9SLzAZhyaLagfO5y4BU2MbzYTBA"
+    },
+    {
+      "type": "comment",
+      "id": "a05cd8d9-04ae-451c-95ca-94bbd05358b5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142177949,
+      "body": "Closed by merged branch \"agent/issue-370-build-infra-ops-needs-signing-certs-signed-insta\".",
+      "attachments": [],
+      "sig": "Jwoh830NIWH1ORFguDmkL9zNROyrYCi6LMzt4smA-k_KAVwuYyT1xZaJJB8qqtjayA-eKjabU77yO_XBGi3eDA"
+    },
+    {
+      "type": "status",
+      "id": "503a8ef7-ff04-4e72-a441-247707fe5826",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142178026,
+      "status": "closed",
+      "sig": "iwfg6pOkb_LgHadBHOPljsq9VjGsTuJCxaF4_6UulmUk5KXe1jFAowCl_ZiCy1-_E2uOHZZcN-7-z-dqDli6Ag"
+    },
+    {
+      "type": "agent",
+      "id": "9504a004-40ec-42eb-bb9f-b5bc14d27a9b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149300439,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "omMrYc2AE8Lyz1avu8M59xz0_9D1-7qzItso9wYQvHifjGOz-xssrPhGg5U1C8N68FnVqCzv4K2OAEmIsEiwBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149300439
+}

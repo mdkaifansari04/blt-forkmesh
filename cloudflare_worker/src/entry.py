@@ -7976,25 +7976,59 @@ def _sentry_header(request, name):
         return ""
 
 
+def _sentry_safe_url(request):
+    try:
+        raw = str(getattr(request, "url", "") or "")
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return parsed.scheme + "://" + parsed.netloc + (parsed.path or "/")
+        return raw.split("?", 1)[0][:2000]
+    except Exception:
+        return ""
+
+
+def _sentry_host(request):
+    try:
+        parsed = urlparse(str(getattr(request, "url", "") or ""))
+        if parsed.netloc:
+            return parsed.netloc[:255]
+    except Exception:
+        pass
+    return _sentry_header(request, "host")[:255]
+
+
 def _sentry_request_payload(request):
     if request is None:
         return None
     headers = {}
-    for name in ("user-agent", "accept", "referer", "cf-ray"):
+    for name in ("host", "user-agent", "accept", "cf-ray"):
         value = _sentry_header(request, name)
         if value:
             headers[name] = value
+    if "host" not in headers:
+        host = _sentry_host(request)
+        if host:
+            headers["host"] = host
     return {
-        "url": str(getattr(request, "url", "") or ""),
+        "url": _sentry_safe_url(request),
         "method": method_name(request),
         "headers": headers,
     }
 
 
-def _sentry_cloudflare_context(request, ray=""):
-    ctx = {"ray": str(ray or "")}
-    if ctx["ray"] and "-" in ctx["ray"]:
-        ctx["colo"] = ctx["ray"].rsplit("-", 1)[-1]
+def _sentry_cloudflare_context(request, ray="", error_code="", service="forkmesh"):
+    ctx = {
+        "service": str(service or "forkmesh"),
+        "worker": str(service or "forkmesh"),
+    }
+    if error_code:
+        ctx["error_code"] = str(error_code)
+    ray = str(ray or "")
+    if ray:
+        ctx["ray_id"] = ray
+        ctx["ray"] = ray
+    if ray and "-" in ray:
+        ctx["colo"] = ray.rsplit("-", 1)[-1]
     cf = getattr(request, "cf", None) if request is not None else None
     if cf is not None:
         for key in (
@@ -8008,6 +8042,17 @@ def _sentry_cloudflare_context(request, ray=""):
             if value is not None:
                 ctx[key] = str(value)[:120]
     return ctx
+
+
+def _sentry_environment(env):
+    for name in ("SENTRY_ENVIRONMENT", "ENVIRONMENT", "WORKER_ENV", "ENV"):
+        try:
+            value = getattr(env, name)
+        except Exception:
+            value = None
+        if value:
+            return str(value)[:120]
+    return ""
 
 
 def _sentry_stack_frames(error):
@@ -8032,8 +8077,27 @@ def _sentry_stack_frames(error):
 
 
 def _sentry_event_payload(env, status, method, path, message, ray="",
-                          request=None, error=None):
+                          request=None, error=None, cloudflare_error_code="",
+                          service="forkmesh"):
     text = str(message or "")
+    cf_context = _sentry_cloudflare_context(
+        request, ray, cloudflare_error_code, service)
+    tags = {
+        "runtime": "cloudflare-python-worker",
+        "method": str(method or ""),
+        "status": str(status or ""),
+        "service": str(service or "forkmesh"),
+        "worker": str(service or "forkmesh"),
+    }
+    if cloudflare_error_code:
+        tags["cloudflare.error_code"] = str(cloudflare_error_code)
+    if ray:
+        tags["cloudflare.ray_id"] = str(ray)
+    if cf_context.get("colo"):
+        tags["cloudflare.colo"] = str(cf_context.get("colo"))
+    host = _sentry_host(request)
+    if host:
+        tags["host"] = host
     event = {
         "event_id": _sentry_event_id(),
         "timestamp": int(Date.now()) / 1000,
@@ -8044,17 +8108,19 @@ def _sentry_event_payload(env, status, method, path, message, ray="",
         "transaction": str(path or ""),
         "server_name": str(getattr(env, "NODE_NAME", "") or "cloudflare-worker"),
         "release": _build_rev(env),
-        "tags": {
-            "runtime": "cloudflare-python-worker",
-            "method": str(method or ""),
-            "status": str(status or ""),
-        },
+        "tags": tags,
         "contexts": {
-            "cloudflare": _sentry_cloudflare_context(request, ray),
-            "runtime": {"name": "Cloudflare Python Workers"},
+            "cloudflare": cf_context,
+            "runtime": {
+                "name": "Cloudflare Python Workers",
+                "service": str(service or "forkmesh"),
+            },
         },
         "extra": {"error_log_message": text[:8000]},
     }
+    environment = _sentry_environment(env)
+    if environment:
+        event["environment"] = environment
     req = _sentry_request_payload(request)
     if req:
         event["request"] = req
@@ -8071,14 +8137,16 @@ def _sentry_event_payload(env, status, method, path, message, ray="",
 
 
 async def capture_sentry_error(env, status, method, path, message, ray="",
-                               request=None, error=None):
+                               request=None, error=None,
+                               cloudflare_error_code="", service="forkmesh"):
     """Send one Sentry event with vanilla Python + Worker fetch. Best-effort."""
     try:
         parts = _sentry_dsn_parts(getattr(env, "SENTRY_DSN", ""))
         if not parts:
             return False
         event = _sentry_event_payload(
-            env, status, method, path, message, ray, request, error)
+            env, status, method, path, message, ray, request, error,
+            cloudflare_error_code, service)
         envelope = (
             json.dumps({"event_id": event["event_id"], "dsn": parts["dsn"]}) +
             "\n" + json.dumps({"type": "event"}) +
@@ -8098,21 +8166,15 @@ async def capture_sentry_error(env, status, method, path, message, ray="",
         return False
 
 
-def _html_escape(value):
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+def _console_error(message):
+    try:
+        from js import console
+        console.error(str(message))
+    except Exception:
+        pass
 
 
-async def log_error(env, status, method, path, message, ray="", request=None,
-                    error=None):
-    """Record a 5xx / unhandled error. Best-effort: never raises."""
-    await capture_sentry_error(
-        env, status, method, path, message, ray, request=request, error=error)
+async def _write_error_log(env, status, method, path, message, ray=""):
     try:
         await ensure_schema(env)
         await d1_run(
@@ -8131,6 +8193,45 @@ async def log_error(env, status, method, path, message, ray="", request=None,
         )
     except Exception:
         pass
+
+
+async def capture_worker_exception(env, request, url, error):
+    """Capture the Python exception that Cloudflare will surface as Error 1101."""
+    ray = _sentry_header(request, "cf-ray")
+    method = method_name(request)
+    path = getattr(url, "path", "") or _sentry_safe_url(request)
+    message = repr(error) + "\n" + traceback.format_exc()
+    sentry_configured = _sentry_dsn_parts(getattr(env, "SENTRY_DSN", "")) is not None
+    sentry_ok = await capture_sentry_error(
+        env, 500, method, path, message, ray,
+        request=request,
+        error=error,
+        cloudflare_error_code="1101",
+        service="forkmesh",
+    )
+    if not sentry_ok and sentry_configured:
+        _console_error(
+            "Sentry capture failed for Cloudflare Worker exception 1101; "
+            "re-raising original exception.")
+    await _write_error_log(env, 500, method, path, message, ray)
+
+
+def _html_escape(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+async def log_error(env, status, method, path, message, ray="", request=None,
+                    error=None):
+    """Record a 5xx / unhandled error. Best-effort: never raises."""
+    await capture_sentry_error(
+        env, status, method, path, message, ray, request=request, error=error)
+    await _write_error_log(env, status, method, path, message, ray)
 
 
 def _safe_error_text(error):
@@ -9380,27 +9481,22 @@ class Default(WorkerEntrypoint):
             )
 
     async def fetch(self, request):
-        url = urlparse(request.url)
-
-        # Admin error dashboard at a secret, env-configured path. Handled before
-        # routing (and outside the 5xx wrapper) so its own 401 isn't logged.
-        admin_path = _admin_path(self.env)
-        if admin_path and url.path.strip("/") == admin_path:
-            return await self._admin(request)
-
-        # Capture any unhandled exception (which surfaces as an HTTP 500) and any
-        # 5xx the handlers return, so the admin dashboard has a record of them.
+        url = None
         try:
+            url = urlparse(request.url)
+
+            # Admin error dashboard at a secret, env-configured path. Its 401/403
+            # responses are not logged, but unexpected exceptions are captured.
+            admin_path = _admin_path(self.env)
+            if admin_path and url.path.strip("/") == admin_path:
+                return await self._admin(request)
+
             response = await self._route(request, url)
         except Exception as error:
-            await log_error(
-                self.env, 500, method_name(request), url.path,
-                (repr(error) + "\n" + traceback.format_exc()),
-                request.headers.get("cf-ray") or "",
-                request=request,
-                error=error,
-            )
-            return json_response({"error": "internal_error"}, status=500)
+            await capture_worker_exception(self.env, request, url, error)
+            # Re-raise so Cloudflare records the native Worker failure/Error 1101
+            # while Sentry keeps the underlying Python exception and stack trace.
+            raise
         try:
             status = int(getattr(response, "status", 200) or 200)
         except Exception:

@@ -1,0 +1,168 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 217,
+  "title": "show the source of truth node as the name in the website repo list",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 18,
+  "progress": 25,
+  "assignees": [
+    "newnewnode"
+  ],
+  "createdAt": 1782353825811,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-217",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782353825811,
+      "title": "show the source of truth node as the name in the website repo list",
+      "body": "",
+      "attachments": [],
+      "sig": "XbfJnU3Ev_JPU1oc4HkoSAXeJgGMGt3zgeYFzb77ywfj4v7ZgRO2u8TWuGS4qGEJvyo_EcXK7x0D4fQKD216Bw"
+    },
+    {
+      "type": "priority",
+      "id": "4187c1c4-caba-4e6f-a6dd-bcbf7237e2d3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482635,
+      "priority": 45,
+      "sig": "B4h9HRF8MaqP2cKmK74jvfCMXdhBXWAVf3lq0tUeT2PXUxtl3i_SRnLos4evGNzkIoE7Ux2zNUSwem7SHTCUAQ"
+    },
+    {
+      "type": "bounty",
+      "id": "dbd0d687-b38e-4775-b6ae-5a7c8d02e6ad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359967705,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "JQ7Hd1xVlhRSxPw8q9i7tvhEF5uLETaHSOLi5dQT5QAHZ9ElOPwzdXNDh4d_GNAYkYg-D7l29B0cPHtTBSMlDg"
+    },
+    {
+      "type": "priority",
+      "id": "76c137ac-472d-425b-9673-7999457cf88b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650983,
+      "priority": 91,
+      "sig": "931xR1TQdpS8FAOBR7VTvM7jTIK-jfeB7AtgNtnGLT22rLpc8zNILwYG0rTk8d0T2d5Ah5SjsrlOyw94f7xmBQ"
+    },
+    {
+      "type": "labels",
+      "id": "ae2ef745-2356-4a04-9159-782ccc9916cf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283848,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "5Q3BGSbMLgjemHFBeeXndHTVQeXFQu6svRDKasSfmQVH5TQG2VThRVXRbSoAxZ_BzeRW3drNW8Iqb3hZ638HBQ"
+    },
+    {
+      "type": "progress",
+      "id": "4e55f8f2-871d-4322-8abb-af020382debc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283905,
+      "progress": 55,
+      "sig": "rJcd3pDudnI5mrNOlqt9cntNVhXI1lB_i9ELYbZMTh1GJckFeKo-z5lkhJtCYH2PUxIwOl5o2RqzqDsHtQetCQ"
+    },
+    {
+      "type": "priority",
+      "id": "e015d1cc-7cc5-4fe8-9976-df11d66aec2b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486823,
+      "priority": 18,
+      "sig": "CY4C2E2HD8iOxEeGHY9udN7FfeMt6iV1W19F83pbOGsg2_4qCj9MWP-_93VCRHj40dQlMTISXZfZXqC3yMnyAQ"
+    },
+    {
+      "type": "labels",
+      "id": "375e1588-4c1b-4f26-b252-303a190b21cf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666895,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "r8LgLrV4O6XhAoow6Cj_xsDs39ESrvxmk8UIeHSFn3Sak0XoTUfrFB0WtVLzxqI2YhOkaYVXi_v1ePbVAXN_Bg"
+    },
+    {
+      "type": "progress",
+      "id": "2c4ab051-1747-44ac-b0f4-53ccf927da68",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666918,
+      "progress": 25,
+      "sig": "CSYbr1XSOMYYcE4oBZuKYEQqznOth4xQw2oazjN-b2W_KipyaL70Y3VtnliHf5PqgAYMygXrEOTc1yRivPyaDw"
+    },
+    {
+      "type": "comment",
+      "id": "fd79647e-4626-4fec-b9f2-a241cde89f83",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666947,
+      "body": "**Completeness analysis:** Partial (25%)\n\ncatalog and repo list exist but source-of-truth node naming in website list not evidenced",
+      "attachments": [],
+      "sig": "Ji6ZDTC00SwMtQJc15z3EkVpEyvBzkfgucv6sKBa5O3kmDo-jhtHlbIUWAK9sUhIkIR65wDYD9QgOlCsSGcVBw"
+    },
+    {
+      "type": "assignees",
+      "id": "97abc7d3-9e4c-4029-a03a-0d363a55adee",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782764808317,
+      "assignees": [
+        "newnewnode"
+      ],
+      "sig": "zt4_rrdfES8Et8qyzUhhPXgW1dKQnDTe48xfgELU0DtsfYknhBIay5zI5A6_FMOsjbkS5PaZqdBBFeHoZrAACQ"
+    },
+    {
+      "type": "agent",
+      "id": "c49c27fa-4e65-4f1e-beb2-b718d6577f83",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782764808343,
+      "agentProvider": "claude-code",
+      "agentSessionId": 51,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "cn9bUpXvnVmBAnMea5lPlP0nqaCbBXcM3jJ8J-psQDT1C5YlNm3jQIe6mvxk3Zru2iS3NbYOmQHA1DhcR5JTCw"
+    },
+    {
+      "type": "agent",
+      "id": "159cde74-188b-406a-bd17-323e9eb9b596",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782768878535,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "GI-ryrJ4Bg64Q7CJ_Ntmt6dqjdkndNlccUFWorT1NX-XSiAgzBZaJddY2NCWhWKsw2CAQwk2PKu552E-I0T1Cw"
+    },
+    {
+      "type": "status",
+      "id": "1c6a2a1e-65d2-4abf-9f77-e50cd06e3014",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782768878643,
+      "status": "closed",
+      "sig": "0l5HT-f0YVzKhUiF95Kr3UcrcZEJGpvdwclvnGLpFhFKnAuin6tW4WgiDH58zEO9mgQdtms4DJGeu-jnTbTqDQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782768878643
+}

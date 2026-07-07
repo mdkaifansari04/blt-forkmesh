@@ -1,0 +1,93 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 302,
+  "title": "remove create pr from the quick issue add",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782589642251,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-302",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782589642251,
+      "title": "remove create pr from the quick issue add",
+      "body": "",
+      "attachments": [],
+      "sig": "rk7ZQ9ush1t2iRL-XJGn5JFVKLYJIz7rrOafMpnYHjLVOHX3uEKiWEzwon89PQ93fAwN7ZjzglTtyOaxP8ryDg"
+    },
+    {
+      "type": "labels",
+      "id": "8fc87232-e06d-442d-a5a0-6b61198283d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687289243,
+      "labels": [
+        "Complete"
+      ],
+      "sig": "6rohN6GUmo90z95L1pHgf0T2t430jFytuLetsvfH6G5Ht1msiI7kYaqJq6c5sNqJlBqTMYCOzQoUNi5GzP48BA"
+    },
+    {
+      "type": "progress",
+      "id": "69ca1cd5-e337-4d7e-ac0d-67412700e27d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687289279,
+      "progress": 85,
+      "sig": "Et11nKvxkCuREJHJjvIgztA5-aLzANM9NHGXXCb8iJjaH4zMtEDaW63pgfZow6IUKLpcL8N6bLMOztZmk3spCw"
+    },
+    {
+      "type": "labels",
+      "id": "2a5c2f58-d0bc-4494-bc9d-169e95ce4387",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670577,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "Z4P68GWSSDZ6i9pZVs9tsBvmpnzuCgEeXYnk8r594wMGy3p5yJlsYbM7s0dLKN3yDK-pSpCuHdFIbpDl5vN1BQ"
+    },
+    {
+      "type": "progress",
+      "id": "57f7c9d5-baa9-4bb4-9649-2c0bc30570ac",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670600,
+      "progress": 5,
+      "sig": "5uTKH0YiKR17LLuTONBvxIukteXZlskwwQuzqPj4oXS4KTDrdq3U6udUxg3MRSh3kWihqTmqzu4z3AsBTU2MAw"
+    },
+    {
+      "type": "comment",
+      "id": "0a14fb94-b0e9-4449-a284-4275fdebe33a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670623,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nremoval of create-pr from quick issue add not evidenced",
+      "attachments": [],
+      "sig": "31-G1uq88xv2noV-Hwt7zbXVUaJrbR4GsxEIEvEsxXB51enV6ml7nXaIkd5nS_5EA06QubY0lexR5h393vwPAg"
+    },
+    {
+      "type": "status",
+      "id": "bcb661d1-9af8-446d-bdb8-8c625e9538a3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782773729473,
+      "status": "closed",
+      "sig": "4EQauO_alFV4lFLrSj_rYcuej74WB9bMrOmA90FiFCOU1jrjUwUJrTksfu4bXSryYmz0kReVPXGzoQolDhvuCw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782773729473
+}

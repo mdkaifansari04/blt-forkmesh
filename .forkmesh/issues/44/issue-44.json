@@ -1,0 +1,81 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 44,
+  "title": "fix the fork button so that it allows you to fork to a location working directory you must already have it mirrored to fork it - remove the star button",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "MVP launch",
+  "priority": 42,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781720327425,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-44",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781720327425,
+      "title": "fix the fork button so that it allows you to fork to a location working directory you must already have it mirrored to fork it - remove the star button",
+      "body": "",
+      "attachments": [],
+      "sig": "WEoIxU7ejeONSYNI-H6WCg0InXJ-mcanW3Pgr6oLYGYRe6TGY5NS_ZhRbVjX4aKE6Av2oBFN-ZUFkK1uaF_1Bg"
+    },
+    {
+      "type": "labels",
+      "id": "f38339e1-ab97-43fa-a684-4d51d7d979ab",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "labels": [
+        "bug"
+      ],
+      "sig": "bqY3a7BtmKC0RfGlfr7RgFHRyV14Vz5GfBI_WxBgqOKbTaVZyfBCQQqxZiS9pWoO84dKlDw0LpuP8QgwlATdDg"
+    },
+    {
+      "type": "milestone",
+      "id": "263434cb-2e80-4adf-b3e7-a24d53918471",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "milestone": "MVP launch",
+      "sig": "E93mOSKc46HW_SyhH0r_ecej3S52syDkrJAWzjXUY48pRXvCFkQb1vU8_-PtGEczMbBZIZVJdC_8j3u-VK7aBw"
+    },
+    {
+      "type": "priority",
+      "id": "9eaa8b2e-35b0-47d7-a1f8-7b6a77750c55",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "priority": 42,
+      "sig": "4IVUdNKyVl5s_Vsdm8yiWglu3wiKyAsJQRMM-n2d89BZ9KMBJx6PBBbZgSbNT_or6AAgilVD52g9WfAhy06RAA"
+    },
+    {
+      "type": "status",
+      "id": "7ce6205a-0273-4c3e-b4dc-47891c983cbc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187227865,
+      "status": "closed",
+      "sig": "fl7X6J2LYYvMPhFCmjAvPmQ169rgq6Eolw7nDLANKau2p5qQbTB6zB0fcrvFiXruPuohuXDMf-hzU_9IH3R_Bw"
+    },
+    {
+      "type": "progress",
+      "id": "cf8ff5f5-abc9-4127-8ea3-543533e82af2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926885,
+      "progress": 100,
+      "sig": "OcPgsvfBRrjToNXh_uYF9dSysXb9XSVWmdOVfYsFRwg0mjpQYCdZpFreBIxLmBsrH1VmX6d530JfNoiOgqXgBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189926885
+}

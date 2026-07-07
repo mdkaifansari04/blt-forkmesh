@@ -5918,7 +5918,6 @@ void MainWindow::postIssueLinkComment(int issueNumber, const QString &body)
     ev.type = QStringLiteral("comment");
     ev.body = body;
     ev = store.makeSignedEvent(issueNumber, ev);
-    ev.bodyFile = "comments/" + ev.id + ".md";
     QJsonObject eventJson = ev.toJson();
     eventJson.insert("body", ev.body);
     const QJsonObject payload{{"owner", repo.owner},

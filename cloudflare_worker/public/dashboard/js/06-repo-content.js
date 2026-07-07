@@ -174,6 +174,41 @@
     return text.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean);
   }
 
+  function issueJsonPath(number) {
+    return `.forkmesh/issues/${Number(number)}/issue-${Number(number)}.json`;
+  }
+
+  function parseIssueJson(text, fallbackNumber) {
+    let issue = {};
+    try {
+      const parsed = JSON.parse(String(text || "{}"));
+      if (parsed && typeof parsed === "object") issue = parsed;
+    } catch (_) {
+      issue = {};
+    }
+    const number = Number(issue.number || fallbackNumber);
+    const events = Array.isArray(issue.events) ? issue.events : [];
+    const open = events.find((event) => event && event.type === "open") || {};
+    const updatedAt = events.reduce((latest, event) => {
+      const ts = Number(event?.ts || 0);
+      return Number.isFinite(ts) && ts > latest ? ts : latest;
+    }, Number(issue.updatedAt || issue.createdAt || open.ts || 0));
+    const status = issue.status || issue.state || "open";
+    const labels = Array.isArray(issue.labels)
+      ? issue.labels.slice(0, 3).join(", ")
+      : parseFrontMatterList(issue.labels).slice(0, 3).join(", ");
+    return {
+      number,
+      title: issue.title || open.title || `issue #${number}`,
+      status,
+      author: issue.authorName || open.authorName || issue.author || open.author || "unknown",
+      date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
+      meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
+      body: open.body || issue.body || "",
+      wantsAgent: Boolean(issue.wantsAgent),
+    };
+  }
+
   function formatRecordDate(value) {
     const number = Number(value);
     if (Number.isFinite(number) && number > 0) {
@@ -210,12 +245,14 @@
     issues: {
       label: "Issues",
       itemLabel: "issue",
-      dir: "issues", file: "issue.md",
+      dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`,
       icon: "circle-dot",
       tone: "text-primary",
       empty: "No issues have been committed to this mirror yet.",
       meta(values) {
-        const labels = parseFrontMatterList(values.labels).slice(0, 3).join(", ");
+        const labels = Array.isArray(values.labels)
+          ? values.labels.slice(0, 3).join(", ")
+          : parseFrontMatterList(values.labels).slice(0, 3).join(", ");
         return [values.status || "open", labels, values.milestone].filter(Boolean).join(" · ");
       },
     },
@@ -290,12 +327,17 @@
       .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
       .sort((a, b) => Number(b.name) - Number(a.name))
       .slice(0, 50);
+    const recordPath = (entry) => {
+      const file = typeof config.file === "function"
+        ? config.file(Number(entry.name))
+        : config.file;
+      return `${config.dir}/${entry.name}/${file}`;
+    };
     // One batched request for every record file instead of a per-record fan-out.
-    const blobs = await fetchRepoBlobs(
-      repo, dirs.map((entry) => `${config.dir}/${entry.name}/${config.file}`));
+    const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath));
     const records = dirs.map((entry) => {
       const number = Number(entry.name);
-      const blob = blobs[`${config.dir}/${entry.name}/${config.file}`];
+      const blob = blobs[recordPath(entry)];
       if (!blob) return null;
       const parsed = parseFrontMatter(blobText(blob));
       const values = parsed.values || {};
@@ -834,9 +876,9 @@
     try {
       let tree;
       try {
-        // List the git tree under issues/ (the mirror browse endpoint
-        // /tree?path=issues) then read one issues/${number}/issue.md blob each.
-        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "issues" }));
+        // List the git tree under .forkmesh/issues/ then read one
+        // .forkmesh/issues/${number}/issue-${number}.json blob for each issue.
+        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
           state.issuesView.items = [];
@@ -852,23 +894,12 @@
         .slice(0, 50);
       // One batched request for all of them, not one /blob call per issue.
       const blobs = await fetchRepoBlobs(
-        repo, dirs.map((entry) => `issues/${Number(entry.name)}/issue.md`));
+        repo, dirs.map((entry) => issueJsonPath(Number(entry.name))));
       const items = dirs.map((entry) => {
         const number = Number(entry.name);
-        const blob = blobs[`issues/${number}/issue.md`];
+        const blob = blobs[issueJsonPath(number)];
         if (!blob) return null;
-        const parsed = parseFrontMatter(blobText(blob));
-        const values = parsed.values || {};
-        return {
-          number,
-          title: values.title || `issue #${number}`,
-          status: values.status || values.state || "open",
-          author: values.authorName || values.author || "unknown",
-          date: formatRecordDate(values.updatedAt || values.createdAt || values.ts),
-          meta: repoCollectionConfig.issues.meta(values),
-          body: parsed.body || "",
-          wantsAgent: Boolean(values.wantsAgent),
-        };
+        return parseIssueJson(blobText(blob), number);
       }).filter(Boolean);
       state.issuesView.items = items;
       state.issuesView.filter = "open";
@@ -877,7 +908,7 @@
       setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
       renderRepoIssues();
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the issues/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
     }
   }
 

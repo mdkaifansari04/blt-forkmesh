@@ -1,0 +1,43 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 182,
+  "title": "show updated as a sortable folumn on issues table too",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782212384072,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-182",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212384072,
+      "title": "show updated as a sortable folumn on issues table too",
+      "body": "",
+      "attachments": [],
+      "sig": "9xUA6m5JCeYiCxgCS8crGt4cKIcUBMbax6Cif8tP8r7aooQYjYgoNHuUTr2zhaLChIjB-OOPzL8Vhaahcgw1DA"
+    },
+    {
+      "type": "status",
+      "id": "7262091f-13b9-4b70-bb4d-246232b3110c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782267880299,
+      "status": "closed",
+      "sig": "_YsBQ4wFZd8VcUMQQ64D0AqZ3udnMpiIYNWoWwx5TlrIK5UndZwIZwCWC5gR2dY6Ds8_lXoy48t34_iW8otWCg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782267880299
+}

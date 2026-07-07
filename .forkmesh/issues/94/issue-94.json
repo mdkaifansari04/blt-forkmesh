@@ -1,0 +1,154 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 94,
+  "title": "when deciding payment split only calculate the repos that are mirrored from other nodes don't count single repos with no mirrors",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "Phase 2",
+  "priority": 2,
+  "progress": 30,
+  "assignees": [],
+  "createdAt": 1782076659204,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-94",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782076659204,
+      "title": "when deciding payment split only calculate the repos that are mirrored from other nodes don't count single repos with no mirrors",
+      "body": "",
+      "attachments": [],
+      "sig": "w1LAXw1BbO7nr80d1UBLa6UUVzKO0yj1UiCbg8ayBX0yiC7qZIo_WxZafdwCvAyUHfJ9H-vEK-BQcOiB2rppBQ"
+    },
+    {
+      "type": "labels",
+      "id": "0a10bae5-aedf-4eeb-aa22-9e1780c715a1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198391,
+      "labels": [
+        "bug"
+      ],
+      "sig": "mt33obSgDUcX2wjF3wsL-WfkMqIv5K7LDPs5ROlDL20FP-f9iKrie8sFMxa2nl-aU7lIkuXM_VKko5vUPJOLAQ"
+    },
+    {
+      "type": "milestone",
+      "id": "51c2cc4e-3c0b-4751-8a31-0f560f9649f4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198391,
+      "milestone": "MVP launch",
+      "sig": "dI5bTaN_sqi7GfPk7ep0_Z2JOsSv89c39htwlNtTsSWg3jRP6VWWYRlJSxh0TFJuLIpoMy4Ba7GqO4Leb0ogDw"
+    },
+    {
+      "type": "priority",
+      "id": "bc82f7bd-b6f7-4482-8426-4cb1e2964378",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198391,
+      "priority": 30,
+      "sig": "-x0rEDhJIIGV6jPA6-Oq9H9v8W5H7Cj69g1NaZsB9fFRPinqVyZtXm6OS7RFBSnkQiSTLAFOeiWkYzXwyfLLCA"
+    },
+    {
+      "type": "bounty",
+      "id": "dcaabebc-4afe-4718-8694-6a1869378f25",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193057359,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "WINf6nMxjcMeF7KhCyfMmQGHBKeWDE9Pm3cbDjyuIjF8tujhyvFvtoGWHdm1GX7E4j_wLNVCo43nPgiYNT1_AQ"
+    },
+    {
+      "type": "priority",
+      "id": "852f4164-b529-42c5-847e-86fe145e0e04",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180233,
+      "priority": 8,
+      "sig": "Y6yBqp_e6XCbQV6oZOi0gmlTgTM6Tr5y_pttwzjL-LizCcB-fO6NI0HRsT6u4b-zZS9XyYDCEtHgPO6nkc1bAQ"
+    },
+    {
+      "type": "milestone",
+      "id": "04637b45-b384-4193-90d7-80e0018e9362",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782278899341,
+      "milestone": "Phase 2",
+      "sig": "R7futNVc7Wg3TQ3U8Zo5Xyy8kbCOIO8c6mVt6_1vqUQttWdbDJdPlct9aM05tQSJW4wJyFQNYuZHOpeJhm7DDQ"
+    },
+    {
+      "type": "progress",
+      "id": "acbba75e-13b7-4fff-ac2f-33ee04034bb2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782281148890,
+      "progress": 30,
+      "sig": "XybSJBLf7_A2yPqYN2Qm_by-9BFU9LCITnoz2NUhtTvNnI4OoKq0o5mERuzHle6TjXhBGcdLmAaJHrVSeT-MCw"
+    },
+    {
+      "type": "priority",
+      "id": "7d9b460d-e888-4bd3-b263-c3312fa3871b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482610,
+      "priority": 2,
+      "sig": "29lM6Q8kLrckpsp0tNTxblfWy646rRCtVep5x5BJ7Q_N26TT-nYw37YrGZXaToCmbIKq5LkXNmjLGWwBqRyzDQ"
+    },
+    {
+      "type": "bounty",
+      "id": "121b9305-8cbe-4cca-874a-84d735e76ae6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359966254,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "xcCeQ8OIHFRJC5i7V3ofYuRkQ1UH7Zpfa4TO8rNwcE4PyxbmXaOPSoVGpbOs8c9FAgK2BTj34z-cUdJkRprnCw"
+    },
+    {
+      "type": "agent",
+      "id": "baa7564d-1327-4145-a297-05f5f5201673",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782429285255,
+      "agentProvider": "claude-code",
+      "agentSessionId": 3,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "DI0Wq-U5N7N_0pOpN986rVt0haGwKw_Xq6Tccj7QBprPydcEqjSLyBCGpPYA8yjRXP8z2uySTvW6UzgaudiXCg"
+    },
+    {
+      "type": "agent",
+      "id": "67faeff5-2b45-4a51-ae47-c9723c72466c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782430570023,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "TUQtr7FlkRx68jsaXSR9ew9TgR-g5i7E1qjgyLDwejO_AyzdenZ_baQXzY1KHsJOT18qoD2DOTOM07KDsXQnBg"
+    },
+    {
+      "type": "status",
+      "id": "00c7bef0-1a33-4e17-a413-25d1f21e9dad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782430911089,
+      "status": "closed",
+      "sig": "lHdaL5uxF233Pb1cF5iasCJ-Dd2Hz1f_nZEGHVa4T6suX-ilkks0Xp8j6AZCqBzsRABoOMK7_TY9j_AjBGbfBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782430911089
+}

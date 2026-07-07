@@ -1,0 +1,117 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 298,
+  "title": "on the command line version add a command to update and restart and another called daemon to go into daemon mode (we can exit)",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782526315492,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-298",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782526315492,
+      "title": "on the command line version add a command to update and restart and another called daemon to go into daemon mode (we can exit)",
+      "body": "",
+      "attachments": [],
+      "sig": "jGN1pNQiP8BbZs5ORgG9vw0syGwZ9KLhpWFEGv8lOn-hYu6L4bY3z7dEEF1UPChPfqpGYyL2mD8eaw72LRXsAA"
+    },
+    {
+      "type": "agent",
+      "id": "a84a6fc2-c208-4d49-bfe3-37a19d685c4e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782526315626,
+      "agentProvider": "claude-code",
+      "agentSessionId": 72,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "FpD9DLR77UVhe808rAgbisGtcJsHUDE632mDKa7IsjBf9ZItdlbPVnYOhFEFRiqJxTqCJa2Z3qSU9bhkpOOhCA"
+    },
+    {
+      "type": "agent",
+      "id": "0f64d552-029e-4054-a93d-5a36fac3d500",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782527494480,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "_9QB38w2Yp8bEPKcmcMyqAkh0FuN-wZdaaXsLRKboSnrpnFp9EWOLKlrbt2AhPNJGhSFF4TtGG-Pfoyu25EwCw"
+    },
+    {
+      "type": "labels",
+      "id": "f3297785-71a7-4ca7-acf2-ce8cdf87c3b8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288958,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "VVvEKLHRJM0Cm8h3HTufmIWS4kLbpUrkYlfkVk2liWWAUr5U_in7vCMtkfUyLHmP90fyBFeUHWG4Ut4nuPXaDA"
+    },
+    {
+      "type": "progress",
+      "id": "25721718-f246-49ba-8edb-0fe104ee7b47",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288993,
+      "progress": 60,
+      "sig": "DV7c7oaz9u_x5qqAuaXuCNH2RZ_fLEhyRxefP0oSfCVCo9JYGwmPbVrwnf-M5Fu_IUSBQA8KwTPMCpP1xQrZBQ"
+    },
+    {
+      "type": "labels",
+      "id": "fea3f385-f90e-43db-b10e-114a8f0b10af",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670369,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "Xr0JEg5-U_WVj1Avm3qruZshN4Mn4A9_U8SnFQeC0KNjFWULb-5KqCgfZFcvr1REjaVGvz0FCLtBmtDGsTrCAQ"
+    },
+    {
+      "type": "progress",
+      "id": "b631a74d-9a28-442c-9206-4caf342bebcc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670393,
+      "progress": 5,
+      "sig": "T2F7aHhmGHgO3Y0xmiq7aE0S8IuFfi6-gErFF7ZX0X68ximSd2QJMhDFKbmZiM-F_Zu0hbPdBvJKrNv1BqkdAQ"
+    },
+    {
+      "type": "comment",
+      "id": "1004b417-3491-41c0-a28e-831d5493f6e4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670415,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nCLI update/restart and daemon commands not evidenced",
+      "attachments": [],
+      "sig": "3-qB8k0dGX0JbelHn0a_JeQcCWg0sXFJttACahwogq-o6O7e3Zkyyvcd_MvccbJg7zA9zcLNcfH22cfUauiiBQ"
+    },
+    {
+      "type": "status",
+      "id": "c0316279-1295-4b98-8a37-f0f0228fd466",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782773708585,
+      "status": "closed",
+      "sig": "zy3Cbrcxer-4q-md6QL1H0Vmj5yE5VTPsiV3Zl6IJ9zo0PiTHlv-WbOoAbVvKJZvcqo1BHu7U_LJYavo0EEZDg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782773708585
+}

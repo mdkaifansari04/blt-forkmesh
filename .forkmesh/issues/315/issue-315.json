@@ -1,0 +1,67 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 315,
+  "title": "Show breadcrumbs on the repository page so we can go back to the main reposit…",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782918130983,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-315",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782918130983,
+      "title": "Show breadcrumbs on the repository page so we can go back to the main reposit…",
+      "body": "Show breadcrumbs on the repository page so we can go back to the main repository page to see all the repositories listed.",
+      "attachments": [],
+      "sig": "yUCMpPRmRgd2aw35DoPFZ8o6BH3ITSUGjGwai2SDfxpIknbLQGGh_DdwGLo--ggEA5KRlUeQ1LLYi_3ZnJUXBQ"
+    },
+    {
+      "type": "agent",
+      "id": "b883131a-6b38-4f7a-ab8e-1c63edc3aff5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782918131021,
+      "agentProvider": "claude-code",
+      "agentSessionId": 91,
+      "agentStatus": "failed",
+      "agentCreatePr": true,
+      "sig": "ZPNQJTz9z_g74mp48EU064bkWqPxL68F5WWXBgpNL5WxA4_CPvXnfZ-71hIm_V5_LqsHePkpiAZaRNxa4XX8Dw"
+    },
+    {
+      "type": "agent",
+      "id": "4daf2280-a8f5-49d5-a5df-a5c2c251d353",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782932739062,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "YSxKnQQ9dagKMxaMHP3BbdaD-bcR7hrD74Pw4DhpnezW8IuwwaZmU7XksMvjnVSqKqXT0gppSODUX1uF5KtQCQ"
+    },
+    {
+      "type": "status",
+      "id": "83f86509-13bd-4f30-a17b-a12832780f02",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782932739174,
+      "status": "closed",
+      "sig": "k-NRY-lwHhc1c54DnudpPs6Eiv0TsXBh6EJNVHORG_UD_or7YXpBkaz4Ygyf4TA9U1dG8AIM64qYicxWBlgMAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782932739174
+}

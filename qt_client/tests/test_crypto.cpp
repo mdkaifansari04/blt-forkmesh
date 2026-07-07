@@ -21,13 +21,16 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
@@ -907,6 +910,13 @@ int main(int argc, char *argv[])
         const int n = repo.createIssue("Round trip", "Hello **body**",
                                        {"bug"}, "v1", 7, {}, {}, &err);
         check(n == 1, "createIssue returns the first issue number");
+        const QString issueJsonPath =
+            QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/1/issue-1.json"));
+        check(QFileInfo::exists(issueJsonPath),
+              "createIssue writes .forkmesh/issues/1/issue-1.json");
+        check(!QFileInfo::exists(
+                  QDir(tmp.path()).filePath(QStringLiteral("issues/1/issue.md"))),
+              "createIssue does not write legacy issue.md");
         QList<Issue> loaded = repo.loadAll();
         check(loaded.size() == 1 && loaded.first().title == "Round trip" &&
                   loaded.first().labels.contains("bug") &&
@@ -914,9 +924,39 @@ int main(int argc, char *argv[])
                   loaded.first().priority == 7,
               "issue loads back with title, label, milestone and priority");
         check(!loaded.isEmpty() && loaded.first().events.first().body == "Hello **body**",
-              "open-event body round-trips from issue.md frontmatter");
+              "open-event body round-trips from issue JSON");
+        const QString legacyIssueDir =
+            QDir(tmp.path()).filePath(QStringLiteral("issues/99"));
+        QDir().mkpath(legacyIssueDir);
+        QFile legacyIssue(QDir(legacyIssueDir).filePath(QStringLiteral("issue.md")));
+        if (legacyIssue.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            legacyIssue.write("---\ntitle: Old format\nstatus: open\n---\n\nignored\n");
+        legacyIssue.close();
+        loaded = repo.loadAll();
+        check(loaded.size() == 1 && loaded.first().number == n,
+              "legacy issues/<n>/issue.md folders are ignored");
+        const int second = repo.createIssue("Second after legacy", "body", {},
+                                            QString(), 0, {}, {}, &err);
+        check(second == 2, "legacy issue folders do not affect new issue numbers");
 
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
+        QFile issueJson(issueJsonPath);
+        const bool commentJsonOk =
+            issueJson.open(QIODevice::ReadOnly) &&
+            QJsonDocument::fromJson(issueJson.readAll())
+                    .object()
+                    .value("events")
+                    .toArray()
+                    .at(1)
+                    .toObject()
+                    .value("body")
+                    .toString() == "a comment";
+        issueJson.close();
+        check(commentJsonOk, "comment body is stored inside the issue JSON");
+        check(QDir(QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/1")))
+                  .entryList(QStringList{QStringLiteral("*.md")}, QDir::Files)
+                  .isEmpty(),
+              "issue folder contains no markdown event files");
         check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
@@ -940,7 +980,7 @@ int main(int argc, char *argv[])
                      e.agentSessionId == 0 && !e.agentCreatePr &&
                      e.agentStatus == "cleared")
                 sawAgentClear = true;
-        check(sawComment, "comment body round-trips from NNNN-comment.md");
+        check(sawComment, "comment body round-trips from issue JSON");
         check(sawAgentAssign, "agent assignment event round-trips");
         check(sawAgentClear, "agent clear event round-trips");
         check(loaded.first().status == "closed", "status reflects close event");
@@ -956,7 +996,7 @@ int main(int argc, char *argv[])
                                [&](const Issue &i) { return i.number == tomb; }),
               "tombstoned issue no longer loads but others remain");
         check(!gitOutput({"log", "--all", "--",
-                          QStringLiteral("issues/%1").arg(tomb)})
+                          QStringLiteral(".forkmesh/issues/%1").arg(tomb)})
                    .trimmed()
                    .isEmpty(),
               "tombstoned issue is preserved in git history");
@@ -966,7 +1006,8 @@ int main(int argc, char *argv[])
         check(std::none_of(afterDelete.begin(), afterDelete.end(),
                            [&](const Issue &i) { return i.number == n; }),
               "deleted issue no longer loads");
-        check(gitOutput({"log", "--all", "--", QStringLiteral("issues/%1").arg(n)})
+        check(gitOutput({"log", "--all", "--",
+                         QStringLiteral(".forkmesh/issues/%1").arg(n)})
                   .trimmed()
                   .isEmpty(),
               "deleted issue is purged from git history");

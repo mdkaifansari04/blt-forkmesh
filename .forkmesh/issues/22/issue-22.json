@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 22,
+  "title": "make it so that the only users can join is if they get an invite code they choose a permanent username",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781663051724,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-22",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781663051724,
+      "title": "make it so that the only users can join is if they get an invite code they choose a permanent username",
+      "body": "",
+      "attachments": [],
+      "sig": "VVuTBuCXPjgRPgwLg_5R9_yNsddtYvtcdXGn1Lhu-swXPJks--MZvPaN9WGCORjOxis0ho-e_5sAeUo-bM1FAQ"
+    },
+    {
+      "type": "status",
+      "id": "33c684ac-37cf-4ffc-b1bc-1ed224f36a4c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781720043618,
+      "status": "closed",
+      "sig": "0IMmZBnEmPWjnHfd0HytzmdyaNNv-MGY_kvl2UidAp2_CkzDTdkjBEivm8uAdadbpPVTu_mMTuwrccRUKmWaCA"
+    },
+    {
+      "type": "progress",
+      "id": "0ed3b5ca-b17e-4a80-819d-8bfbe0b2dd2b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926020,
+      "progress": 100,
+      "sig": "IYVHHUEIws3gWl5h37EzMwZMk4zirompVcFbJdpQehqu-0-QT88H8MdhkK0kIvVMqWq5zvm5OWs0KVvqbEDABg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189926020
+}

@@ -246,8 +246,8 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
 
             // Code: one `git grep` over the tracked tree at the current ref, which
             // works for both a real checkout and a bare mirror. Fixed-string,
-            // case-insensitive; issues/ and pulls/ are excluded so their markdown
-            // doesn't double up the matches already surfaced above.
+            // case-insensitive; issue metadata and pulls/ are excluded so their
+            // records don't double up the matches already surfaced above.
             if (!gitDir.isEmpty()) {
                 QProcess grep;
                 grep.start(QStringLiteral("git"),
@@ -255,7 +255,8 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
                             QStringLiteral("-n"), QStringLiteral("-I"),
                             QStringLiteral("-i"), QStringLiteral("-F"),
                             QStringLiteral("-e"), query, ref, QStringLiteral("--"),
-                            QStringLiteral(":!issues"), QStringLiteral(":!pulls")});
+                            QStringLiteral(":!.forkmesh/issues"),
+                            QStringLiteral(":!pulls")});
                 if (grep.waitForFinished(kGrepTimeoutMs)) {
                     // `git grep <rev>` prefixes each line with "<rev>:"; strip it,
                     // then split the remaining "path:line:text".

@@ -1,0 +1,100 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 36,
+  "title": "Have a signup sheet to request funding to join",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "MVP launch",
+  "priority": 32,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781685850525,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-36",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781685850525,
+      "title": "Have a signup sheet to request funding to join",
+      "body": "",
+      "attachments": [],
+      "sig": "y2OIfb6cWxN2e8CZXa_AowvfN6_XgjN35R2sivAhcsbfFQTZrqdYw93pgHGQqfAPpmbZccKPKGO7c1L5qAkDCg"
+    },
+    {
+      "type": "title",
+      "id": "83f01718-5d20-4e63-b913-80cdad161a7b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1781978086044,
+      "title": "Have a signup sheet to request funding to join",
+      "sig": "YDmpFnp8staMakGeg_F8-Bfsg32P9pyFXYvFcfwiFeHg3_wOnzZwANDMOVBHkPYxQjuTRpc2lsjuB-PtW_ftAA"
+    },
+    {
+      "type": "labels",
+      "id": "b5080ec1-258a-427c-8ff9-bf7225199d2f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "labels": [
+        "feature"
+      ],
+      "sig": "nXd6RJO5rFsX4qfCHs1Jt8L7K5EvSG74VghiSZANYpyvxiPCJbjEjWDSKXOg_uBSjiqlq7mA2-LHXzDWGGeFDQ"
+    },
+    {
+      "type": "milestone",
+      "id": "e70ca6dd-f6d9-4b8b-adbd-b5c596c67c70",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "milestone": "MVP launch",
+      "sig": "Ed2D8UqCzTnfI857kjcPKaBhHIpkfe56nA-aTwSSB2CoxwntMqDz6g40Tz24SBVBMKAdcg8FxwFeVNz7UDwoBg"
+    },
+    {
+      "type": "priority",
+      "id": "d4629b5d-b5fb-42ba-a406-cd4010339f24",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "priority": 32,
+      "sig": "aLQjBWnbe6C9CMtlHKyGUwzim6qfjbaLxILYPxQ369_moYPpeq32OYBSktaZ61HPckByRCBrh7tRCCyfXOuVBw"
+    },
+    {
+      "type": "comment",
+      "id": "b99c2437-8ff0-4f3e-bdab-496cb1c72c43",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782184046603,
+      "body": "lets revisit this if people want it",
+      "attachments": [],
+      "sig": "Un-rEtf6ffLDrF1FUyQ7ZJ_nztxjn1G6kVHM0wv6eTOzGWfcvCi7eRK2RX_WIH-mt_hu12VlGb9DqovnJxbPDA"
+    },
+    {
+      "type": "status",
+      "id": "8442d914-e29b-44d7-848e-0e6791009252",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782184048372,
+      "status": "closed",
+      "sig": "KFM6f2Lo-YPS-zKO2kRc6iF9GAwbkKDObXxkQvtIpIqFO9mtxGYKfppmiJlnScD1JOGpVDeErN9ma11PP3UJAA"
+    },
+    {
+      "type": "progress",
+      "id": "d9135810-841b-41c2-a812-e885380becaa",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926521,
+      "progress": 100,
+      "sig": "d4DfGooRA89-7luTcQE5LrSNqpCH1op0hFjQAB3uKDZCoh5gB4L76DRrshWAfCr4KIIq5fKwXDJv5lDzGbuPCw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189926521
+}

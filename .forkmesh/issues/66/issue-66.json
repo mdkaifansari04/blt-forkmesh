@@ -1,0 +1,81 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 66,
+  "title": "also allow adding solana address from the settings page",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "MVP launch",
+  "priority": 36,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782056862296,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-66",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782056862296,
+      "title": "also allow adding solana address from the settings page",
+      "body": "",
+      "attachments": [],
+      "sig": "motTSJydZfu0K_J8Eq3aYOIcUDXfF_oKswxd5Ofl4E4LRW72C82FBTAt5DvENL8D06AWvw9dZ69vk0oJWrdUDQ"
+    },
+    {
+      "type": "labels",
+      "id": "81a15dfd-2843-496f-a0ff-cba776c60e5a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198388,
+      "labels": [
+        "feature"
+      ],
+      "sig": "IDkMDxDbP0iHO2hNTVb2U_TQaTRYpoUL7JFC2Mlpjtb7H1rNeO05KI7IJjqFNrDrLXibR9IQlMA8iynDUgIjBw"
+    },
+    {
+      "type": "milestone",
+      "id": "d45064f4-b610-4bd7-a90f-6d8442e883ae",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198389,
+      "milestone": "MVP launch",
+      "sig": "oZkV6CsJvenDjZ5eyvl53jMq37ogLnaGP8622JgsrfLQyMq7jY-T4kFsLRX5OveIzlhaNfXgi7SC1hlgBqkNBg"
+    },
+    {
+      "type": "priority",
+      "id": "c218ebcc-2314-483d-b598-6d33675b41af",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198389,
+      "priority": 36,
+      "sig": "AbboobQb9bhGnhrp3DIvFdrh8ArmS_sSDIaQCj3afF2uRP_-PtNOmWEs0WgQzcPqXxg_rHw0OBSTDInUY5u6BA"
+    },
+    {
+      "type": "status",
+      "id": "d851d3c9-cd3b-4250-8571-1f209f747136",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782184073941,
+      "status": "closed",
+      "sig": "UrHJnzppKsiMjEkJYWa5G8qX32hI2q2iOi-2RAoyKkhG5awVy24fUAmq87AmK4Qms8XM2H2SvTtsSgBUmmpTDg"
+    },
+    {
+      "type": "progress",
+      "id": "156ac443-8527-4cb9-ad6a-b8f0a4a80932",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189927871,
+      "progress": 100,
+      "sig": "02H0hFqewPpxpx9C_a4zU42xafdeyy-fUtzuLE6Wt7LjCi2ojdAXhYSNu6PJrjtIAiKNVAMu68qBDKSIXq_RDg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189927871
+}

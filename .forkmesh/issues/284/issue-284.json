@@ -1,0 +1,158 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 284,
+  "title": "show the time on releases list and allow to click to see detail notes of the release and see diffs",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 20,
+  "progress": 20,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782487517730,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-284",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782487517730,
+      "title": "show the time on releases list and allow to click to see detail notes of the release and see diffs",
+      "body": "",
+      "attachments": [],
+      "sig": "iRXcbe1Ep9-Z2UMxLOr7_xKlUBTHwQPbox0N9c5x8zs6W2fWx-IZwm6lKuzuDG1nvU03jusgRelL1Oibpn8oAA"
+    },
+    {
+      "type": "priority",
+      "id": "786aa197-9439-439e-a6eb-c49914570238",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650525,
+      "priority": 70,
+      "sig": "nBZfWdfEYe_f02LVu7ZsN5BBYc4KafY0PBE1Pctmx1eNUEIHfQ_KHs_wkqAtyyvaen6rqapok6ODkQoDbGIXAQ"
+    },
+    {
+      "type": "labels",
+      "id": "359b5ef6-ec46-4b36-9928-b1dcccfb50fb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287983,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "GISAQmbs62w3Vg35KXGA-1l0531tFd6dqiSOxelhIua50CTt5bi6RdDhpv7Hv8ltqWKZ9c8VBt7BMLAn4QNxAQ"
+    },
+    {
+      "type": "progress",
+      "id": "e40ddc92-c197-4546-8126-0a56a9e7d73e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288018,
+      "progress": 55,
+      "sig": "8wk7Jbla7nKnX96zd-2_cYoe6DJLsaZ9uZZyMkkx-EtcKofu_4pMMNCG3B3DNlo6-L8rigt2lRHGCLOE_0xhDg"
+    },
+    {
+      "type": "labels",
+      "id": "29de9e08-3829-431e-b71e-4339879f5108",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669501,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "ErLB049g6dRSyrD-OmXHp-00ogkn5ecN1UHXHbx21VsQhO9UHIAweE4ef0aDKaC5Ax9UOccxKJla8YA14FQFCA"
+    },
+    {
+      "type": "progress",
+      "id": "7d1cdd9a-c191-4ad7-bc9e-805831818a90",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669526,
+      "progress": 20,
+      "sig": "nasnpxDjeDZUTMAtccFxIdMepHhEJbBercVlQwfsIYQYQzXCzqStF32ooaotFB4-jvHFqdTTUq2l__GUt44ECQ"
+    },
+    {
+      "type": "comment",
+      "id": "3f24ddc3-2272-4134-a390-2bc3a1e6beeb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669549,
+      "body": "**Completeness analysis:** Partial (20%)\n\nreleases support exists but time, clickable detail notes and diffs not evidenced",
+      "attachments": [],
+      "sig": "bZbBMAphzTCL_CoekA8mrwZCkH9FozgDPjdMemHbQ-ARPk7Kli1VaORwGNQ5e631-PCzYOmeNgmizCw0D2v8Dw"
+    },
+    {
+      "type": "priority",
+      "id": "e9075361-04c4-4faa-bd15-666e18a7282f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834963,
+      "priority": 20,
+      "sig": "xg-z_zrR1zqPWmjiqMW5pVt__RB2GM-Ue2LMdefVDdAifnFnkD0zNZAnMjUI5iaotZWwLxDs1qHRdIBq5w07CA"
+    },
+    {
+      "type": "agent",
+      "id": "1022c342-c789-4fbb-81b7-a24fc2481cbe",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792708204,
+      "agentProvider": "claude-code",
+      "agentSessionId": 14,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "-ucN2SSkUxhmCv9hhOZWzygxG_lS2DVxxFkw41PF-rdsdynVXintPRGRFhuZmz0xTo0bAf6mn9UAnJo5PdggCg"
+    },
+    {
+      "type": "assignees",
+      "id": "1a2db6a7-7129-4de8-bfaa-2237da2b0a4d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792708229,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "_QQqAs-FFW-LQaHiGsVDVrk4HeKtDy6LICnsRg3UM5g-j-7w8piGWRMIx1qTPA-wS115f5FLi_1GUq0ZGzcZBg"
+    },
+    {
+      "type": "comment",
+      "id": "8f3f2cb8-3d9c-4120-bc1e-9ecfe76ec60f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793137391,
+      "body": "Closed by merged branch \"agent/issue-284-show-the-time-on-releases-list-and-allow-to-clic\".",
+      "attachments": [],
+      "sig": "tDvxHtQvzBDXY0Tnt2UscQU9HresMuDuATgPs6LVMOJRL7x3-X3ecZc3ua7F2Aj2GP-rSpfwedeIEUQMHYS_CA"
+    },
+    {
+      "type": "status",
+      "id": "b689567d-155f-481f-9330-1d70caf8de0a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793137420,
+      "status": "closed",
+      "sig": "qAmRSUMuvuPp9ZrJ0vTLljUazSncTm3jT7ZJjbrshMw4-wd19SJEOdqqypkZIo8JPNCQcd0tD2fVQVnjSOHHCQ"
+    },
+    {
+      "type": "agent",
+      "id": "bcf03100-3f1f-46a5-8162-22e0c439cea6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793642608,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "tyIj4HCVJu8Q_AxvLAaTG9g2ibOoraQVORD9fCE4NhgSmr9-HVMI1srMwKCYSdzuBce1Y-D4KmMAJNXfz4wCAg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782793642608
+}

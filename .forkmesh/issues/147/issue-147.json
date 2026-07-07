@@ -1,0 +1,83 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 147,
+  "title": "don't create a new chat room for each node / repo",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 13,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782160165813,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-147",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782160165813,
+      "title": "don't create a new chat room for each node / repo",
+      "body": "",
+      "attachments": [],
+      "sig": "1mOi9UTz9HCq9NnD0WAHuGSYPgBZy8trqsXE095iCOcc50r875K2gC237v19iwtHPNdTqsx3zWrc5b_6DayGAQ"
+    },
+    {
+      "type": "labels",
+      "id": "4481f821-e01d-452a-8fae-3a3a2e8f63c7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923768,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "9Tmhy5hxKCQMG9xzqc-SQQ9tv53xXkDMAeWckn6O8yM4-k4aNs-nItaMrnIZRCYLtjjAfPv8pjmETCrxSMHjBw"
+    },
+    {
+      "type": "priority",
+      "id": "28b0ccdf-5194-4d07-9017-02939480b2b2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189923816,
+      "priority": 13,
+      "sig": "lsm-AB4x5JZA_bU-qa-yf2J3DpqVlz3BJ_9XMVl4My9BSh2bqeYl17th6IherHqxofBPmvyuW5N_njGpQIbCBg"
+    },
+    {
+      "type": "bounty",
+      "id": "48259721-b73a-492c-8a4a-46d59a68afe9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058474,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "CnYR3ns94_Op9sMbtq2QjLYOogKTArIogtjSYP1hjuS1S7Uszyb1gMXdPdi72C6KlBiHb2Us6gEzpLChZFNrCQ"
+    },
+    {
+      "type": "milestone",
+      "id": "e2ddc5c8-4234-4d7c-9e3b-23c8415883dc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180254,
+      "milestone": "Phase 2",
+      "sig": "5q9I66Csbe26VvkL5au-K0L1enI6nJGTBilLtezPx0MdhmL9C6e6N0CRSycmEAK_OqOQ8lmCrkZNi8XH2_ZCAQ"
+    },
+    {
+      "type": "status",
+      "id": "3fd73dda-364b-4971-806c-c76065a639fb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212148684,
+      "status": "closed",
+      "sig": "95HjKLCKC11ZWljnDa3tJshFKOIe2Qx2niLuFY22Sw2zG3bD1AWDW3zz33WKcPhniV6EPxikHUSgtisCYaOeDw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212148684
+}

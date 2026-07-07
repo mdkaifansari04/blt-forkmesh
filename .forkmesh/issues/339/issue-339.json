@@ -1,0 +1,110 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 339,
+  "title": "Make it so that new issues show up on the website, even if they haven’t been synchronized to the repository yet when a user has a new issue, show it in the issue list on top",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "",
+  "priority": 10,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783052732,
+  "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1783052732",
+      "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+      "authorName": "jett",
+      "ts": 1783052732,
+      "title": "Make it so that new issues show up on the website, even if they haven’t been synchronized to the repository yet when a user has a new issue, show it in the issue list on top",
+      "body": "",
+      "attachments": [],
+      "sig": "EuvRlTUnxvZFGWUVmxIWeVs0WrC07hMihAjFa9dA5GECzKp4JqdXCSfJp0jQIQm0-bAqTisQG1Snq1nKf2gVAA"
+    },
+    {
+      "type": "edit",
+      "id": "e81b44ed-9b08-44e8-8dfc-94ab98015134",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783078810528,
+      "body": "make it so that when a user adds an issue they are brought back to the issue list to see their issue they added.",
+      "attachments": [],
+      "target": "open-web-1783052732",
+      "sig": "-JxF2vdALPZ6kj3agy_iU_Jo5lzUYeLR67jHPdoxq_AK_Z7WidQhmUCMXQE7IqYqqxHO3LVOk5ufkbv0P2uLAA"
+    },
+    {
+      "type": "priority",
+      "id": "446a3970-a012-45ef-93b1-f1767880f868",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818282,
+      "priority": 10,
+      "sig": "Q_k_vuyj-BfPYvFMRlGHnre-scQhCrD2nGtOfaugdq5KkJceTTrvo-9ej_h6RwOxCtwok338lg1_-owGO15vDA"
+    },
+    {
+      "type": "agent",
+      "id": "5cc6b4e2-a1e5-4c81-b1c2-7340e3dd9b75",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122769445,
+      "agentProvider": "claude-code",
+      "agentSessionId": 154,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "kDQ1Z7fwPTg1Awgm9vQal84CavgvIJxXcZ0yjUxBchbCiBECAWVy2VmtGeKDQQbBz4SgRzvLJ0d9biJ0fV8bCA"
+    },
+    {
+      "type": "assignees",
+      "id": "c89f4811-5174-4953-84b5-4dad990da886",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122769524,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "G-cGmqqNH59pCJdnQBqjq7UsfNS0MH92BZ8enGrn56R7rfAeFDe4I5dqpDjL3iVsPfbloVtTArV8onYjoE89Dw"
+    },
+    {
+      "type": "comment",
+      "id": "b5d34110-2aee-457c-aada-090a3f38fde1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124883196,
+      "body": "Closed by merged branch \"agent/issue-339-make-it-so-that-new-issues-show-up-on-the-websit\".",
+      "attachments": [],
+      "sig": "fuOmonGOu0JIo0DVsVBe1xp1-r5zl7iMZLFlghG3LtwOWpJkSK-3yDpQ1UeW3Fw4DOSp5ZuSKCHlqcAkP3aVCg"
+    },
+    {
+      "type": "status",
+      "id": "91dc0c79-6cd8-420b-bffe-6be786d5824b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124883260,
+      "status": "closed",
+      "sig": "z5SK5qzhauIH-LwGCy6Lalf7lR_OG-1Szh-2NlAkHMJBuc2v60Ft48RlVmbc3KBFqGoguu2LKEQhLCpxZtRTDw"
+    },
+    {
+      "type": "agent",
+      "id": "baa5704b-0805-4a1a-9a47-3be1368fa61f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138343765,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "IegqZu7J1giOIN68OqbZcj8QQPww6HkdthY_CnNAlQ-rCzExBll1kJorae-xvCkk_WOlnPbHmdgLuR0IisxLCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138343765
+}

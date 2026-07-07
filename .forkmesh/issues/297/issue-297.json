@@ -1,0 +1,117 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 297,
+  "title": "when a node serves a request or clone request show it in it's logs please",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 15,
+  "assignees": [],
+  "createdAt": 1782525869625,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-297",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782525869625,
+      "title": "when a node serves a request or clone request show it in it's logs please",
+      "body": "",
+      "attachments": [],
+      "sig": "_qaxaQDL4Odz6IPwXAt73-e43WlCA29iDO9mgenxLSPwnhgyYKUTgeyIhtgE7LkNddw1n-XCNkIwLLnmjLqvAA"
+    },
+    {
+      "type": "agent",
+      "id": "afb8046d-3c06-40aa-9b7a-838e4c55f297",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782525869739,
+      "agentProvider": "claude-code",
+      "agentSessionId": 71,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "WVhp3GO1j9rq_3-qouDQuPGSB-CQazSg_KHlQzSliZB7UMLgsuXDyWZLUwXMA2UKA4EfYW9J1C3SO0a9wc2MBQ"
+    },
+    {
+      "type": "agent",
+      "id": "dd8213d7-68a3-4285-9e2e-c6e1672b1532",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782529064295,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ZU9PuxGR-pyPQMvf1MMJUFHjWe1Ch_aRXM9LYPy_GYxmZ5KXnQfZ8LAThl3XW0GvttG6A5YCg9mrvclzFm-MBQ"
+    },
+    {
+      "type": "labels",
+      "id": "ac2d1daf-13a4-4391-8e5c-eb710b44851a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288879,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "85uNwmDHpDfqEiRFhkCg7beLmnhBfnBbyNSWqxAV6B-ASk2L-YRPoBxCHnP5QKsAF8CbG85EPsBm6izpp0R6CA"
+    },
+    {
+      "type": "progress",
+      "id": "f7440e63-b4d7-45a5-bd27-361e3039d18d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288920,
+      "progress": 55,
+      "sig": "bmyEk-khPCmooBALucE_9pi4QQu1K7NW5BZqMcQ5OZtJNYa2Ss0VrIYfp89PfndNvqIe_wT7cL6OfqCiVuCTAw"
+    },
+    {
+      "type": "labels",
+      "id": "d208d9f5-a716-4d82-b2f3-47b5a3e8b837",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670299,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "U3BR7-suSXJ1QCmX3Edb9xH2Y1iQr8KQcqv-tbpzWZJOg0p7vYEAroMRyf8LZNDHl0gW9UQErdkqF_qgVYDDAg"
+    },
+    {
+      "type": "progress",
+      "id": "d4bfb65e-ade1-42af-928c-4bebfd98ce8b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670324,
+      "progress": 15,
+      "sig": "z6TrgvnTSSQVKhp-EFIgJWpa97BHmqT6lGzx3SQ4KE8bFwfpyHnJhv3LA1peOop8-Ll60ZmXnF2SlHuQyQd6Dw"
+    },
+    {
+      "type": "comment",
+      "id": "4e76ad73-6510-4c22-b2f9-045eace6d596",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670347,
+      "body": "**Completeness analysis:** Partial (15%)\n\nclone/git-http handling exists but serving-request logging not evidenced",
+      "attachments": [],
+      "sig": "aQT_YfsvPtLc9h2QrU9_S2F_YpzBwbMk0DxPehW2mZcUYOjN34LE9mMof_iIgOYHEohEkkTKr9gEnKxIEPCpCA"
+    },
+    {
+      "type": "status",
+      "id": "84e89d8c-ef2b-4402-98ac-16bd4aba2d52",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782773739809,
+      "status": "closed",
+      "sig": "5IOIXXlen5gwN3CVPdppqdP_y6LwP3pUmo9PvwhWwgWevjJL2c3w2OS0az0GN1-f4UGfpN2B8C7tTMCjrxHVDQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782773739809
+}
