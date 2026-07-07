@@ -1,32 +1,44 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 394,
-  "title": "testing an issue without the mainnode online",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783435138,
-  "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783435138",
-      "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-      "authorName": "jett",
-      "ts": 1783435138,
-      "title": "testing an issue without the mainnode online",
-      "body": "",
-      "attachments": [],
-      "sig": "ldTiuFnIe18JHH1meJWwIarpdxQHLuoHCH2ZA5Rwj_Pg215z8SoVy4rKSPRvlz2zGZ3C13og3HFJQSzS3Y2VAQ"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783435138
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783435138,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783435138",
+            "sig": "ldTiuFnIe18JHH1meJWwIarpdxQHLuoHCH2ZA5Rwj_Pg215z8SoVy4rKSPRvlz2zGZ3C13og3HFJQSzS3Y2VAQ",
+            "title": "testing an issue without the mainnode online",
+            "ts": 1783435138,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0bdec7d0-e40a-4416-85e1-975f37be44bc",
+            "sig": "-v2wnnJ6PFKbE1cVxPkTMd5i8eTslitpA0j90X1TsPgEK4WqlOvdBBCVmksPG6oTyMGlsI5FcD72e5fgk8fjDw",
+            "status": "closed",
+            "ts": 1783462916507,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 394,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "testing an issue without the mainnode online",
+    "updatedAt": 1783462916507,
+    "votes": 0
 }
