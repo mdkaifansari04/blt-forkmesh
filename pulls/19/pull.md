@@ -4,7 +4,7 @@ number: 19
 title: Add press kit page
 base: main
 head: api-pr/20260708-001118/press-page
-status: open
+status: merged
 ts: 1783449942608
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
