@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783439476548,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-396",
+            "sig": "UybplFGSYL7cJgBMMDJcEa1oELpkrILWEqwGvp_GwwqY9Ruv6y0Rk6mfUBjBk-KowCWbqpCZPn45L-yDVagCCQ",
+            "title": "create a button on the account row in the admin to migrate the account to either a user or a node  nodes will no longer join the chat but users will show all users in the chat",
+            "ts": 1783439476548,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 396,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "create a button on the account row in the admin to migrate the account to either a user or a node  nodes will no longer join the chat but users will show all users in the chat",
+    "updatedAt": 1783439476548,
+    "votes": 0
+}
