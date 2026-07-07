@@ -576,7 +576,7 @@ index 7ba72fee..f2f9ae4e 100644
          "reset-password.html",
          "status.html",
 diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
-index 3fdaeafc..653500a9 100644
+index 3fdaeafc..f9b806d5 100644
 --- a/cloudflare_worker/wrangler.toml
 +++ b/cloudflare_worker/wrangler.toml
 @@ -48,6 +48,7 @@ run_worker_first = [
@@ -587,12 +587,3 @@ index 3fdaeafc..653500a9 100644
    "/careers.html",
    "/changelog.html",
    "/privacy.html",
-@@ -121,7 +122,7 @@ class_name = "ForkMeshHost"
- [[d1_databases]]
- binding = "DB"
- database_name = "forkmesh"
--database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
-+database_id = "54bb594f-a90c-4794-a8ea-7ad0cc9bff83"
- migrations_dir = "migrations"
- 
- # Separate D1 database for a "dev" environment (`pywrangler dev --env dev` /
