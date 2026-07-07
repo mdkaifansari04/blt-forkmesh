@@ -1,0 +1,87 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 237,
+  "title": "Branch port/polish-repo-actions-tab — needs merge into main",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 12,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782356524976,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-237",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356524976,
+      "title": "Branch port/polish-repo-actions-tab — needs merge into main",
+      "body": "Tracking issue for the **`port/polish-repo-actions-tab`** feature branch (auto-created so its work can be prioritized alongside the issue backlog).\n\n**Summary:** Visual polish of the repository Actions tab.\n\n**Why this priority:** Pure UI polish; low risk, land after higher-value features.\n\n**Branch state (snapshot 2026-06-24):**\n- Tip: `aceec87 Merge branch 'main' into port/polish-repo-actions-tab`\n- vs `main`: 615 ahead, 712 behind (counts inflated by ForkMesh sync churn).\n- Local and `origin` copies are in sync (0 ahead / 0 behind).\n- Merge into `main`: **CONFLICT** — must be resolved before it can land.\n\n**Code conflicts vs main (need real review):**\n- `qt_client/src/MainWindow.cpp`\n- `qt_client/src/MainWindow.h`\n- `qt_client/src/Theme.h`\n\n**ForkMesh metadata conflicts (mechanical — take the union of signed events / newer side):**\n- `AGENTS.md`\n- `issues/130/issue.md`\n- `issues/191/issue.md`\n- `issues/192/issue.md`\n- `issues/193/issue.md`\n- `issues/194/issue.md`\n- `pulls/1/changes.patch`\n- `pulls/1/pull.md`\n- `pulls/2/changes.patch`\n- `pulls/2/commits.mbox`\n- `pulls/2/pull.md`\n- `pulls/5/changes.patch`\n- `pulls/5/pull.md`\n\n**Recommendation:** merge (or rebase) `main` into the branch, resolve the code conflicts above, rebuild, then open a ForkMesh PR. The metadata conflicts are signed append-only logs — keep both sides' events.",
+      "attachments": [],
+      "sig": "MwvxRac43oQF3BjPvGC3XvoFKxNd1m0mEdzdFdlpkYzVIBKb8S0RSyZeXmEt5ocNDTihpR-UY_YECGOFWVlYAw"
+    },
+    {
+      "type": "bounty",
+      "id": "d5e3c18a-2020-42aa-bfa8-5b6cff46aad8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359968846,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "OqzFAr50ZvgY91cPxEbJiO2mgI2SS6f704_OvHooyRcy47SYwTLv7vksJhdQnB_8EJ2is_OuXR9bWHszuEP8CA"
+    },
+    {
+      "type": "priority",
+      "id": "8de60073-212e-4887-a473-103a0fce63f3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649234,
+      "priority": 12,
+      "sig": "65KA6bDtCTlsNBANUWqRvL9Zyv9uKBd07FhnXTyKZG68K0paWfR_Z8mTpyQQ0Ue0rm-ADr8YlLUuXit59ZrYAA"
+    },
+    {
+      "type": "agent",
+      "id": "1be75f73-6744-4699-8538-d0d867db9503",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782580826116,
+      "agentProvider": "claude-code",
+      "agentSessionId": 138,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "OlGSj0piAI-effUoGlJfGbQHLP7ViTbLrguh3w3RKok8Krc9AS51lLGZuy7SDYTNVUlOfWozjW7mKav8gB_xCg"
+    },
+    {
+      "type": "agent",
+      "id": "a01f0645-3387-4fde-abc4-9fd0ce7a11c9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782581786421,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "q71OK5vcDlwbtwbWKoBD0L78tsNYc-_lp166gscBrOTzUEqpb40QSD9YgtfvadUsb1qxUIAD73JWL9KAdGG8Cw"
+    },
+    {
+      "type": "status",
+      "id": "c4130565-a040-4af6-8e81-7edeb0ca4128",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782596023897,
+      "status": "closed",
+      "sig": "IVPJ2qil9NnsmxVeTPYISqgCddULc2_B7v1ZzxP_q2ywrvN8G_LNnDMNaM6vxoao5h71MOKtFztKvUhTBVfKAg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782596023897
+}

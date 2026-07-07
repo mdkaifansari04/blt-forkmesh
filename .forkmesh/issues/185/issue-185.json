@@ -1,0 +1,87 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 185,
+  "title": "issue when updating from a mirror node",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782247124968,
+  "author": "DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI",
+  "authorName": "nodedbstpqc2",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-185",
+      "author": "DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI",
+      "authorName": "nodedbstpqc2",
+      "ts": 1782247124968,
+      "title": "issue when updating from a mirror node",
+      "body": "",
+      "attachments": [],
+      "sig": "48o_2lRhKWPgeYGthscODC3wyJTvW8RXVbzT2xDuTULAHvYED7hbMUuWwNAzvXgu5H_i0QdK47VSWorgKZfLCQ"
+    },
+    {
+      "type": "comment",
+      "id": "c4b933a8-325f-460d-b2a2-3c0fedb4b317",
+      "author": "DBSTPqC2ki3F3INajdL6-mCKg7Jk58uuzrsIA4RGYtI",
+      "authorName": "nodedbstpqc2",
+      "ts": 1782247192129,
+      "body": "==> ForkMesh update started\n==> Finding an online ForkMesh mirror...\n==> Pulling a fresh copy from https://forkmesh.com/newnewnode/forkmesh...\n\n$ git -C /home/a/.local/share/ForkMesh/ForkMesh/src remote set-url origin https://forkmesh.com/newnewnode/forkmesh\n  (in /home/a/.local/share/ForkMesh/ForkMesh/src)\nâ finished in 1ms (exit 0)\n\n$ git -C /home/a/.local/share/ForkMesh/ForkMesh/src pull --ff-only\n  (in /home/a/.local/share/ForkMesh/ForkMesh/src)\nhint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nhint:\nhint: or:\nhint:\nhint: \tgit rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\"\nfatal: Not possible to fast-forward, aborting.\nâ finished in 387ms (exit 128)\n!! Update failed: hint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nhint:\nhint: or:\nhint:\nhint: \tgit rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\"\nfatal: Not possible to fast-forward, aborting.",
+      "attachments": [],
+      "sig": "0fRH4AsKGjzrPssOQaF9sY_x9BZSq_g1ehVE9ECG36AiM2jk_6LtQgtfWGvOCEPj-n5IslmkVLikp28AhOxaCg"
+    },
+    {
+      "type": "agent",
+      "id": "94a60d56-1a24-46b6-a4a9-ee67e8ef7dcf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256038498,
+      "agentProvider": "claude-code",
+      "agentSessionId": 7,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "b1qXK9_vyov65ZaldvU42CL7xZw7FBJMnuWWws2Mp9cX-A4t5NXv4VApA0kN3NFzMXqiLmzDpAEZWBPcryXqAg"
+    },
+    {
+      "type": "comment",
+      "id": "65972278-f142-4553-9405-043f9a2613cf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256825219,
+      "body": "Closed by merged pull request #1.",
+      "attachments": [],
+      "sig": "oHllM6-sC7hCSUZKAsNLIBstWPx7D9GXW0nv7KouSGmQx4UxwaN6sbH2U4UjLIRBCh_dOHuxOIXawnwX1ST5AA"
+    },
+    {
+      "type": "status",
+      "id": "18377a88-5581-4a95-8359-53ac533d1300",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256825269,
+      "status": "closed",
+      "sig": "G3HjTynPTJwq3XxWiJ5apL9zHIFWEQWqq9WxBaHgLWoKGq2U2eN1zS-J7BSKN9d91nteVzJi1kMpzgmtozHLAQ"
+    },
+    {
+      "type": "agent",
+      "id": "fb217a7d-f6c9-4fa1-85fe-2bfd002759dd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256872170,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "mOGPPM6mxvhduHXbSmdhW9b9Ee6GX-Ciqv13LrQ7SO0QjORxGoAw6U3UkmvvkJsktxc8a6LjVj0vN4D6FuIwDA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782256872170
+}

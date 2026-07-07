@@ -54,7 +54,28 @@ def test_worker_error_log_reports_to_sentry_and_preserves_d1_log():
     assert "INSERT INTO error_log" in ENTRY_TEXT
     assert "request=request" in ENTRY_TEXT
     assert "error=error" in ENTRY_TEXT
-    assert '"cloudflare": _sentry_cloudflare_context(request, ray)' in ENTRY_TEXT
+    assert '"cloudflare": cf_context' in ENTRY_TEXT
+
+
+def test_worker_1101_exceptions_are_captured_then_reraised():
+    assert "async def capture_worker_exception" in ENTRY_TEXT
+    assert 'cloudflare_error_code="1101"' in ENTRY_TEXT
+    assert '"cloudflare.error_code"] = str(cloudflare_error_code)' in ENTRY_TEXT
+    assert '"cloudflare.ray_id"] = str(ray)' in ENTRY_TEXT
+    assert "await capture_worker_exception(self.env, request, url, error)" in ENTRY_TEXT
+    assert "raise\n" in ENTRY_TEXT
+    assert 'return json_response({"error": "internal_error"}, status=500)' not in ENTRY_TEXT
+    assert "Re-raise so Cloudflare records the native Worker failure/Error 1101" in ENTRY_TEXT
+
+
+def test_sentry_request_metadata_is_allowlisted_and_sanitized():
+    assert 'for name in ("host", "user-agent", "accept", "cf-ray")' in ENTRY_TEXT
+    assert '"url": _sentry_safe_url(request)' in ENTRY_TEXT
+    assert "return parsed.scheme + \"://\" + parsed.netloc + (parsed.path or \"/\")" in ENTRY_TEXT
+    request_payload = ENTRY_TEXT.split("def _sentry_request_payload", 1)[1] \
+        .split("def _sentry_cloudflare_context", 1)[0]
+    assert '"authorization"' not in request_payload.lower()
+    assert '"cookie"' not in request_payload.lower()
 
 
 def test_simulate_sentry_error_route_is_worker_owned_and_raises():

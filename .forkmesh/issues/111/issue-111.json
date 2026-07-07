@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 111,
+  "title": "fix ths in the admin Automated sweeping is not enabled yet  so automated sweeping is working and enabled please",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782084600415,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-111",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084600415,
+      "title": "fix ths in the admin Automated sweeping is not enabled yet  so automated sweeping is working and enabled please",
+      "body": "",
+      "attachments": [],
+      "sig": "1J-Xf-Puh_oRmHvYobhINoKg21hJiA172K9nWoLQXuDevImQVXkwyOfpLOQQgkA-Bgp_7EOu1fQBCJvIGJo3AA"
+    },
+    {
+      "type": "agent",
+      "id": "73dcfe2e-b851-4b67-8b38-95f933f42876",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084600509,
+      "agentProvider": "codex",
+      "agentSessionId": 43,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "V1BOIozNJRzUWa2Y5gtbTxBf69wLZL4Ngg1vsO6D1PYRsZVVZ-HqTThFaTyHzSeFAMxFp6WP9VQxE_0Ty0VuCQ"
+    },
+    {
+      "type": "comment",
+      "id": "43e3c7d0-8937-4462-9b79-264f550f4b7f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084682995,
+      "body": "Closed by merged pull request #44.",
+      "attachments": [],
+      "sig": "C9r8h9xleVG8DmLs96JQYODo5e3AfuNfPKBR1OmUsd1TdRE-9GlPCNepfgfeD9rKRld2UVjJL58hhTScntanDw"
+    },
+    {
+      "type": "status",
+      "id": "8ad71955-e26f-4e43-873f-76771e1f558f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084683043,
+      "status": "closed",
+      "sig": "iQ5hvxCDUfcLLhMgETYGE-7_E-zqWrZAFfoiYKM2gMskD3CREztv4It-mj6C0Uo2NogNtEx0YzmmsswXVFrYDg"
+    },
+    {
+      "type": "agent",
+      "id": "13514307-4a07-4de4-92ec-39f71558c667",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097149012,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "KT6svAhCZAN6DTxVKAeu3LppSeU2KBHxbJeECzPr-9Na3nuheLUQ2YU6if7sGjj2TJwfM5s04vuhNYDMGXgzBw"
+    },
+    {
+      "type": "progress",
+      "id": "a62bc995-740a-4acb-b79f-417c2f41d0fd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930276,
+      "progress": 100,
+      "sig": "jcbLa_YrgBl4h413wddsD8eSXLbFwTCkzi8vgJ6apFWFcMNbyelhQLmOWlIX1Dd3m3mee5FS9JDKqxAgQvkcAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189930276
+}

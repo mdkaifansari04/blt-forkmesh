@@ -1,0 +1,81 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 116,
+  "title": "don't let the user change the default repository room and don't require a mainnode room passphrase anymore just encrypt it standardly and all nodes can join the same rooms on the server",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "MVP launch",
+  "priority": 4,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782090973690,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-116",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782090973690,
+      "title": "don't let the user change the default repository room and don't require a mainnode room passphrase anymore just encrypt it standardly and all nodes can join the same rooms on the server",
+      "body": "",
+      "attachments": [],
+      "sig": "qw5NPLVi8vM5MZcLhwjDNgNpA-GQ3ZD0N2TOoeBB9fe_9OzToSwjolL7VhoF9DM_S8JBBD44OlNhyWlK2HLWCQ"
+    },
+    {
+      "type": "labels",
+      "id": "e5fe4b76-6f8b-4204-8d10-7488cd2d7c69",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198393,
+      "labels": [
+        "security"
+      ],
+      "sig": "vCGW5T6pMZPbVhA4hI_xnkReo37qQWofYZw2WjAG2Ku18RY-hvTNJNGUCVVjPKzTtVrFWB7VYDM-x-EmvZRYCA"
+    },
+    {
+      "type": "milestone",
+      "id": "4f9c7ef3-713e-4745-ad26-bed87a9af722",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198393,
+      "milestone": "MVP launch",
+      "sig": "7Pv1Qroh_tsTBJCScVzYLrrQrlEAO0mP3FIrihJadiBwN66YdM87gZ4zo9jT-jo-pGyHYRMGmD9pixZdjfK8Bg"
+    },
+    {
+      "type": "priority",
+      "id": "9ac6e50c-0727-4b4b-9f1e-f3eb85af4418",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198393,
+      "priority": 4,
+      "sig": "Rp6EoACbJpAaudYA7mBJLpnzYzqwsJhWFujkX2YCLA1zuwg9TPkJja3DMGvBy0My6rcr-ttHug3MESqKIqtjDA"
+    },
+    {
+      "type": "status",
+      "id": "25304463-3708-46ee-b40e-435885a0568c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782180392792,
+      "status": "closed",
+      "sig": "5KwRVtyXeoFDzv9F20G3JclM-sxhs1Zpu_GReFSN6h5zYpNmKgOXwzG8OVqKmsdTEVaSXKgD09J0TBn_FLsABA"
+    },
+    {
+      "type": "progress",
+      "id": "438c4f08-44e2-45d5-8214-9d574d74c474",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930502,
+      "progress": 100,
+      "sig": "jkHXybN-YMoyOE9dMdYSi2fPzVP9Hk3SQDHQYL3M6x06uUCpJACyWdcYQu83cpV7CDdTsXcwSxSfdSmJDWRWDQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189930502
+}

@@ -1,0 +1,74 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 138,
+  "title": "test that issue sends to nodes quickly",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "",
+  "priority": 5,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782151607389,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-138",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782151607389,
+      "title": "test that issue sends to nodes quickly",
+      "body": "",
+      "attachments": [],
+      "sig": "Q404jBNHGcUAXJuc1f_hsBLoaDguEoUUgH-KfBNxOdOynbOVByQduxpMevsg2KnA3gIXzoxkQY98AMau1utbDA"
+    },
+    {
+      "type": "labels",
+      "id": "2c27945b-5309-4209-a932-cdbcb44b5b5b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189922901,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "jAMKyRPfBk69hpr4ngrdgY21Q0ElXIubaRxwzf3ReoGZWmFOTy_tO4m_WrlDOFEUQEERBjb7wWC90oKSCc40AQ"
+    },
+    {
+      "type": "priority",
+      "id": "6f2e8074-9656-4a14-b6f7-93a49d0883f7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189922958,
+      "priority": 5,
+      "sig": "Nf3mwKfBoL7ZGX6_K01Y7Lspyns_Bc-r8MOwWjzV-eFowj8LcqNzS97Ffb3x-9YqhAxXebY0VOFYnaVAJsf8Aw"
+    },
+    {
+      "type": "bounty",
+      "id": "0dbbce11-daf8-4cf9-804b-f9c693d4a210",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058093,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "n7LRA0h8YLAZmBkqkxMxfd6dCUOmAM4atTiUF7njSsTpR67JzhW2nQciN4UMf4iR0F9qrVFhbkefbUxt5lkGAw"
+    },
+    {
+      "type": "status",
+      "id": "871c3b0e-4043-47d8-bfe4-f35aff9d5898",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782194803273,
+      "status": "closed",
+      "sig": "S9PVkjhLNHS4zRpNJd2eCj2BovaW2focyVgLZqE0d8Uqs_MCfcohdsVRbf9hqAANgWj1K1UZ7qoK6d_YFam5Cg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782194803273
+}

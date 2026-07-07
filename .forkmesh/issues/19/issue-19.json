@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 19,
+  "title": "make the website show the issues in a list",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781654790330,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-19",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781654790330,
+      "title": "make the website show the issues in a list",
+      "body": "",
+      "attachments": [],
+      "sig": "zewZA6gJKV5MlLbaLLPG22wqep89AKUsdNWH6OzxeWkMCH---PokzngcE8simJhnE5grTdldBSwm8Ns1wMqwBg"
+    },
+    {
+      "type": "status",
+      "id": "08ed73a3-bcb6-4b9d-bd39-e589af0a96a0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781713653613,
+      "status": "closed",
+      "sig": "fisqBaDqSwgdGnYd2RsUgT1vgJ9pZ8KP8O4DORUyqDpkko8keqCGdNgnPFK0D5_S31MKihFGbmif4MtviLsdDw"
+    },
+    {
+      "type": "progress",
+      "id": "91fad731-2e25-49f3-a506-68fcc1f81185",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189925857,
+      "progress": 100,
+      "sig": "xMMRodmxxBfimmIP8-wTKFmpm4qzU3vWnRCawCPibFCJLp3VFEPOTNDW0510FgLrH6pPhLUvfaWrRyEyaxVFCg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189925857
+}

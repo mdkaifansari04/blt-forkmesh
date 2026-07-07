@@ -1,0 +1,97 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 83,
+  "title": "finish the things in the todo.md and then delete it please",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782070901406,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-83",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782070901406,
+      "title": "finish the things in the todo.md and then delete it please",
+      "body": "",
+      "attachments": [],
+      "sig": "VeKCNaXRSt9UZlrxdBRCxu994pML5TRijzZMoonLKWDzyc3n3c1lmTBBYgMXAoTVpg9eDHdpTvzb3KmNn9T6Bg"
+    },
+    {
+      "type": "edit",
+      "id": "33b9a0e2-254e-49c7-b2ba-be4e32e8d528",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071185148,
+      "body": "# Remaining TODO — top-bar tabs, commits view, quick-issue agent\n\nContext for the next session. All work is in `qt_client/src/` (MainWindow.cpp/.h,\nTheme.h). Build with: `cd qt_client/build && cmake --build . --target forkmesh -j4`.\n\n## 1. Counts next to repo-detail tabs\nThe repo-detail tab bar is built in `buildRepoDetailSection` (~line 4587, the\n`tabs` list of `{label, octicon}`) and the tab buttons are created in the loop\njust below (`m_repoDetailTabs`, object name `repoTab`). Add a count/size suffix\nto each tab label and keep it updated:\n- **Code** → repository size on disk. Compute from the mirror (`repo.mirrorPath`)\n  — e.g. `du -sh` or sum of `git count-objects -v` (`size-pack`). Format human-readable.\n- **Commits** → number of commits (`git -C <mirror> rev-list --count HEAD`).\n- **Agents** → DONE: `m_repoAgentsTab` shows \"Agents (N)\" for the open repo,\n  set in `reloadAgents` (filtered by owner/name).\n- **Actions** → handle `m_repoActionsTab` is now captured (i==5). Just set its\n  text at the END of `refreshRepoActions` (~line 13233), after\n  `m_actionWorkflowList` is populated:\n  `m_repoActionsTab->setText(QStringLiteral(\"Actions (%1)\").arg(qMax(0, m_actionWorkflowList->count() - 1)));`\n  (subtract 1 for the \"All workflows\" pseudo-entry). Also set it on the early\n  return path (no repo) to \"Actions (0)\".\n- These need a refresher (like `updateRepoIssueCount` does for the Issues tab —\n  it keeps a handle `m_repoIssuesTab` and sets its text to `Issues (N)`). Add\n  handles `m_repoCodeTab`, `m_repoCommitsTab`, `m_repoAgentsTab`,\n  `m_repoActionsTab` in the build loop (like `m_repoIssuesTab` at i==2,\n  `m_repoPullsTab` at i==4) and update them when the repo opens / data reloads\n  (`openRepoDetail`, `loadCommits`, `reloadAgents`, `refreshRepoActions`).\n- Pattern to copy: search `updateRepoIssueCount` and `m_repoIssuesTab`.\n\n## 2. Commits tab: single-line, sortable, with stats\nCurrently built by `buildRepoCommitsTab` (~find `::buildRepoCommitsTab`) and\npopulated by `loadCommits`. Requirements:\n- Make each commit **one single line**.\n- Use a **QTableWidget with sortable headers** (like the issues table\n  `m_issueTable` in `buildIssuesSection` — copy its setup:\n  `setSortingEnabled(true)`, `horizontalHeader`, resize modes).\n- Suggested columns: Summary | Author | Date | Files | +adds | -dels.\n- Show **green/red change markers** and **files changed** per commit. Get stats\n  with `git -C <mirror> log --numstat --format=...` or per-commit\n  `git show --stat`/`--numstat`. Render additions in green (#2ea043) and\n  deletions in red (#f85149) — see existing diff coloring in the commit detail\n  view (`showCommit`) for the exact colors/markup.\n- Keep the existing click-to-open-commit behavior (`showCommit(hash)`).\n\n## 3. Quick-issue agent chooser\n- DONE (this session): quick-add \"Assign agent\" checkbox now defaults the\n  provider to **codex** (OpenAI) instead of claude (`quickAddIssue`).\n- TODO: replace/augment the checkbox with a **provider chooser** so the user can\n  pick Codex vs Claude per quick-add. Options:\n  (a) a small `QComboBox` next to the checkbox (items: Codex / Claude Code), or\n  (b) make the checkbox a split-button menu.\n  Wire the chosen provider into the `assignIssueToAgent(provider)` call in\n  `quickAddIssue`. Providers are the strings `\"codex\"` and `\"claude\"` (see the\n  two \"Assign to…\" buttons in `buildIssuesSection` meta panel, ~line 4385).\n\n## Notes / conventions\n- UTF-8 glyphs: use `QString::fromUtf8(\"\\xHH…\")`, never `QStringLiteral` with\n  byte escapes (mojibake). Caret used elsewhere: `\\xE2\\x96\\xBE` (▾).\n- Tab label updates must survive theme refresh (icons re-applied via\n  `applyStoredOcticon`).\n- After any change: rebuild and confirm clean (see command at top).",
+      "attachments": [],
+      "target": "open-83",
+      "sig": "p6BE8V8S8BYiiqWxu3whhEn7HVbeyGe8h18J4E92ux7uYA_P-UTuNWqyW7xWZPifd99D3OA_1_EKk7u-Q_s2Cg"
+    },
+    {
+      "type": "agent",
+      "id": "86342576-72f8-48f2-a9ae-43aa5ff6d84e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071197548,
+      "agentProvider": "codex",
+      "agentSessionId": 19,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "bmkW3dMTB8aTxZaQlwvNQZsd6gavv_9taklfdmvoLJjQ6MeM-SCdp5l5yljRwvHcKZYG4JI7qjQ8a2VuFDUKCQ"
+    },
+    {
+      "type": "comment",
+      "id": "c8af5b97-f83e-4cf7-9a1e-eee35e67b547",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071501657,
+      "body": "Closed by merged pull request #21.",
+      "attachments": [],
+      "sig": "lkS8mv8VKazkJvz-p12wcLwBL1rBWYlnmExVbjdJYQMSyz0pvpXQ-fVCLgueUk1CxvocSYFb6w2JujPqL0yLAA"
+    },
+    {
+      "type": "status",
+      "id": "1705899a-64ab-408d-9fab-a75d1049efb2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782071501709,
+      "status": "closed",
+      "sig": "tmHsgb61kDXiHlz88edeyGPFMufBS_3XADcz1nSdUz8l4szzDAazueghOlNihQe0jCCuQBbRGmvM6HGXAN5GDw"
+    },
+    {
+      "type": "agent",
+      "id": "b4c8f12c-36ca-4d43-9f91-445439dd962c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097171213,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "RNgp8iRIN7MUf5MBlKzXpN8v8sHZFIi7Fbyj7y_5iDc32OWbtiHDSvM46uYBmVkl8t64VTUSi6Qb5E9k_T5FCA"
+    },
+    {
+      "type": "progress",
+      "id": "c45dcb76-7244-4494-8509-6f3f3a4cc9d3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189928827,
+      "progress": 100,
+      "sig": "Kk3FwzDR9Q4u_BM-Jlx66nAFD02skDkwvFipPdsOWtkMCMt2kJZ7R67BVV50F60Qk18Pgh_Cd8cmg3FSR-F7Ag"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189928827
+}

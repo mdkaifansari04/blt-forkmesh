@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 161,
+  "title": "create an \"ask the ai\" issue comment button that uses a very cheap model with open ai to ask a question and it then adds a comment with an answer",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782187490788,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-161",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187490788,
+      "title": "create an \"ask the ai\" issue comment button that uses a very cheap model with open ai to ask a question and it then adds a comment with an answer",
+      "body": "",
+      "attachments": [],
+      "sig": "-0kVi7VKxF4kaZUWDm9u7vHcOIIuFPxy_YznTQRxGRhYnHTJkv0YdJyFyjAIeAwi225dEcDDi1SWYnLgnPYnDQ"
+    },
+    {
+      "type": "agent",
+      "id": "60f084d5-033d-4fd9-9e69-d50911638a1a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187491254,
+      "agentProvider": "openai",
+      "agentSessionId": 11,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "UJSdtlkYIsZw457gYLHKB9hVla1Kd_eoNrnMpbqZAkenfccePmMxh9k0dVR20ewoGL43FXvCoNuhgJ140QlnBg"
+    },
+    {
+      "type": "comment",
+      "id": "349450e8-f064-41a7-bfa9-36b3c3e78362",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187751754,
+      "body": "Closed by merged pull request #9.",
+      "attachments": [],
+      "sig": "IO_rpG3ESyUJ2WOnyvvkNUxdw915-ekGpw3RPdozzlrnpST9S1pttKiDk0YXH-ep0roHE3-9AW00jnvB37daCA"
+    },
+    {
+      "type": "status",
+      "id": "f0b0e292-7de8-439b-b451-3e7d754afae3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187751807,
+      "status": "closed",
+      "sig": "Wh0AF6BGzz2E4U80KTISdhbKw-eUovEA6ldjheNcB4IQFWHCG2t5BSLgbxu6XRmZxgRayCfd2LSX7wVG8e32Dw"
+    },
+    {
+      "type": "progress",
+      "id": "ebedd9c7-85e0-49ec-a19d-3f2f4646ed8a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189931592,
+      "progress": 100,
+      "sig": "xtrnD3bDdYiceyrL7y1B9J7x4jqOliCFEGrkjC-L_EKfmRGPsELcvT5pk5lVP9h-aiSiICq6N54gD9xLXnwBAw"
+    },
+    {
+      "type": "agent",
+      "id": "fffa1cef-bc64-4048-9dee-a5043c2c3a2a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212067167,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ItRDqdSPlx_lcrL9y4l9sUdMcpcQqzT-NJ24q1a8zidZHAyEHB7FqJ_km8mjfxmGv8bNOiOD4UOD4jfxQbIfCg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212067167
+}

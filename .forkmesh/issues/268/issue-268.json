@@ -1,0 +1,144 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 268,
+  "title": "the drag to resize is weird on the issue table please make it so it resizes normally like moving the margins",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 23,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782432688282,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-268",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782432688282,
+      "title": "the drag to resize is weird on the issue table please make it so it resizes normally like moving the margins",
+      "body": "",
+      "attachments": [],
+      "sig": "wg_D-04T89HZvvwf2vSoOxH8RtM6HYgiX1bNNpToWHJ5EJ6Q8He8AroQRsgnR4_3_Utjt41r4kYmOKBWOMTWCQ"
+    },
+    {
+      "type": "agent",
+      "id": "c4321da0-c9c4-4faa-a117-20a1572688de",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782432688391,
+      "agentProvider": "claude-code",
+      "agentSessionId": 14,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "bKtD3p0VQuWGec7tj6Cu8jXT6JRWB_Oiv57sXvsv7j00S5rR23mHckMRUifKiGvZK02PozpxHPqTIuM7H1wiAw"
+    },
+    {
+      "type": "agent",
+      "id": "62be5256-d3e1-4d07-b8b9-aa2ebb9e51f7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782483004662,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "V1kzmWOrQXl_IEZLPx0Hrw4bs7ckF1w7qDFd8iEegBWqd9-vuxHTq3F5MDY1wxsXEB0rGrZif2cKo07Gz89tAw"
+    },
+    {
+      "type": "priority",
+      "id": "e0e7c96f-a413-4ea4-afda-d60fae0a861b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650222,
+      "priority": 56,
+      "sig": "lJuDRJ4PECXIyI35Y6q_L07F-xdA5rN_wkGf1iRsjtClPEM2gxQ1UruRjXDoxNil8-afBBDNVuYm-qPsDhcbDg"
+    },
+    {
+      "type": "labels",
+      "id": "5fb56ada-e534-4e73-a5fc-4818c596806c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286848,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "v_cvOISoAc2qBKzuhOyNEP-mRHOZ2GXBAR8l8feyDQUbIJNCo0wv5dG413YDRBqRkkdNTCLNzwUOoRw7tH_ICQ"
+    },
+    {
+      "type": "progress",
+      "id": "73a61829-c6a2-4c9a-b22c-1d0df1f90c3c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286896,
+      "progress": 55,
+      "sig": "qq7PRn3mlNYW3NA3FIpk6QtNHb8rbI1k1eEDCXLWaYp86geepQktBWh70qMtR4Kb02edvOLuOBbuYPXuYgGoDg"
+    },
+    {
+      "type": "priority",
+      "id": "fe69b751-2f90-4557-a48d-86e62558c70d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487260,
+      "priority": 37,
+      "sig": "Pdka5jpbli92iPMayE38WM3-fNb1IA2_N4QguVWaWk3u9VJsXdsO56C4aND87Cz-AW99kQLnFYRfxF5IDLK0Aw"
+    },
+    {
+      "type": "labels",
+      "id": "89636459-ade6-45b9-ac71-7232f9c77c42",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668550,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "wxDHIejk4nniR5s1LeFzLR6UKmC4rl5DY8_FfzMQ-sutbrZUgDQle8VrZPQCWCw1RLW5ny-P-LHzrTuMTrzeBA"
+    },
+    {
+      "type": "progress",
+      "id": "656106f0-534f-4154-846e-8a4916e4b32d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668576,
+      "progress": 5,
+      "sig": "Ix1qApn8P4RcB23EqpZFujoaeKaSmqKtXSGKh3RtpDyhuLx9tYio3FVt5ZfxSi_EHfMK63PR_xhXl-mEbuMyCQ"
+    },
+    {
+      "type": "comment",
+      "id": "00339c3b-e622-4470-811c-d0809344f936",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668598,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nnormal margin-style resize on issue table not evidenced",
+      "attachments": [],
+      "sig": "NoMmOhSB2PXD77Q0NEm0OSBgFkk9RQ3kPMyUlAieSQAtbF6TpUZXm05dwVhTVxskEX8TWr8dS6zlgJiAZTLrAg"
+    },
+    {
+      "type": "priority",
+      "id": "454f8971-2255-4c6b-ba39-c4feae5c5653",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835033,
+      "priority": 23,
+      "sig": "BiLPvJJvzzZgyL35NJcEmHoNc79zG-4Qy1-mXRvzNbq_ZvsqmVRlgAE8fEIKBP587OSkLQPVtL2ILGjabDl7Dg"
+    },
+    {
+      "type": "status",
+      "id": "07d2f31d-ab4b-4f72-abc3-1a27776a3c30",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793657496,
+      "status": "closed",
+      "sig": "9uIheAgQkgokK77a7bPBPb-TOD-a--4D-jPVVaYDIZnRNHz5_7A8abrw9gAX-QDbFT8I9kfCHMxm_qdqD47LAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782793657496
+}

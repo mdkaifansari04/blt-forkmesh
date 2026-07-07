@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 136,
+  "title": "allow for reviewing PRs and giving feedback, requesting changes, seeing the commit history and conversations around them",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782149243886,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-136",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782149243886,
+      "title": "allow for reviewing PRs and giving feedback, requesting changes, seeing the commit history and conversations around them",
+      "body": "",
+      "attachments": [],
+      "sig": "5FRuFCwqtAA2GvhKKpK9MiyU3fk3F1i5R1Acvx08xlyMe_PPSGyBPpjE3QUG3L1O3fWNTDC3a9RzbM6jMYZ8AA"
+    },
+    {
+      "type": "status",
+      "id": "b94b20ef-bf10-464a-aff7-6b4857c63df3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782162060496,
+      "status": "closed",
+      "sig": "QQM4X4SETvbolnNlzYzwkRUtuSWCgsZqIqCoHUcV3W00dbLxyjFXtvOQYCt8pHcn1cMCIBJrIYeTCCOHcZssCw"
+    },
+    {
+      "type": "progress",
+      "id": "b07f4081-71bf-4473-83eb-6f38e5ea526c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189931118,
+      "progress": 100,
+      "sig": "4wYihRVGIovkymTeJL4yPG4aJLb-dbG4nw0o_2FKUt5dM0PafDnE767kPFSXmohYknhTww2BDnuuON8BlqF8Cw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189931118
+}

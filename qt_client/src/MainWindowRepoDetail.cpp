@@ -5316,7 +5316,7 @@ namespace {
 // and must never be auto-resolved.
 bool isInboxDataPath(const QString &rel)
 {
-    return rel.startsWith(QLatin1String("issues/"))
+    return rel.startsWith(QLatin1String(".forkmesh/issues/"))
         || rel.startsWith(QLatin1String("pulls/"))
         || rel.startsWith(QLatin1String("commits/"))
         || rel.startsWith(QLatin1String(".forkmesh/"));
@@ -5863,7 +5863,7 @@ void MainWindow::downloadCommitPatch()
 
 void MainWindow::applyCommitIssueClosures()
 {
-    // Closing an issue authors signed events into the repo's issues/ folder, so
+    // Closing an issue authors signed events into the repo's .forkmesh/issues/ folder, so
     // it requires a real working tree on this node. Mirror-only repos are
     // read-only here and are skipped.
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())

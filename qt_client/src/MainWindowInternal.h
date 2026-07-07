@@ -6243,9 +6243,9 @@ inline QString worktreeBranchCommit(const QString &workTree, const QString &bran
     return QString::fromUtf8(out).trimmed();
 }
 
-// True when `workTree`'s issues/ subtree has no uncommitted *tracked* changes —
+// True when `workTree`'s issue metadata subtree has no uncommitted *tracked* changes —
 // a clean base for the auto-issue-sync to land issue commits on (issue #193).
-// Scoped to issues/ (not the whole tree) because IssueStore::commit() only ever
+// Scoped to issue metadata (not the whole tree) because IssueStore::commit() only ever
 // stages/commits that path: unrelated in-progress work elsewhere in the repo
 // (which, on an actively developed source-of-truth checkout, is close to
 // always) must not permanently block the auto-drain of mirror-filed issues.
@@ -6258,7 +6258,7 @@ inline bool worktreeTrackedClean(const QString &workTree)
     QByteArray status;
     if (!runGitCapture(workTree,
                        {"status", "--porcelain", "--untracked-files=no", "--",
-                        "issues"},
+                        ".forkmesh/issues"},
                        &status, nullptr))
         return false;
     return QString::fromUtf8(status).trimmed().isEmpty();
@@ -6548,11 +6548,11 @@ inline int mirrorNumberedDirCount(const QString &mirrorPath, const QString &bran
     return count;
 }
 
-// Issues / pull requests / discussions a node's mirror holds — each the count of
-// numbered subdirs under the matching top-level folder on the served branch.
+// Issues / pull requests / discussions a node's mirror holds: each is the count
+// of numbered subdirs under its metadata folder on the served branch.
 inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
 {
-    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral("issues"));
+    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
 }
 inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 {

@@ -1,0 +1,165 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 260,
+  "title": "allow claude clde prompt to be edited and saved in the settings",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 39,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782428147358,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-260",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782428147358,
+      "title": "allow claude clde prompt to be edited and saved in the settings",
+      "body": "",
+      "attachments": [],
+      "sig": "U1Lp9bpzC40wARp_aGVRq-Umi3kvNRM1-Drr9Yrh7Ryc8h-9SQEweGpo8tXcYfA3JYmJpd8fwCanAXoVPNxQBQ"
+    },
+    {
+      "type": "edit",
+      "id": "67ed2903-8960-4a73-a768-91b12392b81f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782428160866,
+      "body": "Resolve ForkMesh issue #259: on the claude code transcript please have a space between each json object\n\nYou are working in a dedicated git worktree on branch `agent/issue-259-on-the-claude-code-transcript-please-have-a-spac` (forked from `main`). The full issue is in issues/259/issue.md. Work end to end:\n1. Implement the change, consistent with the surrounding code.\n2. If `main` has advanced, rebase or merge it into your branch and resolve any conflicts.\n3. Run the project's tests and linting, and fix any failures.\n4. Commit everything to `agent/issue-259-on-the-claude-code-transcript-please-have-a-spac` with a clear message.\nForkMesh will open the pull request from your branch. Finally, summarize what you changed and how to verify it.",
+      "attachments": [],
+      "target": "open-260",
+      "sig": "d1SoQ_gwtCz7fQdC3A2UFr6JHApkGE0MpcD27CrNiqkJygbhZpJ7txPPvnri38_JOGfaiW273BRKkkyw1fLJCg"
+    },
+    {
+      "type": "comment",
+      "id": "b108a355-11b2-4e18-8bd1-78743f52b618",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782482106924,
+      "body": "also have create a pr be auto selected in the issue detail and make assign agent more of a button ",
+      "attachments": [],
+      "sig": "0p7uPpM1RDyNiBKQNGwzo_VqoczC_Qk0Fu3BcmIFLITHYYA1rB7AkGUQS01hKxTlpotoRd_-u8QxsuciTsbaAA"
+    },
+    {
+      "type": "agent",
+      "id": "4b0a423b-e588-48ba-a5fe-b2271e722143",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782482120105,
+      "agentProvider": "claude-code",
+      "agentSessionId": 17,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "3-Jw4UQFAVUbjIl-mQGg7nP5BALZ1bGKRGdNEuvuDL-bMwYZ3XQVBGQSAOr033CaHmcRTNuyCg7peUFviCGNBQ"
+    },
+    {
+      "type": "agent",
+      "id": "8ed6d4ea-2360-49ea-a6c7-5deca5eb5463",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782483083159,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "HeLGAeczYLIePV-G0Xwnpd90QTLNFqwU7t2wdoKqc4AEULH9f1svj-uUDgSs1G7MZqydwB1EPFU9CAFHWhBRCQ"
+    },
+    {
+      "type": "priority",
+      "id": "573197e1-f824-4f68-bbc5-5c2d51828cf9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650103,
+      "priority": 50,
+      "sig": "090-QFr9YZokRNnnzzI9S6HfqLKJ7oaKjbBj75e0FqTgK85I1kdoH2pSfF7tzCLBZMrxxEP85d_dQ1aKiJjoDw"
+    },
+    {
+      "type": "labels",
+      "id": "01febbd9-9394-41b1-8571-e9b4848d5fb5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286251,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "KKUEZJuWZM2TLvxOdIQhKJEFUt1QH6jQjb1rNgp1y776GpZNVdc-dkyN7DivteyOe8EEd68gkG0SbP3qxbYnDQ"
+    },
+    {
+      "type": "progress",
+      "id": "98e844b5-78eb-4984-a08d-09443ac99175",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286295,
+      "progress": 65,
+      "sig": "V0RQ8Pk44NrbL3ET1bV7RoRZ3OR7ldhks01Ra97NwZzD0yPmFqvjux3REGrm5oO-7kurUYv2sCQZehQ08RiBBQ"
+    },
+    {
+      "type": "priority",
+      "id": "e21aedd5-84be-4d5b-922a-54ab57e9f693",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487326,
+      "priority": 40,
+      "sig": "8d2Gp-mzFJv8kla2Rg2VCM8qB9E2nDIItoQi8QFWVOZzK7fh5WRG-KCE3FC7Xzfo49aGGktr4tzWud9rWUl8DA"
+    },
+    {
+      "type": "labels",
+      "id": "502b35c7-d79d-4abb-8593-f231240389d0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668265,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "MfvGv7FhxDvVHSzeAkOmbWWk24gwnFTnVSbE6Cgd-QLVuYLCBW-C9zqt4--lqWTe9mUoT1oAT_lAyUk_qWOyAQ"
+    },
+    {
+      "type": "progress",
+      "id": "f7337263-1830-46fb-b89e-97febd1fd319",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668287,
+      "progress": 5,
+      "sig": "PMxY70e6waFCMN526L1wf1flyb2e4Ef3FFtHZnGoaLjohlHTCFSMtz_6OY22NqhkLdAZfeXFP1DcaYd0FWeeAQ"
+    },
+    {
+      "type": "comment",
+      "id": "e35eab51-160f-4d58-a2c0-a15197106793",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668308,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\neditable/savable Claude Code prompt in settings not evidenced",
+      "attachments": [],
+      "sig": "IZK5ilweQrk-exXs0uegK-jK3FEf3_CJ2eXrwQCG2qJAiz5S3146wxU0A7rdyYTgEBUcsiHzie-hLMAhR8IyAQ"
+    },
+    {
+      "type": "priority",
+      "id": "931683e4-53dd-4c8d-a384-1bcc13e67717",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835448,
+      "priority": 39,
+      "sig": "QzbYHUg9K36VODa7L2JkAobl2OXF5ki0fqhndRIOHLO3HzMNlACUZG3bA_brh6P1FMYuOMldVyKfhpnDuNaRBQ"
+    },
+    {
+      "type": "status",
+      "id": "fc8864ae-a287-4be6-8a02-4680814b0358",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796526147,
+      "status": "closed",
+      "sig": "wKvdXNt8PIAfdvTv96pNf_0IWzqaGqyhivV0p40ILFFciLniJ8qmTf_XqUq2ByUhvHUWAKpl91dT9zcIPLsJAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782796526147
+}

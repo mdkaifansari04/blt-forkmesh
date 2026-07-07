@@ -1,0 +1,110 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 320,
+  "title": "I clicked on verify my email however still in the profile settings it says verify your email before changing your node name so it doesn't seem like the email verification worked",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "",
+  "priority": 2,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782920283476,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-320",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782920283476,
+      "title": "I clicked on verify my email however still in the profile settings it says verify your email before changing your node name so it doesn't seem like the email verification worked",
+      "body": "",
+      "attachments": [],
+      "sig": "_z2-cVY5OulrNbGTilB7wqqJM5hXQHi3GANQmDARcM6UHQGRRNa_sqXf8BHIPmfZvBgEzqsR-mLsMH2Gmh2lDw"
+    },
+    {
+      "type": "priority",
+      "id": "dfc94ce4-400f-488c-bb09-f1323167afe6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818272,
+      "priority": 2,
+      "sig": "tILbyUEZrABUy0OPo2NhTvZDsZvtIW6HXBZeA3D_CtbRdNf1WI_SmWE5VI4urUjwOXYc__5F4Jn3bA8fdi4HBw"
+    },
+    {
+      "type": "edit",
+      "id": "263d4a1f-d8f3-478c-b9df-a5981e5458ba",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121306186,
+      "body": "lets also remove the demo profile on the web if you're not logged in it should just show Sign Up / Log In on all pages / headers ",
+      "attachments": [],
+      "target": "open-320",
+      "sig": "GKFuLLXyLi4Rw-6Q0jy-K9KRq9SWJcI6AuTaPnO87kTks9735sDbLd6TREOeoAsR8eOR2JY5lqFYeQ3slep1CA"
+    },
+    {
+      "type": "agent",
+      "id": "6766032b-9b31-4a16-b64f-e2b84e49c715",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121311544,
+      "agentProvider": "claude-code",
+      "agentSessionId": 143,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "11UbtjKJRv9PGVVQvh00bLSG0u5wf_1yt-f6hsFO-Gu-1rr53ZcBYnDSqALCZWPYhPPpptoKWUxy3KfHupVXAg"
+    },
+    {
+      "type": "assignees",
+      "id": "078ab309-d90e-4f53-b05a-fe619a30c9f2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121311625,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "ikw3U-dl5FmWLSGWrc0qkBivresTVxXjRu43O_b0ekTDXb99Qi1pA-XO0BO_EGjle-dgIMvuwUNDRmjaxpq8CQ"
+    },
+    {
+      "type": "comment",
+      "id": "7adbf577-d3b0-4282-b75f-fb5d97ef2e0c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121571339,
+      "body": "Closed by merged branch \"agent/issue-320-i-clicked-on-verify-my-email-however-still-in-th\".",
+      "attachments": [],
+      "sig": "Va2U1N5aDdQlsbdwul8R48J9kzPniKLZIsabuAZKKSZ8nrDDbvH93taW5a8YCirvNBdbKO-j7MAztzUlTH2GCA"
+    },
+    {
+      "type": "status",
+      "id": "635ee8df-fdb7-4c4b-8e67-96118f0b870b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783121571433,
+      "status": "closed",
+      "sig": "YGoqFSjcQfeEiP6_93SuvQifDo1g-ckOrNyn-_J6DmKrWDMAIOzblUVhcHG9ks3wLl-FqqtPYv5dmyPOaMhnBA"
+    },
+    {
+      "type": "agent",
+      "id": "230e73a2-15e7-4b96-90b2-12f44834c8c3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783138471753,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "1nQEfqz0Xn-751MKE5_6ghLVXICSwGpFbRO4IlkJ9iCAOVb3PpOH3gyYtM_E3ShMRZoMHp4Zx27rPMG9q_IFAw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783138471753
+}

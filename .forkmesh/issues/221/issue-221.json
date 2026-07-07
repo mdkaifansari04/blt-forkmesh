@@ -1,0 +1,120 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 221,
+  "title": "the commit counts are not correct on contributors and activity (insights) make sure they get updated and are accurate",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 9,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782354597876,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-221",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782354597876,
+      "title": "the commit counts are not correct on contributors and activity (insights) make sure they get updated and are accurate",
+      "body": "",
+      "attachments": [],
+      "sig": "h51U4zcQ0vha71yqAsqNpaqIQo3gYHJTpHscSnxUS2QaKPSfmeJRNEcYWsSPnYFjXKVE4DM__BYmkyziZtjIDA"
+    },
+    {
+      "type": "priority",
+      "id": "d2f8e3d3-8c00-40b2-86c6-a24a2fb6a08c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482639,
+      "priority": 9,
+      "sig": "JhItqapRuTMlTIegr14ote0LGIMp0G9UBkJ0qjXbszDFMTk4QB2xHnOVu3vnupA9EIHRvG1EuFmOn2w-ERfbCw"
+    },
+    {
+      "type": "bounty",
+      "id": "129b806e-113b-4cda-8af7-a8ccdde6117e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359967951,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "7mNes_A6BOWVy9Mb-Vfocx1Hak_Mx2x_nwv2JnLeWldV_EMFXqzvoZ6KadISCOnnBmH8fjHkx91m03pWXxAQBg"
+    },
+    {
+      "type": "agent",
+      "id": "f04707cb-f80b-4359-aaee-6a80c32c0bf6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782360364838,
+      "agentProvider": "claude-code",
+      "agentSessionId": 9,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "OQqO0phymOGJMKsibtiUouupz1_VCw6MUeZvBhosoPFeCzvpaZ57pHYYIgfGm9GprzBq5KXx8E9ZICs7iAFiAg"
+    },
+    {
+      "type": "agent",
+      "id": "a9f3b098-cb32-4c9d-ba15-443fb72e8280",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782361169500,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "UAi6r7uF7qJscnrFrnYTp3LF3teuqnuFqS8TRhhV-0VwmXgGii3aeRsoRvc5vIwbAWUHh3bJ1TVVqmzQ_pHzCA"
+    },
+    {
+      "type": "title",
+      "id": "fca712c3-58dc-4d5c-b3ba-d0775ff44cf4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782431478994,
+      "title": "the commit counts are not correct on contributors and activity (insights) make sure they get updated and are accurate",
+      "sig": "KZsZDNSPvtCdN08SKVrjvYvRe5QOG-h2J_lM_3Qj-ahv07LE4xtxAJJZlO1AOWSgm_dKVt9hg9gRL6oskEm3Dg"
+    },
+    {
+      "type": "agent",
+      "id": "d450c471-6154-4207-82c9-a4a49277399c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782431489818,
+      "agentProvider": "claude-code",
+      "agentSessionId": 8,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "q-k2BFtpPlEIxXcd_06-F7d9T-4Vk-vYH9zTXGjzP3sdNBIe7KMWedOd5BU_PUuwwZyq2V9eUSMU9tvt-hhZBg"
+    },
+    {
+      "type": "agent",
+      "id": "4d1f9db0-9df4-472e-ba8c-6e0c1597b836",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782433002599,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "Qn5bOnjKppANJ4gUQK1bAOMQjIjImiP4wx2UMwn_M68W7dsRPllnjnWUcuNP9cdVcfP4mNse3Mf6jzuQM3zSCw"
+    },
+    {
+      "type": "status",
+      "id": "6e1b7d5b-f8f3-49e5-9df2-a93a31ba1c5f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782433119300,
+      "status": "closed",
+      "sig": "zBOBcci0B1RWRJ8h7bu14By-d9NMy-QSKS-sgsj3hYK4miY-mS9hc7AYsatMiXGVz1lLdYjGj9IidboV9dtnBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782433119300
+}

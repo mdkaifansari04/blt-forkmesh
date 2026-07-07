@@ -1,0 +1,60 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 38,
+  "title": "do not allow it to run as root",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781713613288,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-38",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781713613288,
+      "title": "do not allow it to run as root",
+      "body": "",
+      "attachments": [],
+      "sig": "kdacuBoz7IxqKNqL9O1fxlM2xHAEI1ZcIV8rrISbUn9HBOoDHUqg68EfkqGPhscVaNAEgXfb3W5QOzKl_gMECg"
+    },
+    {
+      "type": "vote",
+      "id": "b5c5ff89-0ee9-4f46-bcb1-0991450e85c1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781713633213,
+      "sig": "0tbqf_V7fQNVuxtX3Nq_38M_exHStkWS1fXzO7V5SafWFJSUchC5ja16VxpDdJhRTe_O4XcKT65iIhALjl-eAQ"
+    },
+    {
+      "type": "status",
+      "id": "bfa1026f-9b62-48e6-adcd-99166583ba48",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782009141417,
+      "status": "closed",
+      "sig": "cx5i6LkOGwZ0PJgdLT49o5M5G75RU_85JBqmVn1LLlS3fHjGwmgZ5XHMbAXmybEPC6gv7gXT2rznzKgeeB8hCg"
+    },
+    {
+      "type": "progress",
+      "id": "66ee7dfc-44ef-4e5e-a822-db3a2b06c2eb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926652,
+      "progress": 100,
+      "sig": "Hn45kpwl7RiJXnvZMhurIAPzGcpYEEK7u_9oIf0gcdvl3X55OgsyF4OZ5EF455X_9XzgWAdsknJvepnCq2ceAg"
+    }
+  ],
+  "votes": 1,
+  "updatedAt": 1782189926652
+}

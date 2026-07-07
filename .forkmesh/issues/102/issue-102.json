@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 102,
+  "title": "on the agents sessions page remove refresh openai usage and have it refresh after any openai session and add the same for claude spend have them both there",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782080475795,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-102",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782080475795,
+      "title": "on the agents sessions page remove refresh openai usage and have it refresh after any openai session and add the same for claude spend have them both there",
+      "body": "",
+      "attachments": [],
+      "sig": "pa5bCF6xKDqgLSNhJSchXbk6RPuU7re59WQqkAFex7Exr_4iuG5Umw-w_rYX4v9Ib4Mq4hNMzSfIAfhZ_y3ODg"
+    },
+    {
+      "type": "agent",
+      "id": "b56ca775-11f7-40c0-8b7b-8eaf826a5a47",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084037542,
+      "agentProvider": "claude",
+      "agentSessionId": 41,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "goZS4CKfn4GxD0uqKEkXFZ3wVA-anY7b_m0tflBpwYLuA1nVPtj-TNhDSNgF5_YzCnfUOTDziNJjQx69tMl2Bw"
+    },
+    {
+      "type": "comment",
+      "id": "90dec1f3-1d62-484c-8147-5b1c1175218d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084233665,
+      "body": "Closed by merged pull request #42.",
+      "attachments": [],
+      "sig": "hYhbaZ3NaILs1Wc_-_ezaIHEecuE_EQ8NXtDo3iQT4-nexaImt2UAEnQC0-b09FvdHpc1k_ZivUcqUVEEhYYBw"
+    },
+    {
+      "type": "status",
+      "id": "0ab1bacf-ceb3-4ef1-8f97-316eb7f49c01",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782084233718,
+      "status": "closed",
+      "sig": "Mt2xeerXc-2MRVwL3KBRK-IpVDt_dMJxf4nkdya5WAg12uX6gZ5rm6gC3LzTGc6DSrW77FE12CYVOkw0MHC4Bg"
+    },
+    {
+      "type": "agent",
+      "id": "0a3ee810-d352-4d61-9103-e70c03e175e1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097150077,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "vU9XL23edAn-J2lWcTOUxjD1XHtRpXz0vfFg7IlO5qhYHugodhSb2j5p0T554GgqC6gJOd6fg9AT5QdzLYX9Dw"
+    },
+    {
+      "type": "progress",
+      "id": "fc327378-4245-4697-95e7-113e72f12a75",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189929674,
+      "progress": 100,
+      "sig": "DE7spJw9_75NLQsk79pGC5BzIpKKCfHS1YTBUSjBQ8pQWCi31IvnII_ywae3DFh05o7PgHMJi3i8d8ejg_FyCw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189929674
+}

@@ -1,0 +1,86 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 146,
+  "title": "when the total sol refreshes the box jumps make it stay still please and also have in settings a way to show your earnings in dollars",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782160049508,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-146",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782160049508,
+      "title": "when the total sol refreshes the box jumps make it stay still please and also have in settings a way to show your earnings in dollars",
+      "body": "",
+      "attachments": [],
+      "sig": "IbcdBQKs8wr-SkvVjHxT-ZYvtxQMM9XFDouuKd4-Y4TjJY0-IepIKYwwItqGUE-Fwy7d3WVLNMwqHKLLcM8_DQ"
+    },
+    {
+      "type": "agent",
+      "id": "5de59754-e104-49cf-aa48-a78f956a47fb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782160049856,
+      "agentProvider": "codex",
+      "agentSessionId": 4,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "BsgsJFX7S0Q0SoGa-EBJYXDuscequ_sga7cKL7yMf5RqdYnA-H-KFOelAf9LpI-95LE-ZBSlwzbDYjSyDpSOBg"
+    },
+    {
+      "type": "comment",
+      "id": "a30cda43-d35a-40d9-ad8f-3f0342adf388",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782183619023,
+      "body": "Closed by merged pull request #5.",
+      "attachments": [],
+      "sig": "IF0vaYVM_fZKhjm_7qetQl5gq3-xpkcybSgIgghOL6ud1tZUsO1lL6KnwhdzRjVdlJLWRa4LQ1O9Qd3dLJ7SDg"
+    },
+    {
+      "type": "status",
+      "id": "e1458463-356a-455e-9aea-64dab0f58fa0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782183619080,
+      "status": "closed",
+      "sig": "YdXQn45biFmpY0vmsVv5cibHDDZgaQaHlwQif07yL7G-Q2oLtSJLcu2g0oYgo46sgc828MIv7RVXisG3ijTzCw"
+    },
+    {
+      "type": "progress",
+      "id": "c7316453-8ed8-4d05-9380-aa4fd8adaa49",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189931231,
+      "progress": 100,
+      "sig": "yLtOdm6QxbrsET5E7DlT-5tJSGHS3dLCZJYV4sEwi6_-zUTCZYVAm5VoVFG2iDNnEIjoBBFHIkfHW46w1dpUDQ"
+    },
+    {
+      "type": "agent",
+      "id": "3ced61ae-1b71-4381-8197-cff5398a4748",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212071578,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "xf_RAE4YiZ8x7gxDNExPlS1DEJrLzglEuaRSEH85jqilFr7hdFE-fajlerdZj4e6UJBGM76qpvxn4CN2UDD0Dg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212071578
+}

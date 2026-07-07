@@ -1,0 +1,159 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 287,
+  "title": "please make the headless mode stay running until we explicitly shut it down have it be a duralbe daemon also show memory and cpu levels in the mirrors list",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 1,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782497401761,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-287",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782497401761,
+      "title": "please make the headless mode stay running until we explicitly shut it down have it be a duralbe daemon also show memory and cpu levels in the mirrors list",
+      "body": "",
+      "attachments": [],
+      "sig": "ASxBGtraaYrsofUsByusvhp5qkf_TVPBbsSMxKtD9-xX22uyf2WiT5_rM3JzXhFuFwSgOEcOm9ez-G-bsE5bDA"
+    },
+    {
+      "type": "agent",
+      "id": "bd44cbf0-9b7f-43e6-8696-4cb67b86ee7d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782497402660,
+      "agentProvider": "claude-code",
+      "agentSessionId": 21,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "L71Zbmx8ebZ1DUnoagXWz_NzDGvVBeqhyPk7osVZdyzq_Mx9UaeAEvgGMQ5mpwf5FUv5_xNuCthRZ6QE2Ow-BA"
+    },
+    {
+      "type": "agent",
+      "id": "eb8c15d7-3de1-4b60-a863-278d60c13d9f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782504662720,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "_Onsypt_y2KLthl-zi9vwr-1CUN7FdISkd0Nax-wynjWujanNYpS5UxDjBuUpG2Sr1C8M2AnOyQK1KX9swNNAg"
+    },
+    {
+      "type": "priority",
+      "id": "b50e4dc7-529c-4cd6-b698-b8c2d91492a0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649461,
+      "priority": 22,
+      "sig": "6AGySssETFZ9_3eZbInpEqByFfMvNGEnLZ4rb0Fr3eAuWEXixurEKRP159lLvdFnrS0nVfEgQYsiCJyv3jWjDA"
+    },
+    {
+      "type": "labels",
+      "id": "71218891-0cd7-4750-a1d8-e0dd74c303ac",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288198,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "xbehN2RGngU1RVEdQEHnYDwzaMXSCYaRx7HuSM567KIr9d0eLbHLKRkEIPAkubaQb9uD4uz0iogcRU1HUOygDQ"
+    },
+    {
+      "type": "progress",
+      "id": "eb87fe7d-355e-49a6-882e-1e4f003df44b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288234,
+      "progress": 40,
+      "sig": "Vx4MfDe5FntQyiCeDl_aww-1-CltzA4OPOslMIi81zRDYCLI989heagWTUglCl7a2dSHUsFllkXARNnu9aOMBw"
+    },
+    {
+      "type": "priority",
+      "id": "06baaef8-8dad-4c20-9770-4660d1504482",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486443,
+      "priority": 1,
+      "sig": "2Z1gwaEKmTEVsgv5zoAiNCd5QQVq6Bc_uBsQ6x1OnZNLLvdmqRFk3jdOwJZVaULfXIgbupg3sxiSVli5B4pRCQ"
+    },
+    {
+      "type": "labels",
+      "id": "84f481d6-76e1-43c9-967f-0a93948e6b74",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669721,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "qTkyVB5iIFpkkCLx0kEBr1B74B26welyQ2o0q3TmI0-sPb782li7q3NOCBB0AT0JHo7jO7Fd-6NByJhMDDNbBA"
+    },
+    {
+      "type": "progress",
+      "id": "c3e78d39-78d9-44c0-84dc-2c9d679a6ec9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669745,
+      "progress": 5,
+      "sig": "5J0Ogf6H-HTRxmMB1B9HU9YDTJuJ59o4BMFXt6jeqKUu5wyvniDL1t2tJi_RZFSsRroMFSnouVgJk0Xaa3X9BQ"
+    },
+    {
+      "type": "comment",
+      "id": "443bd7b9-b579-4e8b-b00f-240becc84540",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669769,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ndurable headless daemon and mirror CPU/memory display not evidenced",
+      "attachments": [],
+      "sig": "9T-s85yerFy496gwYcqzoxh_w5JOOqG4mUt-vTWzHxUX55litKF1ekzOaa5K8OWrFY2XUpOS1aLmFwI-shLNCw"
+    },
+    {
+      "type": "agent",
+      "id": "2845e3e6-2db1-41f2-8855-bc60658606b7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782754178766,
+      "agentProvider": "claude-code",
+      "agentSessionId": 18,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "onSUMi2VTlTFA2sh6dHYStNWnyKHHcfnYLHnEob3VAOIU0GW0NYA4APs1qb7WSRxDy3E78eoCxHoEGsFnCNpBQ"
+    },
+    {
+      "type": "agent",
+      "id": "94509b20-2aba-4280-a590-32bf50d43895",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782754194730,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "QN9f_lyxWO--Wl6jm9LOGbR3puL_FofXUSC28yNcvedoLcKYEYftEXgINEQGX3YVWluE9FQzl1t69-EbCNydBQ"
+    },
+    {
+      "type": "status",
+      "id": "015c7c14-fa0d-4d6c-8803-d14232adc4ce",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782754205364,
+      "status": "closed",
+      "sig": "GlglxG1Y4ngfwEzLZ2JFQicUS_vaGiWtM0fzgLadDUbCYyC10Er3IuQASp26Qk7lVDDfq6vcZbzJ6hxVlZ4oBg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782754205364
+}

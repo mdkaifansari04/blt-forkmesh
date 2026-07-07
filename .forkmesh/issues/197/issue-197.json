@@ -1,0 +1,177 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 197,
+  "title": "when on the file browser screen of the code tab and we are on a file next to commit direct and save as pr show a button to show history and then show it",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 35,
+  "progress": 5,
+  "assignees": [
+    "mdkaifansari04"
+  ],
+  "createdAt": 1782348147268,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-197",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782348147268,
+      "title": "when on the file browser screen of the code tab and we are on a file next to commit direct and save as pr show a button to show history and then show it",
+      "body": "",
+      "attachments": [],
+      "sig": "qGY9w4tajE7W68Opq4IfLY5z1eafuy74tMeF84UA5RToBkL4VBTLhVL8yugudbkVK5mGRrVsujtW79-I02V-AQ"
+    },
+    {
+      "type": "agent",
+      "id": "c6491bea-7ea3-4f68-ac5d-933204284e67",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782348147481,
+      "agentProvider": "claude-api",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "iQGokFS1hyHTId0lnlNX5NK9A_fGccl8iMeGxkZgVBe1eC36J71EBhdXRf8FrC9nZABRKoZYIYjKqZFbMXt8DQ"
+    },
+    {
+      "type": "priority",
+      "id": "52fab326-69e0-4163-b348-9705026b3748",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482620,
+      "priority": 25,
+      "sig": "mrvnwHsj_ogCJWkEjmAJt1_tJSqpiJOKCJTg0a_QdhbO1JZfuuwfLpaliFFtttubWR_XzP0RxFc4aLt_SU80Dg"
+    },
+    {
+      "type": "bounty",
+      "id": "35398f27-c5f0-410c-8885-a1c9c53cdf94",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359966945,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "3ctcqg0Hjwy1fKh75pP4-yUPL90eH4mHojb_PoBtJm-5ZT3tTHWh67jahYzDtXXeUzzbNZv_nzoBgvrW2KATDQ"
+    },
+    {
+      "type": "agent",
+      "id": "53ff0679-11ff-42ec-8f38-8b3217df629c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782407699598,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "iB3eO0CaTvtsYzB_2FHYxummU4mNy6P2e1j6zHn5thsqzJdnrus9_wu4NwgG3J_u7d-42Ve0dCBipoVTZ3htBw"
+    },
+    {
+      "type": "priority",
+      "id": "0b08d659-7a0d-4e98-8cf8-2b558f0dc992",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650801,
+      "priority": 83,
+      "sig": "b1iKe4qcMyv9iA8suyhPX97iXbrju-kw4JdDjGZ07WZOPUO-QUamGgjtaoLyZFBdPu-Wp0fxjZpz2qkputybBA"
+    },
+    {
+      "type": "labels",
+      "id": "4d6be4e5-63dc-43c4-b2ba-6a3dd0d19760",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687282484,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "WOdSUbwIORamjpGXVEe4_QfcZCdS-HFs8IQksB9jSJsrCbQrnLk04f1uaMLQPh-wDjXshWupzdDWt6rv9shmAw"
+    },
+    {
+      "type": "progress",
+      "id": "df7f95a6-1336-40b8-90b3-9fd38cdf8a8f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687282552,
+      "progress": 45,
+      "sig": "hEic-bFHeacHUeU5NjoN-IvksPsUyEW5zFCCWasAFb_d6lTNMq0q9OAi9wIObdYktZyQrbyC6Kc6YIz9huNDAQ"
+    },
+    {
+      "type": "priority",
+      "id": "3fc10ca4-a1f1-4a7a-a2ba-b43fa0ffc6c3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487036,
+      "priority": 27,
+      "sig": "gmslorcpZyRWBI-a6P2RyHsnJxCpQGIrrb4B5h_G29Vi04RnpqH3Sp465c_hmp-MkfCRZOLdQPQoYgxtGpI_Aw"
+    },
+    {
+      "type": "labels",
+      "id": "6b2485be-173a-407c-b639-7e1969f08921",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666286,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "wPHVo57CDgT1XFI3nguWzvsZLTUFdJo0_B8RGMruAD_qt7kVhSeZBujJfLWcswnHnkglhEy1mlHpPwpsn2JGBA"
+    },
+    {
+      "type": "progress",
+      "id": "8af0dfa6-a328-4294-991f-d16db723f55c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666308,
+      "progress": 5,
+      "sig": "_Qm-0tBiOsaxyejO5fhEXvxzrKSv3Y6R6L8GVKxqgd4DlUUJn6z0C8mDn8AJkqk7Kts64q2z5js5zJ_GuoXHCQ"
+    },
+    {
+      "type": "comment",
+      "id": "f478cc02-7d46-4689-91ed-5146375885c3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666329,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nno file-history button in file browser visible",
+      "attachments": [],
+      "sig": "1WHiGozKMFcU37hwVF45Wpejsvv4WQNzEUyCqHyjfqpZv5IjVpEERI-m0F7hk76DGxAqrsepuR-xQIt10JHCDg"
+    },
+    {
+      "type": "priority",
+      "id": "069e1c05-b53a-41f3-898d-fedd3ca9fe1e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835325,
+      "priority": 35,
+      "sig": "WYvO5UwXMAMiN-tqt7C7QNNP8tMYjMVJinAt1GXSOCrjc6iPB-HcItKtM-uHjNK_gMBA0kvqnWMwvFF6pGZWDA"
+    },
+    {
+      "type": "assignees",
+      "id": "2aa2ae1a-9bda-494b-bf72-863538c395b7",
+      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+      "authorName": "mdkaifansari04",
+      "ts": 1782832797679,
+      "assignees": [
+        "mdkaifansari04"
+      ],
+      "sig": "VRNU9eMpLIFL6crnMDqiGEDUI0GtaQqLdkHapEDUfzsBfpe68pQ9UsSnJ8rLXSCSQoBaPioFOKdU3iFO0MlHCg"
+    },
+    {
+      "type": "status",
+      "id": "e45fff65-268b-42f8-9641-8a33c8339448",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783094392455,
+      "status": "closed",
+      "sig": "FHMX48Kn3mAB94dfmVTZBhskTSNmkPrkKmcz1TX7OYjfeJlcLFAH_RDfT2eKTUJq5Z1zDslLoqkRqdoHveKvDw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783094392455
+}

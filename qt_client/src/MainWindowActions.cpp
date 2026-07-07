@@ -310,7 +310,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
             QString::fromUtf8(names.readAllStandardOutput())
                 .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         const auto isMetadataPath = [](const QString &p) {
-            return p.startsWith(QLatin1String("issues/")) ||
+            return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
                    p.startsWith(QLatin1String("pulls/")) ||
                    p.startsWith(QLatin1String("commits/"));
         };

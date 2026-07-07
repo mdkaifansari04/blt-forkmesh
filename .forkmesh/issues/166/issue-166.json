@@ -1,0 +1,54 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 166,
+  "title": "new issue test",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782192332329,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-166",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782192332329,
+      "title": "new issue test",
+      "body": "",
+      "attachments": [],
+      "sig": "Bw4DAZWfv5kHzCtiGhi6F35Gc5JMtBZN7TvjuqG384YpPOucTnJ9f6PbfqRnXf0otXn0UXnC_wWTMc7yWA7FCg"
+    },
+    {
+      "type": "bounty",
+      "id": "8cd3e782-9542-46e6-a77c-f94faea08b61",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193059345,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "UqTYj6eiGyjJpA99st5HG7JdwuwNAEy-gsJIzIdjRmMn64ug0miOhTJ7scSt7h8jBVZ2IfxxZq3WjTfKZf74AQ"
+    },
+    {
+      "type": "status",
+      "id": "f0d8d563-6cc2-415c-affe-93483a7038a7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782199558785,
+      "status": "closed",
+      "sig": "1bYpjSsZrruVy_JjgUes9QFxrVX6PQnhXBt_TpMNoNU7qjirNU2AG_AXvWVCnMjsQpluyfC_RyoY9asiEUZJBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782199558785
+}

@@ -1,0 +1,135 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 130,
+  "title": "get relay server federation going so we can have a second relay",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 1,
+  "progress": 10,
+  "assignees": [],
+  "createdAt": 1782143713976,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-130",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782143713976,
+      "title": "get relay server federation going so we can have a second relay",
+      "body": "",
+      "attachments": [],
+      "sig": "eRj94mRpR9HJIlwLCLSJSPuMYRr1F6bdLTa3uo0W4pD49P6QFWWaxAOV1v0-6lgn2u99-5NITa2v7tPDbyTkAw"
+    },
+    {
+      "type": "agent",
+      "id": "f01e57df-84d6-4fa8-a199-5f73282b100c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782143714081,
+      "agentProvider": "codex",
+      "agentSessionId": 3,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "fVxEDRSjh9sATH2xbz0bepql3jBDakVjT9I1h_2fignlJt9vAadmfCNIts6qp_GEAKmokCeHqkipvqh99TebAA"
+    },
+    {
+      "type": "labels",
+      "id": "ea2e5cf7-706d-4462-8011-8e6f6cd97e44",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189922687,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "_UIF92EkYQ03FJqQIFR0SLMGrjkSf_e4bOuOAWbGLRSI3fIipk5FeTRFRIhRebDEmXf1-Tqg5Hsk57DpdkhPCA"
+    },
+    {
+      "type": "priority",
+      "id": "69fd0595-c3d9-471c-ab51-33834b2110a6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189922740,
+      "priority": 3,
+      "sig": "HOOhYIRG6kYI4HV3gGMMtUe3_mI0t8okzt91dAGew4bCSsipcIrtLembDaFsBEhJ-Rkr58_Wo4-tStg7CHuGCg"
+    },
+    {
+      "type": "progress",
+      "id": "f0822a50-d10b-4ea3-8520-26d1cdf4c5e3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189930956,
+      "progress": 10,
+      "sig": "SCSN0VU5KeBaz2KoC0W73QzNrT5X4ENHI8IO5TYW95N-Bt-kSRRsNuOFLsZriDF_gnGzAccI9o7xxHJdl2L9AA"
+    },
+    {
+      "type": "bounty",
+      "id": "ff917199-0706-4b47-8bcd-9b9c2a4228f9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193057981,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "epk3u2SDpfVwT4gqp8M13nz4o6kVr15wghuetNF1kkh7ReOhFA-9mO5WL62seq8HEgsfsZLAgtuVH8pxz28RDA"
+    },
+    {
+      "type": "milestone",
+      "id": "b7a61ad0-2509-4db0-9f7a-c64051721480",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180248,
+      "milestone": "Phase 2",
+      "sig": "AWAvOD9628PfC4J4pOGOIDtZeuKr3iyS2PK8_U-0VICtgTN6wasTCUawUzmai6eR-7nCqos0fk5fn0X7FgRCCA"
+    },
+    {
+      "type": "agent",
+      "id": "7717d853-2bb5-41be-96d0-8f27542c5dfd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212072209,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "GqrkQkRjFpvHBKI_0X4ilFlwA9JWm9tWxYEpjuC1l7my4EYR0RpXanLBppVmvJDfqRZJ_uwFptZgQ_PplDFbDQ"
+    },
+    {
+      "type": "priority",
+      "id": "a3f780d3-c33e-409a-b560-ba305d134694",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782253737196,
+      "priority": 1,
+      "sig": "-Onjzol1UoHgDwFP4qvhXD2ROA2ZbNLg60KBjnThBw6s4rTiByc_TahpbNI6E1KyDJaoakfy3wD390fpG7B3Aw"
+    },
+    {
+      "type": "comment",
+      "id": "ed7b818d-c1e0-4861-993f-3747c27a9fb8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782353699579,
+      "body": "relays are showing connected when I add them ",
+      "attachments": [],
+      "sig": "VABehJRKLjWruV_Ae3qWT_t18NUuNAl7xED0KnruiE4jbZvg8E6w9t5G5mg1cNgPGIO8TWE5GZSOtaRsus7gAA"
+    },
+    {
+      "type": "status",
+      "id": "d6b50359-d952-44be-8b7e-afce0d0a3889",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782353699641,
+      "status": "closed",
+      "sig": "FCRioOGmV0Zuw35cIOd5jUqWhCcYMxqNDbO_dS7JITHhRGzqY2PT1fAakItWfpwvUY-GgZA-5iD6Wdgd-nqdBg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782353699641
+}

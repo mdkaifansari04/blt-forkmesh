@@ -1,0 +1,67 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 184,
+  "title": "fix the fund bounty to show the correct sol to send and have it check for the deposit on the pr",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782214034672,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-184",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782214034672,
+      "title": "fix the fund bounty to show the correct sol to send and have it check for the deposit on the pr",
+      "body": "",
+      "attachments": [],
+      "sig": "jKE93ooifulroJvb8jwH96juAiKjnAqOkFBUwcQUC8Qx4VEFalHjK7EcfZqrd1KswrJD0ss5gNbkCwxNmb6wDg"
+    },
+    {
+      "type": "agent",
+      "id": "dbc55071-e4e3-4337-93ce-75412b274195",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782214034845,
+      "agentProvider": "openai",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "fMgCn4fu6sitTuO5qtowk8yIhXfgjE7vfppMCBzz0UpEblgz4VfgIuvqjElrcXwgn5H3-JpLj1cJ12lqwy9WBg"
+    },
+    {
+      "type": "agent",
+      "id": "b9100425-11a6-4a4c-aa19-249f2b709f0f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782256886161,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "h92mQHLxMnjfxGfw_eP47yCJn4Jxvhed6QSXQVfKTHty8GRALOjvQLZqNAMMJ-oFrFPN1YCDIEMdLBAZrICECw"
+    },
+    {
+      "type": "status",
+      "id": "7a8ed382-63f8-4ba2-89d3-7ecf9fe1ed91",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782278918344,
+      "status": "closed",
+      "sig": "gVYsONLep2mUM_8JXqFeEau1ToX5hasczXmPO2A5qPfJ8373J95-q3n_VvvL0uwerSAniFf47Sm-86ST1g0YDQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782278918344
+}

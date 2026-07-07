@@ -1,0 +1,187 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 205,
+  "title": "make the branches page load better with the table expanded to see everything",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 17,
+  "progress": 5,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782349321778,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-205",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782349321778,
+      "title": "make the branches page load better with the table expanded to see everything",
+      "body": "",
+      "attachments": [],
+      "sig": "xbpeNuTliQlZK2KMp0oyESekG2TODAA5dKo3hW5BAxxmzVjy8Z6aSdZbaUQOHDqSxbYgXO67JIArlJ3FazdxDg"
+    },
+    {
+      "type": "priority",
+      "id": "bfeeabbf-08a0-4264-b8e0-f1fe718a07be",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482626,
+      "priority": 27,
+      "sig": "NHRhPkByqjNTwx4Maxz0DMz4n5wA2_hqb-Tq2J_S9nbY673aj_rPfWrtWAankS_Wd4i6Lv20VL-oqnfRgYdzCw"
+    },
+    {
+      "type": "bounty",
+      "id": "de79b02d-79f3-439d-9623-1099451bd308",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359967242,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "v15riE07h6GskD45yHU-ENVlM-ksJJGlPE3wAPJ3Jj2M7W0C-IUCFY-3wyV9Cw7YMxTQLh-rrLX90tBuTOiqAQ"
+    },
+    {
+      "type": "priority",
+      "id": "9260ac66-557b-469a-b74b-1a4c630666ad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650890,
+      "priority": 87,
+      "sig": "_5xQ0f9Rmqdgr2JsnBMhQa9V6wZpR8u21brR9tmcWJBpq_8lS_iAE9jdg_kKAmCMkdLM-Gbu_scSc5ijEiyuAQ"
+    },
+    {
+      "type": "labels",
+      "id": "9b7b1c34-f412-42ef-8252-b7014386205a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283196,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "CDbG2erzX7_0SPaATod7Z1XdR5GWkRqyriY60lsb6zw9sEylYHVDtZGP45Pt0YAVFCH1C50IBCtY1HuhNS8JAw"
+    },
+    {
+      "type": "progress",
+      "id": "5177bbd4-f9d4-43ce-acd0-398848d981c8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687283253,
+      "progress": 50,
+      "sig": "X_YFKnBxx50AkhYxjysIT-0k-AnaOqMSZX-2PabhFqjOHGheRpRz38JnUDlfM_UbY0p-s0lxQeihOrpsZSCjAw"
+    },
+    {
+      "type": "priority",
+      "id": "ee18e106-48a6-418b-818d-07721d4cbc5e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486945,
+      "priority": 23,
+      "sig": "F4mZWiNHH5eYB-0bNlzaijXxy4G6QGoERH4edKxsle7FsUM12RYn6bzUiM88x-9hMrKpnyVjcEJqexkxQmWZDQ"
+    },
+    {
+      "type": "labels",
+      "id": "f58d5804-b69d-4f8b-81d4-17648fe0735c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666578,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "pGFvfIMGJjKI1yituG2CZmm2MgX4xJsbEuYQg6SUTYQvi-Y1eNCWkHpKrGUmDCXByT0HmhjwULWCZG0OUMpVAg"
+    },
+    {
+      "type": "progress",
+      "id": "6649e82c-1a43-4e96-9be3-f0a09f67a2bd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666610,
+      "progress": 5,
+      "sig": "_sWpu-Tu7_ZrQHB4I0BLm6yESrd1jPP2jNifZtevH6CUvj5M3S-F_nQ_iBbNHWksZ8-cBgTIIdpmXSiZFUdrAw"
+    },
+    {
+      "type": "comment",
+      "id": "ff3e6f67-7633-47d8-94e9-14669bac5ed4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666637,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nbranches page table-expansion improvement not evidenced",
+      "attachments": [],
+      "sig": "AqEx39aMF2vaWh8zFqrwmiA_Y1ahMV6evJJULHo1OEwiwU4J-JLc8q9M5e26TUTvNNA8LUTpnPYgPhFrcmFbBQ"
+    },
+    {
+      "type": "priority",
+      "id": "aa2d7d10-036f-4a57-802c-d2c2f81c1481",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834887,
+      "priority": 17,
+      "sig": "ltf4XggNK5wvebmYOs0krqTO_PMsz582G4dghaAc2nA6SXJkm1CZcarrC-_z5566ehGOTgF3GvGrFeg5Agz1BA"
+    },
+    {
+      "type": "agent",
+      "id": "b306f10d-7823-4330-a04d-b5b125c2339a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792177955,
+      "agentProvider": "claude-code",
+      "agentSessionId": 10,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "7gABVQAXUuj4RdhSWifCIxgJ1cV4z2ItXTz1vldLAQ-8rkUO5jjgkh6EWRsSMJaDTCNR4TK4QJCbADtVdIUBDw"
+    },
+    {
+      "type": "assignees",
+      "id": "39e80098-b1d8-416e-bd17-1517780d9fb7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792178052,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "N-PJ8FIHoq9sJj_SrSqu5bDXjY4_M92BzHJGAxp0U5L0Q3R4mChCVH6lTsQbqflqeO3L-dv1_q5yQH8sCGBnAg"
+    },
+    {
+      "type": "comment",
+      "id": "2efb40f3-5e60-4457-8287-633ccfec953e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793551247,
+      "body": "Closed by merged branch \"agent/issue-205-make-the-branches-page-load-better-with-the-tabl\".",
+      "attachments": [],
+      "sig": "Ot20mSkbEjMQjz4ShwYi64QLAqKfT8kO52s-GrwzJxZt5vDHpq8cSPtLt6C7jNLLpduCEQbJtpII2QSfGl4ZDg"
+    },
+    {
+      "type": "status",
+      "id": "bec5bbc5-d36f-4f1a-8438-e434db97fe4c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793551272,
+      "status": "closed",
+      "sig": "wlOqLT7QnuIFQT6KGRpG8Nq0HIcPyupJTEoNPD7P3iYuvoOgezRpTZ2nbWGxyVilX57azKb91yMqVUcLWWjAAQ"
+    },
+    {
+      "type": "agent",
+      "id": "6d99ebc3-6ca3-4d34-9bfe-73a6bd81abaf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793643556,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "yZrbEIZo1AyBDZQiVBZUtNzJFmUPkziyrT3vT3vqOdM2hXL_d7hmFZ9Opm22oUx34pzTMmgqE_lY7rc7akybBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782793643556
+}

@@ -250,17 +250,22 @@ QJsonObject blobReplyFor(const QString &mirrorPath, const QString &path,
 }
 
 // Repo-scoped search over a bare mirror (issue #360). One `git grep` at the tip
-// ref classifies every hit by path: issues/<N>/… and pulls/<N>/… fold into that
-// issue/PR (deduped by number, titled from the record's frontmatter); everything
-// else is a code match. Fixed-string, case-insensitive; caps every bucket hard
-// so the reply can't balloon into a huge tunnel payload. Runs off the GUI thread
-// (git grep can be slow on a big tree), so it must not touch `this`.
-QString frontMatterTitle(const QString &mirrorPath, const QString &ref,
-                         const QString &relPath)
+// ref classifies every hit by path: .forkmesh/issues/<N>/… and pulls/<N>/… fold
+// into that issue/PR (deduped by number, titled from the record file);
+// everything else is a code match. Fixed-string, case-insensitive; caps every
+// bucket hard so the reply can't balloon into a huge tunnel payload. Runs off
+// the GUI thread (git grep can be slow on a big tree), so it must not touch
+// `this`.
+QString recordTitle(const QString &mirrorPath, const QString &ref,
+                    const QString &relPath)
 {
     QByteArray output;
     if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + relPath}, output))
         return QString();
+    if (relPath.endsWith(QLatin1String(".json"))) {
+        const QJsonObject obj = QJsonDocument::fromJson(output).object();
+        return obj.value(QStringLiteral("title")).toString();
+    }
     for (const QByteArray &line : output.left(4096).split('\n')) {
         const QString text = QString::fromUtf8(line);
         if (text.startsWith(QLatin1String("title:")))
@@ -304,8 +309,9 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
     QSet<int> seenIssue;
     QSet<int> seenPull;
     static const QRegularExpression rowRe(QStringLiteral("^(.+?):(\\d+):(.*)$"));
-    static const QRegularExpression numberedRe(
-        QStringLiteral("^(issues|pulls)/(\\d+)/"));
+    static const QRegularExpression issueRe(
+        QStringLiteral("^\\.forkmesh/issues/(\\d+)/"));
+    static const QRegularExpression pullRe(QStringLiteral("^pulls/(\\d+)/"));
     const QString prefix = ref + QLatin1Char(':');
 
     for (const QByteArray &raw : output.split('\n')) {
@@ -322,10 +328,13 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
         const int lineNo = m.captured(2).toInt();
         const QString text = m.captured(3).trimmed().left(200);
 
-        const QRegularExpressionMatch nm = numberedRe.match(path);
-        if (nm.hasMatch()) {
-            const int number = nm.captured(2).toInt();
-            const bool isIssue = nm.captured(1) == QLatin1String("issues");
+        const QRegularExpressionMatch issueMatch = issueRe.match(path);
+        const QRegularExpressionMatch pullMatch = pullRe.match(path);
+        if (issueMatch.hasMatch() || pullMatch.hasMatch()) {
+            const bool isIssue = issueMatch.hasMatch();
+            const int number =
+                issueMatch.hasMatch() ? issueMatch.captured(1).toInt()
+                                      : pullMatch.captured(1).toInt();
             QSet<int> &seen = isIssue ? seenIssue : seenPull;
             if (seen.contains(number))
                 continue;
@@ -334,11 +343,12 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
                 continue;
             seen.insert(number);
             const QString titleFile =
-                isIssue ? QStringLiteral("issues/%1/issue.md").arg(number)
-                        : QStringLiteral("pulls/%1/pull.md").arg(number);
+                isIssue
+                    ? QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(number)
+                    : QStringLiteral("pulls/%1/pull.md").arg(number);
             bucket.append(QJsonObject{
                 {"number", number},
-                {"title", frontMatterTitle(mirrorPath, ref, titleFile)},
+                {"title", recordTitle(mirrorPath, ref, titleFile)},
                 {"snippet", text}});
         } else if (code.size() < kMaxCode) {
             code.append(QJsonObject{
@@ -348,8 +358,8 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
     return {{"ok", true}, {"issues", issues}, {"pulls", pulls}, {"code", code}};
 }
 
-// Count the numbered sub-directories (1/, 2/, …) under a top-level folder such
-// as issues/, pulls/ or discussions/. Each maps to one filed item, so this is
+// Count the numbered sub-directories (1/, 2/, …) under a metadata folder such
+// as .forkmesh/issues/, pulls/ or discussions/. Each maps to one filed item, so this is
 // the tally the website shows in its tab badges. A missing folder counts as 0.
 int countNumberedDirs(const QString &mirrorPath, const QString &ref,
                       const QString &dir)
@@ -1285,7 +1295,8 @@ QJsonObject RepoHost::buildRootCounts(const QString &ref) const
     if (runGit(m_mirrorPath, {"rev-list", "--count", ref}, output))
         commits = QString::fromUtf8(output).trimmed().toInt();
     return QJsonObject{
-        {"issues", countNumberedDirs(m_mirrorPath, ref, QStringLiteral("issues"))},
+        {"issues",
+         countNumberedDirs(m_mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
         {"pulls", countNumberedDirs(m_mirrorPath, ref, QStringLiteral("pulls"))},
         {"discussions",
          countNumberedDirs(m_mirrorPath, ref, QStringLiteral("discussions"))},

@@ -1,0 +1,81 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 249,
+  "title": "do an optimization pass of everything make sure the whole app is snappy",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 9,
+  "progress": 15,
+  "assignees": [],
+  "createdAt": 1782364796679,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-249",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782364796679,
+      "title": "do an optimization pass of everything make sure the whole app is snappy",
+      "body": "",
+      "attachments": [],
+      "sig": "5_n2mIZw4EpqqkSG7sPeZP8Qe_8Gvvhd5g8RbkAHXqmqKoKXeAC3VzDS5VNAoN73pmHpW97WKPcAr_0TsVIaDQ"
+    },
+    {
+      "type": "priority",
+      "id": "e1620d5c-6e11-4e42-a7cd-6fcf5f88486a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649950,
+      "priority": 43,
+      "sig": "xdPldFlf72yw54qPcF0hp80WdyH-RRyQ7cVMapmQyvAAwbKKNhArpR-sD4sewkWtmz2shYemDO52gKPQx--ZDw"
+    },
+    {
+      "type": "labels",
+      "id": "9d750d9c-5108-4db1-bf32-e6f28bfa2d95",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285529,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "O67x96Dcr5mIJZayX4PI9Bkv5bcVdOg67HE1ao8HpjmDlNoCmNm3fHUlX0bB0MZxiRc9M1FeDd41i31XcbJLBQ"
+    },
+    {
+      "type": "progress",
+      "id": "d3fe701b-89d3-4d1f-a3fd-1d41d6a744ec",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285569,
+      "progress": 15,
+      "sig": "o3s-tmWqsx32F3QPJW6nqIt8ejS0BxyymzKGGQYrnnHkFKdoljIss3-waNlSycXr0yqKUUP3E1s3GpbwpOvFBg"
+    },
+    {
+      "type": "priority",
+      "id": "1d7c3ebf-31ef-4861-921a-477424f0076c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710486622,
+      "priority": 9,
+      "sig": "41SjOuGmiPGyZn1CG-4oNio2WoBO90axZjNMv5i8zvQMp06gyD8Rs-reZP7Z0pg6Af1GWplgMsrHdJUQXCuOAA"
+    },
+    {
+      "type": "status",
+      "id": "04382818-c73a-46cd-aa16-7a3f3e2ad895",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710574226,
+      "status": "closed",
+      "sig": "xEfAcy90V1lETCKOW1YVa6KUf9URu2y3xFBe_TN6q1M03wcYQqaE5xTAMMWH0ivAb2H5nxLHhCWjgj42Y2C9CA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782710574226
+}

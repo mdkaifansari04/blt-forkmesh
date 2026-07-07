@@ -1,0 +1,76 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 202,
+  "title": "delete pr and branch makes the app freeze",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 4,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782349190544,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-202",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782349190544,
+      "title": "delete pr and branch makes the app freeze",
+      "body": "",
+      "attachments": [],
+      "sig": "PN4zb8x8fF7CmL1QmvOojexjqtLCKu3SCmmWV3YeEF_8aDe52Xqhg3XZPo2wXgeyCa53W_m-d_aGSLC_PAJuCA"
+    },
+    {
+      "type": "priority",
+      "id": "0f234fa4-a739-47aa-b43f-6ee2c965099d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482623,
+      "priority": 4,
+      "sig": "LanDGuONNW5pVur-GNA3zDsEBz4q3xtsa1VfgVinOEaftUyOwfkga_OoZw8svwTjobxEdemC7XahiCxQTsBbAg"
+    },
+    {
+      "type": "agent",
+      "id": "af86bb80-a2f5-4e58-9f7a-8505e17c2c84",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782357852804,
+      "agentProvider": "claude-code",
+      "agentSessionId": 8,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "YLEo19Exa86MRl3yU-Ll-bfZfid0CufXjvqtp_LzyEYocM1MmyxwC0WAg4cIbWLiniPW_QrEsSC6b7XGUYqsCg"
+    },
+    {
+      "type": "status",
+      "id": "a99b4d00-93ca-41b4-a3fd-9004ca6fa7cb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782358608718,
+      "status": "closed",
+      "sig": "rYqlujAygPLqVa_PbkPxXfWvK0EH-Bd3Xn8J12E27G_woU2GhuPI1Yq2datj0YgDkC2wKwAXKPhG_3aHOHFlBA"
+    },
+    {
+      "type": "agent",
+      "id": "1cdc22f7-452b-4a98-9545-745a7772dcd9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782360590474,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "pXvt9yZBODgn1LIKr6ZF7gyPtL-XwLSg5Wf9UGAOXACt9z0mejZt1W9ISOM2aN4GUSmqoyofa6V4uyCycWokDg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782360590474
+}

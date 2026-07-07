@@ -1,0 +1,113 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 11,
+  "title": "Leaderboards",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "MVP launch",
+  "priority": 27,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1781642499089,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-11",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781642499089,
+      "title": "Leaderboards",
+      "body": "Longest hosted repos, most mirrored repos, mainnode uptime, contributor activity, and BCH received by projects/contributors/mainnodes.",
+      "attachments": [],
+      "sig": "zaGmrgWldcsYpqSQHXYQfkbHuBy_A_JJX_yxRWJ37Xz18JMFRfywwd4-S4TlBkVEwi6FZZ42P4eRgnqhrElTDA"
+    },
+    {
+      "type": "vote",
+      "id": "88b976a0-68b8-4666-80ee-6ea7d859e0a1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781720532492,
+      "sig": "0FF-rVyDzqXuxu9SEDhW5GIJy-4MIBElArNb6lEQXPUBTuaMQHELCWyuijC6xnMWF-pyyCjGf2JUJUS3PZWzAw"
+    },
+    {
+      "type": "milestone",
+      "id": "4dc9f70e-fd5c-451e-a77b-e80d59af30a8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198376,
+      "milestone": "MVP launch",
+      "sig": "mltALXd_XTs3FlW82u6-ClzX32KREIOhiTmzhja49b0fAZ9MCvxq_xJL29K2OXlAAwB8l46qxWcM7P8MkwgwBg"
+    },
+    {
+      "type": "priority",
+      "id": "cdbff9b7-061b-42b2-a532-f3133c25acfe",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198376,
+      "priority": 75,
+      "sig": "DEaCudVxGbgd2NAewVW-WnWFBWnFtvCDoo5Y3PCGkPTPLQiJhWPiBacG1JXRAApLyX4zPDDTwFI3laL3u0XSCw"
+    },
+    {
+      "type": "bounty",
+      "id": "1d2991ab-e26d-49ae-b73f-5abb299cc16f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193056288,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "28XU6eAeNUC9o8SpsWx6KFuSFO610tkC9ErQmIapDxUyY5yQWx5YvGWotKDOkQ3gUZjA5Xaj9KQ0UpFI0DjxAQ"
+    },
+    {
+      "type": "vote",
+      "id": "e5458709-88bf-4c74-afab-2361cd1358ee",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201296558,
+      "sig": "SE0lpX_DVk3su2r9W3lEckWFVm2ZpPPpg7OuVhgOL4mdCoJPZev-_QGGlQQvtkj8w7oFKrWr14bicByXMum1Bw"
+    },
+    {
+      "type": "vote",
+      "id": "58507a5f-10b3-4462-9756-76e8fb8a539a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201298149,
+      "sig": "N8zqY89dy1qxaAPgPmSUyz4HTCLT4cBgC1zyUSsPTiainMifVHX-cemA4Om_qfIeFPFc_WG5ubUkJn_wEwFtAw"
+    },
+    {
+      "type": "vote",
+      "id": "00a509ab-f9bd-4e17-a81f-754a54a5a3d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201299327,
+      "sig": "O4ULtPp3BiEeFY3h4653f8qOYMZfAE62Ge7yGMlfSa_9hNAsYI-isMVShmvt8YhHGMC7d3yQk7yjPSkxImXrBQ"
+    },
+    {
+      "type": "priority",
+      "id": "b5abaa09-634a-470e-8a7f-67e7cd81ed24",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180217,
+      "priority": 27,
+      "sig": "smKPr4iMXo0FGsQBTv_oix1PSe7hIcBQVKBPF19jYmimw9rl8CDAitqkFWBD6NFEeo4Zg0CN6UIlvPv14mIWBw"
+    },
+    {
+      "type": "status",
+      "id": "05266c43-2640-4e49-8acc-c63f0b082ff4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782276734014,
+      "status": "closed",
+      "sig": "xcjeOu20XY-5mTSpYW9BsmqoUU0xCRnFqhBOfsF2UFyRMZmb6OsN3RUiarA6Am9V_7PkBCNYlvZ5NE2ER-kMCA"
+    }
+  ],
+  "votes": 4,
+  "updatedAt": 1782276734014
+}

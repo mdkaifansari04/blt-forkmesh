@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 363,
+  "title": "[docs + code] Mainnode protocol spec + fully configurable mainnode URL",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "v1",
+  "priority": 30,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818262,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-363",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818262,
+      "title": "[docs + code] Mainnode protocol spec + fully configurable mainnode URL",
+      "body": "**Roadmap Phase 4 (a real network).** Federation starts by making \"mainnode\" a specification, not this one deployment.\n\n- Docs (writing, not code — hence the title tag): `docs/protocol.md` covering the identity and signature schemes (`issues/README.md` already documents the issue canonical string; catalog records, state attestation, presence, and the clone tunnel need the same treatment), every `/api` route, and the two-request clone flow with sticky pinning.\n- Code: the mainnode endpoint is hardcoded (`wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws`, `qt_client/src/MainWindowInternal.h` ~2013; first-run host screen ~5559). Thread a configurable mainnode base host through client and website so a self-hosted mainnode is a first-class target. `cloudflare_worker/deploy.sh` already self-verifies deploys via `/api/version` — document that path as the self-hosting guide.\n\nAcceptance: a second party stands up a working mainnode from the spec alone and points a stock desktop client at it.",
+      "attachments": [],
+      "sig": "XHPi70C02clHf4-aoYi5BTFl14gDA_nTRwcoIugzcusHQeKTp-Fqoy5EUbgwQOluPiUf6-Th1RiUI_rhEW_yDg"
+    },
+    {
+      "type": "agent",
+      "id": "9d1e08c6-976f-496f-b4d1-506b598b6579",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141202536,
+      "agentProvider": "claude-code",
+      "agentSessionId": 240,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "JlNHVp1tXyHwZYKNUGLBeyNNSlvIzM0N52Z3nEIWgIrWEBaiS3Yt5DdMlOW9W1RlUzCDPwfqscFs5szYkk39BQ"
+    },
+    {
+      "type": "assignees",
+      "id": "ded14f38-fdc0-4aaa-b508-dd3073e92e3b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141202617,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "lQf6QFZPnHxF9kEkTPMhBiVmk1Vx3ZJXMOGWsb8UcsLsAo97v5JQGBderJ5MzhxV5YJfck9BcQbeEPfEN2g1BA"
+    },
+    {
+      "type": "comment",
+      "id": "7a3d5baa-a1cd-4bb0-9e64-82504d3da068",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142532208,
+      "body": "Closed by merged branch \"agent/issue-363-docs-code-mainnode-protocol-spec-fully-configura\".",
+      "attachments": [],
+      "sig": "H8k5Y_xEn9D1pK_Xsrp26WcjiwSSwgozB7excHD3wZJEt1KmoRn9oNb6FewFMYbmss9MlJjGu3gEXdE9rU5zCQ"
+    },
+    {
+      "type": "status",
+      "id": "26b15036-ea42-4527-aaa2-c816c41f5aa0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783142532297,
+      "status": "closed",
+      "sig": "Uw2eqIDxr3nDzKayO-ylQh2Yy_FtQyq7MXLy7nGp6HdEdESTwYJg_4431_XxcJpDe9fN3pRNrV503aFBkgohAQ"
+    },
+    {
+      "type": "agent",
+      "id": "681bc6aa-de3a-4880-9dba-a59c9e9702ba",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149304092,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "7m7xTEekNFOB1T6rpRCbd3Ze_I8HZx0CkRVonzplrZuxnek1H9L1l0OVxrjrbPcdHmPll8rJCwMlsjor9rLLAQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149304092
+}

@@ -1,0 +1,90 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 359,
+  "title": "Inline PR review comments and review states (human review that holds up)",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "v1",
+  "priority": 21,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783116818258,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-359",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818258,
+      "title": "Inline PR review comments and review states (human review that holds up)",
+      "body": "**Roadmap Phase 3.** AI review already anchors suggestions to diff hunks (`suggestionPatch` mini-diffs with verify-and-relocate on apply — `qt_client/src/PullAiReview.cpp`); human reviewers get no equivalent.\n\n- Storage: signed `review-comment` events under `pulls/<N>/` using the same append-only `NNNN-<type>.md` pattern and canonical-string signature scheme documented in `issues/README.md`, with a file + line anchor included in the signed content.\n- Rendering: pin comments to diff lines in the review pane (`qt_client/src/PullReviewModel.cpp`, `MainWindowPulls.cpp`), reusing the suggestionPatch relocate-on-drift logic when the PR is updated.\n- Review states: `approve` / `request-changes` as signed events; an unresolved request-changes gates the merge button.\n- Web: read-only rendering in `cloudflare_worker/public/dashboard.js` can follow as a second step.",
+      "attachments": [],
+      "sig": "885Ggk7rpGbmffgPjxPARDG7cD0Rdbg6JViDIq2Zd5Ioi_vvNHPZnMIzO87os46hNukgDpCuj33r7Fsyd-SRAg"
+    },
+    {
+      "type": "agent",
+      "id": "6bb33c0a-119f-4de6-96e1-3e3aed798625",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124216095,
+      "agentProvider": "claude-code",
+      "agentSessionId": 160,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "Ko3ALrnVvORRhkM8UBQeQ8JH64Ys2ssIEFnTRoFONAQ5Av_9eVVqsuExoD6a8ipADY5qb8Dpy0ea0YV8oGxVBA"
+    },
+    {
+      "type": "assignees",
+      "id": "3f35a60b-cf1c-484b-a9e5-5e4fd7a9851f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124216178,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "OfOlLqxheYI3JqwW4_VKtjpbJrDivE8tynvPtvBO4ZDFnbE9fZSgTpGeGYzCmHZlfjgmJgtnRr7Hp5tmYbFdAQ"
+    },
+    {
+      "type": "comment",
+      "id": "86ab9286-9935-4af4-b8b5-49a786d9c3ff",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124466978,
+      "body": "Closed by merged branch \"agent/issue-359-inline-pr-review-comments-and-review-states-huma\".",
+      "attachments": [],
+      "sig": "cIRyUCFbNI1bCacdvPYfXBeH_ZiXYQTheRK7poaLMvnwnBzaojNoEzFOy27dxeX6W4vcbMSrtavm_UNiQdtlCg"
+    },
+    {
+      "type": "status",
+      "id": "002036e8-bfd1-4f05-893f-bb9464c4e87e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783124467043,
+      "status": "closed",
+      "sig": "oLsp72sT_94yK_zsujEI8tVEdHE2KVBL_T02WgWooqtKe1guIfu7kccDDKJLtn1-wL2Ls_W0dlFLzimFVhCJCA"
+    },
+    {
+      "type": "agent",
+      "id": "5ff78e40-14f6-4b05-b093-c859987859be",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783126244512,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "UTMA5XsnzrI5gDMIiKt0aS7f4Zd1b76WADRKAWVhTT3As84_IMADlqw-nlaNWZJnBlY3Aj6hWtwkWWjFXE1yCg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783126244512
+}

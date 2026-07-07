@@ -1280,9 +1280,9 @@ void MainWindow::reloadIssues()
         return;
     }
     const IssueStore store = issueStoreForCurrentRepo();
-    // Skip re-reading git and rebuilding the table when issues/ is byte-for-byte
+    // Skip re-reading git and rebuilding the table when issue metadata is byte-for-byte
     // unchanged since the last load (the common case: this fires on every push, but
-    // a code-only commit doesn't touch issues/). Tearing the rows down and back up
+    // a code-only commit doesn't touch issue metadata). Tearing the rows down and back up
     // mid-interaction drops the click/keystroke the user aimed at a row or the
     // search box, which is what made the app feel unresponsive. Filter changes call
     // refreshIssueList() directly, so they still re-filter the live data.
@@ -2516,11 +2516,13 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     const int idx = issuesRepoIndex();
     const QString imageBase =
-        idx >= 0 ? m_repositories.at(idx).localPath + "/issues/" +
+        idx >= 0 ? m_repositories.at(idx).localPath + "/.forkmesh/issues/" +
                        QString::number(issue.number) + "/"
                  : QString();
     const bool haveLocalFiles = !imageBase.isEmpty() &&
-                                QFileInfo::exists(imageBase + "issue.md");
+                                QFileInfo::exists(
+                                    imageBase + QStringLiteral("issue-%1.json")
+                                                    .arg(issue.number));
     const bool writable = issueStoreForCurrentRepo().canWrite();
 
     auto addCard = [&](const IssueEvent &ev, bool isOpen) {
@@ -2655,7 +2657,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
             const int repoIdx = issuesRepoIndex();
             if (repoIdx >= 0)
                 editor->setPreviewBasePath(m_repositories.at(repoIdx).localPath +
-                                           "/issues/" + QString::number(num));
+                                           "/.forkmesh/issues/" +
+                                           QString::number(num));
             bodyLayout->addWidget(editor);
             auto *attach = new QPushButton("Paste, drop, or click to add files");
             attach->setObjectName("ghostButton");
@@ -3213,7 +3216,7 @@ void MainWindow::updateIssueActionState()
 
 void MainWindow::promptNewIssue()
 {
-    // Owners write straight to issues/; mirror nodes compose the same page but
+    // Owners write straight to .forkmesh/issues/; mirror nodes compose the same page but
     // submit to the source of truth's inbox (handled in the create button). Only
     // block when there is no repo selected at all.
     if (issuesRepoIndex() < 0)
@@ -3405,7 +3408,7 @@ void MainWindow::promptNewIssue()
         IssueStore store = issueStoreForCurrentRepo();
         // On a mirror (no work tree) we can't write the issue locally, so send a
         // signed "open" event to the source of truth's inbox; the owner merges it
-        // into issues/ preserving us as the author, and it syncs back to mirrors.
+        // into .forkmesh/issues/ preserving us as the author, and it syncs back to mirrors.
         if (!store.canWrite()) {
             const QPointer<QWidget> pageGuard(page);
             createButton->setEnabled(false);
@@ -4215,7 +4218,6 @@ void MainWindow::askAiForCurrentIssue()
                 ev.type = "comment";
                 ev.body = comment;
                 ev = signingStore.makeSignedEvent(issueNumber, ev);
-                ev.bodyFile = "comments/" + ev.id + ".md";
                 QJsonObject eventJson = ev.toJson();
                 eventJson.insert("body", ev.body);
                 const QJsonObject payload{{"owner", selectedRepo.owner},
@@ -6578,9 +6580,6 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     ev.type = "comment";
     ev.body = text;
     ev = store.makeSignedEvent(m_currentIssueNumber, ev);
-    // bodyFile isn't part of the signature; name it after the (now-assigned) id
-    // so the maintainer's node stores it predictably.
-    ev.bodyFile = "comments/" + ev.id + ".md";
 
     QJsonObject eventJson = ev.toJson();
     eventJson.insert("body", ev.body); // worker needs the text to verify the sig
@@ -7000,7 +6999,8 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         }
         if (interactive)
             setIssueInlineNotice(
-                QStringLiteral("Merged %1 submission(s) into issues/.").arg(merged));
+                QStringLiteral("Merged %1 submission(s) into .forkmesh/issues/.")
+                    .arg(merged));
 
         // Notify on new issues filed by other nodes (the source of truth should
         // see incoming issues) and on inbound comments — interactive or not.

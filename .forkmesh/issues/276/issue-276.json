@@ -1,0 +1,158 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 276,
+  "title": "fix icon / avatar display on PR detail page",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 14,
+  "progress": 5,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782485809121,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-276",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782485809121,
+      "title": "fix icon / avatar display on PR detail page",
+      "body": "",
+      "attachments": [],
+      "sig": "5rLAs9zxuUnqqSdQft0RJAnAlxaYgX91W20eqeHjknY1bRBkerRsg_4xSxVT35jfJl1sdA8uiRu4eMDC3hC_CQ"
+    },
+    {
+      "type": "priority",
+      "id": "a5539d00-7e66-407e-9ed6-1efbb5138cbd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650349,
+      "priority": 62,
+      "sig": "60qozETk-9sh2N0j0Lq4VE2Jd2V9b-w8957GjN13hE_BtSdgT_FCLqJGcAAPhV8pSFKd2XHfhvnJOJD8eWO6BA"
+    },
+    {
+      "type": "labels",
+      "id": "8e41b3cf-cc0d-4a57-a32e-46b484aa78b2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287335,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "LrsYjcj404pR4d63Wn2CLXHNv8UHoyf7uWxDbsb2BNPClaoaSw0Q397WDKTSrT9_t7P2tZisIZb57DrJV61pAg"
+    },
+    {
+      "type": "progress",
+      "id": "46a0b285-20b9-469b-af52-3ffd68b88747",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287377,
+      "progress": 40,
+      "sig": "ucmJq-AtGsgfTNCLlQhzwlxFN3_g6zVtFpLhYiBxmilTEZRhOSW0Ft1c7ybGx6UTp2T2_n_KMMDKpXLxCKryDw"
+    },
+    {
+      "type": "labels",
+      "id": "604d2448-2203-4bb3-b482-5f80a7136b1c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669015,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "goEjgfJextu_a9JxKRqKnN2-Caz3YcEea4AaQs6-8kkf87qdZeFMj-fO-XPxYOfTAto_JlU-Al3EiWvIYfyNCw"
+    },
+    {
+      "type": "progress",
+      "id": "5a55e5c7-5d06-4266-bdf5-e55bc9d73c39",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669038,
+      "progress": 5,
+      "sig": "8lV6jVU6gEUbK09TKeg5wgXl4UmK7xRfYswognqWDDuJ7TJjUBnRPig6BhaFUtG15_AVqd1JqRFY8OrK0mcJDQ"
+    },
+    {
+      "type": "comment",
+      "id": "cf8e94cb-23ad-4fbd-a54a-a0a7a4d1572d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711669058,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nicon/avatar display fix on PR detail not evidenced",
+      "attachments": [],
+      "sig": "vtHSEED7rmz21JBdtKq6k5mER4-NhNUyjk7-2X4BInLzqAPjI_I3EhEtMweBlbenmhe6yJ6UBBYLb-y-i9niAg"
+    },
+    {
+      "type": "priority",
+      "id": "1d2368ba-093e-4b98-bba9-c05231789a86",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834793,
+      "priority": 14,
+      "sig": "eY3GHj5vMLbnfNdQjypWZZbv2DLXH81O79wtw9eLn_7zKAkmeUjFXhY7lFMjES6cQZb2beGdh2fH7A95Dw2tCQ"
+    },
+    {
+      "type": "agent",
+      "id": "788b3c08-5cef-4d91-ba57-201096786573",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792007969,
+      "agentProvider": "claude-code",
+      "agentSessionId": 7,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "d7uG59hmi3WlI-H2WRlnug2nobNaJdZzLYr-p2kaxdy1pPe9dOAboDngPYVTjStcZrqtcc_ldE5qmnYxt3oDCg"
+    },
+    {
+      "type": "assignees",
+      "id": "f65766f6-3e82-4c67-946a-f0a368a0fa7e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792007995,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "HHKPnEMUnVAKZ6EtvJ7G-mDYbpen6XyY7WNb8y9tGILhB_n5ouf9NjVu0ryjUEsKWm98M4sDEPZwKGLNqCu5Cg"
+    },
+    {
+      "type": "comment",
+      "id": "111d9f41-40da-49a7-99f0-109c4a521fbf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792343927,
+      "body": "Closed by merged branch \"agent/issue-276-fix-icon-avatar-display-on-pr-detail-page\".",
+      "attachments": [],
+      "sig": "8JANg9dqarxh-Y9qDltKItO_yY1CmjwFuCw7tW0rKZL2mTWsUl9Hb2x1v0_edZvd_CCKbjjlz2DjLonpDFchAg"
+    },
+    {
+      "type": "status",
+      "id": "1a3ea921-7bdf-4a04-9bf9-2362f8e2756c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782792343953,
+      "status": "closed",
+      "sig": "OlteZ9m7woRv5mPiJ---dvaJ0-m1xn5e7lRPuBKHEJxSWoZQ6UjSUse4Vjbc6FlHVhVKAcsc_LayeYjQXQQWAg"
+    },
+    {
+      "type": "agent",
+      "id": "83026b71-ac4b-4aad-8d36-860457db7acf",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782793644158,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "1GWu67zn2lhl9ZjUamCdSpWtVvoHx6ARisU7jSso122-6hqZy85VBmf8_0XQiCqgIdKQHVOJRKMzq52F1Sw9Bg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782793644158
+}

@@ -1,0 +1,120 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 244,
+  "title": "have the ability to send images in the agent prompt area",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 27,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782362633929,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-244",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782362633929,
+      "title": "have the ability to send images in the agent prompt area",
+      "body": "",
+      "attachments": [],
+      "sig": "buCXPTFqlX00apV9aoh7RaKINZ8D8dGECwHl1V72WtYjP7acZ96dh6Fo1KMrD5uKt-OudRHNUSxQxbFJylEYBA"
+    },
+    {
+      "type": "priority",
+      "id": "abffb9d0-208b-4dfa-90cb-edf9eca861c0",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649878,
+      "priority": 40,
+      "sig": "lLFWlLyZy75LvsfKn8qaAD4NwUujeXir-jIJQV-_ghL7ll1Sg9MhRzcp6jXTmj04tWMHGM1o0sZZcp6YKDywBA"
+    },
+    {
+      "type": "labels",
+      "id": "dcf7f9e8-352d-4392-ae16-b36a87e2d8d5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285169,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "x3CrmziHEx1Sk7EhfIbriPdg5liRd7OW_vi7egPBFWykcEA371cnUlc_p4sG98X7_gdWJ-8mwbOYG5t21WUkAg"
+    },
+    {
+      "type": "progress",
+      "id": "511a0f58-c5cf-42fa-a257-a1f52bf808d8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687285212,
+      "progress": 50,
+      "sig": "fHagMG0_CqubuWIjYSXnUoJg6YeQmk-uE3aClViJBw_65Dbx1FUDGNWB9MvUAtwa64tLxZrNvr0ZHO1Xk42qBw"
+    },
+    {
+      "type": "priority",
+      "id": "0c134978-2f2e-427c-bfcb-74c02f2d09ed",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487519,
+      "priority": 48,
+      "sig": "nAE1qOaXymIFFfIceBoTkbwGj8JO_Qm12uPYc_JEz3JIlUGsswHx7Iy16I80zcABmyWLdHZb9vxvpq2I5gTcCA"
+    },
+    {
+      "type": "labels",
+      "id": "6f2a05f0-5be4-4d95-8804-aebe08ce7f7b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667698,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "Hn5EYbBdfhRF5X_lgAlabW1r-gI1RsC7_Y39i67H77vumyVBR7YnMsxAx12sRHUswDqqzUyXGFpPvGpAAaTABw"
+    },
+    {
+      "type": "progress",
+      "id": "2a6086e6-3c8f-463c-9ddf-20bb940bade1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667722,
+      "progress": 5,
+      "sig": "wj4vpNZJ0GjpqWi3PuE0FNVjX2PgMcT4bcE_mhsSP01pDHsHCxDj54eqtnJD8GKFU506rmNSPVrmt2mWG5MIAw"
+    },
+    {
+      "type": "comment",
+      "id": "dd92812e-df73-45b6-8bf6-ba94b6757a42",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667746,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nimage upload in agent prompt area not evidenced",
+      "attachments": [],
+      "sig": "ZWE9ZgQ05QQXlb6oq5Oy15kzBSfZtGC0jWCKuhTSuidOllsfkUGAm9g88ZRtuTL-f58tUnIJ1eBWaNQOqI5yDQ"
+    },
+    {
+      "type": "priority",
+      "id": "965e7988-e4f5-4907-9141-c2d2fc9d497a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835127,
+      "priority": 27,
+      "sig": "1Q4wknza3K6xzGZNEA_eVi5cnu899GaSLi3gzxIvtyJZEDRSsELSUiZuy17DQrQiQsjNm30s3WZ16UKmuM_RDQ"
+    },
+    {
+      "type": "status",
+      "id": "a5537b08-90ec-47b3-9869-5d53e16c8915",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795031903,
+      "status": "closed",
+      "sig": "KWTaCc17KQWhziKmboDSRrdECEYAfZnsnRWy9bvQcGPNQyYO9a62zEJCYfJFIKh_WSfmByiS1FIuhhckJiEvCQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782795031903
+}

@@ -1,0 +1,62 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 225,
+  "title": "the pin check is blocking make it run in the background please",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 7,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782354812078,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-225",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782354812078,
+      "title": "the pin check is blocking make it run in the background please",
+      "body": "",
+      "attachments": [],
+      "sig": "paDEhVtn1HNEDZYY7WwiO7x0K5Q-AO7KE7CvPoYKgK7nMbp3Ky9rfpS_pNeptW7ejDvy9zSg1ijP9HsoX2KlAQ"
+    },
+    {
+      "type": "priority",
+      "id": "cf0c5018-0b42-4133-9ce9-529724236d5e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482643,
+      "priority": 7,
+      "sig": "mGSz5P8x1TESR6QOs256An1vehAkpjEIbUAqMU1kOnAc2Xchv2udkNudMDZUgBG7cxot-M-ob-8v0mqeWY-ZBg"
+    },
+    {
+      "type": "comment",
+      "id": "d2272d3a-3670-4cd8-884b-d316a0513d16",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782357779990,
+      "body": "its working better now",
+      "attachments": [],
+      "sig": "K3uycPEA0J_BwMg2ndcTvMn28SJEG_45uJjj335NhiXzf2V--sHT-rD68E-xwQS7gZiSKyjLUGrUswRjQWchCA"
+    },
+    {
+      "type": "status",
+      "id": "8fed2752-92dd-470b-8c2b-e97138edda94",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782357780053,
+      "status": "closed",
+      "sig": "9dsh08w8H9rD5zhOmyq7z4bHtOs1KUoFra8pd0EwcaykYuvsjHkm2fPtir4RkL0BY-PBr4w3lfqpFXyUX0CiCw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782357780053
+}

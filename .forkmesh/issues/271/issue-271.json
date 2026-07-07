@@ -1,0 +1,135 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 271,
+  "title": "when deleting a worktree from the worktree section also delete it's branch",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 34,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782483168534,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-271",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782483168534,
+      "title": "when deleting a worktree from the worktree section also delete it's branch",
+      "body": "",
+      "attachments": [],
+      "sig": "qh7FSiXJsPE-c_RhjkVoVPQVTxtdzxIzpRtz4Wx5FGnc2sPX1OA2DcKnsF4l2yUPbHeNXOPlk5hirMBW1uDeAw"
+    },
+    {
+      "type": "agent",
+      "id": "ee3d05b6-d9ae-43db-80bc-e5d766775ef8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782483168638,
+      "agentProvider": "claude-code",
+      "agentSessionId": 16,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "2QSMndzGLBNYNMA0gryUJCEoUurl0XNpCX7UBkPDK38Ixi8jxaA5CF6yiDNkED0bz9yZpMvzFGq0iOAaYrN6DQ"
+    },
+    {
+      "type": "agent",
+      "id": "de96468f-b9b6-4616-9776-bbefbc831841",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782484808396,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "E2BSqUMAzwAbjpPx-_bvJwZif532uFXutPR7Kw0YPYTGFcbrtyZ8N5ESkt16yG-glN4Xc5r43egGUQYSH1IcDQ"
+    },
+    {
+      "type": "priority",
+      "id": "942e4aaf-7cc3-45d2-b028-26c9534c703b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650283,
+      "priority": 59,
+      "sig": "ht9bGq8bQk5YLaRDSpWv0mShmvXzqsrFJ1225JJJ-epwCG9IoY3c7pC8EuIhEcUSDY0CWjHujoe90sXPINjUCQ"
+    },
+    {
+      "type": "labels",
+      "id": "0fd45c8c-96a3-419f-b43c-d1110cb28b0e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287100,
+      "labels": [
+        "Complete"
+      ],
+      "sig": "xJV4qA4BWeZAmc2oiu0xIxkk9uDsyE2A-zlZYsBuACTnJSvIMiLs81AaJW9Bm-zVVaT80BXNVfTw-tP35kQZAg"
+    },
+    {
+      "type": "progress",
+      "id": "f209e97c-6b3a-43dd-8a50-278ae8b860ae",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687287138,
+      "progress": 85,
+      "sig": "0Ccb0_Ap1uPaDo592xZmNK7kjPJCUtWrOe9Qlbsn4KYmQ8-9M5keijBb2-7jNZw6OCE1Euax8gQrz5bHETOZDA"
+    },
+    {
+      "type": "priority",
+      "id": "e24de8ea-6db5-4c4c-9290-44151890e00f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487188,
+      "priority": 34,
+      "sig": "8VjKdzQGb3Bd85oIUUwajYdXJwzfuWUtG5S93xU9hTlyL3y1sSicjacdI6NaQqVm_FkTnTOuBKfaGabdMKTRDQ"
+    },
+    {
+      "type": "labels",
+      "id": "ce53ddfa-86df-4506-aa72-82d904d2cf6e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668777,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "sxYsg6QtkXFy7qa-2JKuAgN5XJqZ8-F0YW7-F6O-pQABcN1Vbqe7lT_Zqk79SpsE3po2SVtLRiSRBPUsvvdsDg"
+    },
+    {
+      "type": "progress",
+      "id": "aad26639-3cbc-4012-b513-c3615682774e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668810,
+      "progress": 5,
+      "sig": "x4Mk3FbvJtiuUpqqVHOQq2gcWdLmGD9OfZycPuqVsvE1KhkVUrr0kh6fdW0bt6T66t684-fnvBWehTesCORnBQ"
+    },
+    {
+      "type": "comment",
+      "id": "688c9195-7e45-44a8-ac57-39706d4d11ad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668837,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ndelete-branch-with-worktree behavior not evidenced",
+      "attachments": [],
+      "sig": "hf2beNzfJ8InXXqC9UQbpWNgNv0H0rey2Xy30f8Z9_b4AsusvJB0ieiUYjqy1F5XAfr5ryFWgBeQ7OU213JdCg"
+    },
+    {
+      "type": "status",
+      "id": "9f664d6e-b8ef-4aad-a500-fab2a9b19985",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796377004,
+      "status": "closed",
+      "sig": "OXSDgCHpAswAmATTEuhMHy_8MqYejq8m2L2MltPst2Z5UARx0JaB33vlp4wUxsPkTR2EYBZcT6SsUk0tJuu-Dg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782796377004
+}

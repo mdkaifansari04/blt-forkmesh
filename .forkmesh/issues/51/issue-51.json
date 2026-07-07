@@ -1,0 +1,102 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 51,
+  "title": "security is always number one we need to have this documented everywhere and continually scan and check that everything is secure on every commit",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "MVP launch",
+  "priority": 2,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1781732513363,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-51",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781732513363,
+      "title": "security is always number one we need to have this documented everywhere and continually scan and check that everything is secure on every commit",
+      "body": "",
+      "attachments": [],
+      "sig": "mZH6v0UVwx0MtXTRbtKeQazLnN1r0qAXa-HIRsGYhKb9Z9ll5j-goasFB1yEcI3riw0tMhHQx4NvvUPmaE87Dg"
+    },
+    {
+      "type": "labels",
+      "id": "6d88bf90-c2f0-42e0-86fe-879bec3058f9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198387,
+      "labels": [
+        "security"
+      ],
+      "sig": "-lpmnWn3NKEVhphgKzxiqRQPBEUl0reN7FpunurCZ54cBOH7_Rm6oFwpAZClfcw1gBX-q0Eij2qB2GxeYDJMCA"
+    },
+    {
+      "type": "milestone",
+      "id": "200586c8-901e-46b6-8213-9d992bc17770",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198387,
+      "milestone": "MVP launch",
+      "sig": "6T-V_k03KQFsWVSoWlDc8zH-FO8FaekWn0C9y6aXGlBLE6DzNtr4UbCbMAeDPCIqZNMdXAJ5bmg5QAL6e6PQDA"
+    },
+    {
+      "type": "priority",
+      "id": "24f33e04-f082-4d6a-911a-b335cca88cf6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198387,
+      "priority": 3,
+      "sig": "iV6kHvyRzooFYkFzYhQ4a9uR8yYsIpulhKqgpgockDxOEBCh0Xb06TELLXG7DutMlEyGvgw_28yEOTbP3WoTBg"
+    },
+    {
+      "type": "bounty",
+      "id": "1d46ee6e-035d-4f69-bd5b-b674694b89bc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193057143,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "x1PEyPK17kbjHvzG1ssptc9Blk4z7Ot4SRvjkole2ZvUeBQwQvdFs30poovKibGYActLcjxwYz8IFnY4d04mCQ"
+    },
+    {
+      "type": "priority",
+      "id": "635e6567-17e0-48c8-b0ee-6ae75ab8a9b3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180230,
+      "priority": 2,
+      "sig": "_galxVrTFRu-xNzSIMlRs3yL-JuT9ZTvyHSXHmseWVBOzsx_06chUOa1U0v_dyxLqsHivfFASROVg_WXJFPdDQ"
+    },
+    {
+      "type": "comment",
+      "id": "434be570-9904-4975-a1ad-04897d728e25",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782253707666,
+      "body": "we did a security pass, make sure to do one almost every day ",
+      "attachments": [],
+      "sig": "MAE6jVr1457e7ysUQnf0Y7J-5rAAyd9S_eMNE15EDmKRMP40cOBsAUsEdO8VH0eNKnwA-4CqgWnpIhBvp9b5BA"
+    },
+    {
+      "type": "status",
+      "id": "2e131f73-ba3f-48d3-9730-3fbc21c07416",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782253710716,
+      "status": "closed",
+      "sig": "apG92p4PV8RY1HA50O7WQXvnEMCYk2uhH8riouuIezXht0i917ZL1Nq3TGZGhJe4_KGq62VsHtLG2hf1dD13BA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782253710716
+}

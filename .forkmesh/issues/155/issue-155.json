@@ -1,0 +1,83 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 155,
+  "title": "on the code page show how much space each folder is taking along with it's lattest commit message and x ago time have the option for explorer or list view",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 19,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782179278553,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-155",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782179278553,
+      "title": "on the code page show how much space each folder is taking along with it's lattest commit message and x ago time have the option for explorer or list view",
+      "body": "",
+      "attachments": [],
+      "sig": "zy6JPbUOf1ic8lMZ8oVCM4hWg5sgg9WgGXcBR-uu5BSQ0SKZh4k4erlzmYkXI305a8w7ZvZJm8x4yOkTheJ5Aw"
+    },
+    {
+      "type": "labels",
+      "id": "32fbeb0f-0743-48ce-b5f1-9bb6eb9e6420",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924446,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "uJiCBYz_QGPO4J-yNeA-tHZf-OvDxRRNWNmFUwUrihekpZDuPb1vhTEHMI5qhX-m5QtnWKmMMJvboNklQV_7Bg"
+    },
+    {
+      "type": "priority",
+      "id": "4c4f5283-93d7-4f05-af6f-9c203220bf99",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924506,
+      "priority": 19,
+      "sig": "DqwDSVJ5Wj1isR57FLVVlc8QnIkXNgXas8-T9MI5xaPJ69SqNBbAgCBPItlNoJ-b80DBLshQpoMVie5NMWfxDg"
+    },
+    {
+      "type": "bounty",
+      "id": "bea57bbf-4f7d-4964-98c1-d2da9b89490d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058829,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "60OC9SR9-daESPHZBn3K9bGUFmjxMXtl6uUZaaVNtrBhEzYNS6sLK2iM_LVYiK0RriFauCnHSF_k7v3libDOBQ"
+    },
+    {
+      "type": "milestone",
+      "id": "89331a71-23b3-49a5-8117-d9e8c24effb3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180260,
+      "milestone": "Phase 2",
+      "sig": "Z7r1iU65si1tiOYkXpJ2_e6TR9zpRdEJMvZA7T9H01Rz88SQXsB6RijKWA2g-15rQ9wmCC5JTR6StJefvRFCBQ"
+    },
+    {
+      "type": "status",
+      "id": "6c0bd726-aceb-445e-9c29-831ceef76466",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782277399877,
+      "status": "closed",
+      "sig": "Zl250-jhceQqrHpbs59bmKR-OxM9NpzkEEshCdAZurmCgXegV69tf-fxJ-85CQM04gtf__d7N9B-SowdYuFJBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782277399877
+}

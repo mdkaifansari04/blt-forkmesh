@@ -1,0 +1,99 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 337,
+  "title": "Update qt app design",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 65,
+  "progress": 0,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1783051676,
+  "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1783051676",
+      "author": "HvXXnfD2USGnXue_hnzoVlyBZYdvJU7E5o_u3C8srtE",
+      "authorName": "jett",
+      "ts": 1783051676,
+      "title": "Update qt app design",
+      "body": "A Qt app looks nicer when you improve spacing, typography, consistency, and visual hierarchy before adding flashy effects.\n\n1. Use layouts properly\n\nAvoid fixed pixel positions. Use QVBoxLayout, QHBoxLayout, QGridLayout, and set good margins/spacing:\n\nauto *layout = new QVBoxLayout(this);\nlayout->setContentsMargins(16, 16, 16, 16);\nlayout->setSpacing(12);\n\nBad spacing makes Qt apps feel “default” quickly.\n\n2. Pick a modern Qt style\n\nTry Fusion as a baseline:\n\nQApplication::setStyle(\"Fusion\");\n\nThen apply a light/dark palette or stylesheet.\n\n3. Use a consistent font\n\nSet one app-wide font:\n\nQFont font(\"Inter\", 10);\nQApplication::setFont(font);\n\nOn Windows, Segoe UI is also a safe choice. On macOS, let the system font handle it unless you have a strong reason.\n\n4. Add a clean stylesheet\n\nFor a quick modern look:\n\nqApp->setStyleSheet(R\"(\nQWidget {\n    font-size: 10pt;\n}\nQPushButton {\n    padding: 8px 14px;\n    border-radius: 6px;\n    background-color: #2d7ff9;\n    color: white;\n    border: none;\n}\nQPushButton:hover {\n    background-color: #1f6fe5;\n}\nQPushButton:pressed {\n    background-color: #185abc;\n}\nQLineEdit, QTextEdit, QComboBox {\n    padding: 6px 8px;\n    border: 1px solid #c7c7c7;\n    border-radius: 6px;\n    background: white;\n}\nQGroupBox {\n    font-weight: bold;\n    margin-top: 12px;\n}\nQGroupBox::title {\n    subcontrol-origin: margin;\n    left: 8px;\n    padding: 0 4px;\n}\n)\");\n\n5. Use icons\n\nIcons make interfaces easier to scan. Add them to buttons, menus, tabs, and toolbars:\n\nbutton->setIcon(QIcon(\":/icons/save.svg\"));\n\nSVG icons are best because they scale cleanly.\n\n6. Use fewer borders\n\nA lot of default Qt UIs feel boxy. Prefer spacing, section titles, subtle backgrounds, and cards instead of heavy outlines everywhere.\n\nExample card-like container:\n\nQFrame *card = new QFrame;\ncard->setObjectName(\"Card\");\ncard->setStyleSheet(R\"(\nQFrame#Card {\n    background: #ffffff;\n    border: 1px solid #e1e4e8;\n    border-radius: 10px;\n    padding: 12px;\n}\n)\");\n\n7. Improve empty states and messages\n\nInstead of blank panels, show helpful text:\n\nQLabel *empty = new QLabel(\"No projects yet. Create one to get started.\");\nempty->setAlignment(Qt::AlignCenter);\nempty->setStyleSheet(\"color: #777; font-size: 11pt;\");\n\n8. Use QML for highly polished UIs\n\nFor desktop utility apps, Qt Widgets are fine. For more animated, modern, mobile-like interfaces, Qt Quick/QML is often easier to make beautiful.\n\n9. Consider existing themes\n\nFor Python/PyQt/PySide, these are popular starting points:\n\npip install qdarktheme\nimport qdarktheme\napp.setStyleSheet(qdarktheme.load_stylesheet())\n\nFor C++ Qt, you can use custom QSS themes, Fusion palettes, or libraries like Qt Material-style themes.\n\n10. Focus on hierarchy\n\nMake primary actions visually obvious, secondary actions quieter, and destructive actions distinct. A nice-looking app is usually less about colors and more about clarity.\n\nA good quick path: use Fusion style + consistent margins + one font + SVG icons + a simple stylesheet.",
+      "attachments": [],
+      "sig": "zcAZ2gcW81soW_dQ66jW7hI568GbI7lLNjUbFY3m-mgx7BhxSnWZIioreSQ27Kdlu_Fk7wjGbO3uk4DdolzBBw"
+    },
+    {
+      "type": "priority",
+      "id": "376ebb01-a3b5-4a7b-8924-db4b5893bb70",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818280,
+      "priority": 65,
+      "sig": "KJwMsvDAC_oi3CpII2uhX19HG3Rbd9AVsAex-I_E7mJ2UR5oR0Ht0fa2h13XrwHmQR8GvDFknb5HO6eBMIwsAw"
+    },
+    {
+      "type": "agent",
+      "id": "b1e16202-1585-4ffb-b782-2abc1789345d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141497765,
+      "agentProvider": "claude-code",
+      "agentSessionId": 252,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "RW1MgUMWVDpBj93phCVYS6E0Ow3yjdaqL6UhD4sDual4OcUZFowQcMi3-PUCzfbMSDlFDAwfbh2qUi0oCEjTBw"
+    },
+    {
+      "type": "assignees",
+      "id": "583d4ed0-f8d6-440b-b66b-29480643bfa7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141497848,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "6yZs2oo19l671vzSRSOQozvTDhd71iiRXwvZdBzQH60gaX9dv-nO-RuotcrazHYKJroyHpMYn-wdJNsSBm5oBQ"
+    },
+    {
+      "type": "comment",
+      "id": "cff40cb0-b319-4047-aed8-46d5ef636b78",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141679163,
+      "body": "Closed by merged branch \"agent/issue-337-update-qt-app-design\".",
+      "attachments": [],
+      "sig": "sbPYjWIGIoG9OtF2XGtrsrhpfWVnQ05dePT9KQKDfTthSxD7m2x6sGTMJWhRMau0-93zSzW0-S5ezGlsC3R4Cg"
+    },
+    {
+      "type": "status",
+      "id": "fff1744d-94d1-4fbb-af7c-f72301fcfc9a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783141679245,
+      "status": "closed",
+      "sig": "62oaegOfUg1BuPbD4IVhjl1uyYaOO6jbVzQjBWgdh4g8IVjyCRI336zA44SQUv_-Mu6YyEe3G_bkl3iK_nVoDg"
+    },
+    {
+      "type": "agent",
+      "id": "4edf0e27-371a-4f8f-80f5-eaa7838cda77",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783149297697,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "T9FxCJK_r3IBIMbUDW5i8UrauLszgSSJYPNIJ0cQRBnS7YKpIy3QrU04cXpkMmKZ-oB47X7m4SSFUlLLOCJ7Aw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783149297697
+}

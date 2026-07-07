@@ -1,0 +1,140 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 224,
+  "title": "on agents page have a button to delete all merged and closed agents",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 30,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782354783801,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-224",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782354783801,
+      "title": "on agents page have a button to delete all merged and closed agents",
+      "body": "",
+      "attachments": [],
+      "sig": "t1Elx2vAUYWOOg8ee5o_OkJ3m_fsOpM8C-qaCTmc9sJlS0zfGFcowWzqtXgaepJPr1KYdH0HIXeIkSXmRUmxDQ"
+    },
+    {
+      "type": "priority",
+      "id": "03377ff8-fe64-4f4e-87f2-866b2d68429b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482642,
+      "priority": 30,
+      "sig": "T2i0K5nDTsYj8z_kLXeeWlde_Ws3MEVs3wa-KQOTtZJ0PV3Uvm2sn9da8qSq9WhrGQwkaM42_Mk_UiekfCMhBA"
+    },
+    {
+      "type": "bounty",
+      "id": "4343102c-72ae-417b-9112-726926beed58",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359968144,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "RPI7nvMAtC_6GNFIuFbs6c-4Dc_NxEgwLjHBxYIpJjEyUBHiP6plm6CqzT724brE2OVFPcsnEH4ao_4Ua7-ZBQ"
+    },
+    {
+      "type": "priority",
+      "id": "aded4fc4-3519-4a23-9d07-f43c16661714",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649690,
+      "priority": 32,
+      "sig": "52w80xNBufGiFlp6BcWazxr7WWs2A3-aQiApV8IDu7MJ3NwKyXTpDtRHtKn2zpQJSivW8SecrOuB8crHtyLRCg"
+    },
+    {
+      "type": "labels",
+      "id": "c0b012f5-a3cc-4177-9859-00a5728ed712",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284276,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "YvFlsCLu3AuLMWXkf179oZRlvr4ExCWBFAowb_8rwigPjflWV4KOvARW51IodiykrVDQJ9F8ie_rrYuG_1t-Bw"
+    },
+    {
+      "type": "progress",
+      "id": "8fdb3a1f-c698-4573-9a61-d1ed3fb4da0b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284333,
+      "progress": 65,
+      "sig": "ny5c5VHllTP103-QpqH9s6N6fOD59OADv6vZks_PuDjhuQJFplijpzMY437wWDNXZwQ1j2LNF4v01jXRgB-KCg"
+    },
+    {
+      "type": "priority",
+      "id": "ae295486-7509-4463-856a-dbf59f5fbf7c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487591,
+      "priority": 51,
+      "sig": "vfVxZE2_FMUt3cXTTJrpUnWPait59lAdGiC8oZkrVHpoYzwo8Ra2bel0QbQ6qT1h7l3uY1tLyQQ-lxp_8bX4DA"
+    },
+    {
+      "type": "labels",
+      "id": "d0308450-467f-4f00-b4fa-d1757821f949",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667184,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "GBPJ90HsuO2mGG3eKIY4Q8oGJXwL6uUM1odzXVsN92VB51AdKOZRCZ_AaxfRxC0PW_zFU9sUMxCa0cTeA667Dg"
+    },
+    {
+      "type": "progress",
+      "id": "6cd1387f-47e4-4acd-98c6-5d2e64ec25ca",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667205,
+      "progress": 5,
+      "sig": "SZqTK-PaYeLmBVaKFmhgi-rvrBd3hFl1zAFvT2rhRP71N-Yxc4AiDXx4SA_gaQGdPrfe0CBwus12-Fili7G1AA"
+    },
+    {
+      "type": "comment",
+      "id": "4235d9d6-930e-4eca-959f-f6e3f465296e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667228,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ndelete-all-merged-and-closed-agents button not evidenced",
+      "attachments": [],
+      "sig": "45Jrv34-_Yiaejqflkb_0-TaIIFdiSCeDY_lemHcvv1L0fjXEPS1hfcC590yPnPrlnXDnWSCzTqIVUepaa0VCg"
+    },
+    {
+      "type": "priority",
+      "id": "c1d899c2-6758-4ddb-9651-c0433957e509",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835195,
+      "priority": 30,
+      "sig": "JW9443qfQg-1lVZt3dht1n1MoJzBvCb2-D0s1hGBVKMGSLoX5jy79wUOTEIZ7tALpYMhTrVBLFZ6JinnuaRkDA"
+    },
+    {
+      "type": "status",
+      "id": "60a853a3-9b76-4e28-948c-dabaf5671563",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796247143,
+      "status": "closed",
+      "sig": "dHbf3E5kMACORUlZQRHvV5Zf5OoBZeTjFTUcGY4Eo2jI-qNGDHkpWV0V2sA-O-_8NHpYgl5lm-9enJ3yk4K8CA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782796247143
+}

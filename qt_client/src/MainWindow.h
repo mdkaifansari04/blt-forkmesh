@@ -4491,9 +4491,9 @@ private:
     // selects this issue (the next one in the list) once the table is rebuilt, so
     // closing an issue advances to the next instead of lingering on it (adhoc #249).
     int m_selectIssueOnReload = -1;
-    // Content signature (issues/ subtree oid + repo path) of the data the issue
+    // Content signature (.forkmesh/issues/ subtree oid + repo path) of the data the issue
     // list was last built from. reloadIssues() fires on every push/sync — i.e.
-    // every agent commit — but a code-only commit doesn't touch issues/, so this
+    // every agent commit — but a code-only commit doesn't touch issue metadata, so this
     // lets it skip re-reading git and tearing down/rebuilding the issue rows when
     // nothing changed (a rebuild mid-interaction drops the click/keystroke the user
     // aimed at a row or the search box). Empty = "unknown", never skip.

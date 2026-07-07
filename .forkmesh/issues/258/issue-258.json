@@ -1,0 +1,144 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 258,
+  "title": "when i deleted a file from the pr it removed almost everything I think we need to instead edit the diff more carefully",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 6,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782427320682,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-258",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782427320682,
+      "title": "when i deleted a file from the pr it removed almost everything I think we need to instead edit the diff more carefully",
+      "body": "",
+      "attachments": [],
+      "sig": "5Kcgng1adOSzM_Pr9fBCF8o2sDRbB-7MSeFA1UFlF0nuNHDUVtqb0P9TreKZLjQb8MzXVSx1Ou4q6240gKDgCA"
+    },
+    {
+      "type": "agent",
+      "id": "873b8649-c7e6-461a-892e-e000f4c53438",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782427320788,
+      "agentProvider": "claude-code",
+      "agentSessionId": 1,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "Wi4pP2RXam6PXiAiJePfcSZSV_LY03AxLfQ47nfnF2n_h1OLpTVPQ0n7Eg9y4huCxk9y9WdTLjm8hdNPjPo7Bw"
+    },
+    {
+      "type": "agent",
+      "id": "48541254-99db-4f07-8db5-3f9a2fa58b94",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782429309223,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "GO4Bikx0j3Lg-F21_dYkCM7gkN7cBmMvmWdn6TcERHnY5eROoamb11DVjWgfSwCUK-YdAhj9QOOgKIBlle4wAg"
+    },
+    {
+      "type": "priority",
+      "id": "4f34888a-2dc0-4787-91ab-ffdc24b33f3f",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650063,
+      "priority": 48,
+      "sig": "Eb7sjMQ8qGel1_K65qEcAj06RbOPY9RJS68QVuiLnD4gE--y8VhdXt1YaI3PW6oZ6d7_8p73_xb9KZzsffD7DA"
+    },
+    {
+      "type": "labels",
+      "id": "1c2d1974-cfef-4253-81d5-683cf80121d8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286077,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "vz74GpOBqxg80bY_JI028ouiWOLOv_OYaUQKiknbud_l9dCieFvhKkRscHLPVecgEz4gJllR7d9p-EB9yof_Cw"
+    },
+    {
+      "type": "progress",
+      "id": "9748fa3f-c91f-4ef2-a843-942e04de2629",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286122,
+      "progress": 35,
+      "sig": "hLQ4WtZBx9_k4OgDP9NdSpiRHhow6_aPu0jKPlUlYOiQlHtnuTeofhbWwxg68Hvl8P97uoUhzbGLogAosu9GCQ"
+    },
+    {
+      "type": "priority",
+      "id": "10fb18e2-a0a0-43bd-8974-571ae0954d2e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487349,
+      "priority": 41,
+      "sig": "n6_xGxX4Uz9tzq1elgXGqZ6lCORNEA226w00y9ARNi-j9pTRg0hUmUCdSn_3_mHevQHDanW1aZJvRz9Ev-8YDA"
+    },
+    {
+      "type": "labels",
+      "id": "dcfab1d0-e4db-4f17-bd00-789a926728d5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668200,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "mCZINrT_Me9Kqu9pMCnwC0Si3jWFE6lzCw6_4OGzsp4x3b2m6-egXLkA-c2dJbmdsPsDaNJS7G05MCJLRy8SBg"
+    },
+    {
+      "type": "progress",
+      "id": "3352bcb9-8a8c-4304-9314-c161326ef240",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668224,
+      "progress": 5,
+      "sig": "ZuQb66CidRd6YC85jjMQC0UWk4uuNYWIcH3W3rHS-iZV1VYkZ8Pa0PSeXyoAzeyBzh7MYUdUq7FsgAxU_8ntAQ"
+    },
+    {
+      "type": "comment",
+      "id": "edafb563-969d-4629-bcd7-c9c47ba516b5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668246,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ncareful diff-editing fix for file deletion not evidenced",
+      "attachments": [],
+      "sig": "WzP7UKmfiVLUN9FqvgvMmivjqtvqITXEowy1BQsHbEOCF8V8nLt0JQ4t0_YkoeUOxwjhKuQPdPqBUDTpZeBfAg"
+    },
+    {
+      "type": "priority",
+      "id": "399d7331-0906-4c08-8405-cc2c89254313",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834569,
+      "priority": 6,
+      "sig": "sepZwJ_B1eo1FGyvsTBEFmoX9fN03Xhh9sHYM06AJusaRt39spZxsSG6SD1s8x7rtC8_aQ4nEVHqso2yaTQNCg"
+    },
+    {
+      "type": "status",
+      "id": "24917227-35b1-46d6-98fa-ea7433926693",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782789030725,
+      "status": "closed",
+      "sig": "aepMyLFebz_kf3S278vGEvAiblg6s4Z99YAi_FwFy-E1SXzRuCATSR_eAFmpOLy8l3xRZl80SsNGWlVMT4CsDg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782789030725
+}

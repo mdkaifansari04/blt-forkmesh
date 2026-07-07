@@ -1,0 +1,51 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 389,
+  "title": "UI: the window is not optimized for smaller screen size, its difficult to work with a lot of feature in smaller screen.",
+  "status": "closed",
+  "labels": [],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1783359618811,
+  "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+  "authorName": "mdkaifansari04",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-389",
+      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+      "authorName": "mdkaifansari04",
+      "ts": 1783359618811,
+      "title": "UI: the window is not optimized for smaller screen size, its difficult to work with a lot of feature in smaller screen.",
+      "body": "Preview for my full screen\n\n![forkmesh-paste-FHvJys.png](forkmesh-pending-image:0)",
+      "attachments": [],
+      "sig": "tXDwptVGFzQg8oUcPnhU-ep1bkfZcf16cLvweG17CMtynMbwJa7HaCbkDXOtgwa1elIcpvdDnJKqA9lpagHWDg"
+    },
+    {
+      "type": "comment",
+      "id": "f8a9f6a6-cc1b-4aa3-b73f-44a9f21eb602",
+      "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+      "authorName": "forkmesh",
+      "ts": 1783360859794,
+      "body": "i didn't see the file attached",
+      "attachments": [],
+      "sig": "sGNN5n-N_C2EZgYDfFovxaHOKGqmq6Cmo4tLfbvSh4TB-csYnNGAlDjsSnmj2gx2W49gt1QHR5bzjamLvTO0Ag"
+    },
+    {
+      "type": "status",
+      "id": "02e1ad1c-61c1-4da9-95e5-b7ff83b5a343",
+      "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+      "authorName": "forkmesh",
+      "ts": 1783368975013,
+      "status": "closed",
+      "sig": "mej1BcsCEFlDfo-RWoOU3dYtogkfp0JUKaxszQD8Q38INZzlTWVux8KiZSPj7Sg72Bv_5SLhsTx2ef6HzoGSAg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783368975013
+}

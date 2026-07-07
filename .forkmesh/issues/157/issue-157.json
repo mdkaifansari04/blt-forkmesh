@@ -1,0 +1,83 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 157,
+  "title": "when you type @ in an issue have a dropdown of all node names that have every committed or created an issues or added prs so we can notify them",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 21,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782183920155,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-157",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782183920155,
+      "title": "when you type @ in an issue have a dropdown of all node names that have every committed or created an issues or added prs so we can notify them",
+      "body": "",
+      "attachments": [],
+      "sig": "O-8UDDm_yRElEDRBvebG5lhgdppEYFsa7pU2w51jYJ-WhwYt-xspfQ67G5jscJM2SVlpxrMnm0PAPwDiTvN5DA"
+    },
+    {
+      "type": "labels",
+      "id": "154c52b0-12b6-40c6-9413-9a14869ebfde",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924679,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "bEiM_OXCfzSPGSUVO8Bo5v5ZJ3MWlIUFhpOcDYshurudhDZ8tmO1bOiZKfWplCZib4Rs1BSBcw8058HrH48QDw"
+    },
+    {
+      "type": "priority",
+      "id": "00b59de7-17ef-4908-83f9-028b7ff1f7bb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924737,
+      "priority": 21,
+      "sig": "WwDd-CwfEX7G6AIDLDloeufiA97v90u3g4-ddGEPSaLRxzCKHK4L5s469iBJCM0_pn0_y0T31eU410ELlJWHCg"
+    },
+    {
+      "type": "bounty",
+      "id": "821331f0-03d5-43f3-953f-bb30f32a3833",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058955,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "1YJgv-TsEIweva9sJmvFIYXa_bV8szAj5cvarGCfmBGTC55NFUoZ4JlZvLnwajEqG1fsTOc5eW5eCvZjkJUBDg"
+    },
+    {
+      "type": "milestone",
+      "id": "17eb001b-c4f3-4cb2-9e6e-cf6de6612390",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180262,
+      "milestone": "Phase 2",
+      "sig": "J2mI-ddVeLvFnEn_i-id9ckmZu_0HFEyMWmq25e7ojS3d5iHnanbt8t4ahLYf3qqR_Pj3l_c0jLepU3bi0NFDA"
+    },
+    {
+      "type": "status",
+      "id": "2364b569-d6e6-42b6-a036-8f4937a3f68e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782261067547,
+      "status": "closed",
+      "sig": "nW5FOzaNg84GRH_xi9t-GNI6RnxYekjQj8Z3OdlzcGv2zaYqAyPwp_CTsSQZtgX3JIDyqfQF0xZ6Us5flbL9DA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782261067547
+}

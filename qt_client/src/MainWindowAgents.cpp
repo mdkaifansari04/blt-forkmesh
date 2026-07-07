@@ -4668,7 +4668,7 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
         const QString prompt =
             QStringLiteral(
                 "Resolve ForkMesh issue #%1: %2\n\n"
-                "The full issue is in issues/%1/issue.md. Implement the change end "
+                "The full issue is in .forkmesh/issues/%1/issue-%1.json. Implement the change end "
                 "to end, consistent with the surrounding code, then summarize what "
                 "you changed and how to verify it.\n")
                 .arg(session.issueNumber)
@@ -4947,7 +4947,7 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
 
 // Title + full description + every comment, formatted as a self-contained
 // block for an agent prompt (adhoc #256). The description lives in the
-// issue's "open" event body (issue.md's body text); comments are every
+// issue's "open" event body; comments are every
 // subsequent "comment" event, oldest first, matching the thread as read in
 // the app.
 QString MainWindow::issueContextPrompt(const Issue &issue) const
@@ -5018,7 +5018,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
     // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
     // issue-assigned sessions get the full title + description + comment thread
-    // embedded directly (adhoc #256) — pointing only at issues/<n>/issue.md left
+    // embedded directly (adhoc #256) — pointing only at the issue JSON left
     // the agent to go dig it up itself, and it sometimes never did. Both share
     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
     const QString lead =
@@ -5028,7 +5028,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                   "%1\n"
                   "You are working in a dedicated git worktree on branch `%2` "
                   "(forked from `%3`). The description and comments above are "
-                  "the full issue context; issues/%4/issue.md holds the same "
+                  "the full issue context; .forkmesh/issues/%4/issue-%4.json holds the same "
                   "description verbatim if you need to reference the raw file.\n")
                   .arg(issueContextPrompt(issue), session.branchName, baseName,
                        QString::number(session.issueNumber))

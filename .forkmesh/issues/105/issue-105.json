@@ -1,0 +1,110 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 105,
+  "title": "enable automated sweeper to treasury and nodes when someone joins",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782082661669,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-105",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782082661669,
+      "title": "enable automated sweeper to treasury and nodes when someone joins",
+      "body": "",
+      "attachments": [],
+      "sig": "mnee7xrPD9KySN8xTAnbyjFmmWqOGp6XF5Dpy1WTKTtRkXIVJd_7M0eILTORL-UzZkMs7M0tJBHQi_R2frA4Cg"
+    },
+    {
+      "type": "agent",
+      "id": "580fa244-a9d2-451d-b8e2-fa3cde075a27",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782082687096,
+      "agentProvider": "claude",
+      "agentSessionId": 35,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "lEZ1zxI516PJf7sqHgc03iAR_oPOA-gihA4EtuRL9shsJrv3-aT-kKf8x3wsQn3HTELCHJouibnHwzBGsOTeAg"
+    },
+    {
+      "type": "agent",
+      "id": "dad86630-48ab-4353-92a5-e8b5052a20b6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782082948829,
+      "agentProvider": "codex",
+      "agentSessionId": 36,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "SQC60oTG4qc-DQIGAdl0i_-4KF8n-GVP98CbX3M-do2WQa7cv_jRM3efuca0U8B46-WQbR2Zyv7eUCvHUItBCA"
+    },
+    {
+      "type": "comment",
+      "id": "f90b989e-27aa-4fac-8d51-907a03526be3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782083158718,
+      "body": "Closed by merged pull request #36.",
+      "attachments": [],
+      "sig": "Kta8lUQGquBkeksY1KFprozJ_srYevQ_ZlxzJzuXMnUTGpW-zG5HJrsJCnsBe7CUrJf8rIg9Q7PZN2-D1PdgAQ"
+    },
+    {
+      "type": "status",
+      "id": "a0531957-d458-40a5-91cb-751935463fbd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782083158765,
+      "status": "closed",
+      "sig": "66X9nNzOv70QFP3oPDGoBxsLH-jsKqdLRTw14FIc_fSsIw6EUFptawATVOxiez3XzWAlp_XZjwB7FYaeC76dAw"
+    },
+    {
+      "type": "agent",
+      "id": "2190b611-cfce-4d9d-83c1-53679a873571",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097152612,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "TEY6gaGCGjDniU-ZrbBY83qUiUvobcKJSLkJ_WPEYZY87CLgGdqmt7iMaNf4Y9Vvz-nAcRHCJFFTHOuoZuUjCw"
+    },
+    {
+      "type": "agent",
+      "id": "3b53202f-2b26-4673-9dff-f2ca303e4f8c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097153152,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "lGZ7r8pGz9yCyjUQ4BI9CXhBvk9QKPwkqP2_uS5xk2j-Tip2s1MpOwl17YktYsvTGDmxWKsXBDtDuaMIcpIgBA"
+    },
+    {
+      "type": "progress",
+      "id": "d770f897-98e5-401d-9c2e-1051f8282f7a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189929868,
+      "progress": 100,
+      "sig": "bSrUL8IGbj4LH-EO231W42aHPtxvXWIU-322r66_U4pHC3HlEcVmH7PPMLo8auSSN1mKFwAs_LTg9oGKItwBBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189929868
+}

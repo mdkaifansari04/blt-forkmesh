@@ -1,0 +1,144 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 266,
+  "title": "show a tiny token usage chart in the top right next to the earnings near the avatar super tiny just show a horizontal chart for 5 hour useage and wekly",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 40,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782432045606,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-266",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782432045606,
+      "title": "show a tiny token usage chart in the top right next to the earnings near the avatar super tiny just show a horizontal chart for 5 hour useage and wekly",
+      "body": "",
+      "attachments": [],
+      "sig": "5_OdGhhK1H9cCQBmGoDKt3cNOy90uWn2UPdcNGLCEVPDGqx4U36TlZ39k34MTuqCMTlEZg_TiRVXsofNtKP6BQ"
+    },
+    {
+      "type": "agent",
+      "id": "7f6d3ad4-932e-4306-b9bb-41fcf00c0433",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782432045726,
+      "agentProvider": "claude-code",
+      "agentSessionId": 11,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "D6a70_btqGNIP-4SDIBtUGNsi7en3Wpcis18VWphO4BdghU2zO9NiPNctRFNwPRmLGMktPAgVqJ-Q9w7sIc2AQ"
+    },
+    {
+      "type": "agent",
+      "id": "e61887ce-0b72-419f-b8bd-8f2a8eeae1a2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782433353179,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "oOYDISD3ebBf1ZbXRwbTLZ-uSyld9hRkdmRbra1yJsiO_aaRaMHgSUVU98V6BVWNBfVFonbeuZw8Laswo4P_Ag"
+    },
+    {
+      "type": "priority",
+      "id": "533ff532-d690-4cd3-9932-9cbeb25ff984",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650202,
+      "priority": 55,
+      "sig": "eU5qCyZGe0JM_ZZ_HV0QO0KkxO7dGkdSYd6SUe8hIoCX9OqJp1ha_TIDeQswl-bUic_ldiHHZAviwu35bFpbAw"
+    },
+    {
+      "type": "labels",
+      "id": "696c07ce-c7df-4369-b1cf-19127af3fdea",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286759,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "DwhZ1rsEV44bqKzUTBMRfrS8w397zfgmQ8aCOTvuu39zH2UxJXmfzd_wp2UQ_H_jv1ubyn6tlLjiso4ZoITbCw"
+    },
+    {
+      "type": "progress",
+      "id": "58441a54-efd0-4a82-8874-69eb1a390b63",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687286804,
+      "progress": 50,
+      "sig": "9rq9iVRwwKoCKjvYOOlj2Yft_JUb-_5AN6rh1WvXcjfJZWc_s0G7CXOIMqSjyiLqj5ZQXobeR0Usxx6MffhMDw"
+    },
+    {
+      "type": "priority",
+      "id": "57c35819-7eb0-40ba-afbc-46b9661940ad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487280,
+      "priority": 38,
+      "sig": "LAxjEG1K9IJD2KP0mh8m4HzmEF4urW2gg1vgudGA9XsAo_XnSr2U80D6rTv0C3JBmJs6eKhyXcOh3c2skuPeBQ"
+    },
+    {
+      "type": "labels",
+      "id": "4cae2799-e567-4698-8b8c-6d88338ae0f9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668480,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "V_yqroYnYohXEhHmGtiuJJVroat4anRexG2OY4v1Co-gOUkXzUZIPdF89ScqT0oZ_H_yawLcLmOhRm_SY3u8Dg"
+    },
+    {
+      "type": "progress",
+      "id": "dca6d5aa-9711-422e-839f-b8742bdf9aae",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668506,
+      "progress": 5,
+      "sig": "Mf6hJfWBW8o34bhFu_P-fo1qEYrOLHDPxwHabEDmzA4L9A0ly7U7FhASbrOiSYfW1ZSfDtS4fMLa-vpKfCakAA"
+    },
+    {
+      "type": "comment",
+      "id": "9340bddf-4385-4af5-81c8-0e0a21a8e2bb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711668529,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\ntiny token-usage chart near avatar not evidenced",
+      "attachments": [],
+      "sig": "NcyJu_tnlGV4zPTpFCC5ISz7sZBQ_G7Gu3clyqrcDOESK1Nlk4A3-etYMWoiDlqMszfrjaL5uAl0Gup3nSOyDQ"
+    },
+    {
+      "type": "priority",
+      "id": "cde15ec0-28c8-4e62-bee8-7483e735d9e3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835475,
+      "priority": 40,
+      "sig": "I0fi8DtfSTN4hAIrXkAveHI07PmpnTsSPLEy635gRO-5Zhg4RbEj7240ASw-lXdB_SvbFvtAoq2Buhs9eaT5Dw"
+    },
+    {
+      "type": "status",
+      "id": "7889bb24-1a1f-44ee-80c6-2238936e493e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796535596,
+      "status": "closed",
+      "sig": "BOrYbtdtXrG6F_JvOkma7MoMO2LRhWfG8tE-lcuXjoRMC4fQc-wCCc_NEiIXQwSZ9fUXMCH4R21iioIQ1JdFCg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782796535596
+}

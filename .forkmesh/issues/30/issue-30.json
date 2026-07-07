@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 30,
+  "title": "d1 will hold the user's bch address so that someone can make it rain to all users of forkmesk either on individual servfers or across the federation",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781664621518,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-30",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781664621518,
+      "title": "d1 will hold the user's bch address so that someone can make it rain to all users of forkmesk either on individual servfers or across the federation",
+      "body": "",
+      "attachments": [],
+      "sig": "xAusWOXNuPbO93kTz3rkc87__Q7gb9I3hUNZ0OGE-JjEUrpBKl885fuQ5Q8K5YcD8JdkFGWX5N5v_2jxPLtQAA"
+    },
+    {
+      "type": "status",
+      "id": "75c9110a-093f-4ee8-a94b-71e68e9f4ae3",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782078639945,
+      "status": "closed",
+      "sig": "b3dFFgQAhXThRds_vIMSPbuUe8cwqHULXjU7FzfVf-tH9wKySEYSMeWCbLklXcIDGjW2ILoYaUvrVeB_GzvRCQ"
+    },
+    {
+      "type": "progress",
+      "id": "c4956fac-e034-4a2a-a2ee-72aaa4dbdfdd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189926267,
+      "progress": 100,
+      "sig": "Nr8ri31XxLvgVO49Z1tfzXiLh4W60YOQ5cyVI8Dhi7eTKRyVeHjx22MIJhdGp3Rl-rKp8gsSeEFtiV_1mz3OAA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189926267
+}

@@ -1,0 +1,83 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 160,
+  "title": "remove the star button",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 23,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782187444046,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-160",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782187444046,
+      "title": "remove the star button",
+      "body": "",
+      "attachments": [],
+      "sig": "qsnLVvlhk0iEVi-eG4oUE4lnKs7ACoPCPVryAZO-HRT6EjZ3jUGqZg0qtu2981voP5i5akeHpk4PG1t6z9bKDw"
+    },
+    {
+      "type": "labels",
+      "id": "ca0cc53c-1bff-45f3-a420-95c85f168851",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924923,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "pI47IgVM_TrOUaZBuotRI6RJxxjnPX4wIwv2Bk5zjgwKoxi6Q0fCe9k3tf82K7HkdbTTvzL8R1zrhQfK-tt6CA"
+    },
+    {
+      "type": "priority",
+      "id": "9d5a7ae3-f7c4-4427-a439-ab14a897455e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924980,
+      "priority": 23,
+      "sig": "lS4Wz77lUq9W4QQmnAIedjk6OV5i9rS6uMimQeepmCsRJ-7cWNMxDIN35LUHXAtfPzdyk8mCYSuwi-xDtqv5Ag"
+    },
+    {
+      "type": "bounty",
+      "id": "e9f3b63d-46a4-43e1-adb1-29575d7cdac5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193059059,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "gCv7tqGHGZx-wi3Nmmc_vHr55aZUF9OACLFfbZsTjFk7W_TFb0SBOU2GKt5w1GcfilQ9xEHNKwQ7bcb9TpGBDw"
+    },
+    {
+      "type": "milestone",
+      "id": "0cb1b8b7-cc85-4ea0-981c-7d9638661287",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180264,
+      "milestone": "Phase 2",
+      "sig": "VQ0J0iBLLGJvq3WzQnjd0fSthL0dUqyqiPkVee3rsmsCtCx6oi3AEccANgHn7COybt9O7jbb4hPNiK9Rn_kNAA"
+    },
+    {
+      "type": "status",
+      "id": "7e76061f-72ee-46ce-9e9d-72e7f451f306",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782262065447,
+      "status": "closed",
+      "sig": "XRUQl_ev7FNIab_Q4rewfiPhRif2a-jSEketIZvzn70f9fNOfgZQTnyaGvH5AA1kMInh6XhltA2sF6bK6qKbAQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782262065447
+}

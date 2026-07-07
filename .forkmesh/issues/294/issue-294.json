@@ -1,0 +1,126 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 294,
+  "title": "have prioritise from readme button use the defautl agent please",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 79,
+  "progress": 5,
+  "assignees": [],
+  "createdAt": 1782512635428,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-294",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782512635428,
+      "title": "have prioritise from readme button use the defautl agent please",
+      "body": "",
+      "attachments": [],
+      "sig": "mkM30_IPpjHQBqLc6h9fbxuC2ErkmhUA8SgcXUIUCfFAliPFcNfNSOZBW033-bYbp4HFWDnCHKIFB4vjBlY8Dw"
+    },
+    {
+      "type": "agent",
+      "id": "1d95ab08-abad-4753-8a56-58ac6187f061",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782512635549,
+      "agentProvider": "claude-code",
+      "agentSessionId": 38,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "SWTnvRklD5hjiYRIsdSSmAec0AxTQn_MUSU8tn79FoDsYl710ymgu2rUjqlOGxf2alKrDQoMKSIEY3zzpyaTBg"
+    },
+    {
+      "type": "agent",
+      "id": "2a234717-0930-4776-b0d5-ab0975273828",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782513820017,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "1Vs9Hs6UKzBDdnM4NCbhvWJ9FbQiGwJAdQJxsyQTLggDZaYvbToCu4DNz4nHNqCfhWpockHsmEFpSW1wHZKMAQ"
+    },
+    {
+      "type": "priority",
+      "id": "6c358ff3-859f-4e41-8811-375fc40c7f60",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522650710,
+      "priority": 79,
+      "sig": "2FIX6MXXktY9pHFFZePwljTZYPGGTHCGHrK0r6f872-6NISNa_ZL2VZJX6bdTq95Ov5Ytr9x-cMm182WZ51-BA"
+    },
+    {
+      "type": "labels",
+      "id": "4740e0d5-7ff1-4074-b823-f55673660163",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288727,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "bgFyBhJ7AD7gimcPscza9Y3knV3oHwy58Bm3VjyZeIGDFcMOEhshoudbfUoGVDEu50vERWb8Rg177LtYyqB_Dg"
+    },
+    {
+      "type": "progress",
+      "id": "e342ade3-b346-46d0-8c52-6b9f73d55de9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687288765,
+      "progress": 50,
+      "sig": "yJktmjt_JFx8NmqbqtJTGJMoxp0Mjp0Qb_3bekvOkvkBLeCu4v4gYPsiOpRclcNBDVq-qhG5R6PS7VKFu4EUBA"
+    },
+    {
+      "type": "labels",
+      "id": "1f50a83d-0864-4e75-a436-f1d617be9d81",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670158,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "iq6Vkgkq0kSEj1jL9eyN67J2tZk64g8R4hjLGAfq8wvpYg4pYQ6dd7jbcwJPQGMqQxx2TRhNQAfiFLqbXF-LDw"
+    },
+    {
+      "type": "progress",
+      "id": "4a64e753-619d-4084-9f86-45797ad415ec",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670180,
+      "progress": 5,
+      "sig": "rlsNrR5xPAWDp92fUmwgKG21xr-uY5g4sF5Ora-2XE7WkscKlgobS1Ki_5b4WbD8K1hiyTAIg8WWhIbMvPv_DA"
+    },
+    {
+      "type": "comment",
+      "id": "05175f2c-9543-434f-b7f7-cff3ca64b694",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711670206,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nprioritise-from-readme using default agent not evidenced",
+      "attachments": [],
+      "sig": "mgiX8dn6dejbdx7lws0Zc2FzRaBxovq40HzmnbfgvHI8TBnPdRyZSkH1UFW2JsLXi99VIi3XrDsUkKDex0uBCQ"
+    },
+    {
+      "type": "status",
+      "id": "cb2f358e-e8f1-4a4a-93a4-c3aba6dfbadb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782773764155,
+      "status": "closed",
+      "sig": "GXUYLtrnQJ9JI_GSEc1AxDvsjVnYQ46veZmz4DkEfQaXmbSd2Rvhi46SCOGo4TvxHCbVq5M6cFfMsNjsD3CMCw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782773764155
+}

@@ -1,0 +1,83 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 153,
+  "title": "make delete issue one click and then confirm instad of double click make sure it's optimized",
+  "status": "closed",
+  "labels": [
+    "Phase 2"
+  ],
+  "milestone": "Phase 2",
+  "priority": 17,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782178776002,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-153",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782178776002,
+      "title": "make delete issue one click and then confirm instad of double click make sure it's optimized",
+      "body": "",
+      "attachments": [],
+      "sig": "s_agvrycE6iG80z-aZe9uj6K4TZ74JACI3DFDU9Rvj7bnnSHABoyFqT5Fsmoyw7J0Gx4mufzDnJjTQ4kT_9hAQ"
+    },
+    {
+      "type": "labels",
+      "id": "835c15ce-cc78-49d0-8f98-c05a5ad3f429",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924218,
+      "labels": [
+        "Phase 2"
+      ],
+      "sig": "IufmYiC-MePHZHhdMrdn1o0iTryaRRKrzqLC4VXujU_WDt2LHM13m-07KjA8iKb2Jn7Ut6mPVtg-M9XIgt5KCA"
+    },
+    {
+      "type": "priority",
+      "id": "fe0eb4c1-7e08-43f1-aef6-5be2ab61a8fd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189924273,
+      "priority": 17,
+      "sig": "w1qDDeUacPWhgvj2MLw_DXyJLDfbqnZfXzHlaDrPqetXY2SFT0pEdWkHNOeJRNr5OLEBLY0mykmovkypNMttDw"
+    },
+    {
+      "type": "bounty",
+      "id": "7e2c8b5e-5255-4f57-85e3-de7ddc75ffad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193058717,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "gHkT9CSwXNF08v9QvUazqcNogZ3MKSpwzRdhUAKm7-d7qL_E1fqdLN2x2L4TWAxM_oySS-JHQgXR9OJtrf2TCw"
+    },
+    {
+      "type": "milestone",
+      "id": "69c78b1f-16dc-479d-9215-3fb5e765b14d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180258,
+      "milestone": "Phase 2",
+      "sig": "cA2SempQXjG-_ih6sjqN43fp7SRuzUrR4lvgFtPQhmGDw_fi1f9sDiXPac4fjJia32nNdjCki5bYQF3sRv-lAQ"
+    },
+    {
+      "type": "status",
+      "id": "e99e24d8-689f-408d-84e9-4e5394f6613e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782281167515,
+      "status": "closed",
+      "sig": "JFuVIRs1_u3hBjMMjcKX-2DSVnJ_p8wcQHZ_oRKLhsVLYps2gUc2_pDMz8ojhVomfASgzBJstRyerVu-D0f0Cw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782281167515
+}

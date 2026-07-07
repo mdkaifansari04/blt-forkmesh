@@ -1,0 +1,122 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 45,
+  "title": "show attached images in the image detail and allow for paste from clipboard",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "MVP launch",
+  "priority": 23,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1781720372472,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-45",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781720372472,
+      "title": "show attached images in the image detail and allow for paste from clipboard",
+      "body": "",
+      "attachments": [],
+      "sig": "VFzRBeFYgIMPLqv0160jWMobuXFyNcO0t1K8n7CHJHEIp0tnspVKkdockbZQm_4gjniMRhr-mjsZiZeoaGoGCQ"
+    },
+    {
+      "type": "labels",
+      "id": "552d3be1-75ab-4fd3-bff5-29eec78b580d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "labels": [
+        "enhancement"
+      ],
+      "sig": "Vma9YOsgMs0YQ24OYlK_8x7VWta1LCORIuyF1wsa7Vg3NQPUhVWM3mf0kSbq6IdsVO2lNyutDUGRaLVcmrskBA"
+    },
+    {
+      "type": "milestone",
+      "id": "578e5a71-c1ca-4546-8615-be48a3a2920a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "milestone": "MVP launch",
+      "sig": "KRvorvjJg-Thb_CeDugYShaG4E-kTM9EK0Xm5oEw_ptxmCyCq0IXlVu2s90y_08Hs1jFkP6E93D8GXYXwALNBg"
+    },
+    {
+      "type": "priority",
+      "id": "a10a6164-f21d-43b9-994f-553c5148280d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198386,
+      "priority": 64,
+      "sig": "PlcOlNbRoV1ERyBHkyZJJrxV7Wm1dbqLcoKeZ9TJZY1Pl2KWVCB6tkS1mQDiwacmp_Ij7AsGRC3rRNMxMjgqAQ"
+    },
+    {
+      "type": "bounty",
+      "id": "b8c9252f-50c0-44d5-bb1d-e7718b4ee664",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193056985,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "7cHLVbtkRGOLaE5Dlu2svxYxCPqSwHZoqqk2upxCyzDur64ZIzbbdzteuT2IIMZos6EykE272wX6DTHiuzGsAw"
+    },
+    {
+      "type": "comment",
+      "id": "3f5fb623-2383-411f-81d2-b3a9b22b9b5f",
+      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+      "authorName": "",
+      "ts": 1782206371130,
+      "body": "demo test",
+      "attachments": [],
+      "sig": "HaUl1vEn_PtySlSvUlY9ebjx2KKH0UX82Nl2pf-efRj-jtY21LU3m75DBYoh3lto9evKZm8KAY8HzBliRDfiBw"
+    },
+    {
+      "type": "comment",
+      "id": "88f3b31a-4a9d-433a-8adb-10a670ba6822",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782206591265,
+      "body": "got it",
+      "attachments": [],
+      "sig": "5wnMPvwRKAchKUaxYDHUZykROSegKBoPlEXZv0CjnioCtZIxNlgAaINYC5_j31mlN5uNd-4Ej2UdPy_GVJhXAg"
+    },
+    {
+      "type": "comment",
+      "id": "3442e354-ff59-4ad3-8419-7dae93a5c3f6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782206786379,
+      "body": "this is for the chat",
+      "attachments": [],
+      "sig": "I5gTkT8ztvwl5V_ISwMHXvTGdvdSAxqI67cp9OFss3B4LHMKouinqPnAl9uFW0Bybuu6Rfy7GILVhgpMAGC2CQ"
+    },
+    {
+      "type": "priority",
+      "id": "bb681f99-75b2-4a98-98a7-b27eff10d39e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180227,
+      "priority": 23,
+      "sig": "pNJZKLIb3d86O-k0j8GjD7syzv81CjI0QUG3VzexcKoDdf3cTnm60zBvsZKa7T0O-Yzl0LaXECualEpUFf48Aw"
+    },
+    {
+      "type": "status",
+      "id": "cdee03b7-193d-4ba8-87fe-dd64246c7ab1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782274679186,
+      "status": "closed",
+      "sig": "4RQga04DYQB4KtK67PKVIFFDXahN_xNVc_iLMklXlKRxZufriZWSjKYs_F1rCW5NjwhP_tChoLR1H3QcwLb5AA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782274679186
+}

@@ -1,0 +1,74 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 55,
+  "title": "migrate to hd bch address if it makes sense",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1781977982821,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-55",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1781977982821,
+      "title": "migrate to hd bch address if it makes sense",
+      "body": "",
+      "attachments": [],
+      "sig": "ISC8-hLu0YRHMRa761DZUcn8jGsOAWzao8hfRc5T6psnTYr3L6N_PYyTmWpShEkFB5N28XguP5GQwbfffDImBg"
+    },
+    {
+      "type": "edit",
+      "id": "4e2f22a5-9bf1-412d-9d0e-b338ed65bef1",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1781977995486,
+      "body": "1a. HD BCH address derivation — the heaviest new piece (new module src/bch_hd.py)\nPure-Python (Pyodide has no npm/secp256k1 lib). Derive <xpub>/index (single non-hardened child; the supplied xpub is the external/receive node, e.g. m/44'/145'/0'/0):\n\nbase58check-decode xpub → version/chaincode/33-byte compressed pubkey.\nBIP32 CKDpub: I = HMAC-SHA512(chaincode, pubkey||ser32(index)); child point = IL·G + parentPoint via hand-rolled secp256k1 modular point add/double (big-int math, ~80 lines).\nhash160 = RIPEMD160(SHA256(pubkey)). SHA-256 via WebCrypto (js_crypto); RIPEMD160 pure-Python (~70 lines) since Pyodide/WebCrypto lacks it.\nCashAddr encode (bitcoincash: prefix, BCH base32 + polymod checksum, ~60 lines).\nValidate output against existing BCH_RE as a sanity check. Add a focused unit test in cloudflare_worker/tests/ with a known BIP32 vector. Read XPUB from env; if unset, fail the donation-address endpoint with a clear xpub_not_configured error (no silent fallback).",
+      "attachments": [],
+      "target": "open-55",
+      "sig": "nXGAIOi6d6hUopPkZD5OKv-YFwXNsNEx2FTJ6U47svNLqUfJZgAp_NYMul2beOcg-5Kcv_tfnnF57Jx-vgWcAg"
+    },
+    {
+      "type": "edit",
+      "id": "da304384-c9a4-4296-a4bd-4b951047c99b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1781978022420,
+      "body": "1a. HD BCH address derivation — the heaviest new piece (new module src/bch_hd.py)\nPure-Python (Pyodide has no npm/secp256k1 lib). Derive xpub/index (single non-hardened child; the supplied xpub is the external/receive node,\n\nbase58check-decode xpub → version/chaincode/33-byte compressed pubkey.\nBIP32 CKDpub: I = HMAC-SHA512(chaincode, pubkey||ser32(index)); child point = IL·G + parentPoint via hand-rolled secp256k1 modular point add/double (big-int math, ~80 lines).\nhash160 = RIPEMD160(SHA256(pubkey)). SHA-256 via WebCrypto (js_crypto); RIPEMD160 pure-Python (~70 lines) since Pyodide/WebCrypto lacks it.\nCashAddr encode (bitcoincash: prefix, BCH base32 + polymod checksum, ~60 lines).\nValidate output against existing BCH_RE as a sanity check. Add a focused unit test in cloudflare_worker/tests/ with a known BIP32 vector. Read XPUB from env; if unset, fail the donation-address endpoint with a clear xpub_not_configured error (no silent fallback).",
+      "attachments": [],
+      "target": "open-55",
+      "sig": "2_0ffZY-bbGldi9ogV24mSuws-Cdwn9T4WtI-6m2HpEXueKnzJQijUgyTkILFzFAwBf8BQ5wXZqrMLXGKKD9Aw"
+    },
+    {
+      "type": "status",
+      "id": "e647d446-c9d0-456d-9d53-6c0b4303b66e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782063544172,
+      "status": "closed",
+      "sig": "VSkjJMc7zA5pv2oGrBXNbAJoXhvELw06drwtMBRtPDOodSFVh4Gt5Olrfy-A8i-CNau5owzurjUE93yYlrfiDQ"
+    },
+    {
+      "type": "progress",
+      "id": "d4ae728f-e29f-442d-9fab-c7925aa21edb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189927260,
+      "progress": 100,
+      "sig": "RABOHC2CdXUuffrhORTsTq6ndBRFi-cyzXiz072CgRmcPXGm-kCdjrH5CAArf1jUlHDvBfabroGoDDIJEWg-Cw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189927260
+}

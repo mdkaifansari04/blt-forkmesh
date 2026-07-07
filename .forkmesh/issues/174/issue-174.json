@@ -1,0 +1,77 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 174,
+  "title": "6/23/2026, 2:34:59 AM\t503\tGET\t/newnewnode/forkmesh/info/refs\tresponse status 503\ta1017857ca7cccb6 please fix",
+  "status": "closed",
+  "labels": [
+    "bug"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782201033169,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-174",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201033169,
+      "title": "6/23/2026, 2:34:59 AM\t503\tGET\t/newnewnode/forkmesh/info/refs\tresponse status 503\ta1017857ca7cccb6 please fix",
+      "body": "",
+      "attachments": [],
+      "sig": "FRdj9lB36pop1bPzzYbhyytpVuHrv7FjgGeD0SqLHi0T3D7QNTQDjWS2F3aHZWIEI23CmTnL4G3aaa-B1xpwBw"
+    },
+    {
+      "type": "agent",
+      "id": "16d9b0ac-09f5-486c-9a75-a44043acff33",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201033864,
+      "agentProvider": "claude-api",
+      "agentSessionId": 16,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "HxS5134ANkvOjsyDXZXcUruM4gVf9F326HbR6BtPy1OQiGRfv94kZQVW9bP9tTAFJBZKKJpTXWvtfM7MWiRNBQ"
+    },
+    {
+      "type": "comment",
+      "id": "d2b0c67c-6718-4a0a-9ada-1724a638ac29",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201357106,
+      "body": "Closed by merged pull request #3.",
+      "attachments": [],
+      "sig": "y0Uhe4KRFpmw-8CVq05-uBsl1W2fTfPlz0LHuodNHHQABMQZXVJVffajp65SEMur37sCaog9eNd_OzuPUL4-DQ"
+    },
+    {
+      "type": "status",
+      "id": "e20ca6b5-e19f-44f5-aef0-15dccfc290ed",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782201357155,
+      "status": "closed",
+      "sig": "7I627kVOpiUXP31Ixa97ax_GowX3jiIVFx0EuSrN6V9nJIFAlVsk_w2bRO4GVzES_bRshSCXy3Z8OA59SvoSDQ"
+    },
+    {
+      "type": "agent",
+      "id": "dbc3c2f5-0010-4849-ad03-8914cc9c7253",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782212063951,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "alK6LHnkoB7jO6rZiQEi2QQ5HFoedcjsJRYDY_miQ7ZOYmm0M8zyxZIbfRAV8X50rtn61DofO75wQjSKe4AbBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782212063951
+}

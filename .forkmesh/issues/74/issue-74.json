@@ -1,0 +1,100 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 74,
+  "title": "the scan to send solana qr code is not working on the join page please fix it",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "",
+  "priority": 0,
+  "progress": 100,
+  "assignees": [],
+  "createdAt": 1782067893378,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-74",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782067893378,
+      "title": "the scan to send solana qr code is not working on the join page please fix it",
+      "body": "",
+      "attachments": [],
+      "sig": "uk2PWl7BP-Ve-rjv8VW6EH_Llhy3YtIYx3ZWfXpdunQk43ixwxkH2OYtDK2FHEA9G-7mVZeQYdyQTR7vdhL5BA"
+    },
+    {
+      "type": "agent",
+      "id": "45550a22-c43c-434e-b0bb-f4fdf11d2350",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782067893545,
+      "agentProvider": "codex",
+      "agentSessionId": 7,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "9yKimJ4dAccZTn9_HI4PZsEZfeB2zYgQ4-CimrTmT0mliSakvbLl4yMSkRkJsefpMiONz8aCJZNDprF5dPoJDg"
+    },
+    {
+      "type": "agent",
+      "id": "ae8438a5-463c-4217-b19c-12202f204954",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782068096313,
+      "agentProvider": "codex",
+      "agentSessionId": 8,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "5lZLCTiVKSinBghmVGKQZxb1fa_I5nedC7lefhgNPILphxBd2zeAvD0SRmUK5e3t2gHDDPYJuE4X-X_2IS5pDg"
+    },
+    {
+      "type": "status",
+      "id": "b5accced-2ff3-4ed9-babf-c6a3f6e56a35",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782070048279,
+      "status": "closed",
+      "sig": "vuUdQp2zkVcGkIo0-5YlcPRK1cZaFS9ZiQpmg32RULg736M5x10wJKlbcfp02-25x5yt4IoH2ERuhl7Z6Xg5BQ"
+    },
+    {
+      "type": "agent",
+      "id": "6b2fc601-56f8-4fbb-81ba-8cc1e3f902e4",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097176005,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "0YowcJSPxr09unDrvz9-bsWNYK9MYaNzkRzr6V1wRSFyyeARqfM8g4efL2CZKkrONCSJ1ycHeV4Wv3Pztwl7Dg"
+    },
+    {
+      "type": "agent",
+      "id": "7c09bdbb-2a53-4857-b256-b71d7dc91913",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782097176583,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "WCT-7NhfkOYpup89Zw3l6zn6IFagWCH7LGmmwwFZRmUINVquBaIDS6VVvOmjfwGIXhy-Z_DDC4EPstcDmLDiAQ"
+    },
+    {
+      "type": "progress",
+      "id": "69f862b2-3c94-475b-8cf9-ffe619a27ced",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782189928258,
+      "progress": 100,
+      "sig": "Ahj__l89OiXasj65tCULhHJsEeQYWpCj008g1tNfXH-mZEzRW-OOQuPqLloJmW05hlxGirJWDJV72429OFWtBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782189928258
+}

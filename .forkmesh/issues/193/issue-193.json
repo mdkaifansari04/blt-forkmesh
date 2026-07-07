@@ -1,0 +1,219 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 193,
+  "title": "make a chekcbox in settings to auto sync  new issues (if clean)",
+  "status": "closed",
+  "labels": [
+    "Incomplete"
+  ],
+  "milestone": "",
+  "priority": 36,
+  "progress": 5,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782339177891,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-193",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782339177891,
+      "title": "make a chekcbox in settings to auto sync  new issues (if clean)",
+      "body": "",
+      "attachments": [],
+      "sig": "N45oIlx31jBzCtsQXz-2lWYmw_MxrF8cLdCFvQibdBdi2XWttubl5cVgeNpd3PZMq54sUvJB0E2smd0i742fDg"
+    },
+    {
+      "type": "priority",
+      "id": "43c55fc9-b6db-4c1a-b8f4-5191afc9a4d6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782347186208,
+      "priority": 9,
+      "sig": "SsBjHB1Ez1S4HQn5uMxbfBb6lhNPxtV--U7FcLse0gqMzfgR5mqtwlWAzIPvG56yipq-rsb2wY77hwy9DvF0Bg"
+    },
+    {
+      "type": "priority",
+      "id": "6e2ba49e-80e4-4994-9d68-ad048f102395",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482617,
+      "priority": 20,
+      "sig": "sOhsASPt-8OaE19K6RmZtTGlFEmEl-4xQX2Lsb085_o4k8jXVkUjw_2uGbAw-ED7jS53ra3FUILRMHk-M-HtDw"
+    },
+    {
+      "type": "bounty",
+      "id": "e97254ac-742b-4b6e-9f5a-1005530b8703",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359966695,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "gNkYdN2WVrQGD10ChYYmPdubSIBc3WWIR8lx3049DhEHcyDtxt2c9mFPIn9P6YEbtmdOiWMRIYvA1K7GtP7RBQ"
+    },
+    {
+      "type": "title",
+      "id": "17c45620-c6bc-42df-ab10-507247fc0c12",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782364836257,
+      "title": "make a chekcbox in settings to auto sync  new issues (if clean)",
+      "sig": "naDIfbI_PTT5fD1sKq9zArB1Ge_8lerg0IzwAqqxJVBo82C6sL5eEaBovLcqbugeYQyD_T4tNxAAS9YjqfRXAg"
+    },
+    {
+      "type": "agent",
+      "id": "5f334649-f5dc-4f9d-8b3f-5369facdf7d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782364843707,
+      "agentProvider": "claude-code",
+      "agentSessionId": 9,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "5qWSU27UqHWybxL0Seyn_7iU4ORrkpBitICHS6XAM39UXaNOnEN18lB3f2U1onOxFn5E8hpGIYncilxoK-vJCA"
+    },
+    {
+      "type": "agent",
+      "id": "ec2ca2b0-5783-4ee9-a55b-b58516109f23",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782407640015,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "ssAISoWwWK6B5DdSVUKKfzZkMGhJF1cfRcl55n-X9TIvlE8G7G84dTiQDxWVC8iaBN_6VtFCwAopHfjO-LssBg"
+    },
+    {
+      "type": "priority",
+      "id": "c6e9dab9-d1b5-4229-aab2-9be81d745cb9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649526,
+      "priority": 25,
+      "sig": "5DjdeJx8bBBwkSmMJdchI3JUE-hqPSYSx8Cmoytkvn_cIItMKpFvV9YqzESRwsYp5vjPVxB0-f6A3omycSZZAA"
+    },
+    {
+      "type": "labels",
+      "id": "f55e84c6-f26b-437c-860a-6a1e09357bf7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687282192,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "uYq827Cb7LTGZrX5BhTHRwR6iuZxX9kKMSqBSJm3BK-IHg-8z4llvati1eCv6c7hzVdnZRuHgXSJjslqyj4xCg"
+    },
+    {
+      "type": "progress",
+      "id": "9cc395f8-a1b2-487d-ae78-2eb22e1b3243",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687282268,
+      "progress": 35,
+      "sig": "5hBGrB2O5gEy3qvD-usdwOU3_j7UyyUV5i5OwcnPMzOIJQ99fV9N4YevOr8iBqEhmwR84h5VnqyiDQnLMDOSAA"
+    },
+    {
+      "type": "priority",
+      "id": "a66c91bb-786c-4f4d-83ec-e24d3f6dff81",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487077,
+      "priority": 29,
+      "sig": "buR4tLuUWzAUl-arXranQNQAiDvCnGappEdmzXoZcjCiB9kz_303JNtN4Odm1yrsl5MHkjVTfS8q7C5BEZQIAQ"
+    },
+    {
+      "type": "labels",
+      "id": "df1f336e-6a54-4b6e-a4bf-5236fe9488b2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666134,
+      "labels": [
+        "Incomplete"
+      ],
+      "sig": "LVEimG4Gnn-lcP9L2G034aEsbjczZO9yvIVgPTAfU8__YGb3oXiHcv5JW_eJvhe3O1Fl_0ZOkVSzino8rTk_DQ"
+    },
+    {
+      "type": "progress",
+      "id": "79463d6a-444a-43b8-a67f-3f655af7bfa5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666156,
+      "progress": 5,
+      "sig": "P3chI3kFn70XaqR6PJqsKCAhmW0qLq3aWSe6qumKIuVJ8trO_TmgUilOoAqliIsgAS3xmcb9srrgwn35cpdqCA"
+    },
+    {
+      "type": "comment",
+      "id": "4cadbdca-9988-4e3a-9eca-65476d801bba",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711666184,
+      "body": "**Completeness analysis:** Incomplete (5%)\n\nno settings checkbox for auto-sync of new issues found",
+      "attachments": [],
+      "sig": "lm6qm9JXGJsWOTuU6lpWeNgOJFoB2SYv1Vbw6VDDE8Ob1737QiVFTch1QJtehnkD6W2ghJPydzlZInXhHKLMCA"
+    },
+    {
+      "type": "priority",
+      "id": "1a0d5e97-387a-4299-9138-dd8b70f79b86",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835350,
+      "priority": 36,
+      "sig": "CmzkjcnruVQQY9ggjmupjqaHGMaDZx-HUhS7YwFh9D9qfZFIHv7DeBueFYxqgem6eLBfc87qjmn0ugL80XciDw"
+    },
+    {
+      "type": "agent",
+      "id": "b04dc59f-99ab-4592-bdf4-5a7be5c2e8d9",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796412899,
+      "agentProvider": "claude-code",
+      "agentSessionId": 38,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "1B30ngZg49kAr-28HBa8AN_ah9D03bZxnxadG7jVZUz3_yT9n0qcuWX7v5HZxAHBYaNM43nBVLu6NiyzzKYIBw"
+    },
+    {
+      "type": "assignees",
+      "id": "ba14d008-4068-4004-a7bb-4407621edd7d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782796412931,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "ogG0r3KOTYp2e8rJfnws6s1kVKaSoX_6I5miBiu_iU3cUEQksHolTNYVklUtj4HjuurEuGx-clAD3FIsQH6wAg"
+    },
+    {
+      "type": "agent",
+      "id": "8c1a386a-230c-4109-97a3-40b76a5741d7",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782834056854,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "f4NcF6oDz6Jq45mO-NhTtL8Xlql3NR_4iEXmAlK6yr5APdX-KhVZz2hJPoawnP8AZWnqp6RZU6lC9UZ9xru4CQ"
+    },
+    {
+      "type": "status",
+      "id": "5612eafd-7e62-45a2-ae24-d903582be607",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782834057037,
+      "status": "closed",
+      "sig": "9fPCcPy2NVo3oVpCC04p4-XT78nUI_sPAvF2gIRJRRS86EKREAzHXs609lmyvjPVVVh9gSDvOy4pORBMMMwGBA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782834057037
+}

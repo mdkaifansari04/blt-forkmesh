@@ -1,0 +1,85 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 305,
+  "title": "BUG: in verify wallter option whenever i click on very wallet button a pop up opens for email and password for verification i have entered the right credentials but even tho is open up and ask again and if i close that i ask again and everytime i close it just opens up, that needs to be fix",
+  "status": "closed",
+  "labels": [
+    "security"
+  ],
+  "milestone": "",
+  "priority": 1,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782758500903,
+  "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+  "authorName": "mdkaifansari04",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-305",
+      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+      "authorName": "mdkaifansari04",
+      "ts": 1782758500903,
+      "title": "BUG: in verify wallter option whenever i click on very wallet button a pop up opens for email and password for verification i have entered the right credentials but even tho is open up and ask again and if i close that i ask again and everytime i close it just opens up, that needs to be fix",
+      "body": "",
+      "attachments": [],
+      "sig": "MhJHqc11mLZuAXzFwmPEf0z0woykrvS16EUmrBHPHhn_VFhVVD-YZLGyef9PC5EdsS6-LhHWP7JOIqj9lIpZCQ"
+    },
+    {
+      "type": "priority",
+      "id": "00717d3a-6b45-412c-8f44-5e514d760b7c",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782759315314,
+      "priority": 25,
+      "sig": "Wux-DR0y2d2HlhbIpJEgsrG5JQVyBDHr8bmy9lr1js5owGlfbwu9oetpZgKhdPA-Bs8lN__WN9OHH9LpUFaZCQ"
+    },
+    {
+      "type": "priority",
+      "id": "3c212406-e7b2-4c9f-8cb0-d84efc51fc7a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786834436,
+      "priority": 1,
+      "sig": "ChKCpfDbyV8uK1f6_fkRGSBpcW-bwkKU9jSUH0th1tONvBBqpisz8S76CGCHgUkrAosmGg67yr_oVaOYDS0NBg"
+    },
+    {
+      "type": "agent",
+      "id": "f7d09135-e1ed-49d1-a021-224ba699adf8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786852992,
+      "agentProvider": "claude-code",
+      "agentSessionId": 12,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "-STqSDMjqpeyc_pYQLOmxNdam7UrhxazUQz92vz6q1Igy4pQtLk-Km4ODdWYyaDxRiUZfKf7RyV_S8WJE9dbDA"
+    },
+    {
+      "type": "agent",
+      "id": "39f0f304-9024-4113-9e1e-b52b25cc1c09",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782788711732,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "fb_RvKwOKHqTW3aTKwEfVtj68_6C4Qt1qHqsbr0WCBc-XfbUUHcb6ZMxGDoQXuU4N-c93Q97GP2OKQE_iUnGBw"
+    },
+    {
+      "type": "status",
+      "id": "4e830010-a876-4840-a3df-c7ca9d68c64a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782788712036,
+      "status": "closed",
+      "sig": "mI3PxcK_Oivtl64F2xj9Un8Do7P-eFuBWZlEaPKtueCSnYjXQLOGDcbbmdJx5ESyY9uYnOkbpkAookfZd6RiDg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782788712036
+}

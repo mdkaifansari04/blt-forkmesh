@@ -1,0 +1,92 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 35,
+  "title": "for the native app To-do: Keep repo service reachable while app is foregrounded/backgrounded,",
+  "status": "closed",
+  "labels": [
+    "infra"
+  ],
+  "milestone": "MVP launch",
+  "priority": 7,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1781685834420,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "node1",
+  "bountyUsd": 1.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-35",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "node1",
+      "ts": 1781685834420,
+      "title": "for the native app To-do: Keep repo service reachable while app is foregrounded/backgrounded,",
+      "body": "",
+      "attachments": [],
+      "sig": "z3l7PhzJSbC4wb2NGdOepoXXHITMs6PVU9S2Mspf4hn3ZqivtZvnZcwliCpLJYc0IGCMjDzC6XAYOjnY2Hm1Cw"
+    },
+    {
+      "type": "labels",
+      "id": "dead2891-7198-49aa-b33f-9f92ccbd2560",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "labels": [
+        "infra"
+      ],
+      "sig": "ZdDzaIZ2IaLhE3WSlxAvdTFOlVUthgG4S1wbLWnzLt--axvJ-eCFtZ78YHl7_txpZRH6Aii_Uw_KNz5ASHHCAA"
+    },
+    {
+      "type": "milestone",
+      "id": "64bc878d-4894-4ab3-a639-5c51e96a7d9b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "milestone": "MVP launch",
+      "sig": "uMghnf8XDqRPmzu9RZiba89y2meVq5bj4s8MajfL3JTYhBtc7K6qTJQEE4L6p84Evnd5O-9Ld3Kva_qAs-FsDg"
+    },
+    {
+      "type": "priority",
+      "id": "4f566d8f-6017-4e9a-bc9a-2a1f0a8bf680",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782141198384,
+      "priority": 82,
+      "sig": "gZszz-YyeO6XNK0EC7KE6MXsNoUrpBoKEI6aAxxVTradHvystLE6QrhNi7f0cGuBdSBG6_STuIOk-yBUvWq0CQ"
+    },
+    {
+      "type": "bounty",
+      "id": "a816936f-099a-47f2-b38a-49b2bcbfa600",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782193056795,
+      "bountyUsd": 1.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "VL7Yrr5azwi_SdeYIM3WLtKtBWCn8yMnrEbm1BaMRu1XWUwc_H5Suyirmx75QHxF0s5cw25G9UFounIHRaijBA"
+    },
+    {
+      "type": "priority",
+      "id": "5899f325-6fd7-4e7c-9baa-4d5c8ca04f6e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782209180224,
+      "priority": 7,
+      "sig": "00oj3HIPuIlz3dC7qkWwOmWpDzkSWO8vJvG2-0NPwLv7GNPibEtlz1w_DSLf4E5zGvIu1_5_NZHNBBOicwkPAA"
+    },
+    {
+      "type": "status",
+      "id": "eb247b3b-164c-4788-8ad5-95a498c1e06d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782259632956,
+      "status": "closed",
+      "sig": "vuWbOdVZOX5t4T-e5e8fxtWJ-J46Ps2eHCz7MWViexrHJNC9Z_qL376nUvaFYs9Mi99ufX0fdF3QdgWFZmNMAg"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782259632956
+}

@@ -1,0 +1,197 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 226,
+  "title": "show number of releases in releases tab",
+  "status": "closed",
+  "labels": [
+    "Partial"
+  ],
+  "milestone": "",
+  "priority": 29,
+  "progress": 20,
+  "assignees": [
+    "Claude Code"
+  ],
+  "createdAt": 1782354908601,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-226",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782354908601,
+      "title": "show number of releases in releases tab",
+      "body": "",
+      "attachments": [],
+      "sig": "qNDHYsSnYr42tP5ULvIfKOWlTZAnxwMnBtosE-NMpzZOa4rqIMv7aJ3h7k1D4WNkZrlcGdW41nPDBCZWMcUmDA"
+    },
+    {
+      "type": "priority",
+      "id": "d70bddf3-2682-45c4-8ad0-ab95b8f408e2",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482644,
+      "priority": 43,
+      "sig": "kodj1EpdRehHNh5840KszJMjyTq7U8sBdRSvDI8IwL8UA_w8miz8agcaOK0b0ywhOA5_BJHwRs2lFE2Sz_B2DA"
+    },
+    {
+      "type": "bounty",
+      "id": "2449d6e7-06fa-4e79-bd3e-6dc01047b01d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359968203,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "gMr64nsJ5guCtz3wE0YOkyyz9A_FV4YwuqrCpjuGGJTCCyaEUVLoiNEtmgPhMVZcoJhouACPX7c3gImurn7mCg"
+    },
+    {
+      "type": "priority",
+      "id": "e8b3e820-8013-4eea-9376-d6f13d7dfc2d",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782522649714,
+      "priority": 33,
+      "sig": "QgTW_afPEGDgVxgFPL7cVoGCm8Iop1b7sxgb-JqnLtHSUayDT6q4iEE4TLPhFyPWy3tNYK0J8-ggtEoHBxSTDw"
+    },
+    {
+      "type": "labels",
+      "id": "caf54911-ff42-4662-826b-3ed2d507f6fc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284377,
+      "labels": [
+        "Complete"
+      ],
+      "sig": "aAfHBZkSrrgDudSMmfQtMI5I8shdBDLwiOD4EqUlfumJUY0p8nJVm_iuviLx8Z9YN1kZzIQkJn-5a1KowdBfCA"
+    },
+    {
+      "type": "progress",
+      "id": "f846629c-68e2-4ffd-a8e9-e295b1a6bf26",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782687284423,
+      "progress": 90,
+      "sig": "T25oSEY87rWH5TL1de2iOVRFiBcwMcWZl2gr-LY7eBqsB6tnMZBFBu0G_HkVxOuPSZEWb1pWKYsKSlIp9x66Cg"
+    },
+    {
+      "type": "priority",
+      "id": "3caef0fa-cd4a-4447-89be-709300fdb4f8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782710487567,
+      "priority": 50,
+      "sig": "scens_2Eb38e4BBZIlaN8eljLuJ_NxkpQOGS5UT93oV5m1bcbN-9QecXXozBT5cjaC09mP28IY7oz5AVs_2MDw"
+    },
+    {
+      "type": "labels",
+      "id": "b71a674c-a0fb-4745-b281-36417edcb799",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667256,
+      "labels": [
+        "Partial"
+      ],
+      "sig": "gXXTXdT4CS59R01-T1CgScF8Sk5MwvBJUW8SdPYwqa4UuzHw0bGbYtugEP7KdyGd4D5XyZOPmlEuDVIZeXUkCg"
+    },
+    {
+      "type": "progress",
+      "id": "b2788169-e263-4c95-87e9-4d4d8594e15e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667281,
+      "progress": 20,
+      "sig": "1rxMrfNxHHvZyNHtCMNmmbjm8k2Cksvw9LUq2BL9wI-AmciEckaQXSZ8_zKa7KvjbVRPTgjYSLIcX-Vdew6uAg"
+    },
+    {
+      "type": "comment",
+      "id": "1f05e2c4-1c40-468c-8607-38c6fef5a5e6",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782711667305,
+      "body": "**Completeness analysis:** Partial (20%)\n\nreleases support exists (test_releases.py) but release count in tab not evidenced",
+      "attachments": [],
+      "sig": "-oJKbKULt0pKYaMc5On14K9gBVNcYhetY-TID3AmcZQyAAt987v4y0Do26IxX89fDbFLljTl5F-GDmivUMQkDw"
+    },
+    {
+      "type": "priority",
+      "id": "b598eec8-c47b-493b-aa18-d906894babcd",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782786835171,
+      "priority": 29,
+      "sig": "F415BuZT1JPtBozLVunw2MsVrc25QQwfobHx2cNqwDTYUk5bHaa69XskV4-VKrc8HUcoZKPXl-yBaas6lwR8DQ"
+    },
+    {
+      "type": "comment",
+      "id": "226b5677-c667-41b6-b514-e6ce8f23ea2e",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795496763,
+      "body": "So right on top of the Releases tab, show the current release number and then on the right of Releases, show in parentheses how many releases there were.",
+      "attachments": [],
+      "sig": "GjzCHi1_7klyb465-gO_2vq1-Zw8Z4BWNBV9KRlxanCAgrQKLWXoRs8hxolgFsLQ7qh7BcMzH4tjjbAotfDFAA"
+    },
+    {
+      "type": "agent",
+      "id": "d2cf12cb-9292-4af1-a85e-e1e272e3b1ad",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795500169,
+      "agentProvider": "claude-code",
+      "agentSessionId": 33,
+      "agentStatus": "queued",
+      "agentCreatePr": false,
+      "sig": "o-1ywbna7cFgK3-YNndzeiLqPpMi34QVfzzacl-POTNoxIQfW6Ymh-y85FLsW8keyuRtDbjALdcK57hbo-QCBA"
+    },
+    {
+      "type": "assignees",
+      "id": "81dba89f-6511-4e4a-8b5a-1400cca581dc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795500199,
+      "assignees": [
+        "Claude Code"
+      ],
+      "sig": "RCgEMMlXb47dLGOGuKZxwZliV3pWBOi6PP-PJE3wC2YrtSah6Lb0X99mRx7pUOcIPKBH-0veliWLZlxWy7NzAQ"
+    },
+    {
+      "type": "comment",
+      "id": "c647acaa-adf0-48d3-bf13-b6cdf6fcb38a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795858815,
+      "body": "Closed by merged branch \"agent/issue-226-show-number-of-releases-in-releases-tab\".",
+      "attachments": [],
+      "sig": "cYlw_OcL6wDhcuURx77pgE3IWxgJf4npfGnTi1tBvyFHO3rh221C0W1pa1ufk_OTL74z_UjvNi6JG7yV8t5qDA"
+    },
+    {
+      "type": "status",
+      "id": "51f13490-5264-486c-8c88-db52c79237c8",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782795858892,
+      "status": "closed",
+      "sig": "8DzajqV38GwaDDQUvfEZw191x-lz0C583KIzAPROFpkMpIMOub1xcoyYbOOmuOepANN7OR2ekMH2nrf5nQ14Bg"
+    },
+    {
+      "type": "agent",
+      "id": "72f31728-0aca-4a96-bef6-1ed25bd8639a",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782834057593,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "1vTJYVphytFoETKXHaJv4hWyFtHTdNmLyw_ugG0cDSdV5Vy51fR1karJKvvYGSD-RpUCF51s3g4Lix6FTU3UCA"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782834057593
+}

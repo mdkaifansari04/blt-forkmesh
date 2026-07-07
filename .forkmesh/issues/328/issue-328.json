@@ -1,0 +1,52 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 328,
+  "title": "Make it so that when I submit an issue from the website, it goes to the list of issues",
+  "status": "closed",
+  "labels": [
+    "feature"
+  ],
+  "milestone": "",
+  "priority": 9,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782960326,
+  "author": "wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4",
+  "authorName": "jett",
+  "bountyUsd": 0.0,
+  "bountyAddress": "",
+  "bountyStatus": "",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-web-1782960326",
+      "author": "wCCWq66OAF4ld0TEo1EO7nVpibAwa2ukw-MD0J7ttK4",
+      "authorName": "jett",
+      "ts": 1782960326,
+      "title": "Make it so that when I submit an issue from the website, it goes to the list of issues",
+      "body": "",
+      "attachments": [],
+      "sig": "Hvy_FP2wS7zuM-EELe4lhtqfABiqfgq6kI6C3cvymV7hpdfW0ybh_xkCHgm0wXHwKLmPb3Z9sMQqr_ckrNIQDQ"
+    },
+    {
+      "type": "priority",
+      "id": "4d5adfa9-373b-409c-b17e-13dae809c337",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783116818275,
+      "priority": 9,
+      "sig": "_Ac-75jUa6-6NphtuHYW0xrDnz3OT-UivFj7w6OXLAFs4XvBZsBeECWBtkoOlhjJSvGZLItZJLHHR8Hyox5jDg"
+    },
+    {
+      "type": "status",
+      "id": "3fe0cc0d-3445-4d5e-ab87-ca2a3476ff55",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1783122754158,
+      "status": "closed",
+      "sig": "oG4YOUKI54Xz7Tx2tHZfwHT2hKkGuKNhVKAsnad0e3MbBtmMr1v2PIMi4-QfQA2BLTTZEFKL3xsSWZ0pmKJGBw"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1783122754158
+}

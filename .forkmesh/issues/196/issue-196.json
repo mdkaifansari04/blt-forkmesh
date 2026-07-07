@@ -1,0 +1,96 @@
+{
+  "schema": "forkmesh-issue-v1",
+  "number": 196,
+  "title": "make sure avatars show up correctly on the issue descripption section",
+  "status": "closed",
+  "labels": [
+    "enhancement"
+  ],
+  "milestone": "",
+  "priority": 11,
+  "progress": 0,
+  "assignees": [],
+  "createdAt": 1782347127384,
+  "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+  "authorName": "newnewnode",
+  "bountyUsd": 2.0,
+  "bountyAddress": "",
+  "bountyStatus": "open",
+  "events": [
+    {
+      "type": "open",
+      "id": "open-196",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782347127384,
+      "title": "make sure avatars show up correctly on the issue descripption section",
+      "body": "",
+      "attachments": [],
+      "sig": "TpSwidySZVrLhCU-VVgcGqHlXAPEZcBsoIKCVgub4_oIN9gNqlP3iIYKXB6JwEybc0tdL-ig2q0ObVUzASxXAA"
+    },
+    {
+      "type": "priority",
+      "id": "25670c5d-d37c-4654-809e-25de5a8d4227",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782347218309,
+      "priority": 14,
+      "sig": "IBlsfyJt4hL4GuznuDs_LtC1zBmaaCJVIb68NouBv7RWZHVbvAhu58WUnaWRcQ6tj1C8jPzV1mtqZS-_jtjaDw"
+    },
+    {
+      "type": "priority",
+      "id": "35d2de31-3140-471d-af06-49e26874fcdb",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782356482619,
+      "priority": 11,
+      "sig": "qZG7c6oNBkVMnwUbUGKkmyw57fKMZbofxdHwGGDw3Gdrq5GXHAdFEch99hvMabpDzBCicrNBkx-E926VKpYlAQ"
+    },
+    {
+      "type": "bounty",
+      "id": "bb0d1d45-270a-49a3-b0a7-fab48c86ef89",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782359966883,
+      "bountyUsd": 2.0,
+      "bountyAddress": "",
+      "bountyStatus": "open",
+      "sig": "P4xyL392ZoFs3H9AyC9gnzVH4sBPrlfuZ94N5E1mYH_hD0njOaCZaetC7-bG14NefEZCHQtulkgnmy3Gj1XKDQ"
+    },
+    {
+      "type": "agent",
+      "id": "d194bcd5-4567-48ac-b841-705d77d458dc",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782431584781,
+      "agentProvider": "claude-code",
+      "agentSessionId": 9,
+      "agentStatus": "queued",
+      "agentCreatePr": true,
+      "sig": "XSktOSx-WM517ho5nd4meS4GbuOk80D61-fYNAPXCteSEfYREcLzUxK6Pjf0fSK9sQZeXauoNL_OdiJ5OOkAAQ"
+    },
+    {
+      "type": "status",
+      "id": "f8ec1b84-3eb5-4c07-ab22-1857317cfa2b",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782433123340,
+      "status": "closed",
+      "sig": "d2KhlYIR2XBwiGgl7nLF9sq05aozv8ugZ2QPVzkEcP8Z8WwylgBX5PkYurQm1p7yDhoPtpSR8RJoVNforOFIAg"
+    },
+    {
+      "type": "agent",
+      "id": "3d7ece70-0944-4a98-9112-b680f174e9a5",
+      "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+      "authorName": "newnewnode",
+      "ts": 1782433132836,
+      "agentProvider": "",
+      "agentSessionId": 0,
+      "agentStatus": "cleared",
+      "agentCreatePr": false,
+      "sig": "k6hOa5fbUFPEgVpM8rfFLNMkzN-VkqlnTChq8Low0zW4v98obtNpbnyL5K6haAJpdwaB2jVMeTg-pMYVz7qwBQ"
+    }
+  ],
+  "votes": 0,
+  "updatedAt": 1782433132836
+}
