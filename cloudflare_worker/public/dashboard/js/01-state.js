@@ -3,6 +3,7 @@
     repositories: [],
     filteredRepositories: [],
     filteredGroups: [],
+    repositoriesLoading: true,
     page: 1,
     pageSize: 5,
     selectedRepo: null,

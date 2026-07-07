@@ -629,6 +629,7 @@
         showSection(requestedSection() || "repos", { push: false });
       }
     } catch (_) {
+      state.repositoriesLoading = false;
       const list = $("#repoList");
       const count = $("[data-repo-count]");
       if (count) count.textContent = "Unavailable";

@@ -161,6 +161,23 @@
     const next = $("[data-repo-next]");
     const pageList = $("[data-repo-pages]");
 
+    if (state.repositoriesLoading) {
+      if (list) {
+        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>';
+      }
+      if (summary) summary.textContent = "Loading repositories from an online node";
+      if (prev) {
+        prev.disabled = true;
+        prev.classList.add("opacity-40");
+      }
+      if (next) {
+        next.disabled = true;
+        next.classList.add("opacity-40");
+      }
+      if (pageList) pageList.innerHTML = "";
+      return;
+    }
+
     if (list) {
       list.innerHTML = visible.length
         ? visible.map(repositoryCard).join("")
@@ -234,6 +251,7 @@
   }
 
   function renderRepositories(repositories, session) {
+    state.repositoriesLoading = false;
     state.repositories = Array.isArray(repositories) ? repositories : [];
     state.filteredRepositories = state.repositories.slice();
     state.filteredGroups = groupRepositories(state.repositories);
