@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 
 #include <cstdlib>
 #include <atomic>
@@ -116,6 +117,22 @@ const char *signalName(int sig)
     case SIGBUS:  return "SIGBUS (bus error)";
     case SIGFPE:  return "SIGFPE (floating-point / integer error)";
     case SIGILL:  return "SIGILL (illegal instruction)";
+    case SIGTERM: return "SIGTERM (terminated)";
+    case SIGINT:  return "SIGINT (interrupt)";
+    case SIGHUP:  return "SIGHUP (hangup)";
+    case SIGQUIT: return "SIGQUIT (quit)";
+#ifdef SIGTRAP
+    case SIGTRAP: return "SIGTRAP (trace/breakpoint trap)";
+#endif
+#ifdef SIGSYS
+    case SIGSYS:  return "SIGSYS (bad system call)";
+#endif
+#ifdef SIGXCPU
+    case SIGXCPU: return "SIGXCPU (CPU time limit exceeded)";
+#endif
+#ifdef SIGXFSZ
+    case SIGXFSZ: return "SIGXFSZ (file size limit exceeded)";
+#endif
     default:      return "signal";
     }
 }
@@ -190,12 +207,69 @@ void installSignalHandlers()
     sa.sa_handler = crashHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_ONSTACK | SA_RESETHAND;
-    for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL})
+    // Catch every normal fatal/termination signal we can reasonably handle. The
+    // kernel does not allow SIGKILL or SIGSTOP to be caught, blocked, or logged.
+    for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTERM, SIGINT,
+                    SIGHUP, SIGQUIT
+#ifdef SIGTRAP
+                    , SIGTRAP
+#endif
+#ifdef SIGSYS
+                    , SIGSYS
+#endif
+#ifdef SIGXCPU
+                    , SIGXCPU
+#endif
+#ifdef SIGXFSZ
+                    , SIGXFSZ
+#endif
+         })
         sigaction(sig, &sa, nullptr);
 }
 
 } // namespace
 #endif // FORKMESH_CRASH_HANDLER
+
+namespace {
+
+QString compactDiagnosticForMainLog(QString text)
+{
+    text.replace(QChar(0x2014), QLatin1Char('-'));
+    text.replace(QChar(0x2026), QStringLiteral("..."));
+    text.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    text.replace(QLatin1Char('\n'), QStringLiteral(" | "));
+    text = text.simplified();
+    constexpr qsizetype kMaxMainLogDiagnosticChars = 6000;
+    if (text.size() > kMaxMainLogDiagnosticChars) {
+        text = QStringLiteral("...(diagnostic truncated; showing tail)... ") +
+               text.right(kMaxMainLogDiagnosticChars);
+    }
+    return text;
+}
+
+void appendDiagnosticToMainLog(const QString &kind, const QString &context,
+                               const QString &details)
+{
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dir.isEmpty())
+        return;
+    QDir().mkpath(dir);
+    QFile f(dir + QStringLiteral("/network_log.txt"));
+    if (!f.open(QIODevice::Append | QIODevice::Text))
+        return;
+    const QString line =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) +
+        QStringLiteral("  %1: %2").arg(kind, compactDiagnosticForMainLog(context));
+    f.write(line.toUtf8());
+    if (!details.trimmed().isEmpty()) {
+        f.write(" | ");
+        f.write(compactDiagnosticForMainLog(details).toUtf8());
+    }
+    f.write("\n");
+}
+
+} // namespace
 
 void installCrashHandler(const QString &crashLogPath)
 {
@@ -252,6 +326,8 @@ void logDiagnosticEvent(const QString &context, const QString &details)
     // Main application log (stderr). qCritical keeps it visible at default log
     // levels and alongside the startup timing / node log.
     qCritical().noquote() << block;
+    appendDiagnosticToMainLog(QStringLiteral("ForkMesh diagnostic"), context,
+                              details);
 
 #ifdef FORKMESH_CRASH_HANDLER
     // Mirror into the durable crash log, when one was opened, so the breadcrumb
@@ -275,6 +351,8 @@ void logCaughtFault(const QString &context, const QString &what)
         + QStringLiteral("=================================\n");
 
     qCritical().noquote() << block;
+    appendDiagnosticToMainLog(QStringLiteral("ForkMesh caught fault"), context,
+                              what);
 
 #ifdef FORKMESH_CRASH_HANDLER
     if (g_crashFd >= 0) {
