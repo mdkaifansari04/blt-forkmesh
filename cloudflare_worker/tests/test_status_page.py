@@ -388,7 +388,7 @@ def test_operational_hour_does_not_carry_a_stale_reason():
 
 def _run_history_current(
     repo_count=7, online_labels=("alice", "bob"), error_count=3,
-    mainnode_online=True,
+    mainnode_online=True, do_abort_count=0,
 ):
     async def noop(*_a, **_k):
         return None
@@ -400,10 +400,17 @@ def _run_history_current(
             return [{"repo_bi": "mirror_bi", "ts": _Clock.value}] if mainnode_online else []
         return []
 
-    async def d1_first(_env, sql, *_args):
+    async def d1_first(_env, sql, *args):
         if "FROM repositories" in sql:
             return {"n": repo_count}
         if "FROM error_log" in sql:
+            if "message LIKE" in sql:
+                # The dedicated DO-duration-abort counter must filter on the
+                # platform's abort text, not count every error row.
+                assert any(
+                    "Exceeded allowed duration" in str(a) for a in args
+                ), sql
+                return {"n": do_abort_count}
             return {"n": error_count}
         return {}
 
@@ -462,6 +469,43 @@ def test_current_online_count_dedupes_by_node_label_not_row_count():
 def test_current_snapshot_offline_mainnode_is_false():
     out = _run_history_current(mainnode_online=False)
     assert out["current"]["mainnodeOnline"] is False
+
+
+def test_current_snapshot_counts_do_duration_aborts_separately():
+    # AbortError("Exceeded allowed duration in Durable Objects free tier."):
+    # the /status page gets its own counter for platform-killed DO requests so
+    # plan-limit churn is distinguishable from real bugs in errors24h.
+    out = _run_history_current(error_count=9, do_abort_count=4)
+    current = out["current"]
+    assert current["errors24h"] == 9
+    assert current["doDurationAborts24h"] == 4
+
+
+def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
+    # Regression: a room DO request that outlives the free-tier duration cap
+    # dies with pyodide.http.AbortError, which used to escape _route and
+    # surface as a Worker Error 1101. The room fetch must be guarded, log the
+    # cause (so the /status counter above sees it), and answer 503 without
+    # leaking exception detail to the client.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    src = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_route":
+            src = ast.unparse(node)
+    assert src, "_route not found in entry.py"
+    room_block = src[src.index("room_key_from_path(url.path)"):]
+    fetch_at = room_block.index("room_object.fetch")
+    assert "try:" in room_block[:fetch_at]
+    after_fetch = room_block[fetch_at:]
+    assert "log_durable_object_abort" in after_fetch
+    assert "status=503" in after_fetch
+    # The browse route's host DO fetch is guarded the same way so its mirror
+    # fallback engages instead of a 1101.
+    browse_block = src[src.index("REPO_HOST_RE.match"):src.index(
+        "room_key_from_path(url.path)")]
+    browse_fetch_at = browse_block.index("host_object.fetch")
+    assert "try:" in browse_block[:browse_fetch_at]
+    assert "log_durable_object_abort" in browse_block[browse_fetch_at:]
 
 
 def test_current_mainnode_online_via_forkmesh_mirror_heartbeat():
@@ -573,6 +617,8 @@ def test_status_page_renders_current_state_grid():
     assert "stat-nodes" in status_html
     assert "stat-repos" in status_html
     assert "stat-errors" in status_html
+    assert "stat-do-aborts" in status_html
+    assert "doDurationAborts24h" in status_html
     assert "data.current" in status_html
 
 
