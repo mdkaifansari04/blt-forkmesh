@@ -209,8 +209,12 @@ void ActionRunner::launch(Phase phase, const QString &program,
         env.insert(QStringLiteral("FORKMESH_RELEASE_CAS"),
                    QDir(m_mirror).absoluteFilePath(
                        QStringLiteral("forkmesh-releases")));
-    // owner/name so the release.json manifest records which repo it belongs to.
-    if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())
+    // Release workflows publish artifacts and write release.json; expose the
+    // owner/name there so the manifest records which repo owns the blobs. Do
+    // not leak this into ordinary CI jobs: install.sh treats FORKMESH_REPO as an
+    // explicit clone-source override, and worker installer tests must exercise
+    // live mirror selection instead.
+    if (isReleaseRun() && !m_run.owner.isEmpty() && !m_run.name.isEmpty())
         env.insert(QStringLiteral("FORKMESH_REPO"),
                    m_run.owner + QLatin1Char('/') + m_run.name);
     const QString home = QDir::homePath();
