@@ -652,6 +652,7 @@ def test_status_page_asset_and_redirect_exist():
     assert "last 24 hourly checks" in status_html
     assert "currentHour - 23 * 3600000" in status_html
     assert "Missing elapsed samples count as downtime" in status_html
+    assert "optimizing traffic usage for bots" in status_html
     assert "marker.classList.add(\"is-hovered\")" in status_html
     assert "status-day-hour is-" in status_html
     assert "status-hour-slice is-" in status_html
