@@ -5,6 +5,11 @@ ROOT = Path(__file__).resolve().parents[2]
 QT_SRC = ROOT / "qt_client" / "src"
 RELEASES = QT_SRC / "MainWindowReleases.cpp"
 REPOS = QT_SRC / "MainWindowRepos.cpp"
+BACKEND = QT_SRC / "ChatBackend.h"
+SERVER_NODE = QT_SRC / "ServerNode.cpp"
+SERVER_NODE_H = QT_SRC / "ServerNode.h"
+MAIN_WINDOW_H = QT_SRC / "MainWindow.h"
+SETTINGS = QT_SRC / "MainWindowSettings.cpp"
 
 
 def _body(source: str, start: str, end: str) -> str:
@@ -58,3 +63,43 @@ def test_published_mirror_metadata_carries_owner_user():
     )
 
     assert '{"ownerUser", nodeOwnerDisplayName()}' in publish
+
+
+def test_mirror_nodes_can_request_live_peer_refresh():
+    releases = RELEASES.read_text(encoding="utf-8")
+    backend = BACKEND.read_text(encoding="utf-8")
+    server = SERVER_NODE.read_text(encoding="utf-8")
+    server_h = SERVER_NODE_H.read_text(encoding="utf-8")
+    window_h = MAIN_WINDOW_H.read_text(encoding="utf-8")
+    settings = SETTINGS.read_text(encoding="utf-8")
+
+    build = _body(
+        releases,
+        "QWidget *MainWindow::buildMirrorNodesTab()",
+        "void MainWindow::requestMirrorNodesRefresh()",
+    )
+    request = _body(
+        releases,
+        "void MainWindow::requestMirrorNodesRefresh()",
+        "void MainWindow::loadMirrorNodesPanel()",
+    )
+
+    assert 'new QPushButton("Refresh nodes")' in build
+    assert "&MainWindow::requestMirrorNodesRefresh" in build
+    assert "m_backend->requestMirrorRefresh(source, ownerName);" in request
+    assert "m_backend->advertiseMirrorsNow();" in request
+    assert "m_mirrorAdvertSig.clear();" in request
+
+    assert "virtual void requestMirrorRefresh" in backend
+    assert "virtual void advertiseMirrorsNow()" in backend
+    assert "void mirrorRefreshRequested" in backend
+    assert "void requestMirrorRefresh" in server_h
+    assert "void advertiseMirrorsNow() override" in server_h
+    assert 'makeMessage("mirror-refresh")' in server
+    assert 'type == "mirror-refresh"' in server
+    assert "emit mirrorRefreshRequested" in server
+    assert "sendHello(true, false);" in server
+    assert "&ChatBackend::mirrorRefreshRequested" in settings
+    assert "&MainWindow::onMirrorRefreshRequested" in settings
+    assert "void requestMirrorNodesRefresh();" in window_h
+    assert "void onMirrorRefreshRequested" in window_h

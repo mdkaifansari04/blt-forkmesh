@@ -1961,6 +1961,8 @@ void MainWindow::attachBackend(ChatBackend *backend)
             });
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
+    connect(backend, &ChatBackend::mirrorRefreshRequested, this,
+            &MainWindow::onMirrorRefreshRequested);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
     connect(backend, &ChatBackend::networkDiagnosticsChanged, this, [this] {
         if (m_sectionStack &&

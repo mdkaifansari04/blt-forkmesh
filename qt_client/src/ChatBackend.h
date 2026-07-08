@@ -157,6 +157,17 @@ public:
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
     virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
+    // Ask online peers mirroring a repo group to immediately re-advertise their
+    // current mirror metadata. `source` is the shared source identity; `ownerName`
+    // is the caller's clone/catalog identity for compatibility with older adverts.
+    virtual void requestMirrorRefresh(const QString &source,
+                                      const QString &ownerName) {
+        Q_UNUSED(source);
+        Q_UNUSED(ownerName);
+    }
+    // Force this backend to broadcast its currently cached mirror adverts now,
+    // bypassing normal hello coalescing/rate limits.
+    virtual void advertiseMirrorsNow() {}
     // Announce that this node just opened an encrypted cove. The creator's node
     // (creatorKey) recognizes itself and raises a notification; everyone else
     // ignores it. The opener signs a canonical string so the creator can trust
@@ -216,6 +227,8 @@ signals:
     void rosterChanged(const QList<MemberInfo> &members);
     // A peer refreshed its mirror of "owner/name" from the source of truth.
     void mirrorUpdated(const QString &ownerName, const QString &peerName);
+    // A peer asked nodes mirroring `source` to refresh and re-advertise now.
+    void mirrorRefreshRequested(const QString &source, const QString &requesterName);
     // A peer opened an encrypted cove. The UI verifies the opener's signature and,
     // if this node created the cove (creatorKey), raises an "opened" notification.
     void coveOpened(const QString &creatorKey, const QString &coveId,
