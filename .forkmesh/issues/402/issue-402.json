@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783470769538,
+    "events": [
+        {
+            "attachments": [
+                "58947dcd.png",
+                "8e24b3f6.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "![forkmesh-paste-GbmtqG.png](8e24b3f6.png)",
+            "id": "open-402",
+            "sig": "kr5oloqBNE5IAlsCZkZutCIVpRDezkTT56kHZstekKQph86-rj4yAmVL-FR8h4gVVdNpMMK2alfd7KFUYMNjCQ",
+            "title": "make it so that when we paste an image into an issue it shows right away",
+            "ts": 1783470769538,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 402,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "make it so that when we paste an image into an issue it shows right away",
+    "updatedAt": 1783470769538,
+    "votes": 0
+}
