@@ -84,7 +84,8 @@ def test_mirror_nodes_can_request_live_peer_refresh():
         "void MainWindow::loadMirrorNodesPanel()",
     )
 
-    assert 'new QPushButton("Refresh nodes")' in build
+    assert "setAccessibleName(QStringLiteral(\"Refresh nodes\"))" in build
+    assert "refreshNodesButton->setFixedSize(32, 30)" in build
     assert "&MainWindow::requestMirrorNodesRefresh" in build
     assert "m_backend->requestMirrorRefresh(source, ownerName);" in request
     assert "m_backend->advertiseMirrorsNow();" in request

@@ -175,6 +175,10 @@ app_version() {
     sed -n 's/^project(ForkMesh VERSION \([0-9][0-9.]*\).*/\1/p' "$cmake" | head -n1
 }
 
+build_dashboard_assets() {
+    python3 tools/build_dashboard_assets.py
+}
+
 # Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
 # host application-firewall rule that singles out the curl binary (an OpenSnitch
 # "deny process.path /usr/bin/curl" answered on a popup) blackholes every curl
@@ -545,6 +549,7 @@ case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
         require_cloudflare_auth
+        build_dashboard_assets
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
@@ -588,6 +593,7 @@ case "${1:-deploy}" in
         push_secrets
         ;;
     dev)
+        build_dashboard_assets
         pywrangler dev --env "" ${VAR_ARGS[@]+"${VAR_ARGS[@]}"}
         ;;
     dry-run)
@@ -595,6 +601,7 @@ case "${1:-deploy}" in
         # --dry-run still runs the [build] command (migrate.sh → remote D1), which
         # needs Cloudflare auth, so the same non-interactive guard applies.
         require_cloudflare_auth
+        build_dashboard_assets
         pywrangler deploy --env "" --dry-run
         ;;
     *)

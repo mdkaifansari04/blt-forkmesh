@@ -1,10 +1,8 @@
 """Test helper: compose the dashboard behaviour script from its JS fragments.
 
-``public/dashboard.js`` is now split into ordered fragment files under
-``public/dashboard/js/``; the Worker concatenates them back into a single
-``/dashboard.js`` response at request time (see ``src/dashboard_bundle.py``).
-Frontend contract tests that assert on the shipped dashboard script should read
-the *assembled* bundle — exactly what a browser receives — via
+``public/dashboard.js`` is built from ordered fragment files under
+``public/dashboard/js/`` before deploy. Frontend contract tests that assert on
+the shipped dashboard script should read the assembled bundle via
 ``assembled_dashboard_js()``.
 """
 

@@ -93,8 +93,8 @@ def test_public_pages_use_shared_favicon_metadata():
     missing = []
     for page in sorted(PUBLIC_DIR.rglob("*.html")):
         rel_path = page.relative_to(PUBLIC_DIR).as_posix()
-        # dashboard/partials/*.html are shell fragments composed into
-        # dashboard/index.html by the Worker — they have no <head>, so the shared
+        # dashboard/partials/*.html are shell fragments composed into generated
+        # dashboard assets before deploy; they have no <head>, so the shared
         # favicon-metadata contract doesn't apply to them.
         if "partials" in page.relative_to(PUBLIC_DIR).parts:
             continue
@@ -109,7 +109,7 @@ def test_public_pages_use_shared_favicon_metadata():
             # advertises both schemes instead of the dark-only default.
             if (
                 name == "color-scheme"
-                and rel_path in ("dashboard.html", "dashboard/index.html")
+                and rel_path in ("dashboard.html", "dashboard/index.html", "dashboard/shell.html")
                 and parser.meta.get(name) == "light dark"
             ):
                 continue

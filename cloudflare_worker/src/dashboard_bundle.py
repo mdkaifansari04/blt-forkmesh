@@ -1,10 +1,10 @@
-"""Server-side composition of the dashboard behaviour script from JS fragments.
+"""Composition of the dashboard behaviour script from JS fragments.
 
 The dashboard's client script used to be one ~5450-line ``public/dashboard.js``.
 It is now split into ordered fragment files under ``public/dashboard/js/`` that
-the Worker concatenates back into a single ``/dashboard.js`` response at request
-time (see ``Default._serve_dashboard_bundle`` in ``entry.py``). This mirrors how
-the HTML chrome is split into partials and composed by ``dashboard_shell.py``.
+``tools/build_dashboard_assets.py`` concatenates into a single static
+``public/dashboard.js`` before deploy. This mirrors how the HTML chrome is split
+into partials and composed by ``dashboard_shell.py``.
 
 Every fragment is a *contiguous slice* of the original single closure
 ``(() => { ... })();`` — the fragments are NOT independently valid modules; they
@@ -50,8 +50,7 @@ def assemble_bundle(fragments):
 def compose_from_reader(read):
     """Assemble ``/dashboard.js`` using ``read(public_relative_path) -> str``.
 
-    Shared by the Worker (``read`` fetches from the ASSETS binding) and the test
-    suite (``read`` loads files off disk). Reads each fragment in ``FRAGMENTS``
-    order and returns the fully composed script.
+    Shared by the asset build and the test suite. Reads each fragment in
+    ``FRAGMENTS`` order and returns the fully composed script.
     """
     return assemble_bundle([read(fragment_path(name)) for name in FRAGMENTS])

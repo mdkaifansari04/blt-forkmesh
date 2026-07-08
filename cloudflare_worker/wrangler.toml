@@ -5,7 +5,7 @@ compatibility_date = "2026-06-14"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
-command = "./migrate.sh"
+command = "python3 tools/build_dashboard_assets.py && ./migrate.sh"
 
 # Per-minute cron: the Worker's scheduled() handler samples how many nodes are
 # online and records it for the /network/ 24-hour activity graph.
@@ -29,8 +29,6 @@ run_worker_first = [
   "/health",
   "/simulate-sentry-error",
   "/admin-*",
-  "/dashboard",
-  "/dashboard.js",
   "/dashboard/*",
   "/index.html",
   "/dashboard.html",

@@ -969,8 +969,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::loadMirrorNodesPanel);
     addRefreshSpin(refreshButton);
-    auto *refreshNodesButton = new QPushButton("Refresh nodes");
+    auto *refreshNodesButton = new QPushButton;
     refreshNodesButton->setObjectName("ghostButton");
+    refreshNodesButton->setFixedSize(32, 30);
+    refreshNodesButton->setAccessibleName(QStringLiteral("Refresh nodes"));
     refreshNodesButton->setCursor(Qt::PointingHandCursor);
     refreshNodesButton->setToolTip(QStringLiteral(
         "Ask online mirror nodes to immediately report their latest commit and "

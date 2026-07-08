@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en" data-dashboard-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForkMesh Dashboard</title>
+    <meta name="description" content="Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard." />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <script>
+      (() => {
+        const key = "forkmesh.dashboard.theme";
+        const siteKey = "forkmesh.theme";
+        let theme = "dark";
+        try {
+          const stored = localStorage.getItem(key) || localStorage.getItem(siteKey);
+          theme = stored === "light" ? "light" : "dark";
+        } catch (_) {}
+        document.documentElement.dataset.dashboardTheme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f6f8fb" : "#090909");
+      })();
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["ForkMesh Helvetica", "Helvetica Neue", "Helvetica", "Arial", "sans-serif"],
+              mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+            },
+            colors: {
+              background: "rgb(var(--dashboard-background-rgb) / <alpha-value>)",
+              foreground: "rgb(var(--dashboard-foreground-rgb) / <alpha-value>)",
+              card: "rgb(var(--dashboard-card-rgb) / <alpha-value>)",
+              "card-foreground": "rgb(var(--dashboard-card-foreground-rgb) / <alpha-value>)",
+              popover: "rgb(var(--dashboard-popover-rgb) / <alpha-value>)",
+              "popover-foreground": "rgb(var(--dashboard-popover-foreground-rgb) / <alpha-value>)",
+              primary: "rgb(var(--dashboard-primary-rgb) / <alpha-value>)",
+              "primary-foreground": "rgb(var(--dashboard-primary-foreground-rgb) / <alpha-value>)",
+              secondary: "rgb(var(--dashboard-secondary-rgb) / <alpha-value>)",
+              "secondary-foreground": "rgb(var(--dashboard-secondary-foreground-rgb) / <alpha-value>)",
+              muted: "rgb(var(--dashboard-muted-rgb) / <alpha-value>)",
+              "muted-foreground": "rgb(var(--dashboard-muted-foreground-rgb) / <alpha-value>)",
+              accent: "rgb(var(--dashboard-accent-rgb) / <alpha-value>)",
+              "accent-foreground": "rgb(var(--dashboard-accent-foreground-rgb) / <alpha-value>)",
+              destructive: "rgb(var(--dashboard-destructive-rgb) / <alpha-value>)",
+              border: "rgb(var(--dashboard-border-rgb) / <alpha-value>)",
+              input: "transparent",
+              ring: "rgb(var(--dashboard-ring-rgb) / <alpha-value>)",
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "ForkMesh Helvetica";
+        src: url("/assets/fonts/HelveticaNeueLight.otf") format("opentype");
+        font-weight: 300;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Helvetica";
+        src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Helvetica";
+        src: url("/assets/fonts/HelveticaNeueMedium.otf") format("opentype");
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Helvetica";
+        src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype");
+        font-weight: 600 700;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Helvetica";
+        src: url("/assets/fonts/HelveticaNeueHeavy.otf") format("opentype");
+        font-weight: 800;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
+        font-weight: 400 500;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "ForkMesh Dashboard Mono";
+        src: url("/assets/fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+        font-weight: 600 800;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root,
+      [data-dashboard-theme="dark"] {
+        --font-size: 15px;
+        --dashboard-background-rgb: 9 9 11;
+        --dashboard-foreground-rgb: 244 244 245;
+        --dashboard-card-rgb: 17 17 19;
+        --dashboard-card-foreground-rgb: 244 244 245;
+        --dashboard-popover-rgb: 24 24 27;
+        --dashboard-popover-foreground-rgb: 244 244 245;
+        --dashboard-primary-rgb: 74 222 128;
+        --dashboard-primary-foreground-rgb: 5 46 22;
+        --dashboard-secondary-rgb: 28 28 31;
+        --dashboard-secondary-foreground-rgb: 161 161 170;
+        --dashboard-muted-rgb: 28 28 31;
+        --dashboard-muted-foreground-rgb: 113 113 122;
+        --dashboard-accent-rgb: 74 222 128;
+        --dashboard-accent-foreground-rgb: 5 46 22;
+        --dashboard-destructive-rgb: 239 68 68;
+        --dashboard-border-rgb: 39 39 42;
+        --dashboard-ring-rgb: 244 244 245;
+        --dashboard-scrollbar-rgb: 255 255 255;
+        --dashboard-link: #58a6ff;
+        --dashboard-link-hover: #79c0ff;
+        --background: #09090b;
+        --foreground: #f4f4f5;
+        --card: #111113;
+        --primary: #4ade80;
+        --primary-foreground: #052e16;
+        --secondary: #1c1c1f;
+        --muted-foreground: #71717a;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: dark;
+      }
+
+      [data-dashboard-theme="light"] {
+        --dashboard-background-rgb: 246 248 251;
+        --dashboard-foreground-rgb: 15 23 42;
+        --dashboard-card-rgb: 255 255 255;
+        --dashboard-card-foreground-rgb: 15 23 42;
+        --dashboard-popover-rgb: 255 255 255;
+        --dashboard-popover-foreground-rgb: 15 23 42;
+        --dashboard-primary-rgb: 22 163 74;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 241 245 249;
+        --dashboard-secondary-foreground-rgb: 51 65 85;
+        --dashboard-muted-rgb: 241 245 249;
+        --dashboard-muted-foreground-rgb: 100 116 139;
+        --dashboard-accent-rgb: 22 163 74;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 220 38 38;
+        --dashboard-border-rgb: 226 232 240;
+        --dashboard-ring-rgb: 15 23 42;
+        --dashboard-scrollbar-rgb: 71 85 105;
+        --dashboard-link: #0969da;
+        --dashboard-link-hover: #0550ae;
+        --background: #f6f8fb;
+        --foreground: #0f172a;
+        --card: #ffffff;
+        --primary: #16a34a;
+        --primary-foreground: #ffffff;
+        --secondary: #f1f5f9;
+        --muted-foreground: #64748b;
+        --border: rgb(var(--dashboard-border-rgb));
+        color-scheme: light;
+      }
+
+      * {
+        border-color: var(--border);
+        box-sizing: border-box;
+      }
+
+      html {
+        font-size: var(--font-size);
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: "ForkMesh Helvetica", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        font-weight: 500;
+        line-height: 1.5;
+      }
+
+      input {
+        font-weight: 400;
+        line-height: 1.5;
+      }
+
+      .chat-mention {
+        display: inline-block;
+        border-radius: 5px;
+        background: rgba(88, 166, 255, 0.12);
+        color: var(--dashboard-link);
+        font-weight: 700;
+        padding: 0 4px;
+        text-decoration: none;
+      }
+
+      .chat-mention:hover,
+      .chat-mention:focus {
+        background: rgba(88, 166, 255, 0.2);
+        color: var(--dashboard-link-hover);
+        outline: none;
+      }
+
+      .chat-mention-card {
+        position: absolute;
+        z-index: 1000;
+        display: grid;
+        width: min(260px, calc(100vw - 24px));
+        gap: 5px;
+        padding: 10px 12px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: rgb(var(--dashboard-popover-rgb));
+        box-shadow: 0 16px 45px rgb(0 0 0 / 0.32);
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+        text-align: left;
+        text-decoration: none;
+      }
+
+      .chat-mention-card[hidden] {
+        display: none;
+      }
+
+      .chat-mention-card strong {
+        font-size: 13px;
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+      }
+
+      .chat-mention-card span {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .chat-mention-card small {
+        color: var(--dashboard-link);
+        font-size: 11px;
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .view.active.flex-view {
+        display: flex;
+      }
+
+      .copy-check {
+        display: none;
+      }
+
+      .copy-button.copied .copy-icon {
+        display: none;
+      }
+
+      .copy-button.copied .copy-check {
+        display: block;
+      }
+
+      .repo-card.is-hidden {
+        display: none;
+      }
+
+      .repo-list {
+        transition: opacity 160ms ease;
+      }
+
+      .repo-list.is-fetching {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .repo-list.grid-mode {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 0.75rem;
+        padding: 0.75rem;
+      }
+
+      .repo-list.grid-mode .repo-card {
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+      }
+
+	      .repo-list.grid-mode .repo-layout {
+	        min-height: 10rem;
+	      }
+
+      .repo-activity-bars {
+        align-items: end;
+        display: grid;
+        gap: 1px;
+        grid-template-columns: repeat(52, minmax(0, 1fr));
+      }
+
+      .repo-activity-bar {
+        border-radius: 2px 2px 0 0;
+        min-width: 1px;
+      }
+
+	      .network-toggle-open {
+	        display: none;
+	      }
+
+      [data-mobile-menu-toggle],
+      [data-mobile-network-toggle],
+      [data-mobile-sidebar-backdrop],
+      [data-mobile-network-backdrop],
+      [data-mobile-drawer-close],
+      [data-mobile-network-close] {
+        display: none;
+      }
+
+      .network-rail-collapsed #networkRail {
+        display: none;
+      }
+
+      .network-rail-collapsed .network-toggle-open {
+        display: block;
+      }
+
+      .network-rail-collapsed .network-toggle-close {
+        display: none;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-200,
+      [data-dashboard-theme="light"] .text-zinc-300 {
+        color: #334155 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-zinc-500 {
+        color: #64748b !important;
+      }
+
+      [data-dashboard-theme="light"] .text-sky-300 {
+        color: #0369a1 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-emerald-300 {
+        color: #047857 !important;
+      }
+
+      [data-dashboard-theme="light"] .text-amber-200,
+      [data-dashboard-theme="light"] .text-amber-300 {
+        color: #b45309 !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-emerald-950\/40 {
+        background: rgb(220 252 231 / 0.86) !important;
+      }
+
+      [data-dashboard-theme="light"] .bg-rose-950\/40 {
+        background: rgb(254 226 226 / 0.86) !important;
+      }
+
+      .dashboard-accent-link {
+        color: var(--dashboard-link);
+      }
+
+      .dashboard-accent-link:hover {
+        color: var(--dashboard-link-hover);
+      }
+
+      @media (max-width: 1023px) {
+        body.dashboard-sidebar-open,
+        body.network-drawer-open {
+          overflow: hidden;
+        }
+
+        [data-dashboard-root] {
+          height: 100dvh;
+        }
+
+        [data-app-header] {
+          height: 3.75rem;
+          gap: 0.75rem;
+          padding-left: 0.75rem;
+          padding-right: 0.75rem;
+        }
+
+        [data-top-nav] {
+          display: none;
+        }
+
+        [data-mobile-menu-toggle],
+        [data-mobile-network-toggle],
+        [data-mobile-drawer-close],
+        [data-mobile-network-close] {
+          display: inline-flex;
+        }
+
+        [data-dashboard-shell] {
+          position: relative;
+        }
+
+        [data-dashboard-sidebar] {
+          position: fixed;
+          inset: 0 auto 0 0;
+          z-index: 70;
+          width: min(22rem, calc(100vw - 2rem)) !important;
+          max-width: calc(100vw - 2rem) !important;
+          height: 100dvh;
+          transform: translateX(-100%);
+          transition: transform 180ms ease;
+          box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+        }
+
+        body.dashboard-sidebar-open [data-dashboard-sidebar] {
+          transform: translateX(0);
+        }
+
+        [data-mobile-sidebar-backdrop],
+        [data-mobile-network-backdrop] {
+          position: fixed;
+          inset: 0;
+          display: none;
+          background: rgb(0 0 0 / 0.62);
+          backdrop-filter: blur(6px);
+        }
+
+        [data-mobile-sidebar-backdrop] {
+          z-index: 60;
+        }
+
+        [data-mobile-network-backdrop] {
+          z-index: 75;
+        }
+
+        body.dashboard-sidebar-open [data-mobile-sidebar-backdrop],
+        body.network-drawer-open [data-mobile-network-backdrop] {
+          display: block;
+        }
+
+        .network-rail-collapsed #networkRail,
+        #networkRail {
+          display: flex !important;
+          position: fixed;
+          left: 0.5rem;
+          right: 0.5rem;
+          bottom: 0;
+          z-index: 80;
+          width: auto;
+          height: min(82dvh, 42rem);
+          max-height: calc(100dvh - 3.5rem);
+          overflow: hidden;
+          border: 1px solid var(--border);
+          border-bottom: 0;
+          border-radius: 1rem 1rem 0 0;
+          box-shadow: 0 -24px 80px rgb(0 0 0 / 0.5);
+          transform: translateY(calc(100% + 1rem));
+          transition: transform 180ms ease;
+        }
+
+        body.network-drawer-open #networkRail {
+          transform: translateY(0);
+        }
+
+        [data-repo-toolbar] {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        [data-repo-view-toggle] {
+          align-self: flex-end;
+        }
+
+        .repo-list.grid-mode {
+          grid-template-columns: minmax(0, 1fr);
+          padding: 0.5rem;
+        }
+
+      }
+
+      ::selection {
+        background: rgb(74 222 128 / 0.28);
+      }
+
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.18);
+        border: 3px solid transparent;
+        border-radius: 999px;
+        background-clip: padding-box;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgb(var(--dashboard-scrollbar-rgb) / 0.28);
+        background-clip: padding-box;
+      }
+    </style>
+    <script src="/dashboard.js" defer></script>
+    <script src="/dashboard-chat.js" defer></script>
+  </head>
+  <body class="bg-background text-foreground">
+    <div data-dashboard-root class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+<!--#include partial="header"-->
+
+      <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
+      <button data-mobile-network-backdrop type="button" aria-label="Close network drawer"></button>
+
+      <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
+<!--#include partial="sidebar"-->
+
+<!--#include partial="main"-->
+
+<!--#include partial="network-rail"-->
+	    </div>
+	    </div>
+
+<!--#include partial="modals"-->
+
+	    <script>
+      const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
+
+	      function setProfilePopoverOpen(open) {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        if (!toggle || !popover) return;
+
+	        popover.classList.toggle("hidden", !open);
+	        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+		      }
+
+	      function handleLogout() {
+	        try {
+	          fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
+	          localStorage.removeItem("forkmesh.session");
+	        } catch (_) {}
+
+	        document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
+	        setProfilePopoverOpen(false);
+	        window.location.href = window.location.protocol === "file:" ? "index.html" : "/";
+	      }
+
+	      function initProfileMenu() {
+	        const toggle = document.querySelector("[data-profile-toggle]");
+	        const popover = document.querySelector("[data-profile-popover]");
+	        const logout = document.querySelector("[data-logout-button]");
+	        if (!toggle || !popover || !logout) return;
+
+	        toggle.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	          setProfilePopoverOpen(popover.classList.contains("hidden"));
+	        });
+
+	        popover.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	        });
+
+	        logout.addEventListener("click", handleLogout);
+	        document.addEventListener("click", () => setProfilePopoverOpen(false));
+	        document.addEventListener("keydown", (event) => {
+	          if (event.key === "Escape") setProfilePopoverOpen(false);
+	        });
+	      }
+
+	      const contributionColors = ["#1c1c1f", "#14532d", "#166534", "#22c55e", "#4ade80"];
+
+      function contributionLevel(index, year) {
+        const seed = Number(year) || 2026;
+        const value = (index * 17 + seed * 11 + Math.floor(index / 7) * 5) % 23;
+        if (value < 4) return 0;
+        if (value < 9) return 1;
+        if (value < 15) return 2;
+        if (value < 20) return 3;
+        return 4;
+      }
+
+      function renderContributionGrid(year = "2026") {
+        const grid = document.querySelector("[data-contribution-grid]");
+        if (!grid) return;
+        grid.innerHTML = "";
+
+        for (let index = 0; index < 364; index += 1) {
+          const level = contributionLevel(index, year);
+          const cell = document.createElement("span");
+          cell.setAttribute("aria-hidden", "true");
+          cell.title = `${level} contributions`;
+          cell.style.width = "10px";
+          cell.style.height = "10px";
+          cell.style.borderRadius = "2px";
+          cell.style.background = contributionColors[level];
+          grid.appendChild(cell);
+        }
+      }
+
+      function setContributionYear(button) {
+        document.querySelectorAll("[data-contribution-year]").forEach((yearButton) => {
+          const active = yearButton === button;
+          yearButton.classList.toggle("bg-primary", active);
+          yearButton.classList.toggle("text-primary-foreground", active);
+          yearButton.classList.toggle("font-semibold", active);
+          yearButton.classList.toggle("text-muted-foreground", !active);
+          yearButton.classList.toggle("hover:bg-secondary", !active);
+          yearButton.classList.toggle("hover:text-foreground", !active);
+        });
+
+        const count = document.querySelector("[data-contribution-count]");
+        if (count) count.textContent = button.dataset.count;
+        renderContributionGrid(button.dataset.contributionYear);
+      }
+
+      function initContributionActivity() {
+        const yearButtons = document.querySelectorAll("[data-contribution-year]");
+        yearButtons.forEach((button) => {
+          button.addEventListener("click", () => setContributionYear(button));
+        });
+
+        const activeYear = document.querySelector("[data-contribution-year].bg-primary") || yearButtons[0];
+        if (activeYear) setContributionYear(activeYear);
+
+        const showMoreButton = document.querySelector("[data-show-more-activity]");
+        const moreActivity = document.querySelector("[data-more-activity]");
+        if (showMoreButton && moreActivity) {
+          showMoreButton.addEventListener("click", () => {
+            const expanded = moreActivity.classList.toggle("hidden");
+            showMoreButton.textContent = expanded ? "Show more activity" : "Show less activity";
+          });
+        }
+      }
+
+      function setSection(section) {
+        document.querySelectorAll("[data-view]").forEach((view) => {
+          view.classList.toggle("active", view.dataset.view === section);
+        });
+        document.querySelectorAll("[data-nav-link]").forEach((button) => {
+          const active = button.dataset.section === section;
+          button.setAttribute("aria-current", active ? "page" : "false");
+          button.classList.toggle("text-foreground", active);
+          button.classList.toggle("text-muted-foreground", !active);
+          button.classList.toggle("hover:text-foreground", !active);
+        });
+      }
+
+      function setNetworkRail(open) {
+        document.body.classList.toggle("network-rail-collapsed", !open);
+        document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
+          button.setAttribute("aria-expanded", open ? "true" : "false");
+          button.setAttribute("aria-label", open ? "Close network panel" : "Open network panel");
+        });
+      }
+
+      document.querySelectorAll("[data-section]").forEach((button) => {
+        button.addEventListener("click", () => setSection(button.dataset.section));
+      });
+
+      document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
+        button.addEventListener("click", () => {
+          setNetworkRail(document.body.classList.contains("network-rail-collapsed"));
+        });
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") setProfilePopoverOpen(false);
+      });
+
+      const repoPageSize = 5;
+      let repoCurrentPage = 1;
+      let repoIsFetching = false;
+      let repoFetchTimer;
+
+      function repoCards() {
+        return [...document.querySelectorAll(".repo-card")];
+      }
+
+      function repoQuery() {
+        return document.getElementById("repoSearch").value.trim().toLowerCase();
+      }
+
+      function filteredRepoCards() {
+        const query = repoQuery();
+        return repoCards().filter((card) => !query || card.dataset.repo.includes(query));
+      }
+
+      function setRepoButtonDisabled(button, disabled) {
+        if (!button) return;
+        button.disabled = disabled;
+        button.classList.toggle("opacity-40", disabled);
+        button.classList.toggle("pointer-events-none", disabled);
+      }
+
+      function renderRepoPageButtons(totalPages) {
+        const pages = document.querySelector("[data-repo-pages]");
+        if (!pages) return;
+        pages.innerHTML = "";
+
+        for (let page = 1; page <= totalPages; page += 1) {
+          const button = document.createElement("button");
+          const active = page === repoCurrentPage;
+          button.type = "button";
+          button.setAttribute("data-repo-page-button", String(page));
+          button.textContent = String(page);
+          button.setAttribute("aria-label", `Show repository page ${page}`);
+          button.setAttribute("aria-current", active ? "page" : "false");
+          button.className = [
+            "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
+            active
+              ? "border-border bg-secondary text-foreground"
+              : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
+          ].join(" ");
+          button.disabled = repoIsFetching;
+          button.addEventListener("click", () => setRepoPage(page));
+          pages.appendChild(button);
+        }
+      }
+
+      function applyRepoVisibility() {
+        const list = document.getElementById("repoList");
+        const cards = repoCards();
+        const matchedCards = filteredRepoCards();
+        const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
+        repoCurrentPage = Math.min(repoCurrentPage, totalPages);
+
+        const start = (repoCurrentPage - 1) * repoPageSize;
+        const end = Math.min(start + repoPageSize, matchedCards.length);
+        const visibleCards = new Set(matchedCards.slice(start, end));
+
+        cards.forEach((card) => {
+          card.classList.toggle("is-hidden", !visibleCards.has(card));
+        });
+
+        list.classList.toggle("is-fetching", repoIsFetching);
+        document.querySelector("[data-repo-loading]")?.classList.toggle("hidden", !repoIsFetching);
+
+        const summary = document.querySelector("[data-repo-summary]");
+        if (summary) {
+          summary.textContent = matchedCards.length
+            ? `Showing ${start + 1}-${end} of ${matchedCards.length} mirrored repositories`
+            : "No repositories match this filter";
+        }
+
+        renderRepoPageButtons(totalPages);
+        setRepoButtonDisabled(document.querySelector("[data-repo-prev]"), repoIsFetching || repoCurrentPage === 1);
+        setRepoButtonDisabled(document.querySelector("[data-repo-next]"), repoIsFetching || repoCurrentPage === totalPages);
+      }
+
+      function setRepoPage(page, options = {}) {
+        const totalPages = Math.max(1, Math.ceil(filteredRepoCards().length / repoPageSize));
+        const targetPage = Math.min(Math.max(page, 1), totalPages);
+        if (targetPage === repoCurrentPage && !options.force) return;
+
+        window.clearTimeout(repoFetchTimer);
+        if (options.instant) {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+          return;
+        }
+
+        repoIsFetching = true;
+        applyRepoVisibility();
+        repoFetchTimer = window.setTimeout(() => {
+          repoCurrentPage = targetPage;
+          repoIsFetching = false;
+          applyRepoVisibility();
+        }, 220);
+      }
+
+      document.getElementById("repoSearch").addEventListener("input", () => {
+        window.clearTimeout(repoFetchTimer);
+        repoCurrentPage = 1;
+        repoIsFetching = false;
+        applyRepoVisibility();
+      });
+
+      document.querySelector("[data-repo-prev]")?.addEventListener("click", () => setRepoPage(repoCurrentPage - 1));
+      document.querySelector("[data-repo-next]")?.addEventListener("click", () => setRepoPage(repoCurrentPage + 1));
+      applyRepoVisibility();
+
+      document.querySelectorAll("[data-view-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const mode = button.dataset.viewMode;
+          const gridMode = mode === "grid";
+          document.getElementById("repoList").classList.toggle("grid-mode", gridMode);
+          document.querySelectorAll("[data-view-mode]").forEach((control) => {
+            const active = control.dataset.viewMode === mode;
+            control.setAttribute("aria-pressed", active ? "true" : "false");
+            control.classList.toggle("bg-secondary", active);
+            control.classList.toggle("text-foreground", active);
+            control.classList.toggle("text-muted-foreground", !active);
+          });
+        });
+      });
+
+      document.querySelectorAll(".copy-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const text = button.dataset.copy;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (error) {
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "fixed";
+            temp.style.opacity = "0";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+          }
+          button.classList.add("copied");
+          window.setTimeout(() => button.classList.remove("copied"), 1600);
+        });
+      });
+
+      // Chat is wired by /dashboard-chat.js.
+	      initProfileMenu();
+	      initContributionActivity();
+	      lucide.createIcons();
+    </script>
+  </body>
+</html>
