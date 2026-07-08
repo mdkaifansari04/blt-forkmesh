@@ -1,0 +1,36 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783475233252,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "make the chats listed by timestamp on the website with most recent at the bottom",
+            "id": "forkbot-1783475233252",
+            "sig": "",
+            "title": "make the chats listed by timestamp on the website with most recent at the bottom",
+            "ts": 1783475233252,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 404,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "make the chats listed by timestamp on the website with most recent at the bottom",
+    "updatedAt": 1783475233252,
+    "votes": 0
+}
