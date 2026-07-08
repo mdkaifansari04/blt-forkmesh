@@ -1,0 +1,36 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783470735104,
+    "events": [
+        {
+            "attachments": [
+                "58947dcd.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "![forkmesh-paste-HbXSpW.png](58947dcd.png)",
+            "id": "open-401",
+            "sig": "yoHs8J2ownyuFTr1eQfFlApGoZl68tixoos9ELX5duU0bf41OO7a2KlO5hzkReSJz0K7Vl5MCRxZ9LM_NCtzDQ",
+            "title": "update notifications only keep @mentions selected by default and turn the others off",
+            "ts": 1783470735104,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 401,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "update notifications only keep @mentions selected by default and turn the others off",
+    "updatedAt": 1783470735104,
+    "votes": 0
+}
