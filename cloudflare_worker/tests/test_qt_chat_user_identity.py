@@ -8,6 +8,7 @@ SETUP = QT_SRC / "MainWindowSetup.cpp"
 SETTINGS = QT_SRC / "MainWindowSettings.cpp"
 REPOS = QT_SRC / "MainWindowRepos.cpp"
 MESSAGES = QT_SRC / "MainWindowMessages.cpp"
+ISSUES = QT_SRC / "MainWindowIssues.cpp"
 MESSAGE_ROW_HEADER = QT_SRC / "MessageRow.h"
 MESSAGE_ROW = QT_SRC / "MessageRow.cpp"
 
@@ -138,3 +139,31 @@ def test_chat_mentions_highlight_and_open_user_profiles():
     # Existing visible rows are rerendered after the async user directory lands,
     # otherwise old messages would stay plain text until the next full refresh.
     assert "renderConversationRows();" in directory_body
+
+
+def test_chat_composer_stays_visible_and_rooms_scroll_independently():
+    issues = ISSUES.read_text(encoding="utf-8")
+    body = _body(
+        issues,
+        "QWidget *MainWindow::buildChatSection()",
+        "void MainWindow::updateHomeStats()",
+    )
+
+    assert "auto *roomsScroll = new QScrollArea;" in body
+    assert "roomsScroll->setWidgetResizable(true);" in body
+    assert "roomsScroll->setMinimumHeight(0);" in body
+    assert "roomsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);" in body
+    assert "sidebarLayout->addWidget(roomsScroll, 1);" in body
+
+    for list_name in ("m_channelList", "m_dmList"):
+        assert f"{list_name}->setMinimumHeight(0);" in body
+        assert f"{list_name}->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);" in body
+        assert f"{list_name}->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);" in body
+
+    assert "m_messageScroll->setMinimumHeight(0);" in body
+    assert "m_messageScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);" in body
+    assert "composer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);" in body
+    assert "m_messageInput->setMinimumWidth(0);" in body
+    assert "auto *mainColumnHost = new QWidget;" in body
+    assert "mainColumnHost->setMinimumHeight(0);" in body
+    assert "layout->addWidget(mainColumnHost, 1);" in body
