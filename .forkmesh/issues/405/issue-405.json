@@ -1,0 +1,36 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783475474856,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "use AI in the forkbot to detect when someone is giving issue context",
+            "id": "forkbot-1783475474856",
+            "sig": "",
+            "title": "use AI in the forkbot to detect when someone is giving issue context",
+            "ts": 1783475474856,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 405,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "use AI in the forkbot to detect when someone is giving issue context",
+    "updatedAt": 1783475474856,
+    "votes": 0
+}
