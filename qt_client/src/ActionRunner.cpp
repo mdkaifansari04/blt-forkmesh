@@ -97,6 +97,7 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_currentStepLabel = QStringLiteral("Checkout");
     m_currentCommand.clear();
     m_processOutputTruncated = false;
+    forkmesh::setTerminationSignalSurvivalEnabled(true);
 
     m_secrets.clear();
     for (const QString &value : variables.values())
@@ -334,11 +335,12 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
     m_store->saveRun(m_run);
     m_phase = Phase::Idle;
     m_busy = false;
+    forkmesh::setCrashContext(QString());
+    forkmesh::setTerminationSignalSurvivalEnabled(false);
     emit statusChanged(m_run.id, m_run.status);
     emit finished(m_run.id, ok);
     if (landed)
         emit releaseMetadataLanded(m_run.id);
-    forkmesh::setCrashContext(QString());
 }
 
 bool ActionRunner::isReleaseRun() const

@@ -46,9 +46,18 @@ char g_altStack[64 * 1024];
 // this file on the next startup (issue #354).
 int g_crashFd = -1;
 
+// The app's user-facing Log view persists to network_log.txt. Keep a separate
+// pre-opened fd so signal records can leave a compact breadcrumb there too.
+int g_mainLogFd = -1;
+
 // Guard against a fault while we're already handling one (a bug in the handler,
 // or a second thread crashing) turning into an infinite loop.
 std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
+
+// Set only while a local action workflow owns child processes. A failing child
+// step may be terminated as part of a wider process group; the UI should record
+// that signal and continue so the action can settle into a normal failed run.
+std::atomic_bool g_surviveTerminationSignals{false};
 
 // Async-signal-safe unsigned-to-decimal. Writes into buf, returns length.
 int safeUtoa(unsigned long v, char *buf)
@@ -66,24 +75,54 @@ int safeUtoa(unsigned long v, char *buf)
     return n;
 }
 
+int safeItoa(long v, char *buf)
+{
+    if (v < 0) {
+        buf[0] = '-';
+        const unsigned long magnitude =
+            (unsigned long)(-(v + 1)) + 1UL;
+        return 1 + safeUtoa(magnitude, buf + 1);
+    }
+    return safeUtoa((unsigned long)v, buf);
+}
+
+void safeWriteFd(int fd, const char *s)
+{
+    if (fd < 0 || !s || !*s)
+        return;
+    const size_t len = ::strlen(s);
+    ssize_t r = ::write(fd, s, len);
+    (void)r;
+}
+
 // Write to stderr and, when open, mirror the same bytes into the durable crash
 // log so the record survives the process for the next-startup telemetry upload.
 void safeWrite(const char *s)
 {
-    if (s && *s) {
-        const size_t len = ::strlen(s);
-        ssize_t r = ::write(2, s, len);
-        (void)r;
-        if (g_crashFd >= 0)
-            r = ::write(g_crashFd, s, len);
-        (void)r;
-    }
+    safeWriteFd(2, s);
+    safeWriteFd(g_crashFd, s);
+}
+
+void safeWriteNumToFd(int fd, unsigned long v)
+{
+    char buf[24];
+    int n = safeUtoa(v, buf);
+    if (fd < 0)
+        return;
+    ssize_t r = ::write(fd, buf, size_t(n));
+    (void)r;
 }
 
 void safeWriteNum(unsigned long v)
 {
+    safeWriteNumToFd(2, v);
+    safeWriteNumToFd(g_crashFd, v);
+}
+
+void safeWriteInt(long v)
+{
     char buf[24];
-    int n = safeUtoa(v, buf);
+    int n = safeItoa(v, buf);
     ssize_t r = ::write(2, buf, size_t(n));
     (void)r;
     if (g_crashFd >= 0)
@@ -97,6 +136,21 @@ void safeWriteCrashContext()
         return;
     safeWrite("context:\n");
     safeWrite(g_crashContext);
+    safeWrite("\n");
+}
+
+void safeWriteSignalInfo(const siginfo_t *info)
+{
+    if (!info)
+        return;
+    safeWrite("signal code: ");
+    safeWriteInt((long)info->si_code);
+    safeWrite("\n");
+    safeWrite("sender pid: ");
+    safeWriteNum((unsigned long)info->si_pid);
+    safeWrite("\n");
+    safeWrite("sender uid: ");
+    safeWriteNum((unsigned long)info->si_uid);
     safeWrite("\n");
 }
 
@@ -137,9 +191,42 @@ const char *signalName(int sig)
     }
 }
 
+bool isTerminationSignal(int sig)
+{
+    switch (sig) {
+    case SIGTERM:
+    case SIGINT:
+    case SIGHUP:
+    case SIGQUIT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void safeWriteMainLogSignalRecord(int sig, unsigned long when,
+                                  bool survived)
+{
+    if (g_mainLogFd < 0)
+        return;
+
+    safeWriteFd(g_mainLogFd, "ForkMesh signal: ");
+    safeWriteFd(g_mainLogFd, signalName(sig));
+    safeWriteFd(g_mainLogFd, " at epoch ");
+    safeWriteNumToFd(g_mainLogFd, when);
+    if (survived) {
+        safeWriteFd(g_mainLogFd,
+                    "; action workflow survived and will finish/fail normally");
+    } else {
+        safeWriteFd(g_mainLogFd,
+                    "; terminating; see ~/.forkmesh/diagnostics/crashes.log");
+    }
+    safeWriteFd(g_mainLogFd, "\n");
+}
+
 // The signal handler. Strictly async-signal-safe: only write/time/
 // backtrace(_symbols_fd), no allocation, no Qt.
-void crashHandler(int sig)
+void crashHandler(int sig, siginfo_t *info, void *)
 {
     // First faulter wins; anyone re-entering just restores the default and dies.
     if (g_handling.test_and_set()) {
@@ -149,14 +236,31 @@ void crashHandler(int sig)
     }
 
     safeWrite("\n===== ForkMesh crash =====\n");
+    const unsigned long when = (unsigned long)::time(nullptr);
     safeWrite("when (epoch): ");
-    safeWriteNum((unsigned long)::time(nullptr));
+    safeWriteNum(when);
     safeWrite("\nsignal: ");
     safeWrite(signalName(sig));
     safeWrite("\nbuild: ");
     safeWrite(g_buildInfo);
     safeWrite("\n");
+    safeWriteSignalInfo(info);
     safeWriteCrashContext();
+
+    const bool terminationSignal = isTerminationSignal(sig);
+    const bool surviveTermination =
+        terminationSignal &&
+        g_surviveTerminationSignals.load(std::memory_order_relaxed);
+    safeWriteMainLogSignalRecord(sig, when, surviveTermination);
+
+    if (surviveTermination) {
+        safeWrite("termination signal survived: action workflow is still "
+                  "running; continuing so the run can fail cleanly\n");
+        safeWrite("==========================\n");
+        g_handling.clear(std::memory_order_release);
+        return;
+    }
+
     safeWrite("\nbacktrace:\n");
     void *frames[64];
     int n = backtrace(frames, 64);
@@ -204,9 +308,13 @@ void installSignalHandlers()
 
     struct sigaction sa;
     std::memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = crashHandler;
+    sa.sa_sigaction = crashHandler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_ONSTACK | SA_RESETHAND;
+    // Do not use SA_RESETHAND here: an action may survive a logged SIGTERM and
+    // then need the handler again before the failed child process exits. For
+    // real fatal crashes we explicitly restore the default handler below before
+    // re-raising.
+    sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
     // Catch every normal fatal/termination signal we can reasonably handle. The
     // kernel does not allow SIGKILL or SIGSTOP to be caught, blocked, or logged.
     for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTERM, SIGINT,
@@ -271,7 +379,8 @@ void appendDiagnosticToMainLog(const QString &kind, const QString &context,
 
 } // namespace
 
-void installCrashHandler(const QString &crashLogPath)
+void installCrashHandler(const QString &crashLogPath,
+                         const QString &mainLogPath)
 {
 #ifdef FORKMESH_CRASH_HANDLER
     const QByteArray build =
@@ -287,6 +396,12 @@ void installCrashHandler(const QString &crashLogPath)
         g_crashFd = ::open(path.constData(),
                            O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     }
+    if (!mainLogPath.isEmpty()) {
+        QDir().mkpath(QFileInfo(mainLogPath).absolutePath());
+        const QByteArray path = QFile::encodeName(mainLogPath);
+        g_mainLogFd = ::open(path.constData(),
+                             O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    }
 
     // Warm up backtrace() so the first (in-handler) call can't try to dlopen
     // libgcc's unwinder — that would malloc, which isn't signal-safe.
@@ -297,6 +412,7 @@ void installCrashHandler(const QString &crashLogPath)
     std::set_terminate(terminateHandler);
 #else
     Q_UNUSED(crashLogPath);
+    Q_UNUSED(mainLogPath);
 #endif
 }
 
@@ -310,6 +426,15 @@ void setCrashContext(const QString &context)
     g_crashContext[n] = '\0';
 #else
     Q_UNUSED(context);
+#endif
+}
+
+void setTerminationSignalSurvivalEnabled(bool enabled)
+{
+#ifdef FORKMESH_CRASH_HANDLER
+    g_surviveTerminationSignals.store(enabled, std::memory_order_relaxed);
+#else
+    Q_UNUSED(enabled);
 #endif
 }
 

@@ -54,6 +54,19 @@ bool detectHeadless(const QStringList &args)
     return false;
 }
 
+QString earlyMainLogPath()
+{
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    const QByteArray xdgDataHome = qgetenv("XDG_DATA_HOME");
+    const QString base = xdgDataHome.isEmpty()
+                             ? QDir::homePath() + QStringLiteral("/.local/share")
+                             : QString::fromLocal8Bit(xdgDataHome);
+    return QDir(base).filePath(QStringLiteral("ForkMesh/ForkMesh/network_log.txt"));
+#else
+    return QString();
+#endif
+}
+
 // QApplication whose notify() wraps every event delivery in a try/catch. A C++
 // exception thrown out of a slot invoked by the event loop — e.g. a handler for
 // a tab click / currentChanged — is undefined behaviour in Qt6 and typically
@@ -104,10 +117,12 @@ int main(int argc, char *argv[])
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a backtrace in ~/.forkmesh/diagnostics/
     // crashes.log ("sometimes the app exits / crashes" with nothing to explain
-    // why). The durable file is also what the opt-in telemetry upload sends on
-    // the next startup (issue #354). Cheap; opens one fd plus a couple buffers.
+    // why). A compact signal breadcrumb also goes to the main network log.
+    // The durable crash file is what the opt-in telemetry upload sends on the
+    // next startup (issue #354). Cheap; opens a couple fds plus fixed buffers.
     forkmesh::installCrashHandler(
-        QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log"));
+        QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log"),
+        earlyMainLogPath());
 
     // Collect args before QApplication so headless/root flags are visible while we
     // still control the Qt platform plugin selection.
