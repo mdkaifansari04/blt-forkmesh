@@ -61,6 +61,18 @@
             "status": "open",
             "ts": 1783545673178,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5c4de437-9c46-4fa8-a4db-709828e06889",
+            "sig": "rMZqJ4TPBKTFrk2Myp3M6TgscK_rai34GEIs-DkLMJWc1n3wZ6b8ijjkJcYgZrs1tFHCapRiMHgkKYoKynYBBw",
+            "ts": 1783545696981,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -72,6 +84,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "please see if there is an obvious way to fix this while keeping the system secure - also lets add a dedicated row on the /status page to check for this AbortError('Exceeded allowed duration in Durable Objects free tier.')\nTraceback (most recent call last):\n  File \"/session/metadata/entry.py\", line 9776, in fetch\n    response = await self._route(request, url)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/session/metadata/entry.py\", line 10363, in _route\n    return await room_object.fetch(await durable_object_request(request))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/session/metadata/python_modules/workers/fetch.py\", line 43, in fetch\n    resp = await _pyfetch_patched(resource, **other_options)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/lib/python313.zip/pyodide/http.py\", line 458, in pyfetch\n    raise AbortError(e) from None\npyodide.http.AbortError: Exceeded allowed duration in Durable Objects free tier.",
-    "updatedAt": 1783545673178,
+    "updatedAt": 1783545696981,
     "votes": 0
 }
