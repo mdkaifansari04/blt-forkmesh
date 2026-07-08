@@ -261,6 +261,12 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
     assert "./qt_client/build-ci/forkmesh-tests" in CI_WORKFLOW_TEXT
 
 
+def test_action_runner_does_not_override_installer_source_in_ci_jobs():
+    assert "if (isReleaseRun() && !m_run.owner.isEmpty() && !m_run.name.isEmpty())" in ACTION_RUNNER_CPP_TEXT
+    assert "env.insert(QStringLiteral(\"FORKMESH_REPO\")," in ACTION_RUNNER_CPP_TEXT
+    assert "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n        env.insert(QStringLiteral(\"FORKMESH_REPO\")," not in ACTION_RUNNER_CPP_TEXT
+
+
 def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "kActionProcessLogMaxBytes" in ACTION_RUNNER_CPP_TEXT
     assert "kActionProcessLogChunkBytes" in ACTION_RUNNER_CPP_TEXT

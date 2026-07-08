@@ -10,6 +10,15 @@ import tempfile
 INSTALLER = Path(__file__).resolve().parents[1] / "public" / "install.sh"
 
 
+def _base_env():
+    env = os.environ.copy()
+    # ForkMesh action runs set FORKMESH_REPO for release metadata. install.sh
+    # intentionally treats it as an explicit source override, so source-selection
+    # unit tests must not inherit it accidentally.
+    env.pop("FORKMESH_REPO", None)
+    return env
+
+
 def _selection_prefix():
     script = INSTALLER.read_text(encoding="utf-8")
     marker = "# --- privilege escalation"
@@ -32,7 +41,7 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
             encoding="utf-8",
         )
         curl.chmod(0o755)
-        env = os.environ.copy()
+        env = _base_env()
         env["FORKMESH_TEST_RESPONSE"] = response
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         return subprocess.run(
@@ -117,7 +126,7 @@ def _run_prefix(response, extra_env):
         pkill.chmod(0o755)
         home = Path(tmp) / "home"
         home.mkdir()
-        env = os.environ.copy()
+        env = _base_env()
         env["FORKMESH_TEST_RESPONSE"] = response
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         env["HOME"] = str(home)
@@ -183,7 +192,7 @@ def test_installer_skips_mirror_lookup_when_uploading_a_binary():
             encoding="utf-8",
         )
         curl.chmod(0o755)
-        env = os.environ.copy()
+        env = _base_env()
         env["FORKMESH_TEST_RESPONSE"] = '{"ok":false,"error":"no_online_install_source"}'
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         env["FORKMESH_NO_DIAG"] = "1"  # isolate resolve_install_node's curl use
@@ -218,7 +227,7 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
             encoding="utf-8",
         )
         curl.chmod(0o755)
-        env = os.environ.copy()
+        env = _base_env()
         env["FORKMESH_TEST_RESPONSE"] = (
             '{"ok":true,"node":"fallback-node","repo":"forkmesh","totalMinutes":1}'
         )
@@ -290,7 +299,7 @@ def test_clean_clone_falls_back_past_unreachable_mirror():
             'printf "RESULT_REPO=%s\\n" "$REPO"\n'
             'printf "CLONE_OK=%s\\n" "$clone_ok"\n'
         )
-        env = os.environ.copy()
+        env = _base_env()
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         result = subprocess.run(
             ["bash", "-c", harness], env=env, text=True,
@@ -341,7 +350,7 @@ def test_clean_clone_reports_when_all_mirrors_time_out():
             'printf "REASON=%s\\n" "$CLONE_FAIL_REASON"\n'
             'printf "PIN=%s\\n" "$PIN_FAILURE"\n'
         )
-        env = os.environ.copy()
+        env = _base_env()
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         result = subprocess.run(
             ["bash", "-c", harness], env=env, text=True,
