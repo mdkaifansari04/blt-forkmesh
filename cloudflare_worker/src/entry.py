@@ -228,25 +228,6 @@ from urls import (  # noqa: E402
     ACCOUNTS_RE,
 )
 
-# The dashboard SPA shell is split into HTML partials (public/dashboard/partials/)
-# stitched back together at request time — see dashboard_shell.py. Like urls.py,
-# this is a js-free sibling module the runtime bundles and the test suite imports
-# directly.
-from dashboard_shell import (  # noqa: E402
-    assemble_shell,
-    included_partials,
-    partial_path,
-)
-
-# The dashboard behaviour script is likewise split into ordered JS fragments
-# (public/dashboard/js/) concatenated back into one /dashboard.js at request
-# time — see dashboard_bundle.py. Same js-free sibling-module pattern.
-from dashboard_bundle import (  # noqa: E402
-    FRAGMENTS as DASHBOARD_JS_FRAGMENTS,
-    assemble_bundle,
-    fragment_path,
-)
-
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
 # on /owner/repo serves the dashboard shell; direct implementation-file URLs
 # such as /login.html stay non-public.
@@ -2114,6 +2095,7 @@ SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # A node counts as online for payouts if it has sent a heartbeat within this
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
+HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
 # Central donation fund (issue #308): a single worker-custodied Solana wallet
 # that anyone can donate to. A cron sweeps its whole balance out to the
 # currently-online nodes once an hour, so one donation address fans out to every
@@ -5506,7 +5488,13 @@ async def _account_heartbeat(env, request):
     balance_lamports = None
     donation_received = False
     if wallet and SOLANA_RE.match(wallet):
-        balance_lamports = await _solana_balance_lamports(env, wallet)
+        try:
+            balance_lamports = await asyncio.wait_for(
+                _solana_balance_lamports(env, wallet),
+                timeout=HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS / 1000,
+            )
+        except Exception:
+            balance_lamports = None
         if balance_lamports is not None:
             prev = rec.get("last_balance_lamports")
             if isinstance(prev, int) and balance_lamports > prev:
@@ -11463,20 +11451,9 @@ class Default(WorkerEntrypoint):
             room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
             return await room_object.fetch(await durable_object_request(request))
 
-        # Dashboard SPA shell: /dashboard and /dashboard/* paths are client-side
-        # routes, not real files. The shell is split into HTML partials
-        # (public/dashboard/partials/) that we stitch together here so that
-        # direct-navigation to /dashboard/owner/repo lands on the assembled SPA.
-        # (Handled here rather than via _redirects to avoid Cloudflare's
-        # loop-detection false-positive on /dashboard/* → /dashboard/index.html.)
-        # Dashboard behaviour script: /dashboard.js is composed from its ordered
-        # JS fragments (public/dashboard/js/, see dashboard_bundle.py) rather than
-        # served as one monolithic static file. Handled before the /dashboard/*
-        # SPA-shell branch below (note: "/dashboard.js" has no trailing slash so
-        # it doesn't match that branch's startswith("/dashboard/")).
-        if url.path == "/dashboard.js":
-            return await self._serve_dashboard_bundle(url)
-
+        # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
+        # not real files. Serve the prebuilt static shell from ASSETS instead of
+        # composing partials in Python on every hot dashboard request.
         if looks_like_repo_route(url.path):
             return await self._serve_dashboard_shell(url)
 
@@ -11498,60 +11475,20 @@ class Default(WorkerEntrypoint):
             headers={"content-type": "text/html; charset=utf-8"},
         )
 
-    async def _serve_dashboard_bundle(self, url):
-        # Concatenate /dashboard.js from its ordered fragments (see
-        # dashboard_bundle.py). Each fragment is a real static asset, so
-        # env.ASSETS.fetch returns its raw bytes (bypassing the Worker) even
-        # though its /dashboard/js/... path is itself run_worker_first.
-        base = url.scheme + "://" + url.netloc + "/"
-
-        async def _asset_text(rel):
-            resp = await self.env.ASSETS.fetch(base + rel)
-            return await resp.text()
-
-        fragments = []
-        for name in DASHBOARD_JS_FRAGMENTS:
-            fragments.append(await _asset_text(fragment_path(name)))
-        js = assemble_bundle(fragments)
-        # The composed script is identical for every visitor, so let the edge
-        # cache it and keep the concatenation off the Worker CPU budget on the
-        # hot dashboard path (same treatment as the composed shell).
-        return Response(
-            js,
-            status=200,
-            headers={
-                "content-type": "text/javascript; charset=utf-8",
-                "cache-control": "public, max-age=300",
-            },
-        )
-
     async def _serve_dashboard_shell(self, url):
-        # Compose dashboard/index.html and its <!--#include--> partials into one
-        # HTML document (see dashboard_shell.py). Each partial is a real static
-        # asset, so env.ASSETS.fetch returns its raw bytes (bypassing the Worker)
-        # even though its /dashboard/partials/... path is itself run_worker_first.
+        # dashboard/index.html is generated by tools/build_dashboard_assets.py.
+        # env.ASSETS.fetch serves that static file directly from the assets
+        # binding, avoiding Pyodide CPU/GIL pressure on dashboard navigation.
         base = url.scheme + "://" + url.netloc + "/"
-
-        async def _asset_text(rel):
-            resp = await self.env.ASSETS.fetch(base + rel)
-            return await resp.text()
-
-        shell = await _asset_text("dashboard/index.html")
-        partials = {}
-        for name in included_partials(shell):
-            partials[name] = await _asset_text(partial_path(name))
-        html = assemble_shell(shell, partials)
-        # The shell is identical for every visitor (all per-account data is
-        # hydrated client-side), so let the edge cache the composed document and
-        # keep this off the Worker CPU budget on the hot dashboard path.
-        return Response(
-            html,
-            status=200,
-            headers={
-                "content-type": "text/html; charset=utf-8",
-                "cache-control": "public, max-age=300",
-            },
-        )
+        try:
+            resp = await self.env.ASSETS.fetch(base + "dashboard/index.html")
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh Dashboard</title>"
+        return Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
 
     async def _select_clone_fallback(self, owner, repo, force=False):
         # When owner/repo's own host is offline, find a healthy online mirror of the

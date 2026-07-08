@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Static contracts for the dashboard.js -> fragment split.
+"""Static contracts for the dashboard.js fragment build.
 
 ``public/dashboard.js`` (~5450 lines) is split into ordered fragment files under
-``public/dashboard/js/`` that the Worker concatenates into one ``/dashboard.js``
-response at request time, mirroring how the HTML shell is composed from partials
-(see ``src/dashboard_bundle.py`` / ``src/dashboard_shell.py``).
+``public/dashboard/js/``. ``tools/build_dashboard_assets.py`` builds the static
+``public/dashboard.js`` served by Cloudflare, mirroring how the HTML shell is
+composed from partials (see ``src/dashboard_bundle.py`` / ``src/dashboard_shell.py``).
 """
 
 import sys
@@ -26,10 +26,9 @@ ENTRY_TEXT = (_SRC / "entry.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((_ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 
 
-def test_monolithic_dashboard_js_is_gone():
-    # The single 274KB file was replaced by the composed fragments; leaving it in
-    # place would let it drift out of sync with what the Worker actually serves.
-    assert not (PUBLIC / "dashboard.js").exists()
+def test_static_dashboard_js_is_built_from_fragments():
+    assert (PUBLIC / "dashboard.js").is_file()
+    assert (PUBLIC / "dashboard.js").read_text(encoding="utf-8") == assembled_dashboard_js()
 
 
 def test_every_fragment_listed_in_order_exists_on_disk():
@@ -68,15 +67,13 @@ def test_composition_matches_on_disk_fragments():
     assert assembled_dashboard_js() == expected
 
 
-def test_worker_routes_dashboard_js_through_python():
-    assert "from dashboard_bundle import" in ENTRY_TEXT
-    assert 'if url.path == "/dashboard.js":' in ENTRY_TEXT
-    assert "async def _serve_dashboard_bundle" in ENTRY_TEXT
-    # /dashboard.js must hit the Worker (not be served as a plain static asset)
-    # so the composition runs; the fragments themselves ride /dashboard/*.
-    assert "/dashboard.js" in WRANGLER["assets"]["run_worker_first"]
+def test_dashboard_js_is_served_as_a_static_asset():
+    assert "from dashboard_bundle import" not in ENTRY_TEXT
+    assert 'if url.path == "/dashboard.js":' not in ENTRY_TEXT
+    assert "async def _serve_dashboard_bundle" not in ENTRY_TEXT
+    assert "/dashboard.js" not in WRANGLER["assets"]["run_worker_first"]
 
 
 def test_shell_still_references_dashboard_js():
-    shell = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
+    shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
     assert 'src="/dashboard.js"' in shell

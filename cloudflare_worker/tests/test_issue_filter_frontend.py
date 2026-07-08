@@ -13,11 +13,11 @@ from _dashboard_bundle import assembled_dashboard_js
 
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-# The dashboard shell is split into HTML partials the Worker composes at request
-# time; assert against the assembled document a browser actually receives.
+# The dashboard shell is split into HTML partials and prebuilt before deploy;
+# assert against the assembled document a browser actually receives.
 DASHBOARD = assembled_dashboard()
-# dashboard.js is likewise split into ordered public/dashboard/js/*.js fragments
-# composed into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
+# dashboard.js is likewise built from ordered public/dashboard/js/*.js fragments
+# before deploy (see src/dashboard_bundle.py).
 DASHBOARD_JS = assembled_dashboard_js()
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 INDEX = (PUBLIC / "index.html").read_text(encoding="utf-8")

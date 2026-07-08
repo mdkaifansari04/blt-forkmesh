@@ -23,42 +23,29 @@ REPO_HOST_BROWSE_ACTIONS = (
 
 
 def _read(path: Path) -> str:
-    # dashboard/index.html and its dashboard.html duplicate are now shell
-    # scaffolds full of <!--#include partial="name"--> placeholders; the Worker
-    # composes them from public/dashboard/partials/*.html at request time (see
-    # src/dashboard_shell.py). Frontend contracts here assert on the composed
-    # document a browser actually receives. test_dashboard_shell_is_split_into_
-    # composable_partials pins the two raw shell files byte-identical.
-    if path.name == "dashboard.html" or (
-            path.name == "index.html" and path.parent.name == "dashboard"):
-        return assembled_dashboard()
-    # dashboard.js is likewise split into ordered public/dashboard/js/*.js
-    # fragments the Worker concatenates into one /dashboard.js at request time
-    # (see src/dashboard_bundle.py); assert on the composed script.
-    if path.name == "dashboard.js":
-        return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
 
 
 def test_dashboard_shell_is_split_into_composable_partials():
-    raw_index = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
-    raw_dupe = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+    source_shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
+    built_index = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
+    built_dupe = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
 
-    # The served shell and its 308-redirect duplicate must stay byte-identical.
-    assert raw_index == raw_dupe
-    # The shell is genuinely split — it references partials rather than inlining
-    # the chrome.
-    assert "<!--#include" in raw_index
+    # The authored shell stays split — it references partials rather than
+    # inlining the chrome.
+    assert "<!--#include" in source_shell
     for name in ("header", "sidebar", "main", "network-rail", "modals"):
         assert (PUBLIC / "dashboard" / "partials" / (name + ".html")).is_file()
-        assert ('<!--#include partial="%s"-->' % name) in raw_index
+        assert ('<!--#include partial="%s"-->' % name) in source_shell
 
-    # Composition leaves no placeholder behind and the Worker uses ASSETS to
-    # fetch each partial before stitching them together.
+    # The served files are prebuilt static assets, with no runtime include pass.
     composed = assembled_dashboard()
     assert "<!--#include" not in composed
+    assert built_index == composed
+    assert built_dupe == composed
     assert "self.env.ASSETS.fetch(" in ENTRY_TEXT
-    assert "assemble_shell(" in ENTRY_TEXT
+    assert "assemble_shell(" not in ENTRY_TEXT
+    assert "tools/build_dashboard_assets.py" in ENTRY_TEXT
 
 
 def test_feature_landing_is_promoted_to_index_with_signed_in_redirect():
@@ -1256,9 +1243,9 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
 
 def test_dashboard_deep_link_assets_binding_is_wired_up():
     # entry.py's /dashboard/* fallback (run_worker_first) calls
-    # self.env.ASSETS.fetch(...) to serve the SPA shell for deep links like
-    # /dashboard/owner/repo. Without an explicit binding name, env.ASSETS is
-    # undefined and that call throws, 500ing every such request.
+    # self.env.ASSETS.fetch(...) to serve the prebuilt SPA shell for deep links
+    # like /dashboard/owner/repo. Without an explicit binding name, env.ASSETS
+    # is undefined and that call throws, 500ing every such request.
     assert WRANGLER["assets"].get("binding") == "ASSETS"
     assert 'self.env.ASSETS.fetch(' in ENTRY_TEXT
 
@@ -1278,7 +1265,7 @@ def test_clean_marketing_routes_target_static_pages():
         assert redirect in REDIRECTS
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
-    for route in ("/blog", "/blogs", "/docs", "/network", "/desktop"):
+    for route in ("/dashboard", "/dashboard.js", "/blog", "/blogs", "/docs", "/network", "/desktop"):
         assert route not in run_worker_first
     for route in ("/dashboard.html", "/docs.html", "/network.html"):
         assert route in run_worker_first

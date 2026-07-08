@@ -1,10 +1,10 @@
 """Test helper: compose the dashboard SPA shell from its HTML partials.
 
-``public/dashboard/index.html`` is now just the shell scaffold with
-``<!--#include partial="name"-->`` placeholders; the Worker stitches the
-partials in at request time (see ``src/dashboard_shell.py``). Frontend contract
-tests that assert on the rendered dashboard chrome should read the *assembled*
-document, which is exactly what a browser receives, via ``assembled_dashboard()``.
+``public/dashboard/shell.html`` is the authored scaffold with ``<!--#include
+partial="name"-->`` placeholders. ``tools/build_dashboard_assets.py`` stitches
+the partials into the static files browsers receive. Frontend contract tests
+that assert on rendered dashboard chrome can read that assembled document via
+``assembled_dashboard()``.
 """
 
 import sys

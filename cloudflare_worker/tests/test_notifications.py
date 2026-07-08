@@ -50,9 +50,7 @@ def _load_notification_helpers():
 
 
 def _read(path: Path) -> str:
-    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
-    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py);
-    # assert on the composed script.
+    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
     if path.name == "dashboard.js":
         return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
@@ -115,8 +113,8 @@ def test_worker_indexes_notifications_from_existing_event_sources():
 
 
 def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
-    # The two shell files stay byte-identical; the markers live in the composed
-    # document the Worker serves (header + modals partials).
+    # The two prebuilt shell files stay byte-identical; the markers live in the
+    # composed document (header + modals partials).
     assert _read(PUBLIC / "dashboard" / "index.html") == _read(PUBLIC / "dashboard.html")
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
@@ -188,6 +186,8 @@ def test_heartbeat_reports_credits_refilled_from_the_node_itself():
         'credits_kind in ("5h", "weekly")',
         'await enqueue_notification(\n            env, name, "credits_refilled"',
         'dedupe="credits_refilled:" + credits_kind',
+        "HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS",
+        "asyncio.wait_for(\n                _solana_balance_lamports(env, wallet)",
     ):
         assert marker in heartbeat_body
 

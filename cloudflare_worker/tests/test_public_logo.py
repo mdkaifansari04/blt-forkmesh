@@ -49,9 +49,9 @@ class BrandLogoParser(HTMLParser):
 def test_all_public_html_pages_use_logo_in_brand_link():
     assert (PUBLIC_DIR / "assets" / "logo.png").is_file()
 
-    # dashboard/partials/*.html are shell fragments (no <head>/brand link); the
-    # Worker composes them into dashboard/index.html at request time, so they are
-    # not standalone pages and are exempt from the per-page brand-link contract.
+    # dashboard/partials/*.html are shell fragments (no <head>/brand link); they
+    # are composed into generated dashboard assets before deploy, so they are not
+    # standalone pages and are exempt from the per-page brand-link contract.
     html_pages = sorted(
         p for p in PUBLIC_DIR.rglob("*.html")
         if "partials" not in p.relative_to(PUBLIC_DIR).parts
@@ -63,7 +63,7 @@ def test_all_public_html_pages_use_logo_in_brand_link():
         rel = page.relative_to(PUBLIC_DIR).as_posix()
         # The dashboard shell's brand link lives in its header partial; parse the
         # composed document the Worker actually serves.
-        if rel in ("dashboard/index.html", "dashboard.html"):
+        if rel in ("dashboard/index.html", "dashboard.html", "dashboard/shell.html"):
             html = assembled_dashboard()
         else:
             html = page.read_text(encoding="utf-8")

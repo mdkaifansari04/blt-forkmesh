@@ -1,15 +1,15 @@
-"""Server-side composition of the dashboard SPA shell from HTML partials.
+"""Composition of the dashboard SPA shell from HTML partials.
 
 The dashboard's static chrome used to be one ~1800-line ``dashboard/index.html``.
 It is now split into individual partial ``.html`` files under
 ``public/dashboard/partials/`` (header, sidebar, main repos view, network rail,
-modals). ``dashboard/index.html`` keeps only the ``<head>`` and the outer body
+modals). ``dashboard/shell.html`` keeps only the ``<head>`` and the outer body
 scaffold, pulling each section back in with an
 
     <!--#include partial="name"-->
 
-placeholder. The Worker stitches them together at request time (see
-``Default._route``'s ``/dashboard`` branch in ``entry.py``).
+placeholder. ``tools/build_dashboard_assets.py`` stitches them together before
+deploy so Cloudflare can serve ``dashboard/index.html`` as a static asset.
 
 This module is intentionally js-free — no ``js``/``workers`` imports — so both
 the Worker (on Cloudflare) and the test suite can import it directly, the same
@@ -54,6 +54,6 @@ def compose_from_reader(read):
     suite (``read`` loads files off disk). Reads the shell, then each partial it
     references, and returns the fully composed HTML.
     """
-    shell = read("dashboard/index.html")
+    shell = read("dashboard/shell.html")
     partials = {name: read(partial_path(name)) for name in included_partials(shell)}
     return assemble_shell(shell, partials)

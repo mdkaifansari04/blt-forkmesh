@@ -15,8 +15,7 @@ AUTH_PAGES = (
 
 
 def _read(page: Path) -> str:
-    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
-    # Worker concatenates into one /dashboard.js (see src/dashboard_bundle.py).
+    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
     if page.name == "dashboard.js":
         return assembled_dashboard_js()
     return page.read_text(encoding="utf-8")

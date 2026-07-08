@@ -854,8 +854,7 @@ def test_wire_contracts_across_worker_qt_and_installer():
 def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     entry = ENTRY.read_text(encoding="utf-8")
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
-    # dashboard.js is split into ordered public/dashboard/js/*.js fragments the
-    # Worker composes into one /dashboard.js (see src/dashboard_bundle.py).
+    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
     dashboard_js = assembled_dashboard_js()
     login_js = (ROOT / "cloudflare_worker" / "public" / "login.js").read_text(
         encoding="utf-8")
@@ -875,13 +874,11 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     assert "redeemLinkGrant" in dashboard_js
 
     # The browser side asks for one explicit "Authenticate & link" click; the
-    # confirm row exists in both (byte-identical) dashboard HTML copies.
+    # confirm row exists in both prebuilt dashboard HTML copies.
     index_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
                   "index.html").read_text(encoding="utf-8")
     dashboard_html = (ROOT / "cloudflare_worker" / "public" /
                       "dashboard.html").read_text(encoding="utf-8")
-    # The shell is split into partials the Worker composes; the confirm row lives
-    # in the assembled document. The two shell files stay byte-identical.
     assert index_html == dashboard_html
     composed = assembled_dashboard()
     assert "data-link-grant-row" in composed
@@ -905,9 +902,8 @@ def test_dashboard_exposes_a_claim_node_panel():
                  "index.html").read_text(encoding="utf-8")
     dashboard_html = (ROOT / "cloudflare_worker" / "public" / "dashboard.html").read_text(
         encoding="utf-8")
-    # The claim panel lives in a shell partial the Worker composes; assert it on
-    # the assembled document. The two shell files must stay byte-identical (one is
-    # served, the other 308-redirects to it; a frontend test asserts equality).
+    # The claim panel lives in a shell partial and is present in the prebuilt
+    # dashboard HTML assets.
     assert index_html == dashboard_html
     composed = assembled_dashboard()
     assert "data-claim-node-input" in composed

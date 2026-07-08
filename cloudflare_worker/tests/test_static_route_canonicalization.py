@@ -76,6 +76,9 @@ BLOG_POST_REDIRECT_RULES = {
 NON_ROUTED_HTML_ASSETS = {
     # Served by Cloudflare only for misses, not a navigable product route.
     "404.html",
+    # Authored dashboard source; the generated dashboard/index.html asset is the
+    # public route target.
+    "dashboard/shell.html",
     # Duplicate static copies kept for compatibility or source parity; their
     # public routes are canonicalized to the index-backed routes above.
     "dashboard.html",
@@ -190,7 +193,7 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
 def test_worker_does_not_own_static_page_alias_routes():
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
 
-    for route in ("/blog", "/blogs", "/blog.html", "/docs", "/docs.html", "/network", "/network.html"):
+    for route in ("/blog", "/blogs", "/blog.html", "/dashboard", "/dashboard.js", "/docs", "/docs.html", "/network", "/network.html"):
         if route.endswith(".html"):
             assert route in run_worker_first
         else:

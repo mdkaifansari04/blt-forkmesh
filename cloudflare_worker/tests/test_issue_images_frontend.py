@@ -16,8 +16,8 @@ from _dashboard_bundle import assembled_dashboard_js
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# dashboard.js is split into ordered public/dashboard/js/*.js fragments composed
-# into one /dashboard.js by the Worker (see src/dashboard_bundle.py).
+# dashboard.js is built from ordered public/dashboard/js/*.js fragments before
+# deploy (see src/dashboard_bundle.py).
 DASHBOARD_JS = assembled_dashboard_js()
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 

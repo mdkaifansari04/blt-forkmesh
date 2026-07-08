@@ -13,6 +13,7 @@ because they reference the lamport/pricing constants that live there.
 """
 
 import base64
+import asyncio
 import json
 import struct
 
@@ -98,6 +99,7 @@ _SOLANA_PUBLIC_RPCS = (
 # Remember the endpoint that last answered so we hit it first instead of
 # re-walking dead hosts on every poll.
 _SOLANA_RPC_PREFERRED = {"url": ""}
+SOLANA_RPC_TIMEOUT_MS = 2500
 
 
 def _solana_endpoints(env):
@@ -124,18 +126,22 @@ async def _solana_rpc(env, method, params):
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
     for endpoint in _solana_endpoints(env):
         try:
-            resp = await js_fetch(
-                endpoint,
-                to_js({
-                    "method": "POST",
-                    "headers": {"content-type": "application/json",
-                                "accept": "application/json"},
-                    "body": payload,
-                }),
+            resp = await asyncio.wait_for(
+                js_fetch(
+                    endpoint,
+                    to_js({
+                        "method": "POST",
+                        "headers": {"content-type": "application/json",
+                                    "accept": "application/json"},
+                        "body": payload,
+                    }),
+                ),
+                timeout=SOLANA_RPC_TIMEOUT_MS / 1000,
             )
             if not (200 <= int(getattr(resp, "status", 0)) < 300):
                 continue
-            data = json.loads(await resp.text())
+            data = json.loads(await asyncio.wait_for(
+                resp.text(), timeout=SOLANA_RPC_TIMEOUT_MS / 1000))
         except Exception:
             continue
         # A well-formed JSON-RPC reply carries "result"; anything else (including
