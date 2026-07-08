@@ -1377,6 +1377,23 @@ async def status_history(env):
     except Exception:
         current["errors24h"] = None
     try:
+        # Dedicated counter for the platform killing a Durable Object request
+        # mid-flight ("Exceeded allowed duration in Durable Objects free
+        # tier."). Matches both the tagged 503s the routers record via
+        # log_durable_object_abort and the raw tracebacks
+        # capture_worker_exception logged before the routers were guarded, so
+        # the operator can tell plan-limit churn apart from real bugs inside
+        # the generic errors24h count.
+        do_row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE ts >= ? AND message LIKE ?",
+            now - 24 * 60 * 60 * 1000, "%Exceeded allowed duration%",
+        )
+        current["doDurationAborts24h"] = int((do_row or {}).get("n", 0) or 0)
+    except Exception:
+        current["doDurationAborts24h"] = None
+    try:
         # host_presence is keyed one-row-per-repo (upserted on each heartbeat),
         # so reading it with no staleness filter gives the mainnode's true last
         # heartbeat even while offline — lets the banner say "last seen 42m
@@ -9417,6 +9434,22 @@ async def log_error(env, status, method, path, message, ray="", request=None,
     await _write_error_log(env, status, method, path, message, ray)
 
 
+async def log_durable_object_abort(env, request, path, error):
+    """Record a Durable Object fetch the platform killed mid-request.
+
+    On the free tier Cloudflare aborts long-running Durable Object requests
+    with AbortError("Exceeded allowed duration in Durable Objects free
+    tier."). Keeping the raw error text in the message lets the /status page
+    count these plan-limit aborts separately from real bugs (see the
+    doDurationAborts24h snapshot in status_history). Best-effort: log_error
+    never raises.
+    """
+    await log_error(
+        env, 503, method_name(request), path,
+        "durable object aborted: " + _safe_error_text(error)[:400],
+        request.headers.get("cf-ray") or "", request=request, error=error)
+
+
 async def log_cron_error(env, path, message, error=None, failures=None):
     try:
         if failures is not None:
@@ -11409,8 +11442,17 @@ class Default(WorkerEntrypoint):
                             failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
             host_object = self.env.FORKMESH_HOST.get(host_id)
-            response = await host_object.fetch(
-                await durable_object_request(request))
+            try:
+                response = await host_object.fetch(
+                    await durable_object_request(request))
+            except Exception as error:
+                # Same platform abort as the room / release-blob routes (the
+                # free-tier Durable Object duration cap). Treat it as a
+                # transient 503 so a public browse still falls over to a live
+                # mirror below instead of leaking the Worker traceback.
+                await log_durable_object_abort(
+                    self.env, request, url.path, error)
+                response = json_response({"error": "unavailable"}, status=503)
             if public_browse:
                 # The routed node couldn't serve (no host connected: 503, a
                 # dead-but-lingering tunnel: 504, or a host that answered but
@@ -11449,7 +11491,21 @@ class Default(WorkerEntrypoint):
         if room:
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
-            return await room_object.fetch(await durable_object_request(request))
+            try:
+                return await room_object.fetch(
+                    await durable_object_request(request))
+            except Exception as error:
+                # The platform can abort a room DO mid-request — on the free
+                # tier a long-lived room request that outlives the allowed
+                # duration dies with pyodide.http.AbortError("Exceeded allowed
+                # duration in Durable Objects free tier."), and without this
+                # guard that abort escapes Default.fetch as a Worker Error
+                # 1101. Record the real cause (the /status page counts these)
+                # and answer with a generic retryable 503 so no exception
+                # detail reaches the client.
+                await log_durable_object_abort(
+                    self.env, request, url.path, error)
+                return json_response({"error": "unavailable"}, status=503)
 
         # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
         # not real files. Serve the prebuilt static shell from ASSETS instead of
