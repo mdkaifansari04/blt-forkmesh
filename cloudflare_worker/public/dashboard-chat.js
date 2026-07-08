@@ -7,6 +7,9 @@
   const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
   const CHANNEL = "#general";
   const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+  const FORKBOT_ENDPOINT = "/api/forkbot/chat";
+  const FORKBOT_SENDER_ID = "forkbot";
+  const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   // Mainnode base host for the room WebSocket. Defaults to the origin that
   // served the dashboard, so a self-hosted mainnode talks to itself. Override
   // with window.FORKMESH_RELAY_HOST to target a different relay (see
@@ -15,6 +18,7 @@
   const MAX_TEXT = 16000;
   const MAX_NAME = 32;
   const MAX_SIDE_MESSAGES = 3;
+  const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
   const fullLog = document.querySelector("#fullChatMessages");
   const sideLog = document.querySelector("#sideChatMessages");
@@ -39,6 +43,10 @@
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
+  const mentionProfileCache = new Map();
+  let mentionCardEl = null;
+  let activeMentionAnchor = null;
+  let mentionHideTimer = null;
 
   function bytesToB64(bytes) {
     const arr = new Uint8Array(bytes);
@@ -228,6 +236,132 @@
     })[char]);
   }
 
+  function mentionName(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function mentionProfilePath(name) {
+    const key = mentionName(name);
+    return key ? "/@" + encodeURIComponent(key) : "#";
+  }
+
+  async function fetchMentionProfile(name) {
+    const key = mentionName(name);
+    if (!key) return null;
+    if (mentionProfileCache.has(key)) return mentionProfileCache.get(key);
+    const pending = fetch("/api/accounts/" + encodeURIComponent(key), {
+      headers: { accept: "application/json" },
+    }).then(async (response) => {
+      if (!response.ok) return null;
+      const profile = await response.json().catch(() => null);
+      if (!profile || profile.exists === false || profile.kind !== "user") return null;
+      return profile;
+    }).catch(() => null);
+    mentionProfileCache.set(key, pending);
+    return pending;
+  }
+
+  function mentionSummary(profile) {
+    if (!profile) return "User profile";
+    const bio = String(profile.profileBio || "").trim();
+    if (bio) return bio.length > 120 ? bio.slice(0, 117) + "..." : bio;
+    const nodes = Array.isArray(profile.nodes)
+      ? profile.nodes.map((node) => String(node || "").trim()).filter(Boolean)
+      : [];
+    if (nodes.length) return "Nodes: " + nodes.slice(0, 3).join(", ");
+    return profile.status ? String(profile.status) : "User profile";
+  }
+
+  function ensureMentionCard() {
+    if (mentionCardEl) return mentionCardEl;
+    mentionCardEl = document.createElement("a");
+    mentionCardEl.className = "chat-mention-card";
+    mentionCardEl.hidden = true;
+    mentionCardEl.addEventListener("mouseenter", () => {
+      if (mentionHideTimer) clearTimeout(mentionHideTimer);
+    });
+    mentionCardEl.addEventListener("mouseleave", hideMentionCardSoon);
+    document.body.append(mentionCardEl);
+    return mentionCardEl;
+  }
+
+  function renderMentionCard(card, name, profile) {
+    const display = String(profile?.name || profile?.nodeName || name || "").trim() || name;
+    card.textContent = "";
+    card.href = mentionProfilePath(name);
+    const title = document.createElement("strong");
+    title.textContent = "@" + display;
+    const summary = document.createElement("span");
+    summary.textContent = mentionSummary(profile);
+    const action = document.createElement("small");
+    action.textContent = "Click to open full profile";
+    card.append(title, summary, action);
+  }
+
+  function positionMentionCard(anchor, card) {
+    const rect = anchor.getBoundingClientRect();
+    const margin = 12;
+    const width = card.offsetWidth || 240;
+    const x = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    const y = Math.min(rect.bottom + 8, window.innerHeight - card.offsetHeight - margin);
+    card.style.left = `${x + window.scrollX}px`;
+    card.style.top = `${Math.max(margin, y) + window.scrollY}px`;
+  }
+
+  function hideMentionCardSoon() {
+    if (mentionHideTimer) clearTimeout(mentionHideTimer);
+    mentionHideTimer = setTimeout(() => {
+      if (mentionCardEl) mentionCardEl.hidden = true;
+      activeMentionAnchor = null;
+    }, 140);
+  }
+
+  async function showMentionCard(anchor, name) {
+    const key = mentionName(name);
+    if (!key) return;
+    if (mentionHideTimer) clearTimeout(mentionHideTimer);
+    activeMentionAnchor = anchor;
+    const card = ensureMentionCard();
+    renderMentionCard(card, key, null);
+    card.hidden = false;
+    positionMentionCard(anchor, card);
+    const profile = await fetchMentionProfile(key);
+    if (activeMentionAnchor !== anchor) return;
+    renderMentionCard(card, key, profile);
+    positionMentionCard(anchor, card);
+  }
+
+  function appendMentionText(container, text) {
+    const value = String(text || "");
+    const mentionRe = new RegExp(CHAT_MENTION_RE.source, "gi");
+    let cursor = 0;
+    let match;
+    while ((match = mentionRe.exec(value)) !== null) {
+      const prefix = match[1] || "";
+      const name = mentionName(match[2]);
+      const start = match.index + prefix.length;
+      const end = mentionRe.lastIndex;
+      if (start > cursor) container.append(document.createTextNode(value.slice(cursor, start)));
+      const anchor = document.createElement("a");
+      anchor.className = "chat-mention";
+      anchor.href = mentionProfilePath(name);
+      anchor.dataset.chatMention = name;
+      anchor.textContent = value.slice(start, end);
+      anchor.addEventListener("mouseenter", () => showMentionCard(anchor, name));
+      anchor.addEventListener("focus", () => showMentionCard(anchor, name));
+      anchor.addEventListener("mouseleave", hideMentionCardSoon);
+      anchor.addEventListener("blur", hideMentionCardSoon);
+      container.append(anchor);
+      cursor = end;
+    }
+    if (cursor < value.length) container.append(document.createTextNode(value.slice(cursor)));
+  }
+
+  function renderMessageText(container, text) {
+    container.textContent = "";
+    appendMentionText(container, text);
+  }
+
   function setStatus(text) {
     document.querySelectorAll("[data-dashboard-chat-status]").forEach((el) => {
       el.textContent = text;
@@ -300,11 +434,13 @@
           <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
           <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(ts || "")}</span>
         </div>
-        <p class="text-sm text-muted-foreground leading-relaxed break-words">${escapeHtml(text)}</p>
+        <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
+    const textEl = row.querySelector("p");
+    if (textEl) appendMentionText(textEl, text);
     fullLog.append(row);
     fullLog.scrollTop = fullLog.scrollHeight;
-    if (id) rows.set(id, { el: row, senderId: senderId || "", textEl: row.querySelector("p") });
+    if (id) rows.set(id, { el: row, senderId: senderId || "", textEl });
   }
 
   function renderSideMessages() {
@@ -313,16 +449,24 @@
       sideLog.innerHTML = sideEmptyHtml();
       return;
     }
-    sideLog.innerHTML = sideEntries.slice(-MAX_SIDE_MESSAGES).map((message) => `
-      <div class="flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2">
+    sideLog.textContent = "";
+    for (const message of sideEntries.slice(-MAX_SIDE_MESSAGES)) {
+      const row = document.createElement("div");
+      row.className = "flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2";
+      row.innerHTML = `
         <span class="avatar flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-secondary font-mono text-[9px] font-semibold text-foreground">${avatarLetter(message.who)}</span>
         <div class="min-w-0 flex-1">
           <span class="text-[10px] font-semibold ${message.kind === "self" ? "text-primary" : "text-foreground"} mr-1.5">${escapeHtml(message.who)}</span>
-          <p class="text-xs text-muted-foreground leading-relaxed break-words">${escapeHtml(message.text)}</p>
-        </div>
-      </div>
-    `).join("") + '<div data-chat-bottom></div>';
-    sideLog.querySelector("[data-chat-bottom]")?.scrollIntoView({ behavior: "smooth" });
+          <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
+        </div>`;
+      const textEl = row.querySelector("p");
+      if (textEl) appendMentionText(textEl, message.text);
+      sideLog.append(row);
+    }
+    const bottom = document.createElement("div");
+    bottom.dataset.chatBottom = "";
+    sideLog.append(bottom);
+    bottom.scrollIntoView({ behavior: "smooth" });
   }
 
   function appendSideMessage(kind, who, text, id, senderId) {
@@ -425,7 +569,14 @@
       }
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
-      if (rec && rec.senderId === plain.senderId && rec.textEl) rec.textEl.textContent = plain.text || "";
+      if (rec && rec.senderId === plain.senderId && rec.textEl) {
+        renderMessageText(rec.textEl, plain.text || "");
+        const sideEntry = sideEntries.find((entry) => entry.id === plain.target);
+        if (sideEntry) {
+          sideEntry.text = plain.text || "";
+          renderSideMessages();
+        }
+      }
     } else if (type === "delete") {
       const rec = rows.get(plain.target);
       if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
@@ -520,6 +671,40 @@
     connect();
   }
 
+  function makeForkbotPlain(text) {
+    return makePlain("chat", {
+      channel: CHANNEL,
+      text: String(text || "").slice(0, MAX_TEXT),
+      sender: "forkbot",
+      senderId: FORKBOT_SENDER_ID,
+      accountKind: "user",
+    });
+  }
+
+  function broadcastForkbotMessage(text) {
+    const plain = makeForkbotPlain(text);
+    send(plain);
+    seen.add(plain.id);
+    const ts = new Date(plain.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, ts);
+  }
+
+  async function maybeAskForkbot(text) {
+    if (!FORKBOT_MENTION_RE.test(text || "")) return;
+    try {
+      const response = await fetch(FORKBOT_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data || !data.botMessage) return;
+      runWhenConnected(() => broadcastForkbotMessage(data.botMessage));
+    } catch (_) {
+      appendSystem("forkbot is unavailable");
+    }
+  }
+
   function sendFrom(inputEl) {
     if (!userSession()) {
       showUserOnlyState();
@@ -529,11 +714,13 @@
     if (!text) return;
     if (inputEl) inputEl.value = "";
     runWhenConnected(() => {
-      const plain = makePlain("chat", { channel: CHANNEL, text: text.slice(0, MAX_TEXT) });
+      const clipped = text.slice(0, MAX_TEXT);
+      const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
       send(plain);
       seen.add(plain.id);
       const ts = new Date(plain.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, ts);
+      maybeAskForkbot(clipped);
     });
   }
 

@@ -11,6 +11,9 @@ const ROOM_NAME = "general";
 const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
 const CHANNEL = "#general";
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
+const FORKBOT_ENDPOINT = "/api/forkbot/chat";
+const FORKBOT_SENDER_ID = "forkbot";
+const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 // Mainnode base host for the room WebSocket. Defaults to the origin that served
 // this page, so a self-hosted mainnode's own site talks to itself with zero
 // config. A separately-hosted static site can point at a different relay by
@@ -19,6 +22,7 @@ const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
+const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
 const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
@@ -42,6 +46,10 @@ const seen = new Set();
 // messageId -> { el, senderId } for messages currently on screen, so an edit or
 // a (regular / admin) delete can find and update or remove the right row.
 const rows = new Map();
+const mentionProfileCache = new Map();
+let mentionCardEl = null;
+let activeMentionAnchor = null;
+let mentionHideTimer = null;
 
 // ---- base64 <-> bytes -------------------------------------------------------
 
@@ -268,6 +276,132 @@ function clearEmpty() {
   if (empty) empty.remove();
 }
 
+function mentionName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function mentionProfilePath(name) {
+  const key = mentionName(name);
+  return key ? "/@" + encodeURIComponent(key) : "#";
+}
+
+async function fetchMentionProfile(name) {
+  const key = mentionName(name);
+  if (!key) return null;
+  if (mentionProfileCache.has(key)) return mentionProfileCache.get(key);
+  const pending = fetch("/api/accounts/" + encodeURIComponent(key), {
+    headers: { accept: "application/json" },
+  }).then(async (response) => {
+    if (!response.ok) return null;
+    const profile = await response.json().catch(() => null);
+    if (!profile || profile.exists === false || profile.kind !== "user") return null;
+    return profile;
+  }).catch(() => null);
+  mentionProfileCache.set(key, pending);
+  return pending;
+}
+
+function mentionSummary(profile) {
+  if (!profile) return "User profile";
+  const bio = String(profile.profileBio || "").trim();
+  if (bio) return bio.length > 120 ? bio.slice(0, 117) + "..." : bio;
+  const nodes = Array.isArray(profile.nodes)
+    ? profile.nodes.map((node) => String(node || "").trim()).filter(Boolean)
+    : [];
+  if (nodes.length) return "Nodes: " + nodes.slice(0, 3).join(", ");
+  return profile.status ? String(profile.status) : "User profile";
+}
+
+function ensureMentionCard() {
+  if (mentionCardEl) return mentionCardEl;
+  mentionCardEl = document.createElement("a");
+  mentionCardEl.className = "chat-mention-card";
+  mentionCardEl.hidden = true;
+  mentionCardEl.addEventListener("mouseenter", () => {
+    if (mentionHideTimer) clearTimeout(mentionHideTimer);
+  });
+  mentionCardEl.addEventListener("mouseleave", hideMentionCardSoon);
+  document.body.append(mentionCardEl);
+  return mentionCardEl;
+}
+
+function renderMentionCard(card, name, profile) {
+  const display = String(profile?.name || profile?.nodeName || name || "").trim() || name;
+  card.textContent = "";
+  card.href = mentionProfilePath(name);
+  const title = document.createElement("strong");
+  title.textContent = "@" + display;
+  const summary = document.createElement("span");
+  summary.textContent = mentionSummary(profile);
+  const action = document.createElement("small");
+  action.textContent = "Click to open full profile";
+  card.append(title, summary, action);
+}
+
+function positionMentionCard(anchor, card) {
+  const rect = anchor.getBoundingClientRect();
+  const margin = 12;
+  const width = card.offsetWidth || 240;
+  const x = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+  const y = Math.min(rect.bottom + 8, window.innerHeight - card.offsetHeight - margin);
+  card.style.left = `${x + window.scrollX}px`;
+  card.style.top = `${Math.max(margin, y) + window.scrollY}px`;
+}
+
+function hideMentionCardSoon() {
+  if (mentionHideTimer) clearTimeout(mentionHideTimer);
+  mentionHideTimer = setTimeout(() => {
+    if (mentionCardEl) mentionCardEl.hidden = true;
+    activeMentionAnchor = null;
+  }, 140);
+}
+
+async function showMentionCard(anchor, name) {
+  const key = mentionName(name);
+  if (!key) return;
+  if (mentionHideTimer) clearTimeout(mentionHideTimer);
+  activeMentionAnchor = anchor;
+  const card = ensureMentionCard();
+  renderMentionCard(card, key, null);
+  card.hidden = false;
+  positionMentionCard(anchor, card);
+  const profile = await fetchMentionProfile(key);
+  if (activeMentionAnchor !== anchor) return;
+  renderMentionCard(card, key, profile);
+  positionMentionCard(anchor, card);
+}
+
+function appendMentionText(container, text) {
+  const value = String(text || "");
+  const mentionRe = new RegExp(CHAT_MENTION_RE.source, "gi");
+  let cursor = 0;
+  let match;
+  while ((match = mentionRe.exec(value)) !== null) {
+    const prefix = match[1] || "";
+    const name = mentionName(match[2]);
+    const start = match.index + prefix.length;
+    const end = mentionRe.lastIndex;
+    if (start > cursor) container.append(document.createTextNode(value.slice(cursor, start)));
+    const anchor = document.createElement("a");
+    anchor.className = "chat-mention";
+    anchor.href = mentionProfilePath(name);
+    anchor.dataset.chatMention = name;
+    anchor.textContent = value.slice(start, end);
+    anchor.addEventListener("mouseenter", () => showMentionCard(anchor, name));
+    anchor.addEventListener("focus", () => showMentionCard(anchor, name));
+    anchor.addEventListener("mouseleave", hideMentionCardSoon);
+    anchor.addEventListener("blur", hideMentionCardSoon);
+    container.append(anchor);
+    cursor = end;
+  }
+  if (cursor < value.length) container.append(document.createTextNode(value.slice(cursor)));
+}
+
+function renderMessageText(container, text) {
+  container.textContent = "";
+  appendMentionText(container, text);
+}
+
 function appendMessage(kind, who, text, id, senderId) {
   clearEmpty();
   const row = document.createElement("div");
@@ -277,7 +411,7 @@ function appendMessage(kind, who, text, id, senderId) {
   author.textContent = who;
   const body = document.createElement("span");
   body.className = "chat-text";
-  body.textContent = text;
+  appendMentionText(body, text);
   row.append(author, body);
   logEl.append(row);
   logEl.scrollTop = logEl.scrollHeight;
@@ -400,7 +534,7 @@ function handlePlain(plain) {
     // The author edited their own message; only honour it from that author.
     const rec = rows.get(plain.target);
     if (rec && rec.senderId === plain.senderId && rec.body) {
-      rec.body.textContent = plain.text || "";
+      renderMessageText(rec.body, plain.text || "");
     }
   } else if (type === "delete") {
     // A plain delete is only valid from the message's own author.
@@ -433,16 +567,52 @@ async function onFrame(event) {
   handlePlain(plain);
 }
 
+const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
+
 function send(plain) {
   if (!userSession()) {
     lockChatForNonUser();
     return Promise.resolve();
   }
   return encryptObject(plain).then((envelope) => {
+    if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(envelope));
     }
   });
+}
+
+function makeForkbotPlain(text) {
+  return makePlain("chat", {
+    channel: CHANNEL,
+    text: String(text || "").slice(0, MAX_TEXT),
+    sender: "forkbot",
+    senderId: FORKBOT_SENDER_ID,
+    accountKind: "user",
+  });
+}
+
+function broadcastForkbotMessage(text) {
+  const plain = makeForkbotPlain(text);
+  send(plain);
+  seen.add(plain.id);
+  appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId);
+}
+
+async function maybeAskForkbot(text) {
+  if (!FORKBOT_MENTION_RE.test(text || "")) return;
+  try {
+    const response = await fetch(FORKBOT_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data || !data.botMessage) return;
+    runWhenConnected(() => broadcastForkbotMessage(data.botMessage));
+  } catch (error) {
+    appendSystem("forkbot is unavailable");
+  }
 }
 
 async function connect() {
@@ -501,10 +671,12 @@ function sendCurrentMessage() {
   if (!text) return;
   input.value = "";
   runWhenConnected(() => {
-    const plain = makePlain("chat", { channel: CHANNEL, text: text.slice(0, MAX_TEXT) });
+    const clipped = text.slice(0, MAX_TEXT);
+    const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
     send(plain);
     seen.add(plain.id); // we render it here; ignore the echo if one comes back
-    appendMessage("self", plain.sender, text.slice(0, MAX_TEXT), plain.id, plain.senderId);
+    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId);
+    maybeAskForkbot(clipped);
   });
 }
 

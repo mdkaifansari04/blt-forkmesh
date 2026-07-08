@@ -16,6 +16,9 @@ from pathlib import Path
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
+DASHBOARD_HTML = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+PUBLIC_CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
 def test_send_marks_durable_frames_for_relay_retention():
@@ -25,10 +28,21 @@ def test_send_marks_durable_frames_for_relay_retention():
     assert "DURABLE_TYPES.has(" in send
 
 
+def test_public_chat_marks_durable_frames_for_relay_retention():
+    send = PUBLIC_CHAT[
+        PUBLIC_CHAT.index("function send("):PUBLIC_CHAT.index("function makeForkbotPlain(")
+    ]
+    assert "envelope.persist = true" in send
+    assert "DURABLE_TYPES.has(" in send
+
+
 def test_durable_type_set_matches_the_node():
     # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
         assert f'"{kind}"' in CHAT[CHAT.index("DURABLE_TYPES") : CHAT.index("function send(")]
+        assert f'"{kind}"' in PUBLIC_CHAT[
+            PUBLIC_CHAT.index("DURABLE_TYPES"):PUBLIC_CHAT.index("function send(")
+        ]
 
 
 def test_dashboard_chat_requires_user_session_and_marks_user_frames():
@@ -59,9 +73,30 @@ def test_public_chat_requires_user_session_and_marks_user_frames():
 
 
 def test_public_chat_uses_shared_site_theme_keys():
-    chat_html = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+    assert '"forkmesh.dashboard.theme", "forkmesh.theme"' in PUBLIC_CHAT_HTML
+    assert 'meta name="color-scheme" content="light dark"' in PUBLIC_CHAT_HTML
+    assert "html:not(.dark)" in PUBLIC_CHAT_HTML
+    assert 'theme === "light" ? "#f6f8fb" : "#090909"' in PUBLIC_CHAT_HTML
 
-    assert '"forkmesh.dashboard.theme", "forkmesh.theme"' in chat_html
-    assert 'meta name="color-scheme" content="light dark"' in chat_html
-    assert "html:not(.dark)" in chat_html
-    assert 'theme === "light" ? "#f6f8fb" : "#090909"' in chat_html
+
+def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
+    for source in (CHAT, PUBLIC_CHAT):
+        assert "const CHAT_MENTION_RE" in source
+        assert "function appendMentionText" in source
+        assert "function renderMessageText" in source
+        assert 'fetch("/api/accounts/" + encodeURIComponent(key)' in source
+        assert 'anchor.href = mentionProfilePath(name)' in source
+        assert "anchor.dataset.chatMention = name" in source
+        assert 'mentionCardEl.className = "chat-mention-card"' in source
+        assert "showMentionCard(anchor, name)" in source
+
+    assert "renderMessageText(rec.body, plain.text || \"\")" in PUBLIC_CHAT
+    assert "renderMessageText(rec.textEl, plain.text || \"\")" in CHAT
+    assert "sideEntry.text = plain.text || \"\"" in CHAT
+
+
+def test_chat_mention_styles_are_available_on_all_chat_surfaces():
+    for source in (DASHBOARD_HTML, PUBLIC_CHAT_HTML, STYLES):
+        assert ".chat-mention {" in source
+        assert ".chat-mention-card {" in source
+        assert ".chat-mention-card[hidden]" in source

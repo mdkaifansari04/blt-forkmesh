@@ -126,6 +126,14 @@ MAX_PENDING_AGENT_PROMPTS = 50
 # detail page's live transcript (adhoc #259). Kept modest so the full-replace
 # sessions push stays small even with several sessions per repo.
 MAX_AGENT_TRANSCRIPT = 16000
+# ForkBot: first chat-native AI action. The relay still does not decrypt room
+# frames; web chat clients forward explicit forkbot mentions to this endpoint.
+FORKBOT_NAME = "forkbot"
+FORKBOT_AUTHOR = "forkbot"
+FORKBOT_DEFAULT_OWNER = "forkmesh"
+FORKBOT_DEFAULT_REPO = "forkmesh"
+FORKBOT_MAX_COMMAND = 4000
+FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -8135,6 +8143,245 @@ async def poll_handler(env, request):
     return json_response(out)
 
 
+def _forkbot_extract_mention_command(message):
+    text = clean_string(message, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"(?is)(?:^|[^A-Za-z0-9_-])@?forkbot\b[:,]?\s*(.*)$", text)
+    return match.group(1).strip() if match else ""
+
+
+def _forkbot_parse_issue_command(command):
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^(?:please\s+)?"
+        r"(?:create|open|file|make|report)\s+(?:an?\s+)?issue\b"
+        r"\s*(?:(?:to|for|about|that|saying|called|titled)\s+|[:\-]\s*)?"
+        r"(.+)$",
+        text,
+    )
+    if not match:
+        return None
+    description = re.sub(r"\s+", " ", match.group(1)).strip(" .:-")
+    if len(description) < 3:
+        return None
+    return {"description": description}
+
+
+def _forkbot_issue_title(description):
+    text = re.sub(r"\s+", " ", clean_string(description, 240)).strip(" .:-")
+    if not text:
+        return "Issue from #general"
+    for sep in (". ", "! ", "? "):
+        idx = text.find(sep)
+        if 12 <= idx <= 120:
+            text = text[:idx]
+            break
+    if len(text) > 120:
+        text = text[:117].rstrip() + "..."
+    return text or "Issue from #general"
+
+
+def _forkbot_fallback_issue_fields(description):
+    body = clean_string(description, MAX_ISSUE_BYTES).strip()
+    title = _forkbot_issue_title(body)
+    return {"title": title, "body": body}
+
+
+def _forkbot_json_object_from_text(text):
+    if not isinstance(text, str):
+        return None
+    raw = text.strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(raw[start:end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _forkbot_clean_ai_issue_fields(parsed):
+    if not isinstance(parsed, dict):
+        return None
+    title = clean_string(parsed.get("title", ""), 240).strip()
+    body = clean_string(parsed.get("body", ""), MAX_ISSUE_BYTES).strip()
+    if not title or not body:
+        return None
+    return {"title": _forkbot_issue_title(title), "body": body}
+
+
+async def _forkbot_ai_issue_fields(env, description):
+    ai = getattr(env, "AI", None)
+    if ai is None or not hasattr(ai, "run"):
+        return None
+    model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
+        FORKBOT_AI_DEFAULT_MODEL
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You turn a chat request into a ForkMesh issue. Return only "
+                    "compact JSON with title and body string fields. Do not add "
+                    "markdown fences."
+                ),
+            },
+            {
+                "role": "user",
+                "content": clean_string(description, FORKBOT_MAX_COMMAND),
+            },
+        ],
+        "max_tokens": 512,
+    }
+    try:
+        try:
+            result = await ai.run(model, to_js(payload))
+        except TypeError:
+            result = await ai.run(model, payload)
+    except Exception:
+        return None
+    try:
+        if hasattr(result, "to_py"):
+            result = result.to_py()
+    except Exception:
+        pass
+    text = ""
+    if isinstance(result, dict):
+        for key in ("response", "text", "output"):
+            if isinstance(result.get(key), str):
+                text = result.get(key)
+                break
+        if not text:
+            return _forkbot_clean_ai_issue_fields(result)
+    elif isinstance(result, str):
+        text = result
+    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(text))
+
+
+async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+    await ensure_schema(env)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
+    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
+        return False, "inbox_full"
+    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
+    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
+        return False, "author_quota"
+
+    now = int(Date.now())
+    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
+    event = {
+        "type": "open",
+        "id": "forkbot-%d" % now,
+        "author": FORKBOT_AUTHOR,
+        "authorName": FORKBOT_NAME,
+        "ts": now,
+        "title": clean_string(title, 240),
+        "body": clean_string(body, MAX_ISSUE_BYTES),
+        "attachments": [],
+        "sig": "",
+    }
+    item = {
+        "number": 0,
+        "titleIfNew": event["title"],
+        "event": event,
+        "meta": {
+            "labels": ["forkbot"],
+            "milestone": "",
+            "priority": 0,
+            "assignees": [],
+            "wantsAgent": False,
+            "model": "",
+            "provider": "",
+        },
+        "submitter": FORKBOT_AUTHOR,
+        "submittedAt": now,
+        "source": "forkbot",
+        "requestedBy": actor,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
+        repo_bi, await encrypt_row(env, item), submitter_bi,
+    )
+    await _record_contributor(env, FORKBOT_AUTHOR, "issues")
+    await _best_effort_inbox_side_effect(
+        notify_pending_inbox(
+            env, owner, repo, "issue", FORKBOT_AUTHOR, item.get("titleIfNew", ""),
+            0))
+    await _best_effort_inbox_side_effect(
+        notify_mentions(
+            env, owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
+            event.get("body", ""), repo_web_href(owner, repo), "issue"))
+    return True, item
+
+
+async def forkbot_chat_handler(env, request):
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        return json_response({"error": "invalid_json"}, status=400)
+
+    message = clean_string(data.get("message", ""), FORKBOT_MAX_COMMAND)
+    command = _forkbot_extract_mention_command(message)
+    if not command:
+        return json_response({"ok": True, "ignored": True})
+    parsed = _forkbot_parse_issue_command(command)
+    if not parsed:
+        return json_response({
+            "ok": True,
+            "action": "help",
+            "botMessage": (
+                "I can create issues. Try: forkbot create an issue to describe "
+                "the bug or task."
+            ),
+        })
+
+    fields = await _forkbot_ai_issue_fields(env, parsed["description"])
+    if not fields:
+        fields = _forkbot_fallback_issue_fields(parsed["description"])
+    if not fields.get("body"):
+        return json_response({"error": "issue_required"}, status=400)
+
+    owner = FORKBOT_DEFAULT_OWNER
+    repo = FORKBOT_DEFAULT_REPO
+    ok, result = await _forkbot_enqueue_issue(
+        env, owner, repo, fields["title"], fields["body"],
+        clean_string(data.get("sender", ""), MAX_NODE_NAME))
+    if not ok:
+        return json_response({"error": result}, status=429)
+    title = result.get("titleIfNew", fields["title"])
+    return json_response({
+        "ok": True,
+        "action": "issue_created",
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "botMessage": (
+            "Created an issue in %s/%s: %s. It will appear after the owner "
+            "node syncs the issue inbox."
+        ) % (owner, repo, title),
+    }, status=201)
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -10898,6 +11145,12 @@ class Default(WorkerEntrypoint):
         # full profile and notification list every tick.
         if url.path in ("/api/poll", "/api/poll/"):
             return await poll_handler(self.env, request)
+
+        # Chat-triggered Cloudflare AI interface. Clients forward explicit
+        # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
+        # records and returns a bot reply for the encrypted room.
+        if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
+            return await forkbot_chat_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, donation-address, donation-status,
         # finalize, login, and GET /api/accounts/{name}) are single-segment, so

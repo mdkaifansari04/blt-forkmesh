@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
+#include <QCursor>
 #include <QDateTime>
 #include <QEvent>
 #include <QGridLayout>
@@ -19,10 +20,12 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QStyleHints>
 #include <QTimer>
+#include <QToolTip>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -59,6 +62,90 @@ QString humanSize(qint64 bytes)
     if (bytes < 1024 * 1024)
         return QString::number(bytes / 1024.0, 'f', 1) + " KB";
     return QString::number(bytes / (1024.0 * 1024.0), 'f', 1) + " MB";
+}
+
+QString escapedMessageSegment(QString segment)
+{
+    segment.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    segment.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    QString escaped = segment.toHtmlEscaped();
+    escaped.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    return escaped;
+}
+
+QString mentionDisplayName(const MemberInfo &member)
+{
+    const QString owner = member.ownerUser.trimmed();
+    if (!owner.isEmpty())
+        return owner;
+    const QString name = member.name.trimmed();
+    if (!name.isEmpty())
+        return name;
+    return member.nodeName.trimmed();
+}
+
+QString mentionHrefKey(const QString &href)
+{
+    static const QString prefix = QStringLiteral("forkmesh-mention:");
+    if (!href.startsWith(prefix))
+        return {};
+    return href.mid(prefix.size()).trimmed().toLower();
+}
+
+QString mentionCardHtml(const MemberInfo &member)
+{
+    const QString name = mentionDisplayName(member).toHtmlEscaped();
+    QString detail;
+    const QString note = member.note.trimmed();
+    const QString nodes = member.nodeName.trimmed();
+    if (!note.isEmpty()) {
+        detail = note;
+    } else if (!nodes.isEmpty()) {
+        detail = QStringLiteral("Nodes: ") + nodes;
+    } else {
+        detail = member.online ? QStringLiteral("Online")
+                               : QStringLiteral("User profile");
+    }
+
+    return QStringLiteral(
+               "<div style='white-space:nowrap'>"
+               "<b>%1</b><br>"
+               "<span style='color:#8b949e'>%2</span><br>"
+               "<span style='color:#58a6ff'>Click to open full profile</span>"
+               "</div>")
+        .arg(name, detail.toHtmlEscaped());
+}
+
+QString renderMentionedText(const QString &text,
+                            const QHash<QString, MemberInfo> &profiles)
+{
+    if (profiles.isEmpty())
+        return escapedMessageSegment(text);
+
+    static const QRegularExpression mentionRe(
+        QStringLiteral("(^|[^A-Za-z0-9_-])@([A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)\\b"));
+    QString html;
+    int cursor = 0;
+    QRegularExpressionMatchIterator it = mentionRe.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const QString key = match.captured(2).toLower();
+        if (!profiles.contains(key))
+            continue;
+        const int mentionStart = match.capturedStart(2) - 1;
+        const int mentionEnd = match.capturedEnd(2);
+        if (mentionStart < cursor || mentionEnd <= mentionStart)
+            continue;
+        html += escapedMessageSegment(text.mid(cursor, mentionStart - cursor));
+        const QString mentionText = text.mid(mentionStart, mentionEnd - mentionStart);
+        html += QStringLiteral(
+                    "<a href='forkmesh-mention:%1' "
+                    "style='color:#58a6ff; font-weight:700; text-decoration:none;'>%2</a>")
+                    .arg(key.toHtmlEscaped(), mentionText.toHtmlEscaped());
+        cursor = mentionEnd;
+    }
+    html += escapedMessageSegment(text.mid(cursor));
+    return html;
 }
 
 // Mirrors forkmesh::ui::currentThemeIsDark() (MainWindowInternal.h), kept as a
@@ -155,8 +242,10 @@ private:
 } // namespace
 
 MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
+                       const QHash<QString, MemberInfo> &mentionProfiles,
                        bool canModerate, QWidget *parent)
-    : QFrame(parent), m_message(message), m_nameColor(nameColor)
+    : QFrame(parent), m_message(message), m_nameColor(nameColor),
+      m_mentionProfiles(mentionProfiles)
 {
     setObjectName("messageRow");
 
@@ -253,12 +342,29 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         body->setTextFormat(Qt::RichText);
         column->addWidget(body);
     } else if (!message.text.isEmpty()) {
-        auto *body = new QLabel(message.text.toHtmlEscaped());
+        auto *body = new QLabel(renderMentionedText(message.text, m_mentionProfiles));
         body->setObjectName("messageText");
+        body->setTextFormat(Qt::RichText);
         body->setWordWrap(true);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                       Qt::LinksAccessibleByMouse);
-        body->setOpenExternalLinks(true);
+        body->setOpenExternalLinks(false);
+        connect(body, &QLabel::linkHovered, this, [this, body](const QString &href) {
+            const QString key = mentionHrefKey(href);
+            if (key.isEmpty() || !m_mentionProfiles.contains(key)) {
+                QToolTip::hideText();
+                return;
+            }
+            QToolTip::showText(QCursor::pos(),
+                               mentionCardHtml(m_mentionProfiles.value(key)), body);
+        });
+        connect(body, &QLabel::linkActivated, this, [this](const QString &href) {
+            const QString key = mentionHrefKey(href);
+            if (key.isEmpty() || !m_mentionProfiles.contains(key))
+                return;
+            const MemberInfo member = m_mentionProfiles.value(key);
+            emit mentionClicked(member.id, mentionDisplayName(member));
+        });
         column->addWidget(body);
     }
 

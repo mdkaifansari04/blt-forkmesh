@@ -1005,6 +1005,58 @@ main {
   font-size: 13px;
 }
 
+.chat-mention {
+  display: inline-block;
+  border-radius: 5px;
+  background: rgba(88, 166, 255, 0.14);
+  color: #0969da;
+  font-weight: 700;
+  padding: 0 4px;
+  text-decoration: none;
+}
+
+.chat-mention:hover,
+.chat-mention:focus {
+  background: rgba(88, 166, 255, 0.22);
+  outline: none;
+}
+
+.chat-mention-card {
+  position: absolute;
+  z-index: 1000;
+  display: grid;
+  width: min(260px, calc(100vw - 24px));
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 16px 45px rgba(15, 23, 42, 0.2);
+  color: var(--foreground);
+  text-align: left;
+  text-decoration: none;
+}
+
+.chat-mention-card[hidden] {
+  display: none;
+}
+
+.chat-mention-card strong {
+  font-size: 13px;
+  color: var(--foreground);
+}
+
+.chat-mention-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.chat-mention-card small {
+  color: #0969da;
+  font-size: 11px;
+}
+
 .chat-compose {
   display: grid;
   gap: 6px;

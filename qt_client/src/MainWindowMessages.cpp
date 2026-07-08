@@ -8,9 +8,47 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QDesktopServices>
+#include <QUrl>
+
 using namespace forkmesh::ui;
 
 // ------------------------------------------------------------------ messages
+
+static QString chatUserDisplayName(const MemberInfo &member);
+
+static void addMentionProfile(QHash<QString, MemberInfo> &profiles,
+                              MemberInfo member)
+{
+    const QString display = chatUserDisplayName(member).trimmed();
+    if (display.isEmpty())
+        return;
+    member.name = display;
+    const QString key = display.toLower();
+    if (!profiles.contains(key))
+        profiles.insert(key, member);
+}
+
+static QUrl chatMentionProfileUrl(const QString &serverInput,
+                                  const QString &accountName)
+{
+    QUrl base(canonicalServerUrl(serverInput));
+    QString scheme = base.scheme();
+    if (scheme == QLatin1String("wss"))
+        scheme = QStringLiteral("https");
+    else if (scheme == QLatin1String("ws"))
+        scheme = QStringLiteral("http");
+    else if (scheme.isEmpty())
+        scheme = QStringLiteral("https");
+
+    QUrl url;
+    url.setScheme(scheme);
+    url.setHost(base.host());
+    if (base.port() >= 0)
+        url.setPort(base.port());
+    url.setPath(QStringLiteral("/@") + accountName.trimmed().toLower());
+    return url;
+}
 
 QString MainWindow::senderColor(const QString &sender) const
 {
@@ -30,8 +68,15 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     // Admins get a Delete control on EVERY message — anyone's and their own — as
     // a full moderation override (MessageRow routes it through the unconditional
     // admin-delete path).
+    QHash<QString, MemberInfo> mentionProfiles;
+    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
+        addMentionProfile(mentionProfiles, member);
+    for (const MemberInfo &member : std::as_const(m_homeRoster))
+        addMentionProfile(mentionProfiles, member);
+
     const bool canModerate = m_isAdmin;
-    auto *row = new MessageRow(message, senderColor(message.senderName), canModerate);
+    auto *row = new MessageRow(message, senderColor(message.senderName),
+                               mentionProfiles, canModerate);
     if (m_avatars.contains(message.senderId))
         row->setAvatar(m_avatars.value(message.senderId));
     if (m_reactions.contains(message.id))
@@ -54,6 +99,23 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     // the panel updates behind the Chat section and nothing appears to happen.
     connect(row, &MessageRow::senderClicked, this,
             [this](const QString &id, const QString &name) {
+                showSection(0);
+                showNodeProfile(id, name);
+            });
+    connect(row, &MessageRow::mentionClicked, this,
+            [this](const QString &id, const QString &name) {
+                if (id.startsWith(QStringLiteral("user:"))) {
+                    QString account = id.mid(QStringLiteral("user:").size()).trimmed();
+                    if (account.isEmpty())
+                        account = name.trimmed().toLower();
+                    const QUrl url = chatMentionProfileUrl(
+                        m_serverUrlEdit ? m_serverUrlEdit->text() : QString(),
+                        account);
+                    if (url.isValid() && !url.host().isEmpty()) {
+                        QDesktopServices::openUrl(url);
+                        return;
+                    }
+                }
                 showSection(0);
                 showNodeProfile(id, name);
             });
@@ -664,6 +726,12 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     m_chatDirectoryUsers = next;
     refreshMentionCandidates();
     refreshChatMembers();
+    if (m_messageLayout && !m_currentConversation.isEmpty()) {
+        const bool wasAtBottom = m_stickToBottom;
+        renderConversationRows();
+        if (wasAtBottom)
+            scrollToBottom();
+    }
 }
 
 void MainWindow::refreshChatMembers()

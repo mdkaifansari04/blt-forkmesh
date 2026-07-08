@@ -3,6 +3,7 @@
 #include "ChatBackend.h"
 
 #include <QFrame>
+#include <QHash>
 #include <QMap>
 #include <QString>
 #include <QStringList>
@@ -19,6 +20,7 @@ class MessageRow : public QFrame
 public:
     // canModerate adds a Delete control on other people's messages (admins).
     MessageRow(const ChatMessage &message, const QString &nameColor,
+               const QHash<QString, MemberInfo> &mentionProfiles,
                bool canModerate = false, QWidget *parent = nullptr);
 
     QString messageId() const { return m_message.id; }
@@ -39,6 +41,8 @@ signals:
     void imageActivated(const QString &fileName, const QByteArray &data);
     // The avatar or sender name was clicked (to open that node's profile).
     void senderClicked(const QString &id, const QString &name);
+    // A highlighted @mention was clicked (to open that user's/profile's page).
+    void mentionClicked(const QString &id, const QString &name);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -49,6 +53,7 @@ private:
 
     ChatMessage m_message;
     QString m_nameColor;
+    QHash<QString, MemberInfo> m_mentionProfiles;
     QLabel *m_avatarLabel;
     QLabel *m_senderLabel = nullptr;
     QLabel *m_imageLabel = nullptr; // clickable inline image (opens full-size)
