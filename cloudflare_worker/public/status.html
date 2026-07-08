@@ -70,6 +70,11 @@
           <span>Errors (24h)</span>
           <strong id="stat-errors">—</strong>
         </div>
+        <div class="stat-card">
+          <span>DO duration aborts (24h)</span>
+          <strong id="stat-do-aborts">—</strong>
+          <small id="stat-do-aborts-detail"></small>
+        </div>
       </div>
 
       <div id="status-reasons" class="status-reasons" hidden></div>
@@ -325,6 +330,19 @@
             document.getElementById("stat-errors").textContent = fmtNum(
               current.errors24h,
             );
+            const doAborts = document.getElementById("stat-do-aborts");
+            if (doAborts) {
+              doAborts.textContent = fmtNum(current.doDurationAborts24h);
+            }
+            const doAbortsDetail = document.getElementById(
+              "stat-do-aborts-detail",
+            );
+            if (doAbortsDetail) {
+              doAbortsDetail.textContent =
+                (current.doDurationAborts24h || 0) > 0
+                  ? "Durable Object requests killed by Cloudflare's free-tier duration cap; answered with a retryable 503"
+                  : "";
+            }
             currentEl.hidden = false;
           }
 
