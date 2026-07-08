@@ -103,6 +103,18 @@ def _run_prefix(response, extra_env):
             encoding="utf-8",
         )
         curl.chmod(0o755)
+        # Reinstall exercises uninstall_forkmesh(), which may otherwise call the
+        # host's real pgrep/pkill and signal the ForkMesh app that is running
+        # this action. In this unit harness there is no daemon to stop.
+        pgrep = bindir / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        pgrep.chmod(0o755)
+        pkill = bindir / "pkill"
+        pkill.write_text(
+            "#!/bin/sh\necho 'unexpected pkill in installer unit test' >&2\nexit 99\n",
+            encoding="utf-8",
+        )
+        pkill.chmod(0o755)
         home = Path(tmp) / "home"
         home.mkdir()
         env = os.environ.copy()

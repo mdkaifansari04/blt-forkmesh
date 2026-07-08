@@ -21,6 +21,7 @@ ACTION_RUNNER_H = ROOT.parent / "qt_client" / "src" / "ActionRunner.h"
 CRASH_HANDLER_CPP = ROOT.parent / "qt_client" / "src" / "CrashHandler.cpp"
 CRASH_HANDLER_H = ROOT.parent / "qt_client" / "src" / "CrashHandler.h"
 HEADLESS_CONSOLE_CPP = ROOT.parent / "qt_client" / "src" / "HeadlessConsole.cpp"
+MAIN_CPP = ROOT.parent / "qt_client" / "src" / "main.cpp"
 MAIN_WINDOW_INTERNAL_H = ROOT.parent / "qt_client" / "src" / "MainWindowInternal.h"
 MAIN_WINDOW_CPP = ROOT.parent / "qt_client" / "src" / "MainWindow.cpp"
 MAIN_WINDOW_H = ROOT.parent / "qt_client" / "src" / "MainWindow.h"
@@ -37,6 +38,7 @@ ACTION_RUNNER_H_TEXT = ACTION_RUNNER_H.read_text(encoding="utf-8")
 CRASH_HANDLER_CPP_TEXT = CRASH_HANDLER_CPP.read_text(encoding="utf-8")
 CRASH_HANDLER_H_TEXT = CRASH_HANDLER_H.read_text(encoding="utf-8")
 HEADLESS_CONSOLE_CPP_TEXT = HEADLESS_CONSOLE_CPP.read_text(encoding="utf-8")
+MAIN_CPP_TEXT = MAIN_CPP.read_text(encoding="utf-8")
 MAIN_WINDOW_INTERNAL_H_TEXT = MAIN_WINDOW_INTERNAL_H.read_text(encoding="utf-8")
 MAIN_WINDOW_CPP_TEXT = MAIN_WINDOW_CPP.read_text(encoding="utf-8")
 MAIN_WINDOW_H_TEXT = MAIN_WINDOW_H.read_text(encoding="utf-8")
@@ -254,6 +256,9 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
     assert "pip install --user" not in DEPLOY_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
+    assert "cmake -S qt_client -B qt_client/build-ci" in CI_WORKFLOW_TEXT
+    assert "cmake --build qt_client/build-ci -j --target forkmesh-tests" in CI_WORKFLOW_TEXT
+    assert "./qt_client/build-ci/forkmesh-tests" in CI_WORKFLOW_TEXT
 
 
 def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
@@ -278,6 +283,8 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "Showing the final %1 KiB of suppressed process output" in ACTION_RUNNER_CPP_TEXT
     assert "recent process output tail:" in ACTION_RUNNER_CPP_TEXT
     assert "forkmesh::setCrashContext(crashContext())" in ACTION_RUNNER_CPP_TEXT
+    assert "forkmesh::setTerminationSignalSurvivalEnabled(true)" in ACTION_RUNNER_CPP_TEXT
+    assert "forkmesh::setTerminationSignalSurvivalEnabled(false)" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(m_process->readAllStandardOutput())" in ACTION_RUNNER_CPP_TEXT
     assert "emitProcessOutput(tail)" in ACTION_RUNNER_CPP_TEXT
     assert "emitSuppressedProcessOutputTail();" in ACTION_RUNNER_CPP_TEXT
@@ -297,13 +304,33 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "SIGXFSZ (file size limit exceeded)" in CRASH_HANDLER_CPP_TEXT
     assert "SIGTERM, SIGINT" in CRASH_HANDLER_CPP_TEXT
     assert "SIGKILL or SIGSTOP" in CRASH_HANDLER_CPP_TEXT
+    assert "std::atomic_bool g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
+    assert "bool isTerminationSignal(int sig)" in CRASH_HANDLER_CPP_TEXT
+    assert "g_surviveTerminationSignals.load(std::memory_order_relaxed)" in CRASH_HANDLER_CPP_TEXT
+    assert "termination signal survived" in CRASH_HANDLER_CPP_TEXT
+    assert "int g_mainLogFd = -1;" in CRASH_HANDLER_CPP_TEXT
+    assert "safeWriteMainLogSignalRecord" in CRASH_HANDLER_CPP_TEXT
+    assert "ForkMesh signal: " in CRASH_HANDLER_CPP_TEXT
+    assert "action workflow survived and will finish/fail normally" in CRASH_HANDLER_CPP_TEXT
+    assert "void safeWriteSignalInfo(const siginfo_t *info)" in CRASH_HANDLER_CPP_TEXT
+    assert "signal code: " in CRASH_HANDLER_CPP_TEXT
+    assert "sender pid: " in CRASH_HANDLER_CPP_TEXT
+    assert "sender uid: " in CRASH_HANDLER_CPP_TEXT
+    assert "sa.sa_flags = SA_ONSTACK | SA_SIGINFO;" in CRASH_HANDLER_CPP_TEXT
+    assert "sa.sa_flags = SA_ONSTACK | SA_RESETHAND" not in CRASH_HANDLER_CPP_TEXT
     assert "SIGINT/SIGTERM stay owned by CrashHandler" in HEADLESS_CONSOLE_CPP_TEXT
     assert "::sigaction(SIGTERM" not in HEADLESS_CONSOLE_CPP_TEXT
     assert "::sigaction(SIGINT" not in HEADLESS_CONSOLE_CPP_TEXT
     assert "appendDiagnosticToMainLog" in CRASH_HANDLER_CPP_TEXT
     assert "network_log.txt" in CRASH_HANDLER_CPP_TEXT
+    assert "void installCrashHandler(const QString &crashLogPath = QString()," in CRASH_HANDLER_H_TEXT
+    assert "const QString &mainLogPath = QString())" in CRASH_HANDLER_H_TEXT
     assert "void setCrashContext(const QString &context)" in CRASH_HANDLER_H_TEXT
+    assert "void setTerminationSignalSurvivalEnabled(bool enabled)" in CRASH_HANDLER_H_TEXT
     assert "void logDiagnosticEvent(const QString &context, const QString &details)" in CRASH_HANDLER_H_TEXT
+    assert "QString earlyMainLogPath()" in MAIN_CPP_TEXT
+    assert 'QStringLiteral("ForkMesh/ForkMesh/network_log.txt")' in MAIN_CPP_TEXT
+    assert "earlyMainLogPath());" in MAIN_CPP_TEXT
     assert "displaySafePlainLog" in MAIN_WINDOW_INTERNAL_H_TEXT
     assert "text.size() > 8192" in MAIN_WINDOW_INTERNAL_H_TEXT
     assert "m_actionLog->setLineWrapMode(QPlainTextEdit::NoWrap)" in MAIN_WINDOW_ACTIONS_CPP_TEXT

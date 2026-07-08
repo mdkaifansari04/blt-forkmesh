@@ -9,7 +9,8 @@
 // backtrace — to stderr (joining the main application log) and, if a crash-log
 // path was given, to that durable file too, then let the default disposition run
 // so the OS still cores/reports the crash as usual. The durable file is what the
-// opt-in telemetry upload (issue #354) sends on the next startup.
+// opt-in telemetry upload (issue #354) sends on the next startup. If mainLogPath
+// is given, a compact one-line signal breadcrumb is also appended there.
 //
 // The write path is async-signal-safe (raw write/backtrace_symbols_fd to a
 // pre-opened fd, no malloc/Qt), because a crashing process is in an undefined
@@ -23,12 +24,19 @@ namespace forkmesh {
 // the record is also appended to that file (opened here, ahead of any fault, so
 // the handler itself only does async-signal-safe writes); its parent directory
 // is created if needed.
-void installCrashHandler(const QString &crashLogPath = QString());
+void installCrashHandler(const QString &crashLogPath = QString(),
+                         const QString &mainLogPath = QString());
 
 // Best-effort context included in the next fatal crash record. Keep it compact:
 // it is copied into a fixed buffer so the signal handler can dump it without
 // allocating. Passing an empty string clears the context.
 void setCrashContext(const QString &context);
+
+// While a local action workflow is running, treat external termination-style
+// signals as diagnostics instead of letting them kill the UI. This keeps a
+// failed child process from taking the app down with it; outside that window,
+// SIGTERM/SIGINT/SIGHUP/SIGQUIT keep their normal terminating behavior.
+void setTerminationSignalSurvivalEnabled(bool enabled);
 
 // Write a non-fatal diagnostic block to stderr and the durable crash log. This
 // is for breadcrumbs that should survive if the UI dies immediately afterward.
