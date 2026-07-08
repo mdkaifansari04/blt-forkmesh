@@ -7084,6 +7084,10 @@ QWidget *MainWindow::buildChatSection()
     m_statusLine->hide();
 
     m_channelList = new QListWidget;
+    m_channelList->setMinimumHeight(0);
+    m_channelList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    m_channelList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_channelList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     auto *addChannelButton = new QPushButton("+ Add chat");
     addChannelButton->setObjectName("ghostButton");
     addChannelButton->setCursor(Qt::PointingHandCursor);
@@ -7091,17 +7095,35 @@ QWidget *MainWindow::buildChatSection()
     auto *dmsLabel = new QLabel("DIRECT MESSAGES");
     dmsLabel->setObjectName("sectionLabel");
     m_dmList = new QListWidget;
+    m_dmList->setMinimumHeight(0);
+    m_dmList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    m_dmList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_dmList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     // Direct messages still route to live peer ids. The right-side users column
     // shows all known people, including offline account-directory users.
+
+    auto *roomsScroll = new QScrollArea;
+    roomsScroll->setObjectName("messageView");
+    roomsScroll->setWidgetResizable(true);
+    roomsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    roomsScroll->setFrameShape(QFrame::NoFrame);
+    roomsScroll->setMinimumHeight(0);
+    roomsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    auto *roomsContainer = new QWidget;
+    auto *roomsLayout = new QVBoxLayout(roomsContainer);
+    roomsLayout->setContentsMargins(0, 0, 0, 0);
+    roomsLayout->setSpacing(6);
+    roomsLayout->addWidget(m_channelList, 2);
+    roomsLayout->addWidget(addChannelButton);
+    roomsLayout->addWidget(dmsLabel);
+    roomsLayout->addWidget(m_dmList, 1);
+    roomsLayout->addStretch();
+    roomsScroll->setWidget(roomsContainer);
 
     auto *sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setContentsMargins(14, 16, 14, 12);
     sidebarLayout->setSpacing(6);
-    sidebarLayout->addWidget(m_channelList, 2);
-    sidebarLayout->addWidget(addChannelButton);
-    sidebarLayout->addWidget(dmsLabel);
-    sidebarLayout->addWidget(m_dmList, 1);
-    sidebarLayout->addStretch();
+    sidebarLayout->addWidget(roomsScroll, 1);
 
     // Main column
     auto *header = new QWidget;
@@ -7163,6 +7185,8 @@ QWidget *MainWindow::buildChatSection()
     m_messageScroll->setObjectName("messageView");
     m_messageScroll->setWidgetResizable(true);
     m_messageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_messageScroll->setMinimumHeight(0);
+    m_messageScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     m_messageContainer = new QWidget;
     m_messageContainer->setObjectName("messageContainer");
     m_messageLayout = new QVBoxLayout(m_messageContainer);
@@ -7188,6 +7212,7 @@ QWidget *MainWindow::buildChatSection()
 
     auto *composer = new QWidget;
     composer->setObjectName("composerBar");
+    composer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *attachButton = new QPushButton(QString());
     attachButton->setObjectName("iconButton");
     attachButton->setCursor(Qt::PointingHandCursor);
@@ -7198,6 +7223,8 @@ QWidget *MainWindow::buildChatSection()
     m_messageInput->setObjectName("messageInput");
     m_messageInput->setPlaceholderText("Message #general");
     m_messageInput->setMaxLength(16000);
+    m_messageInput->setMinimumWidth(0);
+    m_messageInput->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     // Intercept Ctrl+V so a clipboard image (e.g. a screenshot) is shared as a
     // file attachment instead of being dropped by the text-only line edit.
     m_messageInput->installEventFilter(this);
@@ -7230,7 +7257,11 @@ QWidget *MainWindow::buildChatSection()
     m_typingLabel->setFixedHeight(20);
     m_typingLabel->setText(QString());
 
-    auto *mainColumn = new QVBoxLayout;
+    auto *mainColumnHost = new QWidget;
+    mainColumnHost->setObjectName("chatMainColumn");
+    mainColumnHost->setMinimumHeight(0);
+    mainColumnHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    auto *mainColumn = new QVBoxLayout(mainColumnHost);
     mainColumn->setContentsMargins(0, 0, 0, 0);
     mainColumn->setSpacing(0);
     mainColumn->addWidget(header);
@@ -7268,7 +7299,7 @@ QWidget *MainWindow::buildChatSection()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(sidebar);
-    layout->addLayout(mainColumn, 1);
+    layout->addWidget(mainColumnHost, 1);
     layout->addWidget(membersPanel);
 
     refreshChatMembers();
