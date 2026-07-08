@@ -964,15 +964,26 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *refreshButton = new QPushButton("Refresh");
     refreshButton->setObjectName("ghostButton");
     refreshButton->setCursor(Qt::PointingHandCursor);
+    refreshButton->setToolTip(QStringLiteral("Reload the local mirror nodes table"));
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::loadMirrorNodesPanel);
     addRefreshSpin(refreshButton);
+    auto *refreshNodesButton = new QPushButton("Refresh nodes");
+    refreshNodesButton->setObjectName("ghostButton");
+    refreshNodesButton->setCursor(Qt::PointingHandCursor);
+    refreshNodesButton->setToolTip(QStringLiteral(
+        "Ask online mirror nodes to immediately report their latest commit and "
+        "mirror metadata"));
+    setOcticon(refreshNodesButton, "broadcast", 16);
+    connect(refreshNodesButton, &QPushButton::clicked, this,
+            &MainWindow::requestMirrorNodesRefresh);
     headerRow->addWidget(heading);
     headerRow->addWidget(m_mirrorNodesSummary);
     headerRow->addStretch();
     headerRow->addWidget(m_mirrorNodesOnlineOnlyCheck);
     headerRow->addWidget(m_mirrorResetPinButton);
+    headerRow->addWidget(refreshNodesButton);
     headerRow->addWidget(refreshButton);
     layout->addLayout(headerRow);
 
@@ -1069,6 +1080,71 @@ QWidget *MainWindow::buildMirrorNodesTab()
             });
     layout->addWidget(m_mirrorNodesTable, 1);
     return page;
+}
+
+void MainWindow::requestMirrorNodesRefresh()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (!m_backend) {
+        flashMessage(QStringLiteral("Connect to the mainnode before refreshing nodes."),
+                     true);
+        return;
+    }
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString source =
+        repoSegment(repo.owner, QStringLiteral("owner")) + "/" + name;
+    const QString ownerName = catalogOwner(repo) + "/" + name;
+    if (source.section('/', 0, 0).isEmpty() || name.isEmpty())
+        return;
+
+    // Make our own response fresh too: rebuild the cached mirror adverts from disk
+    // and force an immediate hello before asking peers to do the same.
+    m_mirrorAdvertSig.clear();
+    refreshRepositoryList();
+    m_backend->advertiseMirrorsNow();
+    m_backend->requestMirrorRefresh(source, ownerName);
+    logSystem(QStringLiteral("Mirror nodes: requested live refresh for %1.")
+                  .arg(source));
+    flashMessage(QStringLiteral("Asked online mirror nodes to refresh."));
+    loadMirrorNodesPanel();
+}
+
+void MainWindow::onMirrorRefreshRequested(const QString &source,
+                                          const QString &requesterName)
+{
+    if (!m_backend)
+        return;
+    const QString requested = source.trimmed();
+    bool mirrorsRequestedSource = requested.isEmpty();
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+        const QString repoSource =
+            repoSegment(repo.owner, QStringLiteral("owner")) + "/" + name;
+        const QString ownerName = catalogOwner(repo) + "/" + name;
+        if (requested.compare(repoSource, Qt::CaseInsensitive) == 0 ||
+            requested.compare(ownerName, Qt::CaseInsensitive) == 0) {
+            mirrorsRequestedSource = true;
+            break;
+        }
+    }
+    if (!mirrorsRequestedSource)
+        return;
+
+    // The request is explicit, so bypass the advert-signature cache and the
+    // backend hello throttle: peers asked for the freshest commit/count/resource
+    // snapshot we can report right now.
+    m_mirrorAdvertSig.clear();
+    refreshRepositoryList();
+    m_backend->advertiseMirrorsNow();
+    logSystem(QStringLiteral("Mirror nodes: sent fresh mirror metadata%1.")
+                  .arg(requesterName.trimmed().isEmpty()
+                           ? QString()
+                           : QStringLiteral(" to %1").arg(requesterName.trimmed())));
 }
 
 void MainWindow::loadMirrorNodesPanel()

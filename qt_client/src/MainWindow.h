@@ -1920,6 +1920,9 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    void requestMirrorNodesRefresh();
+    void onMirrorRefreshRequested(const QString &source,
+                                  const QString &requesterName);
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,

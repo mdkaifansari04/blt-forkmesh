@@ -707,8 +707,8 @@ QList<QJsonObject> ServerNode::networkDiagnostics() const
     row.insert(QStringLiteral("data"),
                QStringLiteral("Encrypted room frames: chat/edit/delete/reaction/admin-delete "
                               "are durable history; hello/presence/typing/avatar/history/"
-                              "mirror/cove frames are ephemeral; direct/private frames are "
-                              "targeted."));
+                              "mirror/mirror-refresh/cove frames are ephemeral; direct/"
+                              "private frames are targeted."));
     return {row};
 }
 
@@ -907,6 +907,31 @@ void ServerNode::notifyMirrorUpdated(const QString &ownerName)
     // the relay won't retain or replay it.
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
+}
+
+void ServerNode::requestMirrorRefresh(const QString &source,
+                                      const QString &ownerName)
+{
+    if (!m_wsReady)
+        return;
+    const QString cleanSource = source.trimmed().left(kMaxRepoNameChars);
+    const QString cleanOwnerName = ownerName.trimmed().left(kMaxRepoNameChars);
+    if (cleanSource.isEmpty() && cleanOwnerName.isEmpty())
+        return;
+    QJsonObject message = makeMessage("mirror-refresh");
+    if (!cleanSource.isEmpty())
+        message.insert("source", cleanSource);
+    if (!cleanOwnerName.isEmpty())
+        message.insert("repo", cleanOwnerName);
+    // Pre-mark our own id so the relay's echo back to us doesn't make this node
+    // rebuild and reply to its own request.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
+void ServerNode::advertiseMirrorsNow()
+{
+    sendHello(true, false);
 }
 
 void ServerNode::notifyCoveOpened(const QString &creatorKey, const QString &coveId,
@@ -1310,6 +1335,26 @@ void ServerNode::handlePlain(const QJsonObject &message)
         const QString repo = message.value("repo").toString().left(160);
         if (!repo.isEmpty())
             emit mirrorUpdated(repo, sender);
+    } else if (type == "mirror-refresh") {
+        if (!message.value("to").toString().isEmpty() &&
+            message.value("to").toString() != m_nodeId)
+            return;
+        const QString source =
+            message.value("source").toString().left(kMaxRepoNameChars);
+        const QString repo =
+            message.value("repo").toString().left(kMaxRepoNameChars);
+        bool relevant = source.isEmpty() && repo.isEmpty();
+        for (const MirrorAdvert &m : std::as_const(m_mirroredRepos)) {
+            if ((!source.isEmpty() &&
+                 m.source.compare(source, Qt::CaseInsensitive) == 0) ||
+                (!repo.isEmpty() &&
+                 m.ownerName.compare(repo, Qt::CaseInsensitive) == 0)) {
+                relevant = true;
+                break;
+            }
+        }
+        if (relevant)
+            emit mirrorRefreshRequested(source.isEmpty() ? repo : source, sender);
     } else if (type == "cove-open") {
         const QString creator = message.value("creator").toString().left(120);
         if (!creator.isEmpty())

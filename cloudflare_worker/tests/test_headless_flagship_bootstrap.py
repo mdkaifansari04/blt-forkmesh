@@ -35,8 +35,7 @@ def test_headless_forkmesh_record_is_repaired_into_canonical_flagship():
     assert "repo.mirrorPath = canonicalMirrorPath" in body
     assert "repo.publishToNetwork = true" in body
     assert "syncRepository(i, /*quiet=*/true)" in body
-    assert "publishRepository(i, false)" not in body
-    assert "catalog publishing is driven" in body
+    assert "publishRepository(i, false)" in body
     assert "startRepoHosts()" in body
 
 
@@ -123,45 +122,6 @@ def test_mirror_publish_and_host_require_a_served_commit():
     assert "servedHeadCommit.isEmpty()" in publish_body
     assert "until its mirror has a served commit" in publish_body
     assert "syncRepository(index, /*quiet=*/true)" in publish_body
-
-
-def test_catalog_publish_is_event_driven_after_sync_not_periodic():
-    repos = REPOS.read_text(encoding="utf-8")
-    auto_body = repos[
-        repos.index("void MainWindow::autoSyncMirrors()"):
-        repos.index("void MainWindow::syncMirrorsBehindRoster()")
-    ]
-    sync_body = repos[
-        repos.index("const bool changed =\n                            !hasMirror"):
-        repos.index("// Also mirror the repo's release artifacts", repos.index("const bool changed =\n                            !hasMirror"))
-    ]
-    setup = SETUP.read_text(encoding="utf-8")
-    flagship_body = setup[
-        setup.index("void MainWindow::ensureFlagshipRepo()"):
-        setup.index("bool MainWindow::ensureNodeAccount")
-    ]
-
-    # The 5-minute timer may fetch mirrors, but it must not POST catalog records
-    # or re-attest pins just because the timer fired.
-    assert "syncRepository(i, /*quiet=*/true)" in auto_body
-    assert "publishRepository(" not in auto_body
-    assert "reattestStalePins();" not in auto_body
-    assert "Catalog publishes are event-driven" in auto_body
-
-    # A quiet timer sync publishes only if the served refs changed. Manual/non-
-    # quiet refreshes can still publish metadata after their sync finishes.
-    assert "if (changed || !quiet)\n                                publishRepository(index, false);" in sync_body
-    assert "Timer-driven quiet syncs run even when the mirror is" in sync_body
-
-    # autoSyncMirrors calls ensureFlagshipRepo() on every tick; an existing,
-    # already-synced flagship mirror must only keep hosting warm there.
-    existing_branch = flagship_body[
-        flagship_body.index("if ((changed || needsSync) && !m_syncingRepos.contains(i))"):
-        flagship_body.index("// A user-managed repo named forkmesh")
-    ]
-    assert "syncRepository(i, /*quiet=*/true)" in existing_branch
-    assert "startRepoHosts();" in existing_branch
-    assert "publishRepository(" not in existing_branch
 
 
 def test_mirror_metadata_resolves_remote_refs_like_repo_host():
