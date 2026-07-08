@@ -1,0 +1,36 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783475511275,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "respond with the issue number",
+            "id": "forkbot-1783475511275",
+            "sig": "",
+            "title": "respond with the issue number",
+            "ts": 1783475511275,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 406,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "respond with the issue number",
+    "updatedAt": 1783475511275,
+    "votes": 0
+}
