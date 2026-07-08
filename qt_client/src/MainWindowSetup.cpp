@@ -2025,7 +2025,9 @@ void MainWindow::ensureFlagshipRepo()
                 logSystem("Mirroring forkmesh/forkmesh from " + repo.cloneUrl);
                 syncRepository(i, /*quiet=*/true);
             } else if (repo.publishToNetwork && hasMirror) {
-                publishRepository(i, false);
+                // This path runs from the periodic mirror bootstrap retry too.
+                // Hosting is fine to keep warm, but catalog publishing is driven
+                // by syncRepository after served refs move.
                 startRepoHosts();
             }
         }

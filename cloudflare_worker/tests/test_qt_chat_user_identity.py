@@ -8,6 +8,8 @@ SETUP = QT_SRC / "MainWindowSetup.cpp"
 SETTINGS = QT_SRC / "MainWindowSettings.cpp"
 REPOS = QT_SRC / "MainWindowRepos.cpp"
 MESSAGES = QT_SRC / "MainWindowMessages.cpp"
+MESSAGE_ROW_HEADER = QT_SRC / "MessageRow.h"
+MESSAGE_ROW = QT_SRC / "MessageRow.cpp"
 
 
 def _body(source: str, start: str, end: str) -> str:
@@ -96,3 +98,43 @@ def test_chat_member_column_is_user_directory_not_online_nodes():
     assert "if (!online)" not in roster_body
     assert "USERS \\xE2\\x80\\x94 %1 \\xC2\\xB7 %2 online" in roster_body
     assert "chatUserDisplayName(member)" in roster_body
+
+
+def test_chat_mentions_highlight_and_open_user_profiles():
+    header = MESSAGE_ROW_HEADER.read_text(encoding="utf-8")
+    row = MESSAGE_ROW.read_text(encoding="utf-8")
+    messages = MESSAGES.read_text(encoding="utf-8")
+    add_row_body = _body(
+        messages,
+        "MessageRow *MainWindow::addMessageRow",
+        "void MainWindow::renderConversationRows",
+    )
+    directory_body = _body(
+        messages,
+        "void MainWindow::mergeChatUserDirectory",
+        "void MainWindow::refreshChatMembers",
+    )
+
+    assert "const QHash<QString, MemberInfo> &mentionProfiles" in header
+    assert "void mentionClicked(const QString &id, const QString &name);" in header
+    assert "renderMentionedText(message.text, m_mentionProfiles)" in row
+    assert "forkmesh-mention:" in row
+    assert "QLabel::linkHovered" in row
+    assert "QToolTip::showText" in row
+    assert "QLabel::linkActivated" in row
+
+    # Directory users carry the canonical /@name profile target; live roster
+    # entries are a fallback when the directory has not seen that user yet.
+    assert "std::as_const(m_chatDirectoryUsers)" in add_row_body
+    assert "std::as_const(m_homeRoster)" in add_row_body
+    assert add_row_body.index("std::as_const(m_chatDirectoryUsers)") < add_row_body.index(
+        "std::as_const(m_homeRoster)"
+    )
+    assert "connect(row, &MessageRow::mentionClicked" in add_row_body
+    assert "chatMentionProfileUrl" in add_row_body
+    assert "QDesktopServices::openUrl(url)" in add_row_body
+    assert 'url.setPath(QStringLiteral("/@")' in messages
+
+    # Existing visible rows are rerendered after the async user directory lands,
+    # otherwise old messages would stay plain text until the next full refresh.
+    assert "renderConversationRows();" in directory_body

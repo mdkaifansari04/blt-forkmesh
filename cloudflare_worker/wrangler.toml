@@ -67,6 +67,7 @@ run_worker_first = [
 [vars]
 NODE_NAME = "forkmesh-mainnode"
 NODE_SOLANA_ADDRESS = ""
+FORKBOT_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct"
 # Relay federation. Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
 # that is what makes a deployment "the main relay": it custodies federated signup
 # deposits and disburses to every node on every approved relay.
@@ -108,6 +109,13 @@ NODE_SOLANA_ADDRESS = ""
 
 # Durable Objects are used only for transient relaying now: the encrypted chat
 # rooms and the live file/git tunnel. All persistent data lives in D1 below.
+#
+# ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
+# a crisp issue title/body. The Worker falls back to deterministic parsing when
+# the binding is absent in local/dev contexts.
+[ai]
+binding = "AI"
+
 [[durable_objects.bindings]]
 name = "FORKMESH_MAINNODE_ROOM"
 class_name = "ForkMeshRoom"

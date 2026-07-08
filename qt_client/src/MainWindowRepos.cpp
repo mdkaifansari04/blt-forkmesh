@@ -2991,12 +2991,9 @@ void MainWindow::autoSyncMirrors()
             syncRepository(i, /*quiet=*/true);
     }
 
-    // While we're online, keep every repo we're the source of truth for pinned to
-    // the refs it actually serves. Runs on the same cadence as the mirror sync so
-    // a source repo whose pin drifted (and whose detail the owner never opened)
-    // heals on its own instead of leaving clones rejected with a failing integrity
-    // pin until a manual reset.
-    reattestStalePins();
+    // Catalog publishes are event-driven: syncRepository publishes after a
+    // mirror's served refs actually move. Do not re-attest/publish from the
+    // periodic mirror timer when nothing changed.
 }
 
 void MainWindow::syncMirrorsBehindRoster()
@@ -3557,7 +3554,12 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                                             : " (already up to date)"));
                         }
                         if (!stillPreview && repo.publishToNetwork) {
-                            publishRepository(index, false);
+                            // Timer-driven quiet syncs run even when the mirror is
+                            // already current. Publish the catalog only after the
+                            // served refs actually changed; manual/non-quiet
+                            // refreshes still publish metadata after sync finishes.
+                            if (changed || !quiet)
+                                publishRepository(index, false);
                             // Serve this repo's files live to the web now that a
                             // mirror exists (pure live tunnel, nothing uploaded).
                             startRepoHosts();

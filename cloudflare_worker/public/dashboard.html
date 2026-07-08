@@ -217,6 +217,59 @@
         line-height: 1.5;
       }
 
+      .chat-mention {
+        display: inline-block;
+        border-radius: 5px;
+        background: rgba(88, 166, 255, 0.12);
+        color: var(--dashboard-link);
+        font-weight: 700;
+        padding: 0 4px;
+        text-decoration: none;
+      }
+
+      .chat-mention:hover,
+      .chat-mention:focus {
+        background: rgba(88, 166, 255, 0.2);
+        color: var(--dashboard-link-hover);
+        outline: none;
+      }
+
+      .chat-mention-card {
+        position: absolute;
+        z-index: 1000;
+        display: grid;
+        width: min(260px, calc(100vw - 24px));
+        gap: 5px;
+        padding: 10px 12px;
+        border: 1px solid rgb(var(--dashboard-border-rgb));
+        border-radius: 8px;
+        background: rgb(var(--dashboard-popover-rgb));
+        box-shadow: 0 16px 45px rgb(0 0 0 / 0.32);
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+        text-align: left;
+        text-decoration: none;
+      }
+
+      .chat-mention-card[hidden] {
+        display: none;
+      }
+
+      .chat-mention-card strong {
+        font-size: 13px;
+        color: rgb(var(--dashboard-popover-foreground-rgb));
+      }
+
+      .chat-mention-card span {
+        color: rgb(var(--dashboard-muted-foreground-rgb));
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .chat-mention-card small {
+        color: var(--dashboard-link);
+        font-size: 11px;
+      }
+
       .view {
         display: none;
       }
