@@ -4,7 +4,7 @@ number: 11
 title: feat(flutter): add mainnode notifications
 base: main
 head: pr/flutter-mainnode-notifications
-status: open
+status: merged
 ts: 1783356130946
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds the mainnode notification inbox, notification-to-repo deep links, exact iss
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-
