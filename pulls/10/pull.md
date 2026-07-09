@@ -4,7 +4,7 @@ number: 10
 title: feat(flutter): add signed collaboration core
 base: main
 head: pr/flutter-signed-collaboration-core
-status: open
+status: merged
 ts: 1783356130916
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds signed issue/PR detail timelines, issue metadata composer support, pull rev
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-
