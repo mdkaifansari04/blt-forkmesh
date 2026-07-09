@@ -22,7 +22,7 @@ index 00000000..803867a6
 +CREATE INDEX IF NOT EXISTS idx_profile_follows_follower
 +    ON profile_follows(follower_bi, created_at);
 diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index 40cbf636..d7cfe7a5 100644
+index dd2ae0fa..0e162297 100644
 --- a/cloudflare_worker/src/entry.py
 +++ b/cloudflare_worker/src/entry.py
 @@ -1,7 +1,6 @@
@@ -33,7 +33,7 @@ index 40cbf636..d7cfe7a5 100644
  import hmac
  import io
  import json
-@@ -93,6 +92,10 @@ FEEDBACK_MAX_USER_AGENT = 300
+@@ -94,6 +93,10 @@ FEEDBACK_MAX_USER_AGENT = 300
  FEEDBACK_SOURCES = frozenset({"docs"})
  FEEDBACK_VOTES = frozenset({"like", "dislike"})
  MAX_PROFILE_BIO = 500
@@ -44,7 +44,7 @@ index 40cbf636..d7cfe7a5 100644
  MAX_PROFILE_LINKS = 4
  MAX_PROFILE_LINK_LABEL = 60
  MAX_PROFILE_LINK_URL = 300
-@@ -135,11 +138,6 @@ FORKBOT_DEFAULT_OWNER = "forkmesh"
+@@ -136,11 +139,6 @@ FORKBOT_DEFAULT_OWNER = "forkmesh"
  FORKBOT_DEFAULT_REPO = "forkmesh"
  FORKBOT_MAX_COMMAND = 4000
  FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
@@ -56,7 +56,7 @@ index 40cbf636..d7cfe7a5 100644
  # Notification inbox: Worker indexes public-safe notification state while the
  # canonical issue/PR/discussion/release records remain in signed repo files or
  # pending inboxes. Stored rows are encrypted and bounded per recipient.
-@@ -232,6 +230,7 @@ from urls import (  # noqa: E402
+@@ -233,6 +231,7 @@ from urls import (  # noqa: E402
      GIT_PACK_RE,
      GIT_RECEIVE_RE,
      ACCOUNTS_RE,
@@ -64,39 +64,7 @@ index 40cbf636..d7cfe7a5 100644
  )
  
  # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
-@@ -648,31 +647,6 @@ async def repo_live_host_count(env, owner, repo):
-         return None
- 
- 
--async def notify_repo_host(env, owner, repo, topic):
--    # Push a minimal "something changed" event frame to the repo's connected
--    # desktop host(s) over the existing tunnel WebSocket. The frame carries no
--    # payload — just a topic — and the node responds with one signed GET
--    # /api/sync, which replaces its old fast polling of the per-topic inbox
--    # endpoints. Best-effort: an offline host simply picks the change up from
--    # its slow fallback sync, so a failure here must never fail the write.
--    owner = safe_segment(owner)
--    repo = safe_segment(repo)
--    if not owner or not repo:
--        return
--    try:
--        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
--        host_object = env.FORKMESH_HOST.get(host_id)
--        await asyncio.wait_for(
--            host_object.fetch(
--                f"https://forkmesh.internal/api/repo/{owner}/{repo}/notify"
--                f"?topic={topic}"
--            ),
--            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
--        )
--    except Exception:
--        pass
--
--
- async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
-                                         presence, now):
-     # host_presence is an eventually-refreshed D1 cache. For routing and the
-@@ -981,33 +955,24 @@ async def record_online_sample(env):
+@@ -982,33 +981,24 @@ async def record_online_sample(env):
          "ON CONFLICT(hour_ts) DO UPDATE SET node_minutes = node_minutes + ?",
          hour_ts, online, online,
      )
@@ -145,7 +113,7 @@ index 40cbf636..d7cfe7a5 100644
  
  
  async def online_history(env):
-@@ -1120,10 +1085,6 @@ STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
+@@ -1121,10 +1111,6 @@ STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
  STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
  STATUS_HOUR_MS = 60 * 60 * 1000
  STATUS_DAY_MS = 24 * STATUS_HOUR_MS
@@ -156,7 +124,7 @@ index 40cbf636..d7cfe7a5 100644
  
  
  def _status_expected_checks_for_hour(hour_ts, now):
-@@ -1177,31 +1138,6 @@ def _status_effective_hour(hour_ts, now, row):
+@@ -1178,31 +1164,6 @@ def _status_effective_hour(hour_ts, now, row):
      }
  
  
@@ -188,7 +156,7 @@ index 40cbf636..d7cfe7a5 100644
  async def record_status_sample(env):
      # Called once a minute by the scheduled (cron) handler. Best-effort per
      # system so one failing check can't blank the rest of the page.
-@@ -1209,7 +1145,6 @@ async def record_status_sample(env):
+@@ -1210,7 +1171,6 @@ async def record_status_sample(env):
      now = int(Date.now())
      day_ts = (now // 86400000) * 86400000
      hour_ts = (now // 3600000) * 3600000
@@ -196,7 +164,7 @@ index 40cbf636..d7cfe7a5 100644
      ok = {}
      reason = {}
  
-@@ -1242,21 +1177,6 @@ async def record_status_sample(env):
+@@ -1243,21 +1203,6 @@ async def record_status_sample(env):
          hit_count = {"website": 0, "api": 0, "realtime": 0}
          for row in rows:
              path = str(row.get("path") or "")
@@ -218,7 +186,7 @@ index 40cbf636..d7cfe7a5 100644
              if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
                      GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
                  bucket = "realtime"
-@@ -1285,69 +1205,36 @@ async def record_status_sample(env):
+@@ -1286,69 +1231,36 @@ async def record_status_sample(env):
          # fabricate a false incident from it.
          ok["website"] = ok["api"] = ok["realtime"] = True
  
@@ -309,27 +277,7 @@ index 40cbf636..d7cfe7a5 100644
  
  
  async def status_history(env):
-@@ -1382,19 +1269,6 @@ async def status_history(env):
-             row.get("reason") or None,
-         )
- 
--    current_minute = (now // 60000) * 60000
--    minute_start = current_minute - (STATUS_MINUTES_SHOWN - 1) * 60000
--    minute_rows = await d1_all(
--        env,
--        "SELECT minute_ts, system, ok, reason FROM system_status_minute "
--        "WHERE minute_ts >= ?",
--        minute_start,
--    )
--    by_system_minute = {}
--    for row in minute_rows:
--        system_id = str(row.get("system") or "")
--        by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
--
-     systems = []
-     for system_id, label in STATUS_SYSTEMS:
-         days = []
-@@ -1472,18 +1346,10 @@ async def status_history(env):
+@@ -1475,18 +1387,10 @@ async def status_history(env):
              )
              if total_24h_expected else None
          )
@@ -349,7 +297,7 @@ index 40cbf636..d7cfe7a5 100644
              "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
              "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
          })
-@@ -2275,60 +2141,38 @@ _data_key_cache = {"secret": None, "key": None}
+@@ -2283,60 +2187,38 @@ _data_key_cache = {"secret": None, "key": None}
  _hmac_key_cache = {"secret": None, "key": None}
  
  
@@ -433,7 +381,7 @@ index 40cbf636..d7cfe7a5 100644
      _schema_ready = True
  
  
-@@ -2667,10 +2511,11 @@ async def catalog_handler(env, request):
+@@ -2675,10 +2557,11 @@ async def catalog_handler(env, request):
              rec["cloneOnline"] = repo_clone_online(rec, served)
          repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
          payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
@@ -449,7 +397,7 @@ index 40cbf636..d7cfe7a5 100644
              return json_response(
                  payload,
                  cache_control="no-store, max-age=0, must-revalidate")
-@@ -3627,6 +3472,12 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
+@@ -3635,6 +3518,12 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
      await d1_run(
          env, "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
          new_name_bi, name_bi)
@@ -462,7 +410,7 @@ index 40cbf636..d7cfe7a5 100644
      await d1_run(
          env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
          new_name_bi, name_bi)
-@@ -3693,6 +3544,7 @@ async def _delete_account_namespace(env, name_bi, rec):
+@@ -3701,6 +3590,7 @@ async def _delete_account_namespace(env, name_bi, rec):
      await d1_run(env, "DELETE FROM account_presence WHERE name_bi=?", name_bi)
      await d1_run(env, "DELETE FROM pending_verifications WHERE name_bi=?", name_bi)
      await d1_run(env, "DELETE FROM notifications WHERE recipient_bi=?", name_bi)
@@ -470,7 +418,7 @@ index 40cbf636..d7cfe7a5 100644
      await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", name_bi)
      if email:
          email_bi = await blind_index(env, email)
-@@ -3709,6 +3561,76 @@ def _owned_nodes(rec):
+@@ -3717,6 +3607,76 @@ def _owned_nodes(rec):
      return [n for n in nodes if isinstance(n, str) and n]
  
  
@@ -547,7 +495,7 @@ index 40cbf636..d7cfe7a5 100644
  def _profile_txt_value(name):
      return PROFILE_TXT_PREFIX + clean_string(name, MAX_NODE_NAME).lower()
  
-@@ -3781,9 +3703,21 @@ def _profile_links_public(rec):
+@@ -3789,9 +3749,21 @@ def _profile_links_public(rec):
  
  def _account_profile_fields(rec):
      bio = clean_string(rec.get("profile_bio", ""), MAX_PROFILE_BIO).strip()
@@ -569,7 +517,7 @@ index 40cbf636..d7cfe7a5 100644
          "profilePrivate": bool(rec.get("profile_private")),
          "mastodon": mastodon,
          "mastodonUrl": _mastodon_url(mastodon),
-@@ -3866,6 +3800,7 @@ async def _account_public_payload(env, rec):
+@@ -3874,6 +3846,7 @@ async def _account_public_payload(env, rec):
      solana = (rec.get("solana") or "").strip()
      has_payout = bool(solana and SOLANA_RE.match(solana))
      is_admin = await _is_admin(env, name)
@@ -577,7 +525,7 @@ index 40cbf636..d7cfe7a5 100644
      payload = {
          "ok": True,
          "nodeName": name,
-@@ -3876,6 +3811,7 @@ async def _account_public_payload(env, rec):
+@@ -3884,6 +3857,7 @@ async def _account_public_payload(env, rec):
          "isAdmin": is_admin,
          "solana": solana if has_payout else "",
          "hasPayoutAddress": has_payout,
@@ -585,7 +533,7 @@ index 40cbf636..d7cfe7a5 100644
          "avatarPng": rec.get("avatar_png", ""),
          "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
          "kind": _account_kind(rec),
-@@ -3883,7 +3819,9 @@ async def _account_public_payload(env, rec):
+@@ -3891,7 +3865,9 @@ async def _account_public_payload(env, rec):
          "nodes": _owned_nodes(rec),
          "emailNotifications": rec.get("email_notifications") is not False,
          "notificationPreferences": notification_email_preferences(rec),
@@ -595,7 +543,7 @@ index 40cbf636..d7cfe7a5 100644
      payload.update(_account_profile_fields(rec))
      if is_admin:
          admin_path = _admin_path(env)
-@@ -3944,14 +3882,20 @@ async def _account_users_directory(env, request):
+@@ -3952,14 +3928,20 @@ async def _account_users_directory(env, request):
      return json_response({"ok": True, "users": out})
  
  
@@ -624,7 +572,7 @@ index 40cbf636..d7cfe7a5 100644
      initial = (name[:1] or "F").upper()
      link_rows = []
      for link in links:
-@@ -3979,6 +3923,16 @@ def _public_profile_html(rec, host):
+@@ -3987,6 +3969,16 @@ def _public_profile_html(rec, host):
          if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
      )
      canonical = "https://" + host + "/@" + quote(name)
@@ -641,7 +589,7 @@ index 40cbf636..d7cfe7a5 100644
      return """<!doctype html>
  <html lang="en">
  <head>
-@@ -3990,13 +3944,18 @@ def _public_profile_html(rec, host):
+@@ -3998,13 +3990,18 @@ def _public_profile_html(rec, host):
      :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
      @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
      body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -661,7 +609,7 @@ index 40cbf636..d7cfe7a5 100644
      .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
      .links { display:grid; gap:10px; margin-top:24px; }
      .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-@@ -4005,6 +3964,10 @@ def _public_profile_html(rec, host):
+@@ -4013,6 +4010,10 @@ def _public_profile_html(rec, host):
      .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
      .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
      .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
@@ -672,7 +620,7 @@ index 40cbf636..d7cfe7a5 100644
      footer { margin-top:24px; color:var(--muted); font-size:12px; }
      footer a { color:var(--muted); }
    </style>
-@@ -4012,19 +3975,75 @@ def _public_profile_html(rec, host):
+@@ -4020,19 +4021,75 @@ def _public_profile_html(rec, host):
  <body>
    <main>
      <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
@@ -748,7 +696,7 @@ index 40cbf636..d7cfe7a5 100644
  async def public_profile_handler(env, request, username):
      name = clean_string(username, MAX_NODE_NAME).lower()
      if not valid_node_name(name):
-@@ -4034,8 +4053,9 @@ async def public_profile_handler(env, request, username):
+@@ -4042,8 +4099,9 @@ async def public_profile_handler(env, request, username):
              _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
          return json_response({"error": "not_found"}, status=404)
      host = clean_string(urlparse(request.url).netloc, 253)
@@ -759,7 +707,7 @@ index 40cbf636..d7cfe7a5 100644
          status=200,
          headers={
              "content-type": "text/html; charset=utf-8",
-@@ -4088,6 +4108,57 @@ def _clear_donation_address(rec):
+@@ -4096,6 +4154,57 @@ def _clear_donation_address(rec):
          rec["status"] = "reserved"
  
  
@@ -817,7 +765,7 @@ index 40cbf636..d7cfe7a5 100644
  # A bare reservation only holds the name while a signup is genuinely in flight:
  # the holder has an open, unpaid, unexpired donation request. Once that lapses
  # (or never existed) the reservation is abandoned and the name is free again.
-@@ -4149,6 +4220,73 @@ async def _account_signup(env, request):
+@@ -4157,6 +4266,73 @@ async def _account_signup(env, request):
      return json_response(await _account_public_payload(env, rec), status=201)
  
  
@@ -891,7 +839,7 @@ index 40cbf636..d7cfe7a5 100644
  # Step 1 of the funnel: claim a public node name. The desktop client signs the
  # claim with its Ed25519 identity (binding the name to a key); the website may
  # reserve without a key. A name is only "taken" once it is finalized/paid.
-@@ -4681,29 +4819,39 @@ async def _account_profile(env, request):
+@@ -4689,29 +4865,39 @@ async def _account_profile(env, request):
          data = await request.json()
      except Exception:
          return json_response({"error": "invalid_json"}, status=400)
@@ -954,7 +902,7 @@ index 40cbf636..d7cfe7a5 100644
  
      if data.get("deleteAccount") or data.get("disableAccount"):
          await _delete_account_namespace(env, name_bi, rec)
-@@ -4746,6 +4894,53 @@ async def _account_profile(env, request):
+@@ -4754,6 +4940,53 @@ async def _account_profile(env, request):
                  rec.pop("profile_bio", None)
              changed = True
  
@@ -1008,7 +956,7 @@ index 40cbf636..d7cfe7a5 100644
      if "profilePrivate" in data:
          profile_private = bool(data.get("profilePrivate"))
          if bool(rec.get("profile_private")) != profile_private:
-@@ -5471,7 +5666,10 @@ async def _account_login(env, request):
+@@ -5479,7 +5712,10 @@ async def _account_login(env, request):
          enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
          desktop_capable = enabled and "owner_sign" in caps
          device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
@@ -1020,7 +968,7 @@ index 40cbf636..d7cfe7a5 100644
          payload = _with_session_capabilities(
              payload, session_kind="desktop_node", device_kind=device_kind,
              key_matched=True, desktop_capable=desktop_capable, capabilities=caps)
-@@ -5482,7 +5680,10 @@ async def _account_login(env, request):
+@@ -5490,7 +5726,10 @@ async def _account_login(env, request):
                             else _clear_admin_session_cookie()},
          )
  
@@ -1032,7 +980,7 @@ index 40cbf636..d7cfe7a5 100644
      payload = _with_session_capabilities(
          payload, session_kind="account", device_kind="web_or_mobile",
          key_matched=False, desktop_capable=False)
-@@ -5494,95 +5695,59 @@ async def _account_login(env, request):
+@@ -5502,95 +5741,59 @@ async def _account_login(env, request):
      )
  
  
@@ -1157,7 +1105,7 @@ index 40cbf636..d7cfe7a5 100644
  def _random_bytes(n):
      return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
  
-@@ -7588,8 +7753,6 @@ async def accounts_handler(env, request):
+@@ -7596,8 +7799,6 @@ async def accounts_handler(env, request):
          return await _account_ownership_transfer_confirm(env, request)
      if url.path == "/api/accounts/login" and method == "POST":
          return await _account_login(env, request)
@@ -1166,7 +1114,7 @@ index 40cbf636..d7cfe7a5 100644
      if url.path == "/api/accounts/logout" and method == "POST":
          return await _account_logout(env, request)
      if url.path == "/api/accounts/rotate" and method == "POST":
-@@ -7612,6 +7775,9 @@ async def accounts_handler(env, request):
+@@ -7620,6 +7821,9 @@ async def accounts_handler(env, request):
          return await _account_link_grant(env, request)
      if url.path == "/api/accounts/users" and method == "GET":
          return await _account_users_directory(env, request)
@@ -1176,7 +1124,7 @@ index 40cbf636..d7cfe7a5 100644
      match = ACCOUNTS_RE.match(url.path)
      if match and method == "GET":
          name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-@@ -7644,6 +7810,8 @@ async def accounts_handler(env, request):
+@@ -7652,6 +7856,8 @@ async def accounts_handler(env, request):
                     "kind": _account_kind(rec),
                     "owner": rec.get("owner", ""),
                     "nodes": _owned_nodes(rec)}
@@ -1185,7 +1133,7 @@ index 40cbf636..d7cfe7a5 100644
          payload = {**payload, **_account_profile_fields(rec)}
          return json_response(payload)
      return json_response({"error": "not_found"}, status=404)
-@@ -8356,25 +8524,13 @@ def _forkbot_extract_mention_command(message):
+@@ -8409,25 +8615,13 @@ def _forkbot_extract_mention_command(message):
  
  
  def _forkbot_parse_issue_command(command):
@@ -1214,7 +1162,7 @@ index 40cbf636..d7cfe7a5 100644
          r"(.+)$",
          text,
      )
-@@ -8386,37 +8542,6 @@ def _forkbot_parse_issue_command(command):
+@@ -8439,37 +8633,6 @@ def _forkbot_parse_issue_command(command):
      return {"description": description}
  
  
@@ -1252,7 +1200,7 @@ index 40cbf636..d7cfe7a5 100644
  def _forkbot_issue_title(description):
      text = re.sub(r"\s+", " ", clean_string(description, 240)).strip(" .:-")
      if not text:
-@@ -8469,223 +8594,52 @@ def _forkbot_clean_ai_issue_fields(parsed):
+@@ -8522,223 +8685,52 @@ def _forkbot_clean_ai_issue_fields(parsed):
      return {"title": _forkbot_issue_title(title), "body": body}
  
  
@@ -1504,7 +1452,7 @@ index 40cbf636..d7cfe7a5 100644
  
  
  async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
-@@ -8701,10 +8655,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+@@ -8754,10 +8746,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
  
      now = int(Date.now())
      actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
@@ -1515,7 +1463,7 @@ index 40cbf636..d7cfe7a5 100644
      event = {
          "type": "open",
          "id": "forkbot-%d" % now,
-@@ -8717,7 +8667,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+@@ -8770,7 +8758,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
          "sig": "",
      }
      item = {
@@ -1524,7 +1472,7 @@ index 40cbf636..d7cfe7a5 100644
          "titleIfNew": event["title"],
          "event": event,
          "meta": {
-@@ -8733,7 +8683,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+@@ -8786,7 +8774,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
          "submittedAt": now,
          "source": "forkbot",
          "requestedBy": actor,
@@ -1532,7 +1480,7 @@ index 40cbf636..d7cfe7a5 100644
      }
      await d1_run(
          env,
-@@ -8766,44 +8715,23 @@ async def forkbot_chat_handler(env, request):
+@@ -8820,44 +8807,23 @@ async def forkbot_chat_handler(env, request):
      command = _forkbot_extract_mention_command(message)
      if not command:
          return json_response({"ok": True, "ignored": True})
@@ -1586,7 +1534,7 @@ index 40cbf636..d7cfe7a5 100644
      owner = FORKBOT_DEFAULT_OWNER
      repo = FORKBOT_DEFAULT_REPO
      ok, result = await _forkbot_enqueue_issue(
-@@ -8812,29 +8740,16 @@ async def forkbot_chat_handler(env, request):
+@@ -8866,29 +8832,16 @@ async def forkbot_chat_handler(env, request):
      if not ok:
          return json_response({"error": result}, status=429)
      title = result.get("titleIfNew", fields["title"])
@@ -1620,47 +1568,7 @@ index 40cbf636..d7cfe7a5 100644
      }, status=201)
  
  
-@@ -8952,7 +8867,6 @@ async def issues_handler(env, request, owner, repo):
-                 repo_web_href(owner, repo)))
-         await _best_effort_inbox_side_effect(
-             subscribe_thread(env, owner, repo, "issue", number, actor))
--        await notify_repo_host(env, owner, repo, "issues")
-         return json_response({"ok": True}, status=201)
- 
-     if method == "GET":
-@@ -9028,7 +8942,6 @@ async def pulls_handler(env, request, owner, repo):
-                                      "Pull request comment", event.get("body", ""),
-                                      repo_web_href(owner, repo))
-             await subscribe_thread(env, owner, repo, "pull", number, actor)
--            await notify_repo_host(env, owner, repo, "pulls")
-             return json_response({"ok": True}, status=201)
-         pull = data.get("pull")
-         if not isinstance(pull, dict):
-@@ -9063,7 +8976,6 @@ async def pulls_handler(env, request, owner, repo):
-         await notify_pending_inbox(env, owner, repo, "pull", actor, title, 0)
-         await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
-                               repo_web_href(owner, repo), "pull")
--        await notify_repo_host(env, owner, repo, "pulls")
-         return json_response({"ok": True}, status=201)
- 
-     if method == "GET":
-@@ -9127,7 +9039,6 @@ async def commits_handler(env, request, owner, repo):
-         await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
-         await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
-                               repo_web_href(owner, repo), "commit_comment")
--        await notify_repo_host(env, owner, repo, "commits")
-         return json_response({"ok": True}, status=201)
- 
-     if method == "GET":
-@@ -9199,7 +9110,6 @@ async def discussions_handler(env, request, owner, repo):
-         await notify_pending_inbox(env, owner, repo, "discussion", actor, title, number)
-         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
-                               repo_web_href(owner, repo), "discussion")
--        await notify_repo_host(env, owner, repo, "discussions")
-         return json_response({"ok": True}, status=201)
- 
-     if method == "GET":
-@@ -9222,70 +9132,6 @@ async def discussions_handler(env, request, owner, repo):
+@@ -9277,70 +9230,6 @@ async def discussions_handler(env, request, owner, repo):
      return json_response({"error": "method_not_allowed"}, status=405)
  
  
@@ -1731,15 +1639,7 @@ index 40cbf636..d7cfe7a5 100644
  # --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
  #
  # The desktop app runs Claude Code coding "agent" sessions per repo/issue.
-@@ -9484,7 +9330,6 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
-         "VALUES (?,?,?,?)",
-         repo_bi, agent_id, await encrypt_row(env, item), now,
-     )
--    await notify_repo_host(env, owner, repo, "agents")
-     return json_response({"ok": True})
- 
- 
-@@ -9947,18 +9792,6 @@ def _html_escape(value):
+@@ -10002,18 +9891,6 @@ def _html_escape(value):
      )
  
  
@@ -1758,190 +1658,7 @@ index 40cbf636..d7cfe7a5 100644
  async def log_error(env, status, method, path, message, ray="", request=None,
                      error=None):
      """Record a 5xx / unhandled error. Best-effort: never raises."""
-@@ -11297,22 +11130,16 @@ async def _admin_disburse(env):
- 
- class Default(WorkerEntrypoint):
-     async def scheduled(self, controller, env, ctx):
--        # Cron trigger (every minute, see [triggers] in wrangler.toml).
--        #
--        # Only the two once-a-minute samples run on every tick; everything else
--        # is staggered onto its own minute slot. Running all eight jobs plus
--        # two Sentry round trips every minute — dozens of sequential D1 awaits
--        # in a Pyodide worker, ~90 schema DDL statements first on a cold
--        # isolate — routinely blew the invocation's resource limits, the
--        # platform killed the tick with nothing logged, and the /status page
--        # recorded the missing sample as downtime (~5% uptime shown while the
--        # site was actually up). The samples also run FIRST, so even a tick
--        # that dies in a later job has already landed its data point.
-+        # Cron trigger (every minute, see [triggers] in wrangler.toml): sample how
-+        # many nodes are online and fold it into the current hour's bucket for the
-+        # /network/ activity graph. Best-effort — never raise from the cron
-         cron_expression = _scheduled_cron_expression(controller)
-         cron_check_in_id = _sentry_event_id()
-         cron_started_ms = int(Date.now())
-         cron_failures = []
--        minute = int(cron_started_ms // 60000)
-+        await capture_sentry_cron_check_in(
-+            self.env, "in_progress", check_in_id=cron_check_in_id,
-+            cron=cron_expression)
-         try:
-             await record_online_sample(self.env)
-         except BaseException as error:
-@@ -11329,88 +11156,75 @@ class Default(WorkerEntrypoint):
-                 self.env, "/cron/record-status-sample",
-                 "record_status_sample failed: " + _safe_error_text(error),
-                 error=error, failures=cron_failures)
--        # Backstop the bounty escrow split so a funded bounty pays out to the
--        # author + treasury even if no client polls its status. Scans (and
--        # decrypts) every bounty row, so every 5 minutes is plenty for a
--        # backstop of a client-driven flow.
--        if minute % 5 == 1:
--            try:
--                await sweep_funded_bounties(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/sweep-funded-bounties",
--                    "sweep_funded_bounties failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
--        # Relay federation: a federated relay registers + reports its online
--        # nodes to the main relay (two outbound HTTP calls); the main relay
--        # expires stale federated presence and sweeps confirmed signups.
--        if minute % 5 == 2:
--            try:
--                await ensure_schema(self.env)
--                await _federation_cron(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/federation-cron",
--                    "federation_cron failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
--        # Email digest bridge (issue #361): per-recipient interval + min-age
--        # gates inside already hold a digest back for several minutes, so a
--        # 5-minute cadence adds no user-visible latency.
--        if minute % 5 == 3:
--            try:
--                await send_notification_digests(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/send-notification-digests",
--                    "send_notification_digests failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
--        # Stale-node purge bounds the serving surface to nodes live within the
--        # last hour; running it every 15 minutes still purges well inside that
--        # window (it used to run force=True every single minute).
--        if minute % 15 == 4:
--            try:
--                await purge_stale_registered_nodes(self.env, force=True)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/purge-stale-nodes",
--                    "purge_stale_registered_nodes failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
-         # Keep blocked phantom catalog entries (and their host presence) purged
-         # even if no one loads /network/.
--        if minute % 15 == 9:
--            try:
--                await purge_blocked_catalog(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/purge-blocked-catalog",
--                    "purge_blocked_catalog failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
--        # Central donation fund: distributes once an hour (interval gate
--        # inside); polling that gate every 15 minutes keeps the distribution
--        # within minutes of the hour mark without a per-minute check.
--        if minute % 15 == 14:
--            try:
--                await ensure_schema(self.env)
--                await _distribute_central_fund(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/distribute-central-fund",
--                    "distribute_central_fund failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
-+        try:
-+            await purge_blocked_catalog(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/purge-blocked-catalog",
-+                "purge_blocked_catalog failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-+        try:
-+            await purge_stale_registered_nodes(self.env, force=True)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/purge-stale-nodes",
-+                "purge_stale_registered_nodes failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-+        # Backstop the bounty escrow split so a funded bounty pays out to the
-+        # author + treasury even if no client polls its status.
-+        try:
-+            await sweep_funded_bounties(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/sweep-funded-bounties",
-+                "sweep_funded_bounties failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-+        # Central donation fund: once an hour, sweep the fund wallet out to the
-+        # currently-online nodes (issue #308). The interval gate inside makes the
-+        # per-minute cron a no-op until an hour has elapsed.
-+        try:
-+            await ensure_schema(self.env)
-+            await _distribute_central_fund(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/distribute-central-fund",
-+                "distribute_central_fund failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-+        # Relay federation: a federated relay registers + reports its online nodes
-+        # to the main relay; the main relay expires stale federated presence and
-+        # sweeps confirmed federated signups.
-+        try:
-+            await ensure_schema(self.env)
-+            await _federation_cron(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/federation-cron",
-+                "federation_cron failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-         # Retained chat history is only pruned per-room on client join
--        # (ForkMeshRoom.fetch); sweep all rooms hourly so an idle room still
-+        # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
-         # gets its 7-day-old messages deleted.
--        if minute % 60 == 37:
--            try:
--                await chat_history_prune_expired(self.env)
--            except BaseException as error:
--                await log_cron_error(
--                    self.env, "/cron/chat-history-prune-expired",
--                    "chat_history_prune_expired failed: " + _safe_error_text(error),
--                    error=error, failures=cron_failures)
--        # One Sentry check-in per tick (the closing ok/error): the opening
--        # in-progress check-in doubled the outbound Sentry traffic for no
--        # alerting value on a one-minute schedule.
-+        try:
-+            await chat_history_prune_expired(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/chat-history-prune-expired",
-+                "chat_history_prune_expired failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-+        # Email digest bridge (issue #361): roll each recipient's unread
-+        # notifications into one email so a reply reaches people who don't have
-+        # the app open. Per-recipient interval + min-age gates inside keep the
-+        # per-minute cron cheap and stop it emailing notifications the user is
-+        # actively reading.
-+        try:
-+            await send_notification_digests(self.env)
-+        except BaseException as error:
-+            await log_cron_error(
-+                self.env, "/cron/send-notification-digests",
-+                "send_notification_digests failed: " + _safe_error_text(error),
-+                error=error, failures=cron_failures)
-         final_cron_status = "error" if cron_failures else "ok"
-         await capture_sentry_cron_check_in(
-             self.env, final_cron_status, check_in_id=cron_check_in_id,
-@@ -11444,15 +11258,6 @@ class Default(WorkerEntrypoint):
+@@ -11504,15 +11381,6 @@ class Default(WorkerEntrypoint):
          except Exception:
              status = 200
          if status >= 500:
@@ -1957,7 +1674,7 @@ index 40cbf636..d7cfe7a5 100644
              await log_error(
                  self.env, status, method_name(request), url.path,
                  "response status %d" % status, request.headers.get("cf-ray") or "",
-@@ -11731,19 +11536,15 @@ class Default(WorkerEntrypoint):
+@@ -11791,19 +11659,15 @@ class Default(WorkerEntrypoint):
          # Chat-triggered Cloudflare AI interface. Clients forward explicit
          # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
          # records and returns a bot reply for the encrypted room.
@@ -1979,8 +1696,8 @@ index 40cbf636..d7cfe7a5 100644
 +        if url.path.startswith("/api/accounts/"):
              return await accounts_handler(self.env, request)
  
-         public_profile = re.match(r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$", url.path)
-@@ -12054,28 +11855,22 @@ class Default(WorkerEntrypoint):
+         # Match the profile route on the percent-decoded, case-folded path:
+@@ -12120,28 +11984,22 @@ class Default(WorkerEntrypoint):
          room = room_key_from_path(url.path)
          if room:
              room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
@@ -2025,7 +1742,7 @@ index 40cbf636..d7cfe7a5 100644
  
          # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
          # not real files. Serve the prebuilt static shell from ASSETS instead of
-@@ -13036,25 +12831,6 @@ class ForkMeshHost(DurableObject):
+@@ -13102,25 +12960,6 @@ class ForkMeshHost(DurableObject):
                  None, to_js({"status": 101, "webSocket": client})
              )
  
@@ -2116,7 +1833,7 @@ index 6e3b6016..e4d81e95 100644
  ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 +ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
 diff --git a/cloudflare_worker/tests/test_account_profile_endpoints.py b/cloudflare_worker/tests/test_account_profile_endpoints.py
-index 4c2c09bc..d641f2d8 100644
+index efb56c0d..bd8e39b5 100644
 --- a/cloudflare_worker/tests/test_account_profile_endpoints.py
 +++ b/cloudflare_worker/tests/test_account_profile_endpoints.py
 @@ -10,6 +10,11 @@ from pathlib import Path
