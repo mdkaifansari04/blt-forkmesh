@@ -87,6 +87,11 @@ def safe_catalog_record(data):
         "commit": clean_string(data.get("commit", ""), 64),
         "branch": clean_string(data.get("branch", ""), 120),
         "issueCount": clean_string(data.get("issueCount", ""), 12),
+        # Highest issue number ever assigned (closed/deleted included), so the
+        # relay can propose the desktop's real next number for a ForkBot issue
+        # (see _forkbot_next_issue_number). Distinct from issueCount, which is
+        # only the open count.
+        "issueMaxNumber": clean_string(data.get("issueMaxNumber", ""), 12),
         "commitCount": clean_string(data.get("commitCount", ""), 12),
         "branchCount": clean_string(data.get("branchCount", ""), 12),
         "pullCount": clean_string(data.get("pullCount", ""), 12),

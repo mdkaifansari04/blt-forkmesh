@@ -135,6 +135,11 @@ FORKBOT_DEFAULT_OWNER = "forkmesh"
 FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
 FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+# Recent conversation the client forwards with a ForkBot mention so ForkBot can
+# resolve references like "that bug" / "the thing above" instead of only seeing
+# the one @forkbot line. Bounded so a client can't blow the AI prompt budget.
+FORKBOT_CONTEXT_MAX_MESSAGES = 12
+FORKBOT_CONTEXT_MAX_CHARS = 600
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -8351,13 +8356,23 @@ def _forkbot_extract_mention_command(message):
 
 
 def _forkbot_parse_issue_command(command):
+    # Fast, offline path for an explicitly phrased request ("create an issue
+    # to ..."). A miss here is NOT a rejection: the handler falls back to the
+    # AI intent classifier (_forkbot_ai_interpret), which recognises the same
+    # intent from natural phrasing ("forkbot can you track the flaky login
+    # test?") and from the surrounding conversation. This regex just spares an
+    # AI round trip for the obvious wording and still works when AI is off.
     text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
     if not text:
         return None
     match = re.match(
-        r"(?is)^(?:please\s+)?"
-        r"(?:create|open|file|make|report)\s+(?:an?\s+)?issue\b"
-        r"\s*(?:(?:to|for|about|that|saying|called|titled)\s+|[:\-]\s*)?"
+        r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
+        r"pls\s+|plz\s+)*"
+        r"(?:create|open|file|make|report|log|raise|add|track|submit)\s+"
+        r"(?:an?\s+|a\s+new\s+)?"
+        r"(?:issue|bug|ticket|task|feature\s+request)\b"
+        r"\s*(?:(?:to|for|about|that|saying|called|titled|re|regarding)\s+|"
+        r"[:\-]\s*)?"
         r"(.+)$",
         text,
     )
@@ -8367,6 +8382,25 @@ def _forkbot_parse_issue_command(command):
     if len(description) < 3:
         return None
     return {"description": description}
+
+
+def _forkbot_context_text(context):
+    """Flatten the recent conversation the client forwarded into a short,
+    plain-text transcript for the AI. Each entry is {sender, text}; the client
+    already excludes ForkBot's own lines and caps the count, but we bound it
+    again here so a hostile client can't blow the prompt budget."""
+    if not isinstance(context, list):
+        return ""
+    lines = []
+    for entry in context[-FORKBOT_CONTEXT_MAX_MESSAGES:]:
+        if not isinstance(entry, dict):
+            continue
+        sender = clean_string(entry.get("sender", ""), MAX_NODE_NAME).strip() or "user"
+        text = clean_string(entry.get("text", ""), FORKBOT_CONTEXT_MAX_CHARS).strip()
+        if not text:
+            continue
+        lines.append("%s: %s" % (sender, text))
+    return "\n".join(lines)
 
 
 def _forkbot_issue_title(description):
@@ -8421,7 +8455,9 @@ def _forkbot_clean_ai_issue_fields(parsed):
     return {"title": _forkbot_issue_title(title), "body": body}
 
 
-async def _forkbot_ai_issue_fields(env, description):
+async def _forkbot_run_ai(env, system_prompt, user_prompt):
+    """Run the Workers AI chat model and return the raw response text (or None).
+    Shared by the issue-drafting and intent-classification helpers."""
     ai = getattr(env, "AI", None)
     if ai is None or not hasattr(ai, "run"):
         return None
@@ -8429,18 +8465,8 @@ async def _forkbot_ai_issue_fields(env, description):
         FORKBOT_AI_DEFAULT_MODEL
     payload = {
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You turn a chat request into a ForkMesh issue. Return only "
-                    "compact JSON with title and body string fields. Do not add "
-                    "markdown fences."
-                ),
-            },
-            {
-                "role": "user",
-                "content": clean_string(description, FORKBOT_MAX_COMMAND),
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
         "max_tokens": 512,
     }
@@ -8456,17 +8482,130 @@ async def _forkbot_ai_issue_fields(env, description):
             result = result.to_py()
     except Exception:
         pass
-    text = ""
     if isinstance(result, dict):
         for key in ("response", "text", "output"):
             if isinstance(result.get(key), str):
-                text = result.get(key)
-                break
-        if not text:
-            return _forkbot_clean_ai_issue_fields(result)
-    elif isinstance(result, str):
-        text = result
-    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(text))
+                return result.get(key)
+        # Some bindings return the parsed object directly rather than a text
+        # field; hand the dict back so the caller can read title/body off it.
+        return result
+    if isinstance(result, str):
+        return result
+    return None
+
+
+async def _forkbot_ai_issue_fields(env, description, context_text=""):
+    system_prompt = (
+        "You turn a chat request into a ForkMesh issue. Use the conversation "
+        "context to resolve what the user is referring to. Return only compact "
+        "JSON with title and body string fields. Do not add markdown fences."
+    )
+    user_prompt = clean_string(description, FORKBOT_MAX_COMMAND)
+    if context_text:
+        user_prompt = (
+            "Recent conversation:\n" + context_text +
+            "\n\nRequest: " + user_prompt)
+    result = await _forkbot_run_ai(env, system_prompt, user_prompt)
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        return _forkbot_clean_ai_issue_fields(result)
+    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(result))
+
+
+async def _forkbot_ai_interpret(env, command, context_text=""):
+    """Decide from meaning (not fixed phrasing) whether the user is asking to
+    open an issue, and if so draft it — pulling the subject from the recent
+    conversation when the mention itself is only a pointer ("forkbot log that").
+
+    Returns {"intent": "create_issue", "title", "body"} when an issue is
+    wanted, {"intent": "none"} when it clearly is not, or None when the model
+    is unavailable / unparseable so the caller can fall back."""
+    system_prompt = (
+        "You are ForkBot, an assistant in a ForkMesh chat room. Decide whether "
+        "the user is asking you to open/file/track a bug, task, or feature as an "
+        "issue. They may phrase it any way, or refer to something discussed "
+        "earlier in the conversation rather than restating it. "
+        "Respond with ONLY compact JSON, no markdown fences, of the form "
+        '{"intent":"create_issue","title":"...","body":"..."} when an issue is '
+        'wanted, or {"intent":"none"} when it is not (a greeting, a question, '
+        "small talk). The title is a short summary; the body describes the "
+        "problem or task, drawing on the conversation for detail."
+    )
+    user_prompt = command
+    if context_text:
+        user_prompt = (
+            "Recent conversation:\n" + context_text +
+            "\n\nMessage to ForkBot: " + command)
+    result = await _forkbot_run_ai(env, system_prompt, user_prompt)
+    if result is None:
+        return None
+    parsed = result if isinstance(result, dict) else \
+        _forkbot_json_object_from_text(result)
+    if not isinstance(parsed, dict):
+        return None
+    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
+    if intent not in ("create_issue", "none"):
+        # Some models omit the field but still return title/body when they
+        # decided to draft an issue; treat a usable draft as create_issue.
+        intent = "create_issue" if (parsed.get("title") or parsed.get("body")) \
+            else "none"
+    if intent != "create_issue":
+        return {"intent": "none"}
+    fields = _forkbot_clean_ai_issue_fields(parsed)
+    if not fields:
+        return {"intent": "none"}
+    return {"intent": "create_issue", "title": fields["title"],
+            "body": fields["body"]}
+
+
+async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
+    """Allocate a proposed issue number for a ForkBot-created issue.
+
+    Desktop nodes assign the authoritative number when they merge the inbox
+    (nextNumber() = highest issue dir + 1) and keep a proposed number when its
+    slot is free, so the goal here is to propose the same number the desktop
+    would — and never propose one twice. We seed/re-anchor a persisted per-repo
+    counter from the catalog's published issueMaxNumber (the desktop's real max
+    at its last publish), then hand out the next value and advance. Best-effort:
+    on any storage hiccup we fall back to 0 (the desktop assigns and the reply
+    just omits a number) rather than failing the issue creation."""
+    seed_next = 1
+    try:
+        row = await d1_first(
+            env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+        rec = await decrypt_row(env, row.get("data")) if row else None
+        if rec:
+            for key in ("issueMaxNumber", "issueCount"):
+                value = rec.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    seed_next = max(seed_next, int(value) + 1)
+                    break
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    try:
+        # Seed on first use / re-anchor upward to the catalog max, never
+        # backward (MAX keeps already-handed-out numbers monotonic).
+        await d1_run(
+            env,
+            "INSERT INTO issue_seq (repo_bi, next_number) VALUES (?, ?) "
+            "ON CONFLICT(repo_bi) DO UPDATE SET "
+            "next_number = MAX(issue_seq.next_number, ?)",
+            repo_bi, seed_next, seed_next,
+        )
+        seq_row = await d1_first(
+            env, "SELECT next_number FROM issue_seq WHERE repo_bi=?", repo_bi)
+        number = int((seq_row or {}).get("next_number", seed_next) or seed_next)
+        await d1_run(
+            env, "UPDATE issue_seq SET next_number=? WHERE repo_bi=?",
+            number + 1, repo_bi)
+        return number
+    except Exception:
+        return 0
 
 
 async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
@@ -8482,6 +8621,10 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
 
     now = int(Date.now())
     actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
+    # Proposed number the desktop honors when the slot is free (0 = let the
+    # desktop assign). Allocated before the insert so it lands in the stored
+    # item and can be echoed straight back to the chat.
+    number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
     event = {
         "type": "open",
         "id": "forkbot-%d" % now,
@@ -8494,7 +8637,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "sig": "",
     }
     item = {
-        "number": 0,
+        "number": number,
         "titleIfNew": event["title"],
         "event": event,
         "meta": {
@@ -8510,6 +8653,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "submittedAt": now,
         "source": "forkbot",
         "requestedBy": actor,
+        "issueNumber": number,
     }
     await d1_run(
         env,
@@ -8542,22 +8686,38 @@ async def forkbot_chat_handler(env, request):
     command = _forkbot_extract_mention_command(message)
     if not command:
         return json_response({"ok": True, "ignored": True})
+
+    # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
+    # resolve "that bug" / "the issue we discussed" instead of only the one line.
+    context_text = _forkbot_context_text(data.get("context"))
+
+    # Decide intent and draft the issue. Prefer meaning over fixed wording:
+    #  1. The cheap regex catches an explicitly phrased command offline.
+    #  2. Otherwise the AI classifier reads the command + conversation and
+    #     decides whether an issue is wanted (and drafts it).
+    #  3. With no AI and no regex match, fall back to the help hint.
+    fields = None
     parsed = _forkbot_parse_issue_command(command)
-    if not parsed:
+    if parsed:
+        fields = await _forkbot_ai_issue_fields(
+            env, parsed["description"], context_text)
+        if not fields:
+            fields = _forkbot_fallback_issue_fields(parsed["description"])
+    else:
+        interpreted = await _forkbot_ai_interpret(env, command, context_text)
+        if interpreted and interpreted.get("intent") == "create_issue":
+            fields = {"title": interpreted["title"], "body": interpreted["body"]}
+
+    if not fields or not fields.get("body"):
         return json_response({
             "ok": True,
             "action": "help",
             "botMessage": (
-                "I can create issues. Try: forkbot create an issue to describe "
-                "the bug or task."
+                "I can open issues from the conversation — just tell me what's "
+                "wrong or what needs doing (e.g. \"forkbot open an issue for "
+                "the flaky login test\")."
             ),
         })
-
-    fields = await _forkbot_ai_issue_fields(env, parsed["description"])
-    if not fields:
-        fields = _forkbot_fallback_issue_fields(parsed["description"])
-    if not fields.get("body"):
-        return json_response({"error": "issue_required"}, status=400)
 
     owner = FORKBOT_DEFAULT_OWNER
     repo = FORKBOT_DEFAULT_REPO
@@ -8567,16 +8727,29 @@ async def forkbot_chat_handler(env, request):
     if not ok:
         return json_response({"error": result}, status=429)
     title = result.get("titleIfNew", fields["title"])
+    number = int(result.get("issueNumber", 0) or 0)
+    # /owner/repo/issues is the web route for the repo's issue list; the number
+    # is the proposed one the desktop honors when it merges the inbox.
+    issue_url = repo_web_href(owner, repo) + "/issues"
+    if number > 0:
+        bot_message = (
+            "Opened issue #%d in %s/%s: %s. It'll show at %s once the owner "
+            "node syncs the inbox."
+        ) % (number, owner, repo, title, issue_url)
+    else:
+        bot_message = (
+            "Opened an issue in %s/%s: %s. It'll show at %s once the owner "
+            "node syncs the inbox."
+        ) % (owner, repo, title, issue_url)
     return json_response({
         "ok": True,
         "action": "issue_created",
         "owner": owner,
         "repo": repo,
         "title": title,
-        "botMessage": (
-            "Created an issue in %s/%s: %s. It will appear after the owner "
-            "node syncs the issue inbox."
-        ) % (owner, repo, title),
+        "issueNumber": number,
+        "issueUrl": issue_url,
+        "botMessage": bot_message,
     }, status=201)
 
 

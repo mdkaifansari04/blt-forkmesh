@@ -346,6 +346,16 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # Per-repo issue-number allocator for issues the relay files on a user's
+    # behalf (ForkBot). Desktop nodes own the real numbering (nextNumber() =
+    # highest issue dir + 1), so a relay-created issue can only be given a
+    # *proposed* number the desktop honors when the slot is free. Persisting
+    # the allocation here lets ForkBot answer with the number immediately and
+    # keeps successive ForkBot issues from proposing the same one; it is
+    # re-anchored to each catalog publish's issueMaxNumber so it tracks the
+    # desktop's real count over time.
+    """CREATE TABLE IF NOT EXISTS issue_seq (
+        repo_bi TEXT PRIMARY KEY, next_number INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
