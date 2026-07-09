@@ -45,6 +45,7 @@
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
+    repositoryViewMode: "list",
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -54,6 +55,7 @@
   const REPO_COLLECTION_PAGE_SIZE = 5;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
   const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
+  const DASHBOARD_REPO_VIEW_KEY = "forkmesh.dashboard.repoView";
   const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;
   function readSession() {
     try {
@@ -916,7 +918,9 @@
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
       adminUrl: body.adminUrl || base.adminUrl || "",
-      solana: body.solana || base.solana || "",
+      solana: Object.prototype.hasOwnProperty.call(body, "solana")
+        ? (body.solana || "")
+        : (base.solana || ""),
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
         : Boolean(base.hasPayoutAddress),
@@ -1369,6 +1373,7 @@
     const solanaSelector = options.solanaSelector || "[data-profile-solana]";
     const hintSelector = options.hintSelector || "[data-profile-hint]";
     const buttonSelector = options.buttonSelector || "[data-profile-save]";
+    const passwordInput = $(passwordSelector);
     const password = profilePassword(passwordSelector);
     const solana = ($(solanaSelector)?.value || "").trim();
     if (!password) {
@@ -1388,6 +1393,8 @@
       } else {
         setProfilePageHint(hintSelector, solana ? "Payout address saved." : "Payout address cleared.", "good");
       }
+      if (passwordInput) passwordInput.value = "";
+      updateRenameButton();
     } catch (error) {
       const message = error.message === "bad_solana"
         ? "Enter a valid public Solana address."
@@ -2079,6 +2086,7 @@
       }
     }
 
+    setRepositoryViewMode(state.repositoryViewMode, { persist: false });
     window.lucide?.createIcons();
   }
 
@@ -2104,6 +2112,37 @@
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
         </button>`;
     }).join("");
+  }
+
+  function readRepositoryViewMode() {
+    try {
+      return localStorage.getItem(DASHBOARD_REPO_VIEW_KEY) === "grid" ? "grid" : "list";
+    } catch (_) {
+      return "list";
+    }
+  }
+
+  function setRepositoryViewMode(mode, options = {}) {
+    const next = mode === "grid" ? "grid" : "list";
+    const gridMode = next === "grid";
+    state.repositoryViewMode = next;
+    const repoList = $("#repoList");
+    if (repoList) {
+      repoList.classList.toggle("grid-mode", gridMode);
+      repoList.classList.toggle("divide-y", !gridMode);
+      repoList.classList.toggle("divide-border", !gridMode);
+    }
+    $$("[data-view-mode]").forEach((button) => {
+      const active = button.dataset.viewMode === next;
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.classList.toggle("bg-secondary", active);
+      button.classList.toggle("text-foreground", active);
+      button.classList.toggle("text-muted-foreground", !active);
+      button.classList.toggle("hover:text-foreground", !active);
+    });
+    if (options.persist !== false) {
+      try { localStorage.setItem(DASHBOARD_REPO_VIEW_KEY, next); } catch (_) {}
+    }
   }
 
   function applyRepositoryFilter() {
@@ -6412,6 +6451,11 @@
     state.page += 1;
     updateRepositoryPagination();
   });
+  $$("[data-view-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setRepositoryViewMode(button.dataset.viewMode);
+    });
+  });
 
 	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
 	    event.stopPropagation();
@@ -6525,5 +6569,6 @@
 
   applyDashboardTheme(readDashboardTheme());
   renderLongDiffPreference();
+  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });
   init();
 })();

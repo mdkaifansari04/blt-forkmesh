@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import gzip
+import hashlib
 import hmac
 import io
 import json
@@ -975,24 +976,33 @@ async def record_online_sample(env):
         "ON CONFLICT(hour_ts) DO UPDATE SET node_minutes = node_minutes + ?",
         hour_ts, online, online,
     )
-    for node_key, label in nodes.items():
+    if nodes:
+        # One multi-row upsert for every online node instead of a statement per
+        # node — each awaited D1 round trip counts against the cron tick's
+        # per-invocation limits (see record_status_sample).
+        node_args = []
+        for node_key, label in nodes.items():
+            node_args.extend([hour_ts, node_key, label])
         await d1_run(
             env,
-            """INSERT INTO online_hourly_nodes
-                 (hour_ts, node_key, label, node_minutes) VALUES (?, ?, ?, 1)
-               ON CONFLICT(hour_ts, node_key) DO UPDATE SET
-                 node_minutes = node_minutes + 1,
-                 label = excluded.label""",
-            hour_ts, node_key, label,
+            "INSERT INTO online_hourly_nodes "
+            "(hour_ts, node_key, label, node_minutes) VALUES " +
+            ", ".join(["(?, ?, ?, 1)"] * len(nodes)) + " "
+            "ON CONFLICT(hour_ts, node_key) DO UPDATE SET "
+            "node_minutes = node_minutes + 1, "
+            "label = excluded.label",
+            *node_args,
         )
-    await d1_run(
-        env, "DELETE FROM online_hourly WHERE hour_ts < ?",
-        hour_ts - ONLINE_HISTORY_RETAIN_MS,
-    )
-    await d1_run(
-        env, "DELETE FROM online_hourly_nodes WHERE hour_ts < ?",
-        hour_ts - ONLINE_HISTORY_RETAIN_MS,
-    )
+    # Retention prunes only need to run occasionally: first sample of each hour.
+    if now - hour_ts < 60 * 1000:
+        await d1_run(
+            env, "DELETE FROM online_hourly WHERE hour_ts < ?",
+            hour_ts - ONLINE_HISTORY_RETAIN_MS,
+        )
+        await d1_run(
+            env, "DELETE FROM online_hourly_nodes WHERE hour_ts < ?",
+            hour_ts - ONLINE_HISTORY_RETAIN_MS,
+        )
 
 
 async def online_history(env):
@@ -1227,6 +1237,21 @@ async def record_status_sample(env):
         hit_count = {"website": 0, "api": 0, "realtime": 0}
         for row in rows:
             path = str(row.get("path") or "")
+            try:
+                row_status = int(row.get("status") or 0)
+            except (TypeError, ValueError):
+                row_status = 0
+            # 502/503/504 on a host-tunnel content path (release blob, repo
+            # browse, git clone) means the one desktop node holding that
+            # content is unreachable — node availability, which host_presence
+            # (the git_hosting signal) already tracks. It is not evidence the
+            # worker/API is down, and a single offline node's blob being
+            # re-requested every few minutes used to paint the whole "api"
+            # system red on /status. A 500 on the same path still counts.
+            if row_status in (502, 503, 504) and (
+                    RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
+                    GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
+                continue
             if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
                 bucket = "realtime"
@@ -1255,51 +1280,69 @@ async def record_status_sample(env):
         # fabricate a false incident from it.
         ok["website"] = ok["api"] = ok["realtime"] = True
 
+    # One multi-row upsert per table (3 statements total) instead of the old
+    # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
+    # worker where every awaited D1 round trip counts against tight per-
+    # invocation limits — blowing them killed the whole tick and the /status
+    # page recorded the missing sample as downtime.
+    daily_args = []
+    hourly_args = []
+    minute_args = []
     for system_id, _label in STATUS_SYSTEMS:
         failure = 0 if ok.get(system_id, True) else 1
-        await d1_run(
-            env,
-            "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
-            "VALUES (?, ?, 1, ?) "
-            "ON CONFLICT(day_ts, system) DO UPDATE SET "
-            "checks = checks + 1, failures = failures + ?",
-            day_ts, system_id, failure, failure,
-        )
+        daily_args.extend([day_ts, system_id, failure])
         # reason is only set when this sample failed; on success it's left NULL
         # so the COALESCE below keeps whatever failure reason was last recorded
         # this hour, rather than blanking it out.
-        await d1_run(
-            env,
-            "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
-            "VALUES (?, ?, 1, ?, ?) "
-            "ON CONFLICT(hour_ts, system) DO UPDATE SET "
-            "checks = checks + 1, failures = failures + ?, "
-            "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
-            hour_ts, system_id, failure, reason.get(system_id), failure,
-        )
+        hourly_args.extend([hour_ts, system_id, failure, reason.get(system_id)])
         # A minute is the raw sample itself (not a counter): one cron tick per
         # minute per system, so ON CONFLICT just overwrites in the rare case a
         # tick somehow re-fires for the same minute.
+        minute_args.extend(
+            [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
+    n = len(STATUS_SYSTEMS)
+    await d1_run(
+        env,
+        "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
+        "VALUES " + ", ".join(["(?, ?, 1, ?)"] * n) + " "
+        "ON CONFLICT(day_ts, system) DO UPDATE SET "
+        "checks = checks + excluded.checks, "
+        "failures = failures + excluded.failures",
+        *daily_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
+        "VALUES " + ", ".join(["(?, ?, 1, ?, ?)"] * n) + " "
+        "ON CONFLICT(hour_ts, system) DO UPDATE SET "
+        "checks = checks + excluded.checks, "
+        "failures = failures + excluded.failures, "
+        "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
+        *hourly_args,
+    )
+    await d1_run(
+        env,
+        "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
+        "VALUES " + ", ".join(["(?, ?, ?, ?)"] * n) + " "
+        "ON CONFLICT(minute_ts, system) DO UPDATE SET "
+        "ok = excluded.ok, reason = excluded.reason",
+        *minute_args,
+    )
+    # Retention prunes only need to run occasionally, not 60x/hour: sweep on
+    # the first sample of each hour.
+    if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
         await d1_run(
-            env,
-            "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(minute_ts, system) DO UPDATE SET "
-            "ok = excluded.ok, reason = excluded.reason",
-            minute_ts, system_id, 0 if failure else 1, reason.get(system_id),
+            env, "DELETE FROM system_status_daily WHERE day_ts < ?",
+            day_ts - STATUS_HISTORY_RETAIN_MS,
         )
-    await d1_run(
-        env, "DELETE FROM system_status_daily WHERE day_ts < ?",
-        day_ts - STATUS_HISTORY_RETAIN_MS,
-    )
-    await d1_run(
-        env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
-        day_ts - STATUS_HISTORY_RETAIN_MS,
-    )
-    await d1_run(
-        env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
-        minute_ts - STATUS_MINUTE_RETAIN_MS,
-    )
+        await d1_run(
+            env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
+            day_ts - STATUS_HISTORY_RETAIN_MS,
+        )
+        await d1_run(
+            env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_MINUTE_RETAIN_MS,
+        )
 
 
 async def status_history(env):
@@ -2227,38 +2270,60 @@ _data_key_cache = {"secret": None, "key": None}
 _hmac_key_cache = {"secret": None, "key": None}
 
 
+# Post-CREATE column additions for tables that predate them. Idempotent: a
+# re-run raises "duplicate column name", which the applier swallows.
+SCHEMA_ALTER_STATEMENTS = [
+    # Private repos flag (won't be added by CREATE TABLE IF NOT EXISTS).
+    "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0",
+    # Plaintext blind index of the (signature-verified) submitter on each inbox
+    # row, so a per-author quota can be enforced with a COUNT instead of
+    # decrypting every pending row.
+    "ALTER TABLE issue_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
+    "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
+    # Blind index of the signup IP for duplicate-signup detection (migration 0015).
+    "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
+]
+
+# Fingerprint of the DDL this build would apply. Stored in schema_meta after a
+# full apply so later cold isolates can skip the replay with one SELECT.
+_SCHEMA_FINGERPRINT = hashlib.sha256(
+    "\n".join(SCHEMA_STATEMENTS + SCHEMA_ALTER_STATEMENTS).encode("utf-8")
+).hexdigest()
+
+
 async def ensure_schema(env):
     global _schema_ready
     if _schema_ready:
         return
+    # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
+    # records the applied DDL's fingerprint. One SELECT replaces the ~90
+    # sequential statements below — which, replayed on every cold isolate, were
+    # the dominant startup cost for both requests and the per-minute cron (the
+    # cron routinely blew its resource limits and the /status page recorded the
+    # missing samples as downtime).
+    try:
+        row = await d1_first(
+            env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
+        if row and row.get("v") == _SCHEMA_FINGERPRINT:
+            _schema_ready = True
+            return
+    except Exception:
+        pass  # schema_meta doesn't exist yet — first run against this DB
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
-    # CREATE TABLE IF NOT EXISTS above won't add a column to a repositories table
-    # that predates private repos, so add it separately. Idempotent: a second run
-    # raises "duplicate column name", which we swallow.
-    try:
-        await env.DB.prepare(
-            "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0"
-        ).run()
-    except Exception:
-        pass
-    # Plaintext blind index of the (signature-verified) submitter on each inbox
-    # row, so a per-author quota can be enforced with a COUNT instead of
-    # decrypting every pending row. Added separately for tables predating it.
-    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox", "discussion_inbox"):
+    for sql in SCHEMA_ALTER_STATEMENTS:
         try:
-            await env.DB.prepare(
-                "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
+            await env.DB.prepare(sql).run()
         except Exception:
             pass
-    # Blind index of the signup IP for duplicate-signup detection (migration 0015);
-    # added separately for accounts tables that predate it. Idempotent — a second
-    # run raises "duplicate column name", which we swallow.
-    try:
-        await env.DB.prepare(
-            "ALTER TABLE accounts ADD COLUMN ip_bi TEXT").run()
-    except Exception:
-        pass
+    await d1_run(
+        env,
+        "INSERT INTO schema_meta (k, v) VALUES ('fingerprint', ?) "
+        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        _SCHEMA_FINGERPRINT,
+    )
     _schema_ready = True
 
 
@@ -2597,11 +2662,10 @@ async def catalog_handler(env, request):
             rec["cloneOnline"] = repo_clone_online(rec, served)
         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
-        # Per-viewer responses (with private repos) must not be cached at the shared
-        # edge; only the public-only list is cacheable.
-        if authed_viewer:
-            return json_response(payload)
-        if bypass_cache:
+        # Per-viewer responses (with private repos) must never touch the shared
+        # public cache — and must say no-store themselves so no downstream cache
+        # holds them either; only the public-only list is cacheable.
+        if authed_viewer or bypass_cache:
             return json_response(
                 payload,
                 cache_control="no-store, max-age=0, must-revalidate")
@@ -5512,51 +5576,6 @@ async def _account_logout(env, request):
         extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
         cache_control="no-store, max-age=0, must-revalidate",
     )
-
-
-async def _account_rotate(env, request):
-    # Rebind an account/node identity to a successor Ed25519 key. The currently
-    # bound key must sign the rotation so a fresh installer cannot seize an
-    # existing name unless it controls the old key.
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-    old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
-    new_pubkey = clean_string(data.get("newPubkey", ""), 120)
-    ts = clean_string(data.get("ts", ""), 20)
-    signature = clean_string(data.get("sig", ""), 200)
-    if not valid_node_name(name):
-        return json_response({"error": "invalid_node_id"}, status=400)
-    if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
-        return json_response({"error": "bad_pubkey"}, status=400)
-    if not _ts_ok(ts):
-        return json_response({"error": "stale_request"}, status=401)
-    name_bi, rec = await _account_row(env, name)
-    if not rec or rec.get("status") != "active":
-        return json_response({"error": "no_account"}, status=404)
-    bound = clean_string(rec.get("pubkey", ""), 120)
-    if bound == new_pubkey:
-        return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
-    if bound != old_pubkey:
-        return json_response({"error": "not_bound"}, status=403)
-    canonical = (
-        "forkmesh-key-rotate-v1\n" + name + "\n" + old_pubkey + "\n" +
-        new_pubkey + "\n" + ts
-    ).encode()
-    if not await ed25519_verify(old_pubkey, signature, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
-    prev = rec.get("prev_pubkeys")
-    if not isinstance(prev, list):
-        prev = []
-    if old_pubkey not in prev:
-        prev.append(old_pubkey)
-    rec["pubkey"] = new_pubkey
-    rec["prev_pubkeys"] = prev[-8:]
-    rec["rotated_at"] = int(Date.now())
-    await _save_account(env, name_bi, rec)
-    return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
 
 
 def _random_bytes(n):
@@ -11008,16 +11027,22 @@ async def _admin_disburse(env):
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # Cron trigger (every minute, see [triggers] in wrangler.toml): sample how
-        # many nodes are online and fold it into the current hour's bucket for the
-        # /network/ activity graph. Best-effort — never raise from the cron
+        # Cron trigger (every minute, see [triggers] in wrangler.toml).
+        #
+        # Only the two once-a-minute samples run on every tick; everything else
+        # is staggered onto its own minute slot. Running all eight jobs plus
+        # two Sentry round trips every minute — dozens of sequential D1 awaits
+        # in a Pyodide worker, ~90 schema DDL statements first on a cold
+        # isolate — routinely blew the invocation's resource limits, the
+        # platform killed the tick with nothing logged, and the /status page
+        # recorded the missing sample as downtime (~5% uptime shown while the
+        # site was actually up). The samples also run FIRST, so even a tick
+        # that dies in a later job has already landed its data point.
         cron_expression = _scheduled_cron_expression(controller)
         cron_check_in_id = _sentry_event_id()
         cron_started_ms = int(Date.now())
         cron_failures = []
-        await capture_sentry_cron_check_in(
-            self.env, "in_progress", check_in_id=cron_check_in_id,
-            cron=cron_expression)
+        minute = int(cron_started_ms // 60000)
         try:
             await record_online_sample(self.env)
         except BaseException as error:
@@ -11034,75 +11059,88 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/record-status-sample",
                 "record_status_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
+        # Backstop the bounty escrow split so a funded bounty pays out to the
+        # author + treasury even if no client polls its status. Scans (and
+        # decrypts) every bounty row, so every 5 minutes is plenty for a
+        # backstop of a client-driven flow.
+        if minute % 5 == 1:
+            try:
+                await sweep_funded_bounties(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/sweep-funded-bounties",
+                    "sweep_funded_bounties failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Relay federation: a federated relay registers + reports its online
+        # nodes to the main relay (two outbound HTTP calls); the main relay
+        # expires stale federated presence and sweeps confirmed signups.
+        if minute % 5 == 2:
+            try:
+                await ensure_schema(self.env)
+                await _federation_cron(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/federation-cron",
+                    "federation_cron failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Email digest bridge (issue #361): per-recipient interval + min-age
+        # gates inside already hold a digest back for several minutes, so a
+        # 5-minute cadence adds no user-visible latency.
+        if minute % 5 == 3:
+            try:
+                await send_notification_digests(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/send-notification-digests",
+                    "send_notification_digests failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Stale-node purge bounds the serving surface to nodes live within the
+        # last hour; running it every 15 minutes still purges well inside that
+        # window (it used to run force=True every single minute).
+        if minute % 15 == 4:
+            try:
+                await purge_stale_registered_nodes(self.env, force=True)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/purge-stale-nodes",
+                    "purge_stale_registered_nodes failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Keep blocked phantom catalog entries (and their host presence) purged
         # even if no one loads /network/.
-        try:
-            await purge_blocked_catalog(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/purge-blocked-catalog",
-                "purge_blocked_catalog failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        try:
-            await purge_stale_registered_nodes(self.env, force=True)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/purge-stale-nodes",
-                "purge_stale_registered_nodes failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        # Backstop the bounty escrow split so a funded bounty pays out to the
-        # author + treasury even if no client polls its status.
-        try:
-            await sweep_funded_bounties(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/sweep-funded-bounties",
-                "sweep_funded_bounties failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        # Central donation fund: once an hour, sweep the fund wallet out to the
-        # currently-online nodes (issue #308). The interval gate inside makes the
-        # per-minute cron a no-op until an hour has elapsed.
-        try:
-            await ensure_schema(self.env)
-            await _distribute_central_fund(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/distribute-central-fund",
-                "distribute_central_fund failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        # Relay federation: a federated relay registers + reports its online nodes
-        # to the main relay; the main relay expires stale federated presence and
-        # sweeps confirmed federated signups.
-        try:
-            await ensure_schema(self.env)
-            await _federation_cron(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/federation-cron",
-                "federation_cron failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
+        if minute % 15 == 9:
+            try:
+                await purge_blocked_catalog(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/purge-blocked-catalog",
+                    "purge_blocked_catalog failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Central donation fund: distributes once an hour (interval gate
+        # inside); polling that gate every 15 minutes keeps the distribution
+        # within minutes of the hour mark without a per-minute check.
+        if minute % 15 == 14:
+            try:
+                await ensure_schema(self.env)
+                await _distribute_central_fund(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/distribute-central-fund",
+                    "distribute_central_fund failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
         # Retained chat history is only pruned per-room on client join
-        # (ForkMeshRoom.fetch); sweep all rooms here too so an idle room still
+        # (ForkMeshRoom.fetch); sweep all rooms hourly so an idle room still
         # gets its 7-day-old messages deleted.
-        try:
-            await chat_history_prune_expired(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/chat-history-prune-expired",
-                "chat_history_prune_expired failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        # Email digest bridge (issue #361): roll each recipient's unread
-        # notifications into one email so a reply reaches people who don't have
-        # the app open. Per-recipient interval + min-age gates inside keep the
-        # per-minute cron cheap and stop it emailing notifications the user is
-        # actively reading.
-        try:
-            await send_notification_digests(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/send-notification-digests",
-                "send_notification_digests failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
+        if minute % 60 == 37:
+            try:
+                await chat_history_prune_expired(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/chat-history-prune-expired",
+                    "chat_history_prune_expired failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # One Sentry check-in per tick (the closing ok/error): the opening
+        # in-progress check-in doubled the outbound Sentry traffic for no
+        # alerting value on a one-minute schedule.
         final_cron_status = "error" if cron_failures else "ok"
         await capture_sentry_cron_check_in(
             self.env, final_cron_status, check_in_id=cron_check_in_id,

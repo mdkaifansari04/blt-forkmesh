@@ -346,4 +346,10 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
+    # the DDL that has already been applied to this database. A cold isolate
+    # reads this one row instead of replaying all ~90 statements above — the
+    # full replay only happens when the fingerprint (i.e. this file) changed.
+    """CREATE TABLE IF NOT EXISTS schema_meta (
+        k TEXT PRIMARY KEY, v TEXT NOT NULL)""",
 ]

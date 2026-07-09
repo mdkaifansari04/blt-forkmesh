@@ -2152,6 +2152,14 @@ void MainWindow::replicateReleaseArtifacts(int index)
                 continue;
             if (QFile::exists(mirrorReleaseBlobPath(mirrorPath, hash)))
                 continue; // already hosting this artifact
+            // A blob whose only source node is offline (relay answers 503)
+            // used to be re-requested on every roster flicker and 5-minute
+            // auto-sync, forever — hammering the relay with predictable
+            // failures. Back failing hashes off exponentially instead; a
+            // successful download clears the streak.
+            if (!m_pollBackoff.ready(QStringLiteral("releaseBlob:") + hash,
+                                     QDateTime::currentMSecsSinceEpoch()))
+                continue;
             if (!pending.contains(hash))
                 pending.insert(hash, downloadRepo);
         }
@@ -2221,6 +2229,7 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                 const QString actual =
                     QString::fromLatin1(hasher->result().toHex());
                 if (ok && actual == hash) {
+                    m_pollBackoff.noteSuccess(QStringLiteral("releaseBlob:") + hash);
                     QFile::remove(blobPath); // replace any stale/empty leftover
                     if (!QFile::rename(partPath, blobPath)) {
                         QFile::remove(partPath);
@@ -2236,10 +2245,17 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                     }
                 } else {
                     QFile::remove(partPath);
+                    // Exponential per-hash cooldown (5m doubling to a 6h cap):
+                    // the usual failure is the one node holding the bytes being
+                    // offline, which won't change on the next roster flicker.
+                    m_pollBackoff.noteFailure(
+                        QStringLiteral("releaseBlob:") + hash,
+                        QDateTime::currentMSecsSinceEpoch(),
+                        5LL * 60 * 1000, 6LL * 60 * 60 * 1000);
                     if (!ok)
                         logSystem(QStringLiteral(
                                       "Mirror: release artifact %1 download failed "
-                                      "(%2); will retry on next sync.")
+                                      "(%2); will retry after a backoff.")
                                       .arg(hash.left(12), netError));
                     else
                         logSystem(QStringLiteral(
