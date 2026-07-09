@@ -26,6 +26,10 @@ REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.
 REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
+# Content-free tallies of inbox items awaiting the owner node's next sync, so
+# the website can badge tabs with "N pending" without owner auth (counts only —
+# the items themselves stay encrypted and owner-gated).
+REPO_PENDING_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pending$")
 # Thread subscriptions (issue #361): a node signs a subscribe/unsubscribe for one
 # issue or PR so it gets notified of every reply, not just mentions of it.
 REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")

@@ -167,3 +167,65 @@ def test_chat_composer_stays_visible_and_rooms_scroll_independently():
     assert "auto *mainColumnHost = new QWidget;" in body
     assert "mainColumnHost->setMinimumHeight(0);" in body
     assert "layout->addWidget(mainColumnHost, 1);" in body
+
+
+def test_desktop_frames_carry_account_kind_for_web_display():
+    # Web/dashboard chat surfaces only render frames stamped accountKind
+    # "user". The desktop never sent the field at all, so a desktop user's
+    # messages relayed fine but were invisible on the website — "web and Qt
+    # aren't syncing". The backend stamps every outgoing frame, hydrated from
+    # the same user-vs-node rule as welcomeChannelForIdentity().
+    server_node = (QT_SRC / "ServerNode.cpp").read_text(encoding="utf-8")
+    server_node_h = (QT_SRC / "ServerNode.h").read_text(encoding="utf-8")
+    chat_backend = (QT_SRC / "ChatBackend.h").read_text(encoding="utf-8")
+    chat_win = (QT_SRC / "MainWindowChat.cpp").read_text(encoding="utf-8")
+    setup = SETUP.read_text(encoding="utf-8")
+
+    assert "virtual void setAccountKind(const QString &kind)" in chat_backend
+    assert "void setAccountKind(const QString &kind) override;" in server_node_h
+    assert 'message.insert("accountKind", m_accountKind);' in server_node
+    switcher = _body(
+        chat_win,
+        "void MainWindow::updateUserSwitcher()",
+        "const QString user = topBarUserName();",
+    )
+    assert "m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()" in switcher
+    assert "m_backend->setAccountKind(userLike" in switcher
+    assert "server->setAccountKind(" in setup
+
+
+def test_desktop_composer_bridges_forkbot_like_the_web_chat():
+    # ForkBot has no room connection: whichever client SENDS a mention asks
+    # /api/forkbot/chat and relays the reply. Only web clients did this, so
+    # ForkBot never answered desktop users. The desktop bridge mirrors the
+    # web one: author-side only, public channels only, recent conversation
+    # context attached, reply broadcast as forkbot/accountKind user.
+    header = HEADER.read_text(encoding="utf-8")
+    messages = MESSAGES.read_text(encoding="utf-8")
+    server_node = (QT_SRC / "ServerNode.cpp").read_text(encoding="utf-8")
+    chat_backend = (QT_SRC / "ChatBackend.h").read_text(encoding="utf-8")
+
+    assert "void maybeAskForkbot(const QString &conversation, const QString &text);" in header
+    assert "maybeAskForkbot(m_currentConversation, text);" in messages
+    bridge = _body(
+        messages,
+        "void MainWindow::maybeAskForkbot",
+        "void MainWindow::onComposerEdited",
+    )
+    assert '"(?:^|[^A-Za-z0-9_-])@?forkbot\\\\b"' in bridge
+    assert "m_privateChannels.contains(conversation)" in bridge
+    assert '/api/forkbot/chat' in bridge
+    assert '{QStringLiteral("context"), context}' in bridge
+    assert "m_backend->sendBotChat(channel, botMessage);" in bridge
+
+    assert "virtual void sendBotChat(const QString &channel, const QString &text)" in chat_backend
+    bot_chat = _body(
+        server_node,
+        "void ServerNode::sendBotChat",
+        "void ServerNode::sendDirect",
+    )
+    assert '{"senderId", QStringLiteral("forkbot")}' in bot_chat
+    assert '{"accountKind", QStringLiteral("user")}' in bot_chat
+    # Never into a private room — the bot round-trip would leak the reply
+    # path to the relay.
+    assert "m_privateChannels.contains(channel)" in bot_chat

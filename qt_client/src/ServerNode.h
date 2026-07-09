@@ -49,6 +49,8 @@ public:
     void setConnectionAuthorizer(std::function<bool(const QUrl &)> authorizer);
 
     void sendChat(const QString &channel, const QString &text) override;
+    void setAccountKind(const QString &kind) override;
+    void sendBotChat(const QString &channel, const QString &text) override;
     void sendDirect(const QString &targetId, const QString &text) override;
     void sendFile(const QString &conversation, const QString &fileName,
                   const QString &mimeType, const QByteArray &data) override;
@@ -157,6 +159,8 @@ private:
     QJsonObject makeMessage(const QString &type) const;
 
     QString m_userName;
+    // Stamped on every outgoing frame; web surfaces only display "user" frames.
+    QString m_accountKind = QStringLiteral("node");
     QString m_nodeName;
     QString m_ownerUser;
     QUrl m_url; // the mainnode we're currently pointed at (m_endpoints[m_endpointIndex])

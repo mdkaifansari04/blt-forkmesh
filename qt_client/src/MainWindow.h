@@ -2609,6 +2609,12 @@ private:
     // Save m_privateChannels to QSettings so they outlive a restart.
     void persistPrivateChannels();
     void sendCurrentMessage();
+    // ForkBot bridge: the bot has no room connection of its own — whichever
+    // client SENDS a message mentioning @forkbot asks the relay's
+    // /api/forkbot/chat and relays the reply into the room (the web chat
+    // surfaces do exactly the same, so this makes ForkBot answer desktop
+    // users too). Author-side only, so two clients never double-trigger it.
+    void maybeAskForkbot(const QString &conversation, const QString &text);
     void onComposerEdited(const QString &text);
     // @-mention autocomplete in the chat composer: refresh the candidate names
     // from the roster, show/hide the popup as an "@token" is typed, and replace

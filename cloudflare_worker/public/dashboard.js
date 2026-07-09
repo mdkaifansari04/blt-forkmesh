@@ -3894,6 +3894,40 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
+  // Amber "+N" badge for inbox items the relay is still holding for the owner
+  // node's next sync — signed submissions that exist but aren't in the served
+  // git mirror yet, so the regular tab count can't include them.
+  function setRepoTabPending(tab, count) {
+    const badge = $(`[data-dashboard-repo-tab-pending="${tab}"]`);
+    if (!badge) return;
+    const n = Number(count) || 0;
+    badge.classList.toggle("hidden", n <= 0);
+    if (n > 0) {
+      badge.textContent = `+${formatCount(n)} pending`;
+      badge.title = `${formatCount(n)} incoming item${n === 1 ? "" : "s"} waiting for the owner node to sync`;
+    }
+  }
+
+  // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
+  // fetch, not the caching fetchJson — the counts change as the owner node
+  // drains its inbox and must refresh on every repo open. Best-effort: a miss
+  // just leaves the badges hidden.
+  async function loadRepoPendingCounts(repo) {
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/pending`, {
+        headers: { accept: "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data || data.ok === false) return;
+      const pending = data.pending || {};
+      ["issues", "pulls", "discussions", "commits"].forEach((tab) => {
+        setRepoTabPending(tab, pending[tab]);
+      });
+    } catch (_) {
+      /* offline relay — badges stay hidden */
+    }
+  }
+
   // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
   // header once the real records are loaded (the initial render only knows a
   // bundled total, not the open/closed split).
@@ -5436,7 +5470,13 @@
                 : tab === "pulls"
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
-              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}</button>`;
+              // Inbox-backed tabs get a second (hidden until filled) badge for
+              // items still sitting in the relay's inbox awaiting the owner
+              // node's next sync — see loadRepoPendingCounts.
+              const pendingBadge = ["issues", "pulls", "discussions", "commits"].includes(tab)
+                ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
+                : "";
+              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
             }).join("")}
           </div>
         </div>
@@ -5574,6 +5614,7 @@
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
+    loadRepoPendingCounts(repo);
   }
 
   function findRepository(key) {

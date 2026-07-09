@@ -3808,6 +3808,16 @@ void MainWindow::updateNodeSwitcher()
 
 void MainWindow::updateUserSwitcher()
 {
+    // Every profile-hydration path lands here after updating the user/node
+    // flags, so this is also where the chat backend learns which account kind
+    // to stamp on outgoing frames (web surfaces only display "user" frames —
+    // same user-vs-node rule as welcomeChannelForIdentity()).
+    if (m_backend) {
+        const bool userLike =
+            m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+        m_backend->setAccountKind(userLike ? QStringLiteral("user")
+                                           : QStringLiteral("node"));
+    }
     const QString user = topBarUserName();
     const QString label = user.isEmpty() ? QStringLiteral("User") : user;
     if (m_userMenuButton) {
