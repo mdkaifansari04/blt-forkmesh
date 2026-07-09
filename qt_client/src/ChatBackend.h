@@ -109,6 +109,18 @@ public:
     virtual void editMessage(const QString &conversation, const QString &messageId,
                              const QString &newText) = 0;
     virtual void deleteMessage(const QString &conversation, const QString &messageId) = 0;
+    // Advertise which kind of account is speaking. Web/dashboard chat surfaces
+    // only display frames stamped accountKind "user" (nodes' operational
+    // chatter stays off the public room); without this stamp a desktop USER'S
+    // messages were invisible on the website. Default no-op.
+    virtual void setAccountKind(const QString &kind) { Q_UNUSED(kind); }
+    // Relay a ForkBot reply into a channel on behalf of this client — the bot
+    // has no connection of its own; whichever client triggered it broadcasts
+    // the answer (the web surfaces do the same). Default no-op.
+    virtual void sendBotChat(const QString &channel, const QString &text) {
+        Q_UNUSED(channel);
+        Q_UNUSED(text);
+    }
     // Admin moderation: broadcast a signed request to delete any message (the
     // signature, made by the admin's identity key over a canonical string, lets
     // every peer authenticate it). Default no-op for backends without it.

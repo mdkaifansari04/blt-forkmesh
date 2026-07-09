@@ -208,3 +208,19 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
     assert "appendMessage(kind, who, text, entry.id, entry.senderId,\n                  Number(entry.ts) || Date.now())" in CHAT
+
+
+def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
+    # The room DO reaps sockets that send nothing for 3 minutes; the dashboard
+    # chat used to go silently stale on idle tabs (no keepalive, no reconnect)
+    # so new messages just stopped arriving. Mirrors the /chat page fix: 60s
+    # presence beat (desktop cadence) + reconnect with backoff.
+    assert 'send(makePlain("presence"))' in CHAT
+    assert "}, 60000);" in CHAT
+    assert "function scheduleReconnect(" in CHAT
+    assert "reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);" in CHAT
+    close_handler = CHAT[
+        CHAT.index('socket.addEventListener("close"'):
+        CHAT.index('socket.addEventListener("error"')
+    ]
+    assert "scheduleReconnect();" in close_handler

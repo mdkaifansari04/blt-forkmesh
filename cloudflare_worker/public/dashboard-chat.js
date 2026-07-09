@@ -657,6 +657,23 @@
     });
   }
 
+  // The relay's room DO reaps sockets that send nothing for 3 minutes, and an
+  // idle dashboard tab used to send nothing — its chat silently went stale
+  // (no new messages) until the user typed. Reconnect with backoff and beat
+  // presence at the desktop's 60s cadence to stay live (mirrors chat.js).
+  let reconnectDelayMs = 2000;
+  let reconnectTimer = null;
+
+  function scheduleReconnect() {
+    if (reconnectTimer || !userSession()) return;
+    setStatus("Disconnected · reconnecting…");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, reconnectDelayMs);
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+  }
+
   async function connect() {
     if (socket || connecting) return;
     if (!userSession()) {
@@ -677,6 +694,7 @@
     socket = new WebSocket(`${scheme}//${RELAY_HOST}${CHAT_WS_PATH}`);
     socket.addEventListener("open", () => {
       connecting = false;
+      reconnectDelayMs = 2000;
       setStatus("Connected · end-to-end encrypted");
       send(makePlain("hello", { channels: [CHANNEL] }));
       const callbacks = openCallbacks;
@@ -687,12 +705,18 @@
     socket.addEventListener("close", () => {
       socket = null;
       connecting = false;
-      setStatus("Disconnected · send to rejoin");
+      scheduleReconnect();
     });
     socket.addEventListener("error", () => {
       if (socket) socket.close();
     });
   }
+
+  setInterval(() => {
+    if (socket && socket.readyState === WebSocket.OPEN && userSession()) {
+      send(makePlain("presence"));
+    }
+  }, 60000);
 
   function runWhenConnected(callback) {
     if (socket && socket.readyState === WebSocket.OPEN) {

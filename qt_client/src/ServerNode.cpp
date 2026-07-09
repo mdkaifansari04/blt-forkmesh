@@ -728,6 +728,11 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
                         {"senderId", m_nodeId},
                         {"sender", m_userName.left(kMaxDisplayNameChars)},
                         {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
+    // Web/dashboard chat surfaces only render frames stamped accountKind
+    // "user"; without this a desktop user's messages never appeared on the
+    // website even though they relayed fine.
+    if (!m_accountKind.isEmpty())
+        message.insert("accountKind", m_accountKind);
     if (!m_nodeName.isEmpty())
         message.insert("nodeName", m_nodeName);
     if (!m_ownerUser.isEmpty())
@@ -976,6 +981,36 @@ void ServerNode::sendChat(const QString &channel, const QString &text)
     markSeen(message.value("id").toString());
     storeHistory(message);
     sendEncrypted(message, true);
+    emitChat(message);
+}
+
+void ServerNode::setAccountKind(const QString &kind)
+{
+    m_accountKind = kind.trimmed().left(16);
+}
+
+void ServerNode::sendBotChat(const QString &channel, const QString &text)
+{
+    // A ForkBot reply relayed on behalf of this client (the bot has no room
+    // connection of its own). Mirrors the web clients' makeForkbotPlain frame:
+    // sender/senderId "forkbot", accountKind "user" so every surface — web
+    // and desktop — renders it. Never into a private room: the bot's reply
+    // text comes back over plain HTTPS, so it has no place in an E2E room
+    // whose members deliberately excluded the relay.
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty() || m_privateChannels.contains(channel))
+        return;
+    QJsonObject message{{"type", QStringLiteral("chat")},
+                        {"id", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                        {"senderId", QStringLiteral("forkbot")},
+                        {"sender", QStringLiteral("forkbot")},
+                        {"accountKind", QStringLiteral("user")},
+                        {"ts", double(QDateTime::currentMSecsSinceEpoch())},
+                        {"channel", channel},
+                        {"text", trimmed.left(kMaxTextChars)}};
+    markSeen(message.value("id").toString());
+    storeHistory(message);
+    sendEncrypted(message, false);
     emitChat(message);
 }
 

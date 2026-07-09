@@ -1090,11 +1090,76 @@ void MainWindow::sendCurrentMessage()
     if (text.isEmpty() || !m_backend || m_currentConversation.isEmpty())
         return;
     sendTypingState(false);
-    if (isDirectConversation(m_currentConversation))
+    if (isDirectConversation(m_currentConversation)) {
         m_backend->sendDirect(dmPeerId(m_currentConversation), text);
-    else
+    } else {
         m_backend->sendChat(m_currentConversation, text);
+        maybeAskForkbot(m_currentConversation, text);
+    }
     m_messageInput->clear();
+}
+
+void MainWindow::maybeAskForkbot(const QString &conversation, const QString &text)
+{
+    // Mirror of the web chat's maybeAskForkbot: only the message's own author
+    // triggers the bot (so several connected clients never double-fire it),
+    // only in public channels (a private room's members deliberately excluded
+    // the relay — the bot round-trip would leak the text to it), and the
+    // recent conversation rides along so ForkBot can resolve references like
+    // "that bug" the same way it does for web users.
+    static const QRegularExpression forkbotMention(
+        QStringLiteral("(?:^|[^A-Za-z0-9_-])@?forkbot\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (!m_networkAccess || !m_backend)
+        return;
+    if (m_privateChannels.contains(conversation))
+        return;
+    if (!forkbotMention.match(text).hasMatch())
+        return;
+
+    // The lead-up conversation, oldest first: the last few non-ForkBot lines
+    // before the triggering message (which sendChat just appended via
+    // emitChat -> onMessage, so it is the final history entry — drop it; the
+    // relay receives it separately as `message`).
+    QJsonArray context;
+    const QList<ChatMessage> &history = m_history.value(conversation);
+    const int end = history.size() - 1; // exclude the triggering message
+    for (int i = qMax(0, end - 12); i < end; ++i) {
+        const ChatMessage &entry = history.at(i);
+        if (entry.senderId == QLatin1String("forkbot") || entry.text.isEmpty())
+            continue;
+        context.append(QJsonObject{
+            {QStringLiteral("sender"), entry.senderName.left(32)},
+            {QStringLiteral("text"), entry.text.left(600)},
+        });
+    }
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/forkbot/chat"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    const QJsonObject payload{{QStringLiteral("message"), text},
+                              {QStringLiteral("sender"), chatDisplayName()},
+                              {QStringLiteral("room"), QStringLiteral("general")},
+                              {QStringLiteral("context"), context}};
+    const QString channel = conversation;
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, channel] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject resp =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        const QString botMessage =
+            resp.value(QStringLiteral("botMessage")).toString().trimmed();
+        if (botMessage.isEmpty() || !m_backend)
+            return;
+        // Relay the reply into the room as forkbot so every surface (desktop
+        // + web) sees the same answer.
+        m_backend->sendBotChat(channel, botMessage);
+    });
 }
 
 void MainWindow::onComposerEdited(const QString &text)

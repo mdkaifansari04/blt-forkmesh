@@ -857,6 +857,40 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
+  // Amber "+N" badge for inbox items the relay is still holding for the owner
+  // node's next sync — signed submissions that exist but aren't in the served
+  // git mirror yet, so the regular tab count can't include them.
+  function setRepoTabPending(tab, count) {
+    const badge = $(`[data-dashboard-repo-tab-pending="${tab}"]`);
+    if (!badge) return;
+    const n = Number(count) || 0;
+    badge.classList.toggle("hidden", n <= 0);
+    if (n > 0) {
+      badge.textContent = `+${formatCount(n)} pending`;
+      badge.title = `${formatCount(n)} incoming item${n === 1 ? "" : "s"} waiting for the owner node to sync`;
+    }
+  }
+
+  // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
+  // fetch, not the caching fetchJson — the counts change as the owner node
+  // drains its inbox and must refresh on every repo open. Best-effort: a miss
+  // just leaves the badges hidden.
+  async function loadRepoPendingCounts(repo) {
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/pending`, {
+        headers: { accept: "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data || data.ok === false) return;
+      const pending = data.pending || {};
+      ["issues", "pulls", "discussions", "commits"].forEach((tab) => {
+        setRepoTabPending(tab, pending[tab]);
+      });
+    } catch (_) {
+      /* offline relay — badges stay hidden */
+    }
+  }
+
   // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
   // header once the real records are loaded (the initial render only knows a
   // bundled total, not the open/closed split).

@@ -1147,6 +1147,12 @@ void MainWindow::startSession()
     }
     server->setEndpoints(endpoints);
     attachBackend(server);
+    // Stamp outgoing frames with this account's kind from the first frame —
+    // updateUserSwitcher() re-applies it whenever the profile hydrates.
+    server->setAccountKind(
+        (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
+            ? QStringLiteral("user")
+            : QStringLiteral("node"));
     if (!server->start())
         return;
 

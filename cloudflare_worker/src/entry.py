@@ -217,6 +217,7 @@ from urls import (  # noqa: E402
     REPO_PULLS_RE,
     REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
+    REPO_PENDING_RE,
     REPO_SUBSCRIBE_RE,
     REPO_BOUNTY_RE,
     REPO_SHARES_RE,
@@ -9277,6 +9278,38 @@ async def discussions_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+async def repo_pending_counts_handler(env, request, owner, repo):
+    # GET /api/repo/{owner}/{repo}/pending — content-free tallies of inbox
+    # items still waiting for the owner node's next sync, so the website can
+    # badge the Issues/Pulls/Discussions/Commits tabs with "N pending".
+    # Public: the counts reveal only submission volume (submissions come from
+    # the public anyway); the items themselves stay encrypted and owner-gated
+    # behind the per-topic GET routes. One UNION round trip, edge-cacheable
+    # briefly so repeated page views don't re-hit D1.
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    rows = await d1_all(
+        env,
+        "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox WHERE repo_bi=? "
+        "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
+        repo_bi, repo_bi, repo_bi, repo_bi,
+    )
+    counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
+    return json_response({
+        "ok": True,
+        "pending": {
+            "issues": counts.get("issues", 0),
+            "pulls": counts.get("pulls", 0),
+            "discussions": counts.get("discussions", 0),
+            "commits": counts.get("commits", 0),
+        },
+    }, cache_seconds=30)
+
+
 async def sync_handler(env, request):
     # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
     # everything the owner's desktop node needs across ALL of its repos:
@@ -11851,6 +11884,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await discussions_handler(self.env, request, owner, repo)
+
+        pending_match = REPO_PENDING_RE.match(url.path)
+        if pending_match:
+            owner = safe_segment(pending_match.group(1))
+            repo = safe_segment(pending_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_pending_counts_handler(self.env, request, owner, repo)
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:
