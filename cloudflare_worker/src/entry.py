@@ -8365,10 +8365,12 @@ def _forkbot_parse_issue_command(command):
     text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
     if not text:
         return None
+    # Verb-first ("create an issue to ...") or noun-first ("issue to ...",
+    # "bug: ...") — both common phrasings, both answerable offline.
     match = re.match(
         r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
         r"pls\s+|plz\s+)*"
-        r"(?:create|open|file|make|report|log|raise|add|track|submit)\s+"
+        r"(?:(?:create|open|file|make|report|log|raise|add|track|submit)\s+)?"
         r"(?:an?\s+|a\s+new\s+)?"
         r"(?:issue|bug|ticket|task|feature\s+request)\b"
         r"\s*(?:(?:to|for|about|that|saying|called|titled|re|regarding)\s+|"
@@ -8382,6 +8384,18 @@ def _forkbot_parse_issue_command(command):
     if len(description) < 3:
         return None
     return {"description": description}
+
+
+def _forkbot_command_hints_issue(command):
+    """Cheap offline signal that a ForkBot mention is about recording work —
+    used ONLY when the AI classifier is unreachable, so an unreachable model
+    degrades to filing the raw request instead of refusing with the help hint
+    (that refusal is exactly what users saw while the AI binding was silently
+    failing)."""
+    return bool(re.search(
+        r"(?i)\b(issues?|bugs?|tickets?|tasks?|todo|feature\s+request|"
+        r"create|open|file|track|log|report)\b",
+        clean_string(command, FORKBOT_MAX_COMMAND)))
 
 
 def _forkbot_context_text(context):
@@ -8455,27 +8469,53 @@ def _forkbot_clean_ai_issue_fields(parsed):
     return {"title": _forkbot_issue_title(title), "body": body}
 
 
-async def _forkbot_run_ai(env, system_prompt, user_prompt):
-    """Run the Workers AI chat model and return the raw response text (or None).
-    Shared by the issue-drafting and intent-classification helpers."""
+async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
+    """Run the Workers AI chat model and return the raw response text/object
+    (or None). Shared by the issue-drafting and intent-classification helpers.
+
+    When `schema` is given, the first attempt requests Workers AI JSON mode
+    (response_format json_schema) so a supporting model MUST return valid
+    JSON; models/plans without JSON mode fall back to a plain prompt-only
+    attempt. Every failure path logs the reason — the original implementation
+    swallowed all exceptions, which left ForkBot silently degraded (raw-echo
+    issue titles, natural requests answered with the help hint) with nothing
+    in the logs to say why."""
     ai = getattr(env, "AI", None)
-    if ai is None or not hasattr(ai, "run"):
+    if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
+        _console_error("ForkBot AI unavailable: env.AI binding is missing")
         return None
     model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
         FORKBOT_AI_DEFAULT_MODEL
-    payload = {
+    base_payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "max_tokens": 512,
     }
-    try:
+    attempts = []
+    if schema:
+        with_format = dict(base_payload)
+        with_format["response_format"] = {
+            "type": "json_schema", "json_schema": schema,
+        }
+        attempts.append(with_format)
+    attempts.append(base_payload)
+    result = None
+    ran = False
+    last_error = None
+    for payload in attempts:
         try:
             result = await ai.run(model, to_js(payload))
-        except TypeError:
-            result = await ai.run(model, payload)
-    except Exception:
+            ran = True
+            break
+        except Exception as error:
+            last_error = error
+            continue
+    if not ran:
+        _console_error(
+            "ForkBot AI call failed (%s): %s"
+            % (model, _safe_error_text(last_error)[:300]))
         return None
     try:
         if hasattr(result, "to_py"):
@@ -8484,28 +8524,60 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt):
         pass
     if isinstance(result, dict):
         for key in ("response", "text", "output"):
-            if isinstance(result.get(key), str):
-                return result.get(key)
+            value = result.get(key)
+            if isinstance(value, str):
+                return value
+            # JSON mode returns the parsed object under "response".
+            if isinstance(value, dict):
+                return value
         # Some bindings return the parsed object directly rather than a text
-        # field; hand the dict back so the caller can read title/body off it.
+        # field; hand the dict back so the caller can read fields off it.
         return result
     if isinstance(result, str):
         return result
+    _console_error(
+        "ForkBot AI returned an unusable %s response (%s)"
+        % (type(result).__name__, model))
     return None
+
+
+# JSON schemas for Workers AI JSON mode: a supporting model is FORCED to emit
+# exactly these shapes, eliminating the markdown-fence / chatty-preamble
+# failure modes small instruct models are prone to.
+FORKBOT_ISSUE_FIELDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+    },
+    "required": ["title", "body"],
+}
+FORKBOT_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["create_issue", "none"]},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+    },
+    "required": ["intent"],
+}
 
 
 async def _forkbot_ai_issue_fields(env, description, context_text=""):
     system_prompt = (
         "You turn a chat request into a ForkMesh issue. Use the conversation "
-        "context to resolve what the user is referring to. Return only compact "
-        "JSON with title and body string fields. Do not add markdown fences."
+        "context to resolve what the user is referring to. Respond with ONLY "
+        'one JSON object, no other text: {"title":"short summary",'
+        '"body":"what is wrong or what needs doing, with detail from the '
+        'conversation"}.'
     )
     user_prompt = clean_string(description, FORKBOT_MAX_COMMAND)
     if context_text:
         user_prompt = (
             "Recent conversation:\n" + context_text +
             "\n\nRequest: " + user_prompt)
-    result = await _forkbot_run_ai(env, system_prompt, user_prompt)
+    result = await _forkbot_run_ai(
+        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA)
     if result is None:
         return None
     if isinstance(result, dict):
@@ -8519,25 +8591,31 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
     conversation when the mention itself is only a pointer ("forkbot log that").
 
     Returns {"intent": "create_issue", "title", "body"} when an issue is
-    wanted, {"intent": "none"} when it clearly is not, or None when the model
-    is unavailable / unparseable so the caller can fall back."""
+    wanted, {"intent": "none"} when the model decided it clearly is not, or
+    None when the model is unavailable/unparseable — callers treat None as
+    "AI could not decide" and fall back to a heuristic, NOT as a refusal."""
     system_prompt = (
         "You are ForkBot, an assistant in a ForkMesh chat room. Decide whether "
-        "the user is asking you to open/file/track a bug, task, or feature as an "
-        "issue. They may phrase it any way, or refer to something discussed "
-        "earlier in the conversation rather than restating it. "
-        "Respond with ONLY compact JSON, no markdown fences, of the form "
-        '{"intent":"create_issue","title":"...","body":"..."} when an issue is '
-        'wanted, or {"intent":"none"} when it is not (a greeting, a question, '
-        "small talk). The title is a short summary; the body describes the "
-        "problem or task, drawing on the conversation for detail."
+        "the user wants a bug, task, feature, or improvement recorded as an "
+        "issue. They may phrase it any way at all (\"issue to ...\", \"can you "
+        "sort this out\", \"we should track that\"), or refer to something "
+        "discussed earlier in the conversation instead of restating it. When "
+        "in doubt and the message describes a problem, task, or request, "
+        "treat it as an issue. Respond with ONLY one JSON object, no other "
+        'text. Issue wanted: {"intent":"create_issue","title":"short '
+        'summary","body":"the problem or task, with detail from the '
+        'conversation"}. Not an issue (a greeting, a question about ForkMesh, '
+        'small talk): {"intent":"none"}. Examples: "issue to add dark mode" '
+        '-> {"intent":"create_issue","title":"Add dark mode","body":"Add dark '
+        'mode."}; "hello!" -> {"intent":"none"}.'
     )
     user_prompt = command
     if context_text:
         user_prompt = (
             "Recent conversation:\n" + context_text +
             "\n\nMessage to ForkBot: " + command)
-    result = await _forkbot_run_ai(env, system_prompt, user_prompt)
+    result = await _forkbot_run_ai(
+        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA)
     if result is None:
         return None
     parsed = result if isinstance(result, dict) else \
@@ -8554,7 +8632,9 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         return {"intent": "none"}
     fields = _forkbot_clean_ai_issue_fields(parsed)
     if not fields:
-        return {"intent": "none"}
+        # The model wanted an issue but produced no usable draft — let the
+        # caller's heuristic take over instead of refusing.
+        return None
     return {"intent": "create_issue", "title": fields["title"],
             "body": fields["body"]}
 
@@ -8695,7 +8775,10 @@ async def forkbot_chat_handler(env, request):
     #  1. The cheap regex catches an explicitly phrased command offline.
     #  2. Otherwise the AI classifier reads the command + conversation and
     #     decides whether an issue is wanted (and drafts it).
-    #  3. With no AI and no regex match, fall back to the help hint.
+    #  3. AI unreachable (None — distinct from a confident "none") but the
+    #     message plainly talks about issues/bugs/tracking: file the raw text
+    #     rather than refusing. Only a confident "none" or a message with no
+    #     work-recording signal at all gets the help hint.
     fields = None
     parsed = _forkbot_parse_issue_command(command)
     if parsed:
@@ -8707,6 +8790,8 @@ async def forkbot_chat_handler(env, request):
         interpreted = await _forkbot_ai_interpret(env, command, context_text)
         if interpreted and interpreted.get("intent") == "create_issue":
             fields = {"title": interpreted["title"], "body": interpreted["body"]}
+        elif interpreted is None and _forkbot_command_hints_issue(command):
+            fields = _forkbot_fallback_issue_fields(command)
 
     if not fields or not fields.get("body"):
         return json_response({

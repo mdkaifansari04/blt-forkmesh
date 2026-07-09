@@ -71,19 +71,17 @@ def test_blog_page_uses_editorial_feature_archive_shell():
         assert marker in html
 
 
-def test_blog_page_nav_only_links_auth():
-    parser = BlogNavParser()
-    parser.feed(_read(BLOG_PAGE))
-
-    assert [link.get("href") for link in parser.links] == ["/signup"]
-    assert [link.get("class") for link in parser.links] == ["blog1-login"]
-
-
-def test_blog_page_uses_homepage_logo_markup():
+def test_blog_page_mounts_the_universal_site_header():
+    # The blog's page-specific topbar (brand + hardcoded "Sign Up / Log In")
+    # was replaced by the shared session-aware header, which shows the
+    # logged-in account chip instead of the auth links.
     html = _read(BLOG_PAGE)
 
-    assert '<a class="brand" href="/" aria-label="ForkMesh home">' in html
-    assert '<img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true">' in html
+    assert 'href="/site-header.css"' in html
+    assert 'src="/site-header.js"' in html
+    assert '<div data-forkmesh-header="simple"></div>' in html
+    assert 'class="blog1-topbar"' not in html
+    assert "Sign Up / Log In" not in html
 
 
 def test_blog_page_footer_keeps_only_twitter_social_link():

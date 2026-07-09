@@ -940,20 +940,40 @@ function buildRow(record, prev) {
     prev && !prev.system && prev.senderId === record.senderId &&
     Number(record.ts) - Number(prev.ts) < GROUP_WINDOW_MS);
   const row = document.createElement("div");
+  const isBot = record.senderId === FORKBOT_SENDER_ID;
   row.className = "chat-msg" +
     (grouped ? " is-continuation" : " is-group-start") +
     (record.self ? " is-self" : "") +
-    (record.senderId === FORKBOT_SENDER_ID ? " is-bot" : "");
+    (isBot ? " is-bot" : "");
   row.dataset.id = record.id;
-  row.append(makeAvatar(record.sender, record.senderId === FORKBOT_SENDER_ID ? "bot" : "user"));
+  // Clicking the avatar or the author name opens the sender's profile at
+  // /@username on THIS relay (relative URL, so a self-hosted relay links to
+  // its own profile pages). ForkBot isn't an account, so it stays plain.
+  const avatar = makeAvatar(record.sender, isBot ? "bot" : "user");
+  if (isBot) {
+    row.append(avatar);
+  } else {
+    const avatarLink = document.createElement("a");
+    avatarLink.className = "chat-avatar-link";
+    avatarLink.href = mentionProfilePath(record.sender);
+    avatarLink.append(avatar);
+    row.append(avatarLink);
+  }
   const main = document.createElement("div");
   main.className = "chat-msg-main";
   if (!grouped) {
     const head = document.createElement("div");
     head.className = "chat-msg-head";
-    const author = document.createElement("span");
+    const author = document.createElement(isBot ? "span" : "a");
     author.className = "chat-author";
     author.textContent = record.sender;
+    if (!isBot) {
+      author.href = mentionProfilePath(record.sender);
+      author.addEventListener("mouseenter", () => showMentionCard(author, record.sender));
+      author.addEventListener("focus", () => showMentionCard(author, record.sender));
+      author.addEventListener("mouseleave", hideMentionCardSoon);
+      author.addEventListener("blur", hideMentionCardSoon);
+    }
     const time = document.createElement("span");
     time.className = "chat-time";
     time.textContent = fmtTime(record.ts);

@@ -27,7 +27,11 @@ FUNCS = {
     "repo_web_href",
     "_forkbot_extract_mention_command",
     "_forkbot_parse_issue_command",
+    "_forkbot_command_hints_issue",
     "_forkbot_context_text",
+    "js_nullish",
+    "_console_error",
+    "_safe_error_text",
     "_forkbot_issue_title",
     "_forkbot_fallback_issue_fields",
     "_forkbot_json_object_from_text",
@@ -49,6 +53,8 @@ CONSTANTS = {
     "FORKBOT_AI_DEFAULT_MODEL",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
     "FORKBOT_CONTEXT_MAX_CHARS",
+    "FORKBOT_ISSUE_FIELDS_SCHEMA",
+    "FORKBOT_INTENT_SCHEMA",
     "MAX_ISSUE_BYTES",
     "MAX_PENDING_ISSUES",
     "MAX_PENDING_PER_AUTHOR",
@@ -445,3 +451,108 @@ def test_web_chats_forward_mentions_and_broadcast_bot_replies():
         # Recent conversation is buffered and forwarded so ForkBot has context.
         assert "rememberContext(" in script
         assert "context" in script
+
+
+def test_forkbot_regex_catches_noun_first_issue_commands():
+    # "@forkbot issue to add more features" was answered with the help hint —
+    # the fast path only knew verb-first phrasings.
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_issue_command"]
+    assert parse("issue to add more features to FOrkbot") == {
+        "description": "add more features to FOrkbot"}
+    assert parse("bug: the mirror panel flickers") == {
+        "description": "the mirror panel flickers"}
+    assert parse("ticket about slow release downloads") == {
+        "description": "slow release downloads"}
+    assert parse("how do issues work?") is None
+
+
+def test_forkbot_files_the_raw_request_when_ai_is_unreachable():
+    # env.AI missing/erroring must degrade to filing the plainly-issue-shaped
+    # request, not refuse with the help hint (the reported bug: the AI binding
+    # failed silently and every natural request got "I can open issues...").
+    env, calls, ns = _env_and_calls(ai=None)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": ("forkbot you should be able to get issue context and "
+                    "create issues - create one for that"),
+        "sender": "jett",
+    })))
+
+    assert response["status"] == 201
+    assert calls["inserted"]
+    body = calls["inserted"][0][1]["event"]["body"]
+    assert "create issues" in body
+
+
+def test_forkbot_ai_confident_none_still_returns_help():
+    class _AI:
+        async def run(self, model, payload):
+            return {"response": json.dumps({"intent": "none"})}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot create some good vibes in here",
+    })))
+    assert response["status"] == 200
+    assert response["data"]["action"] == "help"
+    assert calls["inserted"] == []
+
+
+def test_forkbot_requests_json_mode_then_falls_back_without_it():
+    # First attempt carries response_format (Workers AI JSON mode); a model or
+    # plan that rejects it gets a plain prompt-only retry.
+    class _AI:
+        def __init__(self):
+            self.payloads = []
+
+        async def run(self, model, payload):
+            self.payloads.append(payload)
+            if "response_format" in payload:
+                raise RuntimeError("response_format not supported")
+            return {"response": json.dumps({
+                "intent": "create_issue",
+                "title": "Login timeouts",
+                "body": "The login page keeps timing out.",
+            })}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai, catalog_issue_max=0)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot the login page keeps timing out, sort it out",
+    })))
+
+    assert response["status"] == 201
+    assert len(ai.payloads) == 2
+    assert "response_format" in ai.payloads[0]
+    assert ai.payloads[0]["response_format"]["type"] == "json_schema"
+    assert "response_format" not in ai.payloads[1]
+    assert calls["inserted"][0][1]["titleIfNew"] == "Login timeouts"
+
+
+def test_forkbot_handles_json_mode_object_responses():
+    # With JSON mode active the binding returns the parsed object under
+    # "response" instead of a string.
+    class _AI:
+        async def run(self, model, payload):
+            return {"response": {
+                "intent": "create_issue",
+                "title": "Add dark mode",
+                "body": "Users asked for a dark theme.",
+            }}
+
+    env, calls, ns = _env_and_calls(ai=_AI(), catalog_issue_max=0)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot folks keep asking for a dark theme, get it tracked",
+    })))
+    assert response["status"] == 201
+    assert calls["inserted"][0][1]["titleIfNew"] == "Add dark mode"
+
+
+def test_forkbot_command_hint_matches_work_recording_language():
+    ns = _load_forkbot()
+    hints = ns["_forkbot_command_hints_issue"]
+    assert hints("create one for that")
+    assert hints("you should track this bug")
+    assert hints("issue to do the thing")
+    assert not hints("good morning everyone")
+    assert not hints("what's the weather like")

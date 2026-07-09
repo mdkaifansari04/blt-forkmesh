@@ -41,13 +41,12 @@
       .blog1-footer { margin-top:84px; min-height:190px; display:flex; align-items:center; justify-content:space-between; gap:24px; padding:36px 56px; border-top:1px solid var(--blog1-line); } .blog1-footer-brand { display:inline-flex; align-items:center; gap:12px; font-size:24px; font-weight:900; letter-spacing:0; } .blog1-footer-link { color:var(--blog1-muted); } .blog1-footer-link:hover { color:var(--blog1-text); }
       @media (max-width:1100px) { .blog1-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .blog1-hero { grid-template-columns:1fr; } .blog1-hero h1 { font-size:76px; } .blog1-featured-copy h2 { font-size:48px; } .blog1-section h2 { font-size:40px; } .blog1-search-panel h2 { font-size:42px; } } @media (max-width:760px) { body { background:var(--blog1-bg); } .blog1-shell { border:0; } .blog1-topbar { height:72px; padding:0 20px; } .blog1-topbar .brand { font-size:22px; } .blog1-hero { padding:70px 20px 34px; } .blog1-hero h1 { font-size:48px; } .blog1-main { padding:32px 20px 0; } .blog1-featured-copy h2 { font-size:34px; } .blog1-section h2 { font-size:30px; } .blog1-search-panel h2 { font-size:34px; } .blog1-grid { grid-template-columns:1fr; gap:22px; } .blog1-post-image { height:220px; } .blog1-section-head { display:block; } .blog1-footer { padding:30px 20px; display:block; } }
     </style>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
   <body>
     <div class="blog1-shell">
-      <header class="blog1-topbar">
-        <a class="brand" href="/" aria-label="ForkMesh home"><img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true"><span>ForkMesh</span></a>
-        <nav class="blog1-nav" aria-label="Blog"><a class="blog1-login" href="/signup">Sign Up / Log In</a></nav>
-      </header>
+      <div data-forkmesh-header="simple"></div>
       <section class="blog1-hero">
         <div>
           <p class="blog1-eyebrow">Blog</p>
