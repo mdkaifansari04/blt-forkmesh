@@ -57,6 +57,7 @@ struct AgentDiffStat {
 #include <QTextCursor>
 #include <QThread>
 #include <QUrl>
+#include <QUrlQuery>
 
 #include <functional>
 #include <limits>
@@ -666,6 +667,10 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void probeRelayLatency();      // measure round-trip to the active relay (radar)
+    // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
+    // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
+    // fresh sample exists and only probes when the socket is down.
+    void onRelayLatencySampled(int ms);
     void initRelayReachabilityWatch(); // OS reachability → instant radar flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
@@ -2461,6 +2466,31 @@ private:
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
+    // Event-driven relay sync: the relay pushes a minimal {"type":"event"}
+    // frame over the repo's host tunnel socket whenever it stores something
+    // for this node (inbox item, agent prompt). scheduleRelaySync() coalesces
+    // those into one signed GET /api/sync that returns everything for every
+    // owned repo in a single round-trip; a slow fallback tick covers dropped
+    // events. Replaces the old 30–60s polling of the per-topic endpoints.
+    void scheduleRelaySync();
+    void performRelaySync();
+    // Merge one repo's pending payload from /api/sync (or a per-topic drain
+    // reply) into the local stores, ack the inbox, and raise notifications.
+    // Shared by the drain* fetchers and the /api/sync dispatcher.
+    void applyIssuesInboxPayload(const RepositoryRecord &repo,
+                                 const QJsonArray &pending, bool interactive);
+    void applyPullsInboxPayload(const RepositoryRecord &repo,
+                                const QJsonArray &pending, bool interactive);
+    void applyDiscussionsInboxPayload(const RepositoryRecord &repo,
+                                      const QJsonArray &pending,
+                                      bool interactive);
+    void applyCommitInboxPayload(const RepositoryRecord &repo,
+                                 const QJsonArray &pending, bool interactive);
+    void applyAgentPromptsPayload(const RepositoryRecord &repo,
+                                  const QJsonArray &prompts);
+    // owner/ts/sig query params carrying the forkmesh-issues-pull-v1 drain
+    // token — the shared auth for inbox GET/DELETE and /api/sync.
+    QUrlQuery signedInboxQuery(const QString &owner) const;
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
@@ -2734,6 +2764,7 @@ private:
     QWidget *m_relayRadar = nullptr;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
+    qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
     int m_relayProbeFailures = 0;          // consecutive failed probes; the radar
                                            // only flips to "offline" after the
                                            // second miss (one blip isn't an outage)
@@ -3000,7 +3031,13 @@ private:
     QPlainTextEdit *m_agentPromptPreambleEdit = nullptr;
     QPlainTextEdit *m_prioritizePromptEdit = nullptr;
     QTimer *m_mirrorSyncTimer = nullptr;
-    QTimer *m_inboxPollTimer = nullptr; // background drain of owned repo inboxes
+    QTimer *m_inboxPollTimer = nullptr; // slow fallback tick for performRelaySync()
+    // Coalesces relay "event" frames (host tunnel push) into one /api/sync.
+    QTimer *m_relaySyncDebounce = nullptr;
+    // False after the relay 404s /api/sync (older worker): fall back to the
+    // legacy per-topic polling until the app talks to an upgraded relay again.
+    bool m_relaySyncSupported = true;
+    bool m_relaySyncInFlight = false;
     QTimer *m_autoUpdateTimer = nullptr; // periodic check for maybeAutoUpdate()
     bool m_autoUpdateChecking = false;   // a background "git fetch" check is in flight
 
@@ -4059,7 +4096,10 @@ private:
     // re-armed after a status flip so a burst of updates coalesces into one push.
     QTimer *m_agentSyncPushTimer = nullptr;
     QTimer *m_agentSyncDebounceTimer = nullptr;
-    QTimer *m_agentPromptDrainTimer = nullptr;
+    // Last snapshot body POSTed per owner/name: the periodic push skips the
+    // network write when the sessions payload hasn't changed (idle nodes used
+    // to re-upload an identical snapshot every 30s).
+    QHash<QString, QByteArray> m_lastAgentPushPayload;
     // Each running Claude Code session has its own worktree + stream + buffered
     // events, so their output never leaks across sessions; the transcript view is
     // repainted from the selected session's buffer.
@@ -4611,6 +4651,13 @@ private:
     QSet<QString> m_catalogPublishInFlight;      // owner/name
     QSet<QString> m_catalogPublishQueued;        // owner/name dirtied mid-flight
     QSet<QString> m_catalogPublishDialogQueued;  // owner/name wants UI feedback
+    // Fingerprint (sha256 of the record minus volatile fields) of the last
+    // successfully published catalog record per repo, and when it was sent.
+    // publishRepositoryNow() skips the network write when nothing the catalog
+    // shows has changed — roster flicker used to republish an identical record
+    // every ~30s, hammering the relay's D1 for no reader-visible difference.
+    QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
+    QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
     QList<MemberInfo> m_homeRoster;

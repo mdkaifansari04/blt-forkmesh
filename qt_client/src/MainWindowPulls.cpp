@@ -6866,7 +6866,7 @@ void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive, backoffKey] {
+            [this, reply, repo, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
@@ -6878,39 +6878,56 @@ void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
-                                       .object()
-                                       .value("pending")
-                                       .toArray();
-        if (pending.isEmpty()) {
-            if (interactive)
-                QMessageBox::information(this, "Sync inbox",
-                                         "No pending commit comments.");
-            return;
-        }
-        CommitCommentStore store(writable.localPath, writable.mirrorPath,
-                                 &m_profileIdentity, m_userName);
-        int merged = 0;
-        for (const QJsonValue &value : pending) {
-            const QJsonObject obj = value.toObject();
-            const QString sha = obj.value("sha").toString();
-            const CommitComment c =
-                CommitComment::fromJson(obj.value("comment").toObject());
-            if (store.applyRemoteComment(sha, c))
-                ++merged;
-        }
-        m_networkAccess->deleteResource(QNetworkRequest(url)); // ack/clear
-        const bool onThisRepo =
-            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
-            m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
-            m_repositories.at(m_repoDetailIndex).name == repo.name;
-        if (onThisRepo && !m_currentCommitHash.isEmpty())
-            renderCommitThread(m_currentCommitHash);
-        if (interactive)
-            QMessageBox::information(
-                this, "Sync inbox",
-                QStringLiteral("Merged %1 commit comment(s).").arg(merged));
+        applyCommitInboxPayload(repo,
+                                QJsonDocument::fromJson(reply->readAll())
+                                    .object()
+                                    .value("pending")
+                                    .toArray(),
+                                interactive);
     });
+}
+
+// Merge pending commit comments into the local store and ack the inbox.
+// `pending` comes from either a per-repo GET /commits drain reply or the
+// repo's slice of the consolidated GET /api/sync response.
+void MainWindow::applyCommitInboxPayload(const RepositoryRecord &repo,
+                                         const QJsonArray &pending,
+                                         bool interactive)
+{
+    if (pending.isEmpty()) {
+        if (interactive)
+            QMessageBox::information(this, "Sync inbox",
+                                     "No pending commit comments.");
+        return;
+    }
+    const RepositoryRecord writable = writableRecordFor(repo);
+    CommitCommentStore store(writable.localPath, writable.mirrorPath,
+                             &m_profileIdentity, m_userName);
+    if (!store.canWrite())
+        return;
+    int merged = 0;
+    for (const QJsonValue &value : pending) {
+        const QJsonObject obj = value.toObject();
+        const QString sha = obj.value("sha").toString();
+        const CommitComment c =
+            CommitComment::fromJson(obj.value("comment").toObject());
+        if (store.applyRemoteComment(sha, c))
+            ++merged;
+    }
+    QUrl ackUrl = commitsApiUrl(repo);
+    ackUrl.setQuery(
+        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_networkAccess->deleteResource(QNetworkRequest(ackUrl)); // ack/clear
+    const bool onThisRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+        m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+        m_repositories.at(m_repoDetailIndex).name == repo.name;
+    if (onThisRepo && !m_currentCommitHash.isEmpty())
+        renderCommitThread(m_currentCommitHash);
+    if (interactive)
+        QMessageBox::information(
+            this, "Sync inbox",
+            QStringLiteral("Merged %1 commit comment(s).").arg(merged));
 }
 
 void MainWindow::syncPullsInbox()
@@ -6951,7 +6968,7 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive, backoffKey] {
+            [this, reply, repo, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
@@ -6963,82 +6980,99 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
-                                       .object()
-                                       .value("pending")
-                                       .toArray();
-        if (pending.isEmpty()) {
-            if (interactive)
-                QMessageBox::information(this, "Sync inbox",
-                                         "No pending pull requests.");
-            return;
-        }
-        PullStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
-                        m_userName);
-        int merged = 0;
-        QString lastAuthor;
-        QString lastTitle;
-        for (const QJsonValue &value : pending) {
-            const QJsonObject obj = value.toObject();
-            // A submission is either a whole new PR ("pull") or a conversation
-            // event on an existing PR ("event" + "number").
-            if (obj.contains("event")) {
-                const int number = obj.value("number").toInt();
-                const PullEvent ev =
-                    PullEvent::fromJson(obj.value("event").toObject());
-                if (store.applyRemoteEvent(number, ev)) {
-                    ++merged;
-                    lastAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
-                                                         : ev.authorName;
-                    lastTitle = QStringLiteral("review on #%1").arg(number);
-                }
-                continue;
-            }
-            const PullRequest pr =
-                PullRequest::fromJson(obj.value("pull").toObject());
-            if (store.applyRemotePull(pr)) {
-                ++merged;
-                lastAuthor = pr.authorName.isEmpty() ? pr.author.left(8)
-                                                     : pr.authorName;
-                lastTitle = pr.title;
-            }
-        }
-        m_networkAccess->deleteResource(QNetworkRequest(url)); // ack/clear
-        const bool onThisRepo =
-            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
-            m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
-            m_repositories.at(m_repoDetailIndex).name == repo.name;
-        if (onThisRepo)
-            reloadPulls();
-        // Incoming PRs just landed in the working copy: push them to the mirror
-        // and notify peers now so every node's count converges promptly.
-        if (merged > 0) {
-            propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
-            // An inbound PR or review may @mention the owner running this node.
-            scanRepoMentionsFor(writable);
-        }
-        if (interactive) {
-            QMessageBox::information(
-                this, "Sync inbox",
-                QStringLiteral("Merged %1 pull request(s) into pulls/.").arg(merged));
-        } else if (merged > 0) {
-            const QString body =
-                merged == 1
-                    ? QStringLiteral("%1 opened a pull request: %2")
-                          .arg(lastAuthor, lastTitle)
-                    : QStringLiteral("%1 new pull requests on %2/%3")
-                          .arg(merged)
-                          .arg(repo.owner, repo.name);
-            flashMessage(body);
-            if (notifyEnabled(kPullAlertSetting))
-                notifyIfInactive(
-                    QString::fromUtf8("ForkMesh \xE2\x80\x94 new pull request"), body);
-            if (notifyEnabled(kPullAlertSetting) && m_trayIcon &&
-                QSystemTrayIcon::supportsMessages())
-                m_trayIcon->showMessage("ForkMesh — new pull request", body,
-                                        QSystemTrayIcon::Information, 6000);
-        }
+        applyPullsInboxPayload(repo,
+                               QJsonDocument::fromJson(reply->readAll())
+                                   .object()
+                                   .value("pending")
+                                   .toArray(),
+                               interactive);
     });
+}
+
+// Merge pending pull submissions into the local store, ack the inbox, and
+// raise notifications. `pending` comes from either a per-repo GET /pulls
+// drain reply or the repo's slice of the consolidated GET /api/sync response.
+void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
+                                        const QJsonArray &pending,
+                                        bool interactive)
+{
+    if (pending.isEmpty()) {
+        if (interactive)
+            QMessageBox::information(this, "Sync inbox",
+                                     "No pending pull requests.");
+        return;
+    }
+    const RepositoryRecord writable = writableRecordFor(repo);
+    PullStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                    m_userName);
+    if (!store.canWrite())
+        return;
+    int merged = 0;
+    QString lastAuthor;
+    QString lastTitle;
+    for (const QJsonValue &value : pending) {
+        const QJsonObject obj = value.toObject();
+        // A submission is either a whole new PR ("pull") or a conversation
+        // event on an existing PR ("event" + "number").
+        if (obj.contains("event")) {
+            const int number = obj.value("number").toInt();
+            const PullEvent ev =
+                PullEvent::fromJson(obj.value("event").toObject());
+            if (store.applyRemoteEvent(number, ev)) {
+                ++merged;
+                lastAuthor = ev.authorName.isEmpty() ? ev.author.left(8)
+                                                     : ev.authorName;
+                lastTitle = QStringLiteral("review on #%1").arg(number);
+            }
+            continue;
+        }
+        const PullRequest pr =
+            PullRequest::fromJson(obj.value("pull").toObject());
+        if (store.applyRemotePull(pr)) {
+            ++merged;
+            lastAuthor = pr.authorName.isEmpty() ? pr.author.left(8)
+                                                 : pr.authorName;
+            lastTitle = pr.title;
+        }
+    }
+    QUrl ackUrl = pullsApiUrl(repo);
+    ackUrl.setQuery(
+        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_networkAccess->deleteResource(QNetworkRequest(ackUrl)); // ack/clear
+    const bool onThisRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+        m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+        m_repositories.at(m_repoDetailIndex).name == repo.name;
+    if (onThisRepo)
+        reloadPulls();
+    // Incoming PRs just landed in the working copy: push them to the mirror
+    // and notify peers now so every node's count converges promptly.
+    if (merged > 0) {
+        propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
+        // An inbound PR or review may @mention the owner running this node.
+        scanRepoMentionsFor(writable);
+    }
+    if (interactive) {
+        QMessageBox::information(
+            this, "Sync inbox",
+            QStringLiteral("Merged %1 pull request(s) into pulls/.").arg(merged));
+    } else if (merged > 0) {
+        const QString body =
+            merged == 1
+                ? QStringLiteral("%1 opened a pull request: %2")
+                      .arg(lastAuthor, lastTitle)
+                : QStringLiteral("%1 new pull requests on %2/%3")
+                      .arg(merged)
+                      .arg(repo.owner, repo.name);
+        flashMessage(body);
+        if (notifyEnabled(kPullAlertSetting))
+            notifyIfInactive(
+                QString::fromUtf8("ForkMesh \xE2\x80\x94 new pull request"), body);
+        if (notifyEnabled(kPullAlertSetting) && m_trayIcon &&
+            QSystemTrayIcon::supportsMessages())
+            m_trayIcon->showMessage("ForkMesh — new pull request", body,
+                                    QSystemTrayIcon::Information, 6000);
+    }
 }
 
 void MainWindow::pollOwnedInboxes()
@@ -7072,4 +7106,126 @@ void MainWindow::pollOwnedInboxes()
         drainDiscussionsInboxFor(repo, /*interactive=*/false);
         drainCommitInboxFor(repo, /*interactive=*/false);
     }
+}
+
+// owner/ts/sig query params carrying a freshly-signed forkmesh-issues-pull-v1
+// drain token — the shared auth for inbox GET/DELETE and GET /api/sync.
+QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
+{
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
+    QUrlQuery query;
+    query.addQueryItem("owner", owner);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    return query;
+}
+
+// Coalesce a burst of relay "event" frames (one arrives per website write,
+// possibly across several repos' host sockets) into a single /api/sync fetch.
+void MainWindow::scheduleRelaySync()
+{
+    if (!m_relaySyncDebounce) {
+        m_relaySyncDebounce = new QTimer(this);
+        m_relaySyncDebounce->setSingleShot(true);
+        m_relaySyncDebounce->setInterval(2000);
+        connect(m_relaySyncDebounce, &QTimer::timeout, this,
+                &MainWindow::performRelaySync);
+    }
+    if (!m_relaySyncDebounce->isActive())
+        m_relaySyncDebounce->start();
+}
+
+// One signed GET /api/sync returns everything the relay holds for this
+// account across every owned repo — pending issue/pull/discussion/commit
+// inbox items and queued agent prompts — and the shared apply* helpers merge
+// each slice exactly as the old per-topic drains did. Runs when a relay event
+// frame arrives (scheduleRelaySync) and on the slow m_inboxPollTimer fallback
+// tick that covers dropped events and reconnect gaps.
+void MainWindow::performRelaySync()
+{
+    if (!m_networkAccess)
+        return;
+    if (!m_relaySyncSupported) {
+        // Older relay without /api/sync: keep the legacy per-topic polling.
+        pollOwnedInboxes();
+        drainAgentPrompts();
+        return;
+    }
+    if (m_relaySyncInFlight)
+        return;
+    const QString account = m_accountName.isEmpty()
+        ? QSettings().value(kAccountNameSetting).toString().trimmed()
+        : m_accountName;
+    if (account.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!m_pollBackoff.ready(QStringLiteral("relaySync"), nowMs))
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/sync"));
+    url.setQuery(signedInboxQuery(repoSegment(account, QStringLiteral("owner"))));
+    m_relaySyncInFlight = true;
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_relaySyncInFlight = false;
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status == 404 ||
+                reply->error() == QNetworkReply::ContentNotFoundError) {
+                // Relay predates /api/sync: fall back to per-topic polling for
+                // the rest of this run (the fallback tick keeps calling us).
+                m_relaySyncSupported = false;
+                pollOwnedInboxes();
+                drainAgentPrompts();
+                return;
+            }
+            m_pollBackoff.noteFailure(QStringLiteral("relaySync"),
+                                      QDateTime::currentMSecsSinceEpoch());
+            return;
+        }
+        m_pollBackoff.noteSuccess(QStringLiteral("relaySync"));
+        const QJsonArray repos = QJsonDocument::fromJson(reply->readAll())
+                                     .object()
+                                     .value("repos")
+                                     .toArray();
+        const bool autoSyncIssues =
+            QSettings().value(kAutoSyncIssuesSetting, true).toBool();
+        for (const QJsonValue &value : repos) {
+            const QJsonObject entry = value.toObject();
+            const QString entryOwner = entry.value("owner").toString();
+            const QString entryName = entry.value("name").toString();
+            int idx = -1;
+            for (int i = 0; i < m_repositories.size(); ++i) {
+                const RepositoryRecord &r = m_repositories.at(i);
+                if (!r.previewOnly &&
+                    r.owner.compare(entryOwner, Qt::CaseInsensitive) == 0 &&
+                    r.name.compare(entryName, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0)
+                continue;
+            const RepositoryRecord repo = m_repositories.at(idx);
+            const RepositoryRecord writable = writableRecordFor(repo);
+            // Same gates as pollOwnedInboxes: issues only merge into a clean
+            // working tree with the auto-sync option on; the apply helpers
+            // themselves skip repos this node can't write.
+            if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
+                applyIssuesInboxPayload(repo, entry.value("issues").toArray(),
+                                        /*interactive=*/false);
+            applyPullsInboxPayload(repo, entry.value("pulls").toArray(),
+                                   /*interactive=*/false);
+            applyDiscussionsInboxPayload(repo,
+                                         entry.value("discussions").toArray(),
+                                         /*interactive=*/false);
+            applyCommitInboxPayload(repo, entry.value("commits").toArray(),
+                                    /*interactive=*/false);
+            applyAgentPromptsPayload(repo, entry.value("agentPrompts").toArray());
+        }
+    });
 }

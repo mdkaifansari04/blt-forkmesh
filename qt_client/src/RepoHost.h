@@ -43,6 +43,10 @@ signals:
     // Emitted whenever a web request is served for this repo; clone=true for a
     // git clone (upload-pack) so the client can count relays and clones.
     void requestServed(const QString &owner, const QString &name, bool clone);
+    // Minimal "something changed on the relay" push (topic only, no payload);
+    // the app answers with one coalesced GET /api/sync instead of fast polling.
+    void relayEventReceived(const QString &owner, const QString &name,
+                            const QString &topic);
     void networkDiagnosticsChanged();
 
 private:

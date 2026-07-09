@@ -3512,13 +3512,29 @@ void MainWindow::updateRelaySwitcher()
                                QString::number(m_servers.size()));
 }
 
+// The room socket's keepalive pong carries the relay round trip for free every
+// ~25s; feed it straight to the radar so no HTTP probe is needed while the
+// socket is up (probeRelayLatency below skips itself when this is fresh).
+void MainWindow::onRelayLatencySampled(int ms)
+{
+    m_lastWsLatencySampleMs = QDateTime::currentMSecsSinceEpoch();
+    m_relayProbeFailures = 0;
+    if (m_relayRadar)
+        static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
+}
+
 // Measure the round-trip latency to the active relay and feed it to the radar
 // readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
 // Durable-Object fan-out) and time the request; a transport error or timeout
 // flips the radar to its red "offline" alert. Only one probe runs at a time.
+// While the room socket is connected its keepalive pong updates the radar
+// every ~25s (onRelayLatencySampled), so this HTTP probe only fires when that
+// signal has gone quiet — i.e. the socket is down or reconnecting.
 void MainWindow::probeRelayLatency()
 {
     if (!m_relayRadar || !m_networkAccess || m_relayProbeInFlight)
+        return;
+    if (QDateTime::currentMSecsSinceEpoch() - m_lastWsLatencySampleMs < 90 * 1000)
         return;
     auto *radar = static_cast<RelayRadarWidget *>(m_relayRadar);
 
@@ -5010,6 +5026,12 @@ void MainWindow::reattestStalePins()
                                                "drifted past the relay's pin; "
                                                "re-attesting automatically.")
                                     .arg(c.cowner, c.name));
+                            // The RELAY's record is what drifted, so the local
+                            // publish fingerprint may still read "unchanged" —
+                            // drop it so the unchanged-skip gate can't swallow
+                            // this corrective write.
+                            m_catalogPublishedFingerprint.remove(
+                                catalogPublishKey(m_repositories.at(c.index)));
                             publishRepository(c.index, false);
                             if (c.index == m_repoDetailIndex)
                                 touchedOpen = true;

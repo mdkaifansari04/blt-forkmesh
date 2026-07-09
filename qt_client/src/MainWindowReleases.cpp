@@ -1857,11 +1857,15 @@ void MainWindow::loadMirrorNodesPanel()
     // they pulse (adhoc #218).
     activityDots.append(catalogOnlyDots);
 
-    // Refresh the catalog mirror list (throttled per source); the async reply
-    // re-renders this panel so newly-discovered mirrors appear without a restart.
+    // Refresh the catalog mirror list; the async reply re-renders this panel so
+    // newly-discovered mirrors appear without a restart. Opening a different
+    // repo fetches immediately; while the same repo stays open, roster flicker
+    // re-runs this panel constantly, so re-hit the relay only every few minutes
+    // — the roster itself already carries the live peers' mirror adverts, and
+    // /mirrors only adds nodes that are currently offline (those change slowly).
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (m_catalogMirrorsFetchSource != source ||
-        nowMs - m_catalogMirrorsFetchedMs > 15000) {
+        nowMs - m_catalogMirrorsFetchedMs > 5 * 60 * 1000) {
         m_catalogMirrorsFetchSource = source;
         m_catalogMirrorsFetchedMs = nowMs;
         fetchCatalogMirrors(sourceOwner,
