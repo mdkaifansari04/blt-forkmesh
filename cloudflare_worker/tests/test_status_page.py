@@ -33,6 +33,7 @@ def _load(*names, extra_globals=None):
     urls_tree = ast.parse(URLS_TEXT, filename=str(URLS))
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
+        "RELEASE_BLOB_RE", "REPO_HOST_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
@@ -97,12 +98,19 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         return []
 
     async def d1_run(_env, sql, *args):
+        # The samples are written as one multi-row upsert per table (see
+        # record_status_sample): decode the flat arg list back into rows.
         if sql.startswith("INSERT INTO system_status_daily"):
-            inserted.append({"system": args[1], "failure": args[2]})
+            for i in range(0, len(args), 3):
+                inserted.append({"system": args[i + 1], "failure": args[i + 2]})
         elif sql.startswith("INSERT INTO system_status_hourly"):
-            hourly.append({"system": args[1], "failure": args[2], "reason": args[3]})
+            for i in range(0, len(args), 4):
+                hourly.append({"system": args[i + 1], "failure": args[i + 2],
+                               "reason": args[i + 3]})
         elif sql.startswith("INSERT INTO system_status_minute"):
-            minutely.append({"system": args[1], "ok": args[2], "reason": args[3]})
+            for i in range(0, len(args), 4):
+                minutely.append({"system": args[i + 1], "ok": args[i + 2],
+                                 "reason": args[i + 3]})
 
     async def noop(*_a, **_k):
         return None
@@ -190,6 +198,132 @@ def test_reason_includes_status_and_message_and_extra_count():
     ])
     assert results["api"] == 1
     assert reasons["api"] == "500 on /api/repositories: boom (+1 more)"
+
+
+def test_offline_node_tunnel_503s_do_not_fail_any_system():
+    # 502/503/504 on host-tunnel content paths mean the one desktop node
+    # holding that content is unreachable — node availability (tracked by
+    # host_presence / git_hosting), not an API outage. A single offline node's
+    # release blob being re-requested every few minutes used to paint the
+    # whole "api" system red on /status.
+    blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "a" * 64
+    results, reasons, _minutes = _run_sample(error_rows=[
+        {"path": blob, "status": 503, "message": "response status 503"},
+        {"path": "/api/repo/somenode/forkmesh/tree", "status": 504,
+         "message": "host timeout"},
+        {"path": "/somenode/forkmesh/info/refs", "status": 502,
+         "message": "no host"},
+    ])
+    assert results["api"] == 0
+    assert results["realtime"] == 0
+    assert results["website"] == 0
+    assert reasons["api"] is None
+
+
+def test_a_500_on_a_tunnel_path_still_fails_the_api_bucket():
+    # Only upstream-unavailability statuses are excused; a real worker bug
+    # (500) on the same path must still count.
+    blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "b" * 64
+    results, reasons, _minutes = _run_sample(error_rows=[
+        {"path": blob, "status": 500, "message": "boom"},
+    ])
+    assert results["api"] == 1
+    assert "boom" in reasons["api"]
+
+
+def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
+    # Source contract for the scheduled() handler: the two once-a-minute
+    # samples must run unconditionally (and first, so a tick that dies later
+    # has already landed its data point), while every other job sits behind a
+    # minute-modulo gate. Running everything every minute is what blew the
+    # invocation's resource limits and showed as downtime on /status.
+    scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
+        .split("async def fetch", 1)[0]
+    sample_at = scheduled.index("await record_status_sample")
+    online_at = scheduled.index("await record_online_sample")
+    first_gate_at = scheduled.index("if minute % ")
+    assert online_at < first_gate_at
+    assert sample_at < first_gate_at
+    for job in ("sweep_funded_bounties", "_federation_cron",
+                "send_notification_digests", "purge_stale_registered_nodes",
+                "purge_blocked_catalog", "_distribute_central_fund",
+                "chat_history_prune_expired"):
+        job_at = scheduled.index(job + "(")
+        gate = scheduled.rindex("if minute % ", 0, job_at)
+        # The nearest preceding modulo gate must belong to this job's block —
+        # i.e. no other job call sits between the gate and this call.
+        between = scheduled[gate:job_at]
+        assert not any(other + "(" in between for other in (
+            "sweep_funded_bounties", "_federation_cron",
+            "send_notification_digests", "purge_stale_registered_nodes",
+            "purge_blocked_catalog", "_distribute_central_fund",
+            "chat_history_prune_expired") if other != job), job
+
+
+def test_ensure_schema_skips_ddl_when_fingerprint_matches():
+    fake_statements = ["CREATE TABLE IF NOT EXISTS t (x)"]
+    fake_alters = ["ALTER TABLE t ADD COLUMN y"]
+    prepared = []
+
+    class _Stmt:
+        def __init__(self, sql):
+            self.sql = sql
+
+        async def run(self):
+            prepared.append(self.sql)
+
+    class _DB:
+        @staticmethod
+        def prepare(sql):
+            return _Stmt(sql)
+
+    class _Env:
+        DB = _DB
+
+    fingerprint = "fp-current"
+    d1_runs = []
+
+    def make_globals(stored_fingerprint):
+        async def d1_first(_env, sql, *args):
+            assert "schema_meta" in sql
+            if stored_fingerprint is None:
+                raise RuntimeError("no such table: schema_meta")
+            return {"v": stored_fingerprint}
+
+        async def d1_run(_env, sql, *args):
+            d1_runs.append((sql, args))
+
+        return {
+            "SCHEMA_STATEMENTS": fake_statements,
+            "SCHEMA_ALTER_STATEMENTS": fake_alters,
+            "_SCHEMA_FINGERPRINT": fingerprint,
+            "_schema_ready": False,
+            "d1_first": d1_first,
+            "d1_run": d1_run,
+        }
+
+    # Fingerprint matches: one SELECT, zero DDL statements replayed.
+    g = _load("ensure_schema", extra_globals=make_globals(fingerprint))
+    asyncio.run(g["ensure_schema"](_Env()))
+    assert prepared == []
+    assert d1_runs == []
+
+    # No schema_meta yet (first run): full DDL replay + fingerprint recorded.
+    prepared.clear()
+    d1_runs.clear()
+    g = _load("ensure_schema", extra_globals=make_globals(None))
+    asyncio.run(g["ensure_schema"](_Env()))
+    assert prepared == fake_statements + fake_alters
+    assert len(d1_runs) == 1 and "schema_meta" in d1_runs[0][0]
+    assert d1_runs[0][1] == (fingerprint,)
+
+    # Stale fingerprint (schema changed since): replay + re-record.
+    prepared.clear()
+    d1_runs.clear()
+    g = _load("ensure_schema", extra_globals=make_globals("fp-older"))
+    asyncio.run(g["ensure_schema"](_Env()))
+    assert prepared == fake_statements + fake_alters
+    assert len(d1_runs) == 1
 
 
 # --- status_history ----------------------------------------------------------
