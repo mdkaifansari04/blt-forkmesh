@@ -4,7 +4,7 @@ number: 18
 title: Fix Cloudflare production auth and dashboard errors
 base: main
 head: fix/cloudflare-prod-error
-status: open
+status: merged
 ts: 1783436893865
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
