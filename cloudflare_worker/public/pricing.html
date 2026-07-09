@@ -717,132 +717,13 @@
     </style>
       <link rel="stylesheet" href="/site-footer.css" />
     <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
   <body class="min-h-full bg-background text-foreground">
-    <header>
-      <nav
-        id="site-nav"
-        class="site-nav fixed z-20 w-full px-2"
-        data-open="false"
-      >
-        <div
-          class="nav-shell mx-auto mt-2 max-w-6xl border border-transparent px-6 transition-all lg:px-12"
-        >
-          <div
-            class="relative flex flex-wrap items-center justify-between gap-6 py-3 lg:gap-0 lg:py-4"
-          >
-            <div class="flex w-full justify-between lg:w-auto">
-              <a
-                href="/"
-                aria-label="ForkMesh home"
-                class="brand flex items-center space-x-2"
-              >
-                <img
-                  src="/assets/logo.png"
-                  alt=""
-                  aria-hidden="true"
-                  class="brand-mark h-10 w-auto"
-                />
-              </a>
-              <button
-                id="mobile-menu-toggle"
-                type="button"
-                aria-label="Open Menu"
-                aria-expanded="false"
-                class="relative z-20 -m-2.5 -mr-4 block cursor-pointer p-2.5 lg:hidden"
-              >
-                <svg
-                  class="menu-open-icon m-auto size-6 transition duration-200"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <line x1="4" y1="7" x2="20" y2="7"></line>
-                  <line x1="4" y1="12" x2="20" y2="12"></line>
-                  <line x1="4" y1="17" x2="20" y2="17"></line>
-                </svg>
-                <svg
-                  class="menu-close-icon absolute inset-0 m-auto size-6 -rotate-180 scale-0 opacity-0 transition duration-200"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
+    <div data-forkmesh-header="simple"></div>
 
-            <div class="absolute inset-0 m-auto hidden size-fit lg:block">
-              <ul class="flex gap-5 text-sm">
-                <li>
-                  <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#features">Features</a>
-                </li>
-                <li>
-                  <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#solution">Solution</a>
-                </li>
-                <li>
-                  <a href="/pricing" aria-current="page" class="block text-foreground duration-150 hover:text-accent-foreground">Pricing</a>
-                </li>
-                <li>
-                  <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#faq">FAQ</a>
-                </li>
-                <li>
-                  <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/blog">Blog</a>
-                </li>
-              </ul>
-            </div>
-
-            <div
-              class="menu-panel mb-6 w-full flex-wrap items-center justify-end space-y-8 rounded-3xl border border-border bg-background p-6 shadow-2xl shadow-zinc-950/40 md:flex-nowrap lg:m-0 lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none"
-            >
-              <div class="lg:hidden">
-                <ul class="space-y-6 text-base">
-                  <li>
-                    <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#features">Features</a>
-                  </li>
-                  <li>
-                    <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#solution">Solution</a>
-                  </li>
-                  <li>
-                    <a href="/pricing" aria-current="page" class="block text-foreground duration-150 hover:text-accent-foreground">Pricing</a>
-                  </li>
-                  <li>
-                    <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/#faq">FAQ</a>
-                  </li>
-                  <li>
-                    <a class="block text-muted-foreground duration-150 hover:text-accent-foreground" href="/blog">Blog</a>
-                  </li>
-                </ul>
-              </div>
-              <div
-                class="flex w-full flex-col space-y-3 sm:flex-row sm:gap-3 sm:space-y-0 md:w-fit"
-              >
-                <a
-                  class="button-outline hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
-                  href="/docs"
-                  >Read docs</a
-                >
-                <a
-                  class="button-primary hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
-                  href="/signup"
-                  >Get Started</a
-                >
-                <a
-                  class="button-primary show-on-scroll hidden h-7 rounded-lg px-2.5 text-[0.8rem]"
-                  href="/signup"
-                  >Get Started</a
-                >
-              </div>
-            </div>
-          </div>
-        </div>
-      </nav>
-    </header>
-
-    <div class="pricing-shell min-h-full px-5 pb-20 pt-[7.6rem] sm:px-8 lg:px-10">
+    <div class="pricing-shell min-h-full px-5 pb-20 pt-10 sm:px-8 lg:px-10">
       <div class="pricing-grid-overlay"></div>
       <div class="pricing-spotlight"></div>
 

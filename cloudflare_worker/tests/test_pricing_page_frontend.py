@@ -44,10 +44,7 @@ def test_pricing_page_uses_tailwind_cdn_and_shared_branding():
     PRICING_HTML = _pricing_html()
 
     assert "https://cdn.tailwindcss.com" in PRICING_HTML
-    assert 'href="/"\n                aria-label="ForkMesh home"' in PRICING_HTML
-    assert 'class="brand flex items-center space-x-2"' in PRICING_HTML
-    assert 'src="/assets/logo.png"' in PRICING_HTML
-    assert '<a href="/pricing" aria-current="page"' in PRICING_HTML
+    assert '<div data-forkmesh-header="simple"></div>' in PRICING_HTML
     assert "<title>ForkMesh Pricing - Coding Reimagined for Teams</title>" in PRICING_HTML
 
 
@@ -105,15 +102,15 @@ def test_pricing_page_reuses_landing_font_stack():
     assert "HelveticaNeueBold.otf" not in PRICING_HTML
 
 
-def test_pricing_page_header_matches_updated_landing_header_copy():
+def test_pricing_page_uses_the_universal_site_header():
+    # The copied landing nav was replaced by the shared session-aware header
+    # (site-header.js): one chrome for every page, account chip when logged in.
     PRICING_HTML = _pricing_html()
-    header = PRICING_HTML[
-        PRICING_HTML.index("<header>")
-        : PRICING_HTML.index("</header>") + len("</header>")
-    ]
+    body = PRICING_HTML[PRICING_HTML.index("<body"):]
 
-    assert header.count(">Get Started</a") == 2
-    assert "Sign Up / Log In" not in header
+    assert '<div data-forkmesh-header="simple"></div>' in body
+    assert "<header" not in body  # rendered by site-header.js at runtime
+    assert "Sign Up / Log In" not in body
 
 
 def test_pricing_page_repeats_the_free_start_cta_after_plan_comparison():
@@ -129,17 +126,9 @@ def test_pricing_page_reuses_landing_header_and_footer_chrome():
     body = PRICING_HTML[PRICING_HTML.index("<body"):]
 
     for marker in (
-        'id="site-nav"',
-        'class="site-nav fixed z-20 w-full px-2"',
-        'id="mobile-menu-toggle"',
-        'class="menu-panel',
-        'href="/#features"',
-        'href="/#solution"',
-        'href="/pricing"',
-        'href="/#faq"',
-        'href="/blog"',
-        'class="button-outline hide-on-scroll',
-        'class="button-primary hide-on-scroll',
+        'href="/site-header.css"',
+        'src="/site-header.js"',
+        '<div data-forkmesh-header="simple"></div>',
         'href="/site-footer.css"',
         'src="/site-footer.js"',
         '<div data-forkmesh-footer="landing"></div>',
@@ -165,7 +154,6 @@ def test_pricing_page_matches_plan_card_composition():
         "Enterprise",
         "Free",
         "Custom",
-        "Get Started",
         "Start Free",
         "Unlock Pro Free",
         "Contact Team",

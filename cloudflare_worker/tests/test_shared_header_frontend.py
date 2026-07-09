@@ -60,3 +60,66 @@ def test_shared_simple_header_renderer_contains_about_header_contract():
         ".forkmesh-simple-brand-mark",
     ):
         assert marker in css
+
+
+UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
+    PUBLIC / "about.html",
+    PUBLIC / "press.html",
+    PUBLIC / "network.html",
+    PUBLIC / "chat.html",
+    PUBLIC / "blog.html",
+    PUBLIC / "pricing.html",
+    PUBLIC / "login.html",
+    PUBLIC / "signup.html",
+    PUBLIC / "forgot-password.html",
+    PUBLIC / "reset-password.html",
+    PUBLIC / "mirror-payouts.html",
+    PUBLIC / "security-report.html",
+    PUBLIC / "404.html",
+)
+
+
+def test_universal_header_mounts_on_every_page_except_home():
+    # One shared, session-aware header across the site. The home page keeps
+    # its own hero header; the dashboard SPA and docs keep their purpose-built
+    # app chrome (in-app nav / integrated search).
+    for page in UNIVERSAL_HEADER_PAGES:
+        html = _read(page)
+        assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
+        assert 'src="/site-header.js"' in html, f"{page.name} missing header JS"
+        assert '<div data-forkmesh-header="simple"></div>' in html, page.name
+
+    home = _read(PUBLIC / "index.html")
+    assert "data-forkmesh-header" not in home
+
+
+def test_universal_header_is_session_aware():
+    # A logged-in visitor sees their account chip (Dashboard / Profile / Log
+    # out) instead of the old hardcoded Sign Up / Log In links — the reported
+    # bug was /chat showing "Sign Up / Log In" to a logged-in user.
+    js = _read(PUBLIC / "site-header.js")
+
+    assert 'localStorage.getItem("forkmesh.session"' in js
+    assert "function buildAccountArea(" in js
+    assert 'localStorage.removeItem("forkmesh.session")' in js
+    assert ">Dashboard<" not in js  # user data is DOM-built, never innerHTML
+    assert 'dash.textContent = "Dashboard"' in js
+    assert 'out.textContent = "Log out"' in js
+    assert 'href="/signup">Sign Up</a>' in js
+
+
+def test_universal_header_organizes_all_pages():
+    js = _read(PUBLIC / "site-header.js")
+
+    # Primary nav.
+    for href in ("/docs", "/chat", "/network", "/pricing", "/blog", "/status"):
+        assert f'href="{href}"' in js
+    # "More" menu.
+    for href in ("/features", "/desktop", "/about", "/changelog", "/careers",
+                 "/press", "/mirror-payouts", "/security-report", "/privacy",
+                 "/terms"):
+        assert f'href="{href}"' in js
+    # Current page highlight + mobile menu.
+    assert 'aria-current' in js
+    assert "fm-header-burger" in js
+    assert "fm-header-mobile" in js

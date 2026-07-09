@@ -197,6 +197,8 @@
         text-shadow: 0 0 70px rgba(150, 114, 238, 0.12);
       }
     </style>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
   </head>
   <body class="h-full">
     <main class="page-shell flex min-h-screen flex-col">
@@ -204,16 +206,7 @@
       <div class="mesh-grid" aria-hidden="true"></div>
       <div class="mesh-vignette" aria-hidden="true"></div>
 
-      <header class="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-6 lg:px-8">
-        <a href="/" class="brand inline-flex items-center gap-3" aria-label="ForkMesh home">
-          <img class="brand-mark h-10 w-auto" src="/assets/logo.png" alt="" aria-hidden="true" />
-        </a>
-        <nav class="hidden items-center gap-6 text-sm text-muted-foreground md:flex" aria-label="Primary">
-          <a class="transition-colors hover:text-foreground" href="/docs">Docs</a>
-          <a class="transition-colors hover:text-foreground" href="/blog">Blog</a>
-          <a class="transition-colors hover:text-foreground" href="/login">Login</a>
-        </nav>
-      </header>
+      <div data-forkmesh-header="simple"></div>
 
       <section class="relative z-10 mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center px-5 py-20 text-center lg:px-8">
         <div class="status-card rounded-[2rem] px-6 py-10 sm:px-10 lg:px-14 lg:py-14">
