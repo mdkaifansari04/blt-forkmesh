@@ -2858,15 +2858,21 @@ inline QString agentModelLabel(const QString &model)
 // Fill an agent-provider model combo for one of the three agent providers
 // (adhoc #56; shared by the branch "Fix with agent" bar and the Actions "Fix
 // with agent" bar). Item data is the model id passed straight to the caller's
-// start function. claude-code combos are left empty for mergeLiveClaudeModels
-// to fill; openai/claude-api combos keep static lists (no live fetch for those).
+// start function. claude-code combos start with this static fallback so they
+// are never blank, then refreshClaudeModelCombo / mergeLiveClaudeModels swaps
+// in the live line-up once a claude.ai OAuth token is available (users signed
+// in with an API key, or offline, keep the fallback); openai/claude-api combos
+// keep static lists too (no live fetch for those).
 inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
 {
     if (!combo)
         return;
     combo->clear();
     if (provider == QLatin1String("claude-code")) {
-        // Live models populated by refreshClaudeModelCombo / mergeLiveClaudeModels
+        combo->addItem(QStringLiteral("Sonnet 5"), QStringLiteral("claude-sonnet-5"));
+        combo->addItem(QStringLiteral("Opus 4.8"), QStringLiteral("claude-opus-4-8"));
+        combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
+        combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
