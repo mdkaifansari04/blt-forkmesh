@@ -9689,6 +9689,18 @@ def _html_escape(value):
     )
 
 
+def _is_tunnel_content_path(path):
+    """Host-tunnel content routes whose 502/503/504s mean 'that node is
+    offline', not 'the worker failed': release blobs, repo browse, git
+    clone/push. Room paths are deliberately NOT included — a room 5xx is the
+    worker's own Durable Object failing, which must stay visible."""
+    path = str(path or "")
+    return bool(
+        RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
+        GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path) or
+        GIT_RECEIVE_RE.match(path))
+
+
 async def log_error(env, status, method, path, message, ray="", request=None,
                     error=None):
     """Record a 5xx / unhandled error. Best-effort: never raises."""
@@ -11174,6 +11186,15 @@ class Default(WorkerEntrypoint):
         except Exception:
             status = 200
         if status >= 500:
+            # An offline node's content being re-requested (502/503/504 on a
+            # tunnel path) is expected in a P2P network — host_presence and
+            # the /status git_hosting signal already reflect it. Logging every
+            # hit cost a blocking Sentry call + a D1 write per response (a
+            # single offline node's release blob generated hundreds of noise
+            # rows a day and drowned out real failures). A 500 on the same
+            # path is a real worker bug and still logs.
+            if status in (502, 503, 504) and _is_tunnel_content_path(url.path):
+                return response
             await log_error(
                 self.env, status, method_name(request), url.path,
                 "response status %d" % status, request.headers.get("cf-ray") or "",
@@ -11775,22 +11796,28 @@ class Default(WorkerEntrypoint):
         room = room_key_from_path(url.path)
         if room:
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
-            room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
-            try:
-                return await room_object.fetch(
-                    await durable_object_request(request))
-            except Exception as error:
-                # The platform can abort a room DO mid-request — on the free
-                # tier a long-lived room request that outlives the allowed
-                # duration dies with pyodide.http.AbortError("Exceeded allowed
-                # duration in Durable Objects free tier."), and without this
-                # guard that abort escapes Default.fetch as a Worker Error
-                # 1101. Record the real cause (the /status page counts these)
-                # and answer with a generic retryable 503 so no exception
-                # detail reaches the client.
-                await log_durable_object_abort(
-                    self.env, request, url.path, error)
-                return json_response({"error": "unavailable"}, status=503)
+            # The platform can abort a room DO mid-request — the free-tier
+            # duration cap kills long-lived requests, and any co-located DO
+            # blowing the isolate's limits resets every in-flight request with
+            # a generic "internal error". Both are transient: a fresh stub
+            # lands on a replacement isolate, so retry once before failing.
+            # Room requests carry no body (GET snapshot / WebSocket upgrade),
+            # so re-driving durable_object_request is safe. Without this
+            # guard the abort would escape Default.fetch as a Worker Error
+            # 1101; with it, a persistent failure is recorded (the /status
+            # page counts these) and answered with a retryable 503 that
+            # leaks no exception detail to the client.
+            last_error = None
+            for _attempt in range(2):
+                room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
+                try:
+                    return await room_object.fetch(
+                        await durable_object_request(request))
+                except Exception as error:
+                    last_error = error
+            await log_durable_object_abort(
+                self.env, request, url.path, last_error)
+            return json_response({"error": "unavailable"}, status=503)
 
         # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
         # not real files. Serve the prebuilt static shell from ASSETS instead of

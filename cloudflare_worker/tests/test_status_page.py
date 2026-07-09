@@ -33,7 +33,7 @@ def _load(*names, extra_globals=None):
     urls_tree = ast.parse(URLS_TEXT, filename=str(URLS))
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
-        "RELEASE_BLOB_RE", "REPO_HOST_RE",
+        "RELEASE_BLOB_RE", "REPO_HOST_RE", "GIT_RECEIVE_RE",
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
@@ -41,7 +41,7 @@ def _load(*names, extra_globals=None):
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
-        "_status_minute",
+        "_status_minute", "_is_tunnel_content_path",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -229,6 +229,55 @@ def test_a_500_on_a_tunnel_path_still_fails_the_api_bucket():
     ])
     assert results["api"] == 1
     assert "boom" in reasons["api"]
+
+
+def test_tunnel_content_paths_are_classified_and_room_paths_are_not():
+    g = _load()
+    is_tunnel = g["_is_tunnel_content_path"]
+    assert is_tunnel(
+        "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "a" * 64)
+    assert is_tunnel("/api/repo/somenode/forkmesh/tree")
+    assert is_tunnel("/somenode/forkmesh/info/refs")
+    assert is_tunnel("/somenode/forkmesh/git-upload-pack")
+    assert is_tunnel("/somenode/forkmesh/git-receive-pack")
+    # A room 5xx is the worker's own Durable Object failing — must stay
+    # visible in error_log / Sentry, so room paths are never excused.
+    assert not is_tunnel("/api/repo/mainnode/forkmesh/rooms/general/ws")
+    assert not is_tunnel("/api/repositories")
+
+
+def test_fetch_skips_logging_offline_node_5xx_on_tunnel_paths():
+    # Source contract: Default.fetch must not log_error (blocking Sentry call
+    # + D1 write per hit) for 502/503/504 on tunnel content paths — an
+    # offline node's re-requested release blob used to generate hundreds of
+    # noise rows a day. Everything else >= 500 still logs.
+    fetch_src = ENTRY_TEXT.split("async def fetch", 1)[1] \
+        .split("async def _admin", 1)[0]
+    guard_at = fetch_src.index("_is_tunnel_content_path(url.path)")
+    log_at = fetch_src.index("await log_error(")
+    assert "status in (502, 503, 504)" in fetch_src
+    assert guard_at < log_at
+
+
+def test_room_do_fetch_is_retried_once_on_a_transient_abort():
+    # Source contract: a room DO abort (free-tier duration cap, or a
+    # co-located DO resetting the isolate) is transient — the router must
+    # retry once with a fresh stub before answering 503, and only the
+    # persistent failure is logged.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    src = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_route":
+            src = ast.unparse(node)
+    assert src, "_route not found in entry.py"
+    room_block = src[src.index("room_key_from_path(url.path)"):]
+    retry_at = room_block.index("for _attempt in range(2)")
+    stub_at = room_block.index("FORKMESH_MAINNODE_ROOM.get(room_id)")
+    fetch_at = room_block.index("room_object.fetch")
+    # The stub is re-acquired inside the retry loop (a crashed isolate needs
+    # a fresh stub), and the fetch happens inside the loop too.
+    assert retry_at < stub_at < fetch_at
+    assert "log_durable_object_abort" in room_block[fetch_at:]
 
 
 def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
