@@ -1095,21 +1095,18 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentHourlyTimer->start();
 
     // adhoc #182: push a snapshot of this node's agent sessions to the website
-    // (repo owner can watch them there) and drain any steering prompts queued
-    // from the browser. Same cadence family as the mirror sync / inbox poll
-    // timers elsewhere in this window — a first pass shortly after launch, then
-    // on a short interval so the website stays close to live.
+    // (repo owner can watch them there). The periodic tick is only a safety
+    // net: pushAgentSessionsForRepo skips the POST when the payload hasn't
+    // changed since the last successful push, and every real change already
+    // schedules a debounced push (scheduleAgentSessionsPush). Steering prompts
+    // queued from the browser no longer need their own 30s drain timer — the
+    // relay pushes an "agents" event frame over the repo's host tunnel socket
+    // and performRelaySync() picks the prompts up in the shared /api/sync.
     m_agentSyncPushTimer = new QTimer(this);
     connect(m_agentSyncPushTimer, &QTimer::timeout, this,
             &MainWindow::pushAgentSessionsSnapshot);
     m_agentSyncPushTimer->start(30 * 1000);
     QTimer::singleShot(10 * 1000, this, &MainWindow::pushAgentSessionsSnapshot);
-
-    m_agentPromptDrainTimer = new QTimer(this);
-    connect(m_agentPromptDrainTimer, &QTimer::timeout, this,
-            &MainWindow::drainAgentPrompts);
-    m_agentPromptDrainTimer->start(30 * 1000);
-    QTimer::singleShot(15 * 1000, this, &MainWindow::drainAgentPrompts);
 
     // Issue #290 used to re-pull the OAuth usage endpoint on a steady one-minute
     // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
@@ -1404,6 +1401,16 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
     if (!m_pollBackoff.ready(backoffKey, nowMs))
         return;
 
+    // Skip the network write when nothing changed since the last successful
+    // push: an idle node used to re-upload an identical full snapshot every
+    // 30s. A running agent's transcript tail changes every tick, so live
+    // sessions still stream to the website at the timer's cadence.
+    const QString pushKey = repo.owner + "/" + repo.name;
+    const QByteArray body =
+        QJsonDocument(QJsonObject{{"sessions", arr}}).toJson(QJsonDocument::Compact);
+    if (m_lastAgentPushPayload.value(pushKey) == body)
+        return;
+
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
@@ -1418,16 +1425,16 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
 
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    const QJsonObject payload{{"sessions", arr}};
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey] {
+    QNetworkReply *reply = m_networkAccess->post(request, body);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, backoffKey, pushKey, body] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey, QDateTime::currentMSecsSinceEpoch());
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
+        m_lastAgentPushPayload.insert(pushKey, body);
     });
 }
 
@@ -1500,39 +1507,47 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        const QJsonArray prompts = QJsonDocument::fromJson(reply->readAll())
-                                       .object()
-                                       .value("prompts")
-                                       .toArray();
-        for (const QJsonValue &value : prompts) {
-            const QJsonObject item = value.toObject();
-            const QString text = item.value("text").toString();
-            const QString agentId = item.value("agentId").toString();
-            if (text.isEmpty()) {
-                logSystem(QStringLiteral(
-                    "Dropped a malformed website agent prompt."));
-                continue;
-            }
-            // Sentinel "new" (adhoc #266): the website's top-of-list composer asks
-            // to spin up a brand-new ad-hoc agent for this repo from the prompt,
-            // rather than steer an existing session.
-            if (agentId == QLatin1String("new")) {
-                // Optional provider chosen in the website composer's dropdown
-                // (adhoc #271); empty leaves the node's default in place.
-                startWebNewAgentForRepo(repo, text,
-                                        item.value("provider").toString());
-                continue;
-            }
-            bool ok = false;
-            const int sessionId = agentId.toInt(&ok);
-            if (!ok) {
-                logSystem(QStringLiteral(
-                    "Dropped a malformed website agent prompt."));
-                continue;
-            }
-            deliverQueuedAgentPrompt(sessionId, text);
-        }
+        applyAgentPromptsPayload(repo, QJsonDocument::fromJson(reply->readAll())
+                                           .object()
+                                           .value("prompts")
+                                           .toArray());
     });
+}
+
+// Deliver website-queued steering prompts to their agent sessions. `prompts`
+// comes from either a per-repo GET /agents drain reply or the repo's slice of
+// the consolidated GET /api/sync response (both drain server-side on read).
+void MainWindow::applyAgentPromptsPayload(const RepositoryRecord &repo,
+                                          const QJsonArray &prompts)
+{
+    for (const QJsonValue &value : prompts) {
+        const QJsonObject item = value.toObject();
+        const QString text = item.value("text").toString();
+        const QString agentId = item.value("agentId").toString();
+        if (text.isEmpty()) {
+            logSystem(QStringLiteral(
+                "Dropped a malformed website agent prompt."));
+            continue;
+        }
+        // Sentinel "new" (adhoc #266): the website's top-of-list composer asks
+        // to spin up a brand-new ad-hoc agent for this repo from the prompt,
+        // rather than steer an existing session.
+        if (agentId == QLatin1String("new")) {
+            // Optional provider chosen in the website composer's dropdown
+            // (adhoc #271); empty leaves the node's default in place.
+            startWebNewAgentForRepo(repo, text,
+                                    item.value("provider").toString());
+            continue;
+        }
+        bool ok = false;
+        const int sessionId = agentId.toInt(&ok);
+        if (!ok) {
+            logSystem(QStringLiteral(
+                "Dropped a malformed website agent prompt."));
+            continue;
+        }
+        deliverQueuedAgentPrompt(sessionId, text);
+    }
 }
 
 // Steer an agent session with a prompt queued from the website, by session id

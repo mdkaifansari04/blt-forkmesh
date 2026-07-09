@@ -90,6 +90,9 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
     async def failing_side_effect(*_args, **_kwargs):
         raise RuntimeError("notification backend unavailable")
 
+    async def noop_notify_repo_host(_env, _owner, _repo, _topic):
+        return None
+
     ns = _load_functions({
         "Date": _Date,
         "json_response": json_response,
@@ -105,6 +108,7 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
         "notify_issue_assignees": failing_side_effect,
         "notify_subscribers": failing_side_effect,
         "subscribe_thread": failing_side_effect,
+        "notify_repo_host": noop_notify_repo_host,
         "quote": quote,
         "MAX_ISSUE_BYTES": 64 * 1024,
         "MAX_PENDING_ISSUES": 500,

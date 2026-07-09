@@ -1960,6 +1960,8 @@ void MainWindow::attachBackend(ChatBackend *backend)
                 refreshChannelList();
             });
     connect(backend, &ChatBackend::rosterChanged, this, &MainWindow::setRoster);
+    connect(backend, &ChatBackend::latencySampled, this,
+            &MainWindow::onRelayLatencySampled);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
     connect(backend, &ChatBackend::mirrorRefreshRequested, this,
             &MainWindow::onMirrorRefreshRequested);
