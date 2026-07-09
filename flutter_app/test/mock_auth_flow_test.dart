@@ -6,6 +6,7 @@ import 'package:forkmesh/fm_icons.dart';
 import 'package:forkmesh/main.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/screens/auth_mock_flow.dart';
+import 'package:forkmesh/screens/activity_screen.dart';
 import 'package:forkmesh/services/api_service.dart';
 import 'package:forkmesh/services/auth_service.dart';
 import 'package:forkmesh/services/identity.dart';
@@ -17,17 +18,46 @@ import 'package:forkmesh/widgets/connection_dot.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeApiService extends ApiService {
-  FakeApiService(super.settings, {List<Repository> repositories = const []})
-    : _repositories = repositories;
+  FakeApiService(
+    super.settings, {
+    List<Repository> repositories = const [],
+    List<ForkNotification> notifications = const [],
+    NetworkStats? networkStats,
+    NetworkLeaderboards? networkLeaderboards,
+  }) : _repositories = repositories,
+       _notifications = notifications,
+       _networkStats = networkStats,
+       _networkLeaderboards = networkLeaderboards;
 
   final List<Repository> _repositories;
+  final List<ForkNotification> _notifications;
+  final NetworkStats? _networkStats;
+  final NetworkLeaderboards? _networkLeaderboards;
 
   @override
   Future<List<Repository>> repositories() async => _repositories;
 
   @override
   Future<NetworkStats> networkStats() async =>
-      NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
+      _networkStats ?? NetworkStats(nodesOnline: 2, hostsOnline: 1, repos: 3);
+
+  @override
+  Future<NetworkLeaderboards> networkLeaderboards() async =>
+      _networkLeaderboards ?? const NetworkLeaderboards();
+
+  @override
+  Future<NotificationPage> notifications(String node, {int limit = 40}) async =>
+      NotificationPage(
+        notifications: _notifications,
+        unread: _notifications.where((item) => item.isUnread).length,
+      );
+
+  @override
+  Future<void> markNotificationsRead(
+    String node, {
+    List<String> ids = const [],
+    bool all = false,
+  }) async {}
 }
 
 // The login form now performs a real Worker /api/accounts/login round trip
@@ -320,6 +350,7 @@ void main() {
       await submitLogin(tester);
 
       expect(find.text('Code'), findsWidgets);
+      expect(find.text('Agents'), findsWidgets);
       expect(find.text('Chat'), findsWidgets);
       expect(find.text('Activity'), findsWidgets);
       expect(find.text('Settings'), findsWidgets);
@@ -460,6 +491,7 @@ void main() {
     expect(find.byIcon(Icons.chat_bubble_outline_rounded), findsWidgets);
     expect(find.byIcon(Icons.chat_bubble_outline), findsNothing);
     expect(find.text('Code'), findsWidgets);
+    expect(find.text('Agents'), findsWidgets);
     expect(find.text('Chat'), findsWidgets);
     expect(find.text('Activity'), findsWidgets);
     expect(find.text('Settings'), findsWidgets);
@@ -577,9 +609,91 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('NETWORK'), findsOneWidget);
+    expect(find.text('PAYOUT READINESS'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('ACTIVITY LOG'),
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
     expect(find.text('ACTIVITY LOG'), findsOneWidget);
     expect(find.text('NOTIFICATIONS'), findsNothing);
   });
+
+  testWidgets(
+    'activity screen shows payout readiness and funds received visibility',
+    (tester) async {
+      usePhoneView(tester);
+      SharedPreferences.setMockInitialValues({});
+      final settings = await SettingsService.create();
+      final identity = await Identity.loadOrCreate();
+      final relay = RelayService(settings, identity);
+      final api = FakeApiService(
+        settings,
+        networkStats: NetworkStats(
+          nodesOnline: 2,
+          hostsOnline: 1,
+          repos: 3,
+          payoutNodes: const [
+            PayoutNode(
+              name: 'mainnode-a',
+              wallet: 'Wallet11111111111111111111111111111111',
+              balanceLamports: 1250000000,
+              balanceSol: 1.25,
+              online: true,
+              payoutEligible: true,
+              eligibilityReason: 'eligible',
+            ),
+          ],
+        ),
+        networkLeaderboards: const NetworkLeaderboards(
+          fundsMainnodes: [
+            FundsReceivedEntry(
+              name: 'mainnode-a',
+              lamports: 1250000000,
+              sol: 1.25,
+            ),
+          ],
+          fundsContributors: [
+            FundsReceivedEntry(name: 'alice', lamports: 500000000, sol: 0.5),
+          ],
+          fundsProjects: [
+            FundsReceivedEntry(name: 'forkmesh/mobile', lamports: 42),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MultiProvider(
+            providers: [
+              Provider<ApiService>.value(value: api),
+              ChangeNotifierProvider<RelayService>.value(value: relay),
+            ],
+            child: const Scaffold(body: ActivityScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('PAYOUT READINESS'), findsOneWidget);
+      expect(find.text('FUNDS RECEIVED'), findsOneWidget);
+      expect(find.text('mainnode-a'), findsWidgets);
+      expect(find.text('eligible'), findsWidgets);
+      expect(find.text('Wallet...111111'), findsOneWidget);
+      expect(find.text('1.25 SOL (1250000000 lamports)'), findsWidgets);
+      expect(find.text('alice'), findsOneWidget);
+      expect(find.text('forkmesh/mobile'), findsOneWidget);
+      expect(
+        find.textContaining('Mobile does not execute payouts.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('not a promise of current wallet balance'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('top bar bell opens the dedicated notifications page', (
     tester,
@@ -621,11 +735,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Notifications'), findsOneWidget);
-    expect(find.text('Inbox'), findsOneWidget);
-    expect(find.text('Channels'), findsOneWidget);
-    expect(find.text('Direct'), findsOneWidget);
-    expect(find.text('Attachments'), findsOneWidget);
-    expect(find.text('All'), findsNothing);
+    expect(find.text('All'), findsOneWidget);
+    expect(find.text('Unread'), findsOneWidget);
+    expect(find.text('Mentions'), findsOneWidget);
+    expect(find.text('Repo'), findsOneWidget);
+    expect(find.text('Channels'), findsNothing);
+    expect(find.text('Direct'), findsNothing);
+    expect(find.text('Attachments'), findsNothing);
     expect(find.text('Reminders'), findsNothing);
     expect(find.text('Payment'), findsNothing);
     expect(find.text('Booking'), findsNothing);
@@ -633,26 +749,27 @@ void main() {
     expect(find.text('Activity log'), findsNothing);
   });
 
-  testWidgets('viewing notifications clears the top bar alert', (tester) async {
+  testWidgets('marking worker notifications read clears the top bar alert', (
+    tester,
+  ) async {
     usePhoneView(tester);
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
-    final relay = SeededNotificationRelayService(
+    final relay = RelayService(settings, identity);
+    final api = FakeApiService(
       settings,
-      identity,
-      messages: [
-        ChatMessage(
+      notifications: [
+        ForkNotification(
           id: 'n-1',
-          conversation: '#general',
-          senderId: 'remote-node',
-          senderName: 'Rinkit',
-          text: 'ForkMesh mirror finished syncing flutter_app on main.',
-          timestamp: DateTime(2026, 7, 3, 9, 41),
+          kind: 'mention',
+          title: 'You were mentioned in demo/forkmesh',
+          body: 'ForkMesh mirror finished syncing flutter_app on main.',
+          repo: 'demo/forkmesh',
+          ts: DateTime(2026, 7, 3, 9, 41).millisecondsSinceEpoch,
         ),
       ],
     );
-    final api = FakeApiService(settings);
     final auth = await FakeAuthService.create(settings, identity);
     final inbox = InboxService(settings, identity);
 
@@ -668,6 +785,7 @@ void main() {
     );
 
     await submitLogin(tester);
+    await tester.pumpAndSettle();
 
     final notificationButton = find.byKey(
       const ValueKey('top-notifications-button'),
@@ -686,6 +804,8 @@ void main() {
       findsOneWidget,
     );
 
+    await tester.tap(find.widgetWithText(TextButton, 'Mark all read'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
 

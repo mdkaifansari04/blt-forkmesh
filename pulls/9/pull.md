@@ -4,7 +4,7 @@ number: 9
 title: feat(flutter): complete mobile repo experience
 base: main
 head: pr/flutter-repo-experience
-status: open
+status: merged
 ts: 1783356130888
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds the mobile repo browsing foundation: catalog filters, repo detail foundatio
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-

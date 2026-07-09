@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/models/models.dart';
+import 'package:forkmesh/services/notification_deep_link.dart';
 
 // Parsing contracts for the repo-browsing models added by pulls #4/#5. The
 // mobile app reads the same Worker/desktop-host JSON as the website, and the
@@ -34,6 +35,9 @@ void main() {
         'not-an-event', // stray shapes are skipped, not fatal
       ],
       'labels': ['bug', 42],
+      'milestone': 'v2 mobile',
+      'priority': '4',
+      'assignees': ['mona', 'kai'],
     });
 
     expect(issue.number, 7);
@@ -41,6 +45,9 @@ void main() {
     expect(issue.events, hasLength(1));
     expect(issue.events.single.body, 'me too');
     expect(issue.labels, ['bug', '42']);
+    expect(issue.milestone, 'v2 mobile');
+    expect(issue.priority, 4);
+    expect(issue.assignees, ['mona', 'kai']);
   });
 
   test('RepoTree.fromJson accepts list and wrapped-map payloads', () {
@@ -125,5 +132,149 @@ void main() {
     expect(legacy.nodesOnline, 3);
     expect(legacy.hostsOnline, 1);
     expect(legacy.repos, 5);
+  });
+
+  test('NetworkStats.fromJson reads payout readiness nodes', () {
+    final stats = NetworkStats.fromJson({
+      'nodesOnline': 2,
+      'payoutNodes': [
+        {
+          'name': 'mainnode-a',
+          'wallet': 'Wallet11111111111111111111111111111111',
+          'balanceLamports': '1250000000',
+          'balanceSol': '1.25',
+          'online': true,
+          'payoutEligible': true,
+          'eligibilityReason': 'eligible',
+          'relay': 'us-east',
+        },
+        {
+          'name': 'mainnode-b',
+          'online': false,
+          'eligibilityReason': 'missing wallet',
+        },
+      ],
+    });
+
+    expect(stats.payoutNodes, hasLength(2));
+    expect(stats.payoutNodes.first.name, 'mainnode-a');
+    expect(
+      stats.payoutNodes.first.wallet,
+      'Wallet11111111111111111111111111111111',
+    );
+    expect(stats.payoutNodes.first.shortWallet, 'Wallet...111111');
+    expect(stats.payoutNodes.first.balanceLamports, 1250000000);
+    expect(stats.payoutNodes.first.balanceSol, 1.25);
+    expect(stats.payoutNodes.first.online, isTrue);
+    expect(stats.payoutNodes.first.payoutEligible, isTrue);
+    expect(stats.payoutNodes.first.eligibilityLabel, 'eligible');
+    expect(
+      stats.payoutNodes.first.balanceLabel,
+      '1.25 SOL (1250000000 lamports)',
+    );
+    expect(stats.payoutNodes.first.relay, 'us-east');
+    expect(stats.payoutNodes.last.name, 'mainnode-b');
+    expect(stats.payoutNodes.last.wallet, isEmpty);
+    expect(stats.payoutNodes.last.balanceLamports, 0);
+    expect(stats.payoutNodes.last.balanceSol, 0);
+    expect(stats.payoutNodes.last.payoutEligible, isFalse);
+    expect(stats.payoutNodes.last.eligibilityLabel, 'missing wallet');
+  });
+
+  test('NetworkLeaderboards.fromJson parses funds received boards', () {
+    final boards = NetworkLeaderboards.fromJson({
+      'fundsMainnodes': [
+        {'name': 'mainnode-a', 'lamports': '1250000000', 'sol': '1.25'},
+      ],
+      'fundsContributors': [
+        {'name': 'alice', 'lamports': 500000000, 'sol': 0.5},
+      ],
+      'fundsProjects': [
+        {'name': 'forkmesh/mobile', 'lamports': '42'},
+      ],
+    });
+
+    expect(boards.fundsMainnodes.single.name, 'mainnode-a');
+    expect(boards.fundsMainnodes.single.lamports, 1250000000);
+    expect(boards.fundsMainnodes.single.sol, 1.25);
+    expect(
+      boards.fundsMainnodes.single.amountLabel,
+      '1.25 SOL (1250000000 lamports)',
+    );
+    expect(
+      boards.fundsContributors.single.amountLabel,
+      '0.5 SOL (500000000 lamports)',
+    );
+    expect(boards.fundsProjects.single.amountLabel, '42 lamports');
+    expect(boards.isEmpty, isFalse);
+  });
+
+  test('ForkNotification.fromJson parses worker notification payloads', () {
+    final notification = ForkNotification.fromJson({
+      'id': 'dedupe-1',
+      'kind': 'pull_submitted',
+      'title': 'Pull request submitted for mona/forkmesh',
+      'body': 'Mobile review flow is waiting in your desktop inbox.',
+      'repo': 'mona/forkmesh',
+      'href': '/mona/forkmesh/pulls/7',
+      'actor': 'kai',
+      'source': 'pull',
+      'ts': '1770000000000',
+      'readAt': 0,
+      'meta': {'number': 7},
+    });
+
+    expect(notification.id, 'dedupe-1');
+    expect(notification.kind, 'pull_submitted');
+    expect(notification.kindLabel, 'Pull request');
+    expect(notification.title, 'Pull request submitted for mona/forkmesh');
+    expect(notification.repo, 'mona/forkmesh');
+    expect(notification.actor, 'kai');
+    expect(notification.ts, 1770000000000);
+    expect(notification.isUnread, isTrue);
+    expect(notification.meta['number'], 7);
+  });
+
+  test('NotificationPage.fromJson reads list and unread count', () {
+    final page = NotificationPage.fromJson({
+      'ok': true,
+      'unread': '2',
+      'notifications': [
+        {'id': 'n1', 'kind': 'mention', 'title': 'Mention', 'ts': 2},
+        {'id': 'n2', 'kind': 'host_offline', 'title': 'Host offline'},
+      ],
+    });
+
+    expect(page.unread, 2);
+    expect(page.notifications, hasLength(2));
+    expect(page.notifications.first.kindLabel, 'Mention');
+    expect(page.notifications.last.kindLabel, 'Host');
+  });
+
+  test('NotificationDeepLink parses safe repo context hrefs', () {
+    final issue = NotificationDeepLink.parse('/mona/forkmesh/issues/12');
+    expect(issue?.repo.fullName, 'mona/forkmesh');
+    expect(issue?.initialTab, RepoDetailTab.issues);
+    expect(issue?.number, 12);
+
+    final pull = NotificationDeepLink.parse('/mona/forkmesh/pulls/7');
+    expect(pull?.initialTab, RepoDetailTab.pulls);
+    expect(pull?.number, 7);
+
+    final commit = NotificationDeepLink.parse('/mona/forkmesh/commit/abc123');
+    expect(commit?.initialTab, RepoDetailTab.commits);
+    expect(commit?.reference, 'abc123');
+
+    final agents = NotificationDeepLink.parse('/mona/forkmesh/agents');
+    expect(agents?.initialTab, RepoDetailTab.agents);
+
+    final actions = NotificationDeepLink.parse('/mona/forkmesh/actions');
+    expect(actions?.initialTab, RepoDetailTab.actions);
+
+    expect(
+      NotificationDeepLink.parse('https://evil.test/mona/forkmesh'),
+      isNull,
+    );
+    expect(NotificationDeepLink.parse('/api/notifications'), isNull);
   });
 }

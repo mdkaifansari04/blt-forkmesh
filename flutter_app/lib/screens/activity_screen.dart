@@ -18,12 +18,15 @@ class ActivityScreen extends StatefulWidget {
 class _ActivityScreenState extends State<ActivityScreen> {
   static const _initialLogCount = 12;
   late Future<NetworkStats> _stats;
+  late Future<NetworkLeaderboards> _leaderboards;
   bool _showAllLogs = false;
 
   @override
   void initState() {
     super.initState();
-    _stats = context.read<ApiService>().networkStats();
+    final api = context.read<ApiService>();
+    _stats = api.networkStats();
+    _leaderboards = api.networkLeaderboards();
   }
 
   @override
@@ -53,6 +56,20 @@ class _ActivityScreenState extends State<ActivityScreen> {
               ],
             );
           },
+        ),
+        const SizedBox(height: FmSpace.x5),
+        FutureBuilder<NetworkStats>(
+          future: _stats,
+          builder: (context, snap) => _PayoutReadinessSection(
+            nodes: snap.data?.payoutNodes ?? const [],
+          ),
+        ),
+        const SizedBox(height: FmSpace.x5),
+        FutureBuilder<NetworkLeaderboards>(
+          future: _leaderboards,
+          builder: (context, snap) => _FundsReceivedSection(
+            boards: snap.data ?? const NetworkLeaderboards(),
+          ),
         ),
         const SizedBox(height: FmSpace.x5),
         FmSectionHeader(
@@ -109,6 +126,321 @@ class _ActivityScreenState extends State<ActivityScreen> {
       ],
     );
   }
+}
+
+class _PayoutReadinessSection extends StatelessWidget {
+  const _PayoutReadinessSection({required this.nodes});
+
+  final List<PayoutNode> nodes;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleNodes = nodes.take(5).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const FmSectionHeader(title: 'Payout readiness'),
+        const SizedBox(height: FmSpace.x2),
+        FmCard(
+          radius: FmRadius.lg,
+          color: FmTheme.bgRaised(context),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Public readiness and accounting visibility only. Mobile does not execute payouts.',
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: FmSpace.x3),
+              if (visibleNodes.isEmpty)
+                const FmEmptyState(
+                  icon: Icons.account_balance_wallet_outlined,
+                  title: 'No payout-ready nodes reported',
+                  message:
+                      'Payout-eligible nodes appear here when the mainnode reports public payout readiness.',
+                )
+              else ...[
+                for (final node in visibleNodes) _PayoutNodeRow(node: node),
+                if (nodes.length > visibleNodes.length)
+                  Padding(
+                    padding: const EdgeInsets.only(top: FmSpace.x2),
+                    child: Text(
+                      '+${nodes.length - visibleNodes.length} more nodes',
+                      style: TextStyle(
+                        color: FmTheme.textTertiary(context),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PayoutNodeRow extends StatelessWidget {
+  const _PayoutNodeRow({required this.node});
+
+  final PayoutNode node;
+
+  @override
+  Widget build(BuildContext context) {
+    final details = <String>[
+      node.eligibilityLabel,
+      if (node.shortWallet.isNotEmpty) node.shortWallet,
+      if (node.balanceLamports > 0 || node.balanceSol > 0) node.balanceLabel,
+      if (node.relay.trim().isNotEmpty) node.relay.trim(),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: FmSpace.x2),
+      padding: const EdgeInsets.all(FmSpace.x3),
+      decoration: BoxDecoration(
+        color: FmTheme.bgBase(context),
+        borderRadius: BorderRadius.circular(FmRadius.md),
+        border: Border.all(color: FmTheme.border(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  node.name.isEmpty ? 'Unnamed node' : node.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: FmTheme.textPrimary(context),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(width: FmSpace.x2),
+              _MiniBadge(
+                label: node.online ? 'online' : 'offline',
+                color: node.online
+                    ? FmTheme.success(context)
+                    : FmTheme.textTertiary(context),
+              ),
+              const SizedBox(width: FmSpace.x1),
+              _MiniBadge(
+                label: node.payoutEligible ? 'eligible' : 'not eligible',
+                color: node.payoutEligible
+                    ? FmTheme.success(context)
+                    : FmTheme.warning(context),
+              ),
+            ],
+          ),
+          if (details.isNotEmpty) ...[
+            const SizedBox(height: FmSpace.x2),
+            Wrap(
+              spacing: FmSpace.x2,
+              runSpacing: FmSpace.x1,
+              children: [
+                for (final detail in details) _DetailToken(label: detail),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailToken extends StatelessWidget {
+  const _DetailToken({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(
+      horizontal: FmSpace.x2,
+      vertical: FmSpace.x1,
+    ),
+    decoration: BoxDecoration(
+      color: FmTheme.bgRaised(context),
+      borderRadius: BorderRadius.circular(FmRadius.sm),
+      border: Border.all(color: FmTheme.border(context)),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        color: FmTheme.textSecondary(context),
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        height: 1.1,
+      ),
+    ),
+  );
+}
+
+class _FundsReceivedSection extends StatelessWidget {
+  const _FundsReceivedSection({required this.boards});
+
+  final NetworkLeaderboards boards;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      const FmSectionHeader(title: 'Funds received'),
+      const SizedBox(height: FmSpace.x2),
+      FmCard(
+        radius: FmRadius.lg,
+        color: FmTheme.bgRaised(context),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Accumulated public accounting boards, not a promise of current wallet balance.',
+              style: TextStyle(
+                color: FmTheme.textSecondary(context),
+                fontSize: 12,
+                height: 1.35,
+              ),
+            ),
+            const SizedBox(height: FmSpace.x3),
+            if (boards.isEmpty)
+              const FmEmptyState(
+                icon: Icons.leaderboard_outlined,
+                title: 'No funds received yet',
+                message:
+                    'Public funds-received totals appear here after the mainnode reports them.',
+              )
+            else ...[
+              _FundsGroup(title: 'Mainnodes', entries: boards.fundsMainnodes),
+              _FundsGroup(
+                title: 'Contributors',
+                entries: boards.fundsContributors,
+              ),
+              _FundsGroup(title: 'Projects', entries: boards.fundsProjects),
+            ],
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class _FundsGroup extends StatelessWidget {
+  const _FundsGroup({required this.title, required this.entries});
+
+  final String title;
+  final List<FundsReceivedEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleEntries = entries.take(3).toList();
+    if (visibleEntries.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: FmSpace.x3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: FmTheme.textTertiary(context),
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: FmSpace.x2),
+          for (final entry in visibleEntries)
+            _FundsRow(
+              name: entry.name.isEmpty ? 'Unnamed' : entry.name,
+              amount: entry.amountLabel,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FundsRow extends StatelessWidget {
+  const _FundsRow({required this.name, required this.amount});
+
+  final String name;
+  final String amount;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: FmSpace.x1),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: FmTheme.textPrimary(context),
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(width: FmSpace.x3),
+        Flexible(
+          child: Text(
+            amount,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              color: FmTheme.textSecondary(context),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _MiniBadge extends StatelessWidget {
+  const _MiniBadge({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(
+      horizontal: FmSpace.x2,
+      vertical: FmSpace.x1,
+    ),
+    decoration: BoxDecoration(
+      color: color.withAlpha(31),
+      borderRadius: BorderRadius.circular(FmRadius.full),
+    ),
+    child: Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: color,
+        fontSize: 10,
+        fontWeight: FontWeight.w800,
+        height: 1,
+      ),
+    ),
+  );
 }
 
 class _ActivityLogRow extends StatelessWidget {
