@@ -1391,9 +1391,11 @@ async def status_history(env):
         minute_start,
     )
     by_system_minute = {}
+    last_sample_ts = 0
     for row in minute_rows:
         system_id = str(row.get("system") or "")
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
+        last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
     systems = []
     for system_id, label in STATUS_SYSTEMS:
@@ -1495,6 +1497,11 @@ async def status_history(env):
     # read is best-effort so one failing query can't blank the summary, and it
     # all rides on the single /api/status fetch a page view already makes.
     current = {}
+    # When the last recorded health sample was taken. A stale value means the
+    # sampling CRON is down (not the site) — the page uses this to say so
+    # instead of letting missing samples masquerade as an outage. 0 = no
+    # samples in the visible window at all.
+    current["lastCronSampleTs"] = last_sample_ts or None
     try:
         repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
         current["catalogRepos"] = int((repo_row or {}).get("n", 0) or 0)
@@ -11313,21 +11320,26 @@ class Default(WorkerEntrypoint):
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
-        try:
-            await record_online_sample(self.env)
-        except BaseException as error:
-            await log_cron_error(
-                self.env, "/cron/record-online-sample",
-                "record_online_sample failed: " + _safe_error_text(error),
-                error=error, failures=cron_failures)
-        # Fold one health check per system into today's bucket for the public
-        # /status page's 30-day history.
+        # The /status health sample runs FIRST: it is the cheapest job (no
+        # row decryption) and the one whose absence shows publicly as fake
+        # downtime, so a tick that dies partway (cold Pyodide isolate blowing
+        # the invocation limits — cron runs in its own colo, where user
+        # traffic never warms the isolate) has already landed its samples.
         try:
             await record_status_sample(self.env)
         except BaseException as error:
             await log_cron_error(
                 self.env, "/cron/record-status-sample",
                 "record_status_sample failed: " + _safe_error_text(error),
+                error=error, failures=cron_failures)
+        # Online-node sample for the /network/ activity graph (heavier: joins
+        # + AES-GCM row decrypts per live host).
+        try:
+            await record_online_sample(self.env)
+        except BaseException as error:
+            await log_cron_error(
+                self.env, "/cron/record-online-sample",
+                "record_online_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
         # Backstop the bounty escrow split so a funded bounty pays out to the
         # author + treasury even if no client polls its status. Scans (and
