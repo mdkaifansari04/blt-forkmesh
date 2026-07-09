@@ -4,7 +4,7 @@ number: 15
 title: feat(flutter): add bounty funding visibility
 base: main
 head: pr/flutter-bounty-funding-visibility
-status: open
+status: merged
 ts: 1783356131059
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds bounty funding and owner bounty wallet visibility in mobile repo/settings s
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-
