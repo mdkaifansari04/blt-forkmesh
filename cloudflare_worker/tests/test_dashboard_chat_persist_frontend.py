@@ -100,3 +100,82 @@ def test_chat_mention_styles_are_available_on_all_chat_surfaces():
         assert ".chat-mention {" in source
         assert ".chat-mention-card {" in source
         assert ".chat-mention-card[hidden]" in source
+
+
+# --- /chat three-pane layout (rooms | conversation | people) -----------------
+
+def test_public_chat_has_rooms_conversation_and_people_panes():
+    assert 'id="chat-rooms"' in PUBLIC_CHAT_HTML
+    assert 'id="chat-people"' in PUBLIC_CHAT_HTML
+    assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
+    assert ".chat-rooms-pane" in PUBLIC_CHAT_HTML
+    assert ".chat-people-pane" in PUBLIC_CHAT_HTML
+    # Channels multiplex over the one room socket via each message's channel
+    # field, exactly like the desktop; sends carry the active room.
+    assert "channel: activeChannel" in PUBLIC_CHAT
+    assert "function setActiveChannel(" in PUBLIC_CHAT
+    assert 'DEFAULT_CHANNELS = ["#general", "#welcome-users", "#welcome-nodes"]' in PUBLIC_CHAT
+
+
+def test_public_chat_sends_presence_keepalive_at_desktop_cadence():
+    # The room DO reaps sockets with no frames for 3 minutes; the presence beat
+    # (same 60s cadence as ServerNode's kPresenceIntervalMs) keeps the web
+    # client connected AND keeps its roster entry fresh for peers. The old web
+    # client sent nothing while idle and kept getting disconnected.
+    assert "PRESENCE_INTERVAL_MS = 60000" in PUBLIC_CHAT
+    assert "PEER_STALE_MS = 180000" in PUBLIC_CHAT  # ServerNode kPeerStaleMs
+    assert 'send(makePlain("presence"))' in PUBLIC_CHAT
+    assert "function scheduleReconnect(" in PUBLIC_CHAT
+
+
+def test_public_chat_reactions_speak_the_desktop_protocol():
+    # Same frame shape as ServerNode::sendReaction so toggles converge across
+    # web and desktop clients, and reactions persist for late joiners (the
+    # "reaction" kind is already in DURABLE_TYPES).
+    reaction = PUBLIC_CHAT[
+        PUBLIC_CHAT.index("function toggleReaction("):
+        PUBLIC_CHAT.index("function ensureEmojiPicker(")
+    ]
+    assert 'makePlain("reaction"' in reaction
+    assert "conversation:" in reaction
+    assert "target: messageId" in reaction
+    assert "reactorId: selfId" in reaction
+    assert "reactorName: displayName()" in reaction
+    assert "added: !mine" in reaction
+    assert ".chat-reaction-chip" in PUBLIC_CHAT_HTML
+    assert ".chat-emoji-picker" in PUBLIC_CHAT_HTML
+
+
+def test_public_chat_people_pane_tracks_online_status_from_frame_ts():
+    # Presence derives from each frame's own timestamp so replayed history
+    # can't paint a days-old author as online, and an old frame never demotes
+    # a peer heard from more recently.
+    assert "function noteRoster(" in PUBLIC_CHAT
+    assert "Math.min(Number(plain.ts) || Date.now(), Date.now())" in PUBLIC_CHAT
+    assert "function personIsOnline(" in PUBLIC_CHAT
+    assert "chat-presence-dot" in PUBLIC_CHAT
+    assert ".chat-presence-dot.is-online" in PUBLIC_CHAT_HTML
+
+
+def test_public_chat_orders_messages_by_ts_with_avatars_and_time():
+    assert "function insertMessage(" in PUBLIC_CHAT
+    assert "function buildRow(" in PUBLIC_CHAT
+    assert "function makeAvatar(" in PUBLIC_CHAT
+    assert "function fmtTime(" in PUBLIC_CHAT
+    assert "GROUP_WINDOW_MS" in PUBLIC_CHAT
+    assert ".chat-avatar" in PUBLIC_CHAT_HTML
+    assert ".chat-time" in PUBLIC_CHAT_HTML
+
+
+def test_public_chat_mention_autocomplete_accepts_with_tab():
+    # Typing "@partial" pops a roster-backed suggestion list; Tab (or Enter /
+    # click) accepts, arrows navigate, Escape dismisses. The token charset
+    # matches CHAT_MENTION_RE so an accepted mention always renders linked.
+    assert "function mentionTokenAtCaret(" in PUBLIC_CHAT
+    assert "function mentionCandidates(" in PUBLIC_CHAT
+    assert "function acceptMentionSuggest(" in PUBLIC_CHAT
+    assert 'event.key === "Tab" || event.key === "Enter"' in PUBLIC_CHAT
+    assert "acceptMentionSuggest()" in PUBLIC_CHAT
+    assert 'input.addEventListener("input", updateMentionSuggest)' in PUBLIC_CHAT
+    assert ".chat-mention-suggest" in PUBLIC_CHAT_HTML
+    assert ".chat-mention-suggest-item.is-active" in PUBLIC_CHAT_HTML
