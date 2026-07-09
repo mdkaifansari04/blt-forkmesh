@@ -1,8 +1,8 @@
-      <aside id="networkRail" data-dashboard-network-rail aria-label="Network and chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
+      <aside id="networkRail" data-dashboard-network-rail aria-label="Chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
         <div class="flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
           <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
-            <i data-lucide="activity" class="h-3.5 w-3.5 text-primary"></i>
-            Network
+            <i data-lucide="message-circle" class="h-3.5 w-3.5 text-primary"></i>
+            Chat
           </span>
           <div class="flex items-center gap-3">
             <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
@@ -14,42 +14,6 @@
             </button>
           </div>
         </div>
-        <div class="border-b border-border px-4 py-3 shrink-0">
-          <div class="hidden items-center justify-between mb-3 lg:flex">
-            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
-              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
-              Network
-            </span>
-            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
-              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
-              live
-            </span>
-          </div>
-
-          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
-            <div class="rounded-md bg-background border border-border px-3 py-2">
-              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
-              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
-            </div>
-            <div class="rounded-md bg-background border border-border px-3 py-2">
-              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
-              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
-            </div>
-            <div class="rounded-md bg-background border border-border px-3 py-2">
-              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
-              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
-            </div>
-            <div class="rounded-md bg-background border border-border px-3 py-2">
-              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
-              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
-            </div>
-          </div>
-
-          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
-            <div class="text-xs text-muted-foreground">Loading recent network...</div>
-          </div>
-        </div>
-
         <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
             <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>

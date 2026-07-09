@@ -11746,7 +11746,13 @@ class Default(WorkerEntrypoint):
         if ACCOUNTS_RE.match(url.path):
             return await accounts_handler(self.env, request)
 
-        public_profile = re.match(r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$", url.path)
+        # Match the profile route on the percent-decoded, case-folded path:
+        # links pasted from address bars / other apps often arrive as /%40name
+        # (an encoded @) or /@Name, and both used to fall through to the 404
+        # page instead of the profile.
+        public_profile = re.match(
+            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$",
+            unquote(url.path).lower())
         if public_profile:
             profile_response = await public_profile_handler(
                 self.env, request, public_profile.group(1))

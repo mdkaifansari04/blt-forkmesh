@@ -301,28 +301,27 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+    <style>
+      /* Map the docs theme onto the universal header's variable names so it
+         follows the docs light/dark toggle (docs styles use --docs-*). */
+      :root {
+        --muted: var(--docs-muted);
+        --foreground: var(--docs-fg);
+        --border: var(--docs-line);
+        --card: var(--docs-panel);
+      }
+    </style>
   </head>
   <body class="min-h-screen bg-[var(--docs-bg)] text-[var(--docs-fg)]">
+    <div data-forkmesh-header="simple"></div>
     <header
       class="sticky top-0 z-50 border-b border-[var(--docs-line)] bg-[color-mix(in_srgb,var(--docs-bg)_94%,transparent)] backdrop-blur-xl"
     >
       <div
-        class="mx-auto grid h-20 max-w-[1540px] grid-cols-[minmax(150px,250px)_minmax(220px,460px)_minmax(0,1fr)] items-center gap-5 px-5 sm:px-8 lg:px-12 xl:grid-cols-[minmax(160px,280px)_minmax(260px,520px)_minmax(0,1fr)] xl:gap-6"
+        class="mx-auto grid h-20 max-w-[1540px] grid-cols-[minmax(220px,520px)_minmax(0,1fr)] items-center gap-5 px-5 sm:px-8 lg:px-12 xl:grid-cols-[minmax(260px,560px)_minmax(0,1fr)] xl:gap-6"
       >
-        <a
-          class="brand inline-flex items-center gap-3 text-[1.45rem] font-black text-[var(--docs-fg)] no-underline"
-          href="/"
-          aria-label="ForkMesh home"
-        >
-          <img
-            src="/assets/logo.png"
-            alt=""
-            aria-hidden="true"
-            class="brand-mark"
-          />
-          <span>ForkMesh</span>
-        </a>
-
         <div class="relative hidden min-w-0 md:block">
           <label
             class="flex h-11 min-w-0 items-center justify-between gap-4 rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] px-4 text-left text-[0.92rem] font-semibold text-[var(--docs-soft)] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.01)]"
@@ -371,22 +370,6 @@
         <div
           class="flex min-w-0 items-center justify-end gap-3 sm:gap-4 xl:gap-5"
         >
-          <nav
-            class="hidden items-center gap-4 whitespace-nowrap text-[0.92rem] font-bold text-[var(--docs-muted)] lg:flex xl:gap-6"
-            aria-label="Docs header"
-          >
-            <a class="hover:text-[var(--docs-fg)]" href="/">Home</a>
-            <a class="hover:text-[var(--docs-fg)]" href="/about"
-              >Contact Us</a
-            >
-          </nav>
-          <a
-            class="hidden h-11 items-center gap-2 rounded-2xl bg-[var(--docs-button)] px-5 text-[0.92rem] font-bold text-[var(--docs-button-fg)] no-underline shadow-sm sm:inline-flex"
-            href="/login"
-          >
-            Login
-            <span aria-hidden="true">›</span>
-          </a>
           <button
             id="theme-toggle"
             class="icon-button"

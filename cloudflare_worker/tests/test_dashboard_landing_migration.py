@@ -72,9 +72,14 @@ def test_dashboard_exposes_live_hydration_targets():
         "data-repo-count",
         "data-network-node-list",
         "data-network-summary",
-        "data-network-rail-summary",
     ):
         assert marker in dashboard
+
+    # The right rail is chat-only now: its network stats duplicated what the
+    # repo live-mirror / network section already shows, so the rail summary
+    # block was removed and only the mini chat remains.
+    assert "data-network-rail-summary" not in dashboard
+    assert 'id="sideChatMessages"' in dashboard
 
     for placeholder in (
         'data-repo="you/meshcore"',
