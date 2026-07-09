@@ -10088,55 +10088,55 @@ def _admin_href(admin_query, **params):
 
 ADMIN_STYLE = """
  *{box-sizing:border-box}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#ffffff;color:#1f2937}
- header{padding:16px 24px;border-bottom:1px solid #e5e7eb}
+ body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
+ header{padding:16px 24px;border-bottom:1px solid #21262d}
  h1{font-size:18px;margin:0}
- .meta{color:#6b7280;font-size:13px;margin-top:4px}
- a{color:#2563eb;text-decoration:none}
+ .meta{color:#8b949e;font-size:13px;margin-top:4px}
+ a{color:#58a6ff;text-decoration:none}
  a:hover{text-decoration:underline}
  .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px 0}
- .card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 18px;min-width:120px}
+ .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 18px;min-width:120px}
  .card .n{font-size:24px;font-weight:600}
- .card .l{color:#6b7280;font-size:12px;margin-top:2px}
- .card.warn .n{color:#dc2626}
+ .card .l{color:#8b949e;font-size:12px;margin-top:2px}
+ .card.warn .n{color:#f85149}
  .tools{padding:12px 24px;display:flex;gap:12px;align-items:center}
- button{background:#059669;color:#fff;border:1px solid #10b981;border-radius:6px;
+ button{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;
         padding:8px 14px;font:600 13px system-ui;cursor:pointer}
- button:hover{background:#10b981}
- button[disabled]{background:#e5e7eb;border-color:#e5e7eb;color:#6b7280;cursor:not-allowed}
- .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #10b981;
-         background:#f0fdf4;color:#166534;white-space:pre-wrap;font:13px ui-monospace,monospace}
+ button:hover{background:#2ea043}
+ button[disabled]{background:#30363d;border-color:#30363d;color:#8b949e;cursor:not-allowed}
+ .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #2ea043;
+         background:#11251a;color:#aff5c2;white-space:pre-wrap;font:13px ui-monospace,monospace}
  .layout{display:flex;align-items:flex-start}
- nav{width:220px;flex:none;border-right:1px solid #e5e7eb;min-height:60vh;padding:8px 0;background:#f9fafb}
- nav a{display:block;padding:7px 20px;color:#1f2937}
- nav a.active{background:#eff6ff;border-left:3px solid #2563eb;font-weight:600}
- nav .sec{padding:10px 20px 4px;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
- main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px;background:#ffffff}
- table{border-collapse:collapse;width:100%;background:#ffffff}
- th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #e5e7eb;vertical-align:top}
- th{position:sticky;top:0;background:#f3f4f6;color:#374151;font-weight:600;border-bottom:2px solid #d1d5db}
- td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px;color:#1f2937}
- .s5{color:#dc2626;font-weight:600}
- tr:hover{background:#f9fafb}
- .empty{padding:32px 24px;color:#6b7280}
- .title{padding:14px 24px 4px;font-weight:600;color:#111827}
- .navcount{color:#6b7280;font-size:11px;font-weight:400}
- .navlink{color:#2563eb}
+ nav{width:220px;flex:none;border-right:1px solid #21262d;min-height:60vh;padding:8px 0}
+ nav a{display:block;padding:7px 20px;color:#c9d1d9}
+ nav a.active{background:#161b22;border-left:3px solid #58a6ff;font-weight:600}
+ nav .sec{padding:10px 20px 4px;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
+ table{border-collapse:collapse;width:100%}
+ th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
+ th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
+ td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
+ .s5{color:#f85149;font-weight:600}
+ tr:hover{background:#161b22}
+ .empty{padding:32px 24px;color:#8b949e}
+ .title{padding:14px 24px 4px;font-weight:600}
+ .navcount{color:#8b949e;font-size:11px;font-weight:400}
+ .navlink{color:#58a6ff}
  nav a .navcount{float:right}
  .rowform{padding:8px 24px;max-width:760px}
  .rowfield{display:block;margin:10px 0}
- .rowfield span{display:block;color:#6b7280;font-size:12px;margin-bottom:4px}
- .rowfield input,.rowfield textarea{width:100%;background:#ffffff;color:#1f2937;
-        border:1px solid #d1d5db;border-radius:6px;padding:8px;
+ .rowfield span{display:block;color:#8b949e;font-size:12px;margin-bottom:4px}
+ .rowfield input,.rowfield textarea{width:100%;background:#0d1117;color:#c9d1d9;
+        border:1px solid #30363d;border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .tools .navlink{padding:8px 4px}
  .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:180px}
  .account-kind button{padding:4px 8px;font-size:12px}
- .kindpill{border:1px solid #d1d5db;border-radius:999px;padding:3px 8px;
-        color:#1f2937;background:#f3f4f6;font:600 12px system-ui,sans-serif}
+ .kindpill{border:1px solid #30363d;border-radius:999px;padding:3px 8px;
+        color:#c9d1d9;background:#161b22;font:600 12px system-ui,sans-serif}
  .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
  .diagcol{min-width:240px}
- .diagcol h3{font-size:13px;color:#374151;margin:8px 0 4px;font-weight:600}
+ .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
  .diagcol table{width:auto;min-width:220px}
 """
 
