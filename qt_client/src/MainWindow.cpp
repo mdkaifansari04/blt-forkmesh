@@ -340,13 +340,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
     m_mirrorSyncTimer->start(5 * 60 * 1000);
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
-    // Source-of-truth nodes poll their inboxes so issues/PRs/comments filed by
-    // other nodes show up automatically (with a notification), without a manual
-    // "Sync inbox". First pass shortly after launch, then on a short interval.
+    // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
+    // other nodes through the relay's event push: a minimal frame on the repo's
+    // host tunnel socket triggers one consolidated GET /api/sync (see
+    // performRelaySync). This timer is only the slow safety net for dropped
+    // events and reconnect gaps — it used to be a 60s poll of four endpoints
+    // per owned repo. First pass shortly after launch covers anything queued
+    // while the app was closed.
     m_inboxPollTimer = new QTimer(this);
-    connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::pollOwnedInboxes);
-    m_inboxPollTimer->start(60 * 1000);
-    QTimer::singleShot(20000, this, &MainWindow::pollOwnedInboxes);
+    connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::performRelaySync);
+    m_inboxPollTimer->start(5 * 60 * 1000);
+    QTimer::singleShot(20000, this, &MainWindow::performRelaySync);
     // Settings → "Automatically update ForkMesh" (off by default on desktop, on
     // by default headless — see kAutoUpdateSetting): hourly check for a new
     // tagged release, plus one shortly after launch so a stale headless install

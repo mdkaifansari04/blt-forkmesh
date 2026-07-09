@@ -642,6 +642,31 @@ async def repo_live_host_count(env, owner, repo):
         return None
 
 
+async def notify_repo_host(env, owner, repo, topic):
+    # Push a minimal "something changed" event frame to the repo's connected
+    # desktop host(s) over the existing tunnel WebSocket. The frame carries no
+    # payload — just a topic — and the node responds with one signed GET
+    # /api/sync, which replaces its old fast polling of the per-topic inbox
+    # endpoints. Best-effort: an offline host simply picks the change up from
+    # its slow fallback sync, so a failure here must never fail the write.
+    owner = safe_segment(owner)
+    repo = safe_segment(repo)
+    if not owner or not repo:
+        return
+    try:
+        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+        host_object = env.FORKMESH_HOST.get(host_id)
+        await asyncio.wait_for(
+            host_object.fetch(
+                f"https://forkmesh.internal/api/repo/{owner}/{repo}/notify"
+                f"?topic={topic}"
+            ),
+            timeout=HOST_COUNT_TIMEOUT_MS / 1000,
+        )
+    except Exception:
+        pass
+
+
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                                         presence, now):
     # host_presence is an eventually-refreshed D1 cache. For routing and the
@@ -8501,6 +8526,7 @@ async def issues_handler(env, request, owner, repo):
                 repo_web_href(owner, repo)))
         await _best_effort_inbox_side_effect(
             subscribe_thread(env, owner, repo, "issue", number, actor))
+        await notify_repo_host(env, owner, repo, "issues")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -8576,6 +8602,7 @@ async def pulls_handler(env, request, owner, repo):
                                      "Pull request comment", event.get("body", ""),
                                      repo_web_href(owner, repo))
             await subscribe_thread(env, owner, repo, "pull", number, actor)
+            await notify_repo_host(env, owner, repo, "pulls")
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -8610,6 +8637,7 @@ async def pulls_handler(env, request, owner, repo):
         await notify_pending_inbox(env, owner, repo, "pull", actor, title, 0)
         await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
                               repo_web_href(owner, repo), "pull")
+        await notify_repo_host(env, owner, repo, "pulls")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -8673,6 +8701,7 @@ async def commits_handler(env, request, owner, repo):
         await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
         await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
                               repo_web_href(owner, repo), "commit_comment")
+        await notify_repo_host(env, owner, repo, "commits")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -8744,6 +8773,7 @@ async def discussions_handler(env, request, owner, repo):
         await notify_pending_inbox(env, owner, repo, "discussion", actor, title, number)
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
                               repo_web_href(owner, repo), "discussion")
+        await notify_repo_host(env, owner, repo, "discussions")
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -8764,6 +8794,70 @@ async def discussions_handler(env, request, owner, repo):
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def sync_handler(env, request):
+    # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
+    # everything the owner's desktop node needs across ALL of its repos:
+    # pending issue/pull/discussion/commit inbox items, queued agent prompts
+    # (drained on read, same semantics as GET /agents), and the relay's pinned
+    # repo state. This replaces the node's old fast polling (4 inbox GETs per
+    # repo every 60s + agents every 30s + catalog list for pin checks): the
+    # node now calls this once whenever a minimal "event" frame arrives on its
+    # host tunnel socket (see notify_repo_host), plus a slow safety-net poll.
+    # Auth reuses the forkmesh-issues-pull-v1 drain token (_authorize_owner).
+    await ensure_schema(env)
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    params = parse_qs(urlparse(request.url).query)
+    owner = safe_segment(params.get("owner", [""])[0])
+    if not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    owner_bi = await blind_index(env, owner)
+    rows = await d1_all(
+        env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
+    repos = []
+    for row in rows:
+        rec = await decrypt_row(env, row["data"])
+        if not rec:
+            continue
+        repo_bi = row["key_bi"]
+        entry = {
+            "name": clean_string(rec.get("name", ""), 120),
+            "owner": clean_string(rec.get("owner", owner), 120),
+            # The relay's currently pinned state, so the node can detect pin
+            # drift without fetching the whole catalog list.
+            "stateHash": rec.get("stateHash", ""),
+            "updatedAt": rec.get("updatedAt", ""),
+            "source": rec.get("source", ""),
+        }
+        # Table names are fixed literals, safe to interpolate (same convention
+        # as _inbox_author_over_quota). Inbox items are NOT deleted here — the
+        # node still acknowledges a merged inbox with its per-repo DELETE.
+        for topic, table in (("issues", "issue_inbox"),
+                             ("pulls", "pull_inbox"),
+                             ("discussions", "discussion_inbox"),
+                             ("commits", "commit_inbox")):
+            inbox_rows = await d1_all(
+                env, f"SELECT data FROM {table} WHERE repo_bi=? ORDER BY id ASC",
+                repo_bi)
+            entry[topic] = [
+                x for x in
+                [await decrypt_row(env, r["data"]) for r in inbox_rows] if x]
+        prompt_rows = await d1_all(
+            env,
+            "SELECT data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
+            repo_bi)
+        prompts = [
+            x for x in
+            [await decrypt_row(env, r["data"]) for r in prompt_rows] if x]
+        if prompts:
+            await d1_run(
+                env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+        entry["agentPrompts"] = prompts
+        repos.append(entry)
+    return json_response(
+        {"ok": True, "serverTime": int(Date.now()), "repos": repos})
 
 
 # --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
@@ -8964,6 +9058,7 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         "VALUES (?,?,?,?)",
         repo_bi, agent_id, await encrypt_row(env, item), now,
     )
+    await notify_repo_host(env, owner, repo, "agents")
     return json_response({"ok": True})
 
 
@@ -11170,6 +11265,9 @@ class Default(WorkerEntrypoint):
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
         # records and returns a bot reply for the encrypted room.
+        if url.path in ("/api/sync", "/api/sync/"):
+            return await sync_handler(self.env, request)
+
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
 
@@ -12465,6 +12563,25 @@ class ForkMeshHost(DurableObject):
             return JsResponse.new(
                 None, to_js({"status": 101, "webSocket": client})
             )
+
+        if action == "notify":
+            # Internal-only (the public router never forwards this action):
+            # relay a minimal event frame to every connected host socket so the
+            # desktop node knows to run one /api/sync instead of fast-polling.
+            topic = clean_string(parse_qs(url.query).get("topic", [""])[0], 40)
+            frame = json.dumps({"type": "event", "topic": topic})
+            delivered = 0
+            try:
+                hosts = self.ctx.getWebSockets("host")
+            except Exception:
+                hosts = []
+            for host in hosts:
+                try:
+                    host.send(frame)
+                    delivered += 1
+                except Exception:
+                    pass
+            return json_response({"ok": True, "delivered": delivered})
 
         release_blob_match = RELEASE_BLOB_RE.match(path)
         if release_blob_match:

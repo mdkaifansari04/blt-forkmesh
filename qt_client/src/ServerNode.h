@@ -188,6 +188,7 @@ private:
     QByteArray m_wsKey;
     bool m_wsReady = false;
     QTimer *m_pingTimer = nullptr; // keeps the relay connection from idling out
+    qint64 m_pingSentMs = 0; // when the last keepalive ping left (RTT sample)
     QTimer *m_presenceTimer = nullptr; // periodic presence beat + stale-peer sweep
     QTimer *m_helloAdvertiseTimer = nullptr; // coalesces mirror hello updates
     // Auto-reconnect: the node stays online across drops, retrying quickly at

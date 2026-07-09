@@ -785,7 +785,7 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive, inboxBackoffKey] {
+            [this, reply, repo, interactive, inboxBackoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             const int status =
@@ -810,95 +810,112 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
         }
         m_discussionInboxBackoff.clear(inboxBackoffKey);
         m_pollBackoff.noteSuccess(inboxBackoffKey);
-        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
-                                       .object()
-                                       .value("pending")
-                                       .toArray();
-        if (pending.isEmpty()) {
-            if (interactive)
-                setDiscussionInlineNotice("No pending discussion submissions.");
-            return;
-        }
-
-        DiscussionStore store(writable.localPath, writable.mirrorPath,
-                              &m_profileIdentity, m_userName);
-        int merged = 0;
-        int comments = 0;
-        int newDiscussions = 0;
-        QString lastAuthor;
-        QString lastTitle;
-        int lastNumber = 0;
-        for (const QJsonValue &value : pending) {
-            const QJsonObject item = value.toObject();
-            const int number = item.value("number").toInt();
-            const QJsonObject eventObj = item.value("event").toObject();
-            DiscussionEvent ev = DiscussionEvent::fromJson(eventObj);
-            if (ev.body.isEmpty())
-                ev.body = eventObj.value("body").toString();
-            const QString titleIfNew = item.value("titleIfNew").toString();
-            QString error;
-            if (!store.applyRemoteEvent(number, ev, titleIfNew, &error))
-                continue;
-            ++merged;
-            const QString who =
-                ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
-            lastAuthor = who;
-            lastNumber = number;
-            if (ev.type == QLatin1String("open")) {
-                ++newDiscussions;
-                lastTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
-            } else if (ev.type == QLatin1String("comment")) {
-                ++comments;
-                lastTitle = QStringLiteral("comment on #%1").arg(number);
-            }
-        }
-        m_networkAccess->deleteResource(QNetworkRequest(url));
-
-        const bool onThisRepo =
-            m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
-            m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
-            m_repositories.at(m_repoDetailIndex).name == repo.name;
-        if (onThisRepo)
-            reloadDiscussions();
-        if (merged > 0) {
-            propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
-            scanRepoMentionsFor(writable);
-        }
-        if (interactive) {
-            setDiscussionInlineNotice(
-                QStringLiteral("Merged %1 discussion submission(s).").arg(merged));
-        } else if (merged > 0) {
-            QString body;
-            if (newDiscussions > 0) {
-                body = newDiscussions == 1
-                           ? QStringLiteral("%1 opened a discussion on %2/%3: %4")
-                                 .arg(lastAuthor, repo.owner, repo.name, lastTitle)
-                           : QStringLiteral("%1 new discussions on %2/%3")
-                                 .arg(newDiscussions)
-                                 .arg(repo.owner, repo.name);
-            } else if (comments > 0) {
-                body = comments == 1
-                           ? QStringLiteral("%1 commented on %2/%3 discussion #%4")
-                                 .arg(lastAuthor, repo.owner, repo.name)
-                                 .arg(lastNumber)
-                           : QStringLiteral("%1 new discussion comments on %2/%3")
-                                 .arg(comments)
-                                 .arg(repo.owner, repo.name);
-            }
-            if (!body.isEmpty()) {
-                flashMessage(body);
-                // Link a single update to its discussion; a batch lands on the
-                // repo's Discussions tab (issue #292).
-                NotificationLink link;
-                link.kind = QStringLiteral("discussion");
-                link.owner = repo.owner;
-                link.name = repo.name;
-                link.number = merged == 1 ? lastNumber : -1;
-                addNotification(QStringLiteral("Discussion update"), body, false,
-                                link);
-            }
-        }
+        applyDiscussionsInboxPayload(repo,
+                                     QJsonDocument::fromJson(reply->readAll())
+                                         .object()
+                                         .value("pending")
+                                         .toArray(),
+                                     interactive);
     });
+}
+
+// Merge pending discussion submissions into the local store, ack the inbox,
+// and raise notifications. `pending` comes from either a per-repo GET
+// /discussions drain reply or the repo's slice of the consolidated GET
+// /api/sync response.
+void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
+                                              const QJsonArray &pending,
+                                              bool interactive)
+{
+    if (pending.isEmpty()) {
+        if (interactive)
+            setDiscussionInlineNotice("No pending discussion submissions.");
+        return;
+    }
+    const RepositoryRecord writable = writableRecordFor(repo);
+    DiscussionStore store(writable.localPath, writable.mirrorPath,
+                          &m_profileIdentity, m_userName);
+    if (!store.canWrite())
+        return;
+    int merged = 0;
+    int comments = 0;
+    int newDiscussions = 0;
+    QString lastAuthor;
+    QString lastTitle;
+    int lastNumber = 0;
+    for (const QJsonValue &value : pending) {
+        const QJsonObject item = value.toObject();
+        const int number = item.value("number").toInt();
+        const QJsonObject eventObj = item.value("event").toObject();
+        DiscussionEvent ev = DiscussionEvent::fromJson(eventObj);
+        if (ev.body.isEmpty())
+            ev.body = eventObj.value("body").toString();
+        const QString titleIfNew = item.value("titleIfNew").toString();
+        QString error;
+        if (!store.applyRemoteEvent(number, ev, titleIfNew, &error))
+            continue;
+        ++merged;
+        const QString who =
+            ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
+        lastAuthor = who;
+        lastNumber = number;
+        if (ev.type == QLatin1String("open")) {
+            ++newDiscussions;
+            lastTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
+        } else if (ev.type == QLatin1String("comment")) {
+            ++comments;
+            lastTitle = QStringLiteral("comment on #%1").arg(number);
+        }
+    }
+    QUrl ackUrl = discussionsApiUrl(repo);
+    ackUrl.setQuery(
+        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+
+    const bool onThisRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
+        m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
+        m_repositories.at(m_repoDetailIndex).name == repo.name;
+    if (onThisRepo)
+        reloadDiscussions();
+    if (merged > 0) {
+        propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
+        scanRepoMentionsFor(writable);
+    }
+    if (interactive) {
+        setDiscussionInlineNotice(
+            QStringLiteral("Merged %1 discussion submission(s).").arg(merged));
+    } else if (merged > 0) {
+        QString body;
+        if (newDiscussions > 0) {
+            body = newDiscussions == 1
+                       ? QStringLiteral("%1 opened a discussion on %2/%3: %4")
+                             .arg(lastAuthor, repo.owner, repo.name, lastTitle)
+                       : QStringLiteral("%1 new discussions on %2/%3")
+                             .arg(newDiscussions)
+                             .arg(repo.owner, repo.name);
+        } else if (comments > 0) {
+            body = comments == 1
+                       ? QStringLiteral("%1 commented on %2/%3 discussion #%4")
+                             .arg(lastAuthor, repo.owner, repo.name)
+                             .arg(lastNumber)
+                       : QStringLiteral("%1 new discussion comments on %2/%3")
+                             .arg(comments)
+                             .arg(repo.owner, repo.name);
+        }
+        if (!body.isEmpty()) {
+            flashMessage(body);
+            // Link a single update to its discussion; a batch lands on the
+            // repo's Discussions tab (issue #292).
+            NotificationLink link;
+            link.kind = QStringLiteral("discussion");
+            link.owner = repo.owner;
+            link.name = repo.name;
+            link.number = merged == 1 ? lastNumber : -1;
+            addNotification(QStringLiteral("Discussion update"), body, false,
+                            link);
+        }
+    }
 }
 
 void MainWindow::setDiscussionInlineNotice(const QString &message, bool isError)

@@ -235,6 +235,10 @@ signals:
                     const QString &coveName, const QString &openerKey,
                     const QString &openerName, qint64 ts, const QString &signature);
     void networkDiagnosticsChanged();
+    // Round-trip time of the room socket's keepalive ping/pong, sampled every
+    // ~25s while connected. Feeds the relay radar for free — the footer's
+    // latency readout no longer needs its own HTTP probe when this is fresh.
+    void latencySampled(int ms);
     // Short status line for the UI.
     void statusChanged(const QString &status);
     // Unrecoverable failure; the UI returns to the setup screen.
