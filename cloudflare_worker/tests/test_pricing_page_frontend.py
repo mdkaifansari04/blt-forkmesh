@@ -116,6 +116,14 @@ def test_pricing_page_header_matches_updated_landing_header_copy():
     assert "Sign Up / Log In" not in header
 
 
+def test_pricing_page_repeats_the_free_start_cta_after_plan_comparison():
+    PRICING_HTML = _pricing_html()
+
+    assert "Ready to start with Core?" in PRICING_HTML
+    assert "Create a free account and publish your first mirrored repository." in PRICING_HTML
+    assert 'href="/signup"' in PRICING_HTML
+
+
 def test_pricing_page_reuses_landing_header_and_footer_chrome():
     PRICING_HTML = _pricing_html()
     body = PRICING_HTML[PRICING_HTML.index("<body"):]

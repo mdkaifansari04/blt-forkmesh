@@ -36,9 +36,11 @@ def _load(*names, extra_globals=None):
         "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
+        "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
+        "_status_minute",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -76,6 +78,7 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
     """Stub env for record_status_sample: error_log rows + host_presence count."""
     inserted = []
     hourly = []
+    minutely = []
 
     async def d1_first(_env, sql, *_args):
         if "SELECT 1 AS ok" in sql:
@@ -98,6 +101,8 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
             inserted.append({"system": args[1], "failure": args[2]})
         elif sql.startswith("INSERT INTO system_status_hourly"):
             hourly.append({"system": args[1], "failure": args[2], "reason": args[3]})
+        elif sql.startswith("INSERT INTO system_status_minute"):
+            minutely.append({"system": args[1], "ok": args[2], "reason": args[3]})
 
     async def noop(*_a, **_k):
         return None
@@ -109,31 +114,33 @@ def _sample_env(now, error_paths, host_online=True, db_ok=True, error_rows=None)
         "d1_all": d1_all,
         "d1_run": d1_run,
     }
-    return extra, inserted, hourly
+    return extra, inserted, hourly, minutely
 
 
 def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
-    extra, inserted, hourly = _sample_env(
+    extra, inserted, hourly, minutely = _sample_env(
         _Clock.value, error_paths, host_online, db_ok, error_rows=error_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
     asyncio.run(g["record_status_sample"](object()))
-    return {row["system"]: row["failure"] for row in inserted}, {
-        row["system"]: row["reason"] for row in hourly
-    }
+    return (
+        {row["system"]: row["failure"] for row in inserted},
+        {row["system"]: row["reason"] for row in hourly},
+        {row["system"]: (row["ok"], row["reason"]) for row in minutely},
+    )
 
 
 # --- record_status_sample ---------------------------------------------------
 
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_host():
-    results, reasons = _run_sample(error_paths=[], host_online=True, db_ok=True)
+    results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {"website", "api", "database", "git_hosting", "realtime"}
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
 
 
 def test_database_failure_is_isolated_to_the_database_system():
-    results, reasons = _run_sample(error_paths=[], host_online=True, db_ok=False)
+    results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=False)
     assert results["database"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
@@ -142,7 +149,7 @@ def test_database_failure_is_isolated_to_the_database_system():
 
 
 def test_no_live_host_fails_only_git_hosting():
-    results, reasons = _run_sample(error_paths=[], host_online=False, db_ok=True)
+    results, reasons, _minutes = _run_sample(error_paths=[], host_online=False, db_ok=True)
     assert results["git_hosting"] == 1
     assert results["website"] == 0
     assert results["api"] == 0
@@ -150,7 +157,7 @@ def test_no_live_host_fails_only_git_hosting():
 
 
 def test_api_error_does_not_fail_website():
-    results, reasons = _run_sample(error_paths=["/api/repositories"])
+    results, reasons, _minutes = _run_sample(error_paths=["/api/repositories"])
     assert results["api"] == 1
     assert results["website"] == 0
     assert results["realtime"] == 0
@@ -159,14 +166,14 @@ def test_api_error_does_not_fail_website():
 
 
 def test_static_page_error_does_not_fail_api():
-    results, reasons = _run_sample(error_paths=["/dashboard/index.html"])
+    results, reasons, _minutes = _run_sample(error_paths=["/dashboard/index.html"])
     assert results["website"] == 1
     assert results["api"] == 0
     assert "/dashboard/index.html" in reasons["website"]
 
 
 def test_git_clone_and_room_errors_are_bucketed_as_realtime():
-    results, reasons = _run_sample(error_paths=[
+    results, reasons, _minutes = _run_sample(error_paths=[
         "/someowner/somerepo/info/refs",
         "/api/repo/owner/repo/rooms/main/ws",
     ])
@@ -177,7 +184,7 @@ def test_git_clone_and_room_errors_are_bucketed_as_realtime():
 
 
 def test_reason_includes_status_and_message_and_extra_count():
-    results, reasons = _run_sample(error_rows=[
+    results, reasons, _minutes = _run_sample(error_rows=[
         {"path": "/api/repositories", "status": 500, "message": "boom"},
         {"path": "/api/other", "status": 502, "message": "boom2"},
     ])
@@ -187,11 +194,13 @@ def test_reason_includes_status_and_message_and_extra_count():
 
 # --- status_history ----------------------------------------------------------
 
-def _history_env(rows, hour_rows=()):
+def _history_env(rows, hour_rows=(), minute_rows=()):
     async def noop(*_a, **_k):
         return None
 
     async def d1_all(_env, sql, *_args):
+        if "system_status_minute" in sql:
+            return list(minute_rows)
         if "system_status_hourly" in sql:
             return list(hour_rows)
         return rows
@@ -211,8 +220,8 @@ def _history_env(rows, hour_rows=()):
     return extra, captured
 
 
-def _run_history(rows, hour_rows=()):
-    extra, captured = _history_env(rows, hour_rows)
+def _run_history(rows, hour_rows=(), minute_rows=()):
+    extra, captured = _history_env(rows, hour_rows, minute_rows)
     g = _load("status_history", extra_globals=extra)
     asyncio.run(g["status_history"](object()))
     return captured
@@ -382,6 +391,67 @@ def test_operational_hour_does_not_carry_a_stale_reason():
     this_hour = today["hours"][-1]
     assert this_hour["status"] == "operational"
     assert this_hour["reason"] is None
+
+
+# --- per-minute strip (60-minute row under the hour strip) -----------------
+
+MINUTE_MS = 60000
+
+
+def test_record_status_sample_writes_one_minute_row_per_system():
+    _results, _reasons, minutes = _run_sample(error_paths=["/api/repositories"])
+    # database/git_hosting/website/realtime all pass this tick; only "api"
+    # (matched by the /api/ path) fails. minutely's "ok" is the schema's own
+    # ok column (1 == passed), the inverse of the daily/hourly "failure" flag.
+    ok, reason = minutes["api"]
+    assert ok == 0
+    assert "/api/repositories" in reason
+    ok_db, no_reason = minutes["database"]
+    assert ok_db == 1
+    assert no_reason is None
+
+
+def test_minute_strip_is_sixty_buckets_oldest_to_newest():
+    out = _run_history([])
+    by_id = {s["id"]: s for s in out["systems"]}
+    minutes = by_id["website"]["minutes"]
+    assert len(minutes) == 60
+    for i in range(59):
+        assert minutes[i]["minuteTs"] < minutes[i + 1]["minuteTs"]
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    assert minutes[-1]["minuteTs"] == cur_minute
+
+
+def test_minute_with_no_row_is_future_only_for_the_current_bucket():
+    out = _run_history([])
+    by_id = {s["id"]: s for s in out["systems"]}
+    minutes = by_id["website"]["minutes"]
+    # The newest bucket (this minute) simply hasn't been sampled by the cron
+    # yet — that's not evidence of an outage.
+    assert minutes[-1]["status"] == "future"
+    # Every older bucket with no row is missing data, which the page treats
+    # as downtime (same policy as the hour/day rows).
+    assert all(m["status"] == "down" for m in minutes[:-1])
+    assert all("treated as downtime" in m["reason"] for m in minutes[:-1])
+
+
+def test_minute_row_reflects_ok_and_carries_its_failure_reason():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    prev_minute = cur_minute - MINUTE_MS
+    minute_rows = [
+        {"minute_ts": prev_minute, "system": "api", "ok": 0,
+         "reason": "500 on /api/x: boom"},
+        {"minute_ts": cur_minute, "system": "api", "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    minutes = {m["minuteTs"]: m for m in by_id["api"]["minutes"]}
+    assert minutes[prev_minute]["status"] == "down"
+    assert minutes[prev_minute]["reason"] == "500 on /api/x: boom"
+    # The current minute already has a row (the cron beat us to it this
+    # time), so it reflects that sample rather than reading as "future".
+    assert minutes[cur_minute]["status"] == "operational"
+    assert minutes[cur_minute]["reason"] is None
 
 
 # --- current-state snapshot (issue #356) ------------------------------------

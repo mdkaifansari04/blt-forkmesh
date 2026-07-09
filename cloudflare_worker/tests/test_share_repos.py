@@ -92,7 +92,7 @@ def test_authenticated_catalog_includes_repos_shared_to_the_viewer():
     # through the repo_shares ACL by their own blind index.
     assert ("SELECT repo_bi FROM repo_shares WHERE grantee_bi = ?" in ENTRY_TEXT)
     # ...and the public-only branch (anonymous callers) stays public-only.
-    assert ("SELECT key_bi, data FROM repositories WHERE is_private = 0"
+    assert ("SELECT key_bi, owner_bi, data FROM repositories WHERE is_private = 0"
             in ENTRY_TEXT)
 
 

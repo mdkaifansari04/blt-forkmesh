@@ -108,12 +108,14 @@ def test_listing_token_canonical_matches_across_worker_and_client():
 
 
 def test_authenticated_listing_is_scoped_to_the_viewers_own_repos():
-    # Only the viewer's own private repos are added (matched by owner blind index);
-    # public repos stay visible to everyone.
-    assert "is_private = 0 OR owner_bi = ?" in ENTRY_TEXT
+    # The authenticated branch adds the viewer's own private repos and private
+    # repos shared with them; public repos stay visible to everyone.
+    assert "is_private = 0 OR owner_bi = ? OR key_bi IN" in ENTRY_TEXT
+    assert "SELECT repo_bi FROM repo_shares WHERE grantee_bi = ?" in ENTRY_TEXT
 
 
 def test_authenticated_listing_is_not_edge_cached():
     # Per-viewer responses (with private repos) must never touch the shared public
     # cache, or private repos would leak to anonymous visitors.
-    assert "if authed_viewer:\n            return json_response(payload)" in ENTRY_TEXT
+    assert "if authed_viewer or bypass_cache:" in ENTRY_TEXT
+    assert 'cache_control="no-store, max-age=0, must-revalidate"' in ENTRY_TEXT

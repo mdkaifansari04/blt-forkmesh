@@ -214,6 +214,7 @@
       }
     }
 
+    setRepositoryViewMode(state.repositoryViewMode, { persist: false });
     window.lucide?.createIcons();
   }
 
@@ -239,6 +240,37 @@
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
         </button>`;
     }).join("");
+  }
+
+  function readRepositoryViewMode() {
+    try {
+      return localStorage.getItem(DASHBOARD_REPO_VIEW_KEY) === "grid" ? "grid" : "list";
+    } catch (_) {
+      return "list";
+    }
+  }
+
+  function setRepositoryViewMode(mode, options = {}) {
+    const next = mode === "grid" ? "grid" : "list";
+    const gridMode = next === "grid";
+    state.repositoryViewMode = next;
+    const repoList = $("#repoList");
+    if (repoList) {
+      repoList.classList.toggle("grid-mode", gridMode);
+      repoList.classList.toggle("divide-y", !gridMode);
+      repoList.classList.toggle("divide-border", !gridMode);
+    }
+    $$("[data-view-mode]").forEach((button) => {
+      const active = button.dataset.viewMode === next;
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.classList.toggle("bg-secondary", active);
+      button.classList.toggle("text-foreground", active);
+      button.classList.toggle("text-muted-foreground", !active);
+      button.classList.toggle("hover:text-foreground", !active);
+    });
+    if (options.persist !== false) {
+      try { localStorage.setItem(DASHBOARD_REPO_VIEW_KEY, next); } catch (_) {}
+    }
   }
 
   function applyRepositoryFilter() {

@@ -31,11 +31,8 @@ version, never an edit, so old signatures keep verifying across a client rollout
 
 ### 1.1 Node identity
 
-Every node has one long-lived **Ed25519** identity key, generated on first run and
-stored as `ed25519.pem` in the node's config directory
-([`ForkMeshIdentity`](../qt_client/src/ForkMeshIdentity.h)). This key is separate
-from the LAN TLS certificate: TLS encrypts peer links, the Ed25519 key *signs*
-metadata (profile, catalog records, issues, PRs, releases, auth tokens).
+Every desktop node starts with a long-lived **Ed25519** identity key, generated on first run and stored as `ed25519.pem` in the node's config directory ([`ForkMeshIdentity`](../qt_client/src/ForkMeshIdentity.h)).
+This key is separate from the LAN TLS certificate: TLS encrypts peer links, the Ed25519 key *signs* metadata (profile, catalog records, issues, PRs, releases, auth tokens).
 
 The **public key is the identity** — a raw 32-byte Ed25519 key, encoded
 **base64url without padding**. That base64url string is what appears as `author` /
@@ -46,6 +43,7 @@ A human-facing **account name** (e.g. `newnewnode`) can be bound to a key by
 reserving and finalizing it (§4.5). Account binding is what gates hosting, private
 repos, and catalog publishing — a bare key can browse and submit, but only the key
 registered to an account may claim to *host* `owner/repo`.
+An active account can rotate its bound key with `POST /api/accounts/rotate`; the old bound key signs the successor key, and the relay records the old key in `prev_pubkeys` for idempotent retries.
 
 ### 1.2 The canonical-string convention
 
@@ -88,6 +86,7 @@ before any state changes.
 | **Release manifest** | `release` repo · tag · author · ts · `sha256hex(content)` |
 | **Account reserve** | `reserve` name · ts |
 | **Account finalize** | `finalize` name · email · ts |
+| **Account key rotation** | `rotate` oldPubkey · newPubkey · ts |
 | **Host token** | `host` owner · repo · ts |
 | **View token** (private clone/browse) | `view` owner · repo · ts |
 | **Push token** (`git push`) | `push` owner · repo · ts |
@@ -316,17 +315,27 @@ flow.
 
 | Path | Purpose |
 |---|---|
-| `GET/POST /api/accounts/<name>` | reserve / finalize / login; `GET` looks up an account's public key |
+| `GET /api/accounts/<name>` | public account lookup: availability, registered pubkey, profile flags |
+| `POST /api/accounts/signup` | free web signup from node name, email, and password |
+| `POST /api/accounts/reserve` | name reservation, optionally signed by a desktop key |
+| `POST /api/accounts/finalize` | finish a reserved account with email/password and optional key binding |
+| `POST /api/accounts/login` | password/TOTP login; an optional pubkey registers the desktop device |
+| `POST /api/accounts/rotate` | replace the account's bound pubkey after the current bound key signs `forkmesh-rotate-v1` |
+| `POST /api/accounts/profile` | profile updates such as payout address, email verification resend, rename, and delete |
+| `POST /api/accounts/heartbeat` | signed desktop presence and profile heartbeat |
 | `GET /api/version` | `{ ok, rev, now }` — the live BUILD_REV, used to verify a deploy (§6) |
 | `GET /api/network/stats` · `/online-history` · `/leaderboards` | cached homepage / network-page aggregates |
 | `GET /api/status` | 30-day per-system uptime for the public status page |
 
-Account registration is two steps: **reserve** a name (`forkmesh-reserve-v1`) then
-**finalize** it with the key + email (`forkmesh-finalize-v1`). Once finalized, the
-account name is bound to that Ed25519 key, and `verify_host_token` /
-`verify_view_token` / `verify_push_token` all resolve the owner name → registered
-pubkey before accepting a hosting/browse/push action. There is no self-assertion:
-with no registered account, those gates fail closed.
+Account creation has two paths.
+The web path creates an active account directly through `/api/accounts/signup` from a node name, email, and password.
+The desktop/reservation path reserves a name (`forkmesh-reserve-v1`) and then finalizes it with email/password plus the key when one is bound (`forkmesh-finalize-v1`).
+Once active, the account name can be bound to an Ed25519 key, and `verify_host_token` / `verify_view_token` / `verify_push_token` all resolve the owner name to the registered pubkey before accepting a hosting/browse/push action.
+There is no self-assertion: with no registered account, those gates fail closed.
+`POST /api/accounts/rotate` accepts `{ nodeName?, oldPubkey, newPubkey, ts, sig|signature }` and verifies `forkmesh-rotate-v1\n<oldPubkey>\n<newPubkey>\n<ts>` with the currently bound old key.
+A request that names the account and finds `newPubkey` already bound returns success as an idempotent no-op.
+`nodeName` is optional for desktop rotation records; when omitted, the relay finds the account by `oldPubkey`, and a repeat request after success can resolve by `newPubkey` when `oldPubkey` is already in `prev_pubkeys`.
+The rotation rejects stale requests, malformed keys, inactive or missing accounts, an `oldPubkey` that is not currently bound, a bad signature, and a `newPubkey` already bound to another account.
 
 ---
 

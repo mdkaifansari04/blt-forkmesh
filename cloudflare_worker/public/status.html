@@ -83,7 +83,7 @@
         <div class="panel-header">
           <div>
             <h2 id="status-systems-title">Systems</h2>
-            <p>Each top bar is one day; the strip below shows the last 24 hourly checks. Hover an hour for its status and reason.</p>
+            <p>Each top bar is one day, the middle strip shows the last 24 hourly checks, and the bottom strip shows the last 60 one-minute checks. Hover a square for its status and reason.</p>
           </div>
         </div>
         <div style="padding: 4px 16px 16px">
@@ -152,6 +152,13 @@
           future: "Not yet elapsed",
         };
 
+        const MINUTE_STATUS_LABEL = {
+          operational: "Operational",
+          down: "Down",
+          unknown: "No data",
+          future: "Not yet sampled",
+        };
+
         function escapeHtml(value) {
           return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
             "&": "&amp;",
@@ -214,6 +221,20 @@
             text += " (" + (hour.checks - hour.failures) + "/" + hour.checks + " checks passed)";
           }
           if (hour.reason) text += " — " + hour.reason;
+          return text;
+        }
+
+        function fmtMinuteRange(minuteTs) {
+          return new Date(minuteTs).toLocaleTimeString(undefined, {
+            hour: "numeric",
+            minute: "2-digit",
+          });
+        }
+
+        function minuteTooltip(minute) {
+          const label = MINUTE_STATUS_LABEL[minute.status] || "No data";
+          let text = fmtMinuteRange(minute.minuteTs) + ": " + label;
+          if (minute.reason) text += " — " + minute.reason;
           return text;
         }
 
@@ -448,7 +469,7 @@
             days.className = "status-days";
             const detail = document.createElement("div");
             detail.className = "status-hour-detail";
-            const defaultDetail = "Hover a last-24-hours square for details. Missing elapsed samples count as downtime.";
+            const defaultDetail = "Hover a square for details. Missing elapsed samples count as downtime.";
             detail.textContent = defaultDetail;
             const setDetail = (text, marker) => {
               if (marker) marker.classList.add("is-hovered");
@@ -560,6 +581,21 @@
               hourBar.appendChild(slice);
             }
             row.appendChild(hourBar);
+
+            // Third row: the last 60 one-minute checks. Unlike the hour bar
+            // above, the backend already returns exactly 60 buckets (oldest
+            // to newest, including "future" for the still-in-progress
+            // minute), so there's no client-side synthesis needed here.
+            const minuteBar = document.createElement("div");
+            minuteBar.className = "status-minute-bar";
+            const minuteList = system.minutes || [];
+            minuteList.forEach((minute) => {
+              const slice = document.createElement("div");
+              slice.className = "status-minute-slice is-" + (minute.status || "unknown");
+              wireHourDetail(slice, minuteTooltip(minute));
+              minuteBar.appendChild(slice);
+            });
+            row.appendChild(minuteBar);
             row.appendChild(detail);
 
             list.appendChild(row);

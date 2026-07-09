@@ -334,4 +334,16 @@ SCHEMA_STATEMENTS = [
         reason TEXT,
         PRIMARY KEY (hour_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_hourly_hour ON system_status_hourly(hour_ts)",
+    # Per-minute detail backing the /status page's 60-minute strip. Unlike the
+    # daily/hourly rollups above (which only ever store a checks/failures
+    # counter, never the individual samples), a minute IS the individual
+    # sample, so this is one row per system per minute: ok=1/0 plus the same
+    # short failure reason. Short-retention (pruned well under an hour of
+    # slack past what the page displays) since nothing else needs history
+    # this granular once it has aged out of the visible window.
+    """CREATE TABLE IF NOT EXISTS system_status_minute (
+        minute_ts INTEGER NOT NULL, system TEXT NOT NULL,
+        ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
+        PRIMARY KEY (minute_ts, system))""",
+    "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
 ]

@@ -25,8 +25,8 @@ bounties, and a live public website — all running on the network right now.
 ForkMesh is well past "prototype." Here's what you can do right now:
 
 **Identity & accounts**
-- Anonymous accounts secured by a local Ed25519 key + password — no email, no
-  central password database.
+- Accounts can start on the web with email/password or on desktop with a local Ed25519 key.
+- Key-bound actions remain signed and verifiable across nodes.
 - Signed profile and repository metadata, verifiable across nodes.
 
 **Hosting & mirroring**
@@ -185,7 +185,7 @@ root registers it so Claude Code discovers it automatically. Run
 
 ## Core Model
 
-- **Identity:** local Ed25519 keys instead of passwords.
+- **Identity:** local Ed25519 keys for signed protocol actions, with email/password login for web and cross-device account access.
 - **Repositories:** signed metadata plus Git remotes.
 - **Mirrors:** any node can host a bare mirror of any repository, and serve it
   when the source is offline.

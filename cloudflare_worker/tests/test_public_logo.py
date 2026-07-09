@@ -33,7 +33,7 @@ class BrandLogoParser(HTMLParser):
         if self._in_brand:
             if tag not in {"br", "hr", "img", "input", "link", "meta"}:
                 self._brand_depth += 1
-            if tag == "img" and "brand-mark" in classes:
+            if tag == "img":
                 self.brand_logos.append(attr_map)
 
     def handle_endtag(self, tag):

@@ -8,6 +8,7 @@ import 'services/api_service.dart';
 import 'services/auth_service.dart';
 import 'services/identity.dart';
 import 'services/inbox_service.dart';
+import 'services/notification_service.dart';
 import 'services/performance_monitor_service.dart';
 import 'services/relay_service.dart';
 import 'services/settings_service.dart';
@@ -89,6 +90,10 @@ class ForkMeshApp extends StatefulWidget {
 class _ForkMeshAppState extends State<ForkMeshApp> {
   late final PerformanceMonitorService _performanceMonitor =
       widget.performanceMonitor ?? PerformanceMonitorService(enabled: false);
+  late final NotificationService _notifications = NotificationService(
+    widget.api,
+    nodeName: () => widget.auth.session?.nodeName ?? '',
+  );
 
   @override
   void initState() {
@@ -98,6 +103,7 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
 
   @override
   void dispose() {
+    _notifications.dispose();
     _performanceMonitor.uninstallFrameTimingMonitor(WidgetsBinding.instance);
     super.dispose();
   }
@@ -111,6 +117,7 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
         ChangeNotifierProvider.value(value: widget.relay),
         Provider.value(value: widget.api),
         ChangeNotifierProvider.value(value: widget.auth),
+        ChangeNotifierProvider.value(value: _notifications),
         Provider.value(value: widget.inbox),
       ],
       child: MaterialApp(
