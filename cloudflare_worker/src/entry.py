@@ -1105,6 +1105,10 @@ STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
 STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
 STATUS_HOUR_MS = 60 * 60 * 1000
 STATUS_DAY_MS = 24 * STATUS_HOUR_MS
+STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
+# Kept a little past what's shown so a slow reader's page load always has a
+# full 60 buckets to render even a few minutes after the newest cron tick.
+STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -1158,6 +1162,31 @@ def _status_effective_hour(hour_ts, now, row):
     }
 
 
+def _status_minute(minute_ts, current_minute_ts, row):
+    """Status of a single 60-second bucket for the /status minute strip.
+
+    Unlike an hour, a minute has no finer subdivision to average over: it's
+    either sampled ok, sampled failing, or (if it's the in-progress minute)
+    not sampled yet — no "degraded" state is possible at this granularity.
+    """
+    minute_ts = int(minute_ts)
+    if minute_ts >= current_minute_ts and row is None:
+        # This minute's cron tick hasn't landed yet (the common case for the
+        # newest bucket) — not evidence of an outage, just not elapsed.
+        return {"minuteTs": minute_ts, "status": "future", "reason": None}
+    if row is None:
+        return {
+            "minuteTs": minute_ts, "status": "down",
+            "reason": "No status sample recorded for this minute; treated as downtime.",
+        }
+    ok = bool(row.get("ok"))
+    return {
+        "minuteTs": minute_ts,
+        "status": "operational" if ok else "down",
+        "reason": None if ok else (row.get("reason") or None),
+    }
+
+
 async def record_status_sample(env):
     # Called once a minute by the scheduled (cron) handler. Best-effort per
     # system so one failing check can't blank the rest of the page.
@@ -1165,6 +1194,7 @@ async def record_status_sample(env):
     now = int(Date.now())
     day_ts = (now // 86400000) * 86400000
     hour_ts = (now // 3600000) * 3600000
+    minute_ts = (now // 60000) * 60000
     ok = {}
     reason = {}
 
@@ -1247,6 +1277,17 @@ async def record_status_sample(env):
             "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
             hour_ts, system_id, failure, reason.get(system_id), failure,
         )
+        # A minute is the raw sample itself (not a counter): one cron tick per
+        # minute per system, so ON CONFLICT just overwrites in the rare case a
+        # tick somehow re-fires for the same minute.
+        await d1_run(
+            env,
+            "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(minute_ts, system) DO UPDATE SET "
+            "ok = excluded.ok, reason = excluded.reason",
+            minute_ts, system_id, 0 if failure else 1, reason.get(system_id),
+        )
     await d1_run(
         env, "DELETE FROM system_status_daily WHERE day_ts < ?",
         day_ts - STATUS_HISTORY_RETAIN_MS,
@@ -1254,6 +1295,10 @@ async def record_status_sample(env):
     await d1_run(
         env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
         day_ts - STATUS_HISTORY_RETAIN_MS,
+    )
+    await d1_run(
+        env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+        minute_ts - STATUS_MINUTE_RETAIN_MS,
     )
 
 
@@ -1288,6 +1333,19 @@ async def status_history(env):
             int(row.get("checks") or 0), int(row.get("failures") or 0),
             row.get("reason") or None,
         )
+
+    current_minute = (now // 60000) * 60000
+    minute_start = current_minute - (STATUS_MINUTES_SHOWN - 1) * 60000
+    minute_rows = await d1_all(
+        env,
+        "SELECT minute_ts, system, ok, reason FROM system_status_minute "
+        "WHERE minute_ts >= ?",
+        minute_start,
+    )
+    by_system_minute = {}
+    for row in minute_rows:
+        system_id = str(row.get("system") or "")
+        by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
 
     systems = []
     for system_id, label in STATUS_SYSTEMS:
@@ -1366,10 +1424,18 @@ async def status_history(env):
             )
             if total_24h_expected else None
         )
+        minutes = [
+            _status_minute(
+                minute_start + i * 60000, current_minute,
+                by_system_minute.get(system_id, {}).get(minute_start + i * 60000),
+            )
+            for i in range(STATUS_MINUTES_SHOWN)
+        ]
+
         systems.append({
             "id": system_id, "label": label, "status": status,
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
-            "days": days,
+            "days": days, "minutes": minutes,
             "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
             "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
         })
