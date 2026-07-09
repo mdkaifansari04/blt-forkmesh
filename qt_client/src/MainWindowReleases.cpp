@@ -494,6 +494,73 @@ void MainWindow::pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag)
     }
 }
 
+void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+
+    QByteArray out;
+    if (!runGitCapture(dir,
+                       {"for-each-ref", "--format=%(refname:short)", "refs/tags"},
+                       &out, nullptr))
+        return;
+    QStringList staleTags;
+    for (const QByteArray &line : out.split('\n')) {
+        const QString name = QString::fromUtf8(line).trimmed();
+        if (!name.isEmpty() && name != keepTag)
+            staleTags << name;
+    }
+    if (staleTags.isEmpty()) {
+        logSystem(QStringLiteral("Releases: no previous release tags to delete for %1.")
+                       .arg(keepTag));
+        return;
+    }
+
+    int deleted = 0;
+    int failed = 0;
+    for (const QString &name : std::as_const(staleTags)) {
+        if (runGitCapture(dir, {"tag", "-d", name}, nullptr, nullptr))
+            ++deleted;
+        else
+            ++failed;
+    }
+
+    if (deleted > 0)
+        logSystem(
+            QStringLiteral("Git: deleted %1 previous release tag%2 before publishing %3.")
+                .arg(deleted)
+                .arg(deleted == 1 ? QString() : QStringLiteral("s"))
+                .arg(keepTag));
+    if (failed > 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Published release %1, but %2 previous tag%3 could not be deleted.")
+                .arg(keepTag)
+                .arg(failed)
+                .arg(failed == 1 ? QString() : QStringLiteral("s")),
+            true);
+    } else if (deleted > 0) {
+        setRepoDetailNotice(
+            QStringLiteral("Published release %1 and deleted %2 previous tag%3.")
+                .arg(keepTag)
+                .arg(deleted)
+                .arg(deleted == 1 ? QString() : QStringLiteral("s")));
+    }
+
+    loadBranchesAndTags();
+    if (m_repoDetailStack && m_releasesTabIndex >= 0 &&
+        m_repoDetailStack->currentIndex() == m_releasesTabIndex)
+        loadReleasesPanel();
+
+    // Deleting only changes the tag refs in the working copy; propagate that
+    // into the served bare mirror now (syncRepository fetches heads+tags with
+    // --prune) instead of waiting on the 5-minute auto-sync — the same
+    // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
+    propagateRepoUpdate(m_repoDetailIndex);
+}
+
 void MainWindow::loadReleasesPanel()
 {
     if (!m_releasesTable)
@@ -2281,6 +2348,13 @@ void MainWindow::promptNewRelease()
         "After the release tag is created, delete every artifact currently stored "
         "under this repo's local forkmesh-releases/sha256 store. New artifacts "
         "from the release workflow will be written after this."));
+    auto *pruneTagsCheck = new QCheckBox(
+        QStringLiteral("Delete previous release tags"));
+    pruneTagsCheck->setToolTip(QStringLiteral(
+        "After the new release tag is created, delete every other release tag "
+        "in this repository's history, keeping only the one just published. "
+        "This cannot be undone, and links to those older releases will stop "
+        "working."));
     auto *genNotesButton = new QPushButton("Generate release notes");
     genNotesButton->setObjectName("ghostButton");
     genNotesButton->setCursor(Qt::PointingHandCursor);
@@ -2342,6 +2416,7 @@ void MainWindow::promptNewRelease()
     form->addRow(QString(), genNotesButton);
     form->addRow("Notes", notesEdit);
     form->addRow(QString(), pruneArtifactsCheck);
+    form->addRow(QString(), pruneTagsCheck);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText("Publish release");
     form->addRow(buttons);
@@ -2394,6 +2469,8 @@ void MainWindow::promptNewRelease()
     loadBranchesAndTags();
     if (pruneArtifactsCheck->isChecked())
         pruneReleaseArtifactsForCurrentRepo(tag);
+    if (pruneTagsCheck->isChecked())
+        pruneReleaseTagsForCurrentRepo(tag);
 
     // Trigger any `on: release` workflow (e.g. .forkmesh/release.yml, which
     // builds and publishes the desktop binary for this platform). Resolve the
