@@ -889,6 +889,14 @@ void RepoHost::handleFrame(const QByteArray &payload)
         finishReceiveInput(obj.value("reqId").toString());
         return;
     }
+    if (type == "event") {
+        // Minimal server-push notification: the relay has something new for
+        // this repo (inbox item, agent prompt, …). Carries only a topic — the
+        // node fetches the actual data with one signed GET /api/sync.
+        emit relayEventReceived(m_owner, m_name,
+                                obj.value("topic").toString());
+        return;
+    }
     handleRequest(obj);
 }
 

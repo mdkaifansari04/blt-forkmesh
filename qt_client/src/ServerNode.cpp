@@ -305,11 +305,15 @@ bool ServerNode::start()
 
     if (!m_pingTimer) {
         // A periodic WebSocket ping keeps the relay (and Cloudflare's edge)
-        // from dropping the connection while the node is idle.
+        // from dropping the connection while the node is idle. The pong's
+        // round trip doubles as a free latency sample (latencySampled) so the
+        // relay radar doesn't need its own HTTP probe while we're connected.
         m_pingTimer = new QTimer(this);
         m_pingTimer->setInterval(25000);
-        connect(m_pingTimer, &QTimer::timeout, this,
-                [this] { sendControlFrame(0x9); });
+        connect(m_pingTimer, &QTimer::timeout, this, [this] {
+            m_pingSentMs = QDateTime::currentMSecsSinceEpoch();
+            sendControlFrame(0x9);
+        });
     }
 
     if (!m_presenceTimer) {
@@ -563,9 +567,14 @@ void ServerNode::onSocketReadyRead()
             sendControlFrame(0xA, payload);
             continue;
         }
-        if (opcode == 0xA) { // pong: keepalive acknowledged, nothing to do
+        if (opcode == 0xA) { // pong: keepalive acknowledged
             ++m_rxControlFrames;
             m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
+            if (m_pingSentMs > 0) {
+                emit latencySampled(int(qMin<qint64>(
+                    m_lastRxMs - m_pingSentMs, 60 * 1000)));
+                m_pingSentMs = 0;
+            }
             emit networkDiagnosticsChanged();
             continue;
         }

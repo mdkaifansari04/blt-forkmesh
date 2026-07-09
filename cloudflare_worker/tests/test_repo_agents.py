@@ -184,11 +184,15 @@ def _harness(accounts):
             return [{"id": r["id"], "data": r["data"]} for r in rows]
         raise AssertionError("unexpected d1_all: " + sql)
 
+    async def noop_notify_repo_host(_env, _owner, _repo, _topic):
+        return None
+
     ns = _load_functions({
         "Date": _DateStub,
         "json_response": json_response,
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
+        "notify_repo_host": noop_notify_repo_host,
         "_account_row": _account_row,
         "verify_password": verify_password,
         "_is_admin": _is_admin,
