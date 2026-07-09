@@ -293,6 +293,9 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
     first_gate_at = scheduled.index("if minute % ")
     assert online_at < first_gate_at
     assert sample_at < first_gate_at
+    # The /status sample runs before the heavier online sample, so a tick
+    # that dies partway has already landed the publicly-visible data point.
+    assert sample_at < online_at
     for job in ("sweep_funded_bounties", "_federation_cron",
                 "send_notification_digests", "purge_stale_registered_nodes",
                 "purge_blocked_catalog", "_distribute_central_fund",
@@ -953,3 +956,25 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
     print("ok")
+
+
+def test_status_reports_cron_liveness_for_the_banner():
+    # current.lastCronSampleTs = newest minute with a recorded sample, so the
+    # page can say "the sampling cron is behind" instead of letting missing
+    # samples read as a confirmed outage.
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute - 7 * MINUTE_MS, "system": "website",
+         "ok": 1, "reason": None},
+        {"minute_ts": cur_minute - 5 * MINUTE_MS, "system": "api",
+         "ok": 1, "reason": None},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    assert out["current"]["lastCronSampleTs"] == cur_minute - 5 * MINUTE_MS
+    # No samples at all -> null, not 0 (the page treats it as "unknown").
+    out = _run_history([])
+    assert out["current"]["lastCronSampleTs"] is None
+
+    page = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
+    assert "lastCronSampleTs" in page
+    assert "sampling cron is behind" in page

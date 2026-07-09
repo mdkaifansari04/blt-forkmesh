@@ -301,6 +301,19 @@
           bannerSub.textContent = data.now
             ? "Last checked " + new Date(data.now).toLocaleTimeString()
             : "";
+          // A stale health sample means the sampling cron is behind, not that
+          // the site is down — say so explicitly, since the missing samples
+          // paint the strips red either way.
+          const lastSample = data.current && data.current.lastCronSampleTs;
+          if (data.now && typeof lastSample === "number") {
+            const behindMins = Math.floor((data.now - lastSample) / 60000);
+            if (behindMins >= 3) {
+              bannerSub.textContent +=
+                " · last health sample " + behindMins + "m ago — the " +
+                "sampling cron is behind; red squares since then reflect " +
+                "missing samples, not a confirmed outage";
+            }
+          }
 
           const current = data.current || {};
           const currentEl = document.getElementById("status-current");
