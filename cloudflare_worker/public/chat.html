@@ -314,6 +314,19 @@
         font-weight: 700;
         white-space: nowrap;
         color: #7c9cff;
+        text-decoration: none;
+      }
+
+      a.chat-author:hover,
+      a.chat-author:focus-visible {
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
+      .chat-avatar-link {
+        flex-shrink: 0;
+        display: block;
+        text-decoration: none;
       }
 
       .chat-msg.is-self .chat-author { color: var(--accent); }
@@ -609,9 +622,12 @@
         gap: 9px;
         padding: 5px 8px;
         border-radius: 8px;
+        color: inherit;
+        text-decoration: none;
       }
 
       .chat-person:hover { background: var(--surface2); }
+      a.chat-person:hover .chat-person-name { text-decoration: underline; text-underline-offset: 2px; }
 
       .chat-person .chat-avatar { width: 26px; height: 26px; font-size: 12px; margin: 0; }
 

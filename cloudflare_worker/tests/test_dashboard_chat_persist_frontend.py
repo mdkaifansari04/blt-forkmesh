@@ -179,3 +179,18 @@ def test_public_chat_mention_autocomplete_accepts_with_tab():
     assert 'input.addEventListener("input", updateMentionSuggest)' in PUBLIC_CHAT
     assert ".chat-mention-suggest" in PUBLIC_CHAT_HTML
     assert ".chat-mention-suggest-item.is-active" in PUBLIC_CHAT_HTML
+
+
+def test_public_chat_usernames_link_to_relay_profile_pages():
+    # Clicking a message author, their avatar, or a people-pane row opens
+    # /@username — a RELATIVE URL, so the link lands on whichever relay is
+    # serving the page (forkmesh.com or a self-hosted mainnode). ForkBot is
+    # not an account, so its rows stay unlinked.
+    assert 'return key ? "/@" + encodeURIComponent(key) : "#";' in PUBLIC_CHAT
+    assert "author.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
+    assert "avatarLink.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
+    assert "row.href = mentionProfilePath(person.name)" in PUBLIC_CHAT
+    assert 'document.createElement(isBot ? "span" : "a")' in PUBLIC_CHAT
+    assert 'document.createElement(isBot ? "div" : "a")' in PUBLIC_CHAT
+    assert "a.chat-author:hover" in PUBLIC_CHAT_HTML
+    assert "a.chat-person:hover" in PUBLIC_CHAT_HTML

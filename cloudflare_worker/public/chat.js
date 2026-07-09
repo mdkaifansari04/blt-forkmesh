@@ -797,10 +797,15 @@ function renderPeople() {
     head.textContent = title;
     peopleEl.append(head);
     for (const person of sortPeople(list)) {
-      const row = document.createElement("div");
+      // Each row links to the person's profile at /@username on this relay
+      // (relative URL — a self-hosted relay links to its own pages). ForkBot
+      // isn't an account, so its row stays a plain div.
+      const isBot = person.kind === "bot";
+      const row = document.createElement(isBot ? "div" : "a");
       const online = personIsOnline(person);
       row.className = "chat-person" + (online ? "" : " is-offline");
       row.title = person.name + (online ? " · online" : " · offline");
+      if (!isBot) row.href = mentionProfilePath(person.name);
       row.append(makeAvatar(person.name, person.kind));
       const label = document.createElement("span");
       label.className = "chat-person-name";
