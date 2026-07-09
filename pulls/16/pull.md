@@ -4,7 +4,7 @@ number: 16
 title: feat(flutter): show payout readiness visibility
 base: main
 head: pr/flutter-payout-readiness-visibility
-status: open
+status: merged
 ts: 1783356131086
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds payout readiness and funds-received public accounting visibility to mobile 
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-
