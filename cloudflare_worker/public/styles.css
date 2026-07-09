@@ -2567,8 +2567,32 @@ button.issue-row {
   outline: none;
 }
 
+/* Third row: one slice per minute over the last hour. Same statuses as the
+   hour/day markers, just smaller and more of them. */
+.status-minute-bar {
+  display: grid;
+  grid-template-columns: repeat(60, 6px);
+  grid-auto-rows: 12px;
+  gap: 2px;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  margin-top: 6px;
+  padding-bottom: 2px;
+}
+
+.status-minute-slice {
+  cursor: default;
+  border-radius: 1.5px;
+  background: var(--border);
+  width: 6px;
+  height: 12px;
+  outline: none;
+}
+
 .status-hour-slice:focus-visible,
-.status-day-hour:focus-visible {
+.status-day-hour:focus-visible,
+.status-minute-slice:focus-visible {
   box-shadow: 0 0 0 1px var(--foreground);
 }
 
@@ -2580,18 +2604,24 @@ button.issue-row {
 }
 
 .status-hour-slice.is-operational,
-.status-day-hour.is-operational { background: var(--accent-bright); }
+.status-day-hour.is-operational,
+.status-minute-slice.is-operational { background: var(--accent-bright); }
 .status-hour-slice.is-degraded,
-.status-day-hour.is-degraded { background: var(--warning); }
+.status-day-hour.is-degraded,
+.status-minute-slice.is-degraded { background: var(--warning); }
 .status-hour-slice.is-down,
-.status-day-hour.is-down { background: var(--danger); }
+.status-day-hour.is-down,
+.status-minute-slice.is-down { background: var(--danger); }
 .status-hour-slice.is-unknown,
-.status-day-hour.is-unknown { background: var(--border); }
+.status-day-hour.is-unknown,
+.status-minute-slice.is-unknown { background: var(--border); }
 
-/* Hours later today that simply haven't happened yet — visually hollow so a
-   partial day never reads as a completed, fully-green/orange block. */
+/* Hours/minutes later today that simply haven't happened yet — visually
+   hollow so a partial day/hour never reads as a completed, fully-green/orange
+   block. */
 .status-hour-slice.is-future,
-.status-day-hour.is-future {
+.status-day-hour.is-future,
+.status-minute-slice.is-future {
   background: transparent;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 90%, var(--foreground) 10%);
 }

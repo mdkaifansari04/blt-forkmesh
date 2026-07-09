@@ -23,10 +23,10 @@ index 9c0fdef1..67d7ad8d 100644
  - **Mirrors:** any node can host a bare mirror of any repository, and serve it
    when the source is offline.
 diff --git a/cloudflare_worker/public/dashboard.html b/cloudflare_worker/public/dashboard.html
-index 5664308a..78168500 100644
+index 43623160..be42b088 100644
 --- a/cloudflare_worker/public/dashboard.html
 +++ b/cloudflare_worker/public/dashboard.html
-@@ -254,7 +254,7 @@
+@@ -309,7 +309,7 @@
  
        .repo-list.grid-mode {
          display: grid;
@@ -36,10 +36,10 @@ index 5664308a..78168500 100644
          padding: 0.75rem;
        }
 diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
-index 5664308a..78168500 100644
+index 43623160..be42b088 100644
 --- a/cloudflare_worker/public/dashboard/index.html
 +++ b/cloudflare_worker/public/dashboard/index.html
-@@ -254,7 +254,7 @@
+@@ -309,7 +309,7 @@
  
        .repo-list.grid-mode {
          display: grid;
@@ -49,10 +49,10 @@ index 5664308a..78168500 100644
          padding: 0.75rem;
        }
 diff --git a/cloudflare_worker/public/dashboard/js/01-state.js b/cloudflare_worker/public/dashboard/js/01-state.js
-index e8b38287..f691ff9f 100644
+index 68294bea..5d819823 100644
 --- a/cloudflare_worker/public/dashboard/js/01-state.js
 +++ b/cloudflare_worker/public/dashboard/js/01-state.js
-@@ -44,6 +44,7 @@
+@@ -45,6 +45,7 @@
      longDiffOverrides: {},
      repoCommitDetail: null,
      repoRecordDetail: null,
@@ -60,14 +60,14 @@ index e8b38287..f691ff9f 100644
    };
  
    const $ = (selector) => document.querySelector(selector);
-@@ -53,4 +54,5 @@
+@@ -54,4 +55,5 @@
    const REPO_COLLECTION_PAGE_SIZE = 5;
    const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
    const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
 +  const DASHBOARD_REPO_VIEW_KEY = "forkmesh.dashboard.repoView";
    const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;
 diff --git a/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js b/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
-index 340c2e4c..ba4d4da6 100644
+index 9855656e..817754c2 100644
 --- a/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
 +++ b/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
 @@ -343,7 +343,9 @@
@@ -82,10 +82,10 @@ index 340c2e4c..ba4d4da6 100644
          ? Boolean(body.hasPayoutAddress)
          : Boolean(base.hasPayoutAddress),
 diff --git a/cloudflare_worker/public/dashboard/js/04-account.js b/cloudflare_worker/public/dashboard/js/04-account.js
-index 17604c35..42b71660 100644
+index 0ac53dd4..483c6c5b 100644
 --- a/cloudflare_worker/public/dashboard/js/04-account.js
 +++ b/cloudflare_worker/public/dashboard/js/04-account.js
-@@ -276,6 +276,7 @@
+@@ -376,6 +376,7 @@
      const solanaSelector = options.solanaSelector || "[data-profile-solana]";
      const hintSelector = options.hintSelector || "[data-profile-hint]";
      const buttonSelector = options.buttonSelector || "[data-profile-save]";
@@ -93,7 +93,7 @@ index 17604c35..42b71660 100644
      const password = profilePassword(passwordSelector);
      const solana = ($(solanaSelector)?.value || "").trim();
      if (!password) {
-@@ -295,6 +296,8 @@
+@@ -395,6 +396,8 @@
        } else {
          setProfilePageHint(hintSelector, solana ? "Payout address saved." : "Payout address cleared.", "good");
        }
@@ -103,10 +103,10 @@ index 17604c35..42b71660 100644
        const message = error.message === "bad_solana"
          ? "Enter a valid public Solana address."
 diff --git a/cloudflare_worker/public/dashboard/js/05-repo-list-explorer.js b/cloudflare_worker/public/dashboard/js/05-repo-list-explorer.js
-index 58e33ac3..6c706187 100644
+index 190f7d83..a6f2ed71 100644
 --- a/cloudflare_worker/public/dashboard/js/05-repo-list-explorer.js
 +++ b/cloudflare_worker/public/dashboard/js/05-repo-list-explorer.js
-@@ -197,6 +197,7 @@
+@@ -214,6 +214,7 @@
        }
      }
  
@@ -114,7 +114,7 @@ index 58e33ac3..6c706187 100644
      window.lucide?.createIcons();
    }
  
-@@ -224,6 +225,37 @@
+@@ -241,6 +242,37 @@
      }).join("");
    }
  
@@ -153,10 +153,10 @@ index 58e33ac3..6c706187 100644
      const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
      state.filteredRepositories = state.repositories.filter((repo) =>
 diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-index 6c2c648b..5b3fb2e5 100644
+index f3ce9ad7..378ad401 100644
 --- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
 +++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-@@ -1116,6 +1116,11 @@
+@@ -1127,6 +1127,11 @@
      state.page += 1;
      updateRepositoryPagination();
    });
@@ -168,7 +168,7 @@ index 6c2c648b..5b3fb2e5 100644
  
  	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
  	    event.stopPropagation();
-@@ -1229,5 +1234,6 @@
+@@ -1240,5 +1245,6 @@
  
    applyDashboardTheme(readDashboardTheme());
    renderLongDiffPreference();
@@ -239,10 +239,10 @@ index 45536254..1e7b9a95 100644
            <div class="field">
              <label for="acct-email">Email</label>
 diff --git a/cloudflare_worker/public/signup.js b/cloudflare_worker/public/signup.js
-index 52f91efa..bf48b43f 100644
+index 3edcee57..e8a8c3f0 100644
 --- a/cloudflare_worker/public/signup.js
 +++ b/cloudflare_worker/public/signup.js
-@@ -131,13 +131,25 @@
+@@ -134,13 +134,25 @@
  
      createButton.disabled = true;
      createButton.textContent = "Creating…";
@@ -274,7 +274,7 @@ index 52f91efa..bf48b43f 100644
        setSignupHint(
          body.error === "node_name_taken" ? "That username was just taken - try another."
            : body.error === "email_taken" ? "That email is already registered."
-@@ -146,6 +158,8 @@
+@@ -149,6 +161,8 @@
          "bad");
        return;
      }
@@ -284,10 +284,10 @@ index 52f91efa..bf48b43f 100644
      setSignupHint("Account created. Opening your dashboard…", "good");
      window.setTimeout(() => { location.href = "/dashboard"; }, 500);
 diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index 91d34413..9d7c72e0 100644
+index c26897bc..adf9cd36 100644
 --- a/cloudflare_worker/src/entry.py
 +++ b/cloudflare_worker/src/entry.py
-@@ -4796,6 +4796,87 @@ async def _account_login(env, request):
+@@ -5425,6 +5425,87 @@ async def _account_login(env, request):
      )
  
  
@@ -375,7 +375,7 @@ index 91d34413..9d7c72e0 100644
  async def _account_logout(env, request):
      return json_response(
          {"ok": True},
-@@ -6719,6 +6800,8 @@ async def accounts_handler(env, request):
+@@ -7483,6 +7564,8 @@ async def accounts_handler(env, request):
          return await _account_ownership_transfer_confirm(env, request)
      if url.path == "/api/accounts/login" and method == "POST":
          return await _account_login(env, request)
@@ -383,12 +383,12 @@ index 91d34413..9d7c72e0 100644
 +        return await _account_rotate(env, request)
      if url.path == "/api/accounts/logout" and method == "POST":
          return await _account_logout(env, request)
-     if url.path == "/api/accounts/forgot-password" and method == "POST":
+     if url.path == "/api/accounts/rotate" and method == "POST":
 diff --git a/cloudflare_worker/tests/test_auth_pages_frontend.py b/cloudflare_worker/tests/test_auth_pages_frontend.py
-index 7d2c7db6..fad3090a 100644
+index 5fa24247..170e742d 100644
 --- a/cloudflare_worker/tests/test_auth_pages_frontend.py
 +++ b/cloudflare_worker/tests/test_auth_pages_frontend.py
-@@ -116,6 +116,14 @@ def test_signup_is_single_step_email_password_name_form():
+@@ -115,6 +115,14 @@ def test_signup_is_single_step_email_password_name_form():
      assert "Name reserved" not in signup
  
  
@@ -403,7 +403,7 @@ index 7d2c7db6..fad3090a 100644
  def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
      signup_js = _read(PUBLIC / "signup.js")
  
-@@ -126,6 +134,27 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
+@@ -125,6 +133,27 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
      assert 'localStorage.setItem("forkmesh.session", JSON.stringify({' in signup_js
  
  
@@ -431,7 +431,7 @@ index 7d2c7db6..fad3090a 100644
  def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
      # Assert against the composed dashboard shell (see _dashboard_shell).
      dashboard = assembled_dashboard()
-@@ -178,6 +207,30 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
+@@ -198,6 +227,30 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
      assert 'setSection("profile")' in dashboard_js
  
  
@@ -463,10 +463,10 @@ index 7d2c7db6..fad3090a 100644
      login_js = _read(PUBLIC / "login.js")
  
 diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-index f39369bb..08edeb1a 100644
+index b427e26b..895c2921 100644
 --- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
 +++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-@@ -457,6 +457,31 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
+@@ -484,6 +484,31 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
      assert 'button.classList.toggle("bg-secondary", active);' not in tab_state
  
  
@@ -499,7 +499,7 @@ index f39369bb..08edeb1a 100644
      dashboard_js = _read(PUBLIC / "dashboard.js")
      tree_loader = dashboard_js[
 diff --git a/cloudflare_worker/tests/test_favicon_metadata.py b/cloudflare_worker/tests/test_favicon_metadata.py
-index bc1adef7..d1efee9e 100644
+index c47b39d4..7578fe1e 100644
 --- a/cloudflare_worker/tests/test_favicon_metadata.py
 +++ b/cloudflare_worker/tests/test_favicon_metadata.py
 @@ -89,6 +89,14 @@ def _has_link(parser, expected):
@@ -739,19 +739,20 @@ index d5314c4b..a168ecf2 100644
          "nodeName": "ghost-node",
          "oldPubkey": "old-pubkey",
 diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
-index 99d5a0e8..a322aa83 100644
+index 6436950f..98484603 100644
 --- a/cloudflare_worker/tests/test_login_key_binding.py
 +++ b/cloudflare_worker/tests/test_login_key_binding.py
-@@ -153,6 +153,7 @@ def _login_harness(rec):
-             "_save_account": _save_account,
+@@ -154,7 +154,7 @@ def _login_harness(rec):
              "_is_admin": _is_admin,
              "_account_public_payload": _account_public_payload,
+             "_admin_session_cookie": lambda _env, _name: "admin-session",
+-            "_clear_admin_session_cookie": lambda: "clear-admin-session",
 +            "_clear_admin_session_cookie": lambda: "forkmesh_admin=; Path=/; Max-Age=0",
              "json_response": _json_response,
              "Date": _Date,
              "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",
 diff --git a/cloudflare_worker/tests/test_mirror_serving_frontend.py b/cloudflare_worker/tests/test_mirror_serving_frontend.py
-index 3be64b90..b6d963c8 100644
+index 14cdb4d8..85ae0f1b 100644
 --- a/cloudflare_worker/tests/test_mirror_serving_frontend.py
 +++ b/cloudflare_worker/tests/test_mirror_serving_frontend.py
 @@ -69,7 +69,10 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
@@ -809,7 +810,7 @@ index aa7064cc..f15a03fc 100644
 +    assert "if authed_viewer or bypass_cache:" in ENTRY_TEXT
 +    assert 'cache_control="no-store, max-age=0, must-revalidate"' in ENTRY_TEXT
 diff --git a/cloudflare_worker/tests/test_public_logo.py b/cloudflare_worker/tests/test_public_logo.py
-index b6d26283..2cb291cc 100644
+index e2fb7fdb..600ad9db 100644
 --- a/cloudflare_worker/tests/test_public_logo.py
 +++ b/cloudflare_worker/tests/test_public_logo.py
 @@ -33,7 +33,7 @@ class BrandLogoParser(HTMLParser):

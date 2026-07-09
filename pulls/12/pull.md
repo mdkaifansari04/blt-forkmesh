@@ -4,7 +4,7 @@ number: 12
 title: feat(flutter): add agent monitoring
 base: main
 head: pr/flutter-agent-monitoring
-status: open
+status: merged
 ts: 1783356130974
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds repo-level agent session visibility, the global Agents screen, agent status
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-

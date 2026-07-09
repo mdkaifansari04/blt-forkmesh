@@ -4,7 +4,7 @@ number: 13
 title: feat(flutter): show desktop pairing inventory
 base: main
 head: pr/flutter-desktop-pairing-inventory
-status: open
+status: merged
 ts: 1783356130996
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Shows desktop node pairing inventory in mobile settings, including command-lock/
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-

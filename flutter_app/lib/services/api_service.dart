@@ -21,6 +21,7 @@ class ApiService {
   final PerformanceMonitorService? _performanceMonitor;
   _CacheEntry<List<Repository>>? _repositoriesCache;
   _CacheEntry<NetworkStats>? _networkStatsCache;
+  _CacheEntry<NetworkLeaderboards>? _networkLeaderboardsCache;
   final Map<String, DateTime> _offlineRepoUntil = {};
   final Map<String, _CacheEntry<RepoTree>> _treeCache = {};
   final Map<String, _CacheEntry<RepoBlob>> _blobCache = {};
@@ -28,6 +29,7 @@ class ApiService {
   final Map<String, _CacheEntry<List<PublishedPull>>> _pullsCache = {};
   final Map<String, _CacheEntry<List<RepoDiscussion>>> _discussionsCache = {};
   final Map<String, _CacheEntry<List<Map<String, dynamic>>>> _commitsCache = {};
+  final Map<String, _CacheEntry<List<RepoRelease>>> _releasesCache = {};
 
   void clearRepoCache(String owner, String name) {
     final prefix = '$owner/$name:';
@@ -37,6 +39,7 @@ class ApiService {
     _pullsCache.remove('$owner/$name');
     _discussionsCache.remove('$owner/$name');
     _commitsCache.remove('$owner/$name');
+    _releasesCache.remove('$owner/$name');
     _offlineRepoUntil.remove('$owner/$name');
   }
 
@@ -57,8 +60,11 @@ class ApiService {
     );
   }
 
-  Uri rawUri(String owner, String name, String path) =>
-      _base('/api/repo/$owner/$name/raw', {'path': path});
+  Uri rawUri(String owner, String name, String path, {String ref = ''}) =>
+      _base('/api/repo/$owner/$name/raw', {
+        'path': path,
+        if (ref.isNotEmpty) 'ref': ref,
+      });
 
   Exception? _repoOfflineError(String repoKey) {
     final until = _offlineRepoUntil[repoKey];
@@ -105,6 +111,14 @@ class ApiService {
           .toList();
     }();
     _repositoriesCache = _CacheEntry(future, DateTime.now());
+    future.then(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        if (identical(_repositoriesCache?.future, future)) {
+          _repositoriesCache = null;
+        }
+      },
+    );
     return future;
   }
 
@@ -114,13 +128,210 @@ class ApiService {
     }
     final future = () async {
       try {
-        final data = await _getJson(_base('/api/network/stats'));
+        final data = await _getJson(
+          _base('/api/network/stats', {'payouts': '1'}),
+        );
         if (data is Map<String, dynamic>) return NetworkStats.fromJson(data);
       } catch (_) {}
-      return NetworkStats();
+      return const NetworkStats();
     }();
     _networkStatsCache = _CacheEntry(future, DateTime.now());
     return future;
+  }
+
+  Future<NetworkLeaderboards> networkLeaderboards() async {
+    if (_isFresh(_networkLeaderboardsCache, catalogTtl)) {
+      return _networkLeaderboardsCache!.future;
+    }
+    final future = () async {
+      try {
+        final data = await _getJson(_base('/api/network/leaderboards'));
+        if (data is Map<String, dynamic>) {
+          return NetworkLeaderboards.fromJson(data);
+        }
+      } catch (_) {}
+      return const NetworkLeaderboards();
+    }();
+    _networkLeaderboardsCache = _CacheEntry(future, DateTime.now());
+    return future;
+  }
+
+  Future<NotificationPage> notifications(String node, {int limit = 40}) async {
+    final cleanNode = node.trim().toLowerCase();
+    if (cleanNode.isEmpty) {
+      return NotificationPage(notifications: const [], unread: 0);
+    }
+    final data = await _getJson(
+      _base('/api/notifications', {'node': cleanNode, 'limit': '$limit'}),
+    );
+    return NotificationPage.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<void> markNotificationsRead(
+    String node, {
+    List<String> ids = const [],
+    bool all = false,
+  }) async {
+    final cleanNode = node.trim().toLowerCase();
+    if (cleanNode.isEmpty) return;
+    await _postJson(_base('/api/notifications'), {
+      'node': cleanNode,
+      if (all) 'all': true,
+      if (!all && ids.isNotEmpty) 'ids': ids,
+    });
+  }
+
+  Future<List<AgentSession>> agentSessions(
+    String owner,
+    String name, {
+    String ownerAccount = '',
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$name/agents/list'), {
+      if (ownerAccount.trim().isNotEmpty)
+        'ownerAccount': ownerAccount.trim().toLowerCase(),
+    });
+    final raw = data is Map<String, dynamic>
+        ? _asList(data)
+        : data is List
+        ? data
+        : const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => AgentSession.fromJson(Map<String, dynamic>.from(item)))
+        .toList();
+  }
+
+  Future<AgentTranscript> agentTranscript(
+    String owner,
+    String name,
+    int id, {
+    String ownerAccount = '',
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/agents/$id/transcript'), {
+          if (ownerAccount.trim().isNotEmpty)
+            'ownerAccount': ownerAccount.trim().toLowerCase(),
+        });
+    return AgentTranscript.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<RepoActions> repoActions(
+    String owner,
+    String name, {
+    String ownerAccount = '',
+    String ts = '',
+    String sig = '',
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$name/actions/list'), {
+      if (ownerAccount.trim().isNotEmpty)
+        'ownerAccount': ownerAccount.trim().toLowerCase(),
+      if (ts.trim().isNotEmpty) 'ts': ts.trim(),
+      if (sig.trim().isNotEmpty) 'sig': sig.trim(),
+    });
+    return RepoActions.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<ActionLog> actionLog(
+    String owner,
+    String name,
+    int id, {
+    String ownerAccount = '',
+    String ts = '',
+    String sig = '',
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/actions/$id/log'), {
+          if (ownerAccount.trim().isNotEmpty)
+            'ownerAccount': ownerAccount.trim().toLowerCase(),
+          if (ts.trim().isNotEmpty) 'ts': ts.trim(),
+          if (sig.trim().isNotEmpty) 'sig': sig.trim(),
+        });
+    return ActionLog.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<DesktopCommandResult> desktopCommand(
+    String owner,
+    String name, {
+    required String ownerAccount,
+    required String command,
+    required String target,
+    required String ts,
+    required String sig,
+    Map<String, Object?> payload = const {},
+  }) async {
+    final data =
+        await _postJson(_base('/api/repo/$owner/$name/desktop-commands'), {
+          'ownerAccount': ownerAccount.trim().toLowerCase(),
+          'command': command.trim(),
+          'target': target.trim(),
+          'ts': ts.trim(),
+          'sig': sig.trim(),
+          'payload': payload,
+        });
+    return DesktopCommandResult.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  Future<IssueBounty> issueBountyStatus(
+    String owner,
+    String repo,
+    int number,
+  ) async {
+    try {
+      final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+        'action': 'status',
+        'number': number,
+      });
+      return IssueBounty.fromJson(data);
+    } catch (error) {
+      if ('$error'.contains('HTTP 404')) return const IssueBounty();
+      rethrow;
+    }
+  }
+
+  Future<IssueBounty> createIssueBounty(
+    String owner,
+    String repo, {
+    required int number,
+    required double amountUsd,
+    String payee = '',
+    String payeeNode = '',
+    required String ts,
+    required String sig,
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+      'action': 'create',
+      'number': number,
+      'amountUsd': amountUsd,
+      if (payee.trim().isNotEmpty) 'payee': payee.trim(),
+      if (payeeNode.trim().isNotEmpty) 'payeeNode': payeeNode.trim(),
+      'ts': ts.trim(),
+      'sig': sig.trim(),
+    });
+    return IssueBounty.fromJson(data);
+  }
+
+  Future<BountyWallet> bountyWallet(
+    String owner,
+    String repo, {
+    required String ts,
+    required String sig,
+  }) async {
+    final data = await _postJson(_base('/api/repo/$owner/$repo/bounty'), {
+      'action': 'wallet',
+      'ts': ts.trim(),
+      'sig': sig.trim(),
+    });
+    return BountyWallet.fromJson(data);
   }
 
   Future<List<Issue>> issues(String owner, String name) async {
@@ -145,27 +356,55 @@ class ApiService {
     });
   }
 
-  Future<RepoTree> tree(String owner, String name, {String path = ''}) {
+  Future<RepoCommitDetail> commitDetail(
+    String owner,
+    String name,
+    String hash, {
+    Map<String, dynamic> fallbackCommit = const {},
+  }) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/commit', {'path': hash}),
+    );
+    return RepoCommitDetail.fromJson(data, fallbackCommit: fallbackCommit);
+  }
+
+  Future<RepoTree> tree(
+    String owner,
+    String name, {
+    String path = '',
+    String ref = '',
+  }) {
     final repoKey = '$owner/$name';
     final offline = _repoOfflineError(repoKey);
     if (offline != null) return Future<RepoTree>.error(offline);
-    final key = '$repoKey:$path';
+    final key = '$repoKey:$ref:$path';
     return _cached(_treeCache, key, () async {
       final data = await _getJson(
-        _base('/api/repo/$owner/$name/tree', {'path': path}),
+        _base('/api/repo/$owner/$name/tree', {
+          'path': path,
+          if (ref.isNotEmpty) 'ref': ref,
+        }),
       );
       return RepoTree.fromJson(data, path: path);
     });
   }
 
-  Future<RepoBlob> blob(String owner, String name, String path) {
+  Future<RepoBlob> blob(
+    String owner,
+    String name,
+    String path, {
+    String ref = '',
+  }) {
     final repoKey = '$owner/$name';
     final offline = _repoOfflineError(repoKey);
     if (offline != null) return Future<RepoBlob>.error(offline);
-    final key = '$repoKey:$path';
+    final key = '$repoKey:$ref:$path';
     return _cached(_blobCache, key, () async {
       final data = await _getJson(
-        _base('/api/repo/$owner/$name/blob', {'path': path}),
+        _base('/api/repo/$owner/$name/blob', {
+          'path': path,
+          if (ref.isNotEmpty) 'ref': ref,
+        }),
       );
       return RepoBlob.fromJson(data, path: path);
     });
@@ -187,6 +426,91 @@ class ApiService {
         .map(RepoMirror.fromJson)
         .where((m) => m.label.isNotEmpty)
         .toList();
+  }
+
+  Future<List<RepoRelease>> releases(String owner, String name) {
+    final key = '$owner/$name';
+    return _cached(_releasesCache, key, () async {
+      final downloads = await _releaseDownloadCounts(owner, name);
+      final RepoTree treeRoot;
+      try {
+        final data = await _getJson(
+          _base('/api/repo/$owner/$name/tree', {'path': 'releases'}),
+        );
+        treeRoot = RepoTree.fromJson(data, path: 'releases');
+      } catch (_) {
+        return const <RepoRelease>[];
+      }
+      final dirs = treeRoot.entries.where((entry) => entry.isDirectory).toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      final items = await Future.wait(
+        dirs.map((dir) async {
+          try {
+            final blob = await this.blob(
+              owner,
+              name,
+              'releases/${dir.name}/release.json',
+            );
+            final decoded = jsonDecode(blob.content);
+            if (decoded is! Map<String, dynamic>) return null;
+            return RepoRelease.fromJson(decoded, downloads: downloads);
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+      final releases = items.whereType<RepoRelease>().toList();
+      releases.sort((a, b) {
+        final byTime = b.createdAtMs.compareTo(a.createdAtMs);
+        if (byTime != 0) return byTime;
+        return b.tag.compareTo(a.tag);
+      });
+      return releases;
+    });
+  }
+
+  Future<Map<String, int>> _releaseDownloadCounts(
+    String owner,
+    String name,
+  ) async {
+    try {
+      final data = await _getJson(
+        _base('/api/repo/$owner/$name/releases/downloads'),
+      );
+      final raw = data is Map<String, dynamic> && data['counts'] is Map
+          ? data['counts'] as Map
+          : data is Map
+          ? data
+          : const {};
+      return raw.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          value is int
+              ? value
+              : value is num
+              ? value.toInt()
+              : int.tryParse('$value') ?? 0,
+        ),
+      );
+    } catch (_) {
+      _offlineRepoUntil.remove('$owner/$name');
+      return const {};
+    }
+  }
+
+  Future<RepoSearchResults> searchRepo(
+    String owner,
+    String name,
+    String query, {
+    String ref = '',
+  }) async {
+    final data = await _getJson(
+      _base('/api/repo/$owner/$name/search', {
+        'q': query,
+        if (ref.isNotEmpty) 'ref': ref,
+      }),
+    );
+    return RepoSearchResults.fromJson(data);
   }
 
   Future<List<Issue>> publishedIssues(String owner, String name) {
@@ -247,7 +571,8 @@ class ApiService {
         dirs.map((dir) async {
           try {
             final b = await blob(owner, name, 'pulls/$dir/pull.md');
-            return _pullFromMarkdown(dir, b.content);
+            final events = await _pullEvents(owner, name, dir);
+            return _pullFromMarkdown(dir, b.content, events: events);
           } catch (_) {
             return null;
           }
@@ -256,6 +581,36 @@ class ApiService {
       return items.whereType<PublishedPull>().toList()
         ..sort((a, b) => b.number.compareTo(a.number));
     });
+  }
+
+  Future<List<PullEvent>> _pullEvents(
+    String owner,
+    String name,
+    String number,
+  ) async {
+    try {
+      final t = await tree(owner, name, path: 'pulls/$number');
+      final eventFiles =
+          t.entries
+              .where(
+                (e) =>
+                    !e.isDirectory &&
+                    e.name.endsWith('.md') &&
+                    e.name != 'pull.md',
+              )
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
+      final events = <PullEvent>[];
+      for (final file in eventFiles) {
+        try {
+          final b = await blob(owner, name, file.path);
+          events.add(_pullEventFromMarkdown(b.content));
+        } catch (_) {}
+      }
+      return events;
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<List<RepoDiscussion>> publishedDiscussions(String owner, String name) {
@@ -330,6 +685,14 @@ class ApiService {
     List<IssueEvent> events = const [],
   }) {
     final meta = _frontMatter(md);
+    List<String> metaList(String key) => (meta[key] ?? '')
+        .replaceAll('[', '')
+        .replaceAll(']', '')
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
     final title = meta['title'] ?? _firstHeading(md) ?? 'Issue #$number';
     final status =
         meta['status'] ?? (md.contains('status: closed') ? 'closed' : 'open');
@@ -339,14 +702,23 @@ class ApiService {
       status: status,
       body: _bodyWithoutFrontMatter(md),
       author: meta['authorName'] ?? meta['author'] ?? '',
-      labels: (meta['labels'] ?? '')
-          .replaceAll('[', '')
-          .replaceAll(']', '')
-          .split(',')
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(),
+      labels: metaList('labels'),
+      milestone: meta['milestone'] ?? '',
+      priority: int.tryParse(meta['priority'] ?? '') ?? 0,
+      assignees: metaList('assignees'),
       events: events,
+      votes: events.where((event) => event.type == 'vote').length,
+      bountyUsd: double.tryParse(meta['bountyUsd'] ?? '') ?? 0,
+      bountyAddress: meta['bountyAddress'] ?? meta['address'] ?? '',
+      bountyStatus: meta['bountyStatus'] ?? '',
+      bountyRequiredLamports:
+          int.tryParse(meta['bountyRequiredLamports'] ?? '') ?? 0,
+      bountyReceivedLamports:
+          int.tryParse(meta['bountyReceivedLamports'] ?? '') ?? 0,
+      bountyAmountSol: double.tryParse(meta['bountyAmountSol'] ?? '') ?? 0,
+      bountyPayUri: meta['bountyPayUri'] ?? meta['payUri'] ?? meta['uri'] ?? '',
+      bountyPayee: meta['bountyPayee'] ?? meta['payee'] ?? '',
+      bountyPayoutSig: meta['bountyPayoutSig'] ?? meta['payoutSig'] ?? '',
     );
   }
 
@@ -362,7 +734,11 @@ class ApiService {
     );
   }
 
-  PublishedPull _pullFromMarkdown(String number, String md) {
+  PublishedPull _pullFromMarkdown(
+    String number,
+    String md, {
+    List<PullEvent> events = const [],
+  }) {
     final meta = _frontMatter(md);
     final body = _bodyWithoutFrontMatter(md);
     final title = meta['title'] ?? _firstHeading(md) ?? 'Pull request #$number';
@@ -375,6 +751,19 @@ class ApiService {
       head: meta['head'] ?? '',
       patch: meta['patch'] ?? meta['diff'] ?? _extractPatch(body),
       signed: (meta['sig'] ?? '').isNotEmpty,
+      events: events,
+    );
+  }
+
+  PullEvent _pullEventFromMarkdown(String md) {
+    final meta = _frontMatter(md);
+    return PullEvent(
+      type: meta['type'] ?? 'comment',
+      body: _bodyWithoutFrontMatter(md),
+      author: meta['author'] ?? '',
+      authorName: meta['authorName'] ?? '',
+      state: meta['state'] ?? '',
+      ts: int.tryParse(meta['ts'] ?? '') ?? 0,
     );
   }
 
@@ -403,6 +792,7 @@ class ApiService {
       title: meta['title'] ?? _firstHeading(md) ?? 'Discussion #$number',
       body: _bodyWithoutFrontMatter(md),
       author: meta['authorName'] ?? meta['author'] ?? '',
+      category: meta['category'] ?? 'general',
       updatedMs: int.tryParse(meta['updatedAt'] ?? meta['ts'] ?? '') ?? 0,
       events: events,
     );
@@ -476,6 +866,7 @@ class ApiService {
         'tree',
         'data',
         'items',
+        'agents',
       ]) {
         if (data[key] is List) return data[key] as List;
       }
@@ -507,30 +898,7 @@ class ApiService {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       resp!;
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        if (resp.body.isEmpty) return const [];
-        return jsonDecode(resp.body);
-      }
-      if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
-        final repoKey = _repoKeyFromPath(uri.path);
-        if (repoKey != null) {
-          _offlineRepoUntil[repoKey] = DateTime.now().add(offlineRepoTtl);
-        }
-        throw Exception(
-          'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
-        );
-      }
-      if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
-        throw Exception(
-          'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
-        );
-      }
-      if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
-        throw Exception(
-          'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
-        );
-      }
-      throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
+      return _decodeResponse(uri, resp);
     }
 
     if (monitor == null) return load();
@@ -543,6 +911,57 @@ class ApiService {
         if (uri.query.isNotEmpty) 'query': uri.query,
       },
     );
+  }
+
+  Future<dynamic> _postJson(Uri uri, Map<String, dynamic> payload) async {
+    final monitor = _performanceMonitor;
+    Future<dynamic> load() async {
+      final resp = await http
+          .post(
+            uri,
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 12));
+      return _decodeResponse(uri, resp);
+    }
+
+    if (monitor == null) return load();
+    return monitor.track(
+      'api.POST ${uri.path}',
+      load,
+      details: {'host': uri.host, 'path': uri.path},
+    );
+  }
+
+  dynamic _decodeResponse(Uri uri, http.Response resp) {
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      if (resp.body.isEmpty) return const [];
+      return jsonDecode(resp.body);
+    }
+    if (resp.statusCode == 503 && uri.path.contains('/api/repo/')) {
+      final repoKey = _repoKeyFromPath(uri.path);
+      if (repoKey != null) {
+        _offlineRepoUntil[repoKey] = DateTime.now().add(offlineRepoTtl);
+      }
+      throw Exception(
+        'Repo host is offline. Open the Qt desktop node for this owner/repo and make sure it is connected to this Worker, then refresh.',
+      );
+    }
+    if (resp.statusCode == 401 && uri.path.contains('/api/repo/')) {
+      throw Exception(
+        'This repo needs an authenticated/private repo view token. Mobile private-repo browsing is not wired yet.',
+      );
+    }
+    if (resp.statusCode == 500 && uri.path.contains('/api/repo/')) {
+      throw Exception(
+        'Repo host returned an internal error while serving this view. Refresh or retry in a moment; if it keeps happening, reconnect the desktop host for this repo.',
+      );
+    }
+    throw Exception('HTTP ${resp.statusCode} for ${uri.path}');
   }
 }
 

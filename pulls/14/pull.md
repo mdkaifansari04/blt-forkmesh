@@ -4,7 +4,7 @@ number: 14
 title: feat(flutter): add desktop action command handoff
 base: main
 head: pr/flutter-desktop-actions-commands
-status: open
+status: merged
 ts: 1783356131028
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -17,4 +17,3 @@ Adds read-only action session monitoring, signed desktop command queue visibilit
 
 Scope: flutter_app only.
 Base ref used for signing/submission: main.
-
