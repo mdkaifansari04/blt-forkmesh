@@ -106,12 +106,15 @@
       dash.textContent = "Dashboard";
       const profile = document.createElement("a");
       profile.href = "/@" + encodeURIComponent(name.toLowerCase());
-      profile.textContent = "Profile (@" + name + ")";
+      profile.textContent = "Public profile (@" + name + ")";
+      const edit = document.createElement("a");
+      edit.href = "/dashboard?section=profile";
+      edit.textContent = "Edit profile";
       const out = document.createElement("button");
       out.type = "button";
       out.textContent = "Log out";
       out.addEventListener("click", logout);
-      container.append(dash, profile, out);
+      container.append(dash, profile, edit, out);
       return;
     }
     const wrap = document.createElement("div");
@@ -132,14 +135,20 @@
     const dash = document.createElement("a");
     dash.href = "/dashboard";
     dash.textContent = "Dashboard";
+    // Both sides of the profile: /@name is the page everyone else sees;
+    // the dashboard's profile section is the private, editable view
+    // (avatar, bio, email, account status).
     const profile = document.createElement("a");
     profile.href = "/@" + encodeURIComponent(name.toLowerCase());
-    profile.textContent = "Profile";
+    profile.textContent = "Public profile";
+    const edit = document.createElement("a");
+    edit.href = "/dashboard?section=profile";
+    edit.textContent = "Edit profile";
     const out = document.createElement("button");
     out.type = "button";
     out.textContent = "Log out";
     out.addEventListener("click", logout);
-    dropdown.append(dash, profile, out);
+    dropdown.append(dash, profile, edit, out);
     wrap.append(chip, dropdown);
     container.append(wrap);
   }

@@ -56,23 +56,32 @@ def test_docs_pages_use_home_link_instead_of_github():
     for page in DOCS_PAGES:
         html = _read(page)
 
-        assert '<a class="hover:text-[var(--docs-fg)]" href="/">Home</a>' in html
+        # Home navigation now comes from the universal header's brand link
+        # (rendered by site-header.js); the point of this test is that no
+        # GitHub links crept back in.
         assert ">GitHub<" not in html
         assert "ForkMesh repository" not in html
         assert 'href="/mainnode/forkmesh"' not in html
 
 
-def test_docs_pages_keep_homepage_logo_markup():
+def test_docs_pages_mount_the_universal_site_header():
+    # The docs' own brand + Home/Contact/Login row was replaced by the shared
+    # session-aware header; the docs toolbar keeps only its search, theme
+    # toggle, and product tabs. A var shim maps the docs light/dark palette
+    # onto the header's variable names so it follows the docs theme toggle.
     for page in DOCS_PAGES:
         html = _read(page)
 
-        assert 'class="brand inline-flex items-center gap-3 text-[1.45rem]' in html
-        assert 'href="/"' in html
-        assert 'aria-label="ForkMesh home"' in html
-        assert 'class="brand-mark"' in html
-        assert 'src="/assets/logo.png"' in html
-        assert 'alt=""' in html
-        assert 'aria-hidden="true"' in html
+        assert 'href="/site-header.css"' in html
+        assert 'src="/site-header.js"' in html
+        assert '<div data-forkmesh-header="simple"></div>' in html
+        assert "--muted: var(--docs-muted);" in html
+        assert "--foreground: var(--docs-fg);" in html
+        # The duplicated chrome is gone; docs-specific tools stay.
+        assert 'aria-label="Docs header"' not in html
+        assert ">Contact Us<" not in html
+        assert 'id="theme-toggle"' in html
+        assert 'id="docs-search"' in html
 
 
 def test_docs_pages_use_reduced_type_scale():

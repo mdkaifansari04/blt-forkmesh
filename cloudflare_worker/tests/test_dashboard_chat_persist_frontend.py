@@ -194,3 +194,17 @@ def test_public_chat_usernames_link_to_relay_profile_pages():
     assert 'document.createElement(isBot ? "div" : "a")' in PUBLIC_CHAT
     assert "a.chat-author:hover" in PUBLIC_CHAT_HTML
     assert "a.chat-person:hover" in PUBLIC_CHAT_HTML
+
+
+def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
+    # The rail's mini chat renders like the full chat — avatar + name + time —
+    # and inserts each message by its own timestamp so replayed history and
+    # live traffic interleave with the newest at the bottom.
+    assert "function fmtChatTime(" in CHAT
+    assert "tsMs: Number(tsMs) || Date.now()" in CHAT
+    assert "sideEntries.splice(index, 0, entry)" in CHAT
+    assert "fmtChatTime(message.tsMs)" in CHAT
+    assert "avatarLetter(message.who)" in CHAT
+    # Call sites hand the epoch timestamp through (formatting happens at
+    # render), so ordering never depends on arrival order.
+    assert "appendMessage(kind, who, text, entry.id, entry.senderId,\n                  Number(entry.ts) || Date.now())" in CHAT

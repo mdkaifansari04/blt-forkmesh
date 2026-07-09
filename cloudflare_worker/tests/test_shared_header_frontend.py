@@ -76,13 +76,15 @@ UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
     PUBLIC / "mirror-payouts.html",
     PUBLIC / "security-report.html",
     PUBLIC / "404.html",
+    PUBLIC / "docs.html",
+    PUBLIC / "docs" / "index.html",
 )
 
 
 def test_universal_header_mounts_on_every_page_except_home():
     # One shared, session-aware header across the site. The home page keeps
-    # its own hero header; the dashboard SPA and docs keep their purpose-built
-    # app chrome (in-app nav / integrated search).
+    # its own hero header; the dashboard SPA keeps its in-app chrome. Docs
+    # mounts it too, with its own search toolbar below.
     for page in UNIVERSAL_HEADER_PAGES:
         html = _read(page)
         assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
@@ -104,6 +106,9 @@ def test_universal_header_is_session_aware():
     assert 'localStorage.removeItem("forkmesh.session")' in js
     assert ">Dashboard<" not in js  # user data is DOM-built, never innerHTML
     assert 'dash.textContent = "Dashboard"' in js
+    assert 'profile.textContent = "Public profile"' in js
+    assert 'edit.href = "/dashboard?section=profile"' in js
+    assert 'edit.textContent = "Edit profile"' in js
     assert 'out.textContent = "Log out"' in js
     assert 'href="/signup">Sign Up</a>' in js
 

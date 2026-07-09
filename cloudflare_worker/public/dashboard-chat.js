@@ -432,7 +432,13 @@
     return escapeHtml((handle || "?").slice(0, 1).toUpperCase());
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, ts) {
+  function fmtChatTime(tsMs) {
+    const value = Number(tsMs);
+    if (!value) return "";
+    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function appendFullMessage(kind, who, text, id, senderId, tsMs) {
     if (!fullLog) return;
     clearEmptyState();
     const self = kind === "self";
@@ -443,7 +449,7 @@
       <div class="min-w-0 flex-1">
         <div class="mb-0.5 flex items-baseline gap-2">
           <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
-          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(ts || "")}</span>
+          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(tsMs))}</span>
         </div>
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
@@ -454,6 +460,10 @@
     if (id) rows.set(id, { el: row, senderId: senderId || "", textEl });
   }
 
+  // The rail's mini chat mirrors the full view at a smaller scale: avatar +
+  // name + time header with the message below, ordered by each message's own
+  // timestamp so replayed history and live traffic interleave correctly with
+  // the newest at the bottom.
   function renderSideMessages() {
     if (!sideLog) return;
     if (!sideEntries.length) {
@@ -462,12 +472,16 @@
     }
     sideLog.textContent = "";
     for (const message of sideEntries.slice(-MAX_SIDE_MESSAGES)) {
+      const self = message.kind === "self";
       const row = document.createElement("div");
       row.className = "flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2";
       row.innerHTML = `
-        <span class="avatar flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-secondary font-mono text-[9px] font-semibold text-foreground">${avatarLetter(message.who)}</span>
+        <span class="avatar flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(message.who)}</span>
         <div class="min-w-0 flex-1">
-          <span class="text-[10px] font-semibold ${message.kind === "self" ? "text-primary" : "text-foreground"} mr-1.5">${escapeHtml(message.who)}</span>
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-[11px] font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(message.who)}</span>
+            <span class="text-[9px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(message.tsMs))}</span>
+          </div>
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
       const textEl = row.querySelector("p");
@@ -480,14 +494,20 @@
     bottom.scrollIntoView({ behavior: "smooth" });
   }
 
-  function appendSideMessage(kind, who, text, id, senderId) {
-    sideEntries.push({ kind, who, text, id, senderId });
+  function appendSideMessage(kind, who, text, id, senderId, tsMs) {
+    // Insert in timestamp order (append is the common case) so the newest
+    // message is always the bottom row even when retained history replays
+    // after live messages have already landed.
+    const entry = { kind, who, text, id, senderId, tsMs: Number(tsMs) || Date.now() };
+    let index = sideEntries.length;
+    while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
+    sideEntries.splice(index, 0, entry);
     renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, ts) {
-    appendFullMessage(kind, who, text, id, senderId, ts);
-    appendSideMessage(kind, who, text, id, senderId);
+  function appendMessage(kind, who, text, id, senderId, tsMs) {
+    appendFullMessage(kind, who, text, id, senderId, tsMs);
+    appendSideMessage(kind, who, text, id, senderId, tsMs);
     rememberContext(who, text);
   }
 
@@ -539,8 +559,8 @@
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
     if (!text) return;
-    const ts = entry.ts ? new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-    appendMessage(kind, who, text, entry.id, entry.senderId, ts);
+    appendMessage(kind, who, text, entry.id, entry.senderId,
+                  Number(entry.ts) || Date.now());
   }
 
   async function verifyAdminDelete(plain) {
@@ -697,8 +717,7 @@
     const plain = makeForkbotPlain(text);
     send(plain);
     seen.add(plain.id);
-    const ts = new Date(plain.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, ts);
+    appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
   }
 
   async function maybeAskForkbot(text) {
@@ -736,8 +755,7 @@
       const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
       send(plain);
       seen.add(plain.id);
-      const ts = new Date(plain.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, ts);
+      appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
       maybeAskForkbot(clipped);
     });
   }

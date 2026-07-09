@@ -113,6 +113,10 @@ def test_worker_serves_public_at_profiles_and_private_profiles_404():
     ]
 
     assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$"' in route_body
+    # The route matches the percent-decoded, case-folded path: pasted links
+    # often arrive as /%40name (an encoded @) or /@Name, and both used to fall
+    # through to the 404 page instead of the profile.
+    assert "unquote(url.path).lower()" in route_body
     assert "public_profile_handler(" in route_body
     assert '_account_kind(rec) != "user"' in ENTRY_TEXT
     assert 'bool(rec.get("profile_private"))' in ENTRY_TEXT
