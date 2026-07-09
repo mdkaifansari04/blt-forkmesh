@@ -97,7 +97,7 @@
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       storeSession(body);
-      setTimeout(() => (location.href = nextPath() || "/"), 700);
+      setTimeout(() => (location.href = nextPath() || "/dashboard"), 700);
       return;
     }
     if (body.error === "bad_totp") {

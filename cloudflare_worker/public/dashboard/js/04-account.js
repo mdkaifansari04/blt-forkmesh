@@ -376,6 +376,7 @@
     const solanaSelector = options.solanaSelector || "[data-profile-solana]";
     const hintSelector = options.hintSelector || "[data-profile-hint]";
     const buttonSelector = options.buttonSelector || "[data-profile-save]";
+    const passwordInput = $(passwordSelector);
     const password = profilePassword(passwordSelector);
     const solana = ($(solanaSelector)?.value || "").trim();
     if (!password) {
@@ -395,6 +396,8 @@
       } else {
         setProfilePageHint(hintSelector, solana ? "Payout address saved." : "Payout address cleared.", "good");
       }
+      if (passwordInput) passwordInput.value = "";
+      updateRenameButton();
     } catch (error) {
       const message = error.message === "bad_solana"
         ? "Enter a valid public Solana address."

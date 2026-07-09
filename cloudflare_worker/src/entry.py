@@ -1105,6 +1105,10 @@ STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
 STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
 STATUS_HOUR_MS = 60 * 60 * 1000
 STATUS_DAY_MS = 24 * STATUS_HOUR_MS
+STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
+# Kept a little past what's shown so a slow reader's page load always has a
+# full 60 buckets to render even a few minutes after the newest cron tick.
+STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 
 
 def _status_expected_checks_for_hour(hour_ts, now):
@@ -1158,6 +1162,31 @@ def _status_effective_hour(hour_ts, now, row):
     }
 
 
+def _status_minute(minute_ts, current_minute_ts, row):
+    """Status of a single 60-second bucket for the /status minute strip.
+
+    Unlike an hour, a minute has no finer subdivision to average over: it's
+    either sampled ok, sampled failing, or (if it's the in-progress minute)
+    not sampled yet — no "degraded" state is possible at this granularity.
+    """
+    minute_ts = int(minute_ts)
+    if minute_ts >= current_minute_ts and row is None:
+        # This minute's cron tick hasn't landed yet (the common case for the
+        # newest bucket) — not evidence of an outage, just not elapsed.
+        return {"minuteTs": minute_ts, "status": "future", "reason": None}
+    if row is None:
+        return {
+            "minuteTs": minute_ts, "status": "down",
+            "reason": "No status sample recorded for this minute; treated as downtime.",
+        }
+    ok = bool(row.get("ok"))
+    return {
+        "minuteTs": minute_ts,
+        "status": "operational" if ok else "down",
+        "reason": None if ok else (row.get("reason") or None),
+    }
+
+
 async def record_status_sample(env):
     # Called once a minute by the scheduled (cron) handler. Best-effort per
     # system so one failing check can't blank the rest of the page.
@@ -1165,6 +1194,7 @@ async def record_status_sample(env):
     now = int(Date.now())
     day_ts = (now // 86400000) * 86400000
     hour_ts = (now // 3600000) * 3600000
+    minute_ts = (now // 60000) * 60000
     ok = {}
     reason = {}
 
@@ -1247,6 +1277,17 @@ async def record_status_sample(env):
             "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
             hour_ts, system_id, failure, reason.get(system_id), failure,
         )
+        # A minute is the raw sample itself (not a counter): one cron tick per
+        # minute per system, so ON CONFLICT just overwrites in the rare case a
+        # tick somehow re-fires for the same minute.
+        await d1_run(
+            env,
+            "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(minute_ts, system) DO UPDATE SET "
+            "ok = excluded.ok, reason = excluded.reason",
+            minute_ts, system_id, 0 if failure else 1, reason.get(system_id),
+        )
     await d1_run(
         env, "DELETE FROM system_status_daily WHERE day_ts < ?",
         day_ts - STATUS_HISTORY_RETAIN_MS,
@@ -1254,6 +1295,10 @@ async def record_status_sample(env):
     await d1_run(
         env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
         day_ts - STATUS_HISTORY_RETAIN_MS,
+    )
+    await d1_run(
+        env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+        minute_ts - STATUS_MINUTE_RETAIN_MS,
     )
 
 
@@ -1288,6 +1333,19 @@ async def status_history(env):
             int(row.get("checks") or 0), int(row.get("failures") or 0),
             row.get("reason") or None,
         )
+
+    current_minute = (now // 60000) * 60000
+    minute_start = current_minute - (STATUS_MINUTES_SHOWN - 1) * 60000
+    minute_rows = await d1_all(
+        env,
+        "SELECT minute_ts, system, ok, reason FROM system_status_minute "
+        "WHERE minute_ts >= ?",
+        minute_start,
+    )
+    by_system_minute = {}
+    for row in minute_rows:
+        system_id = str(row.get("system") or "")
+        by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
 
     systems = []
     for system_id, label in STATUS_SYSTEMS:
@@ -1366,10 +1424,18 @@ async def status_history(env):
             )
             if total_24h_expected else None
         )
+        minutes = [
+            _status_minute(
+                minute_start + i * 60000, current_minute,
+                by_system_minute.get(system_id, {}).get(minute_start + i * 60000),
+            )
+            for i in range(STATUS_MINUTES_SHOWN)
+        ]
+
         systems.append({
             "id": system_id, "label": label, "status": status,
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
-            "days": days,
+            "days": days, "minutes": minutes,
             "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
             "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
         })
@@ -5359,6 +5425,87 @@ async def _account_login(env, request):
     )
 
 
+async def _account_rotate(env, request):
+    """Rotate an active account's bound Ed25519 key after old-key approval.
+
+    The desktop client may omit nodeName in its rotation record; in that case
+    the relay resolves the account by oldPubkey, or treats an already-finished
+    newPubkey binding plus prev_pubkeys entry as an idempotent retry.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+
+    name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
+    old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
+    new_pubkey = clean_string(data.get("newPubkey", ""), 120)
+    ts = clean_string(data.get("ts", ""), 20)
+    signature = clean_string(data.get("signature") or data.get("sig", ""), 200)
+
+    if name:
+        if not valid_node_name(name):
+            return json_response({"error": "invalid_node_id"}, status=400)
+    if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
+        return json_response({"error": "invalid_pubkey"}, status=400)
+    if not _ts_ok(ts):
+        return json_response({"error": "stale_request"}, status=401)
+    canonical = ("forkmesh-rotate-v1\n" + old_pubkey + "\n" +
+                 new_pubkey + "\n" + str(ts)).encode()
+
+    if name:
+        name_bi, rec = await _account_row(env, name)
+    else:
+        name_bi, rec = await _account_row_by_pubkey(env, old_pubkey)
+        if not rec:
+            _, next_rec = await _account_row_by_pubkey(env, new_pubkey)
+            next_name = clean_string(
+                (next_rec or {}).get("name", ""), MAX_NODE_NAME).lower()
+            next_current_pubkey = clean_string(
+                (next_rec or {}).get("pubkey", ""), 120)
+            next_prev_pubkeys = (next_rec or {}).get("prev_pubkeys")
+            if (next_rec and next_rec.get("status") == "active" and
+                    next_current_pubkey == new_pubkey and
+                    isinstance(next_prev_pubkeys, list) and
+                    old_pubkey in next_prev_pubkeys):
+                if not valid_node_name(next_name):
+                    return json_response({"error": "invalid_node_id"}, status=400)
+                if not await ed25519_verify(old_pubkey, signature, canonical):
+                    return json_response({"error": "bad_signature"}, status=401)
+                return json_response(
+                    {"ok": True, "nodeName": next_name, "pubkey": new_pubkey})
+        if rec:
+            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+            if not valid_node_name(name):
+                return json_response({"error": "invalid_node_id"}, status=400)
+    if not rec or rec.get("status") != "active":
+        return json_response({"error": "no_account"}, status=404)
+
+    current_pubkey = clean_string(rec.get("pubkey", ""), 120)
+    if current_pubkey == new_pubkey:
+        return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+    if current_pubkey != old_pubkey:
+        return json_response({"error": "not_bound"}, status=403)
+
+    if not await ed25519_verify(old_pubkey, signature, canonical):
+        return json_response({"error": "bad_signature"}, status=401)
+
+    existing_bi, _ = await _account_row_by_pubkey(env, new_pubkey)
+    if existing_bi and existing_bi != name_bi:
+        return json_response({"error": "pubkey_taken"}, status=409)
+
+    prev_pubkeys = rec.get("prev_pubkeys")
+    if not isinstance(prev_pubkeys, list):
+        prev_pubkeys = []
+    if old_pubkey not in prev_pubkeys:
+        prev_pubkeys.append(old_pubkey)
+    rec["pubkey"] = new_pubkey
+    rec["prev_pubkeys"] = prev_pubkeys
+    rec["rotated_at"] = int(Date.now())
+    await _save_account(env, name_bi, rec)
+    return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
+
+
 async def _account_logout(env, request):
     return json_response(
         {"ok": True},
@@ -7417,6 +7564,8 @@ async def accounts_handler(env, request):
         return await _account_ownership_transfer_confirm(env, request)
     if url.path == "/api/accounts/login" and method == "POST":
         return await _account_login(env, request)
+    if url.path == "/api/accounts/rotate" and method == "POST":
+        return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":

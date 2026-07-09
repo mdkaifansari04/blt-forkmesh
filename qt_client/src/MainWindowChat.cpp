@@ -2696,7 +2696,12 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessage");
     m_topMessage->setTextFormat(Qt::RichText);
-    m_topMessage->setAlignment(Qt::AlignCenter);
+    // Left-align the text itself: the toast as a whole still sits centered in the
+    // bar (via the stretches around it below), but when the window is too narrow
+    // to fit the full one-liner, Qt clips the label rather than eliding it, and a
+    // centered label clips from both ends — hiding the start of the message where
+    // the useful detail is. Left alignment keeps that start visible.
+    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     // Hard cap on the pill's width so a long toast can never widen the window; the
     // text itself is elided to one line in flashMessage. A long message reveals its
     // full text inline via the Expand button beside the toast (see renderTopMessage)

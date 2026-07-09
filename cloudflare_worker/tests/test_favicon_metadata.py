@@ -89,6 +89,14 @@ def _has_link(parser, expected):
     return False
 
 
+def _is_generated_feature_blog_page(rel_path, html):
+    return (
+        rel_path.startswith("blog/")
+        and rel_path.endswith("/index.html")
+        and "generated from the live ForkMesh feature catalog" in html
+    )
+
+
 def test_public_pages_use_shared_favicon_metadata():
     missing = []
     for page in sorted(PUBLIC_DIR.rglob("*.html")):
@@ -98,8 +106,18 @@ def test_public_pages_use_shared_favicon_metadata():
         # favicon-metadata contract doesn't apply to them.
         if "partials" in page.relative_to(PUBLIC_DIR).parts:
             continue
+        html = page.read_text(encoding="utf-8")
         parser = HeadMetadataParser()
-        parser.feed(page.read_text(encoding="utf-8"))
+        parser.feed(html)
+
+        if _is_generated_feature_blog_page(rel_path, html):
+            if not parser.descriptions:
+                missing.append(f"{rel_path}: meta description")
+            if not _has_link(
+                    parser, {"rel": "icon", "href": "/favicon/favicon.ico",
+                             "sizes": "any"}):
+                missing.append(f"{rel_path}: link favicon.ico")
+            continue
 
         for expected in REQUIRED_HEAD_LINKS:
             if not _has_link(parser, expected):

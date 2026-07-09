@@ -38,20 +38,31 @@ def _json_response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _harness(rec):
+def _harness(rec, pubkey_lookup=None, expected_canonical=None):
     saved = []
+    verified = []
 
     async def _account_row(_env, name):
         if rec is None:
             return "bi:" + name, None
         return "bi:" + name, dict(rec)
 
+    async def _account_row_by_pubkey(_env, pubkey):
+        if pubkey_lookup and pubkey in pubkey_lookup:
+            return pubkey_lookup[pubkey]
+        return None, None
+
     async def _save_account(_env, name_bi, updated_rec, **_kwargs):
         saved.append((name_bi, dict(updated_rec)))
 
-    async def ed25519_verify(pubkey, sig, _canonical):
+    async def ed25519_verify(pubkey, sig, canonical):
         # Only the currently-bound old key with the sentinel signature verifies.
-        return sig == "goodsig" and pubkey == "old-pubkey"
+        verified.append((pubkey, sig, canonical))
+        if sig != "goodsig" or pubkey != "old-pubkey":
+            return False
+        if expected_canonical is not None:
+            return canonical == expected_canonical
+        return True
 
     class _Date:
         @staticmethod
@@ -66,13 +77,14 @@ def _harness(rec):
             "valid_node_pubkey": lambda v: bool(v) and v != "invalid",
             "_ts_ok": lambda ts: ts != "stale",
             "_account_row": _account_row,
+            "_account_row_by_pubkey": _account_row_by_pubkey,
             "_save_account": _save_account,
             "ed25519_verify": ed25519_verify,
             "json_response": _json_response,
             "Date": _Date,
         }
     )
-    return handler, saved
+    return handler, saved, verified
 
 
 def _bound_account(**overrides):
@@ -86,7 +98,7 @@ def _run(handler, body):
 
 
 def test_rotate_rebinds_to_successor_when_old_key_signs():
-    handler, saved = _harness(_bound_account())
+    handler, saved, _verified = _harness(_bound_account())
     resp = _run(handler, {
         "nodeName": "alice-node",
         "oldPubkey": "old-pubkey",
@@ -103,8 +115,99 @@ def test_rotate_rebinds_to_successor_when_old_key_signs():
     assert rec["rotated_at"] == 1783000000000
 
 
+def test_rotate_accepts_desktop_rotation_record_signature_field():
+    canonical = b"forkmesh-rotate-v1\nold-pubkey\nnew-pubkey\n1783000000000"
+    handler, saved, _verified = _harness(_bound_account(), expected_canonical=canonical)
+    resp = _run(handler, {
+        "kind": "forkmesh.rotate",
+        "nodeName": "alice-node",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "signature": "goodsig",
+    })
+    assert resp["status"] == 200
+    assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
+    assert len(saved) == 1
+    _, rec = saved[0]
+    assert rec["pubkey"] == "new-pubkey"
+
+
+def test_rotate_accepts_desktop_rotation_record_without_node_name():
+    canonical = b"forkmesh-rotate-v1\nold-pubkey\nnew-pubkey\n1783000000000"
+    handler, saved, _verified = _harness(
+        _bound_account(),
+        {"old-pubkey": ("bi:alice-node", _bound_account())},
+        expected_canonical=canonical,
+    )
+    resp = _run(handler, {
+        "kind": "forkmesh.rotate",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "signature": "goodsig",
+    })
+    assert resp["status"] == 200
+    assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
+    assert saved == [
+        (
+            "bi:alice-node",
+            {
+                "name": "alice-node",
+                "status": "active",
+                "pubkey": "new-pubkey",
+                "prev_pubkeys": ["old-pubkey"],
+                "rotated_at": 1783000000000,
+            },
+        )
+    ]
+
+
+def test_rotate_retries_desktop_record_after_nameless_rotation():
+    canonical = b"forkmesh-rotate-v1\nold-pubkey\nnew-pubkey\n1783000000000"
+    rotated = _bound_account(pubkey="new-pubkey", prev_pubkeys=["old-pubkey"])
+    handler, saved, verified = _harness(
+        None,
+        {"new-pubkey": ("bi:alice-node", rotated)},
+        expected_canonical=canonical,
+    )
+    resp = _run(handler, {
+        "kind": "forkmesh.rotate",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "signature": "goodsig",
+    })
+    assert resp["status"] == 200
+    assert resp["data"] == {"ok": True, "nodeName": "alice-node", "pubkey": "new-pubkey"}
+    assert saved == []
+    assert verified == [("old-pubkey", "goodsig", canonical)]
+
+
+def test_rotate_rejects_successor_key_bound_to_another_account():
+    handler, saved, _verified = _harness(
+        _bound_account(),
+        {
+            "new-pubkey": (
+                "bi:bob-node",
+                _bound_account(name="bob-node", pubkey="new-pubkey"),
+            )
+        },
+    )
+    resp = _run(handler, {
+        "nodeName": "alice-node",
+        "oldPubkey": "old-pubkey",
+        "newPubkey": "new-pubkey",
+        "ts": "1783000000000",
+        "sig": "goodsig",
+    })
+    assert resp["status"] == 409
+    assert resp["data"]["error"] == "pubkey_taken"
+    assert saved == []
+
+
 def test_rotate_rejects_signature_from_a_non_bound_key():
-    handler, saved = _harness(_bound_account())
+    handler, saved, _verified = _harness(_bound_account())
     resp = _run(handler, {
         "nodeName": "alice-node",
         "oldPubkey": "attacker-pubkey",
@@ -118,7 +221,7 @@ def test_rotate_rejects_signature_from_a_non_bound_key():
 
 
 def test_rotate_rejects_bad_signature_from_the_bound_key():
-    handler, saved = _harness(_bound_account())
+    handler, saved, _verified = _harness(_bound_account())
     resp = _run(handler, {
         "nodeName": "alice-node",
         "oldPubkey": "old-pubkey",
@@ -132,7 +235,7 @@ def test_rotate_rejects_bad_signature_from_the_bound_key():
 
 
 def test_rotate_is_idempotent_when_already_bound_to_successor():
-    handler, saved = _harness(_bound_account(pubkey="new-pubkey"))
+    handler, saved, _verified = _harness(_bound_account(pubkey="new-pubkey"))
     resp = _run(handler, {
         "nodeName": "alice-node",
         "oldPubkey": "old-pubkey",
@@ -146,7 +249,7 @@ def test_rotate_is_idempotent_when_already_bound_to_successor():
 
 
 def test_rotate_rejects_stale_request():
-    handler, saved = _harness(_bound_account())
+    handler, saved, _verified = _harness(_bound_account())
     resp = _run(handler, {
         "nodeName": "alice-node",
         "oldPubkey": "old-pubkey",
@@ -160,7 +263,7 @@ def test_rotate_rejects_stale_request():
 
 
 def test_rotate_requires_an_existing_account():
-    handler, saved = _harness(None)
+    handler, saved, _verified = _harness(None)
     resp = _run(handler, {
         "nodeName": "ghost-node",
         "oldPubkey": "old-pubkey",

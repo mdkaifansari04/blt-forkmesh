@@ -1849,6 +1849,11 @@ private:
     void loadReleasesPanel();
     void promptNewRelease();
     void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
+    // Deletes every other release tag in this repo's history, keeping only
+    // `keepTag` (the one just published). Best-effort like the artifact prune
+    // above: logs and surfaces a notice on partial failure rather than
+    // aborting the whole publish.
+    void pruneReleaseTagsForCurrentRepo(const QString &keepTag);
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
     // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in

@@ -115,6 +115,14 @@ def test_signup_is_single_step_email_password_name_form():
     assert "Name reserved" not in signup
 
 
+def test_auth_pages_reinforce_dashboard_value_before_submit():
+    login = _read(PUBLIC / "login.html")
+    signup = _read(PUBLIC / "signup.html")
+
+    assert "Manage repositories, mirrors, payouts, and signed collaboration." in login
+    assert "Start free with code hosting, live mirrors, and signed collaboration." in signup
+
+
 def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
     signup_js = _read(PUBLIC / "signup.js")
 
@@ -123,6 +131,27 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
     assert 'api("/api/accounts/donation-address"' not in signup_js
     assert "solana" not in signup_js.lower()
     assert 'localStorage.setItem("forkmesh.session", JSON.stringify({' in signup_js
+
+
+def test_signup_submit_never_leaves_button_stuck_on_request_failure():
+    signup_js = _read(PUBLIC / "signup.js")
+    create_account = signup_js[
+        signup_js.index("async function createAccount"):
+        signup_js.index("nameInput.addEventListener")
+    ]
+
+    assert 'createButton.textContent = "Creating…";' in create_account
+    assert "try {\n      result = await api(\"/api/accounts/signup\"" in create_account
+    assert "catch (_) {\n      setSignupHint(\"Network error - please try again.\", \"bad\");" in create_account
+    assert "finally {\n      if (!created) {\n        createButton.disabled = false;" in create_account
+    assert 'createButton.textContent = "Create account";' in create_account
+
+
+def test_login_success_lands_on_dashboard_after_authentication():
+    login_js = _read(PUBLIC / "login.js")
+
+    assert 'location.href = nextPath() || "/dashboard"' in login_js
+    assert 'location.href = nextPath() || "/"' not in login_js
 
 
 def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
@@ -196,6 +225,30 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
     assert "deleteAccount: true" in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
     assert 'setSection("profile")' in dashboard_js
+
+
+def test_dashboard_profile_session_merge_allows_clearing_payout_address():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    merge = dashboard_js[
+        dashboard_js.index("function sessionFromAccountPayload"):
+        dashboard_js.index("function applyAvatar")
+    ]
+
+    assert 'solana: Object.prototype.hasOwnProperty.call(body, "solana")' in merge
+    assert '? (body.solana || "")' in merge
+    assert ': (base.solana || "")' in merge
+    assert "solana: body.solana || base.solana || \"\"" not in merge
+
+
+def test_dashboard_profile_save_clears_password_after_success():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    save_profile = dashboard_js[
+        dashboard_js.index("async function saveProfile"):
+        dashboard_js.index("async function resendVerification")
+    ]
+
+    assert "const passwordInput = $(passwordSelector);" in save_profile
+    assert 'if (passwordInput) passwordInput.value = "";' in save_profile
 
 
 def test_login_explains_disabled_legacy_accounts():
