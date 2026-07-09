@@ -46,6 +46,17 @@ const seen = new Set();
 // messageId -> { el, senderId } for messages currently on screen, so an edit or
 // a (regular / admin) delete can find and update or remove the right row.
 const rows = new Map();
+// Rolling buffer of the most recent decrypted messages, forwarded to ForkBot so
+// it can resolve references like "that bug" from the conversation. The room is
+// end-to-end encrypted, so the relay only ever sees what we choose to send here.
+const recentContext = [];
+const RECENT_CONTEXT_MAX = 20;
+function rememberContext(sender, text) {
+  const clean = String(text || "").trim();
+  if (!clean) return;
+  recentContext.push({ sender: String(sender || "").slice(0, MAX_NAME), text: clean });
+  if (recentContext.length > RECENT_CONTEXT_MAX) recentContext.shift();
+}
 const mentionProfileCache = new Map();
 let mentionCardEl = null;
 let activeMentionAnchor = null;
@@ -418,6 +429,7 @@ function appendMessage(kind, who, text, id, senderId) {
   if (id) {
     rows.set(id, { el: row, senderId: senderId || "", body });
   }
+  rememberContext(who, text);
 }
 
 // Drop a message row from the screen (a deletion leaves no tombstone, matching
@@ -601,11 +613,18 @@ function broadcastForkbotMessage(text) {
 
 async function maybeAskForkbot(text) {
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
+  // The triggering line is the last buffer entry (appendMessage ran just
+  // before this) and is sent separately as `message`; drop it, drop ForkBot's
+  // own replies, and cap the rest so ForkBot sees the lead-up conversation.
+  const context = recentContext
+    .slice(0, -1)
+    .filter((m) => m.sender.toLowerCase() !== "forkbot")
+    .slice(-12);
   try {
     const response = await fetch(FORKBOT_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME }),
+      body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME, context }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data || !data.botMessage) return;

@@ -6607,11 +6607,50 @@ inline int mirrorNumberedDirCount(const QString &mirrorPath, const QString &bran
     return count;
 }
 
+// Highest numbered subdir under a metadata folder on the served branch, i.e.
+// the largest issue/PR number ever assigned (closed and deleted ones still
+// occupy their slot on disk). Returns 0 when the folder is empty/absent. This
+// is the anchor the relay uses to propose the SAME next number the desktop's
+// nextNumber() (= max + 1) would — so a ForkBot-filed issue can be given its
+// real number immediately (see _forkbot_next_issue_number in the worker).
+inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch,
+                                const QString &subdir)
+{
+    if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
+        !QDir(mirrorPath).exists())
+        return 0;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":" + subdir}, &out,
+                       nullptr))
+        return 0; // no <subdir>/ folder yet -> nothing filed
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    int maxNumber = 0;
+    for (const QByteArray &record : out.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 2 || meta.at(1) != "tree")
+            continue;
+        const QString name = QString::fromUtf8(record.mid(tab + 1));
+        if (!numericName.match(name).hasMatch())
+            continue;
+        maxNumber = qMax(maxNumber, name.toInt());
+    }
+    return maxNumber;
+}
+
 // Issues / pull requests / discussions a node's mirror holds: each is the count
 // of numbered subdirs under its metadata folder on the served branch.
 inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
 {
     return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
+}
+inline int mirrorIssueMaxNumber(const QString &mirrorPath, const QString &branch)
+{
+    return mirrorNumberedDirMax(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
 }
 inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 {

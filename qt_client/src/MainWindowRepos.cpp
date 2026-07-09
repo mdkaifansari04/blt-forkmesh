@@ -2730,6 +2730,10 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         headCommit = servedHeadCommit;
     }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
+    // Highest issue number ever assigned (not just the open count), so the
+    // relay can propose the same next number the desktop would for a ForkBot-
+    // filed issue and answer the chat with that number immediately.
+    const int issueMaxNumber = mirrorIssueMaxNumber(repo.mirrorPath, headBranch);
     const int commitCount = mirrorCommitCount(repo.mirrorPath, headBranch);
     const int branchCount = mirrorBranchCount(repo.mirrorPath);
     const int pullCount = mirrorPullCount(repo.mirrorPath, headBranch);
@@ -2762,6 +2766,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                          {"commit", headCommit},
                          {"branch", headBranch},
                          {"issueCount", QString::number(issueCount)},
+                         {"issueMaxNumber", QString::number(issueMaxNumber)},
                          {"commitCount", QString::number(commitCount)},
                          {"branchCount", QString::number(branchCount)},
                          {"pullCount", QString::number(pullCount)},

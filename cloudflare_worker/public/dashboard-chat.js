@@ -43,6 +43,17 @@
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
+  // Rolling buffer of recent decrypted messages, forwarded to ForkBot so it can
+  // resolve references like "that bug" from the conversation. The room is E2E
+  // encrypted, so the relay only sees what we choose to send here.
+  const recentContext = [];
+  const RECENT_CONTEXT_MAX = 20;
+  function rememberContext(sender, text) {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    recentContext.push({ sender: String(sender || "").slice(0, MAX_NAME), text: clean });
+    if (recentContext.length > RECENT_CONTEXT_MAX) recentContext.shift();
+  }
   const mentionProfileCache = new Map();
   let mentionCardEl = null;
   let activeMentionAnchor = null;
@@ -477,6 +488,7 @@
   function appendMessage(kind, who, text, id, senderId, ts) {
     appendFullMessage(kind, who, text, id, senderId, ts);
     appendSideMessage(kind, who, text, id, senderId);
+    rememberContext(who, text);
   }
 
   function appendSystem(text) {
@@ -691,11 +703,17 @@
 
   async function maybeAskForkbot(text) {
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
+    // Drop the triggering line (sent separately as `message`) and ForkBot's own
+    // replies, and cap the rest so ForkBot sees the lead-up conversation.
+    const context = recentContext
+      .slice(0, -1)
+      .filter((m) => m.sender.toLowerCase() !== "forkbot")
+      .slice(-12);
     try {
       const response = await fetch(FORKBOT_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME }),
+        body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME, context }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || !data.botMessage) return;

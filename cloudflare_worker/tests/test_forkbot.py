@@ -27,11 +27,15 @@ FUNCS = {
     "repo_web_href",
     "_forkbot_extract_mention_command",
     "_forkbot_parse_issue_command",
+    "_forkbot_context_text",
     "_forkbot_issue_title",
     "_forkbot_fallback_issue_fields",
     "_forkbot_json_object_from_text",
     "_forkbot_clean_ai_issue_fields",
+    "_forkbot_run_ai",
     "_forkbot_ai_issue_fields",
+    "_forkbot_ai_interpret",
+    "_forkbot_next_issue_number",
     "_forkbot_enqueue_issue",
     "forkbot_chat_handler",
 }
@@ -43,6 +47,8 @@ CONSTANTS = {
     "FORKBOT_DEFAULT_REPO",
     "FORKBOT_MAX_COMMAND",
     "FORKBOT_AI_DEFAULT_MODEL",
+    "FORKBOT_CONTEXT_MAX_MESSAGES",
+    "FORKBOT_CONTEXT_MAX_CHARS",
     "MAX_ISSUE_BYTES",
     "MAX_PENDING_ISSUES",
     "MAX_PENDING_PER_AUTHOR",
@@ -89,7 +95,7 @@ def _json_response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _env_and_calls(ai=None):
+def _env_and_calls(ai=None, catalog_issue_max=None):
     calls = {"inserted": [], "contributors": [], "side_effects": []}
 
     class _Env:
@@ -102,18 +108,38 @@ def _env_and_calls(ai=None):
     async def blind_index(_env, value):
         return "bi:" + str(value)
 
-    async def d1_first(_env, sql, *_args):
+    # Per-repo issue-number allocator state (issue_seq table). Seeded from the
+    # catalog record's issueMaxNumber the first time a repo is used.
+    seq = {}
+
+    async def d1_first(_env, sql, *args):
         if "SELECT COUNT(*) AS c FROM issue_inbox" in sql:
             return {"c": 0}
         if "WHERE repo_bi=? AND submitter_bi=?" in sql:
             return {"c": 0}
+        if "FROM repositories WHERE key_bi=?" in sql:
+            # A stored catalog record whose issueMaxNumber seeds the allocator.
+            return {"data": {"issueMaxNumber": str(catalog_issue_max)}} \
+                if catalog_issue_max is not None else None
+        if "SELECT next_number FROM issue_seq" in sql:
+            return {"next_number": seq.get(args[0], 1)}
         raise AssertionError("unexpected d1_first: " + sql)
 
     async def d1_run(_env, sql, *args):
         if sql.startswith("INSERT INTO issue_inbox"):
             calls["inserted"].append(args)
             return None
+        if sql.startswith("INSERT INTO issue_seq"):
+            repo_bi, seed_next = args[0], args[1]
+            seq[repo_bi] = max(seq.get(repo_bi, 0), seed_next)
+            return None
+        if sql.startswith("UPDATE issue_seq"):
+            seq[args[1]] = args[0]
+            return None
         raise AssertionError("unexpected d1_run: " + sql)
+
+    async def decrypt_row(_env, data):
+        return dict(data) if isinstance(data, dict) else None
 
     async def encrypt_row(_env, obj):
         return dict(obj)
@@ -141,6 +167,7 @@ def _env_and_calls(ai=None):
         "d1_first": d1_first,
         "d1_run": d1_run,
         "encrypt_row": encrypt_row,
+        "decrypt_row": decrypt_row,
         "_record_contributor": record_contributor,
         "_best_effort_inbox_side_effect": side_effect,
         "_inbox_author_over_quota": inbox_author_over_quota,
@@ -169,8 +196,46 @@ def test_forkbot_parses_explicit_issue_mentions_only():
     assert parse("tell me a joke") is None
 
 
+def test_forkbot_regex_recognizes_natural_phrasings():
+    # The offline fast path now covers common natural wordings, not just
+    # "create/open/file/make/report an issue".
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_issue_command"]
+    assert parse("can you log a bug about the flaky login test") == {
+        "description": "the flaky login test"}
+    assert parse("track a task to add dark mode") == {
+        "description": "add dark mode"}
+    assert parse("please raise a ticket regarding slow clones") == {
+        "description": "slow clones"}
+    assert parse("open a feature request for saved searches") == {
+        "description": "saved searches"}
+    # Still not an issue request.
+    assert parse("what's the weather") is None
+
+
+def test_forkbot_context_text_bounds_and_formats_conversation():
+    ns = _load_forkbot()
+    fmt = ns["_forkbot_context_text"]
+    assert fmt(None) == ""
+    assert fmt([]) == ""
+    out = fmt([
+        {"sender": "alice", "text": "the login page 500s on submit"},
+        {"sender": "bob", "text": "yeah since the auth deploy"},
+        {"not": "a dict"},
+        {"sender": "carol", "text": "   "},
+    ])
+    assert out == (
+        "alice: the login page 500s on submit\n"
+        "bob: yeah since the auth deploy")
+    # Never exceeds the message cap.
+    many = [{"sender": "u", "text": "m%d" % i} for i in range(50)]
+    assert len(fmt(many).splitlines()) == ns["FORKBOT_CONTEXT_MAX_MESSAGES"]
+
+
 def test_forkbot_chat_handler_queues_default_repo_issue():
-    env, calls, ns = _env_and_calls()
+    # Catalog says the repo's highest issue number is 6, so the proposed number
+    # (what the desktop's nextNumber() would assign) is 7.
+    env, calls, ns = _env_and_calls(catalog_issue_max=6)
 
     response = asyncio.run(ns["forkbot_chat_handler"](
         env,
@@ -184,13 +249,19 @@ def test_forkbot_chat_handler_queues_default_repo_issue():
     assert response["data"]["owner"] == "forkmesh"
     assert response["data"]["repo"] == "forkmesh"
     assert response["data"]["title"] == "make crash logs searchable"
-    assert "owner node syncs the issue inbox" in response["data"]["botMessage"]
+    assert response["data"]["issueNumber"] == 7
+    assert response["data"]["issueUrl"] == "/forkmesh/forkmesh/issues"
+    assert "#7" in response["data"]["botMessage"]
+    assert "/forkmesh/forkmesh/issues" in response["data"]["botMessage"]
 
     assert len(calls["inserted"]) == 1
     repo_bi, item, submitter_bi = calls["inserted"][0]
     assert repo_bi == "bi:forkmesh/forkmesh"
     assert submitter_bi == "bi:forkbot"
-    assert item["number"] == 0
+    # The proposed number lands in the stored item so the desktop honors it and
+    # the chat reply can echo it.
+    assert item["number"] == 7
+    assert item["issueNumber"] == 7
     assert item["titleIfNew"] == "make crash logs searchable"
     assert item["submitter"] == "forkbot"
     assert item["requestedBy"] == "alice"
@@ -231,6 +302,7 @@ def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
 
 
 def test_forkbot_unknown_command_returns_help_without_enqueueing():
+    # No AI configured and no regex match -> help, nothing enqueued.
     env, calls, ns = _env_and_calls()
 
     response = asyncio.run(ns["forkbot_chat_handler"](
@@ -238,8 +310,119 @@ def test_forkbot_unknown_command_returns_help_without_enqueueing():
 
     assert response["status"] == 200
     assert response["data"]["action"] == "help"
-    assert "forkbot create an issue" in response["data"]["botMessage"]
+    assert "open an issue" in response["data"]["botMessage"]
     assert calls["inserted"] == []
+
+
+def test_forkbot_ai_intent_creates_issue_from_natural_request():
+    # The wording matches no command regex; the AI classifier recognizes the
+    # intent from meaning and drafts the issue.
+    class _AI:
+        async def run(self, model, payload):
+            self.payload = payload
+            return {"response": json.dumps({
+                "intent": "create_issue",
+                "title": "Flaky login test",
+                "body": "The login integration test fails intermittently.",
+            })}
+
+    env, calls, ns = _env_and_calls(ai=_AI(), catalog_issue_max=3)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot the login test keeps flaking, can you sort that out?",
+        "sender": "alice",
+    })))
+
+    assert response["status"] == 201
+    assert response["data"]["issueNumber"] == 4
+    assert calls["inserted"][0][1]["titleIfNew"] == "Flaky login test"
+    assert calls["inserted"][0][1]["event"]["body"] == (
+        "The login integration test fails intermittently.")
+
+
+def test_forkbot_ai_intent_none_returns_help_without_enqueueing():
+    class _AI:
+        async def run(self, model, payload):
+            return {"response": json.dumps({"intent": "none"})}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot good morning, how are you?",
+    })))
+
+    assert response["status"] == 200
+    assert response["data"]["action"] == "help"
+    assert calls["inserted"] == []
+
+
+def test_forkbot_forwards_conversation_context_to_the_ai():
+    # "log that" only makes sense with the prior conversation; the recent
+    # messages must reach the AI prompt.
+    class _AI:
+        async def run(self, model, payload):
+            self.payload = payload
+            return {"response": json.dumps({
+                "intent": "create_issue",
+                "title": "Clone hangs on large repos",
+                "body": "Cloning a large repo stalls at 90%.",
+            })}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai, catalog_issue_max=0)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot log that as an issue",
+        "sender": "alice",
+        "context": [
+            {"sender": "bob", "text": "cloning the monorepo hangs at 90%"},
+            {"sender": "alice", "text": "same here, never finishes"},
+        ],
+    })))
+
+    assert response["status"] == 201
+    assert response["data"]["issueNumber"] == 1
+    user_prompt = ai.payload["messages"][1]["content"]
+    assert "cloning the monorepo hangs at 90%" in user_prompt
+    assert "log that as an issue" in user_prompt
+
+
+def test_forkbot_issue_numbers_increment_and_reanchor_to_catalog():
+    seq = {}
+
+    async def d1_first(_env, sql, *args):
+        if "FROM repositories WHERE key_bi=?" in sql:
+            return {"data": {"issueMaxNumber": str(_env.catalog_max)}}
+        if "SELECT next_number FROM issue_seq" in sql:
+            return {"next_number": seq.get(args[0], 1)}
+        raise AssertionError(sql)
+
+    async def d1_run(_env, sql, *args):
+        if sql.startswith("INSERT INTO issue_seq"):
+            seq[args[0]] = max(seq.get(args[0], 0), args[1])
+        elif sql.startswith("UPDATE issue_seq"):
+            seq[args[1]] = args[0]
+        else:
+            raise AssertionError(sql)
+
+    async def decrypt_row(_env, data):
+        return dict(data)
+
+    g = _load_forkbot({
+        "d1_first": d1_first, "d1_run": d1_run, "decrypt_row": decrypt_row,
+    })
+    alloc = g["_forkbot_next_issue_number"]
+
+    class _Env:
+        catalog_max = 4
+
+    env = _Env()
+    # Seeds from catalog max (4) -> proposes 5, then 6 monotonically.
+    assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 5
+    assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 6
+    # The desktop merged up to 9 and republished; the allocator re-anchors up.
+    env.catalog_max = 9
+    assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 10
+    # A stale/lower catalog max never drags the counter backward.
+    env.catalog_max = 2
+    assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 11
 
 
 def test_forkbot_route_and_workers_ai_binding_are_configured():
@@ -259,3 +442,6 @@ def test_web_chats_forward_mentions_and_broadcast_bot_replies():
         assert 'senderId: FORKBOT_SENDER_ID' in script
         assert "broadcastForkbotMessage(data.botMessage)" in script
         assert "maybeAskForkbot(clipped)" in script
+        # Recent conversation is buffered and forwarded so ForkBot has context.
+        assert "rememberContext(" in script
+        assert "context" in script
