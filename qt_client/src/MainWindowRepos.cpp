@@ -9,11 +9,16 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QCryptographicHash>
+
 using namespace forkmesh::ui;
 
 namespace {
 constexpr qint64 kCatalogPublishDebounceMs = 1000;
 constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
+// An unchanged record is still re-published this often so its catalog row
+// can't age out server-side (MAX_CATALOG_REPOS prunes by updatedAt).
+constexpr qint64 kCatalogPublishRefreshMs = 6LL * 60 * 60 * 1000;
 constexpr qint64 kCatalogPublishRateLimitRetryMs = 60LL * 1000;
 constexpr qint64 kCatalogPublishMaxRetryAfterMs = 10LL * 60 * 1000;
 
@@ -2371,6 +2376,12 @@ void MainWindow::startRepoHosts()
         });
         connect(host, &RepoHost::log, this, &MainWindow::logSystem);
         connect(host, &RepoHost::requestServed, this, &MainWindow::onRequestServed);
+        // Relay push: "something changed for this repo" (inbox item, agent
+        // prompt). Coalesce into one signed GET /api/sync instead of polling.
+        connect(host, &RepoHost::relayEventReceived, this,
+                [this](const QString &, const QString &, const QString &) {
+                    scheduleRelaySync();
+                });
         connect(host, &RepoHost::networkDiagnosticsChanged, this, [this] {
             if (m_sectionStack &&
                 m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
@@ -2800,6 +2811,31 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         metadata.insert("stateSig", m_profileIdentity.signData(stateCanonical));
     }
 
+    // Skip the network write when nothing the catalog shows has changed since
+    // the last successful publish. Roster presence flickers re-request a
+    // publish continuously (setRoster -> syncMirrorsBehindRoster -> publish),
+    // which used to re-POST an identical record every ~30s per repo. The
+    // fingerprint covers everything readers see — refs (stateHash), counters,
+    // description, visibility — and excludes only the per-attempt volatile
+    // fields; a manual "Publish" (showDialogOnError) always goes through, and
+    // an unchanged record still refreshes every kCatalogPublishRefreshMs.
+    QJsonObject fingerprintSource = metadata;
+    fingerprintSource.remove(QStringLiteral("updatedAt"));
+    fingerprintSource.remove(QStringLiteral("lastSync"));
+    fingerprintSource.remove(QStringLiteral("signature"));
+    fingerprintSource.remove(QStringLiteral("catalogSig"));
+    fingerprintSource.remove(QStringLiteral("stateSig"));
+    const QByteArray fingerprint = QCryptographicHash::hash(
+        QJsonDocument(fingerprintSource).toJson(QJsonDocument::Compact),
+        QCryptographicHash::Sha256);
+    const qint64 lastPublishedAt =
+        m_catalogPublishedFingerprintAtMs.value(publishKey, 0);
+    if (!showDialogOnError &&
+        m_catalogPublishedFingerprint.value(publishKey) == fingerprint &&
+        now - lastPublishedAt < kCatalogPublishRefreshMs) {
+        return;
+    }
+
     QNetworkRequest request(catalogApiUrl());
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
@@ -2813,7 +2849,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
               request.url().toString() + ".");
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, index, publishKey, showDialogOnError] {
+            [this, reply, index, publishKey, showDialogOnError, fingerprint] {
                 const QByteArray body = reply->readAll();
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -2843,6 +2879,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
 
                 RepositoryRecord &repo = m_repositories[index];
                 if (error == QNetworkReply::NoError && status >= 200 && status < 300) {
+                    m_catalogPublishedFingerprint.insert(publishKey, fingerprint);
+                    m_catalogPublishedFingerprintAtMs.insert(
+                        publishKey, QDateTime::currentMSecsSinceEpoch());
                     repo.publishToNetwork = true;
                     repo.publishedAtMs = QDateTime::currentMSecsSinceEpoch();
                     saveRepositories();
