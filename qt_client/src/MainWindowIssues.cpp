@@ -6850,7 +6850,7 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, repo, writable, interactive, backoffKey] {
+            [this, reply, repo, interactive, backoffKey] {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
@@ -6862,211 +6862,228 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
             return;
         }
         m_pollBackoff.noteSuccess(backoffKey);
-        const QJsonArray pending = QJsonDocument::fromJson(reply->readAll())
-                                       .object()
-                                       .value("pending")
-                                       .toArray();
-        if (pending.isEmpty()) {
-            if (interactive)
-                setIssueInlineNotice("No pending submissions.");
-            return;
-        }
-        IssueStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
-                         m_userName);
-        int merged = 0;
-        int comments = 0;
-        int newIssues = 0;
-        QString lastCommentAuthor;
-        int lastCommentNumber = 0;
-        QString lastCommentBody;
-        QString lastIssueAuthor;
-        QString lastIssueTitle;
-        int lastIssueNumber = 0;
-        // New issues the submitter (the repo owner, filing from the website)
-        // asked to have auto-assigned to an agent once merged. Matched against
-        // the merged store below by open-event identity, since a freshly merged
-        // web submission's real issue number isn't known until after the merge
-        // (proposed number 0 gets reassigned inside applyRemoteEvent).
-        struct AgentRequest {
-            IssueEvent event;
-            QString model;
-            QString provider; // empty = node default (adhoc #234)
-        };
-        QList<AgentRequest> agentRequests;
-        for (const QJsonValue &value : pending) {
-            const QJsonObject item = value.toObject();
-            const int number = item.value("number").toInt();
-            const QJsonObject eventObj = item.value("event").toObject();
-            IssueEvent ev = IssueEvent::fromJson(eventObj);
-            ev.body = eventObj.value("body").toString();
-            const QString titleIfNew = item.value("titleIfNew").toString();
-            const QJsonObject metaObj = item.value("meta").toObject();
-            RemoteIssueMeta meta;
-            for (const QJsonValue &l : metaObj.value("labels").toArray())
-                meta.labels << l.toString();
-            meta.milestone = metaObj.value("milestone").toString();
-            meta.priority = metaObj.value("priority").toInt();
-            for (const QJsonValue &a : metaObj.value("assignees").toArray())
-                meta.assignees << a.toString();
-            meta.wantsAgent = metaObj.value("wantsAgent").toBool();
-            meta.wantsAgentModel = metaObj.value("model").toString();
-            meta.wantsAgentProvider = metaObj.value("provider").toString();
-            if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
-                ++merged;
-                const QString who =
-                    ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
-                if (ev.type == QLatin1String("comment")) {
-                    ++comments;
-                    lastCommentAuthor = who;
-                    lastCommentNumber = number;
-                    lastCommentBody = ev.body.simplified();
-                } else if (ev.type == QLatin1String("open")) {
-                    ++newIssues;
-                    lastIssueAuthor = who;
-                    lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
-                    lastIssueNumber = number;
-                    if (meta.wantsAgent)
-                        agentRequests << AgentRequest{ev, meta.wantsAgentModel,
-                                                      meta.wantsAgentProvider};
-                }
+        applyIssuesInboxPayload(repo,
+                                QJsonDocument::fromJson(reply->readAll())
+                                    .object()
+                                    .value("pending")
+                                    .toArray(),
+                                interactive);
+    });
+}
+
+// Merge pending issue submissions into the local store, ack the inbox, and
+// raise notifications. `pending` comes from either a per-repo GET /issues
+// drain reply or the repo's slice of the consolidated GET /api/sync response.
+void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
+                                         const QJsonArray &pending,
+                                         bool interactive)
+{
+    if (pending.isEmpty()) {
+        if (interactive)
+            setIssueInlineNotice("No pending submissions.");
+        return;
+    }
+    const RepositoryRecord writable = writableRecordFor(repo);
+    IssueStore store(writable.localPath, writable.mirrorPath, &m_profileIdentity,
+                     m_userName);
+    if (!store.canWrite())
+        return;
+    int merged = 0;
+    int comments = 0;
+    int newIssues = 0;
+    QString lastCommentAuthor;
+    int lastCommentNumber = 0;
+    QString lastCommentBody;
+    QString lastIssueAuthor;
+    QString lastIssueTitle;
+    int lastIssueNumber = 0;
+    // New issues the submitter (the repo owner, filing from the website)
+    // asked to have auto-assigned to an agent once merged. Matched against
+    // the merged store below by open-event identity, since a freshly merged
+    // web submission's real issue number isn't known until after the merge
+    // (proposed number 0 gets reassigned inside applyRemoteEvent).
+    struct AgentRequest {
+        IssueEvent event;
+        QString model;
+        QString provider; // empty = node default (adhoc #234)
+    };
+    QList<AgentRequest> agentRequests;
+    for (const QJsonValue &value : pending) {
+        const QJsonObject item = value.toObject();
+        const int number = item.value("number").toInt();
+        const QJsonObject eventObj = item.value("event").toObject();
+        IssueEvent ev = IssueEvent::fromJson(eventObj);
+        ev.body = eventObj.value("body").toString();
+        const QString titleIfNew = item.value("titleIfNew").toString();
+        const QJsonObject metaObj = item.value("meta").toObject();
+        RemoteIssueMeta meta;
+        for (const QJsonValue &l : metaObj.value("labels").toArray())
+            meta.labels << l.toString();
+        meta.milestone = metaObj.value("milestone").toString();
+        meta.priority = metaObj.value("priority").toInt();
+        for (const QJsonValue &a : metaObj.value("assignees").toArray())
+            meta.assignees << a.toString();
+        meta.wantsAgent = metaObj.value("wantsAgent").toBool();
+        meta.wantsAgentModel = metaObj.value("model").toString();
+        meta.wantsAgentProvider = metaObj.value("provider").toString();
+        if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
+            ++merged;
+            const QString who =
+                ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
+            if (ev.type == QLatin1String("comment")) {
+                ++comments;
+                lastCommentAuthor = who;
+                lastCommentNumber = number;
+                lastCommentBody = ev.body.simplified();
+            } else if (ev.type == QLatin1String("open")) {
+                ++newIssues;
+                lastIssueAuthor = who;
+                lastIssueTitle = ev.title.isEmpty() ? titleIfNew : ev.title;
+                lastIssueNumber = number;
+                if (meta.wantsAgent)
+                    agentRequests << AgentRequest{ev, meta.wantsAgentModel,
+                                                  meta.wantsAgentProvider};
             }
         }
-        // Acknowledge so the inbox clears the merged submissions.
-        m_networkAccess->deleteResource(QNetworkRequest(url));
-        // Refresh the issue list if this is the repo currently on screen.
-        const int curIdx = issuesRepoIndex();
-        if (curIdx >= 0 &&
-            m_repositories.at(curIdx).owner == repo.owner &&
-            m_repositories.at(curIdx).name == repo.name)
-            reloadIssues();
-        // Start an agent on each new issue the owner flagged for auto-assignment
-        // when they filed it. Look the issue back up by its open event's identity
-        // (see agentRequests above) to get the real, post-merge issue number.
-        // repoHint keeps this pointed at repo/store above regardless of what the
-        // Issues tab currently shows (adhoc #105).
-        if (!agentRequests.isEmpty()) {
-            const QList<Issue> mergedIssues = store.loadAll();
-            for (const auto &request : std::as_const(agentRequests)) {
-                const IssueEvent &wanted = request.event;
-                const QString &wantedModel = request.model;
-                // The web submitter's provider choice (adhoc #234), falling back
-                // to this node's default when they left it unset.
-                const QString wantedProvider = request.provider.trimmed().isEmpty()
-                                                   ? defaultAgentProvider()
-                                                   : request.provider.trimmed();
-                for (const Issue &candidate : mergedIssues) {
-                    if (candidate.isDeleted())
+    }
+    // Acknowledge so the inbox clears the merged submissions.
+    QUrl ackUrl = issuesApiUrl(repo);
+    ackUrl.setQuery(
+        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    // Refresh the issue list if this is the repo currently on screen.
+    const int curIdx = issuesRepoIndex();
+    if (curIdx >= 0 &&
+        m_repositories.at(curIdx).owner == repo.owner &&
+        m_repositories.at(curIdx).name == repo.name)
+        reloadIssues();
+    // Start an agent on each new issue the owner flagged for auto-assignment
+    // when they filed it. Look the issue back up by its open event's identity
+    // (see agentRequests above) to get the real, post-merge issue number.
+    // repoHint keeps this pointed at repo/store above regardless of what the
+    // Issues tab currently shows (adhoc #105).
+    if (!agentRequests.isEmpty()) {
+        const QList<Issue> mergedIssues = store.loadAll();
+        for (const auto &request : std::as_const(agentRequests)) {
+            const IssueEvent &wanted = request.event;
+            const QString &wantedModel = request.model;
+            // The web submitter's provider choice (adhoc #234), falling back
+            // to this node's default when they left it unset.
+            const QString wantedProvider = request.provider.trimmed().isEmpty()
+                                               ? defaultAgentProvider()
+                                               : request.provider.trimmed();
+            for (const Issue &candidate : mergedIssues) {
+                if (candidate.isDeleted())
+                    continue;
+                bool matched = false;
+                for (const IssueEvent &e : candidate.events) {
+                    if (e.type != QLatin1String("open"))
                         continue;
-                    bool matched = false;
-                    for (const IssueEvent &e : candidate.events) {
-                        if (e.type != QLatin1String("open"))
-                            continue;
-                        const bool sameSig =
-                            !wanted.sig.isEmpty() && e.sig == wanted.sig;
-                        const bool sameAuthorTs =
-                            wanted.sig.isEmpty() && e.author == wanted.author &&
-                            e.ts == wanted.ts && e.title == wanted.title;
-                        if (sameSig || sameAuthorTs) {
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if (matched) {
-                        // A redelivered inbox item (e.g. the previous drain's ack
-                        // delete failed after a successful merge) would otherwise
-                        // start a second agent on the same issue — skip if one is
-                        // already recorded on it.
-                        bool alreadyAssigned = false;
-                        for (const IssueEvent &e : candidate.events) {
-                            if (e.type == QLatin1String("agent") && e.agentSessionId > 0) {
-                                alreadyAssigned = true;
-                                break;
-                            }
-                        }
-                        if (!alreadyAssigned)
-                            startAgentForIssue(candidate, wantedProvider,
-                                               /*createPr=*/true, /*quiet=*/true,
-                                               wantedModel, &repo);
+                    const bool sameSig =
+                        !wanted.sig.isEmpty() && e.sig == wanted.sig;
+                    const bool sameAuthorTs =
+                        wanted.sig.isEmpty() && e.author == wanted.author &&
+                        e.ts == wanted.ts && e.title == wanted.title;
+                    if (sameSig || sameAuthorTs) {
+                        matched = true;
                         break;
                     }
                 }
-            }
-        }
-        // Incoming issues just landed in the working copy: push them to the
-        // mirror and notify peers now so every node's count converges promptly.
-        if (merged > 0) {
-            propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
-            // An inbound issue/comment may @mention the owner running this node.
-            scanRepoMentionsFor(writable);
-        }
-        if (interactive)
-            setIssueInlineNotice(
-                QStringLiteral("Merged %1 submission(s) into .forkmesh/issues/.")
-                    .arg(merged));
-
-        // Notify on new issues filed by other nodes (the source of truth should
-        // see incoming issues) and on inbound comments — interactive or not.
-        if (newIssues > 0) {
-            const QString body =
-                newIssues == 1
-                    ? QStringLiteral("%1 filed a new issue on %2/%3: %4")
-                          .arg(lastIssueAuthor, repo.owner, repo.name, lastIssueTitle)
-                    : QStringLiteral("%1 new issues filed on %2/%3")
-                          .arg(newIssues)
-                          .arg(repo.owner, repo.name);
-            flashMessage(body);
-            if (notifyEnabled(kIssueAlertSetting))
-                notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new issue"),
-                                 body);
-            // Log it on the Notifications page so it persists past the toast.
-            // A single new issue links straight to it; a batch lands on the
-            // repo's Issues tab (issue #292).
-            NotificationLink link;
-            link.kind = QStringLiteral("issue");
-            link.owner = repo.owner;
-            link.name = repo.name;
-            link.number = newIssues == 1 ? lastIssueNumber : -1;
-            addNotification(QStringLiteral("New issue"), body, false, link);
-            if (notifyEnabled(kIssueAlertSetting) && m_trayIcon &&
-                QSystemTrayIcon::supportsMessages())
-                m_trayIcon->showMessage("ForkMesh — new issue", body,
-                                        QSystemTrayIcon::Information, 6000);
-        }
-        if (comments > 0) {
-            QString body;
-            if (comments == 1) {
-                body = QStringLiteral("%1 commented on %2/%3 issue #%4")
-                           .arg(lastCommentAuthor, repo.owner, repo.name)
-                           .arg(lastCommentNumber);
-                if (!lastCommentBody.isEmpty()) {
-                    const QString snippet = lastCommentBody.left(140) +
-                        (lastCommentBody.size() > 140 ? QString::fromUtf8("\xE2\x80\xA6")
-                                                      : QString());
-                    body += QString::fromUtf8(": \xE2\x80\x9C%1\xE2\x80\x9D").arg(snippet);
+                if (matched) {
+                    // A redelivered inbox item (e.g. the previous drain's ack
+                    // delete failed after a successful merge) would otherwise
+                    // start a second agent on the same issue — skip if one is
+                    // already recorded on it.
+                    bool alreadyAssigned = false;
+                    for (const IssueEvent &e : candidate.events) {
+                        if (e.type == QLatin1String("agent") && e.agentSessionId > 0) {
+                            alreadyAssigned = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyAssigned)
+                        startAgentForIssue(candidate, wantedProvider,
+                                           /*createPr=*/true, /*quiet=*/true,
+                                           wantedModel, &repo);
+                    break;
                 }
-            } else {
-                body = QStringLiteral("%1 new comments on %2/%3 issues")
-                           .arg(comments)
-                           .arg(repo.owner, repo.name);
             }
-            if (notifyEnabled(kCommentAlertSetting))
-                notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new comment"),
-                                 body);
-            // Log it on the Notifications page so it persists past the toast.
-            // A single comment links to its issue; a batch lands on the Issues
-            // tab (issue #292).
-            NotificationLink link;
-            link.kind = QStringLiteral("issue");
-            link.owner = repo.owner;
-            link.name = repo.name;
-            link.number = comments == 1 ? lastCommentNumber : -1;
-            addNotification(QStringLiteral("New comment"), body, false, link);
-            if (notifyEnabled(kCommentAlertSetting) && m_trayIcon &&
-                QSystemTrayIcon::supportsMessages())
-                m_trayIcon->showMessage("ForkMesh — new comment", body,
-                                        QSystemTrayIcon::Information, 6000);
         }
-    });
+    }
+    // Incoming issues just landed in the working copy: push them to the
+    // mirror and notify peers now so every node's count converges promptly.
+    if (merged > 0) {
+        propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
+        // An inbound issue/comment may @mention the owner running this node.
+        scanRepoMentionsFor(writable);
+    }
+    if (interactive)
+        setIssueInlineNotice(
+            QStringLiteral("Merged %1 submission(s) into .forkmesh/issues/.")
+                .arg(merged));
+
+    // Notify on new issues filed by other nodes (the source of truth should
+    // see incoming issues) and on inbound comments — interactive or not.
+    if (newIssues > 0) {
+        const QString body =
+            newIssues == 1
+                ? QStringLiteral("%1 filed a new issue on %2/%3: %4")
+                      .arg(lastIssueAuthor, repo.owner, repo.name, lastIssueTitle)
+                : QStringLiteral("%1 new issues filed on %2/%3")
+                      .arg(newIssues)
+                      .arg(repo.owner, repo.name);
+        flashMessage(body);
+        if (notifyEnabled(kIssueAlertSetting))
+            notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new issue"),
+                             body);
+        // Log it on the Notifications page so it persists past the toast.
+        // A single new issue links straight to it; a batch lands on the
+        // repo's Issues tab (issue #292).
+        NotificationLink link;
+        link.kind = QStringLiteral("issue");
+        link.owner = repo.owner;
+        link.name = repo.name;
+        link.number = newIssues == 1 ? lastIssueNumber : -1;
+        addNotification(QStringLiteral("New issue"), body, false, link);
+        if (notifyEnabled(kIssueAlertSetting) && m_trayIcon &&
+            QSystemTrayIcon::supportsMessages())
+            m_trayIcon->showMessage("ForkMesh — new issue", body,
+                                    QSystemTrayIcon::Information, 6000);
+    }
+    if (comments > 0) {
+        QString body;
+        if (comments == 1) {
+            body = QStringLiteral("%1 commented on %2/%3 issue #%4")
+                       .arg(lastCommentAuthor, repo.owner, repo.name)
+                       .arg(lastCommentNumber);
+            if (!lastCommentBody.isEmpty()) {
+                const QString snippet = lastCommentBody.left(140) +
+                    (lastCommentBody.size() > 140 ? QString::fromUtf8("\xE2\x80\xA6")
+                                                  : QString());
+                body += QString::fromUtf8(": \xE2\x80\x9C%1\xE2\x80\x9D").arg(snippet);
+            }
+        } else {
+            body = QStringLiteral("%1 new comments on %2/%3 issues")
+                       .arg(comments)
+                       .arg(repo.owner, repo.name);
+        }
+        if (notifyEnabled(kCommentAlertSetting))
+            notifyIfInactive(QString::fromUtf8("ForkMesh \xE2\x80\x94 new comment"),
+                             body);
+        // Log it on the Notifications page so it persists past the toast.
+        // A single comment links to its issue; a batch lands on the Issues
+        // tab (issue #292).
+        NotificationLink link;
+        link.kind = QStringLiteral("issue");
+        link.owner = repo.owner;
+        link.name = repo.name;
+        link.number = comments == 1 ? lastCommentNumber : -1;
+        addNotification(QStringLiteral("New comment"), body, false, link);
+        if (notifyEnabled(kCommentAlertSetting) && m_trayIcon &&
+            QSystemTrayIcon::supportsMessages())
+            m_trayIcon->showMessage("ForkMesh — new comment", body,
+                                    QSystemTrayIcon::Information, 6000);
+    }
 }
 
 QWidget *MainWindow::buildChatSection()
