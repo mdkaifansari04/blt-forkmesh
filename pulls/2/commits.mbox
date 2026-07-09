@@ -1,0 +1,1451 @@
+From 47d916f7a4c7c2d1e410825832e78ef4765ed4ea Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Fri, 10 Jul 2026 00:23:23 +0530
+Subject: [PATCH] docs: plan GitHub-like dashboard redesign
+
+---
+ ...26-07-09-github-like-dashboard-redesign.md | 1051 +++++++++++++++++
+ ...9-github-like-dashboard-redesign-design.md |  373 ++++++
+ 2 files changed, 1424 insertions(+)
+ create mode 100644 cloudflare_worker/docs/superpowers/plans/2026-07-09-github-like-dashboard-redesign.md
+ create mode 100644 cloudflare_worker/docs/superpowers/specs/2026-07-09-github-like-dashboard-redesign-design.md
+
+diff --git a/cloudflare_worker/docs/superpowers/plans/2026-07-09-github-like-dashboard-redesign.md b/cloudflare_worker/docs/superpowers/plans/2026-07-09-github-like-dashboard-redesign.md
+new file mode 100644
+index 00000000..2017ba5d
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/plans/2026-07-09-github-like-dashboard-redesign.md
+@@ -0,0 +1,1051 @@
++# GitHub-Like Dashboard Redesign Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
++> Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Redesign the logged-in ForkMesh web app so dashboard, profile, repository, code, issue, and pull request screens closely match the supplied GitHub dark mode references while preserving existing ForkMesh data flows.
++
++**Architecture:** Keep the current static dashboard architecture.
++Author source changes in dashboard partials and JS fragments, then rebuild generated assets with `tools/build_dashboard_assets.py`.
++Preserve existing data attributes and route functions wherever possible so event delegation and live mirror behavior keep working.
++
++**Tech Stack:** Cloudflare Worker static assets, Python build script, Tailwind CDN classes in authored HTML, vanilla JavaScript dashboard fragments, pytest static contract tests, browser visual verification.
++
++---
++
++## File Structure
++
++Modify `public/dashboard/shell.html` for GitHub dark design tokens, global drawer CSS, app-level responsive rules, and common utility classes.
++
++Modify `public/dashboard/partials/header.html` for the GitHub-like global top bar.
++
++Modify `public/dashboard/partials/sidebar.html` for the hamburger-only off-canvas navigation drawer.
++
++Modify `public/dashboard/partials/main.html` for Dashboard Home, Profile Overview, Profile Repositories, Repositories, Profile Settings, Network, Chat, and Explore view containers.
++
++Modify `public/dashboard/js/01-state.js` for section state, profile tab state, mock fixture helpers, and route constants if needed.
++
++Modify `public/dashboard/js/04-account.js` for section routing, drawer behavior, avatar-to-settings behavior, and profile rendering hooks.
++
++Modify `public/dashboard/js/05-repo-list-explorer.js` for GitHub-like repository cards, profile repository rows, sidebar top repository rows, and repository list filtering.
++
++Modify `public/dashboard/js/06-repo-content.js` for tree rows, blob viewer, issues list, pull list, issue detail, pull detail, conversation cards, and diff shell styling.
++
++Modify `public/dashboard/js/07-repo-compose-branch.js` for branch controls, issue composer placement, repo collection toolbar, commits, releases, insights, mirrors, and agents panel styling.
++
++Modify `public/dashboard/js/08-repo-detail-network.js` for repository header, repo tabs, code layout, About rail, route restoration, event handlers, dashboard home rendering hooks, and network rail styling.
++
++Modify tests in `tests/test_dashboard_landing_migration.py`, `tests/test_dashboard_bundle.py`, `tests/test_issue_filter_frontend.py`, and `tests/test_mirror_serving_frontend.py`.
++
++Rebuild generated `public/dashboard/index.html`, `public/dashboard.html`, and `public/dashboard.js` with `python tools/build_dashboard_assets.py`.
++
++Do not manually edit generated dashboard assets except through the build output.
++
++---
++
++### Task 1: Shell Theme And Hamburger-Only Drawer
++
++**Files:**
++- Modify: `public/dashboard/shell.html`
++- Modify: `public/dashboard/partials/header.html`
++- Modify: `public/dashboard/partials/sidebar.html`
++- Modify: `public/dashboard/js/04-account.js`
++- Modify: `public/dashboard/js/08-repo-detail-network.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Generated: `public/dashboard/index.html`
++- Generated: `public/dashboard.html`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Update the failing shell contract**
++
++Add or replace a test in `tests/test_dashboard_landing_migration.py` that pins the new GitHub-like shell.
++
++```python
++def test_dashboard_uses_github_like_global_shell_and_hamburger_drawer():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++
++    assert dashboard == _read(PUBLIC / "dashboard.html")
++    assert "--dashboard-background-rgb: 13 17 23" in dashboard
++    assert "--dashboard-header-rgb: 1 4 9" in dashboard
++    assert "--dashboard-border-rgb: 48 54 61" in dashboard
++    assert "data-global-search" in dashboard
++    assert "data-sidebar-top-repositories" in dashboard
++    assert "data-dashboard-sidebar" in dashboard
++    assert "data-mobile-menu-toggle" in dashboard
++    assert "lg:hidden" not in dashboard[
++        dashboard.index("data-mobile-menu-toggle") - 240:
++        dashboard.index("data-mobile-menu-toggle") + 480
++    ]
++    assert "lg:flex" not in dashboard[
++        dashboard.index("data-dashboard-sidebar") - 240:
++        dashboard.index("data-dashboard-sidebar") + 480
++    ]
++    assert "function setMobileSidebarOpen(open)" in dashboard_js
++    assert "matchMedia(\"(min-width: 1024px)\")" not in dashboard_js
++```
++
++- [ ] **Step 2: Run the shell contract and verify it fails**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_uses_github_like_global_shell_and_hamburger_drawer -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++The failure should mention missing GitHub-like tokens or the old responsive sidebar classes.
++
++- [ ] **Step 3: Update dashboard design tokens**
++
++In `public/dashboard/shell.html`, update the `:root, [data-dashboard-theme="dark"]` variables to GitHub-like dark values.
++
++Add these variables in the dark block.
++
++```css
++--dashboard-header-rgb: 1 4 9;
++--dashboard-background-rgb: 13 17 23;
++--dashboard-foreground-rgb: 240 246 252;
++--dashboard-card-rgb: 22 27 34;
++--dashboard-card-foreground-rgb: 240 246 252;
++--dashboard-popover-rgb: 22 27 34;
++--dashboard-popover-foreground-rgb: 240 246 252;
++--dashboard-primary-rgb: 35 134 54;
++--dashboard-primary-foreground-rgb: 255 255 255;
++--dashboard-secondary-rgb: 33 38 45;
++--dashboard-secondary-foreground-rgb: 201 209 217;
++--dashboard-muted-rgb: 22 27 34;
++--dashboard-muted-foreground-rgb: 139 148 158;
++--dashboard-accent-rgb: 88 166 255;
++--dashboard-accent-foreground-rgb: 255 255 255;
++--dashboard-destructive-rgb: 248 81 73;
++--dashboard-border-rgb: 48 54 61;
++--dashboard-ring-rgb: 88 166 255;
++--dashboard-scrollbar-rgb: 139 148 158;
++--dashboard-link: #58a6ff;
++--dashboard-link-hover: #79c0ff;
++--background: #0d1117;
++--foreground: #f0f6fc;
++--card: #161b22;
++--primary: #238636;
++--primary-foreground: #ffffff;
++--secondary: #21262d;
++--muted-foreground: #8b949e;
++--border: rgb(var(--dashboard-border-rgb));
++```
++
++Update `body` and `[data-dashboard-root]` background usage so the top header can use `rgb(var(--dashboard-header-rgb))`.
++
++- [ ] **Step 4: Make the header GitHub-like**
++
++In `public/dashboard/partials/header.html`, replace the current centered nav header with a GitHub-like header.
++
++Keep these required targets:
++
++```html
++data-app-header
++data-mobile-menu-toggle
++data-global-search
++notificationToggle
++notificationDropdown
++data-profile-settings-button
++data-dashboard-profile-avatar
++data-dashboard-profile-avatar-image
++data-dashboard-profile-name
++data-guest-auth-link
++data-admin-button
++```
++
++Use icon-only buttons with labels for compact actions.
++
++The hamburger button must not be `lg:hidden`.
++
++The profile avatar button must continue to be `data-profile-settings-button`.
++
++- [ ] **Step 5: Convert sidebar to all-viewport drawer**
++
++In `public/dashboard/partials/sidebar.html`, remove the desktop persistent sidebar structure.
++
++The root aside should keep `id="dashboardSidebar"` and `data-dashboard-sidebar`.
++
++It should include:
++
++```html
++data-sidebar-main-menu
++data-sidebar-top-repositories
++data-sidebar-repo-count
++data-sidebar-repo-list
++```
++
++Add buttons or links for Dashboard, Profile, Repositories, Network, Chat, Docs, and Blog.
++
++The top repositories list must keep `data-dashboard-open-repo` buttons rendered from JavaScript.
++
++- [ ] **Step 6: Update drawer CSS**
++
++In `public/dashboard/shell.html`, change drawer CSS so `[data-dashboard-sidebar]` is fixed and translated off-screen by default on every viewport.
++
++Use this behavior:
++
++```css
++[data-dashboard-sidebar] {
++  position: fixed;
++  inset: 0 auto 0 0;
++  z-index: 70;
++  width: min(20rem, calc(100vw - 2rem));
++  transform: translateX(-100%);
++  transition: transform 180ms ease;
++}
++
++body.dashboard-sidebar-open [data-dashboard-sidebar] {
++  transform: translateX(0);
++}
++```
++
++Remove the desktop rule that closes mobile drawers on `matchMedia("(min-width: 1024px)")`.
++
++- [ ] **Step 7: Update drawer JavaScript**
++
++In `public/dashboard/js/04-account.js`, remove `dashboardDesktopMedia`, `closeDrawersOnDesktopChange`, and related `matchMedia` listener code.
++
++Keep `setMobileSidebarOpen`, `setMobileNetworkOpen`, and `closeMobileDrawers`.
++
++Ensure `setMobileSidebarOpen(true)` still closes the network drawer.
++
++- [ ] **Step 8: Rebuild dashboard assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++Expected result:
++
++```text
++Built dashboard assets: dashboard/index.html, dashboard.html, dashboard.js
++```
++
++or:
++
++```text
++Dashboard assets are up to date.
++```
++
++- [ ] **Step 9: Run shell tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_uses_github_like_global_shell_and_hamburger_drawer tests/test_dashboard_bundle.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 10: Commit**
++
++```bash
++git add public/dashboard/shell.html public/dashboard/partials/header.html public/dashboard/partials/sidebar.html public/dashboard/js/04-account.js public/dashboard/js/08-repo-detail-network.js public/dashboard/index.html public/dashboard.html public/dashboard.js tests/test_dashboard_landing_migration.py
++git commit -m "feat: add github-like dashboard shell"
++```
++
++---
++
++### Task 2: Dashboard Home And Profile Pages
++
++**Files:**
++- Modify: `public/dashboard/partials/main.html`
++- Modify: `public/dashboard/js/01-state.js`
++- Modify: `public/dashboard/js/04-account.js`
++- Modify: `public/dashboard/js/05-repo-list-explorer.js`
++- Modify: `public/dashboard/js/08-repo-detail-network.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Generated: `public/dashboard/index.html`
++- Generated: `public/dashboard.html`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Write the failing home/profile contract**
++
++Add this test to `tests/test_dashboard_landing_migration.py`.
++
++```python
++def test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories():
++    dashboard = _read(PUBLIC / "dashboard" / "index.html")
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++    visible = _strip_html_comments(dashboard)
++
++    assert 'data-view="home" class="view active' in visible
++    assert 'data-view="repos" class="view active' not in visible
++    assert 'data-view="profile-overview"' in dashboard
++    assert 'data-view="profile-repositories"' in dashboard
++    assert 'data-profile-tabs' in dashboard
++    assert 'data-profile-repo-search' in dashboard
++    assert 'data-home-feed' in dashboard
++    assert 'data-home-top-repositories' in dashboard
++    assert 'data-home-right-rail' in dashboard
++    assert 'const SECTION_ROUTES = ["home", "profile-overview", "profile-repositories", "repos", "network", "profile", "chat"]' in dashboard_js
++    assert 'showSection(requestedSection() || "home", { push: false })' in dashboard_js
++```
++
++- [ ] **Step 2: Run the test and verify it fails**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++- [ ] **Step 3: Promote Home to the default**
++
++In `public/dashboard/partials/main.html`, uncomment or replace the hidden Home section.
++
++Set Home as:
++
++```html
++<section data-view="home" class="view active h-full overflow-y-auto">
++```
++
++Set Repositories as:
++
++```html
++<section data-view="repos" class="view h-full overflow-y-auto">
++```
++
++Create home subsections with these data targets:
++
++```html
++data-home-top-repositories
++data-home-feed
++data-home-right-rail
++```
++
++- [ ] **Step 4: Add Profile Overview and Profile Repositories views**
++
++In `public/dashboard/partials/main.html`, add separate sections:
++
++```html
++<section data-view="profile-overview" class="view h-full overflow-y-auto">
++```
++
++and:
++
++```html
++<section data-view="profile-repositories" class="view h-full overflow-y-auto">
++```
++
++Both sections should include `data-profile-tabs`.
++
++Profile Overview should include:
++
++```html
++data-profile-overview-card
++data-profile-readme-panel
++data-profile-contribution-grid
++data-profile-activity-list
++```
++
++Profile Repositories should include:
++
++```html
++data-profile-repo-search
++data-profile-repo-list
++data-profile-repo-type-filter
++data-profile-repo-language-filter
++data-profile-repo-sort-filter
++```
++
++- [ ] **Step 5: Update top-level section routes**
++
++In `public/dashboard/js/04-account.js`, set:
++
++```javascript
++const SECTION_ROUTES = ["home", "profile-overview", "profile-repositories", "repos", "network", "profile", "chat"];
++```
++
++Update `sectionUrl(section)` so `home` maps to `/dashboard`, `profile-overview` maps to `/dashboard?section=profile-overview`, and `profile-repositories` maps to `/dashboard?section=profile-repositories`.
++
++Update dashboard initialization in `public/dashboard/js/08-repo-detail-network.js` to default to `home`.
++
++- [ ] **Step 6: Render home repositories and profile repositories**
++
++In `public/dashboard/js/05-repo-list-explorer.js`, add helpers:
++
++```javascript
++function renderHomeRepositories() {
++  const container = $("[data-home-top-repositories]");
++  if (!container) return;
++  const groups = groupRepositories(state.repositories || []).slice(0, 8);
++  container.innerHTML = groups.length
++    ? groups.map((group) => {
++        const repo = sourceOfTruth(group);
++        const key = repoKey(repo);
++        return `<button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-secondary">
++          <span class="h-5 w-5 shrink-0 rounded-full bg-secondary"></span>
++          <span class="min-w-0 truncate text-foreground">${escapeHtml(key)}</span>
++        </button>`;
++      }).join("")
++    : '<div class="px-2 py-3 text-sm text-muted-foreground">No repositories yet.</div>';
++}
++
++function renderProfileRepositories() {
++  const container = $("[data-profile-repo-list]");
++  if (!container) return;
++  const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
++  const groups = groupRepositories(state.repositories || [])
++    .filter((group) => repositoryMatchesQuery(sourceOfTruth(group), query));
++  container.innerHTML = groups.length
++    ? groups.map((group) => profileRepositoryRow(group)).join("")
++    : '<div class="rounded-md border border-border px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
++  window.lucide?.createIcons();
++}
++```
++
++Call `renderHomeRepositories()` and `renderProfileRepositories()` from `renderRepositories`.
++
++- [ ] **Step 7: Rebuild assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 8: Run focused tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories tests/test_dashboard_bundle.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 9: Commit**
++
++```bash
++git add public/dashboard/partials/main.html public/dashboard/js/01-state.js public/dashboard/js/04-account.js public/dashboard/js/05-repo-list-explorer.js public/dashboard/js/08-repo-detail-network.js public/dashboard/index.html public/dashboard.html public/dashboard.js tests/test_dashboard_landing_migration.py
++git commit -m "feat: add github-like dashboard and profile views"
++```
++
++---
++
++### Task 3: GitHub-Like Repository Cards And Profile Repository Rows
++
++**Files:**
++- Modify: `public/dashboard/js/05-repo-list-explorer.js`
++- Modify: `public/dashboard/js/08-repo-detail-network.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Write the failing repository card contract**
++
++Add this test to `tests/test_dashboard_landing_migration.py`.
++
++```python
++def test_repository_cards_and_profile_rows_match_github_repository_lists():
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++    assert "function profileRepositoryRow(group)" in dashboard_js
++    assert "data-profile-repository-row" in dashboard_js
++    assert "data-repo-star-button" in dashboard_js
++    assert "data-repo-language-dot" in dashboard_js
++    assert "data-repo-activity-sparkline" in dashboard_js
++    assert "Find a repository..." in dashboard_js
++    assert "Type" in dashboard_js
++    assert "Language" in dashboard_js
++    assert "Sort" in dashboard_js
++```
++
++- [ ] **Step 2: Run the test and verify it fails**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_repository_cards_and_profile_rows_match_github_repository_lists -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++- [ ] **Step 3: Add deterministic mock helpers**
++
++In `public/dashboard/js/05-repo-list-explorer.js`, add:
++
++```javascript
++function stableMockNumber(seed, min, max) {
++  const text = String(seed || "forkmesh");
++  let hash = 0;
++  for (let index = 0; index < text.length; index += 1) {
++    hash = ((hash << 5) - hash) + text.charCodeAt(index);
++    hash |= 0;
++  }
++  const span = Math.max(1, max - min + 1);
++  return min + (Math.abs(hash) % span);
++}
++
++function repoLanguage(repo) {
++  return String(repo.language || repo.primaryLanguage || repo.stack || "TypeScript");
++}
++
++function repoLicense(repo) {
++  return String(repo.license || repo.licenseName || "MIT License");
++}
++```
++
++- [ ] **Step 4: Replace repositoryCard markup**
++
++Rewrite `repositoryCard(group)` to use GitHub-like rows.
++
++Keep these attributes:
++
++```html
++data-dashboard-open-repo
++data-repo
++data-clone-url
++role="link"
++tabindex="0"
++```
++
++Add these targets:
++
++```html
++data-repo-star-button
++data-repo-language-dot
++data-repo-activity-sparkline
++```
++
++- [ ] **Step 5: Add profileRepositoryRow**
++
++Add `profileRepositoryRow(group)` near `repositoryCard(group)`.
++
++It should render a wide profile list row with repository name, visibility, source line, description, topics, language, license, updated date, Star button, and sparkline.
++
++- [ ] **Step 6: Rebuild assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 7: Run tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_repository_cards_and_profile_rows_match_github_repository_lists tests/test_dashboard_landing_migration.py::test_dashboard_repository_cards_are_clickable_metric_summaries -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add public/dashboard/js/05-repo-list-explorer.js public/dashboard/js/08-repo-detail-network.js public/dashboard.js tests/test_dashboard_landing_migration.py
++git commit -m "feat: restyle repository lists like github"
++```
++
++---
++
++### Task 4: Repository Code Page, Folder Explorer, And Blob Viewer
++
++**Files:**
++- Modify: `public/dashboard/js/06-repo-content.js`
++- Modify: `public/dashboard/js/07-repo-compose-branch.js`
++- Modify: `public/dashboard/js/08-repo-detail-network.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Modify: `tests/test_mirror_serving_frontend.py`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Write the failing repo code contract**
++
++Add this test to `tests/test_dashboard_landing_migration.py`.
++
++```python
++def test_repository_code_page_matches_github_code_layout():
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++    render = dashboard_js[
++        dashboard_js.index("function renderRepoDetail")
++        : dashboard_js.index("function findRepository")
++    ]
++    assert "data-repo-github-header" in render
++    assert "data-repo-action-watch" in render
++    assert "data-repo-action-fork" in render
++    assert "data-repo-action-star" in render
++    assert "data-repo-code-sidebar" in render
++    assert "data-repo-file-table" in render
++    assert "data-repo-about-rail" in render
++    assert "Watch" in render
++    assert "Fork" in render
++    assert "Star" in render
++    assert "Add file" in render
++    assert ">Code<" in render
++```
++
++- [ ] **Step 2: Run and verify failure**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_repository_code_page_matches_github_code_layout -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++- [ ] **Step 3: Rewrite renderRepoDetail shell**
++
++In `public/dashboard/js/08-repo-detail-network.js`, rewrite the root repository template to include:
++
++```html
++data-repo-github-header
++data-repo-action-watch
++data-repo-action-fork
++data-repo-action-star
++data-repo-code-sidebar
++data-repo-file-table
++data-repo-about-rail
++```
++
++Keep all existing tab button data attributes:
++
++```html
++data-dashboard-repo-tab
++data-dashboard-repo-tab-count
++data-dashboard-repo-tab-panel
++```
++
++Keep existing live targets:
++
++```html
++data-repo-tree
++data-repo-blob
++data-repo-readme
++data-repo-commit-summary
++data-repo-breadcrumb
++data-repo-served-by
++data-repo-live-mirror-list
++```
++
++- [ ] **Step 4: Restyle tree rows**
++
++In `public/dashboard/js/06-repo-content.js`, update `loadRepositoryTree` row markup to GitHub-like table rows.
++
++Rows must show icon, name, last commit message, and last commit date.
++
++Keep click targets:
++
++```html
++data-dashboard-tree-path
++data-dashboard-blob-path
++```
++
++- [ ] **Step 5: Restyle blob viewer**
++
++In `public/dashboard/js/06-repo-content.js`, update `loadRepositoryBlob` so `data-repo-file-shell` matches GitHub file viewer styling.
++
++Keep:
++
++```html
++data-repo-file-mode
++data-repo-file-action
++data-repo-file-content
++```
++
++- [ ] **Step 6: Rebuild assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 7: Run repo tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_repository_code_page_matches_github_code_layout tests/test_dashboard_landing_migration.py::test_dashboard_repository_detail_keeps_code_comments_issues_shell tests/test_mirror_serving_frontend.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add public/dashboard/js/06-repo-content.js public/dashboard/js/07-repo-compose-branch.js public/dashboard/js/08-repo-detail-network.js public/dashboard.js tests/test_dashboard_landing_migration.py tests/test_mirror_serving_frontend.py
++git commit -m "feat: restyle repository code view like github"
++```
++
++---
++
++### Task 5: Issues And Pull Request Lists
++
++**Files:**
++- Modify: `public/dashboard/js/06-repo-content.js`
++- Modify: `public/dashboard/js/07-repo-compose-branch.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Modify: `tests/test_issue_filter_frontend.py`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Update list contracts**
++
++Replace the old "without create buttons" assertion with this test in `tests/test_dashboard_landing_migration.py`.
++
++```python
++def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++    assert "function renderRepoCollectionPanel(kind, repo, openCount, closedCount)" in dashboard_js
++    assert 'data-repo-collection-sidebar="${kind}"' in dashboard_js
++    assert 'data-repo-collection-toolbar="${kind}"' in dashboard_js
++    assert 'data-repo-filter-query="${kind}"' in dashboard_js
++    assert "New issue" in dashboard_js
++    assert "New pull request" in dashboard_js
++    for marker in ("Assigned to me", "Created by me", "Mentioned", "Recent activity", "Views", "Projects", "Milestones", "Labels"):
++        assert marker in dashboard_js
++    for marker in ("Author", "Labels", "Projects", "Milestones", "Assignees", "Sort", "Reviews"):
++        assert marker in dashboard_js
++```
++
++- [ ] **Step 2: Run and verify failure**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_repository_issue_and_pull_tabs_match_github_lists -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++- [ ] **Step 3: Rewrite renderRepoCollectionPanel**
++
++In `public/dashboard/js/07-repo-compose-branch.js`, update `renderRepoCollectionPanel(kind, repo, openCount, closedCount)`.
++
++The new panel should include:
++
++```html
++data-repo-collection-sidebar="${kind}"
++data-repo-collection-toolbar="${kind}"
++data-repo-filter-query="${kind}"
++data-repo-${kind}
++```
++
++The Issues panel should include a `data-repo-issue-new` button with text `New issue`.
++
++The Pull requests panel should include a visually present `New pull request` button.
++
++If no pull creation flow exists, mark it disabled and add `aria-disabled="true"`.
++
++- [ ] **Step 4: Restyle record list rows**
++
++In `public/dashboard/js/06-repo-content.js`, update `renderRepoRecordList(items, config, kind)` to GitHub-like issue/PR list rows.
++
++Keep:
++
++```html
++data-repo-record-kind
++data-repo-record-number
++data-repo-record-state
++```
++
++Rows should include a checkbox visual, open icon, title, number, author/date metadata, labels, comments placeholder, and state chip.
++
++- [ ] **Step 5: Preserve issue filtering**
++
++Run:
++
++```bash
++python -m pytest tests/test_issue_filter_frontend.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++If the test fails because strings changed, update only the asserted strings while preserving Open-by-default behavior.
++
++- [ ] **Step 6: Rebuild assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 7: Run list tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_dashboard_repository_issue_and_pull_tabs_match_github_lists tests/test_dashboard_landing_migration.py::test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom tests/test_issue_filter_frontend.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 8: Commit**
++
++```bash
++git add public/dashboard/js/06-repo-content.js public/dashboard/js/07-repo-compose-branch.js public/dashboard.js tests/test_dashboard_landing_migration.py tests/test_issue_filter_frontend.py
++git commit -m "feat: restyle issue and pull request lists"
++```
++
++---
++
++### Task 6: Issue And Pull Request Detail Pages
++
++**Files:**
++- Modify: `public/dashboard/js/06-repo-content.js`
++- Modify: `tests/test_dashboard_landing_migration.py`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Write detail contract**
++
++Add this test to `tests/test_dashboard_landing_migration.py`.
++
++```python
++def test_issue_and_pull_detail_pages_match_github_conversation_layout():
++    dashboard_js = _read(PUBLIC / "dashboard.js")
++    detail = dashboard_js[
++        dashboard_js.index("function renderRepoRecordDetail")
++        : dashboard_js.index("async function loadRepoRecordDetail")
++    ]
++    assert "data-repo-record-hero" in detail
++    assert "data-repo-record-conversation" in detail
++    assert "data-repo-record-sidebar" in detail
++    assert "data-repo-record-tab=\"conversation\"" in detail
++    assert "data-repo-record-tab=\"commits\"" in detail
++    assert "data-repo-record-tab=\"checks\"" in detail
++    assert "data-repo-record-tab=\"files\"" in detail
++    assert "Reviewers" in detail
++    assert "Assignees" in detail
++    assert "Milestone" in detail
++    assert "Notifications" in detail
++    assert "Participants" in detail
++```
++
++- [ ] **Step 2: Run and verify failure**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_issue_and_pull_detail_pages_match_github_conversation_layout -q
++```
++
++Expected result:
++
++```text
++FAILED
++```
++
++- [ ] **Step 3: Rewrite renderRepoRecordDetail**
++
++In `public/dashboard/js/06-repo-content.js`, update `renderRepoRecordDetail(repo, kind, number, parsed)`.
++
++For issues, render:
++
++```html
++data-repo-record-hero
++data-repo-record-conversation
++data-repo-record-sidebar
++```
++
++For pulls, render the same structure plus record tabs:
++
++```html
++data-repo-record-tab="conversation"
++data-repo-record-tab="commits"
++data-repo-record-tab="checks"
++data-repo-record-tab="files"
++```
++
++Keep:
++
++```html
++data-repo-record-detail
++data-repo-record-back
++data-repo-record-body
++data-repo-pull-conversation
++data-repo-pull-files
++data-repo-pull-patch
++```
++
++- [ ] **Step 4: Preserve long diff behavior**
++
++Confirm these markers remain in `public/dashboard.js` after rebuild:
++
++```javascript
++data-show-full-diff
++DASHBOARD_LONG_DIFFS_KEY
++renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)
++```
++
++- [ ] **Step 5: Rebuild assets**
++
++Run:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 6: Run detail tests**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_landing_migration.py::test_issue_and_pull_detail_pages_match_github_conversation_layout tests/test_dashboard_landing_migration.py::test_dashboard_repository_records_open_live_markdown_detail_views tests/test_dashboard_landing_migration.py::test_dashboard_pull_detail_reads_committed_patch_for_files_changed -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 7: Commit**
++
++```bash
++git add public/dashboard/js/06-repo-content.js public/dashboard.js tests/test_dashboard_landing_migration.py
++git commit -m "feat: restyle issue and pull details"
++```
++
++---
++
++### Task 7: Visual Verification And Pixel Polish
++
++**Files:**
++- Modify: any source dashboard partial or JS fragment required by visual findings.
++- Generated: `public/dashboard/index.html`
++- Generated: `public/dashboard.html`
++- Generated: `public/dashboard.js`
++
++- [ ] **Step 1: Start the local Worker or static server**
++
++Use the repo's existing development command if configured.
++
++If no dev command is available, use a simple static server for visual shell checks:
++
++```bash
++python -m http.server 8788 -d public
++```
++
++Expected:
++
++```text
++Serving HTTP on
++```
++
++- [ ] **Step 2: Open desktop viewport**
++
++Open:
++
++```text
++http://127.0.0.1:8788/dashboard/
++```
++
++Verify desktop at approximately `2048x1120`.
++
++Check Dashboard Home, Profile Overview, Profile Repositories, Repositories, Repo Code, Repo Folder, Repo Blob, Issues List, Pull Requests List, Issue Detail, and Pull Request Detail.
++
++- [ ] **Step 3: Open mobile viewport**
++
++Verify at approximately `390x844`.
++
++Check header, hamburger drawer, Dashboard Home, Profile Overview, Repo Code, Issue Detail, and Pull Request Detail.
++
++- [ ] **Step 4: Fix visual issues**
++
++For every visible issue, edit source partials or JS fragments only.
++
++Then rebuild:
++
++```bash
++python tools/build_dashboard_assets.py
++```
++
++- [ ] **Step 5: Run final focused test suite**
++
++Run:
++
++```bash
++python -m pytest tests/test_dashboard_bundle.py tests/test_dashboard_landing_migration.py tests/test_issue_filter_frontend.py tests/test_mirror_serving_frontend.py -q
++```
++
++Expected result:
++
++```text
++passed
++```
++
++- [ ] **Step 6: Commit final polish**
++
++```bash
++git add public/dashboard/shell.html public/dashboard/partials/header.html public/dashboard/partials/sidebar.html public/dashboard/partials/main.html public/dashboard/js public/dashboard/index.html public/dashboard.html public/dashboard.js tests/test_dashboard_landing_migration.py tests/test_issue_filter_frontend.py tests/test_mirror_serving_frontend.py
++git commit -m "fix: polish github-like dashboard responsive layout"
++```
++
++---
++
++## Plan Self-Review
++
++Spec coverage:
++Every approved spec section maps to a task.
++Task 1 covers global shell and sidebar.
++Task 2 covers dashboard home, profile overview, and profile repositories.
++Task 3 covers repository cards and profile repository rows.
++Task 4 covers repo code, folder, file, and About rail.
++Task 5 covers issue and pull list pages.
++Task 6 covers issue and pull detail pages.
++Task 7 covers responsive and visual verification.
++
++Placeholder scan:
++The plan contains no placeholder markers or vague implementation escape hatches.
++
++Type and target consistency:
++The plan preserves existing dashboard targets such as `data-dashboard-open-repo`, `data-dashboard-repo-tab`, `data-repo-tree`, `data-repo-blob`, `data-repo-record-kind`, and `data-repo-record-number`.
++New targets are named consistently with existing dashboard conventions.
++
++Generated asset rule:
++Every task that touches dashboard source files includes a rebuild step.
++Generated files are staged only after the rebuild step.
+diff --git a/cloudflare_worker/docs/superpowers/specs/2026-07-09-github-like-dashboard-redesign-design.md b/cloudflare_worker/docs/superpowers/specs/2026-07-09-github-like-dashboard-redesign-design.md
+new file mode 100644
+index 00000000..5914aecc
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/specs/2026-07-09-github-like-dashboard-redesign-design.md
+@@ -0,0 +1,373 @@
++# GitHub-Like ForkMesh Dashboard Redesign Design
++
++## Goal
++
++Redesign the ForkMesh logged-in web app so the dashboard, profile, repositories, repository detail, code browser, issues, pull requests, and record detail pages feel visually and structurally like GitHub dark mode while keeping ForkMesh identity, live mirror data, agents, and network concepts intact.
++
++The redesign should use real existing data wherever it exists.
++
++Missing product features should appear as polished mocked or disabled GitHub-like interface states so the app feels complete while later backend work can wire them up.
++
++## Scope
++
++This redesign covers the static dashboard shell and the dashboard client bundle in `cloudflare_worker`.
++
++The primary files are `public/dashboard/shell.html`, `public/dashboard/partials/header.html`, `public/dashboard/partials/sidebar.html`, `public/dashboard/partials/main.html`, `public/dashboard/js/05-repo-list-explorer.js`, `public/dashboard/js/06-repo-content.js`, `public/dashboard/js/07-repo-compose-branch.js`, and `public/dashboard/js/08-repo-detail-network.js`.
++
++Generated files `public/dashboard/index.html`, `public/dashboard.html`, and `public/dashboard.js` must be rebuilt with `python tools/build_dashboard_assets.py`.
++
++The design does not require a new framework, new backend endpoints, or a full rewrite.
++
++## Visual Direction
++
++ForkMesh should use a GitHub dark mode visual system.
++
++The page background should use a near-black base similar to `#0d1117` with top chrome near `#010409`.
++
++Panels should use `#161b22`.
++
++Borders should use `#30363d`.
++
++Primary text should use `#f0f6fc`.
++
++Muted text should use `#8b949e`.
++
++Links should use GitHub-like blue such as `#58a6ff`.
++
++Positive actions and open states should use GitHub-like green such as `#238636` and `#2ea043`.
++
++Contribution heatmap colors should follow the GitHub dark green scale.
++
++Cards and panels should keep small radii, usually 6px to 8px.
++
++The app should feel dense, utilitarian, and scan-friendly rather than marketing-oriented.
++
++ForkMesh should keep its own logo and product name.
++
++The UI should not use GitHub brand assets or imply it is GitHub.
++
++## Global Shell
++
++The top header should match GitHub's logged-in app rhythm.
++
++The left side should contain the hamburger button, ForkMesh mark, and a contextual page or repository breadcrumb.
++
++The right side should contain compact search, action icon buttons, notifications, and avatar.
++
++The search can be visually complete before global search is functional.
++
++The hamburger sidebar should be the only way the sidebar opens on desktop and mobile.
++
++There should be no persistent desktop sidebar.
++
++The sidebar should open as an off-canvas drawer from the left with a dark backdrop.
++
++The sidebar should include Dashboard, Profile, Repositories, Network, Chat, Docs, and Blog.
++
++The sidebar should also include a Top repositories section backed by the existing repository catalog.
++
++The avatar button should open the existing profile settings page.
++
++The top header and drawer must avoid horizontal overflow at narrow widths.
++
++## Dashboard Home
++
++Dashboard Home should become the default logged-in dashboard view.
++
++It should follow GitHub's home dashboard layout with a left repository rail, a center activity feed, and a right information rail.
++
++The left rail should show the signed-in user, top repositories, a repository search field, and a New button.
++
++The center column should show a compact prompt/search surface, shortcut pills, alerts, and activity feed cards.
++
++The right rail should show network status, latest ForkMesh updates, mirror/repository suggestions, and optional mocked event cards.
++
++Real data should include repositories, session identity, notifications, and network stats.
++
++Mocked data may include activity feed entries, changelog entries, suggestions, shortcut counts, and event cards.
++
++Mocked blocks should be labeled in code through comments or data attributes, not visible in the app.
++
++## Profile Overview
++
++Profile Overview should match the GitHub profile overview layout.
++
++The left profile column should include avatar, display name, username, pronouns if available, bio, Edit profile button, follower-style stats if available, location or links if available, achievements, and highlights.
++
++The main column should include a README-style profile panel, contribution heatmap, contribution activity, and pinned or recent repositories.
++
++The top profile tabs should include Overview, Repositories, Projects, Packages, and Stars.
++
++Only Overview and Repositories need to be functional in this phase.
++
++Projects, Packages, and Stars can be mocked or visually disabled.
++
++The current hidden home contribution heatmap should be adapted rather than discarded.
++
++The profile settings page should remain the existing settings surface.
++
++Clicking Edit profile or the avatar should route to the existing settings page.
++
++## Profile Repositories
++
++The profile repositories tab should match GitHub's profile repository list.
++
++It should reuse the same profile left column used by Profile Overview.
++
++The sidebar markup, data bindings, and update path should be shared so Overview and Repositories cannot drift.
++
++Only the right-hand content area should differ between the Overview and Repositories tabs.
++
++It should include a repository search field, Type filter, Language filter, Sort filter, and New button.
++
++The repository rows should show name, visibility pill, fork/source line when available, description, topics if available or mocked, language dot, license if available or mocked, updated time, star button, and activity sparkline.
++
++Existing repository catalog data should power names, owner, visibility, description, language where available, updated time, status, and activity.
++
++Missing stars, license, topics, and fork source can be mocked with stable fallback values.
++
++Repository rows should open the repo detail page through the existing `data-dashboard-open-repo` path.
++
++## Repository Header And Tabs
++
++Repository pages should match GitHub's repository header pattern.
++
++The header should show owner, repository name, privacy, and a dropdown affordance.
++
++The repo tab row should include Code, Issues, Pull requests, Agents, Actions, Projects, Wiki, Security and quality, Insights, and Settings.
++
++Tabs backed by existing behavior should be active.
++
++Code, Issues, Pull requests, Agents, Insights, Releases if retained, Mirrors if retained, and Settings should keep current app behavior or route to existing sections.
++
++Actions, Projects, Wiki, and Security and quality can be mocked or disabled if no behavior exists.
++
++Mirror-specific data should remain available, but it should be integrated into GitHub-like places instead of dominating the visual language.
++
++Repo action buttons should follow GitHub button grouping with Watch, Fork, Star, and Code.
++
++Watch, Fork, and Star counts can be mocked.
++
++The Code button should keep the current clone-copy behavior.
++
++## Repository Code View
++
++The default repository detail page should match GitHub's Code tab.
++
++It should include a branch selector, branch/tag summary, Go to file, Add file, and Code button.
++
++The file table should show a latest commit summary row, file/folder rows, last commit message, and last commit date.
++
++The right About rail should include description, link, README, activity, stars/watchers/forks, releases, packages, contributors, languages, and suggested workflows.
++
++Existing data should power live tree entries, blob content, README, latest commit summary, mirror availability, release manifests, language/activity data where available, and contributors where available.
++
++Unavailable sections should render tasteful empty states.
++
++The Code page should stay robust when no live host is available.
++
++It should show a GitHub-like unavailable state instead of a broken panel.
++
++## Repository Folder And File Detail
++
++Opening a folder should switch to a GitHub-like code detail layout with a left file explorer.
++
++The left explorer should include branch selector, Go to file, and the tree.
++
++The main content should include breadcrumbs, latest commit row, and a file table for the folder.
++
++Opening a file should keep the explorer and show a GitHub-like file viewer.
++
++The file viewer should include Code and Blame controls, line count, size, Raw, copy, download, and fullscreen actions.
++
++Existing blob and tree APIs should continue to power this.
++
++The layout must collapse gracefully on mobile by hiding the explorer behind a compact file panel or drawer.
++
++## Issues List
++
++The Issues tab should match GitHub's issue list page.
++
++It should include a left issue sidebar with Issues, Assigned to me, Created by me, Mentioned, Recent activity, Views, Projects, Milestones, and Labels.
++
++It should include a search field defaulting to `is:issue state:open`.
++
++It should include a New issue button.
++
++It should include Open and Closed counts, a row checkbox column, and filter menus for Author, Labels, Projects, Milestones, Assignees, and Sort.
++
++Existing issue data should power title, number, state, author, date, body preview, labels where present, and counts.
++
++The existing new issue flow should be reused if it is currently available.
++
++If the flow is unavailable in a specific state, the button should be visually present but route to sign-in or show a disabled/mock affordance.
++
++The current Open-by-default behavior must remain.
++
++## Pull Requests List
++
++The Pull requests tab should match GitHub's pull request list page.
++
++It should include an optional first-time contributor banner.
++
++It should include Filters, search defaulting to `is:pr is:open`, Labels, Milestones, and New pull request.
++
++It should include Open and Closed counts, and filters for Author, Label, Projects, Milestones, Reviews, Assignee, and Sort.
++
++Existing pull data should power title, number, state, author, date, base/head if available, body preview, patch metadata, and counts.
++
++New pull request can be mocked or disabled if no creation flow exists.
++
++Review/check status, labels, and comments can be mocked until backend data exists.
++
++## Issue Detail
++
++Issue detail should match GitHub's issue conversation layout.
++
++The title should be large, with the issue number muted beside it.
++
++The state badge should be green for Open and muted for Closed.
++
++The main column should contain a conversation card with avatar, author, timestamp, contributor badge, menu affordance, and Markdown body.
++
++The right rail should include Assignees, Labels, Type, Fields, Projects, Milestone, Relationships, Development, Notifications, and Participants.
++
++Existing issue detail data should power title, number, state, author, date, body, and labels where present.
++
++Unavailable metadata should render as "No one assigned", "No labels", or equivalent GitHub-like empty text.
++
++The Back control should remain available but should be visually secondary.
++
++## Pull Request Detail
++
++Pull request detail should match GitHub's PR conversation layout.
++
++The title should be large, with PR number muted beside it.
++
++The merge summary line should include an Open badge, author, base branch chip, and head branch chip.
++
++The tab row should include Conversation, Commits, Checks, and Files changed.
++
++Conversation should show the PR body and conversation events.
++
++Files changed should show the existing committed patch summary and diff blocks.
++
++Commits and Checks can be mocked if only partial data exists.
++
++The right rail should include Reviewers, Assignees, Labels, Projects, Milestone, Development, Notifications, and Participants.
++
++Existing PR data should power body, base/head, conversation events, patch files, and diff.
++
++Diff rendering must preserve the existing long diff safety behavior.
++
++## Data And Mocking Rules
++
++Real existing data should always win over mocks.
++
++Mocks should be deterministic and derived from stable repository or session identifiers when possible.
++
++Mocked values should not claim real external activity.
++
++Mocked values should be visibly plausible but generic.
++
++Examples include default star counts, watcher counts, license text, topics, empty metadata rails, and placeholder changelog cards.
++
++Mocked UI should be easy to replace when backend fields arrive.
++
++## Routing
++
++The dashboard should default to Dashboard Home for signed-in users.
++
++Public or guest repository browsing should still work.
++
++Repository routes such as `/owner/repo`, `/owner/repo/issues`, `/owner/repo/pulls`, `/owner/repo/tree/path`, and `/owner/repo/blob/path` should continue to restore the intended tab or file path on refresh.
++
++The profile settings page should remain available through the avatar.
++
++Profile Overview and Profile Repositories should have durable section URLs.
++
++Back and Forward should continue to work across top-level sections, repo tabs, folder navigation, blob navigation, and issue or PR detail where currently supported.
++
++## Accessibility
++
++All icon-only buttons need accessible labels.
++
++The hamburger and drawers must keep `aria-expanded` current.
++
++Tabs must keep role and selected state semantics.
++
++Search inputs need clear labels or contextual placeholder text.
++
++Keyboard navigation should still support Enter and Escape where current behavior exists.
++
++Color should not be the only state indicator for open, closed, private, public, or live host status.
++
++## Responsive Behavior
++
++The app must avoid horizontal overflow at desktop, tablet, and mobile widths.
++
++Long repository names, branch names, paths, labels, and issue titles must truncate or wrap intentionally.
++
++The global sidebar should become a full-height drawer on all viewports.
++
++Profile and repo sidebars should stack below primary content on small screens.
++
++Repository file explorer should collapse on small screens.
++
++Issue and PR metadata rails should stack below conversation content on small screens.
++
++## Testing Strategy
++
++Static contract tests should be updated for the new default dashboard section, visible profile overview, hamburger-only sidebar, repo tabs, issue list, pull list, and detail shells.
++
++Existing tests that assert Home is hidden or Repositories is default must be updated.
++
++Existing tests that assert New issue and New pull request are absent must be updated.
++
++Focused tests should cover dashboard shell composition, dashboard JS composition, dashboard routing, repo detail contracts, issue filters, pull detail patch rendering, commit detail rendering, and mobile drawer markers.
++
++After implementation, run `python tools/build_dashboard_assets.py`.
++
++Then run focused pytest commands for dashboard shell, dashboard bundle, dashboard landing migration, issue filter frontend, mirror serving frontend, and any touched repo record tests.
++
++Visual verification should use a browser at desktop and mobile widths for Dashboard Home, Profile Overview, Profile Repositories, Repo Code, Repo Folder, Repo Blob, Issues List, Pull Requests List, Issue Detail, and Pull Request Detail.
++
++## Out Of Scope
++
++This phase does not add a real global search backend.
++
++This phase does not add real stars, watchers, forks, projects, packages, wiki, checks, or GitHub-style security data.
++
++This phase does not change repository storage, issue storage, pull storage, mirror routing, clone routing, or notification backend behavior.
++
++This phase does not redesign public marketing pages.
++
++## Risks
++
++The dashboard JavaScript is large and string-rendered, so large template edits can break subtle event bindings.
++
++The implementation should preserve existing data attributes wherever possible.
++
++The generated dashboard assets must not be edited directly without updating source partials or fragments.
++
++Some current tests assert exact strings in templates, so contract updates should be deliberate and scoped.
++
++The repository pages depend on live desktop hosts for tree, blob, issue, and PR data, so unavailable-host states must look intentional.
++
++## Acceptance Criteria
++
++The dashboard, profile, repositories, repo code, repo folder, repo blob, issues, pull requests, issue detail, and pull request detail pages visually match the supplied GitHub dark mode references closely.
++
++The app keeps ForkMesh branding and product-specific concepts.
++
++The sidebar opens only from the hamburger button.
++
++The avatar opens the existing profile settings page.
++
++Existing real repository browsing, issue loading, pull loading, diff rendering, release loading, mirror health, agents, notifications, chat, and network behavior remain functional.
++
++Mocked and unavailable features render as polished GitHub-like states.
++
++No page has horizontal overflow at common desktop or mobile viewport widths.
++
++Focused tests pass after generated dashboard assets are rebuilt.
+-- 
+2.50.1 (Apple Git-155)
+
