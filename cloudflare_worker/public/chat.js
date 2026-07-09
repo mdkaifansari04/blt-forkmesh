@@ -1,7 +1,13 @@
 // Browser-side ForkMesh room chat. Reimplements the desktop client's room
 // crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
-// the public encrypted "general" room and talk to connected clients. The relay
-// only ever sees ciphertext.
+// the public encrypted rooms and talk to connected clients. The relay only
+// ever sees ciphertext.
+//
+// Layout: rooms on the left (channels multiplex over the ONE "general" room
+// socket via each message's `channel` field, exactly like the desktop),
+// conversation in the middle (ts-ordered, newest at the bottom, avatars +
+// timestamps + reactions), people on the right (roster built from hello/
+// presence/chat frames, online = seen within the desktop's 3-minute window).
 
 const ROOM_NAME = "general";
 // Baked-in app key for the passphrase-free shared rooms. MUST stay byte-for-byte
@@ -9,7 +15,7 @@ const ROOM_NAME = "general";
 // Flutter app's _appRoomKey (room_crypto.dart); the PBKDF2 password is what binds
 // every client to the same AES key, so a mismatch silently drops all messages.
 const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
-const CHANNEL = "#general";
+const DEFAULT_CHANNELS = ["#general", "#welcome-users", "#welcome-nodes"];
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
@@ -23,6 +29,15 @@ const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
 const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
+// Presence cadence + staleness mirror the desktop node (ServerNode.cpp:
+// kPresenceIntervalMs / kPeerStaleMs). The beat doubles as the keep-alive the
+// relay's room DO needs — it closes sockets with no frames for 3 minutes, which
+// is why the old web client (which sent nothing while idle) kept disconnecting.
+const PRESENCE_INTERVAL_MS = 60000;
+const PEER_STALE_MS = 180000;
+const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
+const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
+const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
 
 const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
@@ -30,6 +45,10 @@ const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
 const clearBtn = document.querySelector("#chat-clear");
 const statusEl = document.querySelector("#chat-status");
+const roomsEl = document.querySelector("#chat-rooms");
+const peopleEl = document.querySelector("#chat-people");
+const peopleTitleEl = document.querySelector("#chat-people-title");
+const channelTitleEl = document.querySelector("#chat-channel-title");
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -42,25 +61,49 @@ let socket = null;
 let connecting = false;
 let openCallbacks = [];
 let cachedUserSession = null;
+let reconnectDelayMs = 2000;
+let reconnectTimer = null;
 const seen = new Set();
-// messageId -> { el, senderId } for messages currently on screen, so an edit or
-// a (regular / admin) delete can find and update or remove the right row.
+// messageId -> message record { id, channel, ts, senderId, sender, text, self,
+// el, body, reactionsEl }. `el`/`body` reference the on-screen row while the
+// record's channel is the active one, so an edit or a (regular / admin) delete
+// can find and update or remove the right row.
 const rows = new Map();
-// Rolling buffer of the most recent decrypted messages, forwarded to ForkBot so
-// it can resolve references like "that bug" from the conversation. The room is
-// end-to-end encrypted, so the relay only ever sees what we choose to send here.
-const recentContext = [];
+// channel -> ts-ordered array of message records (newest last).
+const channelMessages = new Map();
+// channel -> { unread } for the rooms list badges.
+const channelMeta = new Map();
+// messageId -> Map(emoji -> Map(reactorId -> reactorName)); same shape as the
+// desktop's m_reactions so toggles converge across clients.
+const reactions = new Map();
+// senderId -> { id, name, kind: "user"|"bot"|"node", lastSeenMs } built from
+// every decrypted frame; drives the right-hand people pane.
+const roster = new Map();
+let activeChannel = DEFAULT_CHANNELS[0];
+try {
+  const saved = localStorage.getItem(ACTIVE_CHANNEL_KEY);
+  if (saved && saved.startsWith("#")) activeChannel = saved;
+} catch (_) {}
+// Rolling per-channel buffer of the most recent decrypted messages, forwarded
+// to ForkBot so it can resolve references like "that bug" from the
+// conversation. The room is end-to-end encrypted, so the relay only ever sees
+// what we choose to send here.
+const recentContext = new Map(); // channel -> [{sender, text}]
 const RECENT_CONTEXT_MAX = 20;
-function rememberContext(sender, text) {
+function rememberContext(channel, sender, text) {
   const clean = String(text || "").trim();
   if (!clean) return;
-  recentContext.push({ sender: String(sender || "").slice(0, MAX_NAME), text: clean });
-  if (recentContext.length > RECENT_CONTEXT_MAX) recentContext.shift();
+  const list = recentContext.get(channel) || [];
+  recentContext.set(channel, list);
+  list.push({ sender: String(sender || "").slice(0, MAX_NAME), text: clean });
+  if (list.length > RECENT_CONTEXT_MAX) list.shift();
 }
 const mentionProfileCache = new Map();
 let mentionCardEl = null;
 let activeMentionAnchor = null;
 let mentionHideTimer = null;
+let emojiPickerEl = null;
+let emojiPickerTarget = null;
 
 // ---- base64 <-> bytes -------------------------------------------------------
 
@@ -172,7 +215,7 @@ async function decryptObject(envelope) {
   }
 }
 
-// ---- UI ---------------------------------------------------------------------
+// ---- session ----------------------------------------------------------------
 
 function readSession() {
   try {
@@ -286,6 +329,51 @@ function clearEmpty() {
   const empty = logEl.querySelector(".chat-empty");
   if (empty) empty.remove();
 }
+
+// ---- avatars ------------------------------------------------------------------
+
+const AVATAR_COLORS = [
+  "#4f7ddb", "#8250df", "#bf3989", "#cf222e",
+  "#bc4c00", "#4d7c0f", "#1f883d", "#0f766e",
+];
+
+function avatarColor(name) {
+  const key = String(name || "").toLowerCase();
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
+
+// Letter avatar immediately; asynchronously swapped for the account's uploaded
+// avatarPng when the profile has one (user accounts only — fetchMentionProfile
+// resolves null for nodes, which keep the letter).
+function makeAvatar(name, kind) {
+  const el = document.createElement("div");
+  el.className = "chat-avatar";
+  const display = String(name || "?").trim() || "?";
+  el.style.background = avatarColor(display);
+  el.textContent = kind === "bot" ? "🤖" : display.charAt(0).toUpperCase();
+  if (kind !== "bot") {
+    fetchMentionProfile(display).then((profile) => {
+      const png = profile && profile.avatarPng;
+      if (!png) return;
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = png.startsWith("data:") ? png : "data:image/png;base64," + png;
+      el.textContent = "";
+      el.style.background = "transparent";
+      el.append(img);
+    });
+  }
+  return el;
+}
+
+function fmtTime(ts) {
+  const date = new Date(Number(ts) || Date.now());
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ---- mentions -----------------------------------------------------------------
 
 function mentionName(value) {
   return String(value || "").trim().toLowerCase();
@@ -413,23 +501,549 @@ function renderMessageText(container, text) {
   appendMentionText(container, text);
 }
 
-function appendMessage(kind, who, text, id, senderId) {
-  clearEmpty();
+// ---- @mention autocomplete -----------------------------------------------------
+// Typing "@" (plus an optional partial name) in the composer pops a suggestion
+// list built from the roster; Tab (or Enter / click) accepts the highlighted
+// name, arrows move, Escape dismisses.
+
+let mentionSuggestEl = null;
+// null when closed, else { items, index, start, end } where start/end bound the
+// "@partial" token in the input's value.
+let mentionSuggest = null;
+
+function ensureMentionSuggest() {
+  if (mentionSuggestEl) return mentionSuggestEl;
+  mentionSuggestEl = document.createElement("div");
+  mentionSuggestEl.className = "chat-mention-suggest";
+  mentionSuggestEl.hidden = true;
+  const bar = input.closest(".chat-input-bar") || document.body;
+  bar.append(mentionSuggestEl);
+  return mentionSuggestEl;
+}
+
+function closeMentionSuggest() {
+  mentionSuggest = null;
+  if (mentionSuggestEl) mentionSuggestEl.hidden = true;
+}
+
+// The "@partial" token the caret is currently inside, or null. A mention starts
+// at "@" preceded by whitespace/start and uses the same charset the renderer
+// links (CHAT_MENTION_RE): letters, digits, hyphens.
+function mentionTokenAtCaret() {
+  const caret = input.selectionStart;
+  if (caret == null || input.selectionEnd !== caret) return null;
+  const before = input.value.slice(0, caret);
+  const match = /(^|\s)@([A-Za-z0-9-]{0,32})$/.exec(before);
+  if (!match) return null;
+  const start = caret - match[2].length - 1; // include the "@"
+  return { start, end: caret, partial: match[2].toLowerCase() };
+}
+
+function mentionCandidates(partial) {
+  const self = mentionName(displayName());
+  const byName = new Map();
+  for (const person of roster.values()) {
+    const key = mentionName(person.name);
+    if (!key || key === self) continue;
+    const prev = byName.get(key);
+    if (!prev || (personIsOnline(person) && !personIsOnline(prev))) {
+      byName.set(key, person);
+    }
+  }
+  if (!byName.has(FORKBOT_SENDER_ID)) {
+    byName.set(FORKBOT_SENDER_ID, {
+      id: FORKBOT_SENDER_ID, name: "forkbot", kind: "bot", lastSeenMs: Date.now(),
+    });
+  }
+  const matches = [...byName.values()].filter((person) => {
+    const key = mentionName(person.name);
+    return !partial || key.startsWith(partial) || key.includes(partial);
+  });
+  matches.sort((a, b) => {
+    const ak = mentionName(a.name);
+    const bk = mentionName(b.name);
+    const aPrefix = partial && ak.startsWith(partial) ? 0 : 1;
+    const bPrefix = partial && bk.startsWith(partial) ? 0 : 1;
+    return (aPrefix - bPrefix) ||
+      (personIsOnline(b) - personIsOnline(a)) ||
+      ak.localeCompare(bk);
+  });
+  return matches.slice(0, 8);
+}
+
+function renderMentionSuggest() {
+  const box = ensureMentionSuggest();
+  box.textContent = "";
+  const hint = document.createElement("div");
+  hint.className = "chat-mention-suggest-hint";
+  hint.textContent = "Tab to mention · Esc to dismiss";
+  box.append(hint);
+  mentionSuggest.items.forEach((person, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "chat-mention-suggest-item" +
+      (index === mentionSuggest.index ? " is-active" : "");
+    item.append(makeAvatar(person.name, person.kind));
+    const label = document.createElement("span");
+    label.className = "chat-mention-suggest-name";
+    label.textContent = person.name;
+    const dot = document.createElement("span");
+    dot.className = "chat-presence-dot" + (personIsOnline(person) ? " is-online" : "");
+    item.append(label, dot);
+    // mousedown, not click: click fires after the input's blur would have
+    // closed the popup.
+    item.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      acceptMentionSuggest(index);
+    });
+    item.addEventListener("mouseenter", () => {
+      mentionSuggest.index = index;
+      renderMentionSuggest();
+    });
+    box.append(item);
+  });
+  box.hidden = false;
+  const active = box.querySelector(".is-active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+function updateMentionSuggest() {
+  const token = mentionTokenAtCaret();
+  if (!token) {
+    closeMentionSuggest();
+    return;
+  }
+  const items = mentionCandidates(token.partial);
+  if (!items.length) {
+    closeMentionSuggest();
+    return;
+  }
+  const prevName = mentionSuggest &&
+    mentionSuggest.items[mentionSuggest.index] &&
+    mentionName(mentionSuggest.items[mentionSuggest.index].name);
+  let index = prevName
+    ? items.findIndex((person) => mentionName(person.name) === prevName)
+    : 0;
+  if (index < 0) index = 0;
+  mentionSuggest = { items, index, start: token.start, end: token.end };
+  renderMentionSuggest();
+}
+
+function acceptMentionSuggest(index) {
+  if (!mentionSuggest) return;
+  const person = mentionSuggest.items[
+    typeof index === "number" ? index : mentionSuggest.index];
+  if (!person) return;
+  const name = mentionName(person.name);
+  const value = input.value;
+  const inserted = "@" + name + " ";
+  input.value = value.slice(0, mentionSuggest.start) + inserted +
+    value.slice(mentionSuggest.end);
+  const caret = mentionSuggest.start + inserted.length;
+  input.setSelectionRange(caret, caret);
+  closeMentionSuggest();
+  input.focus();
+}
+
+function moveMentionSuggest(step) {
+  if (!mentionSuggest) return;
+  const count = mentionSuggest.items.length;
+  mentionSuggest.index = (mentionSuggest.index + step + count) % count;
+  renderMentionSuggest();
+}
+
+// ---- rooms (left pane) --------------------------------------------------------
+
+function normalizeChannel(name) {
+  const value = String(name || "").trim();
+  if (!value || value.length > 40) return "";
+  return value.startsWith("#") ? value : "#" + value;
+}
+
+function ensureChannel(name) {
+  const channel = normalizeChannel(name);
+  if (!channel) return "";
+  if (!channelMeta.has(channel)) {
+    channelMeta.set(channel, { unread: 0 });
+    if (!channelMessages.has(channel)) channelMessages.set(channel, []);
+    renderRooms();
+  }
+  return channel;
+}
+
+function bumpUnread(channel) {
+  const meta = channelMeta.get(channel);
+  if (!meta) return;
+  meta.unread += 1;
+  renderRooms();
+}
+
+function renderRooms() {
+  if (!roomsEl) return;
+  roomsEl.textContent = "";
+  const names = [...channelMeta.keys()].sort((a, b) => {
+    const ai = DEFAULT_CHANNELS.indexOf(a);
+    const bi = DEFAULT_CHANNELS.indexOf(b);
+    if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    return a.localeCompare(b);
+  });
+  for (const name of names) {
+    const meta = channelMeta.get(name);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-room" + (name === activeChannel ? " is-active" : "");
+    const label = document.createElement("span");
+    label.className = "chat-room-name";
+    label.textContent = name;
+    btn.append(label);
+    if (meta.unread > 0 && name !== activeChannel) {
+      const badge = document.createElement("span");
+      badge.className = "chat-room-unread";
+      badge.textContent = meta.unread > 99 ? "99+" : String(meta.unread);
+      btn.append(badge);
+    }
+    btn.addEventListener("click", () => setActiveChannel(name));
+    roomsEl.append(btn);
+  }
+}
+
+function setActiveChannel(name) {
+  const channel = ensureChannel(name);
+  if (!channel || channel === activeChannel) return;
+  activeChannel = channel;
+  try {
+    localStorage.setItem(ACTIVE_CHANNEL_KEY, channel);
+  } catch (_) {}
+  const meta = channelMeta.get(channel);
+  if (meta) meta.unread = 0;
+  if (channelTitleEl) channelTitleEl.textContent = channel;
+  if (input) input.placeholder = `Message ${channel}…`;
+  renderRooms();
+  renderActiveChannel();
+}
+
+// ---- people (right pane) -------------------------------------------------------
+
+// Coalesce roster paints: a history replay on join delivers hundreds of frames
+// in a burst, and each one touches the roster.
+let peopleRenderTimer = null;
+function schedulePeopleRender() {
+  if (peopleRenderTimer) return;
+  peopleRenderTimer = setTimeout(() => {
+    peopleRenderTimer = null;
+    renderPeople();
+  }, 100);
+}
+
+function noteRoster(plain) {
+  const id = plain && plain.senderId;
+  if (!id) return;
+  const name = String(plain.sender || "").trim().slice(0, MAX_NAME) || "peer";
+  const kind = plain.accountKind === "user"
+    ? (id === FORKBOT_SENDER_ID ? "bot" : "user")
+    : "node";
+  // Use the frame's own timestamp (bounded by now): the relay replays retained
+  // frames to a joining client, and a days-old replayed message must not paint
+  // its author online. Never move lastSeen backwards either — a replayed old
+  // frame (or old bye) can't demote a peer we've heard from more recently.
+  const frameTs = Math.min(Number(plain.ts) || Date.now(), Date.now());
+  const prev = roster.get(id);
+  const prevSeen = prev ? prev.lastSeenMs : 0;
+  let lastSeenMs;
+  if (plain.type === "bye") {
+    lastSeenMs = prevSeen > frameTs ? prevSeen : 0;
+  } else {
+    lastSeenMs = Math.max(prevSeen, frameTs);
+  }
+  roster.set(id, { id, name, kind, lastSeenMs });
+  schedulePeopleRender();
+}
+
+function noteSelfRoster() {
+  if (!userSession()) return;
+  roster.set(selfId, {
+    id: selfId,
+    name: displayName(),
+    kind: "user",
+    lastSeenMs: Date.now(),
+  });
+  schedulePeopleRender();
+}
+
+function personIsOnline(person) {
+  return person.lastSeenMs > 0 && Date.now() - person.lastSeenMs <= PEER_STALE_MS;
+}
+
+function renderPeople() {
+  if (!peopleEl) return;
+  peopleEl.textContent = "";
+  const people = [...roster.values()];
+  const bySection = { user: [], node: [] };
+  for (const person of people) {
+    (person.kind === "node" ? bySection.node : bySection.user).push(person);
+  }
+  const sortPeople = (list) =>
+    list.sort((a, b) =>
+      (personIsOnline(b) - personIsOnline(a)) ||
+      a.name.localeCompare(b.name));
+  const onlineCount = people.filter(personIsOnline).length;
+  if (peopleTitleEl) {
+    peopleTitleEl.textContent = `People — ${onlineCount} online`;
+  }
+  const renderSection = (title, list) => {
+    if (!list.length) return;
+    const head = document.createElement("div");
+    head.className = "chat-people-section";
+    head.textContent = title;
+    peopleEl.append(head);
+    for (const person of sortPeople(list)) {
+      const row = document.createElement("div");
+      const online = personIsOnline(person);
+      row.className = "chat-person" + (online ? "" : " is-offline");
+      row.title = person.name + (online ? " · online" : " · offline");
+      row.append(makeAvatar(person.name, person.kind));
+      const label = document.createElement("span");
+      label.className = "chat-person-name";
+      label.textContent = person.name;
+      const dot = document.createElement("span");
+      dot.className = "chat-presence-dot" + (online ? " is-online" : "");
+      row.append(label, dot);
+      peopleEl.append(row);
+    }
+  };
+  renderSection("Users", bySection.user);
+  renderSection("Nodes", bySection.node);
+}
+
+// ---- reactions ------------------------------------------------------------------
+
+function reactionKey(plain) {
+  return String(plain.reactorId || plain.senderId || "");
+}
+
+function applyReaction(plain) {
+  const target = String(plain.target || "");
+  const emoji = String(plain.emoji || "").slice(0, 8);
+  const reactor = reactionKey(plain);
+  if (!target || !emoji || !reactor) return;
+  const perMessage = reactions.get(target) || new Map();
+  reactions.set(target, perMessage);
+  const perEmoji = perMessage.get(emoji) || new Map();
+  perMessage.set(emoji, perEmoji);
+  if (plain.added) {
+    perEmoji.set(reactor, String(plain.reactorName || plain.sender || "peer"));
+  } else {
+    perEmoji.delete(reactor);
+  }
+  if (!perEmoji.size) perMessage.delete(emoji);
+  renderReactions(target);
+}
+
+function renderReactions(messageId) {
+  const rec = rows.get(messageId);
+  if (!rec || !rec.reactionsEl) return;
+  rec.reactionsEl.textContent = "";
+  const perMessage = reactions.get(messageId);
+  if (!perMessage) return;
+  for (const [emoji, reactors] of perMessage) {
+    if (!reactors.size) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chat-reaction-chip" + (reactors.has(selfId) ? " is-mine" : "");
+    chip.title = [...reactors.values()].join(", ");
+    const face = document.createElement("span");
+    face.textContent = emoji;
+    const count = document.createElement("span");
+    count.className = "chat-reaction-count";
+    count.textContent = String(reactors.size);
+    chip.append(face, count);
+    chip.addEventListener("click", () => toggleReaction(messageId, emoji));
+    rec.reactionsEl.append(chip);
+  }
+}
+
+function toggleReaction(messageId, emoji) {
+  if (!userSession()) {
+    lockChatForNonUser();
+    return;
+  }
+  const rec = rows.get(messageId);
+  const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
+  const plain = makePlain("reaction", {
+    conversation: (rec && rec.channel) || activeChannel,
+    target: messageId,
+    emoji,
+    reactorId: selfId,
+    reactorName: displayName(),
+    added: !mine,
+  });
+  seen.add(plain.id);
+  applyReaction(plain);
+  runWhenConnected(() => send(plain));
+}
+
+function ensureEmojiPicker() {
+  if (emojiPickerEl) return emojiPickerEl;
+  emojiPickerEl = document.createElement("div");
+  emojiPickerEl.className = "chat-emoji-picker";
+  emojiPickerEl.hidden = true;
+  for (const emoji of REACTION_EMOJI) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = emoji;
+    btn.addEventListener("click", () => {
+      if (emojiPickerTarget) toggleReaction(emojiPickerTarget, emoji);
+      hideEmojiPicker();
+    });
+    emojiPickerEl.append(btn);
+  }
+  document.body.append(emojiPickerEl);
+  document.addEventListener("click", (event) => {
+    if (!emojiPickerEl.hidden && !emojiPickerEl.contains(event.target)) hideEmojiPicker();
+  }, true);
+  return emojiPickerEl;
+}
+
+function hideEmojiPicker() {
+  if (emojiPickerEl) emojiPickerEl.hidden = true;
+  emojiPickerTarget = null;
+}
+
+function showEmojiPicker(anchor, messageId) {
+  const picker = ensureEmojiPicker();
+  emojiPickerTarget = messageId;
+  picker.hidden = false;
+  const rect = anchor.getBoundingClientRect();
+  const margin = 8;
+  const width = picker.offsetWidth || 220;
+  const x = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+  const y = Math.max(margin, rect.top - picker.offsetHeight - 6);
+  picker.style.left = `${x + window.scrollX}px`;
+  picker.style.top = `${y + window.scrollY}px`;
+}
+
+// ---- message log (middle pane) --------------------------------------------------
+
+function logNearBottom() {
+  return logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 60;
+}
+
+function scrollLogToBottom() {
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Render one message record into the log. `prev` is the record already above
+// it; consecutive same-sender messages within GROUP_WINDOW_MS collapse under a
+// single avatar + name/time header, Discord-style.
+function buildRow(record, prev) {
+  const grouped = Boolean(
+    prev && !prev.system && prev.senderId === record.senderId &&
+    Number(record.ts) - Number(prev.ts) < GROUP_WINDOW_MS);
   const row = document.createElement("div");
-  row.className = `chat-msg chat-msg-${kind}`;
-  const author = document.createElement("span");
-  author.className = "chat-author";
-  author.textContent = who;
+  row.className = "chat-msg" +
+    (grouped ? " is-continuation" : " is-group-start") +
+    (record.self ? " is-self" : "") +
+    (record.senderId === FORKBOT_SENDER_ID ? " is-bot" : "");
+  row.dataset.id = record.id;
+  row.append(makeAvatar(record.sender, record.senderId === FORKBOT_SENDER_ID ? "bot" : "user"));
+  const main = document.createElement("div");
+  main.className = "chat-msg-main";
+  if (!grouped) {
+    const head = document.createElement("div");
+    head.className = "chat-msg-head";
+    const author = document.createElement("span");
+    author.className = "chat-author";
+    author.textContent = record.sender;
+    const time = document.createElement("span");
+    time.className = "chat-time";
+    time.textContent = fmtTime(record.ts);
+    time.title = new Date(Number(record.ts) || Date.now()).toLocaleString();
+    head.append(author, time);
+    main.append(head);
+  }
   const body = document.createElement("span");
   body.className = "chat-text";
-  appendMentionText(body, text);
-  row.append(author, body);
-  logEl.append(row);
-  logEl.scrollTop = logEl.scrollHeight;
-  if (id) {
-    rows.set(id, { el: row, senderId: senderId || "", body });
+  appendMentionText(body, record.text);
+  main.append(body);
+  const reactionsEl = document.createElement("div");
+  reactionsEl.className = "chat-reactions";
+  main.append(reactionsEl);
+  row.append(main);
+  const reactBtn = document.createElement("button");
+  reactBtn.type = "button";
+  reactBtn.className = "chat-react-btn";
+  reactBtn.textContent = "☺+";
+  reactBtn.title = "Add reaction";
+  reactBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showEmojiPicker(reactBtn, record.id);
+  });
+  row.append(reactBtn);
+  record.el = row;
+  record.body = body;
+  record.reactionsEl = reactionsEl;
+  return row;
+}
+
+function renderActiveChannel() {
+  logEl.textContent = "";
+  const list = channelMessages.get(activeChannel) || [];
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = userSession()
+      ? `No messages in ${activeChannel} yet. Say hi!`
+      : "Log in as a user to join the room.";
+    logEl.append(empty);
+    return;
   }
-  rememberContext(who, text);
+  let prev = null;
+  for (const record of list) {
+    logEl.append(buildRow(record, prev));
+    renderReactions(record.id);
+    prev = record;
+  }
+  scrollLogToBottom();
+}
+
+// Insert a message record in ts order (newest at the bottom). Appends in the
+// common case; an out-of-order arrival (history replay racing live messages)
+// rebuilds the visible channel so ordering and grouping stay correct.
+function insertMessage(record) {
+  const channel = record.channel;
+  const list = channelMessages.get(channel) || [];
+  channelMessages.set(channel, list);
+  let index = list.length;
+  while (index > 0 && Number(list[index - 1].ts) > Number(record.ts)) index -= 1;
+  list.splice(index, 0, record);
+  rows.set(record.id, record);
+  if (channel === activeChannel) {
+    const pinned = logNearBottom();
+    if (index === list.length - 1) {
+      clearEmpty();
+      logEl.append(buildRow(record, list.length > 1 ? list[index - 1] : null));
+      renderReactions(record.id);
+      if (pinned || record.self) scrollLogToBottom();
+    } else {
+      renderActiveChannel();
+    }
+  } else if (!record.self) {
+    bumpUnread(channel);
+  }
+}
+
+function appendMessage(kind, who, text, id, senderId, ts, channel) {
+  const record = {
+    id: id || String(Math.random()).slice(2) + Date.now(),
+    channel: ensureChannel(channel) || activeChannel,
+    ts: Number(ts) || Date.now(),
+    senderId: senderId || "",
+    sender: who,
+    text,
+    self: kind === "self",
+  };
+  insertMessage(record);
+  rememberContext(record.channel, who, text);
 }
 
 // Drop a message row from the screen (a deletion leaves no tombstone, matching
@@ -437,23 +1051,27 @@ function appendMessage(kind, who, text, id, senderId) {
 function removeMessage(id) {
   const rec = rows.get(id);
   if (!rec) return;
-  if (rec.el && rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
   rows.delete(id);
+  reactions.delete(id);
+  const list = channelMessages.get(rec.channel) || [];
+  const index = list.indexOf(rec);
+  if (index >= 0) list.splice(index, 1);
+  // Re-render so grouping headers stay correct around the gap.
+  if (rec.channel === activeChannel) renderActiveChannel();
 }
 
-// Wipe the on-screen transcript and restore the empty placeholder. This is a
-// local view-only clear: it doesn't delete anything on the relay or for other
-// clients. Cleared ids stay in `seen` so a replayed history can't bring them
-// back, while genuinely new incoming messages still appear.
+// Wipe the active room's local transcript and restore the empty placeholder.
+// This is a local view-only clear: it doesn't delete anything on the relay or
+// for other clients. Cleared ids stay in `seen` so a replayed history can't
+// bring them back, while genuinely new incoming messages still appear.
 function clearChat() {
-  rows.clear();
-  logEl.textContent = "";
-  const empty = document.createElement("div");
-  empty.className = "chat-empty";
-  empty.textContent = userSession()
-    ? "Type below to join the room."
-    : "Log in as a user to join the room.";
-  logEl.append(empty);
+  const list = channelMessages.get(activeChannel) || [];
+  for (const record of list) {
+    rows.delete(record.id);
+    reactions.delete(record.id);
+  }
+  channelMessages.set(activeChannel, []);
+  renderActiveChannel();
 }
 
 function appendSystem(text) {
@@ -462,7 +1080,7 @@ function appendSystem(text) {
   row.className = "chat-system";
   row.textContent = text;
   logEl.append(row);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (logNearBottom()) scrollLogToBottom();
 }
 
 // ---- protocol ---------------------------------------------------------------
@@ -491,12 +1109,20 @@ function once(id) {
 
 function renderChatEntry(entry, kind) {
   if (!entry || entry.accountKind !== "user") return;
+  // A private-room message from a room we weren't invited to is ignored, the
+  // same honour-model as the desktop client.
+  if (entry.private) return;
+  // Historical authors still belong in the people pane (as offline entries —
+  // noteRoster derives presence from the entry's own timestamp).
+  noteRoster(entry);
   if (!once(entry.id)) return;
   const who = (entry.sender || "peer").slice(0, MAX_NAME);
   const text = entry.fileName
     ? "📎 " + entry.fileName
     : entry.text || "";
-  if (text) appendMessage(kind, who, text, entry.id, entry.senderId);
+  if (text) {
+    appendMessage(kind, who, text, entry.id, entry.senderId, entry.ts, entry.channel);
+  }
 }
 
 // An admin-delete frame is signed by the admin's identity key over a canonical
@@ -532,6 +1158,16 @@ async function verifyAdminDelete(plain) {
 
 function handlePlain(plain) {
   const type = plain.type;
+  // Roster + channel discovery run for EVERY decrypted frame — desktop nodes
+  // announce themselves (hello/presence) without accountKind, and the people
+  // pane should still show them with their online status.
+  noteRoster(plain);
+  if (type === "hello" || type === "channel") {
+    const announced = type === "channel" ? [plain.name] : plain.channels || [];
+    for (const name of announced) {
+      if (name) ensureChannel(name);
+    }
+  }
   if (type !== "history" && plain.accountKind !== "user") return;
   const sender = (plain.sender || "peer").slice(0, MAX_NAME);
   if (type === "chat") {
@@ -542,10 +1178,13 @@ function handlePlain(plain) {
         renderChatEntry(entry, "peer");
       }
     }
+  } else if (type === "reaction") {
+    if (once(plain.id)) applyReaction(plain);
   } else if (type === "edit") {
     // The author edited their own message; only honour it from that author.
     const rec = rows.get(plain.target);
     if (rec && rec.senderId === plain.senderId && rec.body) {
+      rec.text = plain.text || "";
       renderMessageText(rec.body, plain.text || "");
     }
   } else if (type === "delete") {
@@ -596,7 +1235,7 @@ function send(plain) {
 
 function makeForkbotPlain(text) {
   return makePlain("chat", {
-    channel: CHANNEL,
+    channel: activeChannel,
     text: String(text || "").slice(0, MAX_TEXT),
     sender: "forkbot",
     senderId: FORKBOT_SENDER_ID,
@@ -608,15 +1247,16 @@ function broadcastForkbotMessage(text) {
   const plain = makeForkbotPlain(text);
   send(plain);
   seen.add(plain.id);
-  appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId);
+  appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts, plain.channel);
 }
 
 async function maybeAskForkbot(text) {
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
   // The triggering line is the last buffer entry (appendMessage ran just
   // before this) and is sent separately as `message`; drop it, drop ForkBot's
-  // own replies, and cap the rest so ForkBot sees the lead-up conversation.
-  const context = recentContext
+  // own replies, and cap the rest so ForkBot sees the lead-up conversation of
+  // the room the mention happened in.
+  const context = (recentContext.get(activeChannel) || [])
     .slice(0, -1)
     .filter((m) => m.sender.toLowerCase() !== "forkbot")
     .slice(-12);
@@ -632,6 +1272,16 @@ async function maybeAskForkbot(text) {
   } catch (error) {
     appendSystem("forkbot is unavailable");
   }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || !userSession()) return;
+  setStatus("Disconnected · reconnecting…");
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, reconnectDelayMs);
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
 }
 
 async function connect() {
@@ -654,9 +1304,11 @@ async function connect() {
 
   socket.addEventListener("open", () => {
     connecting = false;
+    reconnectDelayMs = 2000;
     setStatus("Connected · end-to-end encrypted");
     // Announce ourselves so clients add us to their roster and replay history.
-    send(makePlain("hello", { channels: [CHANNEL] }));
+    send(makePlain("hello", { channels: [...channelMeta.keys()] }));
+    noteSelfRoster();
     const callbacks = openCallbacks;
     openCallbacks = [];
     callbacks.forEach((cb) => cb());
@@ -665,7 +1317,7 @@ async function connect() {
   socket.addEventListener("close", () => {
     socket = null;
     connecting = false;
-    setStatus("Disconnected · send to rejoin");
+    scheduleReconnect();
   });
   socket.addEventListener("error", () => {
     if (socket) socket.close();
@@ -691,32 +1343,83 @@ function sendCurrentMessage() {
   input.value = "";
   runWhenConnected(() => {
     const clipped = text.slice(0, MAX_TEXT);
-    const plain = makePlain("chat", { channel: CHANNEL, text: clipped });
+    const plain = makePlain("chat", { channel: activeChannel, text: clipped });
     send(plain);
     seen.add(plain.id); // we render it here; ignore the echo if one comes back
-    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId);
+    appendMessage("self", plain.sender, clipped, plain.id, plain.senderId, plain.ts, plain.channel);
     maybeAskForkbot(clipped);
   });
 }
 
 async function initChat() {
+  for (const channel of DEFAULT_CHANNELS) ensureChannel(channel);
+  if (channelTitleEl) channelTitleEl.textContent = activeChannel;
+  if (input) input.placeholder = `Message ${activeChannel}…`;
+  renderRooms();
+  renderPeople();
   await hydrateUserSession();
   // Connect right away for signed-in users so retained room history is visible
   // without first focusing an input.
   if (userSession()) {
     unlockChatForUser();
     connect();
+    renderActiveChannel();
   } else {
     lockChatForNonUser();
   }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
   input.addEventListener("keydown", (event) => {
+    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
+    // accepts the highlighted name, arrows move, Escape dismisses — only then
+    // does Enter fall through to send.
+    if (mentionSuggest) {
+      if (event.key === "Tab" || event.key === "Enter") {
+        event.preventDefault();
+        acceptMentionSuggest();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveMentionSuggest(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMentionSuggest();
+        return;
+      }
+    }
     if (event.key === "Enter") {
       event.preventDefault();
       sendCurrentMessage();
     }
   });
+  // Track the "@partial" token under the caret as it changes — typing, caret
+  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
+  // still lands).
+  input.addEventListener("input", updateMentionSuggest);
+  input.addEventListener("click", updateMentionSuggest);
+  input.addEventListener("keyup", (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      updateMentionSuggest();
+    }
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(closeMentionSuggest, 120);
+  });
+  // Presence beat, matching the desktop's cadence: keeps our roster entry
+  // fresh for peers AND keeps the room DO from closing the socket as stale
+  // (it reaps sockets that send nothing for 3 minutes — the old web client's
+  // idle disconnects).
+  setInterval(() => {
+    if (socket && socket.readyState === WebSocket.OPEN && userSession()) {
+      send(makePlain("presence"));
+      noteSelfRoster();
+    }
+  }, PRESENCE_INTERVAL_MS);
+  // Re-evaluate online dots as peers go stale even with no traffic.
+  setInterval(renderPeople, 30000);
 }
 
 if (logEl && input && sendBtn) {
