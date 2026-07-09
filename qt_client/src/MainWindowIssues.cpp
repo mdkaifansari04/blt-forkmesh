@@ -761,10 +761,12 @@ QWidget *MainWindow::buildIssuesSection()
                            m_issueAgentProvider->currentData().toString());
     connect(m_issueAgentProvider,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-                if (m_issueAgentProvider && m_issueAgentModel)
+                if (m_issueAgentProvider && m_issueAgentModel) {
                     fillAgentFixModelCombo(
                         m_issueAgentModel,
                         m_issueAgentProvider->currentData().toString());
+                    refreshClaudeModelCombo();
+                }
             });
     refreshClaudeModelCombo();
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
