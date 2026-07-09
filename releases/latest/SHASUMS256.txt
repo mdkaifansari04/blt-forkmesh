@@ -1,2 +1,2 @@
-3b61dfc28f3da5614a705a5732ad4a1d68619ac768d8e36e4de2d75638388282  forkmesh-linux-x86_64
-dffc4f6aa1bb985c77d708ef7277eb4a27c06a09af17d4bc297689ea3676fdb4  forkmesh-linux-x86_64.AppDir.tar.gz
+b50fb856959c6e9a123da80762a6d289ee96459c6c9beed0a3e3e6050c6bb10a  forkmesh-linux-x86_64
+528ef9fa2932541889ee190fb9a65e319ed720d8394229db67e4f3e6d5ffba4d  forkmesh-linux-x86_64.AppDir.tar.gz
