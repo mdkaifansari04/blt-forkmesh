@@ -32,7 +32,7 @@
     notifications: [],
     notificationUnread: 0,
     selectedNotificationId: "",
-    issuesView: { filter: "open", items: [] },
+    issuesView: { filter: "open", items: [], query: "" },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],

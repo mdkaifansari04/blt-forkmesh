@@ -7,6 +7,7 @@ import io
 import json
 import re
 import struct
+import time
 import traceback
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -7762,7 +7763,12 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
     return True
 
 
-async def notify_mentions(env, owner, repo, actor, title, body, href, source):
+async def notify_mentions(env, owner, repo, actor, title, body, href, source,
+                          number=0):
+    # number is optional (0 = not a numbered item, e.g. a brand-new PR before
+    # the owner assigns it) so every existing call site keeps working
+    # unchanged; callers that DO know the number pass it as a keyword so the
+    # digest email can show "#N" instead of just a bare title.
     for name in notification_mentions(title, body):
         await enqueue_notification(
             env, name, "mention", "You were mentioned in " + owner + "/" + repo,
@@ -7771,6 +7777,7 @@ async def notify_mentions(env, owner, repo, actor, title, body, href, source):
             dedupe="mention:" + owner + "/" + repo + ":" + source + ":" + name +
                    ":" + clean_string(actor, 80) + ":" + clean_string(title, 80) +
                    ":" + clean_string(body, 80),
+            meta={"number": number} if number else {},
         )
 
 
@@ -8219,6 +8226,21 @@ def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
         "</div></div>")
 
 
+def _format_email_ts(ts_ms):
+    """Human-readable UTC timestamp for email bodies, e.g. '2026-07-09 14:32
+    UTC'. Sortable/unambiguous rather than locale-flavored, and built from
+    time.gmtime/strftime with only the portable %Y/%m/%d/%H/%M directives —
+    no timezone database, no platform-specific no-leading-zero flags (those
+    aren't guaranteed to work under Pyodide's WASM libc)."""
+    try:
+        ts_ms = int(ts_ms or 0)
+        if ts_ms <= 0:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts_ms / 1000))
+    except Exception:
+        return ""
+
+
 def _notification_digest_email(node, items):
     n = len(items)
     subject = ("ForkMesh: " + str(n) + " new notification" +
@@ -8231,15 +8253,39 @@ def _notification_digest_email(node, items):
         title = clean_string(it.get("title", ""), 160) or "Notification"
         body = clean_string(it.get("body", ""), 300)
         repo = clean_string(it.get("repo", ""), 180)
+        actor = clean_string(it.get("actor", ""), 120)
+        meta_in = it.get("meta")
+        try:
+            number = int((meta_in or {}).get("number", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        when = _format_email_ts(it.get("ts"))
+        # "[owner/repo] #42 Title", falling back gracefully as each piece is
+        # missing (a brand-new PR/comment has no number yet; an old digest
+        # backlog item might predate actor tracking).
         prefix = ("[" + repo + "] ") if repo else ""
-        lines.append("- " + prefix + title)
+        number_prefix = ("#" + str(number) + " ") if number > 0 else ""
+        lines.append("- " + prefix + number_prefix + title)
+        # A second indented line for who/when, only when there's something to
+        # show — matches the existing "    body" indent convention below.
+        who_when = " · ".join(filter(None, [
+            ("by " + actor) if actor else "", when]))
+        if who_when:
+            lines.append("    " + who_when)
         if body:
             lines.append("    " + body)
+        meta_html = " &middot; ".join(filter(None, [
+            _html_escape("#" + str(number)) if number > 0 else "",
+            ("by <strong>" + _html_escape(actor) + "</strong>") if actor else "",
+            _html_escape(when) if when else "",
+        ]))
         html_items.append(
             "<div style=\"border:1px solid #313134;border-radius:8px;"
             "background:#0f0f11;padding:12px 14px;margin:0 0 10px\">"
             "<p style=\"margin:0;color:#f5f5f5;font-size:14px;"
             "font-weight:800\">" + _html_escape(prefix + title) + "</p>" +
+            ("<p style=\"margin:4px 0 0;color:#8a8a93;font-size:12px\">" +
+             meta_html + "</p>" if meta_html else "") +
             ("<p style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
              "line-height:1.45\">" + _html_escape(body) + "</p>"
              if body else "") + "</div>")
@@ -8751,11 +8797,12 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
     await _best_effort_inbox_side_effect(
         notify_pending_inbox(
             env, owner, repo, "issue", FORKBOT_AUTHOR, item.get("titleIfNew", ""),
-            0))
+            number))
     await _best_effort_inbox_side_effect(
         notify_mentions(
             env, owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
-            event.get("body", ""), repo_web_href(owner, repo), "issue"))
+            event.get("body", ""), repo_web_href(owner, repo), "issue",
+            number=number))
     return True, item
 
 
@@ -8941,7 +8988,8 @@ async def issues_handler(env, request, owner, repo):
         await _best_effort_inbox_side_effect(
             notify_mentions(
                 env, owner, repo, actor, item.get("titleIfNew", ""),
-                event.get("body", ""), repo_web_href(owner, repo), "issue"))
+                event.get("body", ""), repo_web_href(owner, repo), "issue",
+                number=number))
         assignees = list(meta.get("assignees", [])) if isinstance(meta, dict) else []
         if isinstance(event.get("assignees"), list):
             assignees.extend(event.get("assignees"))
@@ -9028,7 +9076,7 @@ async def pulls_handler(env, request, owner, repo):
             actor = clean_string(event.get("authorName", "") or event.get("author", ""), MAX_NODE_NAME).lower()
             await notify_pending_inbox(env, owner, repo, "pull", actor, event.get("body", ""), number)
             await notify_mentions(env, owner, repo, actor, "Pull request comment", event.get("body", ""),
-                                  repo_web_href(owner, repo), "pull")
+                                  repo_web_href(owner, repo), "pull", number=number)
             # Subscriptions (issue #361): fan the comment out to the PR's
             # followers, then auto-subscribe the commenter.
             await notify_subscribers(env, owner, repo, "pull", number, actor,
@@ -9205,7 +9253,7 @@ async def discussions_handler(env, request, owner, repo):
         title = item.get("titleIfNew", "") or "Discussion update"
         await notify_pending_inbox(env, owner, repo, "discussion", actor, title, number)
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
-                              repo_web_href(owner, repo), "discussion")
+                              repo_web_href(owner, repo), "discussion", number=number)
         await notify_repo_host(env, owner, repo, "discussions")
         return json_response({"ok": True}, status=201)
 

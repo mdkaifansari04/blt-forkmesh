@@ -131,3 +131,72 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     assert '["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab)' in DASHBOARD_JS
     # The tab badge still fills immediately from the root tree's bundled counts.
     assert 'setRepoTabCount("issues", Number(counts.issues));' in DASHBOARD_JS
+
+
+# --- Free-text issue search (adjacent to the Open/Closed/All filter) --------
+# The Issues panel already had a GitHub-style search box (data-repo-filter-
+# query="issues") sitting there decoratively with no listener behind it.
+# These tests pin it now actually filtering the already-loaded issue list.
+
+
+def test_issues_view_state_carries_a_search_query():
+    assert 'issuesView: { filter: "open", items: [], query: "" }' in DASHBOARD_JS
+
+
+def test_issue_search_matches_number_title_body_author_and_meta():
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function issueMatchesQuery")
+        : DASHBOARD_JS.index("function renderRepoIssues")
+    ]
+    for marker in (
+        'if (!q) return true;',
+        '"#" + issue.number, String(issue.number), issue.title, issue.body,',
+        'issue.author, issue.meta,',
+        '.join(" ").toLowerCase();',
+        'return haystack.includes(q);',
+    ):
+        assert marker in render
+
+
+def test_render_repo_issues_applies_the_search_filter_after_the_status_filter():
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderRepoIssues")
+        : DASHBOARD_JS.index("function setIssueFilter")
+    ]
+    # The three pinned status-filter lines stay exactly as before...
+    assert 'if (issuesView.filter === "all") return true;' in render
+    assert 'if (issuesView.filter === "open") return issue.status === "open";' in render
+    assert 'return issue.status !== "open";' in render
+    # ...with the search predicate layered on afterward, not replacing them.
+    assert '}).filter((issue) => issueMatchesQuery(issue, issuesView.query));' in render
+
+
+def test_issue_search_box_is_wired_to_a_delegated_input_listener():
+    assert 'event.target?.matches?.(\'[data-repo-filter-query="issues"]\')' in DASHBOARD_JS
+    listener = DASHBOARD_JS[
+        DASHBOARD_JS.index(
+            'event.target?.matches?.(\'[data-repo-filter-query="issues"]\')')
+        : DASHBOARD_JS.index(
+            'event.target?.matches?.("[data-repo-branch-search]")')
+    ]
+    assert "state.issuesView.query = event.target.value || \"\";" in listener
+    assert "renderRepoIssues();" in listener
+
+
+def test_issue_search_box_value_reflects_live_state_pulls_search_stays_static():
+    assert (
+        'value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}"'
+        in DASHBOARD_JS
+    )
+
+
+def test_opening_a_different_repo_resets_any_leftover_search_query():
+    # The search box is rendered immediately when a repo opens (via
+    # renderRepoCollectionPanel), before the Issues tab's own lazy load would
+    # otherwise reset the query — so the reset has to happen here too, or a
+    # freshly-opened repo's search box would show the PREVIOUS repo's text.
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderRepoDetail")
+        : DASHBOARD_JS.index("navigateHistory(detailPath)")
+    ]
+    assert 'state.issuesView = { filter: "open", items: [], query: "" };' in render

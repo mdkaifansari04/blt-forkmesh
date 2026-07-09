@@ -876,6 +876,22 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
+  // Free-text issue search: substring match (case-insensitive) over the
+  // number, title, body snippet, author, and the status/labels/milestone
+  // meta string — everything renderRepoRecordList already shows per row, so
+  // "matches the search" and "matches what's visibly displayed" stay the
+  // same thing. Runs client-side over the already-loaded (batched) issue set
+  // rather than a new network call, per the existing loadRepoIssues contract.
+  function issueMatchesQuery(issue, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [
+      "#" + issue.number, String(issue.number), issue.title, issue.body,
+      issue.author, issue.meta,
+    ].join(" ").toLowerCase();
+    return haystack.includes(q);
+  }
+
   function renderRepoIssues() {
     const container = $("[data-repo-issues]");
     if (!container) return;
@@ -884,14 +900,17 @@
       if (issuesView.filter === "all") return true;
       if (issuesView.filter === "open") return issue.status === "open";
       return issue.status !== "open";
-    });
+    }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
     </div>`;
+    const emptyLabel = issuesView.query
+      ? `No issues matching "${escapeHtml(issuesView.query)}".`
+      : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
-      : `<div class="px-4 py-3 text-sm text-muted-foreground">No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.</div>`);
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
     window.lucide?.createIcons();
   }
 
@@ -918,6 +937,7 @@
         if (isMissingMirrorFolder(error)) {
           state.issuesView.items = [];
           state.issuesView.filter = "open";
+          state.issuesView.query = "";
           renderRepoIssues();
           return;
         }
@@ -938,6 +958,7 @@
       }).filter(Boolean);
       state.issuesView.items = items;
       state.issuesView.filter = "open";
+      state.issuesView.query = "";
       setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
       const openIssues = items.filter((issue) => issue.status === "open").length;
       setRepoCollectionCounts("issues", openIssues, items.length - openIssues);

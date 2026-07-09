@@ -162,8 +162,8 @@ def _env_and_calls(ai=None, catalog_issue_max=None):
     def notify_pending_inbox(*args):
         return ("pending", args)
 
-    def notify_mentions(*args):
-        return ("mentions", args)
+    def notify_mentions(*args, **kwargs):
+        return ("mentions", args, kwargs)
 
     ns = _load_forkbot({
         "Date": _Date,
