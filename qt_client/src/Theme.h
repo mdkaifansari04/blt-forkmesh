@@ -1148,26 +1148,29 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
 }
 /* Agent detail: log terminal + status pill + API-traffic panel */
 QPlainTextEdit#actionLog {
-    background-color: #010409;
-    border: 1px solid #30363d;
+    background-color: #ffffff;
+    border: 1px solid #d1d5db;
     border-radius: 8px;
-    color: #c9d1d9;
+    color: #1f2937;
     padding: 10px 12px;
-    selection-background-color: #1f6feb;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
 }
 #agentStatusPill {
-    background-color: #161b22;
-    border: 1px solid #30363d;
+    background-color: #f3f4f6;
+    border: 1px solid #d1d5db;
     border-radius: 11px;
     padding: 2px 10px;
     font-size: 12px;
     font-weight: 600;
+    color: #1f2937;
 }
 #agentNetPanel {
-    background-color: #0d1117;
-    border: 1px solid #30363d;
+    background-color: #f9fafb;
+    border: 1px solid #d1d5db;
     border-radius: 8px;
     padding: 8px 12px;
+    color: #374151;
 }
 
 /* --- Item-view selection, applied last so it wins over the rules above ---
