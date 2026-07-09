@@ -860,7 +860,7 @@
               </span>
               <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
                 <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
+                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
               </span>
             </label>
             <div class="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">

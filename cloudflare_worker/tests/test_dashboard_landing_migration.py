@@ -692,7 +692,9 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
         'data-repo-collection-toolbar="${kind}"',
         'data-repo-filter-menu="${kind}"',
         'data-repo-filter-query="${kind}"',
-        'placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}"',
+        # Issues actually wires the search box (pulls stays a static "is:pr
+        # is:open" placeholder; only issue search was requested).
+        'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
         "Author",
         "Labels",
         "Projects",

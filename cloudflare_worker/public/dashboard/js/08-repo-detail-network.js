@@ -6,6 +6,11 @@
     state.repoMirrors = [];
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
+    // A search left over from the previously-open repo must not carry into
+    // this one — the search box is rendered immediately (below, via
+    // renderRepoCollectionPanel), before the Issues tab's own lazy load
+    // would otherwise reset it.
+    state.issuesView = { filter: "open", items: [], query: "" };
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
@@ -1158,6 +1163,11 @@
   });
 
   document.addEventListener("input", (event) => {
+    if (event.target?.matches?.('[data-repo-filter-query="issues"]') && state.selectedRepo) {
+      state.issuesView.query = event.target.value || "";
+      renderRepoIssues();
+      return;
+    }
     if (event.target?.matches?.("[data-repo-branch-search]") && state.selectedRepo) {
       setRepoBranchQuery(state.selectedRepo, event.target.value || "");
       updateRepoBranchControls(state.selectedRepo, event.target.closest("[data-repo-branch-control]"));

@@ -32,7 +32,7 @@
     notifications: [],
     notificationUnread: 0,
     selectedNotificationId: "",
-    issuesView: { filter: "open", items: [] },
+    issuesView: { filter: "open", items: [], query: "" },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
@@ -3913,6 +3913,22 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
+  // Free-text issue search: substring match (case-insensitive) over the
+  // number, title, body snippet, author, and the status/labels/milestone
+  // meta string — everything renderRepoRecordList already shows per row, so
+  // "matches the search" and "matches what's visibly displayed" stay the
+  // same thing. Runs client-side over the already-loaded (batched) issue set
+  // rather than a new network call, per the existing loadRepoIssues contract.
+  function issueMatchesQuery(issue, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    const haystack = [
+      "#" + issue.number, String(issue.number), issue.title, issue.body,
+      issue.author, issue.meta,
+    ].join(" ").toLowerCase();
+    return haystack.includes(q);
+  }
+
   function renderRepoIssues() {
     const container = $("[data-repo-issues]");
     if (!container) return;
@@ -3921,14 +3937,17 @@
       if (issuesView.filter === "all") return true;
       if (issuesView.filter === "open") return issue.status === "open";
       return issue.status !== "open";
-    });
+    }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
     </div>`;
+    const emptyLabel = issuesView.query
+      ? `No issues matching "${escapeHtml(issuesView.query)}".`
+      : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
-      : `<div class="px-4 py-3 text-sm text-muted-foreground">No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.</div>`);
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
     window.lucide?.createIcons();
   }
 
@@ -3955,6 +3974,7 @@
         if (isMissingMirrorFolder(error)) {
           state.issuesView.items = [];
           state.issuesView.filter = "open";
+          state.issuesView.query = "";
           renderRepoIssues();
           return;
         }
@@ -3975,6 +3995,7 @@
       }).filter(Boolean);
       state.issuesView.items = items;
       state.issuesView.filter = "open";
+      state.issuesView.query = "";
       setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
       const openIssues = items.filter((issue) => issue.status === "open").length;
       setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
@@ -5300,7 +5321,7 @@
               </span>
               <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
                 <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
+                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
               </span>
             </label>
             <div class="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
@@ -5330,6 +5351,11 @@
     state.repoMirrors = [];
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
+    // A search left over from the previously-open repo must not carry into
+    // this one — the search box is rendered immediately (below, via
+    // renderRepoCollectionPanel), before the Issues tab's own lazy load
+    // would otherwise reset it.
+    state.issuesView = { filter: "open", items: [], query: "" };
     // Pull requests and discussions load lazily the first time their tab is
     // opened rather than on every page load. Eagerly fetching every record's
     // blob up front is what flooded the host with requests and tripped the rate
@@ -6482,6 +6508,11 @@
   });
 
   document.addEventListener("input", (event) => {
+    if (event.target?.matches?.('[data-repo-filter-query="issues"]') && state.selectedRepo) {
+      state.issuesView.query = event.target.value || "";
+      renderRepoIssues();
+      return;
+    }
     if (event.target?.matches?.("[data-repo-branch-search]") && state.selectedRepo) {
       setRepoBranchQuery(state.selectedRepo, event.target.value || "");
       updateRepoBranchControls(state.selectedRepo, event.target.closest("[data-repo-branch-control]"));
