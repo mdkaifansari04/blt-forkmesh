@@ -19,6 +19,15 @@
             "title": "test this",
             "ts": 1783475154903,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "fdce13b4-729b-4203-b9c2-d44c34d88014",
+            "sig": "jv2nrHHqizKuL1Ha-bb8dEi7VX1z4-h5N93edlkhQjiYjJ9dN0ZY_kXF-9f-lhJWl_P7k1CS9-4nxODbRykmBg",
+            "status": "closed",
+            "ts": 1783600917366,
+            "type": "status"
         }
     ],
     "labels": [
@@ -29,8 +38,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "test this",
-    "updatedAt": 1783475154903,
+    "updatedAt": 1783600917366,
     "votes": 0
 }
