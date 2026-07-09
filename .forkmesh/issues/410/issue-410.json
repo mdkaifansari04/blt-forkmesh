@@ -1,0 +1,36 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783610271320,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "fix the login / signup header on chat please",
+            "id": "forkbot-1783610271320",
+            "sig": "",
+            "title": "fix the login / signup header on chat please",
+            "ts": 1783610271320,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 410,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "fix the login / signup header on chat please",
+    "updatedAt": 1783610271320,
+    "votes": 0
+}
