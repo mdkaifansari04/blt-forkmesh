@@ -64,7 +64,8 @@
         nodes: Array.isArray(body.nodes) ? body.nodes : [],
         at: Date.now(),
       }));
-      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";
+      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax"
+        + (location.protocol === "https:" ? "; Secure" : "");
     } catch (_) {}
   }
 

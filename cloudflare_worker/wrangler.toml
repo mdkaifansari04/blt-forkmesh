@@ -26,12 +26,25 @@ not_found_handling = "404-page"
 # handled in code rather than served as a static asset.
 run_worker_first = [
   "/api/*",
+  # / is worker-owned so logged-in visitors get an instant server-side 302 to
+  # /dashboard (keyed off the forkmesh_session presence cookie) instead of the
+  # old paint-the-homepage-then-redirect client script.
+  "/",
   "/health",
   "/simulate-sentry-error",
   "/admin-*",
+  # /dashboard (exact) is worker-owned so legacy /dashboard?section=X URLs can
+  # 308 to the per-page paths — _redirects cannot match query strings. The
+  # per-page documents below are excluded so they stay asset-served.
+  "/dashboard",
   "/dashboard/*",
+  "!/dashboard/repos",
+  "!/dashboard/network",
+  "!/dashboard/chat",
+  "!/dashboard/settings",
+  "!/dashboard/profile",
+  "!/dashboard/profile/repositories",
   "/index.html",
-  "/dashboard.html",
   "/blog.html",
   "/login.html",
   "/signup.html",
@@ -60,7 +73,6 @@ run_worker_first = [
   "/@*",
   "/%40*",
   "/*/*",
-  "!/dashboard/index.html",
   "!/dashboard/partials/*",
   "!/dashboard/js/*",
   "!/assets/*",
