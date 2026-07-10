@@ -1,32 +1,47 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 392,
-  "title": "BUG: repo delete feature not working",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783361961840,
-  "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
-  "authorName": "mdkaifansari04",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-391",
-      "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
-      "authorName": "mdkaifansari04",
-      "ts": 1783361961840,
-      "title": "BUG: repo delete feature not working",
-      "body": "Description\nwhen user deletes his repo technically the repo is deleted from his account but always there as a local copy due to that user cannot create the repo with same name as deleted repo, this needs to fix\nwhen user deletes the repo it should be deleted completly from users account.",
-      "attachments": [],
-      "sig": "Pp91G0bkLhF2WTVzeVVhj0lvFR8Fcp75Hm-He9dwgtyQuGnWMuwGEVFfQooY9oXyxJPT7YneEBInGzYhDrwaCw"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783361961840
+    "assignees": [
+    ],
+    "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+    "authorName": "mdkaifansari04",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783361961840,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+            "authorName": "mdkaifansari04",
+            "body": "Description\nwhen user deletes his repo technically the repo is deleted from his account but always there as a local copy due to that user cannot create the repo with same name as deleted repo, this needs to fix\nwhen user deletes the repo it should be deleted completly from users account.",
+            "id": "open-391",
+            "sig": "Pp91G0bkLhF2WTVzeVVhj0lvFR8Fcp75Hm-He9dwgtyQuGnWMuwGEVFfQooY9oXyxJPT7YneEBInGzYhDrwaCw",
+            "title": "BUG: repo delete feature not working",
+            "ts": 1783361961840,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 10,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "47880bcd-0e4d-4442-b73c-64e0210d4972",
+            "sig": "1mtn-11hNYipsmb02diZoJeTdoJhIHZ2Uy57TSOFt7jhd9KfOCDoJfwzR8JIx1i3VS4W2LiX082p2oMXjM30Bg",
+            "ts": 1783717075724,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 392,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "BUG: repo delete feature not working",
+    "updatedAt": 1783717075724,
+    "votes": 0
 }
