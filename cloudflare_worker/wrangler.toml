@@ -52,6 +52,12 @@ run_worker_first = [
   "/privacy.html",
   "/terms.html",
   "/status.html",
+  # Public profile URLs are single-segment (/@name). Without these two entries
+  # Static Assets grabs the request first, percent-encodes @ -> %40, finds no
+  # matching asset, and serves 404.html before the worker's profile handler can
+  # run. Pasted links arrive both literally (/@name) and pre-encoded (/%40name).
+  "/@*",
+  "/%40*",
   "/*/*",
   "!/dashboard/index.html",
   "!/dashboard/partials/*",

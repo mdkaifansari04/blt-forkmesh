@@ -240,6 +240,17 @@ def test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets():
         assert not static_routes.looks_like_repo_route(path)
 
 
+def test_public_profile_routes_are_worker_owned():
+    # /@name is single-segment, so it does not match /*/*; without explicit
+    # entries Static Assets shadows it, encodes @ -> %40, and 404s before the
+    # worker's public_profile_handler runs. Both literal and pre-encoded forms
+    # must be routed to the worker.
+    run_worker_first = WRANGLER["assets"]["run_worker_first"]
+
+    assert "/@*" in run_worker_first
+    assert "/%40*" in run_worker_first
+
+
 if __name__ == "__main__":
     test_public_redirects_have_one_canonical_route_per_public_html_page()
     test_every_public_html_file_is_accounted_for_by_routes_or_explicit_exclusions()
@@ -248,3 +259,4 @@ if __name__ == "__main__":
     test_internal_links_and_redirects_do_not_point_at_html_routes()
     test_worker_does_not_own_static_page_alias_routes()
     test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets()
+    test_public_profile_routes_are_worker_owned()
