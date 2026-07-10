@@ -2,6 +2,7 @@
 """Static contracts for the landing/dashboard split."""
 
 from pathlib import Path
+import re
 import tomllib
 
 from _dashboard_shell import assembled_dashboard
@@ -672,7 +673,11 @@ def test_dashboard_uses_github_like_global_shell_and_hamburger_drawer():
         dashboard.index("data-dashboard-sidebar") - 240:
         dashboard.index("data-dashboard-sidebar") + 480
     ]
-    assert "#0C1117" in dashboard
+    # The sidebar tracks the theme (light/dark), not a hardcoded dark color,
+    # so it doesn't stay black when the rest of the dashboard switches to
+    # light mode.
+    assert "#0C1117" not in dashboard
+    assert "bg-[rgb(var(--dashboard-sidebar-rgb))]" in dashboard
     assert "lg:hidden" not in hamburger
     assert "lg:flex" not in sidebar
     assert "function setMobileSidebarOpen(open)" in dashboard_js
@@ -753,6 +758,29 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
         assert "data-profile-appearance-panel" not in page
         assert "data-appearance-theme" not in page
         assert "forkmesh.dashboard.theme" not in page
+
+
+def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
+    # Regression guard: the header background once stayed black in light mode
+    # because --dashboard-header-rgb was only ever defined in the dark theme
+    # block. Every color variable set for dark must have a light override too
+    # (font-size is the one deliberate exception: it's theme-independent and
+    # lives on the shared :root/dark selector).
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    assert dashboard == _read(PUBLIC / "dashboard.html")
+
+    dark_block = dashboard[
+        dashboard.index('[data-dashboard-theme="dark"] {'):
+        dashboard.index('[data-dashboard-theme="light"] {')
+    ]
+    light_block = dashboard[
+        dashboard.index('[data-dashboard-theme="light"] {'):
+        dashboard.index("* {", dashboard.index('[data-dashboard-theme="light"] {'))
+    ]
+    dark_vars = set(re.findall(r"--([a-zA-Z0-9-]+):", dark_block)) - {"font-size"}
+    light_vars = set(re.findall(r"--([a-zA-Z0-9-]+):", light_block))
+    missing = dark_vars - light_vars
+    assert not missing, f"light theme is missing overrides for: {sorted(missing)}"
 
 
 def _strip_html_comments(html: str) -> str:
