@@ -45,6 +45,17 @@
             "sig": "Tzt1GpsH-RbD-nlv2H3hxDtt5aNbRD99CpizwTiRgoG7AICwJWPJW9YayKE57VBQcp43s3-qI34dCURs6QM2Cw",
             "ts": 1783717218138,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Closed by merged branch \"agent/issue-402-make-it-so-that-when-we-paste-an-image-into-an-i\".",
+            "id": "1163cd6b-bace-4331-8152-705d94e8456d",
+            "sig": "Sv5j3oe20_suI5jBByVllZasYSpm2DXJbPay77XlHZj_at0_lTCvH69_bzoVoC7CoOpJCkmTjFsxFWGxXEMJCA",
+            "ts": 1783720507508,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -56,6 +67,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "make it so that when we paste an image into an issue it shows right away",
-    "updatedAt": 1783717218138,
+    "updatedAt": 1783720507508,
     "votes": 0
 }
