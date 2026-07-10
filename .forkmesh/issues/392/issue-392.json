@@ -63,6 +63,18 @@
             "status": "closed",
             "ts": 1783720734731,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7006c828-0199-4f6a-a2d4-7fe6cd8f8000",
+            "sig": "S4NeqnRjwh3QmeQDb6k7xR1aPQML7u1orYCfqaTV29Diykq2NEbuIpL94mCJR5RmcK-3YCLCovQnv8qUW8giDg",
+            "ts": 1783721095764,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -74,6 +86,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "closed",
     "title": "BUG: repo delete feature not working",
-    "updatedAt": 1783720734731,
+    "updatedAt": 1783721095764,
     "votes": 0
 }

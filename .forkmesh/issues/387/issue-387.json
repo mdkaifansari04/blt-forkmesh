@@ -43,6 +43,27 @@
             "sig": "Mmz50Fnzedmo5DxnzZwAVvKHZb3C0STADPc4dEdFu_c9tNrgk0jP4G_dYWvxmTMmgPE1l6bNm0Omn5J4l04AAA",
             "ts": 1783717160470,
             "type": "assignees"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6da3157f-80e8-4837-b07d-278563cd2ba7",
+            "sig": "sDFPOoYrS8H7Qo0F8PDkvLjknvNoZ7o3sb2aWBv5E2qhVUZtsQ0vvi7wV_ZutZefiCSCciRluqBzDUrtu5a8BA",
+            "ts": 1783721095616,
+            "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b8084442-6ede-4647-b0d0-d41b20dbfe2a",
+            "sig": "SV7_hR8wyFGaMtBaTyfaaZ2WkHT8Pwnz6pu40XSfqoga31NMPtb6H9vjEiikye38AUm2oVXhJS_r1nBUaW9LDQ",
+            "status": "closed",
+            "ts": 1783721095727,
+            "type": "status"
         }
     ],
     "labels": [
@@ -52,8 +73,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "show a greyed out microphone where the microphoen icon goes  if the user does not have any models installed",
-    "updatedAt": 1783717160470,
+    "updatedAt": 1783721095727,
     "votes": 0
 }
