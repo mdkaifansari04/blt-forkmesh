@@ -2,8 +2,8 @@
 
 The dashboard's static chrome used to be one ~1800-line ``dashboard/index.html``.
 It is now split into individual partial ``.html`` files under
-``public/dashboard/partials/`` (header, sidebar, main repos view, network rail,
-modals). ``dashboard/shell.html`` keeps only the ``<head>`` and the outer body
+``public/dashboard/partials/`` (header, sidebar, main repos view, modals).
+``dashboard/shell.html`` keeps only the ``<head>`` and the outer body
 scaffold, pulling each section back in with an
 
     <!--#include partial="name"-->

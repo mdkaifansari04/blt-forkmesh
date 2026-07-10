@@ -37,7 +37,7 @@
 
           <label class="grid gap-1.5 text-xs text-muted-foreground">
             Current password
-            <input data-profile-password type="password" autocomplete="current-password" placeholder="Required to save profile changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            <input data-profile-password type="password" autocomplete="current-password" placeholder="Required to save payout changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
           </label>
 
           <p data-profile-hint class="min-h-4 text-xs text-muted-foreground"></p>
@@ -46,7 +46,39 @@
           </button>
 	        </div>
 	      </div>
-	    </div>
+    </div>
+
+    <div
+      data-profile-about-modal
+      class="hidden fixed inset-0 z-[95] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profileAboutModalTitle"
+    >
+      <button data-profile-about-modal-backdrop type="button" aria-label="Close about editor" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="profileAboutModalTitle" class="text-sm font-semibold text-foreground">Edit about yourself</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Markdown shown on your ForkMesh profile overview.</p>
+          </div>
+          <button data-profile-about-modal-close type="button" aria-label="Close about editor" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+        <div class="grid min-h-0 gap-4 overflow-y-auto p-4">
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground">
+            About yourself
+            <textarea data-profile-about-textarea rows="14" maxlength="32000" spellcheck="true" class="min-h-72 resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:border-ring" placeholder="# Hi, I'm ..."></textarea>
+          </label>
+          <p data-profile-about-hint class="min-h-4 text-xs text-muted-foreground"></p>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <button data-profile-about-cancel type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-semibold text-foreground hover:bg-secondary">Cancel</button>
+          <button data-profile-about-save type="button" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90">Save about</button>
+        </div>
+      </div>
+    </div>
 
     <div
       id="notificationModal"

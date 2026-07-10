@@ -27,7 +27,7 @@
         <div class="grid gap-2">
           <label class="flex items-center gap-2 text-xs text-muted-foreground">
             <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
-            <span>Assign to agent — once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
+            <span>Assign to agent - once filed, ${sessionOwnsRepo(repo) ? "your" : escapeHtml(repo.owner || "the owner") + "'s"} node starts a coding agent on it automatically</span>
           </label>
           <div class="ml-5 flex flex-wrap items-center gap-4">
             <label class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -116,7 +116,7 @@
           const total = images.reduce((sum, img) => sum + img.size, 0);
           const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
           if (budget <= 0) {
-            setAttachHint("Attached images already use up the issue's size limit — remove one to add another.", "bad");
+            setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
             continue;
           }
           let dataUrl;
@@ -130,7 +130,7 @@
               continue;
             }
           } else {
-            setAttachHint(`${file.name} is ${formatSize(file.size)} — crop or compress it to fit under ${formatSize(budget)}.`);
+            setAttachHint(`${file.name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
             const result = await openImageResizeModal(file, budget);
             if (!result) {
               setAttachHint("");
@@ -181,7 +181,7 @@
     const agentModel = assignAgent ? String(agentModelInput?.value || "") : "";
     const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
     // Swap each attached image's short placeholder back out for its real
-    // data: URL now, right before signing — the signed content hash has to
+    // data: URL now, right before signing - the signed content hash has to
     // cover exactly what gets sent.
     let body = String(bodyInput?.value || "");
     const images = form._pendingIssueImages || [];
@@ -191,7 +191,7 @@
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider);
       // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't be visible there until they drain it — but show it locally, on
+      // won't be visible there until they drain it - but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
       state.issuesView.items = [{
         number: null,
@@ -828,6 +828,36 @@
       </label>`;
   }
 
+  function renderRepoCollectionSidebar(kind) {
+    const primaryItems = [
+      ["Issues", "circle-dot"],
+      ["Assigned to me", "users"],
+      ["Created by me", "smile-plus"],
+      ["Mentioned", "at-sign"],
+      ["Recent activity", "clock"],
+    ];
+    const secondaryItems = [
+      ["Views", "layers"],
+      ["Projects", "table-2"],
+      ["Milestones", "milestone"],
+      ["Labels", "tag"],
+    ];
+    const renderItem = ([label, icon], active = false) => `
+      <button type="button" class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}">
+        <i data-lucide="${icon}" class="h-3.5 w-3.5 shrink-0"></i>
+        <span class="min-w-0 truncate">${label}</span>
+      </button>`;
+    return `
+      <aside data-repo-collection-sidebar="${kind}" class="hidden border-r border-border pr-3 lg:block">
+        <nav class="grid gap-1">
+          ${primaryItems.map((item, index) => renderItem(item, index === 0)).join("")}
+        </nav>
+        <nav class="mt-5 grid gap-1 border-t border-border pt-5">
+          ${secondaryItems.map((item) => renderItem(item)).join("")}
+        </nav>
+      </aside>`;
+  }
+
   function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
     const isPulls = kind === "pulls";
     const config = repoCollectionConfig[kind];
@@ -845,39 +875,48 @@
 
     return `
       <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
-        <div class="mt-4 grid gap-3">
-          <div data-repo-collection-toolbar="${kind}" class="grid gap-2 lg:grid-cols-[auto_minmax(0,1fr)]">
-            <label class="inline-flex h-9 min-w-0 items-center overflow-hidden rounded-md border border-border bg-background text-xs">
-              <span class="relative inline-flex h-full items-center gap-1.5 border-r border-border bg-secondary px-3 font-medium text-foreground">
-                <span>Filters</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-                <select data-repo-filter-menu="${kind}" aria-label="${title} filters" class="absolute inset-0 cursor-pointer opacity-0">
-                  <option>Open ${title.toLowerCase()}</option>
-                  <option>Your ${title.toLowerCase()}</option>
-                  <option>Everything assigned</option>
-                  <option>Recently updated</option>
-                </select>
-              </span>
-              <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
-                <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
-              </span>
-            </label>
-            <div class="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
-              ${filters.map(([label, options]) => renderRepoCollectionFilter(label, options)).join("")}
-            </div>
-          </div>
-          <div class="overflow-hidden rounded-lg border border-border bg-background">
-            <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
-              <div class="flex min-w-0 flex-wrap items-center gap-3 text-xs">
-                <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i><span data-repo-collection-open-count="${kind}">${tabCountLabel(openCount)}</span> Open</span>
-                <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i><span data-repo-collection-closed-count="${kind}">${tabCountLabel(closedCount)}</span> Closed</span>
+        <div class="mt-4 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          ${renderRepoCollectionSidebar(kind)}
+          <div class="min-w-0">
+            ${isPulls ? `
+              <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">
+                <p class="text-sm font-semibold text-foreground">First time contributing to ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}?</p>
+                <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground">Review this repository's contribution notes before opening a pull request.</p>
+              </div>` : ""}
+            <div data-repo-collection-toolbar="${kind}" class="mb-3 grid gap-2 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
+              <label class="inline-flex h-9 min-w-0 items-center overflow-hidden rounded-md border border-border bg-background text-xs lg:col-span-2">
+                <span class="relative inline-flex h-full items-center gap-1.5 border-r border-border bg-secondary px-3 font-medium text-foreground">
+                  <span>Filters</span>
+                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+                  <select data-repo-filter-menu="${kind}" aria-label="${title} filters" class="absolute inset-0 cursor-pointer opacity-0">
+                    <option>Open ${title.toLowerCase()}</option>
+                    <option>Your ${title.toLowerCase()}</option>
+                    <option>Everything assigned</option>
+                    <option>Recently updated</option>
+                  </select>
+                </span>
+                <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
+                  <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                  <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
+                </span>
+              </label>
+              ${isPulls
+                ? `<button type="button" disabled aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground opacity-70"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
+                : `<button type="button" data-repo-issue-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`}
+              <div class="flex min-w-0 flex-wrap items-center gap-2 lg:col-span-3">
+                ${filters.map(([label, options]) => renderRepoCollectionFilter(label, options)).join("")}
               </div>
-              ${kind === "issues" && state.session?.nodeName
-                ? `<button type="button" data-repo-issue-new class="inline-flex h-7 items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`
-                : `<span class="text-[10px] text-muted-foreground">Create from desktop client for signed submissions</span>`}
             </div>
-            <div data-repo-${kind}></div>
+            <div class="overflow-hidden rounded-lg border border-border bg-background">
+              <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+                <div class="flex min-w-0 flex-wrap items-center gap-3 text-xs">
+                  <span class="inline-flex items-center gap-2 font-semibold text-foreground"><i data-lucide="${icon}" class="h-3.5 w-3.5 text-primary"></i><span data-repo-collection-open-count="${kind}">${tabCountLabel(openCount)}</span> Open</span>
+                  <span class="inline-flex items-center gap-2 text-muted-foreground"><i data-lucide="check" class="h-3.5 w-3.5"></i><span data-repo-collection-closed-count="${kind}">${tabCountLabel(closedCount)}</span> Closed</span>
+                </div>
+                <span class="text-[10px] text-muted-foreground">${isPulls ? "Review and merge signed patches" : "Track signed issues from the live mirror"}</span>
+              </div>
+              <div data-repo-${kind}></div>
+            </div>
           </div>
         </div>
       </section>`;

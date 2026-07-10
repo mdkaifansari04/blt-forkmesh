@@ -13,6 +13,8 @@
 /security-report /security-report.html 200
 /docs /docs/index.html 200
 /docs/ /docs 308
+/docs/:slug /docs/:slug/ 308
+/docs/:slug/ /docs/:slug/index.html 200
 /blog/ /blog 308
 /blogs /blog 308
 # Blog posts are directory indexes, but Workers Static Assets has
