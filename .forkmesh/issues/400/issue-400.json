@@ -54,6 +54,15 @@
             "sig": "5h0gb8lUaVlKe_wi5LZ92BQM7nUiW7y90M5j2w2XC4bbeY73tv-MvDdZeaUlaTM7EgIfKNTK_dQzM21nfpXkBQ",
             "ts": 1783720494530,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "a3b8880b-dc75-49f9-9fdb-eade35bb4a45",
+            "sig": "VKcXmFIvxlRS3uyvAn95VqDedSPd0gYaR-LMbWoWrLCPBpDhKqndj2FAz38ROIuhk-zohK2MMdvqGlOsuqH9Ag",
+            "status": "closed",
+            "ts": 1783720494585,
+            "type": "status"
         }
     ],
     "labels": [
@@ -63,8 +72,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "allow for deleting a comment from an issue",
-    "updatedAt": 1783720494530,
+    "updatedAt": 1783720494585,
     "votes": 0
 }
