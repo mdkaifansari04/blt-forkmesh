@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
     "authorName": "mdkaifansari04",
@@ -31,6 +32,17 @@
             "sig": "1mtn-11hNYipsmb02diZoJeTdoJhIHZ2Uy57TSOFt7jhd9KfOCDoJfwzR8JIx1i3VS4W2LiX082p2oMXjM30Bg",
             "ts": 1783717075724,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "27801159-f421-4da2-ab35-08f880364778",
+            "sig": "AOhC7cP4R4QiVwfyhrgAfsK6HJmkIbjSijt6lTb4O0eCRFFZ_sg4zvTXXRhEdAqR6zg-GZuFXDloUxrUwtucCA",
+            "ts": 1783717075784,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -42,6 +54,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "BUG: repo delete feature not working",
-    "updatedAt": 1783717075724,
+    "updatedAt": 1783717075784,
     "votes": 0
 }
