@@ -75,7 +75,6 @@ BLOG_POST_REDIRECT_RULES = {
     ("/blog/:slug/", "/blog/:slug/index.html", "200"),
 }
 
-# Docs sections are directory indexes served the same way blog posts are.
 DOCS_PAGE_REDIRECT_RULES = {
     ("/docs/:slug", "/docs/:slug/", "308"),
     ("/docs/:slug/", "/docs/:slug/index.html", "200"),
@@ -97,8 +96,8 @@ NON_ROUTED_HTML_ASSETS = {
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "blog").glob("*/index.html")
 } | {
-    # Docs sections live under /docs/<slug>/ and are served the same way,
-    # while /docs itself is the canonical listing route.
+    # Docs pages live under /docs/<slug>/ and are served as static
+    # directory indexes, while /docs itself is the canonical listing route.
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "docs").glob("*/index.html")
 }
@@ -127,8 +126,8 @@ def test_public_redirects_have_one_canonical_route_per_public_html_page():
         if (
             status == "200"
             and target.endswith(".html")
-            and (source, target, status)
-            not in BLOG_POST_REDIRECT_RULES | DOCS_PAGE_REDIRECT_RULES
+            and (source, target, status) not in BLOG_POST_REDIRECT_RULES
+            and (source, target, status) not in DOCS_PAGE_REDIRECT_RULES
         )
     }
 
