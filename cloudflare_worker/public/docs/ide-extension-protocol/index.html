@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IDE extension protocol · ForkMesh Docs</title>
+    <meta
+      name="description"
+      content="How the ForkMesh desktop app and IDE extension hand off work through a small set of JSON files under ~/.forkmesh/ide/ instead of sockets or ports."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/static-page.js" defer></script>
+    <style>
+      .doc-wrap { max-width: 860px; margin: 0 auto; padding: 42px 20px 80px; }
+      .doc-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .doc-intro { color: var(--muted); max-width: 68ch; font-size: 17px; margin: 0 0 8px; line-height: 1.6; }
+      .doc-crumbs { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+      .doc-crumbs a { color: var(--muted); }
+      .doc-crumbs a:hover { color: var(--foreground); }
+      .doc-toc { margin: 28px 0 8px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; }
+      .doc-toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+      .doc-toc ol { margin: 0; padding-left: 18px; columns: 2; column-gap: 24px; }
+      .doc-toc li { margin: 4px 0; break-inside: avoid; }
+      .doc-toc a { color: var(--foreground); text-decoration: none; }
+      .doc-toc a:hover { text-decoration: underline; }
+      .doc-body { margin-top: 32px; }
+      .doc-body h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
+      .doc-body h2:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .doc-body h3 { font-size: 19px; margin: 28px 0 10px; }
+      .doc-body p { color: var(--muted); line-height: 1.65; margin: 0 0 14px; }
+      .doc-body p strong, .doc-body li strong { color: var(--foreground); }
+      .doc-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+      .doc-body ul, .doc-body ol { padding-left: 22px; margin: 0 0 14px; color: var(--muted); }
+      .doc-body li { margin: 6px 0; line-height: 1.6; }
+      .doc-body code { font-family: "ForkMesh Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; background: rgba(127,127,127,0.14); border-radius: 4px; padding: 0.12em 0.4em; }
+      .doc-body pre { background: rgba(127,127,127,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 18px; }
+      .doc-body pre code { background: none; padding: 0; font-size: 0.86em; line-height: 1.55; }
+      .doc-body blockquote { margin: 0 0 16px; padding: 4px 16px; border-left: 3px solid var(--border); color: var(--muted); }
+      .doc-body table { width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 0.93em; }
+      .doc-body th, .doc-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .doc-body th { color: var(--foreground); font-weight: 700; }
+      .doc-body hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+      .doc-siblings { margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--border); }
+      .doc-siblings h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+      .doc-siblings ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); }
+      .doc-siblings a { font-weight: 600; color: var(--foreground); text-decoration: none; }
+      .doc-siblings a:hover { text-decoration: underline; }
+    </style>
+    <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+
+    <main class="doc-wrap">
+      <p class="doc-crumbs"><a href="/docs">Docs</a> / IDE extension protocol</p>
+      <p class="eyebrow">Developer docs</p>
+      <h1>ForkMesh IDE ↔ desktop protocol</h1>
+      <p class="doc-intro">
+        The desktop app and this extension talk through plain files under
+        <code>~/.forkmesh/ide/</code>. No sockets, no ports — it works
+        regardless of which folder the IDE has open and survives either side
+        restarting.
+      </p>
+
+      <div class="doc-body">
+        <pre><code>~/.forkmesh/ide/
+  registration.json     written by the extension; a heartbeat
+  requests/&lt;id&gt;.json     written by the desktop app; consumed by the extension
+  responses/&lt;id&gt;.json    written by the extension; an ack/result per request</code></pre>
+
+        <h2 id="registration-json-extension-desktop">registration.json (extension → desktop)</h2>
+        <p>
+          Rewritten on activation, on a ~20s heartbeat, and on window focus
+          changes; deleted on deactivation. The desktop app treats the
+          integration as <strong>active</strong> when this file exists and
+          <code>ts</code> is within the last ~90 seconds.
+        </p>
+        <pre><code>{
+  "ide": "Visual Studio Code",
+  "version": "1.96.0",
+  "pid": 12345,
+  "ts": 1782000000000,
+  "workspaces": ["/home/me/projects/forkmesh"],
+  "agents": { "claude": true, "codex": true }
+}</code></pre>
+
+        <h2 id="requests-id-json-desktop-extension">requests/&lt;id&gt;.json (desktop → extension)</h2>
+        <p>
+          The desktop app writes one file per "run this issue in the IDE"
+          action. The extension watches the directory, reads + deletes the
+          file, loads the issue from
+          <code>repoPath/issues/&lt;issueNumber&gt;/</code>, and starts the
+          agent in a terminal.
+        </p>
+        <pre><code>{
+  "id": "b3f1c2…",
+  "ts": 1782000000000,
+  "repoPath": "/home/me/projects/forkmesh",
+  "issueNumber": 42,
+  "issueTitle": "Fix the thing",
+  "provider": "claude"
+}</code></pre>
+        <p>
+          <code>provider</code> is <code>"claude"</code> or
+          <code>"codex"</code>. <code>id</code> should be unique (a UUID).
+        </p>
+
+        <h2 id="responses-id-json-extension-desktop">responses/&lt;id&gt;.json (extension → desktop)</h2>
+        <pre><code>{ "id": "b3f1c2…", "ts": 1782000000001, "ok": true, "message": "Started Claude Code on issue #42" }</code></pre>
+        <p>
+          The desktop app may read this to confirm the hand-off, then delete
+          it. Stale responses can be ignored/swept by age.
+        </p>
+      </div>
+
+      <nav class="doc-siblings" aria-label="Other developer docs">
+        <h2>More developer docs</h2>
+        <ul>
+          <li><a href="/docs/protocol">Protocol spec</a> — identity, signatures, HTTP API, self-hosting a mainnode</li>
+          <li><a href="/docs/cloudflare-worker">Relay &amp; website</a> — the Cloudflare Worker</li>
+          <li><a href="/docs/qt-client">Desktop client</a> — the Qt 6 node</li>
+          <li><a href="/docs/flutter-app">Mobile app</a> — the Flutter client</li>
+          <li><a href="/docs/ide-extension">IDE extension</a> — editor integration</li>
+          <li><a href="/changelog">Changelog</a> — release-by-release history</li>
+        </ul>
+      </nav>
+    </main>
+
+    <div data-forkmesh-footer="standard"></div>
+  </body>
+</html>

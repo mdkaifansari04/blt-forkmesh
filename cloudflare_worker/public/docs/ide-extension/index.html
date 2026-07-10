@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IDE extension · ForkMesh Docs</title>
+    <meta
+      name="description"
+      content="The ForkMesh IDE extension for VS Code and Codeium-based editors: browse open issues from the file-based tracker and launch Claude Code or Codex against any issue with one click."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/static-page.js" defer></script>
+    <style>
+      .doc-wrap { max-width: 860px; margin: 0 auto; padding: 42px 20px 80px; }
+      .doc-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .doc-intro { color: var(--muted); max-width: 68ch; font-size: 17px; margin: 0 0 8px; line-height: 1.6; }
+      .doc-crumbs { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+      .doc-crumbs a { color: var(--muted); }
+      .doc-crumbs a:hover { color: var(--foreground); }
+      .doc-toc { margin: 28px 0 8px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; }
+      .doc-toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+      .doc-toc ol { margin: 0; padding-left: 18px; columns: 2; column-gap: 24px; }
+      .doc-toc li { margin: 4px 0; break-inside: avoid; }
+      .doc-toc a { color: var(--foreground); text-decoration: none; }
+      .doc-toc a:hover { text-decoration: underline; }
+      .doc-body { margin-top: 32px; }
+      .doc-body h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
+      .doc-body h2:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .doc-body h3 { font-size: 19px; margin: 28px 0 10px; }
+      .doc-body p { color: var(--muted); line-height: 1.65; margin: 0 0 14px; }
+      .doc-body p strong, .doc-body li strong { color: var(--foreground); }
+      .doc-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+      .doc-body ul, .doc-body ol { padding-left: 22px; margin: 0 0 14px; color: var(--muted); }
+      .doc-body li { margin: 6px 0; line-height: 1.6; }
+      .doc-body code { font-family: "ForkMesh Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; background: rgba(127,127,127,0.14); border-radius: 4px; padding: 0.12em 0.4em; }
+      .doc-body pre { background: rgba(127,127,127,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 18px; }
+      .doc-body pre code { background: none; padding: 0; font-size: 0.86em; line-height: 1.55; }
+      .doc-body blockquote { margin: 0 0 16px; padding: 4px 16px; border-left: 3px solid var(--border); color: var(--muted); }
+      .doc-body table { width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 0.93em; }
+      .doc-body th, .doc-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .doc-body th { color: var(--foreground); font-weight: 700; }
+      .doc-body hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+      .doc-siblings { margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--border); }
+      .doc-siblings h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+      .doc-siblings ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); }
+      .doc-siblings a { font-weight: 600; color: var(--foreground); text-decoration: none; }
+      .doc-siblings a:hover { text-decoration: underline; }
+    </style>
+    <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+
+    <main class="doc-wrap">
+      <p class="doc-crumbs"><a href="/docs">Docs</a> / IDE extension</p>
+      <p class="eyebrow">Developer docs</p>
+      <h1>ForkMesh for VS Code / Codeium</h1>
+      <p class="doc-intro">
+        Brings ForkMesh's issue tracker into the editor and lets you hand any
+        issue to <strong>Claude Code</strong> or <strong>Codex</strong> with
+        one click. Works in VS Code and the VS Code–based IDEs (Windsurf,
+        Cursor, Codeium, VSCodium) via the standard extension API.
+      </p>
+
+      <div class="doc-body">
+        <h2 id="what-it-does">What it does</h2>
+        <ul>
+          <li>Adds a <strong>ForkMesh</strong> icon to the activity bar (left rail).</li>
+          <li>Lists the repository's <strong>open issues</strong>, read straight from the file-based tracker in <code>issues/</code> (the same files the ForkMesh desktop app reads/writes).</li>
+          <li>
+            Each issue has two inline buttons:
+            <ul>
+              <li><strong>Start with Claude Code</strong> — opens a terminal at the repo root and runs Claude Code seeded with a prompt built from the issue.</li>
+              <li><strong>Start with Codex</strong> — same, for Codex.</li>
+            </ul>
+          </li>
+          <li>Integrates with the <strong>ForkMesh desktop app</strong>: when you enable IDE integration there, its issue view gains "run in IDE" buttons that drive this extension.</li>
+        </ul>
+
+        <h2 id="requirements">Requirements</h2>
+        <ul>
+          <li>A workspace folder that is a ForkMesh repository (contains an <code>issues/</code> directory). Override the location with <code>forkmesh.issuesPath</code>.</li>
+          <li>The <code>claude</code> and/or <code>codex</code> CLIs on your <code>PATH</code> (or customize the commands below).</li>
+        </ul>
+
+        <h2 id="settings">Settings</h2>
+        <table>
+          <thead>
+            <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>forkmesh.claudeCommand</code></td><td><code>claude "$(cat {promptFile})"</code></td><td>Command to start Claude Code. <code>{promptFile}</code> → generated prompt file, <code>{issueNumber}</code> → issue number.</td></tr>
+            <tr><td><code>forkmesh.codexCommand</code></td><td><code>codex "$(cat {promptFile})"</code></td><td>Command to start Codex.</td></tr>
+            <tr><td><code>forkmesh.issuesPath</code></td><td><em>(auto)</em></td><td>Absolute path to an <code>issues/</code> dir; empty = auto-detect <code>&lt;workspace&gt;/issues</code>.</td></tr>
+            <tr><td><code>forkmesh.showClosedIssues</code></td><td><code>false</code></td><td>Also list closed issues.</td></tr>
+          </tbody>
+        </table>
+        <blockquote>
+          <p>The default commands use <code>$(cat …)</code> (a POSIX shell). On Windows, set a PowerShell-friendly command, e.g. <code>claude (Get-Content {promptFile} -Raw)</code>.</p>
+        </blockquote>
+
+        <h2 id="desktop-app-handshake">Desktop-app handshake</h2>
+        <p>
+          While running, the extension maintains a heartbeat file and watches
+          for task requests under <code>~/.forkmesh/ide/</code> — see
+          <a href="/docs/ide-extension-protocol">ide-extension-protocol.md</a>.
+          The ForkMesh desktop app uses these to detect the extension and to
+          launch issues in the IDE. No network sockets are involved.
+        </p>
+
+        <h2 id="develop-build">Develop / build</h2>
+        <pre><code>cd ide_extension
+npm install
+npm run compile          # or: npm run watch
+# Press F5 in VS Code to launch an Extension Development Host.
+npm run package          # produces forkmesh-&lt;version&gt;.vsix (needs @vscode/vsce)</code></pre>
+        <p>Install the packaged build with:</p>
+        <pre><code>code --install-extension forkmesh-0.1.0.vsix
+# Windsurf / Cursor / VSCodium expose the same CLI under their own name.</code></pre>
+      </div>
+
+      <nav class="doc-siblings" aria-label="Other developer docs">
+        <h2>More developer docs</h2>
+        <ul>
+          <li><a href="/docs/protocol">Protocol spec</a> — identity, signatures, HTTP API, self-hosting a mainnode</li>
+          <li><a href="/docs/cloudflare-worker">Relay &amp; website</a> — the Cloudflare Worker</li>
+          <li><a href="/docs/qt-client">Desktop client</a> — the Qt 6 node</li>
+          <li><a href="/docs/flutter-app">Mobile app</a> — the Flutter client</li>
+          <li><a href="/docs/ide-extension-protocol">IDE extension protocol</a> — the desktop handshake</li>
+          <li><a href="/changelog">Changelog</a> — release-by-release history</li>
+        </ul>
+      </nav>
+    </main>
+
+    <div data-forkmesh-footer="standard"></div>
+  </body>
+</html>
