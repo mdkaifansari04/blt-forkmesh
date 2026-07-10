@@ -886,10 +886,13 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     assert "data-link-grant-confirm" in dashboard_js
 
     # A logged-out browser bounces through login and resumes via ?next= (local
-    # paths only, so the bounce can't become an open redirect).
+    # paths only, so the bounce can't become an open redirect). The guard rejects
+    # "//host" and the "/\host" backslash bypass and confirms the resolved origin
+    # matches ours.
     assert "/login?next=" in dashboard_js
     assert "nextPath()" in login_js
-    assert 'value.startsWith("/") && !value.startsWith("//")' in login_js
+    assert 'value.startsWith("//")' in login_js
+    assert 'new URL(value, location.origin).origin !== location.origin' in login_js
 
 
 def test_dashboard_exposes_a_claim_node_panel():
