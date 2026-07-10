@@ -173,6 +173,11 @@ SCHEMA_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS login_attempts (id_bi TEXT PRIMARY KEY, "
     "fails INTEGER NOT NULL DEFAULT 0, first_fail_ts INTEGER NOT NULL DEFAULT 0, "
     "locked_until INTEGER NOT NULL DEFAULT 0)",
+    # Per-source-IP account-creation throttle: a rolling window count keyed by the
+    # blind index of the signup IP, so a single IP can't mass-create accounts /
+    # squat node names. ip_bi is the same one-way index stored on the account.
+    "CREATE TABLE IF NOT EXISTS signup_rate (ip_bi TEXT PRIMARY KEY, "
+    "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
     # Installer link-code rendezvous (adhoc #53): install.sh mints a short code
     # the fresh headless node registers with, and the installing user's desktop
     # app offers the same code signed by its key. Whichever side arrives first

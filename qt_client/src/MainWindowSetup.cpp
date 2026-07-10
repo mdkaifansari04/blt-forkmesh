@@ -1131,7 +1131,8 @@ void MainWindow::startSession()
                                   nodeOwnerDisplayName(),
                                   m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
-                                  m_solanaEdit->text().trimmed(), this);
+                                  m_solanaEdit->text().trimmed(),
+                                  m_roomPassphrase, this);
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
         return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
     });
@@ -1323,6 +1324,9 @@ void MainWindow::sendNodeHeartbeat()
             m_navNodeName->setToolTip(
                 m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
         }
+        // Fetch the shared room-chat key once the account identity is available,
+        // so it's cached before the user opens chat (no-op once fetched).
+        fetchRoomPassphrase();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -1554,6 +1558,36 @@ void MainWindow::pollPendingUsers()
                                      QMessageBox::Yes | QMessageBox::No) ==
             QMessageBox::Yes)
             showAdminVerifyDialog();
+    });
+}
+
+void MainWindow::fetchRoomPassphrase()
+{
+    // Fetch once: the shared room key is stable per relay. Signed with the node's
+    // own Ed25519 key (the same proof a heartbeat carries), so the relay hands
+    // the key only to a registered account — it is no longer a public constant.
+    if (!m_roomPassphrase.isEmpty())
+        return;
+    const QString node = accountOwner();
+    if (node.isEmpty() || !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-room-key-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/chat/room-key"));
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        const QString pass = resp.value("passphrase").toString();
+        if (!pass.isEmpty())
+            m_roomPassphrase = pass;
     });
 }
 
