@@ -1430,8 +1430,8 @@ private:
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
     // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
-    // OAuth usage endpoint. No background timer drives this (adhoc #76) — it
-    // only runs right after a prompt is sent (bumpClaudeCodeUsage) or when the
+    // OAuth usage endpoint. No background timer drives this (adhoc #76), and
+    // adhoc #20 dropped every other trigger too — this now only runs when the
     // user hovers the top-bar chart to check the current figures.
     void refreshClaudeCodeUsage();
     // Ask the provider which models this account can drive right now
@@ -1440,11 +1440,6 @@ private:
     // without an app update). Best-effort: on any failure the static defaults
     // from populateClaudeModelCombo() stand.
     void refreshClaudeModelCombo();
-    // Refresh usage now and again a few seconds later. Use this the moment a new
-    // agent starts or a prompt is sent: at that instant no tokens have been
-    // consumed yet, so an immediate refresh still shows the pre-start figure —
-    // the delayed follow-up catches the first turn's usage.
-    void bumpClaudeCodeUsage();
     // Codex currently exposes ForkMesh's locally tracked rolling-window
     // remaining time rather than a live provider utilization API. Keep the
     // top-bar Codex meter in sync with the Agents-page usage-limit countdown.
