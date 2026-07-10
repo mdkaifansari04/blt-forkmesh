@@ -831,10 +831,11 @@ int IssueStore::createIssue(const QString &title, const QString &body,
                             const QStringList &labels, const QString &milestone,
                             int priority,
                             const QStringList &assignees,
-                            const QStringList &attachmentSrcPaths, QString *error)
+                            const QStringList &attachmentSrcPaths, QString *error,
+                            Issue *createdOut)
 {
     return createIssue(title, body, labels, milestone, priority, assignees,
-                       attachmentSrcPaths, {}, error);
+                       attachmentSrcPaths, {}, error, createdOut);
 }
 
 int IssueStore::createIssue(const QString &title, const QString &body,
@@ -842,7 +843,8 @@ int IssueStore::createIssue(const QString &title, const QString &body,
                             int priority,
                             const QStringList &assignees,
                             const QStringList &attachmentSrcPaths,
-                            const QStringList &attachmentPlaceholders, QString *error)
+                            const QStringList &attachmentPlaceholders, QString *error,
+                            Issue *createdOut)
 {
     if (!canWrite()) {
         if (error)
@@ -880,6 +882,8 @@ int IssueStore::createIssue(const QString &title, const QString &body,
         return -1;
     if (!commit(QStringLiteral("issue #%1: %2").arg(number).arg(title), error))
         return -1;
+    if (createdOut)
+        *createdOut = issue;
     return number;
 }
 
