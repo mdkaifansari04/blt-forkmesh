@@ -65,6 +65,15 @@
             "sig": "Hz1gnNQ9agM9j_Xs0BtZhmko0WOZKa-BhJs3cqHC1iocxXzI3pLsPrIl3NsC4hdB8u8pT2_yudMzrk0PleVoBQ",
             "ts": 1783720055322,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d76a468f-a894-49d3-9bd6-2d759cd43199",
+            "sig": "KkVj6ZyRaPcNvf4ZdP17qzDynBY3pKskTmgDp9OFjEmwRXSb4-47czLfmnAitg4jR2CgLkNXy-jjdUnfpgUjBQ",
+            "status": "closed",
+            "ts": 1783720055376,
+            "type": "status"
         }
     ],
     "labels": [
@@ -74,8 +83,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "BUG: after creating issue, there is redirect to the issue tab, which feels like very laggy, this needs to be fixed.",
-    "updatedAt": 1783720055322,
+    "updatedAt": 1783720055376,
     "votes": 0
 }
