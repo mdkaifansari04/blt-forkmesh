@@ -3,6 +3,7 @@
 
 import ast
 import asyncio
+import base64
 import json
 import re
 import tomllib
@@ -28,6 +29,28 @@ FUNCS = {
     "_forkbot_extract_mention_command",
     "_forkbot_parse_issue_command",
     "_forkbot_command_hints_issue",
+    "_forkbot_polite_prefix",
+    "_forkbot_parse_list_command",
+    "_forkbot_parse_search_command",
+    "_forkbot_parse_agent_command",
+    "_forkbot_parse_show_command",
+    "_forkbot_parse_help_command",
+    "_forkbot_help_message",
+    "_forkbot_repo_host_json",
+    "_forkbot_missing_tree",
+    "_forkbot_issue_json_path",
+    "_forkbot_blob_text",
+    "_forkbot_parse_issue_record",
+    "_forkbot_recent_issue_numbers",
+    "_forkbot_load_issue_records",
+    "_forkbot_search_issues",
+    "_forkbot_issue_lines",
+    "_forkbot_host_offline_reply",
+    "_forkbot_action_list",
+    "_forkbot_action_search",
+    "_forkbot_action_show",
+    "_forkbot_action_start_agent",
+    "_forkbot_enqueue_agent_request",
     "_forkbot_context_text",
     "js_nullish",
     "_console_error",
@@ -53,6 +76,10 @@ CONSTANTS = {
     "FORKBOT_AI_DEFAULT_MODEL",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
     "FORKBOT_CONTEXT_MAX_CHARS",
+    "FORKBOT_LIST_DEFAULT",
+    "FORKBOT_LIST_MAX",
+    "FORKBOT_SEARCH_MAX",
+    "FORKBOT_HOST_TIMEOUT_MS",
     "FORKBOT_ISSUE_FIELDS_SCHEMA",
     "FORKBOT_INTENT_SCHEMA",
     "MAX_ISSUE_BYTES",
@@ -73,7 +100,8 @@ def _load_forkbot(extra_globals=None):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in FUNCS:
             selected.append(node)
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
-    ns = {"json": json, "re": re, "quote": quote, "to_js": lambda value: value}
+    ns = {"json": json, "re": re, "quote": quote, "asyncio": asyncio,
+          "base64": base64, "to_js": lambda value: value}
     if extra_globals:
         ns.update(extra_globals)
     exec(compile(module, str(ENTRY), "exec"), ns)
@@ -101,12 +129,69 @@ def _json_response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _env_and_calls(ai=None, catalog_issue_max=None):
+class _HostResponse:
+    def __init__(self, data):
+        self._data = data
+
+    async def json(self):
+        return self._data
+
+
+class _FakeHost:
+    """Stands in for env.FORKMESH_HOST: idFromName/get return self, fetch
+    answers the tree/blobs/search tunnel actions with canned payloads."""
+
+    def __init__(self, tree=None, blobs=None, search=None):
+        self.urls = []
+        self._tree = tree
+        self._blobs = blobs
+        self._search = search
+
+    def idFromName(self, name):
+        return name
+
+    def get(self, _id):
+        return self
+
+    async def fetch(self, url):
+        self.urls.append(url)
+        if "/tree?" in url:
+            data = self._tree
+        elif "/blobs?" in url:
+            data = self._blobs
+        elif "/search?" in url:
+            data = self._search
+        else:
+            data = None
+        if data is None:
+            raise RuntimeError("host offline")
+        return _HostResponse(data)
+
+
+def _issue_tree(numbers):
+    return {"ok": True, "entries": [
+        {"type": "tree", "name": str(n)} for n in numbers]}
+
+
+def _issue_blobs(records):
+    blobs = {}
+    for record in records:
+        path = ".forkmesh/issues/%d/issue-%d.json" % (
+            record["number"], record["number"])
+        blobs[path] = {"ok": True, "encoding": "utf8",
+                       "content": json.dumps(record)}
+    return {"ok": True, "blobs": blobs}
+
+
+def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     calls = {"inserted": [], "contributors": [], "side_effects": []}
 
     class _Env:
         AI = ai
         FORKBOT_AI_MODEL = ""
+
+    if host is not None:
+        _Env.FORKMESH_HOST = host
 
     async def ensure_schema(_env):
         return None
@@ -165,7 +250,11 @@ def _env_and_calls(ai=None, catalog_issue_max=None):
     def notify_mentions(*args, **kwargs):
         return ("mentions", args, kwargs)
 
+    async def is_admin(_env, name):
+        return str(name or "").lower() in {str(a).lower() for a in admins}
+
     ns = _load_forkbot({
+        "_is_admin": is_admin,
         "Date": _Date,
         "json_response": _json_response,
         "ensure_schema": ensure_schema,
@@ -556,3 +645,313 @@ def test_forkbot_command_hint_matches_work_recording_language():
     assert hints("issue to do the thing")
     assert not hints("good morning everyone")
     assert not hints("what's the weather like")
+
+
+def test_forkbot_parses_list_commands():
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_list_command"]
+    assert parse("list issues") == {"count": 5}
+    assert parse("list the last few issues") == {"count": 5}
+    assert parse("show me the latest 10 issues") == {"count": 10}
+    assert parse("please list the last 3 issues") == {"count": 3}
+    assert parse("what are the recent issues") == {"count": 5}
+    # Count is capped so one chat line can't request a huge blob fan-out.
+    assert parse("list the last 500 issues") == {"count": ns["FORKBOT_LIST_MAX"]}
+    # Not list requests.
+    assert parse("create an issue to fix retries") is None
+    assert parse("issues are piling up") is None
+
+
+def test_forkbot_parses_search_commands():
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_search_command"]
+    assert parse("search issues for relay retries") == {
+        "query": "relay retries"}
+    assert parse("find issues about dark mode") == {"query": "dark mode"}
+    assert parse("look for issues mentioning flaky login") == {
+        "query": "flaky login"}
+    assert parse("search the issues: crash logs") == {"query": "crash logs"}
+    # No "issue" keyword -> stays with the create/AI paths.
+    assert parse("search for happiness") is None
+    assert parse("find the bug in the relay") is None
+
+
+def test_forkbot_parses_start_agent_commands():
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_agent_command"]
+    assert parse("start an agent on the most recent issue") == {
+        "issueNumber": 0}
+    assert parse("start a coding agent on the latest issue") == {
+        "issueNumber": 0}
+    assert parse("please run an agent on issue #12") == {"issueNumber": 12}
+    assert parse("assign an agent to issue 7") == {"issueNumber": 7}
+    assert parse("kick off an agent on the newest issue") == {
+        "issueNumber": 0}
+    assert parse("start the meeting") is None
+    assert parse("the agent crashed") is None
+
+
+def test_forkbot_parses_show_and_help_commands():
+    ns = _load_forkbot()
+    show = ns["_forkbot_parse_show_command"]
+    assert show("show issue #12") == {"issueNumber": 12}
+    assert show("show me the latest issue") == {"issueNumber": 0}
+    assert show("what's the status of issue 4") == {"issueNumber": 4}
+    # "open issue ..." must stay with the create parser ("open" = filing verb).
+    assert show("open issue 4") is None
+    assert show("show me the latest issues") is None  # plural -> list command
+    helping = ns["_forkbot_parse_help_command"]
+    assert helping("help")
+    assert helping("what can you do?")
+    assert not helping("help me fix the relay")  # falls through to intents
+    assert not helping("create an issue to add help docs")
+
+
+def test_forkbot_lists_recent_issues_from_live_mirror():
+    host = _FakeHost(
+        tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]),
+        blobs=_issue_blobs([
+            {"number": n, "title": "Issue %d" % n, "status": "open",
+             "authorName": "jett"} for n in (8, 7, 6, 5, 4)]),
+    )
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot list the last few issues", "sender": "alice",
+    })))
+
+    assert response["status"] == 200
+    assert response["data"]["action"] == "issues_listed"
+    assert [i["number"] for i in response["data"]["issues"]] == [8, 7, 6, 5, 4]
+    message = response["data"]["botMessage"]
+    assert "#8 Issue 8 (open, by jett)" in message
+    assert "#3" not in message
+    # More issues exist than were shown -> the reply teaches "ask for more".
+    assert "list the last N issues" in message
+    assert "/forkmesh/forkmesh/issues" in message
+    assert calls["inserted"] == []
+    # One tree listing + one batched blob read, over the internal tunnel.
+    assert any("/tree?" in url for url in host.urls)
+    assert any("/blobs?" in url for url in host.urls)
+
+
+def test_forkbot_list_honors_requested_count():
+    host = _FakeHost(
+        tree=_issue_tree([10, 11, 12]),
+        blobs=_issue_blobs([
+            {"number": n, "title": "T%d" % n, "status": "open"}
+            for n in (12, 11)]),
+    )
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot show me the latest 2 issues",
+    })))
+    assert response["data"]["action"] == "issues_listed"
+    assert [i["number"] for i in response["data"]["issues"]] == [12, 11]
+    blob_urls = [url for url in host.urls if "/blobs?" in url]
+    assert len(blob_urls) == 1 and "issue-10.json" not in blob_urls[0]
+
+
+def test_forkbot_list_reports_offline_host_instead_of_empty_repo():
+    env, calls, ns = _env_and_calls()  # no FORKMESH_HOST binding at all
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot list the last 5 issues",
+    })))
+    assert response["data"]["action"] == "issues_unavailable"
+    assert "live host" in response["data"]["botMessage"]
+    assert calls["inserted"] == []
+
+
+def test_forkbot_searches_issues_via_host_grep():
+    host = _FakeHost(search={"ok": True, "issues": [
+        {"number": 42, "title": "Relay retries drop frames",
+         "snippet": "the relay retries forever"},
+        {"number": 7, "title": "Retry backoff", "snippet": ""},
+    ], "pulls": [], "code": []})
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot search issues for relay retries",
+    })))
+
+    assert response["data"]["action"] == "issues_searched"
+    assert response["data"]["query"] == "relay retries"
+    message = response["data"]["botMessage"]
+    assert "#42 Relay retries drop frames" in message
+    assert "the relay retries forever" in message
+    assert "#7 Retry backoff" in message
+    assert any("/search?q=relay%20retries" in url for url in host.urls)
+
+
+def test_forkbot_search_reports_no_matches():
+    host = _FakeHost(search={"ok": True, "issues": [], "pulls": [],
+                             "code": []})
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot find issues about jetpacks",
+    })))
+    assert response["data"]["action"] == "issues_searched"
+    assert response["data"]["issues"] == []
+    assert "No issues matching" in response["data"]["botMessage"]
+
+
+def test_forkbot_shows_one_issue():
+    host = _FakeHost(
+        tree=_issue_tree([3, 9]),
+        blobs=_issue_blobs([{
+            "number": 9, "title": "Clone hangs", "status": "open",
+            "authorName": "bob",
+            "events": [{"type": "open", "authorName": "bob",
+                        "body": "Cloning stalls at 90%."}],
+        }]),
+    )
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot show me the latest issue",
+    })))
+    assert response["data"]["action"] == "issue_shown"
+    assert response["data"]["issue"]["number"] == 9
+    message = response["data"]["botMessage"]
+    assert "#9 Clone hangs (open, opened by bob)" in message
+    assert "Cloning stalls at 90%." in message
+
+
+def test_forkbot_starts_agent_on_most_recent_issue_for_owner():
+    host = _FakeHost(
+        tree=_issue_tree([4, 5, 6]),
+        blobs=_issue_blobs([{"number": 6, "title": "Fix relay retries",
+                             "status": "open"}]),
+    )
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on the most recent issue",
+        "sender": "forkmesh",  # the default repo's owner account
+    })))
+
+    assert response["status"] == 201
+    assert response["data"]["action"] == "agent_requested"
+    assert response["data"]["issueNumber"] == 6
+    assert "Fix relay retries" in response["data"]["botMessage"]
+    assert len(calls["inserted"]) == 1
+    _repo_bi, item, submitter_bi = calls["inserted"][0]
+    assert submitter_bi == "bi:forkbot"
+    # An agent request rides the inbox as a ForkBot comment on the EXISTING
+    # issue whose meta carries wantsAgent — the desktop starts the agent when
+    # it merges the inbox.
+    assert item["number"] == 6
+    assert item["event"]["type"] == "comment"
+    assert item["meta"]["wantsAgent"] is True
+    assert item["requestedBy"] == "forkmesh"
+    assert "forkmesh" in item["event"]["body"]
+
+
+def test_forkbot_starts_agent_on_named_issue_for_admin():
+    host = _FakeHost(
+        tree=_issue_tree([4, 5, 6]),
+        blobs=_issue_blobs([{"number": 4, "title": "Old bug",
+                             "status": "open"}]),
+    )
+    env, calls, ns = _env_and_calls(host=host, admins=("jett",))
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on issue #4",
+        "sender": "jett",
+    })))
+    assert response["status"] == 201
+    assert response["data"]["issueNumber"] == 4
+    assert calls["inserted"][0][1]["number"] == 4
+
+
+def test_forkbot_denies_agent_start_for_non_owner():
+    host = _FakeHost(tree=_issue_tree([1, 2]))
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on the latest issue",
+        "sender": "mallory",
+    })))
+    assert response["status"] == 200
+    assert response["data"]["action"] == "agent_denied"
+    assert calls["inserted"] == []
+    # An anonymous mention (no sender) must not inherit owner privileges.
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on the latest issue",
+    })))
+    assert response["data"]["action"] == "agent_denied"
+    assert calls["inserted"] == []
+
+
+def test_forkbot_rejects_agent_start_on_unknown_issue():
+    host = _FakeHost(tree=_issue_tree([1, 2, 3]))
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot start an agent on issue #99",
+        "sender": "forkmesh",
+    })))
+    assert response["data"]["action"] == "agent_denied"
+    assert "#99" in response["data"]["botMessage"]
+    assert calls["inserted"] == []
+
+
+def test_forkbot_ai_intent_routes_list_search_and_agent():
+    # Natural phrasing that no offline regex catches: the AI classifier picks
+    # the intent and the handler runs the matching action.
+    class _AI:
+        def __init__(self, intent):
+            self._intent = intent
+
+        async def run(self, model, payload):
+            return {"response": json.dumps(self._intent)}
+
+    host = _FakeHost(
+        tree=_issue_tree([1, 2, 3]),
+        blobs=_issue_blobs([
+            {"number": n, "title": "T%d" % n, "status": "open"}
+            for n in (3, 2)]),
+        search={"ok": True, "issues": [
+            {"number": 2, "title": "T2", "snippet": "relay"}]},
+    )
+    env, _calls, ns = _env_and_calls(
+        ai=_AI({"intent": "list_issues", "count": 2}), host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot what came in recently?",
+    })))
+    assert response["data"]["action"] == "issues_listed"
+    assert [i["number"] for i in response["data"]["issues"]] == [3, 2]
+
+    env, _calls, ns = _env_and_calls(
+        ai=_AI({"intent": "search_issues", "query": "relay"}), host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot anything on file about the relay?",
+    })))
+    assert response["data"]["action"] == "issues_searched"
+    assert response["data"]["issues"][0]["number"] == 2
+
+    env, calls, ns = _env_and_calls(
+        ai=_AI({"intent": "start_agent", "issueNumber": 0}), host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot get someone working on that new one",
+        "sender": "forkmesh",
+    })))
+    assert response["data"]["action"] == "agent_requested"
+    assert response["data"]["issueNumber"] == 3
+
+
+def test_forkbot_help_lists_every_capability():
+    env, _calls, ns = _env_and_calls()
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot help",
+    })))
+    assert response["data"]["action"] == "help"
+    message = response["data"]["botMessage"]
+    for capability in ("open an issue", "list recent issues", "search issues",
+                       "start a coding agent"):
+        assert capability in message
+
+
+def test_forkbot_desktop_honors_agent_request_comments():
+    # The desktop side of "forkbot start an agent on issue #N": the inbox
+    # merge collects comment events whose meta carries wantsAgent and starts
+    # an agent on the existing issue, with the same double-start guard as
+    # open-event requests.
+    issues_cpp = (ROOT.parent / "qt_client" / "src" /
+                  "MainWindowIssues.cpp").read_text(encoding="utf-8")
+    assert "CommentAgentRequest" in issues_cpp
+    assert re.search(r"meta\.wantsAgent && number > 0", issues_cpp)
+    assert "issueHasAgent" in issues_cpp
