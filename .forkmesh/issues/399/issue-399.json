@@ -54,6 +54,15 @@
             "target": "open-399",
             "ts": 1783463031881,
             "type": "edit"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "81b87161-a153-43c1-9ae7-f9d1ab2f7ec3",
+            "sig": "Cthjemj3l_VtKL3bvQeLpMgFITm5UYsIk7fxKjvUEFvJ6iAqlx2FDwv_3NCJkGwULwG9MKlWTgHxywt944zXAw",
+            "status": "closed",
+            "ts": 1783717193725,
+            "type": "status"
         }
     ],
     "labels": [
@@ -63,8 +72,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "update the PR system",
-    "updatedAt": 1783463031881,
+    "updatedAt": 1783717193725,
     "votes": 0
 }
