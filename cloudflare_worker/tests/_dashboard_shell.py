@@ -1,10 +1,13 @@
-"""Test helper: compose the dashboard SPA shell from its HTML partials.
+"""Test helper: compose the per-page dashboard documents from HTML partials.
 
 ``public/dashboard/shell.html`` is the authored scaffold with ``<!--#include
-partial="name"-->`` placeholders. ``tools/build_dashboard_assets.py`` stitches
-the partials into the static files browsers receive. Frontend contract tests
-that assert on rendered dashboard chrome can read that assembled document via
-``assembled_dashboard()``.
+partial="name"-->`` / ``<!--#page token-->`` placeholders and one view file per
+page under ``public/dashboard/partials/views/``. ``tools/build_dashboard_assets.py``
+stitches one document per ``dashboard_shell.PAGES`` entry into the static files
+browsers receive. Frontend contract tests can read a single page via
+``assembled_dashboard_page(page_id)`` or every page concatenated via
+``assembled_dashboard()`` (for "marker exists somewhere in the dashboard"
+assertions).
 """
 
 import sys
@@ -20,7 +23,19 @@ import dashboard_shell  # noqa: E402
 PUBLIC = _ROOT / "public"
 
 
+def _read(rel: str) -> str:
+    return (PUBLIC / rel).read_text(encoding="utf-8")
+
+
+def assembled_dashboard_page(page_id: str) -> str:
+    """One fully composed page document (shell + chrome partials + its view)."""
+    return dashboard_shell.compose_page_from_reader(_read, page_id)
+
+
 def assembled_dashboard() -> str:
-    """The fully composed dashboard shell (index.html + all its partials)."""
-    return dashboard_shell.compose_from_reader(
-        lambda rel: (PUBLIC / rel).read_text(encoding="utf-8"))
+    """Every page document concatenated, in PAGES order.
+
+    Kept for the many contract tests that only assert a marker exists somewhere
+    in the dashboard chrome or views.
+    """
+    return "".join(assembled_dashboard_page(page) for page in dashboard_shell.PAGES)

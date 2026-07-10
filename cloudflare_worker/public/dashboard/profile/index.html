@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ForkMesh Dashboard</title>
-    <meta name="description" content="Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard." />
+    <title>Profile - ForkMesh</title>
+    <meta name="description" content="Your public ForkMesh profile overview and contribution activity." />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
@@ -461,8 +461,8 @@
     <script src="/dashboard.js?v=github-settings-tabs" defer></script>
     <script src="/dashboard-chat.js" defer></script>
   </head>
-  <body class="bg-background text-foreground" data-page="home">
-    <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+  <body class="bg-background text-foreground" data-page="profile">
+    <div data-dashboard-root data-dashboard-section="profile-overview" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
       <header data-app-header class="relative h-14 flex items-center gap-3 px-4 shrink-0">
         <button
           data-mobile-menu-toggle
@@ -606,11 +606,11 @@
         </div>
 
         <nav data-sidebar-main-menu class="grid gap-1 border-b border-border px-3 py-3">
-          <a data-nav="home" data-nav-link aria-current="page" href="/dashboard" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a data-nav="home" data-nav-link href="/dashboard" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="home" class="h-4 w-4 text-muted-foreground"></i>
             Dashboard
           </a>
-          <a data-nav="profile" data-nav-link href="/dashboard/profile" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a data-nav="profile" data-nav-link aria-current="page" href="/dashboard/profile" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="user-round" class="h-4 w-4 text-muted-foreground"></i>
             Profile
           </a>
@@ -648,110 +648,85 @@
 
       <main data-dashboard-main class="flex-1 min-w-0 flex flex-col overflow-hidden">
         <div id="content" class="flex-1 min-h-0 overflow-hidden">
-          <section data-view="home" class="view active h-full overflow-y-auto">
-            <div class="grid min-h-full lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,48rem)_20rem] 2xl:grid-cols-[20rem_minmax(0,52rem)_22rem]">
-              <aside data-home-left-rail class="min-w-0 border-b border-border bg-card px-4 py-6 sm:px-6 lg:min-h-full lg:border-b-0 lg:border-r lg:px-8 lg:py-10">
-                <div class="mb-7 flex min-w-0 items-center gap-3">
-                  <div data-home-user-avatar class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">
-                    <img class="hidden h-full w-full object-cover" alt="" />
-                    <span data-avatar-initial class="text-[10px] font-semibold text-muted-foreground">F</span>
-                  </div>
-                  <a href="/dashboard/profile" class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></a>
-                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                </div>
-
-                <div class="mb-3 flex items-center justify-between gap-3">
-                  <h2 class="text-sm font-semibold text-foreground">Top repositories</h2>
-                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-                    <i data-lucide="book-marked" class="h-3.5 w-3.5"></i>
-                    New
-                  </button>
-                </div>
-                <label class="mb-3 flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground">
-                  <i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i>
-                  <input data-home-repo-search type="search" placeholder="Find a repository..." class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" />
-                </label>
-                <div data-home-top-repositories class="grid gap-1">
-                  <div class="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">Loading repositories...</div>
-                </div>
-                <button type="button" class="mt-4 text-xs font-medium text-muted-foreground hover:text-accent">Show more</button>
-              </aside>
-
-              <section data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8">
-                <h1 class="mb-5 text-2xl font-semibold tracking-normal text-foreground">Home</h1>
-
-                <div data-home-action-panel class="overflow-hidden rounded-lg border border-border bg-card">
-                  <textarea
-                    data-home-agent-input
-                    rows="3"
-                    maxlength="4000"
-                    placeholder="Ask ForkBot to create an issue, for example: forkbot create an issue to document mirror failover"
-                    class="block min-h-24 w-full resize-y bg-transparent px-4 py-4 text-base text-foreground outline-none placeholder:text-muted-foreground"
-                  ></textarea>
-                  <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-3">
-                    <div class="flex min-w-0 flex-wrap items-center gap-2">
-                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>ForkBot</button>
-                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>All repositories<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
-                      <button type="button" aria-label="Add context" class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="plus" class="h-4 w-4"></i></button>
-                    </div>
-                    <div class="flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
-                      <span data-home-agent-status class="min-w-0 truncate">Creates signed issue inbox entries with Cloudflare AI.</span>
-                      <span class="h-5 w-px bg-border"></span>
-                      <button data-home-agent-submit type="button" aria-label="Send prompt" class="text-muted-foreground hover:text-accent"><i data-lucide="send" class="h-4 w-4"></i></button>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="mt-4 flex min-w-0 flex-wrap justify-center gap-2">
-                  <button data-home-agent-sample="forkbot create an issue to document mirror failover behavior" type="button" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="cloud" class="h-4 w-4 text-muted-foreground"></i>Agent</button>
-                  <button data-home-agent-sample="forkbot create an issue to improve the repository README" type="button" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="circle-dashed" class="h-4 w-4 text-muted-foreground"></i>Create issue</button>
-                  <a href="/blog/parallel-agents/" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="sparkles" class="h-4 w-4 text-muted-foreground"></i>Parallel agents</a>
-                  <a href="/dashboard/repos" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="git-branch" class="h-4 w-4 text-muted-foreground"></i>Repositories</a>
-                  <a href="/blog/signed-patch-pull-requests/" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="git-pull-request" class="h-4 w-4 text-muted-foreground"></i>Pull requests</a>
-                </div>
-
-                <div class="mt-6 mb-3 flex items-center justify-between gap-3">
-                  <h2 class="text-sm font-semibold text-foreground">Feed</h2>
-                  <button type="button" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground hover:bg-card"><i data-lucide="list-filter" class="h-4 w-4 text-muted-foreground"></i>Filter</button>
-                </div>
-
-                <div data-home-feed class="grid gap-4">
-                  <div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">Loading dashboard activity...</div>
-                </div>
-              </section>
-
-              <aside data-home-right-rail class="min-w-0 px-4 pb-6 sm:px-6 xl:sticky xl:top-6 xl:self-start xl:px-0 xl:py-6">
-                <section data-home-ad-card class="overflow-hidden rounded-lg border border-border bg-card">
-                  <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-                    <h2 class="text-sm font-semibold text-foreground">ForkMesh field notes</h2>
-                    <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">AD</span>
-                  </div>
-                  <a href="/blog/parallel-agents/" class="block border-b border-border bg-secondary/60 px-4 py-5 hover:bg-secondary">
-                    <p class="text-lg font-semibold leading-tight text-foreground">Run multiple coding agents without a queue.</p>
-                    <p class="mt-2 text-sm leading-5 text-muted-foreground">How ForkMesh coordinates parallel agents across issues and pull requests.</p>
+          <section data-view="profile-overview" class="view active h-full overflow-y-auto">
+            <div data-profile-header-band class="border-b border-border bg-background px-4">
+              <div data-profile-tabs-inner class="w-full">
+                <nav data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm">
+                  <a href="/dashboard/profile" class="inline-flex items-center gap-2 border-b-2 border-[#f78166] px-2 pb-3 pt-3 font-semibold text-foreground">
+                    <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+                    Overview
                   </a>
-                  <div class="grid gap-0 divide-y divide-border">
-                    <a href="/blog/live-clone-routing/" class="block px-4 py-3 hover:bg-secondary">
-                      <span class="text-sm font-semibold text-accent hover:underline">Live clone routing</span>
-                      <span class="mt-1 block text-xs text-muted-foreground">Clone from online desktop hosts through the relay.</span>
-                    </a>
-                    <a href="/blog/web-contribution-inbox/" class="block px-4 py-3 hover:bg-secondary">
-                      <span class="text-sm font-semibold text-accent hover:underline">Web contribution inbox</span>
-                      <span class="mt-1 block text-xs text-muted-foreground">Accept signed issues and patches while offline.</span>
-                    </a>
+                  <a href="/dashboard/profile/repositories" class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+                    Repositories
+                    <span data-profile-repo-count class="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">0</span>
+                  </a>
+                  <a href="/dashboard/network" class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+                    Network
+                  </a>
+                </nav>
+              </div>
+            </div>
+            <div class="w-full px-4 py-6 sm:px-6 lg:px-8">
+              <div class="mx-auto max-w-[1432px]">
+                <div data-profile-overview-layout class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]">
+                  <aside data-profile-sidebar-slot data-profile-sidebar-context="overview" class="min-w-0"></aside>
+                  <div class="grid min-w-0 content-start gap-6">
+                    <section data-profile-about-panel class="overflow-hidden rounded-md border border-border bg-card">
+                      <div class="flex items-center justify-between gap-3 px-4 py-3">
+                        <h2 class="min-w-0 truncate text-sm font-semibold text-muted-foreground"><span data-profile-about-owner>forkmesh</span> / About yourself</h2>
+                        <button data-profile-about-edit type="button" aria-label="Edit about yourself" class="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground">
+                          <i data-lucide="pencil" class="h-4 w-4"></i>
+                        </button>
+                      </div>
+                      <div data-profile-about-body class="grid gap-4 border-t border-border p-5 text-sm leading-6 text-foreground md:p-6">
+                        <p class="text-2xl font-semibold">Hi, this is your ForkMesh profile.</p>
+                        <p class="text-muted-foreground">Pinned profile content and public activity will live here.</p>
+                      </div>
+                    </section>
+                    <div data-profile-contribution-timeline-layout class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_9rem] xl:items-start">
+                      <div data-profile-contribution-main class="grid min-w-0 gap-6">
+                        <section data-profile-contribution-grid class="grid gap-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <h2 data-profile-contribution-summary class="text-xl font-semibold leading-7 text-foreground">0 contributions in the last year</h2>
+                            <button type="button" class="hidden items-center gap-1 text-sm text-muted-foreground hover:text-foreground sm:inline-flex">
+                              <span>Contribution settings</span>
+                              <i data-lucide="chevron-down" class="h-4 w-4"></i>
+                            </button>
+                          </div>
+                          <div data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5">
+                            <div class="min-w-[880px]">
+                              <div data-contribution-months class="grid text-xs text-muted-foreground"></div>
+                              <div data-contribution-cells class="mt-1 grid text-xs text-muted-foreground" aria-label="Contribution activity calendar"></div>
+                              <div class="mt-4 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+                                <a href="/docs/contributions" class="hover:text-accent hover:underline">Learn how we count contributions</a>
+                                <span data-contribution-legend class="inline-flex items-center gap-1.5"></span>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                        <section data-profile-activity-list class="grid gap-6">
+                          <h2 class="text-xl font-semibold leading-7 text-foreground">Contribution activity</h2>
+                          <div data-profile-activity-items class="grid gap-6"></div>
+                          <p data-profile-activity-empty class="text-sm text-muted-foreground">No contribution activity found for this year yet.</p>
+                        </section>
+                        <footer data-profile-contribution-footer class="hidden items-center gap-5 pt-10 text-xs text-muted-foreground lg:flex">
+                          <i data-lucide="github" class="h-6 w-6 shrink-0"></i>
+                          <span>© 2026 ForkMesh, Inc.</span>
+                          <a href="/terms" class="hover:text-accent hover:underline">Terms</a>
+                          <a href="/privacy" class="hover:text-accent hover:underline">Privacy</a>
+                          <a href="/security" class="hover:text-accent hover:underline">Security</a>
+                          <a href="/status" class="hover:text-accent hover:underline">Status</a>
+                          <a href="/docs" class="hover:text-accent hover:underline">Docs</a>
+                        </footer>
+                      </div>
+                      <aside data-profile-contribution-years class="hidden gap-2 text-sm xl:grid">
+                      </aside>
+                    </div>
                   </div>
-                </section>
-
-                <section data-home-changelog-card class="mt-4 rounded-lg border border-border bg-card p-4">
-                  <div class="flex items-center justify-between gap-3">
-                    <h2 class="text-sm font-semibold text-foreground">Latest from the changelog</h2>
-                    <a href="/changelog" class="shrink-0 text-xs font-medium text-accent hover:underline">View all</a>
-                  </div>
-                  <div data-home-changelog-list class="mt-4 grid gap-4 border-l border-border pl-4">
-                    <div class="text-sm text-muted-foreground">Loading release notes...</div>
-                  </div>
-                </section>
-              </aside>
+                </div>
+              </div>
             </div>
           </section>
 
