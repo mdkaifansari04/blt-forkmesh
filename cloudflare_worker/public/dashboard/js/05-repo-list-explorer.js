@@ -13,14 +13,131 @@
     return haystack.includes(query);
   }
 
-  // A repo is reachable when its own host is live OR — for a public repo — a peer
+  function groupMatchesGlobalSearch(group, query) {
+    if (!query) return true;
+    if (repositoryMatchesQuery(sourceOfTruth(group), query)) return true;
+    return (group.members || []).some((member) => repositoryMatchesQuery(member, query));
+  }
+
+  function globalSearchRepoSummary(group, repo) {
+    const members = group.members || [];
+    const liveCount = members.reduce((count, member) => count + (repoIsLive(member) ? 1 : 0), 0);
+    const nodeText = members.length > 1 ? `${liveCount} of ${members.length} nodes online` : (repoIsLive(repo) ? "online" : "offline");
+    const visibility = repo.isPrivate ? "private" : "public";
+    const description = String(repo.description || "").trim();
+    return [visibility, nodeText, description].filter(Boolean).join(" - ");
+  }
+
+  function setGlobalSearchOpen(open) {
+    state.globalSearch.open = Boolean(open);
+    renderGlobalSearchResults();
+  }
+
+  function closeGlobalSearch(options = {}) {
+    const input = $("[data-global-search]");
+    if (options.clear && input) input.value = "";
+    state.globalSearch.open = false;
+    state.globalSearch.selectedIndex = 0;
+    renderGlobalSearchResults();
+  }
+
+  function renderGlobalSearchResults() {
+    const input = $("[data-global-search]");
+    const panel = $("[data-global-search-panel]");
+    const container = $("[data-global-search-results]");
+    if (!input || !panel || !container) return;
+
+    const query = input.value.trim().toLowerCase();
+    const groups = groupRepositories(state.repositories || [])
+      .filter((group) => groupMatchesGlobalSearch(group, query))
+      .slice(0, 8);
+    state.globalSearch.results = groups.map((group) => sourceOfTruth(group));
+    state.globalSearch.selectedIndex = Math.min(
+      state.globalSearch.selectedIndex,
+      Math.max(state.globalSearch.results.length - 1, 0),
+    );
+
+    input.setAttribute("aria-expanded", state.globalSearch.open ? "true" : "false");
+    panel.classList.toggle("hidden", !state.globalSearch.open);
+    if (!state.globalSearch.open) return;
+
+    if (state.repositoriesLoading) {
+      container.innerHTML = '<div class="px-3 py-5 text-sm text-muted-foreground">Loading repositories...</div>';
+      return;
+    }
+
+    if (!groups.length) {
+      container.innerHTML = '<div class="px-3 py-5 text-sm text-muted-foreground">No repositories match this search.</div>';
+      return;
+    }
+
+    container.innerHTML = groups.map((group, index) => {
+      const repo = sourceOfTruth(group);
+      const key = repoKey(repo);
+      const selected = index === state.globalSearch.selectedIndex;
+      return `
+        <button
+          type="button"
+          data-global-search-result
+          data-dashboard-open-repo="${escapeHtml(key)}"
+          role="option"
+          aria-selected="${selected ? "true" : "false"}"
+          class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${selected ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}"
+        >
+          <i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>
+          <span class="min-w-0">
+            <span class="block truncate font-medium text-foreground">${escapeHtml(key)}</span>
+            <span class="block truncate text-xs text-muted-foreground">${escapeHtml(globalSearchRepoSummary(group, repo))}</span>
+          </span>
+        </button>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  function moveGlobalSearchSelection(delta) {
+    const results = $$("[data-global-search-result]");
+    if (!results.length) return;
+    state.globalSearch.selectedIndex = (state.globalSearch.selectedIndex + delta + results.length) % results.length;
+    results.forEach((button, index) => {
+      const selected = index === state.globalSearch.selectedIndex;
+      button.setAttribute("aria-selected", selected ? "true" : "false");
+      button.classList.toggle("bg-secondary", selected);
+      button.classList.toggle("text-foreground", selected);
+      button.classList.toggle("text-muted-foreground", !selected);
+      if (selected) button.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function selectGlobalSearchResult(key = "") {
+    const selected = $('[data-global-search-result][aria-selected="true"]') || $("[data-global-search-result]");
+    const wanted = key || selected?.dataset?.dashboardOpenRepo || repoKey(state.globalSearch.results[state.globalSearch.selectedIndex] || {});
+    const repo = findRepository(wanted);
+    if (!repo) return;
+    closeGlobalSearch({ clear: true });
+    closeMobileDrawers();
+    renderRepoDetail(repo);
+  }
+
+  function focusGlobalSearch() {
+    const shell = $("[data-global-search-shell]");
+    const input = $("[data-global-search]");
+    if (!input || (shell && !shell.getClientRects().length)) return false;
+    state.globalSearch.open = true;
+    state.globalSearch.selectedIndex = 0;
+    renderGlobalSearchResults();
+    input.focus();
+    input.select();
+    return true;
+  }
+
+  // A repo is reachable when its own host is live OR - for a public repo - a peer
   // mirroring the same logical repo is online and the relay serves it in place
   // through the repo's own URL (adhoc #61). cloneOnline is the worker's group
   // verdict; fall back to liveHost for older payloads that predate it.
   function repoIsLive(repo) {
     return Boolean(repo?.cloneOnline ?? repo?.liveHost);
   }
-  // Live, but the named source of truth is down — a mirror node is serving it.
+  // Live, but the named source of truth is down - a mirror node is serving it.
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
   }
@@ -56,6 +173,25 @@
     return buckets;
   }
 
+  function stableMockNumber(seed, min, max) {
+    const text = String(seed || "forkmesh");
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = ((hash << 5) - hash) + text.charCodeAt(index);
+      hash |= 0;
+    }
+    const span = Math.max(1, max - min + 1);
+    return min + (Math.abs(hash) % span);
+  }
+
+  function repoLanguage(repo) {
+    return String(repo.language || repo.primaryLanguage || repo.stack || "TypeScript");
+  }
+
+  function repoLicense(repo) {
+    return String(repo.license || repo.licenseName || "MIT License");
+  }
+
   function repoMetricChip(label, icon, value) {
     return `
       <span class="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground">
@@ -84,7 +220,7 @@
       return `<span class="repo-activity-bar ${tone}" style="height:${height}px"></span>`;
     }).join("");
     return `
-      <div class="repo-activity-sparkline w-full" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+      <div data-repo-activity-sparkline class="repo-activity-sparkline w-full" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
         <div class="mb-1 flex items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
           <span>52 weeks</span>
           <span>${loading ? "loading" : `${formatCount(displayTotal)} commits`}</span>
@@ -115,6 +251,8 @@
     ].join("");
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
+    const language = repoLanguage(origin);
+    const stars = stableMockNumber(key, 0, 40);
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
@@ -126,11 +264,19 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
+              <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
+                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span>Star</span>
+                <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+              </button>
             </div>
             <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
             <div class="mt-2 flex items-center gap-x-4 gap-y-1.5 flex-wrap">
               <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(visibility)}
+                <span data-repo-language-dot class="w-2 h-2 rounded-full bg-primary"></span>${escapeHtml(language)}
+              </span>
+              <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <i data-lucide="${origin.isPrivate ? "lock" : "globe-2"}" class="h-3 w-3"></i>${escapeHtml(visibility)}
               </span>
               <span class="flex items-center gap-1 text-xs text-muted-foreground">
                 <i data-lucide="radio" class="w-3 h-3"></i>${nodeCount > 1 ? `${nodeCount} nodes` : (viaMirror ? "served by mirror" : live ? "live host" : "host offline")}
@@ -145,6 +291,40 @@
         </div>
       </div>
     `;
+  }
+
+  function profileRepositoryRow(group) {
+    const repo = sourceOfTruth(group);
+    const key = repoKey(repo);
+    const visibility = repo.isPrivate ? "Private" : "Public";
+    const language = repoLanguage(repo);
+    const license = repoLicense(repo);
+    const stars = stableMockNumber(key, 0, 80);
+    const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
+    const activityWeeks = groupActivityWeeks(group);
+    return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
+      <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="min-w-0 text-left">
+        <span class="flex min-w-0 flex-wrap items-center gap-2">
+          <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
+          <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
+        </span>
+        <span class="mt-1 block text-xs text-muted-foreground">Published from ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}</span>
+        <span class="mt-2 line-clamp-2 text-sm text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</span>
+        <span class="mt-3 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          <span class="inline-flex items-center gap-1.5"><span data-repo-language-dot class="h-2 w-2 rounded-full bg-primary"></span>${escapeHtml(language)}</span>
+          <span class="inline-flex items-center gap-1.5"><i data-lucide="scale" class="h-3.5 w-3.5"></i>${escapeHtml(license)}</span>
+          <span>Updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
+        </span>
+      </button>
+      <div class="grid content-center gap-3">
+        <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
+          <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
+          Star
+          <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+        </button>
+        ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
+      </div>
+    </article>`;
   }
 
   function updateRepositoryPagination() {
@@ -214,7 +394,6 @@
       }
     }
 
-    setRepositoryViewMode(state.repositoryViewMode, { persist: false });
     window.lucide?.createIcons();
   }
 
@@ -242,35 +421,123 @@
     }).join("");
   }
 
-  function readRepositoryViewMode() {
-    try {
-      return localStorage.getItem(DASHBOARD_REPO_VIEW_KEY) === "grid" ? "grid" : "list";
-    } catch (_) {
-      return "list";
-    }
+  function renderHomeRepositories() {
+    const container = $("[data-home-top-repositories]");
+    if (!container) return;
+    const query = ($("[data-home-repo-search]")?.value || "").trim().toLowerCase();
+    const groups = groupRepositories(state.repositories || []).filter((group) => {
+      return repositoryMatchesQuery(sourceOfTruth(group), query);
+    }).slice(0, 8);
+    container.innerHTML = `
+      ${groups.length
+        ? `<div class="grid gap-1">${groups.map((group) => {
+            const repo = sourceOfTruth(group);
+            const key = repoKey(repo);
+            return `<button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
+              <i data-lucide="book-marked" class="h-3.5 w-3.5 shrink-0"></i>
+              <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+            </button>`;
+          }).join("")}</div>`
+        : '<div class="px-2 py-3 text-sm text-muted-foreground">No repositories match this filter.</div>'}
+    `;
+    window.lucide?.createIcons();
   }
 
-  function setRepositoryViewMode(mode, options = {}) {
-    const next = mode === "grid" ? "grid" : "list";
-    const gridMode = next === "grid";
-    state.repositoryViewMode = next;
-    const repoList = $("#repoList");
-    if (repoList) {
-      repoList.classList.toggle("grid-mode", gridMode);
-      repoList.classList.toggle("divide-y", !gridMode);
-      repoList.classList.toggle("divide-border", !gridMode);
-    }
-    $$("[data-view-mode]").forEach((button) => {
-      const active = button.dataset.viewMode === next;
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-      button.classList.toggle("bg-secondary", active);
-      button.classList.toggle("text-foreground", active);
-      button.classList.toggle("text-muted-foreground", !active);
-      button.classList.toggle("hover:text-foreground", !active);
+  function homeFeedNotificationCard(item) {
+    const href = String(item?.href || "").trim();
+    const tag = href ? "a" : "div";
+    const hrefAttr = href ? ` href="${escapeHtml(href)}"` : "";
+    return `
+      <${tag}${hrefAttr} class="block overflow-hidden rounded-lg border border-border bg-card hover:bg-secondary/40">
+        <div class="flex min-w-0 items-start gap-3 px-4 py-4">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-secondary text-primary">
+            <i data-lucide="${notificationIcon(item.kind)}" class="h-5 w-5"></i>
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-semibold text-foreground">${escapeHtml(item.title || "ForkMesh notification")}</span>
+            <span class="mt-1 block text-sm leading-5 text-muted-foreground">${escapeHtml(item.body || item.repo || "ForkMesh activity")}</span>
+            <span class="mt-2 block text-xs text-muted-foreground">${escapeHtml(notificationTimeLabel(item.ts))}${item.repo ? ` · ${escapeHtml(item.repo)}` : ""}</span>
+          </span>
+        </div>
+      </${tag}>
+    `;
+  }
+
+  function homeFeedRepositoryCard(group) {
+    const repo = sourceOfTruth(group);
+    const key = repoKey(repo);
+    const live = repoIsLive(repo);
+    const viaMirror = repoServedByMirror(repo);
+    const description = repo.description || "No description published.";
+    const updated = repo.updatedAt || repo.lastSync;
+    return `
+      <article class="overflow-hidden rounded-lg border border-border bg-card">
+        <div class="flex min-w-0 items-start gap-3 px-4 py-4">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-secondary ${live ? "text-primary" : "text-muted-foreground"}">
+            <i data-lucide="${viaMirror ? "radio" : "book-marked"}" class="h-5 w-5"></i>
+          </span>
+          <div class="min-w-0 flex-1">
+            <p class="text-sm text-muted-foreground">
+              <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</button>
+              ${live ? "is available on the mesh" : "is waiting for a live host"}
+            </p>
+            <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>
+            <p class="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+              <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>${live ? (viaMirror ? "served by mirror" : "live host") : "offline"}</span>
+              <span>${escapeHtml(formatDate(updated))}</span>
+            </p>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderHomeFeed() {
+    const container = $("[data-home-feed]");
+    if (!container) return;
+    const notifications = Array.isArray(state.notifications) ? state.notifications.slice(0, 4) : [];
+    const repoCards = groupRepositories(state.repositories || []).slice(0, 4).map(homeFeedRepositoryCard);
+    const cards = notifications.map(homeFeedNotificationCard).concat(repoCards).slice(0, 8);
+    container.innerHTML = cards.length
+      ? cards.join("")
+      : '<div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">No dashboard activity yet. Publish a repository or receive a notification to start the feed.</div>';
+    window.lucide?.createIcons();
+  }
+
+  function renderHomeChangelog() {
+    const container = $("[data-home-changelog-list]");
+    if (!container) return;
+    const items = [
+      { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
+      { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
+      { label: "Signed patch pull requests", meta: "Blog", href: "/blog/signed-patch-pull-requests/" },
+    ];
+    container.innerHTML = items.map((item) => `
+      <article class="relative">
+        <span class="absolute -left-[1.18rem] top-1.5 h-2 w-2 rounded-full bg-muted-foreground"></span>
+        <p class="text-xs text-muted-foreground">${escapeHtml(item.meta)}</p>
+        <a href="${escapeHtml(item.href)}" class="mt-1 block text-sm font-semibold leading-5 text-foreground hover:text-accent">${escapeHtml(item.label)}</a>
+      </article>
+    `).join("");
+  }
+
+  function renderProfileRepositories() {
+    const container = $("[data-profile-repo-list]");
+    if (!container) return;
+    const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
+    const groups = groupRepositories(state.repositories || []).filter((group) => {
+      return repositoryMatchesQuery(sourceOfTruth(group), query);
     });
-    if (options.persist !== false) {
-      try { localStorage.setItem(DASHBOARD_REPO_VIEW_KEY, next); } catch (_) {}
-    }
+    container.innerHTML = groups.length
+      ? groups.map((group) => profileRepositoryRow(group)).join("")
+      : '<div class="px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
+    window.lucide?.createIcons();
+  }
+
+  function renderProfileRepositoryCount(count = groupRepositories(state.repositories || []).length) {
+    $$("[data-profile-repo-count]").forEach((element) => {
+      element.textContent = formatCount(count);
+    });
   }
 
   function applyRepositoryFilter() {
@@ -280,6 +547,11 @@
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
     renderSidebarRepositories();
+    renderHomeRepositories();
+    renderHomeFeed();
+    renderHomeChangelog();
+    renderProfileRepositories();
+    renderProfileRepositoryCount();
   }
 
   function renderRepositories(repositories, session) {
@@ -292,7 +564,10 @@
     const count = $("[data-repo-count]");
     if (count) count.textContent = `${formatCount(state.filteredGroups.length)} mirrored`;
 
+    renderProfileRepositoryCount();
     applyRepositoryFilter();
+    renderProfileContributionGraph();
+    renderGlobalSearchResults();
   }
 
   function setRepoTab(tab) {
@@ -365,12 +640,12 @@
     const parts = repoPathParts(path);
     let acc = "";
     const rootLabel = repo.name || "repository";
-    crumb.innerHTML = [`<button type="button" data-dashboard-tree-path="" class="font-semibold text-primary hover:underline">${escapeHtml(rootLabel)}</button>`]
+    crumb.innerHTML = [`<button type="button" data-dashboard-tree-path="" class="font-semibold text-accent hover:underline">${escapeHtml(rootLabel)}</button>`]
       .concat(parts.map((part, index) => {
         acc = acc ? `${acc}/${part}` : part;
         const isBlobTerminal = terminalKind === "blob" && index === parts.length - 1;
         const pathAttribute = isBlobTerminal ? "data-dashboard-blob-path" : "data-dashboard-tree-path";
-        return `<span class="text-muted-foreground">/</span> <button type="button" ${pathAttribute}="${escapeHtml(acc)}" class="${isBlobTerminal ? "text-foreground" : "text-primary hover:underline"}">${escapeHtml(part)}</button>`;
+        return `<span class="text-muted-foreground">/</span> <button type="button" ${pathAttribute}="${escapeHtml(acc)}" class="${isBlobTerminal ? "text-foreground" : "text-accent hover:underline"}">${escapeHtml(part)}</button>`;
       })).join(" ");
   }
 

@@ -42,5 +42,5 @@ def test_dashboard_does_not_run_periodic_profile_or_notification_polling():
     assert "`/api/poll?node=${encodeURIComponent(node)}`" not in DASHBOARD_JS
     assert "function startProfileSync()" not in DASHBOARD_JS
     assert "setInterval(" not in DASHBOARD_JS
-    assert "await refreshPublicProfile(session);" in DASHBOARD_JS
+    assert "await hydrateCanonicalProfile(session);" in DASHBOARD_JS
     assert "await loadNotifications();" in DASHBOARD_JS
