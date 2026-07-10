@@ -280,6 +280,114 @@
     return data;
   }
 
+  // Mirrors PullStore::contentForSigning's per-type field order (comment,
+  // review, line-comment, thread-comment, thread-reply, thread-state,
+  // suggestion-state) and the desktop's pull inbox POST
+  // (verify_pull_comment_event/pull_comment_content in the worker). Covers
+  // every conversation-shaped pull event; opening a brand new pull request is
+  // a distinct signed shape (submitWebPullOpen, below).
+  async function submitWebPullEvent(repo, number, type, fields = {}) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const NUL = String.fromCharCode(0);
+    const cleanBody = String(fields.body || "").replace(/[\r\n]+$/, "");
+    let content;
+    if (type === "comment") {
+      content = cleanBody;
+    } else if (type === "review") {
+      content = [fields.state || "", cleanBody].join(NUL);
+    } else if (type === "line-comment") {
+      content = [fields.path || "", fields.side || "", String(fields.line || 0), cleanBody].join(NUL);
+    } else if (type === "thread-comment") {
+      content = [
+        fields.threadId || "", fields.path || "", fields.side || "",
+        String(fields.lineStart || 0), String(fields.lineEnd || 0),
+        cleanBody, fields.suggestionPatch || "",
+      ].join(NUL);
+    } else if (type === "thread-reply") {
+      content = [fields.threadId || "", fields.parentId || "", cleanBody].join(NUL);
+    } else if (type === "thread-state") {
+      content = [fields.threadId || "", fields.state || "", cleanBody].join(NUL);
+    } else if (type === "suggestion-state") {
+      content = [fields.threadId || "", fields.state || "", fields.appliedCommit || "", cleanBody].join(NUL);
+    } else {
+      throw new Error("unsupported_pull_event_type");
+    }
+    const contentHash = await sha256HexLower(content);
+    const canonical = `forkmesh-pull-comment-v1\n${type}\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type,
+      id: `${type}-web-${ts}`,
+      body: cleanBody,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    for (const key of ["state", "path", "side", "line", "threadId", "parentId", "lineStart", "lineEnd", "suggestionPatch", "appliedCommit"]) {
+      if (fields[key] !== undefined && fields[key] !== "") event[key] = fields[key];
+    }
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/pulls`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  async function submitWebPullComment(repo, number, body) {
+    return submitWebPullEvent(repo, number, "comment", { body });
+  }
+
+  async function submitWebPullReview(repo, number, reviewState, body) {
+    return submitWebPullEvent(repo, number, "review", { state: reviewState, body });
+  }
+
+  // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
+  // the worker): title/base/head/patch, with an empty patch for a
+  // branch-referencing submission from the web - the desktop reconstructs the
+  // diff on drain (see renderRepoPullPatch's "Branch-backed PRs are
+  // reconstructed by the desktop client" copy).
+  async function submitWebPullOpen(repo, title, body, base, head) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    const NUL = String.fromCharCode(0);
+    const patch = "";
+    const content = [title, base, head, patch].join(NUL);
+    const contentHash = await sha256HexLower(content);
+    const canonical = `forkmesh-pull-event-v1\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const pull = {
+      title,
+      body: cleanBody,
+      base,
+      head,
+      patch,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, pull };
+    const response = await fetch(`${repoApiBase(repo)}/pulls`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
   async function handleDiscussionReplySubmit(repo, form) {
     if (!repo || !form) return;
     const number = Number(form.dataset.repoDiscussionReplyNumber || 0);

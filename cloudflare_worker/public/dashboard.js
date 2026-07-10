@@ -867,6 +867,114 @@
     return data;
   }
 
+  // Mirrors PullStore::contentForSigning's per-type field order (comment,
+  // review, line-comment, thread-comment, thread-reply, thread-state,
+  // suggestion-state) and the desktop's pull inbox POST
+  // (verify_pull_comment_event/pull_comment_content in the worker). Covers
+  // every conversation-shaped pull event; opening a brand new pull request is
+  // a distinct signed shape (submitWebPullOpen, below).
+  async function submitWebPullEvent(repo, number, type, fields = {}) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const NUL = String.fromCharCode(0);
+    const cleanBody = String(fields.body || "").replace(/[\r\n]+$/, "");
+    let content;
+    if (type === "comment") {
+      content = cleanBody;
+    } else if (type === "review") {
+      content = [fields.state || "", cleanBody].join(NUL);
+    } else if (type === "line-comment") {
+      content = [fields.path || "", fields.side || "", String(fields.line || 0), cleanBody].join(NUL);
+    } else if (type === "thread-comment") {
+      content = [
+        fields.threadId || "", fields.path || "", fields.side || "",
+        String(fields.lineStart || 0), String(fields.lineEnd || 0),
+        cleanBody, fields.suggestionPatch || "",
+      ].join(NUL);
+    } else if (type === "thread-reply") {
+      content = [fields.threadId || "", fields.parentId || "", cleanBody].join(NUL);
+    } else if (type === "thread-state") {
+      content = [fields.threadId || "", fields.state || "", cleanBody].join(NUL);
+    } else if (type === "suggestion-state") {
+      content = [fields.threadId || "", fields.state || "", fields.appliedCommit || "", cleanBody].join(NUL);
+    } else {
+      throw new Error("unsupported_pull_event_type");
+    }
+    const contentHash = await sha256HexLower(content);
+    const canonical = `forkmesh-pull-comment-v1\n${type}\n${number}\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const event = {
+      type,
+      id: `${type}-web-${ts}`,
+      body: cleanBody,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    for (const key of ["state", "path", "side", "line", "threadId", "parentId", "lineStart", "lineEnd", "suggestionPatch", "appliedCommit"]) {
+      if (fields[key] !== undefined && fields[key] !== "") event[key] = fields[key];
+    }
+    const payload = { owner: repo.owner, repo: repo.name, number, event };
+    const response = await fetch(`${repoApiBase(repo)}/pulls`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  async function submitWebPullComment(repo, number, body) {
+    return submitWebPullEvent(repo, number, "comment", { body });
+  }
+
+  async function submitWebPullReview(repo, number, reviewState, body) {
+    return submitWebPullEvent(repo, number, "review", { state: reviewState, body });
+  }
+
+  // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
+  // the worker): title/base/head/patch, with an empty patch for a
+  // branch-referencing submission from the web - the desktop reconstructs the
+  // diff on drain (see renderRepoPullPatch's "Branch-backed PRs are
+  // reconstructed by the desktop client" copy).
+  async function submitWebPullOpen(repo, title, body, base, head) {
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
+    const NUL = String.fromCharCode(0);
+    const patch = "";
+    const content = [title, base, head, patch].join(NUL);
+    const contentHash = await sha256HexLower(content);
+    const canonical = `forkmesh-pull-event-v1\n${pub}\n${ts}\n${contentHash}`;
+    const sig = bytesToB64url(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, ISSUE_TEXT_ENCODER.encode(canonical)));
+    const pull = {
+      title,
+      body: cleanBody,
+      base,
+      head,
+      patch,
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+      sig,
+    };
+    const payload = { owner: repo.owner, repo: repo.name, pull };
+    const response = await fetch(`${repoApiBase(repo)}/pulls`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
   async function handleDiscussionReplySubmit(repo, form) {
     if (!repo || !form) return;
     const number = Number(form.dataset.repoDiscussionReplyNumber || 0);
@@ -4761,6 +4869,33 @@
     return { label: "comment", tone: neutral };
   }
 
+  // Approve/request-changes/comment state per reviewer, derived the same way
+  // the desktop's PullStore::reviewSummary() does: the *last* review event
+  // per author wins.
+  function pullReviewSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    const byAuthor = new Map();
+    for (const ev of rows) {
+      if (ev.type !== "review" || !ev.state) continue;
+      const key = ev.author || ev.authorName || "";
+      if (!key) continue;
+      byAuthor.set(key, { authorName: ev.authorName || ev.author || "unknown", state: ev.state });
+    }
+    return Array.from(byAuthor.values());
+  }
+
+  function renderPullReviewers(events) {
+    const reviewers = pullReviewSummary(events);
+    if (!reviewers.length) return "No reviews";
+    // sidebarSection wraps this in a <p>, so rows must stay phrasing content
+    // (span, not div) or the browser silently closes the paragraph early.
+    return reviewers.map((reviewer) => {
+      const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
+      const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
+      return `<span class="mt-1.5 flex items-center justify-between gap-2 first:mt-0"><span class="truncate font-medium text-foreground">${escapeHtml(reviewer.authorName)}</span><span class="shrink-0 text-[10px] font-semibold ${tone}">${escapeHtml(label)}</span></span>`;
+    }).join("");
+  }
+
   function pullEventAnchorLabel(ev) {
     if (!ev.path) return "";
     if (ev.lineStart) {
@@ -4882,6 +5017,92 @@
       </form>`;
   }
 
+  function renderPullReviewForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
+    }
+    const who = escapeHtml(state.session.nodeName);
+    return `
+      <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Review
+          <textarea data-repo-pull-review-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Reviewing as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="submit" data-repo-pull-review-action="changes_requested" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-x" class="h-4 w-4"></i>Request changes</button>
+            <button type="submit" data-repo-pull-review-action="approved" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Approve</button>
+            <button type="submit" data-repo-pull-review-action="comment" class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          </div>
+        </div>
+      </form>`;
+  }
+
+  async function handlePullReviewSubmit(repo, form, action) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoPullReviewNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-pull-review-body]");
+    const buttons = form.querySelectorAll("[data-repo-pull-review-action]");
+    const hint = form.querySelector("[data-repo-pull-review-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This pull request hasn't finished loading yet.", "bad");
+      return;
+    }
+    const isReview = action === "approved" || action === "changes_requested";
+    if (!isReview && !body) {
+      setHint("Write a comment before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    buttons.forEach((button) => { button.disabled = true; });
+    setHint("Signing and sending…");
+    try {
+      if (isReview) {
+        await submitWebPullReview(repo, number, action, body);
+      } else {
+        await submitWebPullComment(repo, number, body);
+      }
+      const newEvent = {
+        type: isReview ? "review" : "comment",
+        state: isReview ? action : "",
+        authorName: state.session?.nodeName || "you",
+        author: state.session?.nodeName || "",
+        ts: Math.floor(Date.now() / 1000),
+        body,
+      };
+      const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
+      if (list) {
+        if (list.dataset.empty === "true") list.innerHTML = "";
+        list.dataset.empty = "false";
+        list.insertAdjacentHTML("beforeend", renderPullConversationEvent(newEvent));
+      }
+      if (state.repoRecordDetail?.kind === "pulls" && String(state.repoRecordDetail.number) === String(number)) {
+        const conversation = [...(state.repoRecordDetail.parsed.pullConversation || []), newEvent];
+        state.repoRecordDetail.parsed.pullConversation = conversation;
+        const reviewers = document.querySelector("[data-repo-pull-reviewers]");
+        if (reviewers) reviewers.innerHTML = renderPullReviewers(conversation);
+      }
+      if (bodyInput) bodyInput.value = "";
+      buttons.forEach((button) => { button.disabled = false; });
+      setHint(isReview ? "Review sent to the maintainer's inbox for review." : "Comment sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      buttons.forEach((button) => { button.disabled = false; });
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "event_too_large" ? "The comment is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the review's signature."
+          : "Could not send the review. Please try again.",
+        "bad");
+    }
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -4929,7 +5150,8 @@
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = isPulls ? `
-          <div data-repo-pull-conversation class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>` : "";
+          <div data-repo-pull-conversation data-empty="${pullConversation.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>
+          ${renderPullReviewForm(number)}` : "";
     const pullFilesSection = isPulls ? `
         <section class="overflow-hidden rounded-lg border border-border" data-repo-record-files-panel>
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
@@ -4996,7 +5218,7 @@
             ${pullFilesSection}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
-            ${isPulls ? sidebarSection("Reviewers", "No reviews") : ""}
+            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation)}</span>`) : ""}
             ${sidebarSection("Assignees", "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
@@ -5880,6 +6102,103 @@
     }
   }
 
+  // Branch-referencing web pull requests: no client-side diff computation
+  // (deliberately - that duplicates what git already does correctly). The
+  // desktop client reconstructs the patch from base/head on drain, same as any
+  // other branch-backed pull request (see renderRepoPullPatch's "Branch-backed
+  // PRs are reconstructed by the desktop client" copy).
+  function openPullCompose(repo) {
+    const container = $("[data-repo-pulls]");
+    if (!container || !repo) return;
+    const who = escapeHtml(state.session?.nodeName || "you");
+    const branches = repoBranchList(repo);
+    const defaultBranch = repoDefaultBranch(repo);
+    const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
+    const headDefault = branches.find((branch) => branch.name !== defaultBranch)?.name || defaultBranch;
+    container.innerHTML = `
+      <form data-repo-pull-new-form class="grid gap-3 border-t border-border bg-background p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="git-pull-request" class="h-4 w-4 text-primary"></i>New pull request</span>
+          <button type="button" data-repo-pull-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to pull requests</button>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Base
+            <select data-repo-pull-base class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary">${branchOptions}</select>
+          </label>
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Head
+            <select data-repo-pull-head class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary">${branchOptions}</select>
+          </label>
+        </div>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Title
+          <input data-repo-pull-title type="text" required maxlength="240" placeholder="Short, descriptive title" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
+          <textarea data-repo-pull-body rows="6" placeholder="Describe the change. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
+        </div>
+      </form>`;
+    window.lucide?.createIcons();
+    const baseSelect = container.querySelector("[data-repo-pull-base]");
+    const headSelect = container.querySelector("[data-repo-pull-head]");
+    if (baseSelect) baseSelect.value = defaultBranch;
+    if (headSelect) headSelect.value = headDefault;
+    container.querySelector("[data-repo-pull-title]")?.focus();
+  }
+
+  async function handlePullComposeSubmit(repo, form) {
+    if (!repo || !form) return;
+    const titleInput = form.querySelector("[data-repo-pull-title]");
+    const bodyInput = form.querySelector("[data-repo-pull-body]");
+    const baseSelect = form.querySelector("[data-repo-pull-base]");
+    const headSelect = form.querySelector("[data-repo-pull-head]");
+    const submit = form.querySelector("[data-repo-pull-submit]");
+    const hint = form.querySelector("[data-repo-pull-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const title = String(titleInput?.value || "").trim();
+    const base = String(baseSelect?.value || "").trim();
+    const head = String(headSelect?.value || "").trim();
+    if (!title) {
+      setHint("Enter a title for the pull request.", "bad");
+      titleInput?.focus();
+      return;
+    }
+    if (!base || !head) {
+      setHint("Choose a base and head branch.", "bad");
+      return;
+    }
+    if (base === head) {
+      setHint("Base and head must be different branches.", "bad");
+      return;
+    }
+    const body = String(bodyInput?.value || "");
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebPullOpen(repo, title, body, base, head);
+      if (titleInput) titleInput.value = "";
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Pull request sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "pull_too_large" ? "The submission is too large."
+          : code === "bad_signature" ? "Could not verify the pull request's signature."
+          : "Could not send the pull request. Please try again.",
+        "bad");
+    }
+  }
+
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
@@ -6556,7 +6875,7 @@
                 </span>
               </label>
               ${isPulls
-                ? `<button type="button" disabled aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground opacity-70"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
+                ? `<button type="button" data-repo-pull-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
                 : `<button type="button" data-repo-issue-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`}
               <div class="flex min-w-0 flex-wrap items-center gap-2 lg:col-span-3">
                 ${filters.map(([label, options]) => renderRepoCollectionFilter(label, options)).join("")}
@@ -7707,6 +8026,22 @@
         return;
       }
 
+      const pullNewButton = event.target.closest("[data-repo-pull-new]");
+      if (pullNewButton && state.selectedRepo) {
+        if (!state.session?.nodeName) {
+          location.href = "/login";
+          return;
+        }
+        openPullCompose(state.selectedRepo);
+        return;
+      }
+
+      const pullCancelButton = event.target.closest("[data-repo-pull-cancel]");
+      if (pullCancelButton && state.selectedRepo) {
+        loadRepoCollection(state.selectedRepo, "pulls", "[data-repo-pulls]");
+        return;
+      }
+
       const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
       if (issueFilterButton) {
         setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter || "open");
@@ -7825,6 +8160,19 @@
     if (discussionReplyForm && state.selectedRepo) {
       event.preventDefault();
       handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
+      return;
+    }
+    const pullReviewForm = event.target.closest("[data-repo-pull-review-form]");
+    if (pullReviewForm && state.selectedRepo) {
+      event.preventDefault();
+      const action = event.submitter?.dataset.repoPullReviewAction || "comment";
+      handlePullReviewSubmit(state.selectedRepo, pullReviewForm, action);
+      return;
+    }
+    const pullNewForm = event.target.closest("[data-repo-pull-new-form]");
+    if (pullNewForm && state.selectedRepo) {
+      event.preventDefault();
+      handlePullComposeSubmit(state.selectedRepo, pullNewForm);
       return;
     }
     const agentPromptForm = event.target.closest("[data-repo-agent-prompt-form]");

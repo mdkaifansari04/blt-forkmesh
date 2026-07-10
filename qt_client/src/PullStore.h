@@ -240,6 +240,11 @@ public:
     // Count files/additions/deletions from a unified diff.
     static void computeStats(PullRequest &pr);
 
+    // Path to the linked git worktree that pulls/ metadata actually lives in
+    // (issue #399) — public for tooling/tests that need to inspect it
+    // directly; ordinary callers should go through the read/write API above.
+    QString metaWorkTree() const;
+
 private:
     // Shared machinery for the on-branch PR operations (resolve, edit file):
     // beginPullBranch checks out the PR's work branch and `git am`s the PR onto
@@ -253,6 +258,12 @@ private:
 
     QString pullsDir() const;
     QString pullDir(int number) const;
+    // Point refs/pr/<n>/head at pr's current content: the head branch's own
+    // tip when it resolves locally or from the mirror, otherwise a replayed
+    // commit built from pr.commits/pr.patch in a throwaway detached worktree.
+    // Best-effort — a PR is left without a ref on failure and callers fall
+    // back to the pre-#399 patch/branch-name path.
+    bool materializePullRef(const PullRequest &pr, QString *error) const;
     int nextNumber() const;
     bool writePull(const PullRequest &pr, QString *error) const;
     bool readPull(int number, PullRequest &out) const;
