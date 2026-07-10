@@ -7280,6 +7280,12 @@ QWidget *MainWindow::buildChatSection()
     auto *composer = new QWidget;
     composer->setObjectName("composerBar");
     composer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Rounded "pill" that groups the attach control, text field, and emoji
+    // button into one control, so the composer reads as a single input instead
+    // of three loose widgets.
+    auto *inputRow = new QWidget;
+    inputRow->setObjectName("composerInputRow");
+    inputRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *attachButton = new QPushButton(QString());
     attachButton->setObjectName("iconButton");
     attachButton->setCursor(Qt::PointingHandCursor);
@@ -7310,13 +7316,28 @@ QWidget *MainWindow::buildChatSection()
             QOverload<const QString &>::of(&QCompleter::activated), this,
             &MainWindow::insertMention);
     refreshMentionCandidates();
+    // 🙂 opens a compact emoji grid that inserts into the composer at the caret.
+    auto *emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x99\x82"));
+    emojiButton->setObjectName("iconButton");
+    emojiButton->setCursor(Qt::PointingHandCursor);
+    emojiButton->setToolTip("Insert emoji");
+    connect(emojiButton, &QPushButton::clicked, this,
+            [this, emojiButton] { showEmojiPicker(emojiButton); });
+    auto *inputRowLayout = new QHBoxLayout(inputRow);
+    inputRowLayout->setContentsMargins(6, 2, 6, 2);
+    inputRowLayout->setSpacing(2);
+    inputRowLayout->addWidget(attachButton);
+    inputRowLayout->addWidget(m_messageInput, 1);
+    inputRowLayout->addWidget(emojiButton);
     auto *sendButton = new QPushButton("Send");
     sendButton->setObjectName("primaryButton");
+    sendButton->setCursor(Qt::PointingHandCursor);
     auto *composerLayout = new QHBoxLayout(composer);
     composerLayout->setContentsMargins(14, 10, 14, 12);
     composerLayout->setSpacing(8);
-    composerLayout->addWidget(attachButton);
-    composerLayout->addWidget(m_messageInput);
+    // The pill takes all spare width; the Send button stays a fixed size so it
+    // never gets pushed off-screen when the window is narrow.
+    composerLayout->addWidget(inputRow, 1);
     composerLayout->addWidget(sendButton);
 
     m_typingLabel = new QLabel;
@@ -7376,6 +7397,19 @@ QWidget *MainWindow::buildChatSection()
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item)
                     switchConversation(item->data(Qt::UserRole).toString());
+            });
+    // Right-click a room to delete it (removed from this device only).
+    m_channelList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_channelList, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                QListWidgetItem *item = m_channelList->itemAt(pos);
+                if (!item)
+                    return;
+                const QString channel = item->data(Qt::UserRole).toString();
+                QMenu menu(m_channelList);
+                QAction *del = menu.addAction(QStringLiteral("Delete room"));
+                if (menu.exec(m_channelList->viewport()->mapToGlobal(pos)) == del)
+                    promptDeleteRoom(channel);
             });
     connect(m_dmList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {

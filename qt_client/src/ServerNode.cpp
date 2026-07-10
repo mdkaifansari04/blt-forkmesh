@@ -266,6 +266,7 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
                                 .toHex());
     m_endpoints = {m_url}; // default to the single URL; setEndpoints() adds failovers
     loadKnownPeers();
+    loadHiddenChannels();
 }
 
 void ServerNode::setEndpoints(const QList<QUrl> &endpoints)
@@ -1185,6 +1186,31 @@ void ServerNode::sendTyping(const QString &conversation, bool active)
     sendEncrypted(message, false);
 }
 
+QString ServerNode::hiddenChannelsSettingKey() const
+{
+    // Scope the deleted-rooms list to this room/relay so different networks
+    // don't share hidden state.
+    return QStringLiteral("chat/hiddenChannels/") + m_rosterStorageKey;
+}
+
+void ServerNode::loadHiddenChannels()
+{
+    const QStringList hidden =
+        QSettings().value(hiddenChannelsSettingKey()).toStringList();
+    m_hiddenChannels = QSet<QString>(hidden.begin(), hidden.end());
+    // Drop any hidden room the default channel list seeded, so a room deleted in
+    // a previous run doesn't come back on the next launch.
+    for (const QString &name : hidden)
+        m_channels.removeAll(name);
+}
+
+void ServerNode::saveHiddenChannels()
+{
+    QSettings().setValue(hiddenChannelsSettingKey(),
+                         QStringList(m_hiddenChannels.begin(),
+                                     m_hiddenChannels.end()));
+}
+
 void ServerNode::addChannel(const QString &channel)
 {
     QString name = channel.trimmed();
@@ -1192,6 +1218,10 @@ void ServerNode::addChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
+    // A room the user deleted stays deleted, even if something tries to re-add
+    // it (default-channel seeding, a peer hello, etc.).
+    if (m_hiddenChannels.contains(name))
+        return;
     if (!m_channels.contains(name)) {
         m_channels.append(name);
         emit channelsChanged(m_channels);
@@ -1202,6 +1232,22 @@ void ServerNode::addChannel(const QString &channel)
     sendEncrypted(message, true);
 }
 
+void ServerNode::removeChannel(const QString &channel)
+{
+    QString name = channel.trimmed();
+    if (name.isEmpty())
+        return;
+    if (!name.startsWith('#'))
+        name.prepend('#');
+    m_hiddenChannels.insert(name);
+    saveHiddenChannels();
+    m_privateChannels.remove(name);
+    if (m_channels.removeAll(name) > 0)
+        emit channelsChanged(m_channels);
+    // Purge any retained history so a re-add can't replay old messages.
+    m_channelHistory.remove(name);
+}
+
 void ServerNode::createPrivateChannel(const QString &channel)
 {
     QString name = channel.trimmed();
@@ -1209,6 +1255,9 @@ void ServerNode::createPrivateChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
+    // Creating a room by this name is an explicit re-add: clear any prior delete.
+    if (m_hiddenChannels.remove(name))
+        saveHiddenChannels();
     m_privateChannels.insert(name);
     if (!m_channels.contains(name)) {
         m_channels.append(name);
@@ -1304,7 +1353,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
         bool changed = false;
         for (const auto &value : message.value("channels").toArray()) {
             const QString channel = value.toString();
-            if (!channel.isEmpty() && !m_channels.contains(channel)) {
+            if (!channel.isEmpty() && !m_channels.contains(channel) &&
+                !m_hiddenChannels.contains(channel)) {
                 m_channels.append(channel);
                 changed = true;
             }
@@ -1351,6 +1401,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         // the same honour-model as a direct message addressed to someone else.
         if (message.value("private").toBool() && !m_channels.contains(channel))
             return;
+        // A message in a room the user deleted stays out — don't resurrect it.
+        if (m_hiddenChannels.contains(channel))
+            return;
         if (!m_channels.contains(channel))
             m_channels.append(channel);
         storeHistory(message);
@@ -1363,6 +1416,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
             if (!channel.isEmpty()) {
                 if (!channel.startsWith('#'))
                     channel.prepend('#');
+                if (m_hiddenChannels.contains(channel))
+                    return; // stay out of a room we deleted
                 m_privateChannels.insert(channel);
                 if (!m_channels.contains(channel)) {
                     m_channels.append(channel);
@@ -1379,7 +1434,7 @@ void ServerNode::handlePlain(const QJsonObject &message)
             emitDm(message, senderId);
     } else if (type == "channel") {
         const QString name = message.value("name").toString();
-        if (!m_channels.contains(name)) {
+        if (!m_channels.contains(name) && !m_hiddenChannels.contains(name)) {
             m_channels.append(name);
             emit channelsChanged(m_channels);
         }

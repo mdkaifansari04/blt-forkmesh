@@ -73,6 +73,7 @@ public:
     void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
+    void removeChannel(const QString &channel) override;
     void createPrivateChannel(const QString &channel) override;
     void inviteToChannel(const QString &peerId, const QString &channel) override;
     void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
@@ -136,6 +137,11 @@ private:
     void sendChannelHistoryTo(const QString &peerId, const QString &channel);
     void loadKnownPeers();
     void persistKnownPeers() const;
+    // Rooms the user deleted, persisted per room/relay so a delete sticks across
+    // restarts and can't be resurrected by peer traffic.
+    QString hiddenChannelsSettingKey() const;
+    void loadHiddenChannels();
+    void saveHiddenChannels();
     void handlePlain(const QJsonObject &message);
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
@@ -226,14 +232,18 @@ private:
     QString m_lastTxType;
     QString m_lastTxScope;
 
-    // Split welcome rooms are the one-time join rooms for nodes/users; every
-    // node starts in both so it can open whichever matches its identity.
-    QStringList m_channels{
-        "#general", "#welcome-nodes", "#welcome-users", "#random"};
+    // Shared network rooms every node starts in. #welcome is the one-time
+    // "just joined" room (only verified users actually post there).
+    QStringList m_channels{"#general", "#welcome", "#random"};
     // Invite-only channels (subset of m_channels). Never advertised in hello or
     // "channel" broadcasts, and messages in them carry "private":true so a peer
     // who wasn't invited drops them instead of auto-joining. See createPrivateChannel.
     QSet<QString> m_privateChannels;
+    // Rooms the user explicitly deleted. Kept out of m_channels and re-checked
+    // whenever a peer hello / channel broadcast / chat would otherwise re-add a
+    // room, so a deleted room stays gone. Persisted in QSettings so it survives
+    // restarts (loadHiddenChannels/saveHiddenChannels).
+    QSet<QString> m_hiddenChannels;
     QHash<QString, Peer> m_peers;
     QHash<QString, QList<QJsonObject>> m_channelHistory;
     QHash<QString, QString> m_messageConversation;
