@@ -1051,6 +1051,15 @@ int main(int argc, char *argv[])
         check(repo.loadAll().size() == before,
               "re-syncing a merged issue does not duplicate it");
 
+        // Settle any untracked state the IssueStore section above left behind
+        // (e.g. its issues/ folder) so the PullStore tests below start from a
+        // clean tree — beginPullBranch (agent edit / file edit / conflict
+        // resolve) requires one, and pulls/ commits no longer land in this
+        // working tree at all (issue #399) to incidentally sweep it up.
+        git({"add", "-A"});
+        git({"commit", "-q", "-m", "test: settle pre-pull-tests state",
+            "--allow-empty"});
+
         // --- PullStore conversation round-trip ---------------------------
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
@@ -1361,12 +1370,21 @@ int main(int argc, char *argv[])
                 pulls.createPull("Branch backed", "body", baseBranch, "feat-bb",
                                  QString(), QString(), /*branchBacked=*/true, &err);
             check(bn > 0, "createPull stores a branch-backed PR");
-            const QString bdir = tmp.path() + "/pulls/" + QString::number(bn);
+            // pulls/ metadata lives on its own linked worktree, not tmp.path()
+            // (issue #399) - it never lands on whatever's checked out there.
+            const QString metaDir = pulls.metaWorkTree();
+            auto metaGitOutput = [&](const QStringList &args) {
+                QProcess p;
+                p.start("git", QStringList{"-C", metaDir} + args);
+                p.waitForFinished(8000);
+                return p.readAllStandardOutput();
+            };
+            const QString bdir = metaDir + "/pulls/" + QString::number(bn);
             check(!QFile::exists(bdir + "/changes.patch"),
                   "a branch-backed PR writes no changes.patch into the repo");
             check(QFile::exists(bdir + "/pull.md"),
                   "a branch-backed PR still records its signed pull.md pointer");
-            const QString tracked = QString::fromUtf8(gitOutput(
+            const QString tracked = QString::fromUtf8(metaGitOutput(
                 {"ls-tree", "-r", "--name-only", "HEAD",
                  "pulls/" + QString::number(bn)}));
             check(tracked.contains("pull.md") &&
@@ -1524,7 +1542,22 @@ int main(int argc, char *argv[])
                 clone.waitForFinished(8000);
             }
             git({"branch", "-D", "feat-bin"});
-            writeBytes(
+            // Also drop the materialized PR ref (issue #399): deleting the
+            // named branch alone no longer strands the commits (the ref keeps
+            // them reachable independently), so simulating "no reachable refs
+            // anywhere" needs both gone.
+            git({"update-ref", "-d",
+                QStringLiteral("refs/pr/%1/head").arg(pbn)});
+            // pulls/ metadata lives on its own linked worktree, not tmp.path()
+            // (issue #399).
+            const QString metaDir = plain.metaWorkTree();
+            auto writeMetaBytes = [&](const QString &rel, const QByteArray &bytes) {
+                QFile f(metaDir + "/" + rel);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(bytes);
+                f.close();
+            };
+            writeMetaBytes(
                 "pulls/" + QString::number(pbn) + "/commits.mbox",
                 QByteArray(
                     "From 0000000000000000000000000000000000000000 Mon Sep 17 "

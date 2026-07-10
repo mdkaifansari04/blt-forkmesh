@@ -1129,6 +1129,22 @@
         return;
       }
 
+      const pullNewButton = event.target.closest("[data-repo-pull-new]");
+      if (pullNewButton && state.selectedRepo) {
+        if (!state.session?.nodeName) {
+          location.href = "/login";
+          return;
+        }
+        openPullCompose(state.selectedRepo);
+        return;
+      }
+
+      const pullCancelButton = event.target.closest("[data-repo-pull-cancel]");
+      if (pullCancelButton && state.selectedRepo) {
+        loadRepoCollection(state.selectedRepo, "pulls", "[data-repo-pulls]");
+        return;
+      }
+
       const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
       if (issueFilterButton) {
         setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter || "open");
@@ -1247,6 +1263,19 @@
     if (discussionReplyForm && state.selectedRepo) {
       event.preventDefault();
       handleDiscussionReplySubmit(state.selectedRepo, discussionReplyForm);
+      return;
+    }
+    const pullReviewForm = event.target.closest("[data-repo-pull-review-form]");
+    if (pullReviewForm && state.selectedRepo) {
+      event.preventDefault();
+      const action = event.submitter?.dataset.repoPullReviewAction || "comment";
+      handlePullReviewSubmit(state.selectedRepo, pullReviewForm, action);
+      return;
+    }
+    const pullNewForm = event.target.closest("[data-repo-pull-new-form]");
+    if (pullNewForm && state.selectedRepo) {
+      event.preventDefault();
+      handlePullComposeSubmit(state.selectedRepo, pullNewForm);
       return;
     }
     const agentPromptForm = event.target.closest("[data-repo-agent-prompt-form]");

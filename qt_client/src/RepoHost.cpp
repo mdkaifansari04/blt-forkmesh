@@ -218,12 +218,31 @@ QString refForBranchIn(const QString &mirrorPath, const QString &branch)
     return QString();
 }
 
+// pulls/ metadata now commits onto its own dedicated branch instead of
+// whatever the repo's default branch is (issue #399), so a request for a
+// pulls/ path with no explicit branch needs to resolve there instead of
+// falling through to refForBranchIn's ordinary default-branch behavior. Falls
+// back to the ordinary resolution when the metadata branch doesn't exist on
+// this mirror yet (pre-#399, or not yet synced).
+QString refForRepoPath(const QString &mirrorPath, const QString &path,
+                       const QString &branch)
+{
+    if (branch.trimmed().isEmpty() && path.startsWith(QLatin1String("pulls/"))) {
+        QByteArray probe;
+        if (runGit(mirrorPath,
+                   {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"},
+                   probe))
+            return refForBranchIn(mirrorPath, QStringLiteral("forkmesh/pulls"));
+    }
+    return refForBranchIn(mirrorPath, branch);
+}
+
 QJsonObject blobReplyFor(const QString &mirrorPath, const QString &path,
                          const QString &branch)
 {
     if (path.isEmpty())
         return {{"ok", false}, {"error", "not_found"}};
-    const QString ref = refForBranchIn(mirrorPath, branch);
+    const QString ref = refForRepoPath(mirrorPath, path, branch);
     if (ref.isEmpty())
         return {{"ok", false}, {"error", "not_found"}};
     QByteArray output;
@@ -448,7 +467,7 @@ void insertEntryCommitSummary(QJsonObject &entry, const QJsonObject &commit)
 QJsonObject treeReplyFor(const QString &mirrorPath, const QString &path,
                          const QString &branch)
 {
-    const QString ref = refForBranchIn(mirrorPath, branch);
+    const QString ref = refForRepoPath(mirrorPath, path, branch);
     if (ref.isEmpty())
         return {{"ok", false}, {"error", "empty_repo"}};
     const QString treeish = path.isEmpty() ? ref : ref + ":" + path;
@@ -1269,7 +1288,7 @@ void RepoHost::streamRawBlob(const QString &reqId, const QString &path, const QS
         sendGitEnd(reqId, false, QStringLiteral("bad_path"));
         return;
     }
-    const QString ref = refForBranch(branch);
+    const QString ref = refForRepoPath(m_mirrorPath, path, branch);
     if (ref.isEmpty()) {
         sendGitEnd(reqId, false, QStringLiteral("not_found"));
         return;
