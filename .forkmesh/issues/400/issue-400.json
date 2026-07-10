@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
@@ -31,6 +32,17 @@
             "sig": "Q4p9DPuAthjHwKWADXZ2ryYhFpx25FpVyW1YkoXWwRzTpYW_Jrm4VR9_Hm6CR1JkjXYE1--yOmIeJREEx_dKAg",
             "ts": 1783717199422,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "906a293f-c13b-479c-aab9-005396c86783",
+            "sig": "35jNhYAqzBEtrWA0EditSPcnJO77KKKfpTOw7wwk9hAo7LGidke6BcD3fBIyImK-QmxzXOWkO8Calzg7N_shAQ",
+            "ts": 1783717199490,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -42,6 +54,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "allow for deleting a comment from an issue",
-    "updatedAt": 1783717199422,
+    "updatedAt": 1783717199490,
     "votes": 0
 }
