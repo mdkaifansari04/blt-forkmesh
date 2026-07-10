@@ -134,6 +134,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
         case RepoDetailTab.about:
         case RepoDetailTab.actions:
         case RepoDetailTab.agents:
+        case RepoDetailTab.worktrees:
           return;
       }
     } catch (_) {
@@ -226,6 +227,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
                 Tab(text: 'About'),
                 Tab(text: 'Actions'),
                 Tab(text: 'Agents'),
+                Tab(text: 'Worktrees'),
               ],
             ),
           ),
@@ -245,6 +247,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           _AboutTab(repo: repo),
           _ActionsTab(api: api, repo: repo),
           _AgentsTab(api: api, repo: repo),
+          _WorktreesTab(api: api, repo: repo),
         ],
       ),
     );
@@ -5784,6 +5787,121 @@ class _AsyncList<T> extends StatelessWidget {
           itemBuilder: (_, i) => itemBuilder(items[i]),
         );
       },
+    );
+  }
+}
+
+class _WorktreesTab extends StatelessWidget {
+  const _WorktreesTab({required this.api, required this.repo});
+  final ApiService api;
+  final Repository repo;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AsyncList<RepoBranch>(
+      future: api.branches(repo.owner, repo.name),
+      empty: 'No worktrees found for this repository.',
+      itemBuilder: (branch) {
+        if (!branch.hasWorktree) return const SizedBox.shrink();
+        return _MobileCard(
+          icon: Icons.folder_special_outlined,
+          iconColor: FmTheme.accent(context),
+          title: branch.name,
+          subtitle: branch.worktreePath,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => _WorktreeDetailScreen(
+                repo: repo,
+                branch: branch,
+              ),
+            ),
+          ),
+          chips: [
+            if (branch.isDefault) 'default',
+            if (branch.sha.isNotEmpty) branch.sha.substring(0, 7),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _WorktreeDetailScreen extends StatelessWidget {
+  const _WorktreeDetailScreen({
+    required this.repo,
+    required this.branch,
+  });
+
+  final Repository repo;
+  final RepoBranch branch;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Worktree: ${branch.name}')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _InfoCard(
+            title: branch.name,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Chip(
+                    icon: Icons.account_tree_outlined,
+                    label: branch.name,
+                  ),
+                  if (branch.isDefault)
+                    const _Chip(
+                      icon: Icons.flag_outlined,
+                      label: 'default branch',
+                    ),
+                  if (branch.sha.isNotEmpty)
+                    _Chip(
+                      icon: Icons.commit_outlined,
+                      label: branch.sha.substring(0, 7),
+                    ),
+                  _Chip(icon: Icons.folder_outlined, label: repo.fullName),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _kv('Branch', branch.name),
+              _kv('Worktree path', branch.worktreePath),
+              if (branch.sha.isNotEmpty) _kv('Commit', branch.sha),
+              const SizedBox(height: 16),
+              Text(
+                'This worktree is managed by the desktop node. Mobile can view worktree state; operations like merge, update, and delete are desktop-controlled.',
+                style: TextStyle(
+                  color: FmTheme.textSecondary(context),
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _InfoCard(
+            title: 'Worktree actions',
+            children: [
+              const Text(
+                'Worktree operations are controlled from the desktop node. Use the Qt client to merge, update from main, or delete this worktree.',
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => _copyText(
+                  context,
+                  label: 'Worktree path',
+                  value: branch.worktreePath,
+                ),
+                icon: const Icon(Icons.copy_all_outlined, size: 18),
+                label: const Text('Copy path'),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
