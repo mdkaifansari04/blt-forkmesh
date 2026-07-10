@@ -1775,7 +1775,11 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
 
     assert 'src="/dashboard-chat.js"' in dashboard
     assert 'CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws"' in chat_js
-    assert 'ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1"' in chat_js
+    # The room key is fetched from the relay (server-derived from DATA_KEY), not a
+    # public baked-in constant.
+    assert 'forkmesh-shared-room-key-v1' not in chat_js
+    assert 'ROOM_KEY_ENDPOINT = "/api/chat/room-key"' in chat_js
+    assert "fetchRoomPassphrase" in chat_js
     assert "deriveRoomKey" in chat_js
     assert "encryptObject" in chat_js
     assert "decryptObject" in chat_js

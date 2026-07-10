@@ -52,8 +52,12 @@ ForkMesh is well past "prototype." Here's what you can do right now:
   desktop client, with mergeability checks and AI-assisted review.
 - **Actions:** run real workflows on push, with the latest live log always one
   click away, rendered in a native in-app terminal with full color and emoji.
-- **Encrypted room chat**, per-repository, end-to-end encrypted (AES-256-GCM)
-  before it ever reaches the relay. The relay only ever sees ciphertext.
+- **Encrypted room chat**, per-repository — messages are AES-256-GCM encrypted
+  client-side, so the relay only ever stores and forwards ciphertext and never
+  keeps plaintext. A default room derives its key from a shared, app-wide
+  constant: that keeps the relay from reading messages at rest, but it is *not*
+  confidential between ForkMesh users — set a room passphrase (shared out of
+  band) when you need a key only the participants know.
 
 **AI agents, built in**
 - Assign any issue to **Claude Code** or **Codex** straight from the issue view.
@@ -219,7 +223,10 @@ root registers it so Claude Code discovers it automatically. Run
 ## Security Notes
 
 - Relay chat payloads are encrypted client-side with AES-256-GCM; the relay only
-  sees ciphertext envelopes and cannot read room contents.
+  ever stores and forwards ciphertext envelopes. Default rooms use a shared,
+  app-wide key, so this protects message contents at rest on the relay but is
+  not confidential between users — use a room passphrase for participant-only
+  confidentiality.
 - Profile and repository metadata are signed by the local Ed25519 identity.
 
 ## Roadmap
