@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Founders outreach - ForkMesh</title>
+    <meta
+      name="description"
+      content="Send sponsorship and partnership outreach from the ForkMesh founders address."
+    />
+    <meta name="robots" content="noindex" />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="/outreach.js" defer></script>
+    <style>
+      body {
+        min-height: 100vh;
+        color: #f5f5f5;
+        background:
+          radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 32rem),
+          #050505;
+      }
+
+      .auth-shell {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px 16px;
+      }
+
+      .auth-card {
+        width: min(100%, 680px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        background: rgba(8, 8, 8, 0.88);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+        padding: 22px;
+      }
+
+      .auth-card .brand {
+        width: fit-content;
+        margin: 0 auto 18px;
+      }
+
+      .join-eyebrow {
+        display: inline-flex; align-items: center; gap: 8px;
+        color: rgba(255, 255, 255, 0.7); font-weight: 650; font-size: 12px;
+        justify-content: center; width: 100%;
+      }
+      .join-title {
+        font-size: clamp(26px, 6vw, 34px); font-weight: 800; line-height: 1.04;
+        text-align: center; margin: 8px 0 10px; color: #ffffff;
+      }
+      .join-sub { color: rgba(255, 255, 255, 0.62); text-align: center; max-width: 500px;
+        margin: 0 auto 16px; line-height: 1.5; font-size: 13px; }
+      .join-sub a { color: #ffffff; }
+
+      .field { margin-bottom: 12px; }
+      .field label {
+        display: block; font-weight: 650; font-size: 12px; margin-bottom: 6px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .field input, .field select, .field textarea {
+        width: 100%; padding: 0.55rem 0.7rem; border-radius: 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.05); color: #f5f5f5;
+        font: inherit; font-size: 14px;
+      }
+      .field textarea { min-height: 240px; resize: vertical; line-height: 1.5; }
+      .field input:focus, .field select:focus, .field textarea:focus {
+        outline: 0; border-color: rgba(255, 255, 255, 0.34);
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+      }
+      .field select option { background: #141416; color: #f5f5f5; }
+
+      .auth-button-primary {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 100%; height: 2.4rem; border: 0; border-radius: 0.8rem;
+        background: #ffffff; color: #050505; font-weight: 750; font-size: 14px;
+        cursor: pointer;
+        transition: transform 150ms ease, background-color 150ms ease;
+      }
+      .auth-button-primary:hover { background: #d9d9d9; }
+      .auth-button-primary:active { transform: translateY(1px); }
+      .auth-button-primary:disabled { background: #e6e6e6; cursor: not-allowed; }
+
+      .hint { margin: 10px 0 0; font-size: 13px; text-align: center;
+        color: rgba(255, 255, 255, 0.62); }
+      .hint.good { color: #4ade80; }
+      .hint.bad { color: #f87171; }
+
+      .panel {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.035);
+        border-radius: 14px; padding: 14px; margin-top: 16px;
+      }
+      .panel h3 { color: #ffffff; margin: 0 0 10px; font-size: 14px; }
+      .panel .meta { color: rgba(255, 255, 255, 0.52); font-size: 12px; margin: 8px 0 0; }
+
+      .team-row, .log-row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; padding: 7px 0; font-size: 13px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .team-row:first-of-type, .log-row:first-of-type { border-top: 0; }
+      .team-row .who { color: #ffffff; font-weight: 650; }
+      .team-row .sub, .log-row .sub { color: rgba(255, 255, 255, 0.52); font-size: 12px; }
+      .log-row .what { min-width: 0; }
+      .log-row .what .to { color: #ffffff; }
+      .log-row .what div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .log-ok { color: #4ade80; font-size: 12px; white-space: nowrap; }
+      .log-fail { color: #f87171; font-size: 12px; white-space: nowrap; }
+
+      .team-add { display: flex; gap: 8px; margin-top: 10px; }
+      .team-add input { flex: 1; padding: 0.45rem 0.7rem; border-radius: 0.7rem;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.05); color: #f5f5f5; font: inherit;
+        font-size: 13px; }
+      .btn-sm {
+        border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 0.7rem;
+        background: transparent; color: #ffffff; font: inherit; font-size: 12px;
+        font-weight: 650; padding: 0.35rem 0.75rem; cursor: pointer;
+      }
+      .btn-sm:hover { background: rgba(255, 255, 255, 0.1); }
+
+      .row-links { text-align: center; margin-top: 14px;
+        color: rgba(255, 255, 255, 0.58); font-size: 13px; }
+      .row-links a { color: #ffffff; }
+
+      [hidden] { display: none !important; }
+    </style>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="or-title">
+        <a class="brand" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+        </a>
+        <span class="join-eyebrow">⬡ Founders outreach</span>
+        <h1 id="or-title" class="join-title">Send from the founders email</h1>
+        <p class="join-sub" id="or-status">Checking your access…</p>
+
+        <!-- Shown when there is no login session. -->
+        <div id="or-login" hidden>
+          <p class="join-sub">
+            Sign in with your ForkMesh account to use the outreach console.
+          </p>
+          <p class="row-links"><a href="/login?next=/outreach">Log in →</a></p>
+        </div>
+
+        <!-- Shown when logged in but not on the outreach team. -->
+        <div id="or-denied" hidden>
+          <p class="join-sub">
+            Your account isn't on the outreach team yet. Ask a ForkMesh admin
+            to add you, then reload this page.
+          </p>
+        </div>
+
+        <!-- Compose form (admins + outreach team members). -->
+        <form id="or-compose" hidden>
+          <div class="field">
+            <label for="or-template">Template</label>
+            <select id="or-template"></select>
+          </div>
+          <div class="field">
+            <label for="or-to">To</label>
+            <input id="or-to" type="email" required autocomplete="off"
+                   placeholder="sponsor@example.com" />
+          </div>
+          <div class="field">
+            <label for="or-subject">Subject</label>
+            <input id="or-subject" type="text" required autocomplete="off" maxlength="200" />
+          </div>
+          <div class="field">
+            <label for="or-body">Message (plain text; fill in the [bracketed] parts)</label>
+            <textarea id="or-body" required maxlength="10000"></textarea>
+          </div>
+          <button class="auth-button-primary" id="or-send" type="submit">Send email</button>
+          <p class="hint" id="or-hint"></p>
+        </form>
+
+        <!-- Team roster (admins only). -->
+        <div class="panel" id="or-team" hidden>
+          <h3>Outreach team</h3>
+          <div id="or-team-list"></div>
+          <div class="team-add">
+            <input id="or-team-name" type="text" autocomplete="off"
+                   placeholder="account name to add" />
+            <button class="btn-sm" id="or-team-add" type="button">Add</button>
+          </div>
+          <p class="meta">Admins can always send. Accounts added here can send
+            from the founders address too; remove them to revoke access.</p>
+        </div>
+
+        <!-- Recent sends (visible to everyone who can send). -->
+        <div class="panel" id="or-log" hidden>
+          <h3>Recent sends</h3>
+          <div id="or-log-list"></div>
+        </div>
+
+        <p class="row-links"><a href="/dashboard">← Back to dashboard</a></p>
+      </section>
+    </main>
+  </body>
+</html>
