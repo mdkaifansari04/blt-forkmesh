@@ -333,12 +333,13 @@
         height: 100dvh;
         background-color: rgb(var(--dashboard-sidebar-rgb)) !important;
         transform: translateX(-100%);
-        transition: transform 180ms ease;
-        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+        transition: transform 180ms ease, box-shadow 180ms ease;
+        box-shadow: none;
       }
 
       body.dashboard-sidebar-open [data-dashboard-sidebar] {
         transform: translateX(0);
+        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
       }
 
       [data-mobile-sidebar-backdrop] {
