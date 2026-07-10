@@ -168,6 +168,18 @@ class ApiService {
     return future;
   }
 
+  /// The shared room-chat passphrase, derived server-side from DATA_KEY and
+  /// handed only to authenticated clients (bearer token attached by _getJson).
+  /// Replaces the old public app-wide constant; every client feeds it into the
+  /// same PBKDF2 room-key derivation so they all converge on one AES key.
+  Future<String> roomChatPassphrase() async {
+    final data = await _getJson(_base('/api/chat/room-key'));
+    if (data is Map && data['passphrase'] is String) {
+      return data['passphrase'] as String;
+    }
+    throw Exception('room key unavailable');
+  }
+
   Future<NotificationPage> notifications(String node, {int limit = 40}) async {
     final cleanNode = node.trim().toLowerCase();
     if (cleanNode.isEmpty) {
