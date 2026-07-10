@@ -413,6 +413,11 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+# Per-source-IP account-creation throttle: at most SIGNUP_MAX_PER_IP new accounts
+# from one IP per rolling SIGNUP_RATE_WINDOW_MS, to blunt mass signup / name
+# squatting. Login has its own lockout; catalog writes have their own cooldown.
+SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000
+SIGNUP_MAX_PER_IP = 5
 ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 # How long a password-reset link stays valid after it is emailed.
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
@@ -2302,6 +2307,7 @@ _stale_node_purge = {"ts": 0}
 # keyed by the current secret so a secret rotation still takes effect.
 _data_key_cache = {"secret": None, "key": None}
 _hmac_key_cache = {"secret": None, "key": None}
+_room_key_cache = {"secret": None, "value": None}
 
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -2482,6 +2488,65 @@ async def _hmac_key(env):
     return key
 
 
+async def _room_chat_passphrase(env):
+    # The shared room-chat key, derived ONE-WAY from DATA_KEY with its own domain
+    # separation (same pattern as the blind-index HMAC key). Returned as a hex
+    # string that every client feeds into the existing PBKDF2(passphrase, room
+    # salt) room-key derivation, so it drops in for the old public app constant
+    # ("forkmesh-shared-room-key-v1") without changing the wire crypto.
+    #
+    # Why this is a real improvement: the key is no longer a constant anyone can
+    # read straight out of the open-source client — only an authenticated
+    # ForkMesh account can fetch it. It is NOT confidentiality from the relay:
+    # the relay operator holds DATA_KEY and can derive this too (as they always
+    # could derive the old constant). SHA-256 is preimage-resistant, so exposing
+    # this passphrase never exposes DATA_KEY or the custody seeds it also guards.
+    secret = _require_data_secret(env) + ":room-chat-passphrase-v1"
+    if _room_key_cache["secret"] == secret and _room_key_cache["value"]:
+        return _room_key_cache["value"]
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    value = bytes(Uint8Array.new(digest).to_py()).hex()
+    _room_key_cache["secret"] = secret
+    _room_key_cache["value"] = value
+    return value
+
+
+async def _room_key_authorized(env, request):
+    # Any registered ForkMesh account may fetch the shared room-chat key: prove it
+    # with a web/mobile account session token (bearer/body), or — for a desktop
+    # node that authenticates with its Ed25519 key rather than a session — a fresh
+    # ts + signature over "forkmesh-room-key-v1\n<node>\n<ts>" verified against the
+    # node's registered pubkey.
+    if await _authed_account_name(env, request):
+        return True
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-room-key-v1\n" + node + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def chat_room_key_handler(env, request):
+    # Serve the shared room-chat passphrase to authenticated clients only. This is
+    # what lets the room key live server-side (derived from DATA_KEY) instead of
+    # as a public constant baked into every client build.
+    await ensure_schema(env)
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _room_key_authorized(env, request):
+        return json_response({"error": "unauthorized"}, status=401)
+    return json_response(
+        {"ok": True, "passphrase": await _room_chat_passphrase(env)},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 async def blind_index(env, value):
     # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
     key = await _hmac_key(env)
@@ -2589,6 +2654,44 @@ async def catalog_rate_check(env, owner_bi):
         "INSERT INTO catalog_rate (owner_bi, ts) VALUES (?,?) "
         "ON CONFLICT(owner_bi) DO UPDATE SET ts=excluded.ts",
         owner_bi, now,
+    )
+    return None
+
+
+async def signup_rate_check(env, ip_bi):
+    # Throttle account creation per source IP: at most SIGNUP_MAX_PER_IP within a
+    # rolling SIGNUP_RATE_WINDOW_MS. Returns a 429 response when over the limit,
+    # else None (and records this creation). A missing IP (local/dev, or a proxy
+    # path with no CF header) is not throttled — we only rate-limit what we can
+    # attribute — so genuine tests and self-hosting stay unaffected.
+    if not ip_bi:
+        return None
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT count, window_start_ts FROM signup_rate WHERE ip_bi=?", ip_bi)
+    count = 0
+    window_start = now
+    if row:
+        try:
+            window_start = int(row.get("window_start_ts") or 0)
+            count = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            window_start, count = now, 0
+        if now - window_start >= SIGNUP_RATE_WINDOW_MS:
+            window_start, count = now, 0  # window elapsed; start a fresh count
+    if count >= SIGNUP_MAX_PER_IP:
+        retry_ms = max(1000, SIGNUP_RATE_WINDOW_MS - (now - window_start))
+        return json_response(
+            {"error": "rate_limited", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={"Retry-After": str(max(1, (retry_ms + 999) // 1000))},
+        )
+    new_count = count + 1
+    await d1_run(
+        env,
+        "INSERT INTO signup_rate (ip_bi, count, window_start_ts) VALUES (?,?,?) "
+        "ON CONFLICT(ip_bi) DO UPDATE SET count=?, window_start_ts=?",
+        ip_bi, new_count, window_start, new_count, window_start,
     )
     return None
 
@@ -4148,8 +4251,8 @@ def _public_profile_html(profile, host):
     body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { width:min(46rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
     header { display:flex; gap:16px; align-items:center; }
-    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); }
-    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
+    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%%, var(--border)); }
+    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
     h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
     .handle, .bio, small { color:var(--muted); }
     .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
@@ -4161,15 +4264,15 @@ def _public_profile_html(profile, host):
     .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
     .links { display:grid; gap:10px; margin-top:24px; }
     .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%, var(--border)); }
+    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%%, var(--border)); }
     .profile-link span { display:grid; min-width:0; }
     .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
-    .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
+    .verified { border-color:color-mix(in srgb, var(--accent) 45%%, var(--border)); color:var(--accent); }
     .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
     .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
     input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
-    button { border:1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
+    button { border:1px solid color-mix(in srgb, var(--accent) 48%%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
     footer { margin-top:24px; color:var(--muted); font-size:12px; }
     footer a { color:var(--muted); }
   </style>
@@ -4409,6 +4512,14 @@ async def _account_signup(env, request):
     dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
+
+    # Per-IP account-creation throttle (checked only once the name/email are
+    # otherwise creatable, so a rejected duplicate doesn't burn the quota).
+    signup_ip = (_signup_metadata(request).get("ip") or "").strip()
+    throttled = await signup_rate_check(
+        env, await blind_index(env, signup_ip) if signup_ip else None)
+    if throttled is not None:
+        return throttled
 
     salt, phash = await hash_password(password)
     rec = existing or {}
@@ -13091,6 +13202,11 @@ class Default(WorkerEntrypoint):
         # full profile and notification list every tick.
         if url.path in ("/api/poll", "/api/poll/"):
             return await poll_handler(self.env, request)
+
+        # Shared room-chat key, derived server-side from DATA_KEY and handed only
+        # to authenticated clients — replaces the old public app-wide constant.
+        if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
+            return await chat_room_key_handler(self.env, request)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
