@@ -254,14 +254,17 @@ def test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories():
     assert 'showSection(requestedSection() || "home", { push: false })' in dashboard_js
 
 
-def test_dashboard_home_left_rail_uses_github_dark_panel_background():
+def test_dashboard_home_left_rail_uses_theme_aware_panel_background():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     home = dashboard[
         dashboard.index('data-view="home"')
         : dashboard.index('data-view="repos"')
     ]
 
-    assert 'data-home-left-rail class="min-w-0 border-b border-border bg-[#0d1117]' in home
+    # bg-card (not a hardcoded dark hex) so the rail switches with the
+    # dashboard's light/dark theme instead of always rendering dark.
+    assert 'data-home-left-rail class="min-w-0 border-b border-border bg-card' in home
+    assert "bg-[#0d1117]" not in home
     assert 'lg:border-b-0 lg:border-r' in home
     assert 'lg:min-h-full' in home
     assert 'data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8"' in home
@@ -781,6 +784,30 @@ def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
     light_vars = set(re.findall(r"--([a-zA-Z0-9-]+):", light_block))
     missing = dark_vars - light_vars
     assert not missing, f"light theme is missing overrides for: {sorted(missing)}"
+
+
+def test_dashboard_mobile_drawer_shadow_only_renders_while_open():
+    # Regression guard: the mobile nav drawer's box-shadow used to be set
+    # unconditionally on [data-dashboard-sidebar], which sits off-canvas
+    # (translateX(-100%)) by default. A box-shadow isn't clipped by its own
+    # element being off-screen, so a dark blur bled ~100px into the visible
+    # page at all times — most visible in light mode as a smudge in the
+    # bottom-left corner. The shadow must only apply once the drawer is
+    # actually open.
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+
+    closed_rule = dashboard[
+        dashboard.index("[data-dashboard-sidebar] {"):
+        dashboard.index("}", dashboard.index("[data-dashboard-sidebar] {"))
+    ]
+    open_rule = dashboard[
+        dashboard.index("body.dashboard-sidebar-open [data-dashboard-sidebar] {"):
+        dashboard.index(
+            "}", dashboard.index("body.dashboard-sidebar-open [data-dashboard-sidebar] {")
+        )
+    ]
+    assert "box-shadow: none" in closed_rule
+    assert "box-shadow: 24px 0 80px" in open_rule
 
 
 def _strip_html_comments(html: str) -> str:
