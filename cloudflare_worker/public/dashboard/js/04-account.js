@@ -1,52 +1,8 @@
-  function setSection(section) {
-    const dashboardRoot = $("[data-dashboard-root]");
-    if (dashboardRoot) dashboardRoot.dataset.dashboardSection = section;
-    $$("[data-view]").forEach((view) => {
-      view.classList.toggle("active", view.dataset.view === section);
-    });
-    $$("[data-nav-link]").forEach((button) => {
-      const active = button.dataset.section === section;
-      button.setAttribute("aria-current", active ? "page" : "false");
-      button.classList.toggle("text-foreground", active);
-      button.classList.toggle("text-muted-foreground", !active);
-      button.classList.toggle("hover:text-foreground", !active);
-    });
-    renderHeaderContext(section);
-  }
-
-  // Top-level sections that get their own address-bar entry (?section=network,
-  // ?section=profile, ...) so a refresh or Back/Forward restores whichever page
-  // you were on instead of always dropping you back on the repos list. "repos"
-  // is the default, so it stays on the bare /dashboard URL. The repo-detail view
-  // ("explore") is addressed by the /owner/repo path instead, not here.
-  const SECTION_ROUTES = ["home", "profile-overview", "profile-repositories", "repos", "network", "profile", "chat"];
-
-  function requestedSection() {
-    const value = (new URLSearchParams(location.search).get("section") || "").trim();
-    return SECTION_ROUTES.includes(value) ? value : "";
-  }
-
-  function sectionUrl(section) {
-    return section && section !== "home" && SECTION_ROUTES.includes(section)
-      ? `/dashboard?section=${section}`
-      : "/dashboard";
-  }
-
-  // Switch to a top-level section AND reflect it in the URL (plus run any
-  // per-section load hooks) so the choice survives a refresh. Pass push:false
-  // when restoring from the URL (init/popstate) so we don't re-push it.
-  function showSection(section, { push = true } = {}) {
-    if (push) {
-      state.selectedRepo = null;
-      navigateHistory(sectionUrl(section));
-    }
-    setSection(section);
-    if (section === "profile") {
-      renderProfilePage(state.session);
-      refreshPublicProfile(state.session);
-      setSettingsSection(state.settingsView?.section || "public-profile", { scroll: false });
-    }
-  }
+  // Every top-level page is its own document now (/dashboard, /dashboard/repos,
+  // /dashboard/network, ...) — navigation between them is a real page load via
+  // plain <a href> links, so there is no client-side section router anymore.
+  // The only client-routed state left is within-page: repo tabs/tree/blob on
+  // the repo page, and the settings sub-tabs below.
 
   const SETTINGS_SECTIONS = ["public-profile", "account", "appearance", "notifications", "payout", "nodes", "danger"];
 
@@ -54,10 +10,24 @@
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
   }
 
-  function setSettingsSection(section, { scroll = true } = {}) {
+  // The settings sub-tab addressed by the URL (/dashboard/settings/<tab>), so a
+  // refresh keeps the tab instead of snapping back to public-profile.
+  function settingsSectionFromPath() {
+    const parts = location.pathname.split("/").filter(Boolean);
+    return normalizeSettingsSection(parts[0] === "dashboard" && parts[1] === "settings" ? parts[2] || "" : "");
+  }
+
+  function setSettingsSection(section, { scroll = true, push = false } = {}) {
     const activeSection = normalizeSettingsSection(section);
     if (!state.settingsView) state.settingsView = {};
     state.settingsView.section = activeSection;
+    if (push) {
+      // Reflect the tab in the URL so refresh/back keep it. public-profile is
+      // the default, so it stays on the bare /dashboard/settings URL.
+      navigateHistory(activeSection === "public-profile"
+        ? "/dashboard/settings"
+        : `/dashboard/settings/${activeSection}`);
+    }
 
     $$("[data-settings-section]").forEach((panel) => {
       const active = panel.dataset.settingsSection === activeSection;
@@ -92,7 +62,11 @@
   }
 
   function currentSection() {
-    return $("[data-view].active")?.dataset?.view || "home";
+    // The legacy section name is baked into the page document at build time
+    // (dashboard_shell.PAGES[page]["section"] -> data-dashboard-section).
+    return $("[data-dashboard-root]")?.dataset?.dashboardSection
+      || $("[data-view].active")?.dataset?.view
+      || "home";
   }
 
   function renderHeaderContext(section = currentSection()) {
@@ -1569,16 +1543,17 @@
 
   function offerLinkGrant(grant) {
     // Strip the one-time grant from the address bar first so refresh/back
-    // can't replay it (and it doesn't linger in the visible URL), then land on
-    // the profile's Nodes panel and ask for one explicit "Authenticate & link"
-    // click. The grant overrides any existing association, so the click is the
-    // moment of consent on the browser side.
+    // can't replay it (and it doesn't linger in the visible URL), then show
+    // the settings page's Nodes panel and ask for one explicit "Authenticate &
+    // link" click. The grant overrides any existing association, so the click
+    // is the moment of consent on the browser side. (Boot redirects the grant
+    // to the settings document before calling this, so the panel exists here.)
     const params = new URLSearchParams(location.search);
     for (const key of ["link_node", "link_ts", "link_sig"]) params.delete(key);
     const rest = params.toString();
     window.history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : ""));
     state.linkGrant = grant;
-    setSection("profile");
+    setSettingsSection("nodes", { scroll: false });
     const row = $("[data-link-grant-row]");
     if (row) row.classList.remove("hidden");
     const text = $("[data-link-grant-text]");

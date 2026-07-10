@@ -1243,6 +1243,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
         description,
       }),
     });
@@ -1452,7 +1453,7 @@
       const response = await fetch(`${repoApiBase(repo)}/agents/${encodeURIComponent(agentId)}/transcript`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ ownerAccount: state.session?.nodeName || "" }),
+        body: JSON.stringify({ ownerAccount: state.session?.nodeName || "", sessionToken: state.session?.sessionToken || "" }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
@@ -1484,6 +1485,7 @@
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({
         ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -1539,6 +1541,7 @@
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           ownerAccount: state.session?.nodeName || "",
+          sessionToken: state.session?.sessionToken || "",
           text,
         }),
       });
@@ -1590,6 +1593,7 @@
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           ownerAccount: state.session?.nodeName || "",
+          sessionToken: state.session?.sessionToken || "",
           text,
           provider: String(providerSelect?.value || ""),
           model: String(modelSelect?.value || ""),
