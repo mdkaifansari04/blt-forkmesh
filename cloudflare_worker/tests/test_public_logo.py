@@ -33,7 +33,7 @@ class BrandLogoParser(HTMLParser):
         if self._in_brand:
             if tag not in {"br", "hr", "img", "input", "link", "meta"}:
                 self._brand_depth += 1
-            if tag == "img":
+            if tag == "img" and "brand-mark" in classes:
                 self.brand_logos.append(attr_map)
 
     def handle_endtag(self, tag):
@@ -44,6 +44,17 @@ class BrandLogoParser(HTMLParser):
             self._brand_depth -= 1
         if self._brand_depth <= 0:
             self._in_brand = False
+
+
+class LogoImageParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.logos = []
+
+    def handle_starttag(self, tag, attrs):
+        attr_map = dict(attrs)
+        if tag == "img" and attr_map.get("src") == LOGO_SRC:
+            self.logos.append(attr_map)
 
 
 def test_all_public_html_pages_use_logo_in_brand_link():
@@ -107,12 +118,62 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
 def test_dashboard_assets_are_root_relative_for_deep_links():
     html = (PUBLIC_DIR / "dashboard.html").read_text(encoding="utf-8")
 
-    assert 'src="/dashboard.js"' in html
+    assert 'src="/dashboard.js?v=github-settings-tabs"' in html
     assert 'href="styles.css"' not in html
     assert 'src="dashboard.js"' not in html
+
+
+def test_dashboard_logo_does_not_paint_light_background():
+    html = assembled_dashboard()
+    parser = LogoImageParser()
+    parser.feed(html)
+
+    assert parser.logos
+    for logo in parser.logos:
+        classes = set(logo.get("class", "").split())
+        assert "bg-foreground" not in classes
+        assert "p-1" not in classes
+        assert "rounded-full" not in classes
+
+
+def test_dark_pages_do_not_wrap_logo_in_light_circle():
+    bad_classes = {"bg-foreground", "bg-white", "bg-white/90", "p-1", "rounded-full"}
+    offenders = []
+
+    html_pages = sorted(
+        p for p in PUBLIC_DIR.rglob("*.html")
+        if "partials" not in p.relative_to(PUBLIC_DIR).parts
+    )
+    for page in html_pages:
+        rel = page.relative_to(PUBLIC_DIR).as_posix()
+        if rel in ("dashboard/index.html", "dashboard.html", "dashboard/shell.html"):
+            html = assembled_dashboard()
+        else:
+            html = page.read_text(encoding="utf-8")
+
+        is_dark = (
+            'class="dark' in html
+            or 'data-dashboard-theme="dark"' in html
+            or 'content="dark"' in html
+            or "content=\"light dark\"" in html
+        )
+        if not is_dark:
+            continue
+
+        parser = LogoImageParser()
+        parser.feed(html)
+        for logo in parser.logos:
+            classes = set(logo.get("class", "").split())
+            overlap = sorted(classes & bad_classes)
+            if overlap:
+                offenders.append("%s: %s" % (rel, " ".join(overlap)))
+
+    assert offenders == []
 
 
 if __name__ == "__main__":
     test_all_public_html_pages_use_logo_in_brand_link()
     test_brand_logo_size_comes_from_shared_stylesheet()
     test_dashboard_assets_are_root_relative_for_deep_links()
+    test_dashboard_logo_does_not_paint_light_background()
+    test_dark_pages_do_not_wrap_logo_in_light_circle()

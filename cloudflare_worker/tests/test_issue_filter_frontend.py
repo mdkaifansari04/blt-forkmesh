@@ -100,9 +100,9 @@ def test_homepage_links_to_active_nodes():
 
 def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     # Record lists (issues/pulls/discussions) must fetch their record files
-    # through ONE batched /blobs request — fetching each record as its own
+    # through ONE batched /blobs request - fetching each record as its own
     # /blob call fired 50+ parallel requests per page view and tripped the
-    # relay's per-repo rate limit — and must only load on the tab's FIRST
+    # relay's per-repo rate limit - and must only load on the tab's FIRST
     # view, not eagerly on every repo open.
     assert "async function fetchRepoBlobs(repo, paths)" in DASHBOARD_JS
     assert "/blobs?" in DASHBOARD_JS

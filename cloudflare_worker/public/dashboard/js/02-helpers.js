@@ -368,12 +368,12 @@
     return `/${owner}/${name}${suffix}`;
   }
 
-  // Feature-tab route segments (mirrors 404.html's `featureTabs` list) — tells
+  // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
   const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"];
 
   // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
-  // for the account that can actually see it — sessionCanAssignAgent gates it
+  // for the account that can actually see it - sessionCanAssignAgent gates it
   // the same way it gates the "Assign to agent" issue checkbox (owner or
   // admin). A non-owner deep-linking /owner/repo/agents must NOT recognize it
   // as a tab route (it falls through to the harmless tree/blob path instead),
@@ -492,7 +492,7 @@
   const ISSUE_IMAGE_MAX_COUNT = 4;
   const ISSUE_IMAGE_MAX_BYTES = 40 * 1024;
   const ISSUE_IMAGE_MAX_TOTAL_BYTES = 45 * 1024;
-  // Raw files can be much bigger than the final embedded size — anything under
+  // Raw files can be much bigger than the final embedded size - anything under
   // this is accepted into the crop/compress modal rather than rejected outright.
   const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
 

@@ -20,7 +20,7 @@
     // the /dashboard/owner/name... path that 404.html bounces refreshed repo
     // links (including /owner/name/issues etc.) to. Carry over whatever tab or
     // tree/blob suffix the incoming URL already pointed at instead of
-    // collapsing it to the bare repo root — otherwise a refresh on the Issues
+    // collapsing it to the bare repo root - otherwise a refresh on the Issues
     // tab would lose its place and land back on Code. Only trust that suffix
     // when the URL is actually addressing THIS repo already (a fresh open from
     // the repo list/sidebar while some other repo's tab URL is showing should
@@ -64,9 +64,13 @@
       agents: { label: "Agents", icon: "bot", count: "" },
     };
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
+    const actionSeed = repoKey(repo);
+    const watchCount = stableMockNumber(`${actionSeed}:watch`, 0, 18);
+    const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
+    const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
-        <div class="rounded-t-lg border border-border bg-background">
+        <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
           <div class="grid gap-4 border-b border-border p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
             <div class="min-w-0">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
@@ -78,6 +82,24 @@
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
             <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
+              <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                Watch
+                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(watchCount)}</span>
+                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              </button>
+              <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                Fork
+                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
+                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              </button>
+              <button type="button" data-repo-action-star class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                Star
+                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(starCount)}</span>
+                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              </button>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
@@ -105,10 +127,11 @@
 	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
-		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto]">
+		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
 		                ${renderRepoBranchToolbar(repo, branch)}
 		                <button type="button" data-repo-file-finder-open class="inline-flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto hidden rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">T</span></button>
-		                <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" class="copy-button inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i>Copy clone</button>
+		                <button type="button" aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
+		                <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i></button>
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
 			                <div class="flex min-w-0 items-center gap-2">
@@ -117,11 +140,12 @@
 			                </div>
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
 		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
-		                  <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" class="copy-button inline-flex h-8 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i>Copy clone</button>
+		                  <button type="button" aria-disabled="true" class="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file</button>
+		                  <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-8 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span></button>
 		                </div>
 		              </div>
 		              <div data-repo-code-workspace class="min-w-0 gap-4">
-		                <aside data-repo-code-explorer class="hidden min-w-0 overflow-hidden rounded-lg border border-border bg-background">
+		                <aside data-repo-code-explorer class="hidden min-w-0 overflow-hidden rounded-lg border border-border bg-background" data-repo-code-sidebar>
 		                  <div class="flex h-11 items-center gap-2 border-b border-border bg-secondary/40 px-3 text-sm font-semibold text-foreground">
 		                    <i data-lucide="panel-left" class="h-3.5 w-3.5 text-muted-foreground"></i>
 		                    Files
@@ -133,7 +157,7 @@
 		                  <div data-repo-explorer-tree class="max-h-[35rem] overflow-auto py-2"></div>
 		                </aside>
 		                <div data-repo-code-main class="min-w-0">
-		                  <div data-repo-tree-panel class="overflow-hidden rounded-lg border border-border bg-background">
+		                  <div data-repo-tree-panel data-repo-file-table class="overflow-hidden rounded-lg border border-border bg-background">
 	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
 	                      <div class="flex min-w-0 items-center gap-2">
 	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
@@ -148,7 +172,7 @@
 	                      <span></span>
 	                      <span>Name</span>
 	                      <span class="hidden sm:block">Last commit message</span>
-	                      <span>Type</span>
+	                      <span>Last commit date</span>
 	                    </div>
 	                    <div data-repo-tree></div>
 	                  </div>
@@ -183,7 +207,7 @@
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
-          <aside data-repo-about class="min-w-0 rounded-lg border border-border bg-background p-4">
+          <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
               ${canEditAbout
@@ -298,14 +322,13 @@
       .map(([label, value]) => `
         <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono">
           <span class="text-muted-foreground">${escapeHtml(label)}</span>
-          <span class="text-foreground">${escapeHtml(value === "" || value === undefined || value === null ? "—" : value)}</span>
+          <span class="text-foreground">${escapeHtml(value === "" || value === undefined || value === null ? "-" : value)}</span>
         </span>`)
       .join("");
   }
 
   function renderNetworkRows(rows) {
     const list = $("[data-network-node-list]");
-    const rail = $("[data-network-rail-nodes]");
     const count = $("[data-network-node-count]");
     const recent = rows.slice(0, 6);
     const onlineCount = rows.filter((row) => row.online).length;
@@ -326,18 +349,6 @@
           </div>
         `).join("")
         : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
-    }
-    if (rail) {
-      rail.innerHTML = recent.slice(0, 3).length
-        ? recent.slice(0, 3).map((row) => `
-          <div class="flex items-center gap-2">
-            <i data-lucide="circle" class="${nodeDotClass(row, "w-1.5 h-1.5")}"></i>
-            <span class="text-xs ${row.online ? "text-foreground" : "text-muted-foreground"} truncate flex-1 font-mono">${escapeHtml(row.name || "node")}</span>
-            ${row.version ? `<span class="text-[10px] text-muted-foreground/70 font-mono">v${escapeHtml(row.version)}</span>` : ""}
-            <span class="text-[10px] text-muted-foreground font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
-          </div>
-        `).join("")
-        : '<div class="text-xs text-muted-foreground">No nodes online right now.</div>';
     }
   }
 
@@ -369,10 +380,6 @@
       $("[data-network-repos]") && ($("[data-network-repos]").textContent = formatCount(repos));
       $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
       $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
-      $("[data-network-rail-hosts]") && ($("[data-network-rail-hosts]").textContent = formatCount(hosts));
-      $("[data-network-rail-repos]") && ($("[data-network-rail-repos]").textContent = formatCount(repos));
-      $("[data-network-rail-clients]") && ($("[data-network-rail-clients]").textContent = formatCount(clients));
-      $("[data-network-rail-uptime]") && ($("[data-network-rail-uptime]").textContent = activeMinutes ? "Active" : "Idle");
 
       // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
       // that are online right now. Online nodes sort first and always appear even
@@ -413,8 +420,6 @@
     } catch (_) {
       $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
         '<div class="px-4 py-3 text-sm text-muted-foreground">Network data is unavailable right now.</div>');
-      $("[data-network-rail-nodes]") && ($("[data-network-rail-nodes]").innerHTML =
-        '<div class="text-xs text-muted-foreground">Network data unavailable.</div>');
     } finally {
       window.lucide?.createIcons();
     }
@@ -527,6 +532,7 @@
       state.notifications = [];
       state.notificationUnread = 0;
       renderNotificationPreview();
+      renderHomeFeed();
       return;
     }
     try {
@@ -539,6 +545,7 @@
     }
     renderNotificationPreview();
     renderNotificationModal();
+    renderHomeFeed();
   }
 
   function setNotificationDropdownOpen(open) {
@@ -579,7 +586,7 @@
   }
 
   async function renderAppVersion() {
-    // Show the live ForkMesh release version (same number as the desktop app —
+    // Show the live ForkMesh release version (same number as the desktop app -
     // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
     // var) next to the logo. Best-effort: stay hidden if the endpoint or version
     // is unavailable so the header never shows a broken "v".
@@ -593,6 +600,76 @@
       el.classList.remove("hidden");
     } catch (_) {
       /* leave the version chip hidden */
+    }
+  }
+
+  function setHomeAgentStatus(message, tone = "") {
+    const status = $("[data-home-agent-status]");
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = "min-w-0 truncate " + (
+      tone === "bad" ? "text-destructive"
+        : tone === "good" ? "text-primary"
+        : "text-muted-foreground");
+  }
+
+  function normalizeHomeForkbotMessage(message) {
+    const text = String(message || "").trim();
+    if (!text) return "";
+    return /\bforkbot\b/i.test(text) ? text : "forkbot " + text;
+  }
+
+  async function submitHomeAgentPrompt() {
+    const input = $("[data-home-agent-input]");
+    const button = $("[data-home-agent-submit]");
+    const raw = String(input?.value || "").trim();
+    if (!raw) {
+      setHomeAgentStatus("Enter a ForkBot issue command first.", "bad");
+      input?.focus();
+      return;
+    }
+    const message = normalizeHomeForkbotMessage(raw);
+    if (button) button.disabled = true;
+    setHomeAgentStatus("Sending to ForkBot...");
+    try {
+      const response = await fetch("/api/forkbot/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          message,
+          sender: state.session?.nodeName || "dashboard",
+        }),
+      });
+      const responseText = await response.text();
+      let body = {};
+      try {
+        body = responseText ? JSON.parse(responseText) : {};
+      } catch (_) {
+        body = {};
+      }
+      if (!response.ok || body.error) {
+        const detail = body.error || responseText || `HTTP ${response.status}`;
+        if (String(detail).includes("DATA_KEY is unset")) {
+          setHomeAgentStatus("ForkBot is not configured on this Worker.", "bad");
+          return;
+        }
+        throw new Error(detail);
+      }
+      const reply = body.botMessage || (
+        body.ignored
+          ? "ForkBot did not find a command. Try: forkbot create an issue to describe the task."
+          : "ForkBot handled the request."
+      );
+      setHomeAgentStatus(reply, body.action === "issue_created" ? "good" : "");
+      if (body.action === "issue_created" && input) input.value = "";
+    } catch (error) {
+      setHomeAgentStatus(
+        String(error?.message || "") === "rate_limited"
+          ? "ForkBot is rate limited. Try again later."
+          : "Could not reach ForkBot.",
+        "bad");
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -623,10 +700,23 @@
     }
 
     renderProfile(session || { nodeName: "guest" });
+    renderHomeChangelog();
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      await refreshPublicProfile(session);
+      await hydrateCanonicalProfile(session);
       await loadNotifications();
+    }
+    if (dashboardMockRepositoriesEnabled()) {
+      renderRepositories(dashboardMockRepositories(), session);
+      if (requested) {
+        const repo = findRepository(requested);
+        if (repo) renderRepoDetail(repo);
+        else showSection(requestedSection() || "home", { push: false });
+      } else {
+        showSection(requestedSection() || "repos", { push: false });
+      }
+      renderNetwork();
+      return;
     }
     try {
       const data = await fetchJson("/api/repositories", { fresh: true });
@@ -634,11 +724,11 @@
       if (requested) {
         const repo = findRepository(requested);
         if (repo) renderRepoDetail(repo);
-        else showSection(requestedSection() || "repos", { push: false });
+        else showSection(requestedSection() || "home", { push: false });
       } else {
-        // Refresh landed on a section URL (?section=network/profile/...) —
+        // Refresh landed on a section URL (?section=network/profile/...) -
         // restore it instead of falling back to the repos list.
-        showSection(requestedSection() || "repos", { push: false });
+        showSection(requestedSection() || "home", { push: false });
       }
     } catch (_) {
       state.repositoriesLoading = false;
@@ -649,6 +739,8 @@
         list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
       }
       renderSidebarRepositories(session);
+      renderHomeFeed();
+      renderHomeChangelog();
     }
     renderNetwork();
   }
@@ -660,19 +752,24 @@
       return;
     }
 
-    const mobileNetworkToggle = event.target.closest("[data-mobile-network-toggle]");
-    if (mobileNetworkToggle) {
-      setMobileNetworkOpen(!document.body.classList.contains("network-drawer-open"));
-      return;
-    }
-
     if (event.target.closest("[data-mobile-sidebar-backdrop], [data-mobile-drawer-close]")) {
       setMobileSidebarOpen(false);
       return;
     }
 
-    if (event.target.closest("[data-mobile-network-backdrop], [data-mobile-network-close]")) {
-      setMobileNetworkOpen(false);
+    const homeAgentSample = event.target.closest("[data-home-agent-sample]");
+    if (homeAgentSample) {
+      const input = $("[data-home-agent-input]");
+      if (input) {
+        input.value = homeAgentSample.dataset.homeAgentSample || "";
+        input.focus();
+      }
+      setHomeAgentStatus("Ready to send to ForkBot.");
+      return;
+    }
+
+    if (event.target.closest("[data-home-agent-submit]")) {
+      await submitHomeAgentPrompt();
       return;
     }
 
@@ -721,6 +818,12 @@
       return;
     }
 
+    const settingsSectionButton = event.target.closest("[data-settings-section-link]");
+    if (settingsSectionButton) {
+      setSettingsSection(settingsSectionButton.dataset.settingsSectionLink || "public-profile");
+      return;
+    }
+
     const appearanceThemeButton = event.target.closest("[data-appearance-theme]");
     if (appearanceThemeButton) {
       saveDashboardTheme(appearanceThemeButton.dataset.appearanceTheme);
@@ -752,6 +855,28 @@
 
     if (event.target.closest("[data-profile-modal-close], [data-profile-modal-backdrop]")) {
       setProfileModalOpen(false);
+      return;
+    }
+
+    if (event.target.closest("[data-profile-about-edit]")) {
+      setProfileAboutModalOpen(true);
+      return;
+    }
+
+    if (event.target.closest("[data-profile-about-modal-close], [data-profile-about-modal-backdrop], [data-profile-about-cancel]")) {
+      setProfileAboutModalOpen(false);
+      return;
+    }
+
+    if (event.target.closest("[data-profile-about-save]")) {
+      saveProfileAbout();
+      return;
+    }
+
+    const contributionYear = event.target.closest("[data-profile-contribution-year]");
+    if (contributionYear) {
+      state.profileContributions.year = Number(contributionYear.dataset.profileContributionYear) || new Date().getFullYear();
+      renderProfileContributionGraph();
       return;
     }
 
@@ -836,6 +961,9 @@
     if (!event.target.closest("[data-repo-branch-control]")) {
       closeRepoBranchMenus();
     }
+    if (!event.target.closest("[data-global-search-shell]")) {
+      closeGlobalSearch();
+    }
 
     const sectionButton = event.target.closest("[data-section]");
     if (sectionButton) {
@@ -857,6 +985,13 @@
       state.page = Number(pageButton.dataset.dashboardRepoPage) || 1;
       updateRepositoryPagination();
     }
+
+      const globalSearchResult = event.target.closest("[data-global-search-result]");
+      if (globalSearchResult) {
+        event.preventDefault();
+        selectGlobalSearchResult(globalSearchResult.dataset.dashboardOpenRepo || "");
+        return;
+      }
 
       const openButton = event.target.closest("[data-dashboard-open-repo]");
       if (openButton) {
@@ -1057,7 +1192,7 @@
         return;
       }
 
-      // Open an agent's detail page — live transcript + prompt (adhoc #259).
+      // Open an agent's detail page - live transcript + prompt (adhoc #259).
       // Toggle: clicking a selected agent returns to the list (issue #375).
       const agentOpenButton = event.target.closest("[data-repo-agent-open]");
       if (agentOpenButton && state.selectedRepo) {
@@ -1131,6 +1266,41 @@
     state.page = 1;
     applyRepositoryFilter();
   });
+  $("[data-global-search]")?.addEventListener("focus", () => {
+    setGlobalSearchOpen(true);
+  });
+  $("[data-global-search]")?.addEventListener("input", () => {
+    state.globalSearch.open = true;
+    state.globalSearch.selectedIndex = 0;
+    renderGlobalSearchResults();
+  });
+  $("[data-global-search]")?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveGlobalSearchSelection(1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveGlobalSearchSelection(-1);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      selectGlobalSearchResult();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeGlobalSearch();
+    }
+  });
+  $("[data-home-repo-search]")?.addEventListener("input", () => {
+    renderHomeRepositories();
+  });
+  $("[data-profile-repo-search]")?.addEventListener("input", () => {
+    renderProfileRepositories();
+  });
   $("[data-repo-prev]")?.addEventListener("click", () => {
     state.page -= 1;
     updateRepositoryPagination();
@@ -1138,11 +1308,6 @@
   $("[data-repo-next]")?.addEventListener("click", () => {
     state.page += 1;
     updateRepositoryPagination();
-  });
-  $$("[data-view-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setRepositoryViewMode(button.dataset.viewMode);
-    });
   });
 
 	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
@@ -1153,6 +1318,13 @@
 	    showSection("profile");
 	    closeMobileDrawers();
 	  });
+  $$("[data-settings-section-link]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setSettingsSection(button.dataset.settingsSectionLink || "public-profile");
+    });
+  });
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
@@ -1188,12 +1360,22 @@
 
   document.addEventListener("keydown", (event) => {
     const typingTarget = event.target?.matches?.("input, textarea, select, [contenteditable='true']");
+    if (event.target?.matches?.("[data-home-agent-input]") && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      submitHomeAgentPrompt();
+      return;
+    }
+    if (!typingTarget && event.key === "/") {
+      if (focusGlobalSearch()) event.preventDefault();
+      return;
+    }
 	    if (event.key === "Escape") {
 	      setProfileModalOpen(false);
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
+	      closeGlobalSearch();
 	      closeMobileDrawers();
 	      return;
 	    }
@@ -1237,7 +1419,7 @@
       state.selectedRepo = null;
       // Restore whichever section the URL points at (Back out of a repo into
       // Network/Profile, or forward into one) rather than snapping to repos.
-      showSection(requestedSection() || "repos", { push: false });
+      showSection(requestedSection() || "home", { push: false });
       return;
     }
     if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
@@ -1262,6 +1444,5 @@
 
   applyDashboardTheme(readDashboardTheme());
   renderLongDiffPreference();
-  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });
   init();
 })();

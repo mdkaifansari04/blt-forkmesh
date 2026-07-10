@@ -31,12 +31,13 @@ def test_dashboard_shell_is_split_into_composable_partials():
     built_index = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
     built_dupe = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
 
-    # The authored shell stays split — it references partials rather than
+    # The authored shell stays split - it references partials rather than
     # inlining the chrome.
     assert "<!--#include" in source_shell
-    for name in ("header", "sidebar", "main", "network-rail", "modals"):
+    for name in ("header", "sidebar", "main", "modals"):
         assert (PUBLIC / "dashboard" / "partials" / (name + ".html")).is_file()
         assert ('<!--#include partial="%s"-->' % name) in source_shell
+    assert '<!--#include partial="network-rail"-->' not in source_shell
 
     # The served files are prebuilt static assets, with no runtime include pass.
     composed = assembled_dashboard()
@@ -62,10 +63,11 @@ def test_dashboard_exposes_live_hydration_targets():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
     assert dashboard == _read(PUBLIC / "dashboard.html")
-    assert 'src="/dashboard.js"' in dashboard
+    assert 'src="/dashboard.js?v=github-settings-tabs"' in dashboard
     assert 'src="/dashboard-chat.js"' in dashboard
     for marker in (
         "data-dashboard-profile-name",
+        "data-sidebar-user-name",
         "data-sidebar-repo-list",
         "data-sidebar-repo-count",
         "data-logout-button",
@@ -75,11 +77,11 @@ def test_dashboard_exposes_live_hydration_targets():
     ):
         assert marker in dashboard
 
-    # The right rail is chat-only now: its network stats duplicated what the
-    # repo live-mirror / network section already shows, so the rail summary
-    # block was removed and only the mini chat remains.
+    # The persistent network rail (and its mini chat widget) is gone: network
+    # stats live in the Network section and chat is now its own dashboard
+    # section/route, not a sidebar rail.
     assert "data-network-rail-summary" not in dashboard
-    assert 'id="sideChatMessages"' in dashboard
+    assert 'id="sideChatMessages"' not in dashboard
 
     for placeholder in (
         'data-repo="you/meshcore"',
@@ -100,32 +102,39 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
     assert '<span class="hidden sm:inline">Get paid to mirror</span>' in dashboard
 
 
+def test_dashboard_home_hides_unready_sponsorship_target_list():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+
+    assert dashboard == _read(PUBLIC / "dashboard.html")
+    assert "Sponsorship target list" not in dashboard
+    for sponsor in ("DigitalOcean", "Tailscale", "Sentry", "Supabase"):
+        assert sponsor not in dashboard
+
+
 def test_dashboard_nav_links_to_web_chat():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
     assert dashboard == _read(PUBLIC / "dashboard.html")
-    top_nav = dashboard.split('data-top-nav', 1)[1].split("</nav>", 1)[0]
-    assert top_nav.index("Repositories") < top_nav.index("Network")
-    assert top_nav.index("Network") < top_nav.index('href="/chat"')
-    assert top_nav.index('href="/chat"') < top_nav.index('href="/docs"')
-    assert "Chat" in top_nav
-
-    mobile_nav = dashboard.split('data-mobile-sidebar-menu', 1)[1].split(
+    drawer_nav = dashboard.split('data-sidebar-main-menu', 1)[1].split(
         "</nav>", 1)[0]
-    assert 'href="/chat"' in mobile_nav
-    assert 'data-lucide="messages-square"' in mobile_nav
+    assert drawer_nav.index("Repositories") < drawer_nav.index("Network")
+    assert drawer_nav.index("Network") < drawer_nav.index('href="/chat"')
+    assert drawer_nav.index('href="/chat"') < drawer_nav.index('href="/docs"')
+    assert "Chat" in drawer_nav
+    assert 'href="/chat"' in drawer_nav
+    assert 'data-lucide="messages-square"' in drawer_nav
 
 
-def test_dashboard_uses_local_helvetica_without_affecting_code_or_site_fonts():
+def test_dashboard_uses_github_system_font_without_affecting_code_or_site_fonts():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
     site_css = _read(PUBLIC / "styles.css")
 
     assert dashboard == _read(PUBLIC / "dashboard.html")
-    assert 'font-family: "ForkMesh Helvetica"' in dashboard
-    assert 'src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype")' in dashboard
-    assert 'src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype")' in dashboard
-    assert 'sans: ["ForkMesh Helvetica", "Helvetica Neue", "Helvetica", "Arial", "sans-serif"]' in dashboard
+    assert 'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif' in dashboard
+    assert 'src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype")' not in dashboard
+    assert 'src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype")' not in dashboard
+    assert 'sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"]' in dashboard
     assert 'font-family: "ForkMesh Dashboard Mono"' in dashboard
     assert 'mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"]' in dashboard
     assert "fonts.googleapis.com" not in dashboard
@@ -201,7 +210,7 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
 def test_dashboard_loads_profile_once_without_periodic_polling():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert "await refreshPublicProfile(session);" in dashboard_js
+    assert "await hydrateCanonicalProfile(session);" in dashboard_js
     assert "await loadNotifications();" in dashboard_js
     assert "function startProfileSync()" not in dashboard_js
     assert "async function pollStatus(" not in dashboard_js
@@ -209,28 +218,380 @@ def test_dashboard_loads_profile_once_without_periodic_polling():
     assert "setInterval(" not in dashboard_js
 
 
-def test_dashboard_defaults_to_repositories_and_hides_unready_home_desktop_nav():
+def test_dashboard_defaults_to_home_and_keeps_repositories_available():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
-    assert '<!-- Home dashboard tab is intentionally hidden' in dashboard
-    assert '<!-- Desktop Client is intentionally hidden' in dashboard
     assert 'data-section="repos" data-nav-link aria-current="page"' in dashboard
     visible = _strip_html_comments(dashboard)
-    assert 'data-view="repos" class="view active' in visible
-    assert 'data-view="home" class="view active' not in visible
-    rendered_nav = dashboard[
-        dashboard.index('<nav data-top-nav')
-        : dashboard.index('</nav>', dashboard.index('<nav data-top-nav'))
+    assert 'data-view="home" class="view active' in visible
+    assert 'data-view="repos" class="view active' not in visible
+    assert 'data-sidebar-main-menu' in dashboard
+
+
+def test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    visible = _strip_html_comments(dashboard)
+
+    assert 'data-view="home" class="view active' in visible
+    assert 'data-view="repos" class="view active' not in visible
+    assert 'data-view="profile-overview"' in dashboard
+    assert 'data-view="profile-repositories"' in dashboard
+    assert 'data-profile-tabs' in dashboard
+    assert 'data-profile-repo-search' in dashboard
+    assert 'data-home-feed' in dashboard
+    assert 'data-home-top-repositories' in dashboard
+    assert 'data-home-right-rail' in dashboard
+    assert 'data-home-left-rail' in dashboard
+    assert 'data-home-user-avatar' in dashboard
+    assert 'data-home-user-name' in dashboard
+    assert 'data-home-action-panel' in dashboard
+    assert 'data-home-agent-input' in dashboard
+    assert 'data-home-changelog-card' in dashboard
+    assert 'data-home-contributions' not in visible
+    assert 'const SECTION_ROUTES = ["home", "profile-overview", "profile-repositories", "repos", "network", "profile", "chat"]' in dashboard_js
+    assert 'showSection(requestedSection() || "home", { push: false })' in dashboard_js
+
+
+def test_dashboard_home_left_rail_uses_github_dark_panel_background():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    home = dashboard[
+        dashboard.index('data-view="home"')
+        : dashboard.index('data-view="repos"')
     ]
-    visible_nav = rendered_nav.replace(
-        rendered_nav[rendered_nav.index('<!-- Home dashboard tab'):rendered_nav.index('-->', rendered_nav.index('<!-- Home dashboard tab')) + 3],
-        '',
-    ).replace(
-        rendered_nav[rendered_nav.index('<!-- Desktop Client'):rendered_nav.index('-->', rendered_nav.index('<!-- Desktop Client')) + 3],
-        '',
-    )
-    assert "Home" not in visible_nav
-    assert "Desktop Client" not in visible_nav
+
+    assert 'data-home-left-rail class="min-w-0 border-b border-border bg-[#0d1117]' in home
+    assert 'lg:border-b-0 lg:border-r' in home
+    assert 'lg:min-h-full' in home
+    assert 'data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8"' in home
+
+
+def test_dashboard_profile_about_is_editable_for_logged_in_user():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    profile = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+
+    for marker in (
+        "data-profile-about-panel",
+        "data-profile-about-owner",
+        "data-profile-about-body",
+        "data-profile-about-edit",
+        "data-profile-about-modal",
+        "data-profile-about-textarea",
+        "data-profile-about-save",
+        "data-profile-about-hint",
+    ):
+        assert marker in dashboard
+    assert "README.md" not in profile
+    assert "About yourself" in profile
+    assert 'aria-label="Edit about yourself"' in profile
+
+    for marker in (
+        "function renderProfileAbout(session)",
+        "function setProfileAboutModalOpen(open)",
+        "async function saveProfileAbout()",
+        "profileAbout: body.profileAbout ?? body.profileReadme ?? base.profileAbout ?? base.profileReadme ??",
+        "postProfile({ profileAbout })",
+        "renderProfileAbout(nextSession)",
+        'applyAvatar($("[data-home-user-avatar]"), session)',
+        'const homeName = $("[data-home-user-name]")',
+        'const sidebarName = $("[data-sidebar-user-name]")',
+    ):
+        assert marker in dashboard_js
+
+
+def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    profile = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+
+    assert "data-profile-overview-layout" in profile
+    assert "data-profile-overview-card" not in profile
+    assert "lg:grid-cols-[296px_minmax(0,1fr)]" in profile
+    assert "h-72 w-72" in profile
+    assert "data-profile-bio" in profile
+    assert "data-profile-followers" in profile
+    assert "data-profile-following" in profile
+    assert "data-profile-mirrors" in profile
+    assert "data-profile-location" in profile
+    assert "data-profile-timezone" in profile
+    assert "data-profile-achievements" not in profile
+    assert "data-profile-highlights" not in profile
+    assert "Sponsors dashboard" not in profile
+    assert "Cracked dev @ 20" not in profile
+    assert "Breaking the INTERNET" not in profile
+    assert ">30<" not in profile
+    assert ">19<" not in profile
+    assert "data-profile-about-panel" in profile
+    assert "data-profile-contribution-grid" in profile
+    assert "data-profile-activity-list" in profile
+    assert "profileFollowers" in dashboard_js
+    assert "profileFollowing" in dashboard_js
+    assert "profileMirrorCount" in dashboard_js
+    assert "session?.profileLocation" in dashboard_js
+    assert "session?.profileTimezone" in dashboard_js
+    assert 'rounded-lg border border-border bg-card p-4' not in profile
+
+
+def test_dashboard_profile_contribution_graph_matches_github_density():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    profile = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+
+    for marker in (
+        "data-profile-contribution-timeline-layout",
+        "data-profile-contribution-main",
+        "data-profile-contribution-years",
+        "data-profile-contribution-grid",
+        "data-profile-contribution-summary",
+        "data-profile-contribution-calendar",
+        "data-contribution-months",
+        "data-contribution-cells",
+        "data-contribution-legend",
+        "data-profile-activity-items",
+        "data-profile-activity-empty",
+        "data-profile-contribution-footer",
+        "Contribution settings",
+        "Learn how we count contributions",
+    ):
+        assert marker in profile
+
+    assert "Update your 2FA" not in profile
+    assert "to see contributions within the ForkMesh organization" not in profile
+    assert "grid-cols-[2rem_repeat(26,1rem)]" not in profile
+    assert "max-w-[1432px]" in profile
+    assert 'xl:grid-cols-[minmax(0,1fr)_9rem]' in profile
+    assert 'data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5"' in profile
+    assert "data-profile-contribution-year" in dashboard_js
+    assert 'data-profile-activity-list class="grid gap-6"' in profile
+    assert 'data-profile-activity-list class="rounded-md border border-border bg-card p-5"' not in profile
+    assert "min-w-[880px]" in profile
+    assert "function renderProfileContributionGraph()" in dashboard_js
+    assert "function profileContributionData(" in dashboard_js
+    assert "function loadProfileContributionHistories(" in dashboard_js
+    assert "function profileContributionYears(" in dashboard_js
+    assert "function profileContributionLevel(count, max)" in dashboard_js
+    assert "function profileContributionLevel(week, day)" not in dashboard_js
+    assert "fetchJson(repoLiveUrl(repo, \"history\"))" in dashboard_js
+    assert "contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince)" in dashboard_js
+    assert "addCatalogActivityWeeks" in dashboard_js
+    assert 'const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)"' in dashboard_js
+    assert 'const CONTRIBUTION_GRID_GAP = "0.1875rem"' in dashboard_js
+    assert "for (let week = 0; week < 53; week += 1)" in dashboard_js
+    assert "for (let day = 0; day < 7; day += 1)" in dashboard_js
+    assert 'cell.className = "h-3 w-3 rounded-sm"' in dashboard_js
+    assert "data-contribution-cell" in dashboard_js
+    assert "renderProfileContributionGraph();" in dashboard_js
+
+
+def test_dashboard_profile_tabs_are_unified_with_app_header():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    header = dashboard[
+        dashboard.index("data-app-header") - 80:
+        dashboard.index("data-app-header") + 260
+    ]
+    overview = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+    repositories = dashboard[
+        dashboard.index('data-view="profile-repositories"')
+        : dashboard.index('data-view="profile"')
+    ]
+
+    for profile in (overview, repositories):
+        assert "data-profile-header-band" in profile
+        assert "data-profile-tabs-inner" in profile
+        assert 'data-profile-header-band class="border-b border-border bg-background px-4"' in profile
+        assert 'data-profile-tabs-inner class="w-full"' in profile
+        assert 'data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm"' in profile
+        assert profile.index("data-profile-header-band") < profile.index("data-profile-tabs")
+        assert 'data-profile-tabs-inner class="mx-auto max-w-[1280px]"' not in profile
+        assert "mb-8 flex min-w-0 gap-2 overflow-x-auto border-b border-border text-sm" not in profile
+        assert "mb-5 flex min-w-0 gap-4 overflow-x-auto border-b border-border text-sm" not in profile
+
+    assert "border-b border-border" not in header
+    assert 'data-dashboard-root data-dashboard-section="home"' in dashboard
+    assert '[data-dashboard-section="home"] [data-app-header]' in dashboard
+    assert 'dashboardRoot.dataset.dashboardSection = section;' in dashboard_js
+    assert overview.index("data-profile-header-band") < overview.index("data-profile-overview-layout")
+    assert repositories.index("data-profile-header-band") < repositories.index("data-profile-repo-search")
+    assert 'data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>' in dashboard
+    assert 'const headerContext = $("[data-dashboard-header-context]")' in dashboard_js
+    assert 'const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();' in dashboard_js
+    assert 'function renderHeaderContext(section = currentSection())' in dashboard_js
+    assert 'renderHeaderContext(section);' in dashboard_js
+
+
+def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    overview = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+    repositories = dashboard[
+        dashboard.index('data-view="profile-repositories"')
+        : dashboard.index('data-view="profile"')
+    ]
+    network = dashboard[
+        dashboard.index('data-view="network"')
+        : dashboard.index('data-view="explore"')
+    ]
+
+    for profile in (overview, repositories):
+        tabs = profile[
+            profile.index("data-profile-tabs")
+            : profile.index("</nav>", profile.index("data-profile-tabs"))
+        ]
+        assert 'data-section="profile-overview"' in tabs
+        assert 'data-section="profile-repositories"' in tabs
+        assert 'data-section="network"' in tabs
+        assert tabs.index("Overview") < tabs.index("Repositories")
+        assert tabs.index("Repositories") < tabs.index("Network")
+        assert "Projects" not in tabs
+        assert "Packages" not in tabs
+        assert "Stars" not in tabs
+        assert ">40<" not in tabs
+
+    network_tabs = network[
+        network.index("data-profile-tabs")
+        : network.index("</nav>", network.index("data-profile-tabs"))
+    ]
+    assert 'data-section="network"' in network_tabs
+    assert 'border-b-2 border-[#f78166]' in network_tabs[
+        network_tabs.index('data-section="network"')
+        : network_tabs.index("</button>", network_tabs.index('data-section="network"'))
+    ]
+    assert 'data-network-page-inner class="w-full px-4 py-6 sm:px-6 lg:px-8"' in network
+    assert "mx-auto max-w-[1432px]" in network
+    for icon in ("shield", "zap", "lock", "refresh-cw"):
+        assert (
+            f'data-lucide="{icon}" class="w-3.5 h-3.5 text-muted-foreground shrink-0"'
+            in network
+        )
+        assert (
+            f'data-lucide="{icon}" class="w-3.5 h-3.5 text-primary shrink-0"'
+            not in network
+        )
+
+
+def test_dashboard_profile_repositories_reuses_overview_sidebar_component():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    overview = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+    repositories = dashboard[
+        dashboard.index('data-view="profile-repositories"')
+        : dashboard.index('data-view="profile"')
+    ]
+    network = dashboard[
+        dashboard.index('data-view="network"')
+        : dashboard.index('data-view="explore"')
+    ]
+
+    assert 'data-profile-sidebar-slot data-profile-sidebar-context="overview"' in overview
+    assert 'data-profile-sidebar-slot data-profile-sidebar-context="repositories"' in repositories
+    assert 'data-profile-sidebar-slot data-profile-sidebar-context="network"' in network
+    assert 'data-network-layout class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]"' in network
+    assert network.index('data-profile-sidebar-slot data-profile-sidebar-context="network"') < network.index("data-network-summary")
+    assert "data-profile-sidebar-card" not in repositories
+    assert "data-profile-sidebar-card" not in network
+    assert 'rounded-lg border border-border bg-card p-4' not in repositories
+    assert "function profileSidebarMarkup(session)" in dashboard_js
+    assert "function renderProfileSidebars(session)" in dashboard_js
+    assert '$$("[data-profile-sidebar-slot]").forEach' in dashboard_js
+    assert "renderProfileSidebars(session);" in dashboard_js
+    assert "$$('[data-profile-page-node-name]')" in dashboard_js
+    assert "$$('[data-profile-page-email]')" in dashboard_js
+
+
+def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    overview = dashboard[
+        dashboard.index('data-view="profile-overview"')
+        : dashboard.index('data-view="profile-repositories"')
+    ]
+    repositories = dashboard[
+        dashboard.index('data-view="profile-repositories"')
+        : dashboard.index('data-view="profile"')
+    ]
+
+    assert 'data-profile-repo-count' in overview
+    assert 'data-profile-repo-count' in repositories
+    assert ">226<" not in overview
+    assert ">226<" not in repositories
+    assert "function renderProfileRepositoryCount" in dashboard_js
+    assert '$$("[data-profile-repo-count]").forEach' in dashboard_js
+    assert "renderProfileRepositoryCount();" in dashboard_js
+    assert "groupRepositories(state.repositories || []).length" in dashboard_js
+
+
+def test_dashboard_home_uses_github_dark_typography_and_blue_links():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    home = dashboard[
+        dashboard.index('data-view="home"')
+        : dashboard.index('data-view="repos"')
+    ]
+
+    assert '--dashboard-background-rgb: 1 4 9' in dashboard
+    assert '--dashboard-card-rgb: 13 17 23' in dashboard
+    assert '"-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans"' in dashboard
+    assert '--dashboard-link: #58a6ff' in dashboard
+    assert 'text-accent hover:underline' in home
+    assert 'text-primary hover:underline' not in home
+    assert 'text-accent hover:underline' in dashboard_js
+    assert 'text-primary hover:underline">${escapeHtml(repo.name || "repository")}' not in dashboard_js
+
+
+def test_dashboard_home_widgets_are_wired_to_real_data_and_actions():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    home = dashboard[
+        dashboard.index('data-view="home"')
+        : dashboard.index('data-view="repos"')
+    ]
+
+    assert "Update your 2FA" not in home
+    assert "to see dashboard activity within ForkMesh" not in home
+    assert 'data-home-agent-input' in home
+    assert 'data-home-agent-submit' in home
+    assert 'data-home-agent-status' in home
+    assert 'data-home-ad-card' in home
+    assert 'href="/blog/parallel-agents/"' in home
+    assert 'href="/blog/live-clone-routing/"' in home
+    assert 'href="/changelog"' in home
+    assert 'data-home-feed-card' not in home
+    assert "Dashboard feed adopts GitHub-style repository discovery" not in home
+
+    for marker in (
+        "function renderHomeFeed()",
+        "function renderHomeChangelog()",
+        "function submitHomeAgentPrompt()",
+        'fetch("/api/forkbot/chat"',
+        "await response.text()",
+        "ForkBot is not configured on this Worker.",
+        "renderHomeFeed();",
+        "const query = ($(\"[data-home-repo-search]\")?.value || \"\").trim().toLowerCase();",
+        "repositoryMatchesQuery(sourceOfTruth(group), query)",
+    ):
+        assert marker in dashboard_js
+
+    assert "3 hours ago" not in dashboard_js
+    assert "mesh-maintainer" not in dashboard_js
 
 
 def test_dashboard_has_mobile_responsive_navigation_drawers():
@@ -243,25 +604,98 @@ def test_dashboard_has_mobile_responsive_navigation_drawers():
         "data-mobile-menu-toggle",
         "data-mobile-sidebar-backdrop",
         "data-dashboard-sidebar",
-        "data-mobile-network-toggle",
-        "data-mobile-network-backdrop",
         "data-mobile-drawer-close",
-        "data-mobile-network-close",
         "dashboard-sidebar-open",
-        "network-drawer-open",
     ):
         assert marker in dashboard
+    for removed_marker in (
+        "data-mobile-network-toggle",
+        "data-mobile-network-backdrop",
+        "data-mobile-network-close",
+        "data-network-rail-toggle",
+        "data-dashboard-network-rail",
+        "network-drawer-open",
+        "networkRail",
+    ):
+        assert removed_marker not in dashboard
 
     for marker in (
         "function setMobileSidebarOpen(open)",
-        "function setMobileNetworkOpen(open)",
         "function closeMobileDrawers()",
-        "matchMedia(\"(min-width: 1024px)\")",
         "data-mobile-menu-toggle",
-        "data-mobile-network-toggle",
         "closeMobileDrawers();",
     ):
         assert marker in dashboard_js
+    for removed_marker in (
+        "function setMobileNetworkOpen(open)",
+        "data-mobile-network-toggle",
+        "data-mobile-network-close",
+        "data-network-rail",
+        "network-drawer-open",
+    ):
+        assert removed_marker not in dashboard_js
+    assert "matchMedia(\"(min-width: 1024px)\")" not in dashboard_js
+
+
+def test_dashboard_header_removes_dead_create_and_network_rail_controls():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    header = dashboard[
+        dashboard.index("data-app-header") - 80:
+        dashboard.index("</header>", dashboard.index("data-app-header"))
+    ]
+
+    assert "data-mobile-network-toggle" not in header
+    assert "data-network-rail-toggle" not in header
+    assert 'aria-label="Open network drawer"' not in header
+    assert 'aria-label="Open network panel"' not in header
+    assert 'aria-label="Create new"' not in header
+
+
+def test_dashboard_uses_github_like_global_shell_and_hamburger_drawer():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert dashboard == _read(PUBLIC / "dashboard.html")
+    assert "--dashboard-background-rgb: 1 4 9" in dashboard
+    assert "--dashboard-header-rgb: 1 4 9" in dashboard
+    assert "--dashboard-sidebar-rgb: 12 17 23" in dashboard
+    assert "--dashboard-border-rgb: 48 54 61" in dashboard
+    assert "data-global-search" in dashboard
+    assert "data-sidebar-top-repositories" in dashboard
+    assert "data-dashboard-sidebar" in dashboard
+    assert "data-mobile-menu-toggle" in dashboard
+    hamburger = dashboard[
+        dashboard.index("data-mobile-menu-toggle") - 240:
+        dashboard.index("data-mobile-menu-toggle") + 480
+    ]
+    sidebar = dashboard[
+        dashboard.index("data-dashboard-sidebar") - 240:
+        dashboard.index("data-dashboard-sidebar") + 480
+    ]
+    assert "#0C1117" in dashboard
+    assert "lg:hidden" not in hamburger
+    assert "lg:flex" not in sidebar
+    assert "function setMobileSidebarOpen(open)" in dashboard_js
+    assert "matchMedia(\"(min-width: 1024px)\")" not in dashboard_js
+
+
+def test_dashboard_global_header_search_has_keyboard_backed_repo_results():
+    dashboard = assembled_dashboard()
+    dashboard_js = assembled_dashboard_js()
+
+    assert "data-global-search-shell" in dashboard
+    assert "data-global-search-panel" in dashboard
+    assert "data-global-search-results" in dashboard
+    assert 'aria-controls="globalSearchResults"' in dashboard
+    assert 'aria-keyshortcuts="/"' in dashboard
+    assert "function focusGlobalSearch()" in dashboard_js
+    assert "function renderGlobalSearchResults()" in dashboard_js
+    assert "function selectGlobalSearchResult(" in dashboard_js
+    assert 'event.key === "/"' in dashboard_js
+    assert "focusGlobalSearch()" in dashboard_js
+    assert "typingTarget" in dashboard_js
+    assert '$("[data-global-search]")?.addEventListener("keydown"' in dashboard_js
+    assert "renderRepoDetail(repo);" in dashboard_js
 
 
 def test_dashboard_has_scoped_light_dark_appearance_controls():
@@ -398,6 +832,36 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
     assert "Copy clone" not in card
 
 
+def test_repository_cards_and_profile_rows_match_github_repository_lists():
+    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "function profileRepositoryRow(group)" in dashboard_js
+    assert "data-profile-repository-row" in dashboard_js
+    assert "data-repo-star-button" in dashboard_js
+    assert "data-repo-language-dot" in dashboard_js
+    assert "data-repo-activity-sparkline" in dashboard_js
+    assert "Find a repository..." in dashboard
+    assert "Type" in dashboard
+    assert "Language" in dashboard
+    assert "Sort" in dashboard
+
+
+def test_dashboard_can_seed_mock_repositories_for_ui_testing_by_query_param():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "function dashboardMockRepositoriesEnabled()" in dashboard_js
+    assert "function dashboardMockRepositories()" in dashboard_js
+    assert 'new URLSearchParams(location.search).get("mockRepos")' in dashboard_js
+    assert 'owner: "demo-alice"' in dashboard_js
+    assert 'name: "mesh-workbench"' in dashboard_js
+    assert 'name: "mobile-mirror-client"' in dashboard_js
+    assert 'name: "security-review-lab"' in dashboard_js
+    assert "if (dashboardMockRepositoriesEnabled())" in dashboard_js
+    assert "renderRepositories(dashboardMockRepositories(), session);" in dashboard_js
+    assert "mockRepos" not in _read(PUBLIC / "dashboard" / "index.html")
+
+
 def test_dashboard_repository_detail_uses_github_like_inner_layout():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
@@ -418,6 +882,28 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
         assert marker in render
     assert 'data-lucide="${icon}"' in dashboard_js
     assert 'icon = isPulls ? "git-pull-request" : "circle-dot"' in dashboard_js
+
+
+def test_repository_code_page_matches_github_code_layout():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    render = dashboard_js[
+        dashboard_js.index("function renderRepoDetail")
+        : dashboard_js.index("function findRepository")
+    ]
+
+    assert "data-repo-github-header" in render
+    assert "data-repo-action-watch" in render
+    assert "data-repo-action-fork" in render
+    assert "data-repo-action-star" in render
+    assert "data-repo-code-sidebar" in render
+    assert "data-repo-file-table" in render
+    assert "data-repo-about-rail" in render
+    assert "Watch" in render
+    assert "Fork" in render
+    assert "Star" in render
+    assert "Add file" in render
+    assert "Last commit date" in render
+    assert ">Code<" in render
 
 
 def test_dashboard_about_links_readme_activity_and_owner_edit():
@@ -487,31 +973,6 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
     assert 'border-primary text-foreground' in render
     assert 'border-primary bg-secondary text-foreground' not in render
     assert 'button.classList.toggle("bg-secondary", active);' not in tab_state
-
-
-def test_dashboard_repository_view_toggle_is_wired_in_composed_bundle():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
-    dashboard_js = _read(PUBLIC / "dashboard.js")
-
-    assert 'data-repo-view-toggle' in dashboard
-    assert 'data-view-mode="list"' in dashboard
-    assert 'data-view-mode="grid"' in dashboard
-    assert "function setRepositoryViewMode" in dashboard_js
-    assert "DASHBOARD_REPO_VIEW_KEY" in dashboard_js
-    assert "repoList.classList.toggle(\"grid-mode\", gridMode);" in dashboard_js
-    assert 'button.setAttribute("aria-pressed", active ? "true" : "false");' in dashboard_js
-    assert '$$("[data-view-mode]").forEach((button) => {' in dashboard_js
-
-
-def test_dashboard_repository_grid_cards_keep_reviewable_width():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
-    grid_styles = dashboard[
-        dashboard.index(".repo-list.grid-mode {")
-        : dashboard.index(".repo-list.grid-mode .repo-card")
-    ]
-
-    assert "minmax(280px, 1fr)" not in grid_styles
-    assert "minmax(22rem, 1fr)" in grid_styles
 
 
 def test_dashboard_repository_folder_icons_are_grey():
@@ -680,7 +1141,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
     assert 'entry.message || entry.commitMessage || "mirrored repository object"' not in tree_loader
 
 
-def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_create_buttons():
+def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
         dashboard_js.index("function renderRepoDetail")
@@ -689,12 +1150,20 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
 
     for marker in (
         "function renderRepoCollectionPanel(kind, repo, openCount, closedCount)",
+        'data-repo-collection-sidebar="${kind}"',
         'data-repo-collection-toolbar="${kind}"',
         'data-repo-filter-menu="${kind}"',
         'data-repo-filter-query="${kind}"',
         # Issues actually wires the search box (pulls stays a static "is:pr
         # is:open" placeholder; only issue search was requested).
         'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
+        "New issue",
+        "New pull request",
+        "Assigned to me",
+        "Created by me",
+        "Mentioned",
+        "Recent activity",
+        "Views",
         "Author",
         "Labels",
         "Projects",
@@ -707,8 +1176,6 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
 
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
-    assert "New issue" not in render
-    assert "New pull request" not in render
 
 
 def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom():
@@ -771,7 +1238,7 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'data-dashboard-open-repo="${escapeHtml(key)}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
     # The Clone availability chip keys off the group-liveness verdict (`live`,
-    # which folds in an online mirror serving in place — adhoc #61) but keeps the
+    # which folds in an online mirror serving in place - adhoc #61) but keeps the
     # neutral GitHub-like foreground/muted colors, never the accent primary.
     assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
     assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
@@ -799,6 +1266,27 @@ def test_dashboard_repository_records_open_live_markdown_detail_views():
     assert "fetchJson(`${repoApiBase(repo)}/issues" not in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/pulls" not in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/discussions" not in dashboard_js
+
+
+def test_issue_and_pull_detail_pages_match_github_conversation_layout():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    detail = dashboard_js[
+        dashboard_js.index("function renderRepoRecordDetail")
+        : dashboard_js.index("async function loadRepoRecordDetail")
+    ]
+
+    assert "data-repo-record-hero" in detail
+    assert "data-repo-record-conversation" in detail
+    assert "data-repo-record-sidebar" in detail
+    assert 'data-repo-record-tab="conversation"' in detail
+    assert 'data-repo-record-tab="commits"' in detail
+    assert 'data-repo-record-tab="checks"' in detail
+    assert 'data-repo-record-tab="files"' in detail
+    assert "Reviewers" in detail
+    assert "Assignees" in detail
+    assert "Milestone" in detail
+    assert "Notifications" in detail
+    assert "Participants" in detail
 
 
 def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
@@ -925,14 +1413,14 @@ def test_worker_routes_repo_about_catalog_update_for_source_owner():
     ]
 
 
-def test_dashboard_repository_go_to_file_is_real_and_add_file_removed():
+def test_dashboard_repository_go_to_file_and_add_file_controls_are_present():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
         dashboard_js.index("function renderRepoDetail")
         : dashboard_js.index("function findRepository")
     ]
 
-    assert "Add file" not in render
+    assert "Add file" in render
     for marker in (
         "data-repo-file-finder-open",
         "data-repo-file-finder",
@@ -1172,7 +1660,7 @@ def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
     assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
     assert 'op": "raw-blob"' in ENTRY_TEXT
     # Raw blobs stream chunk-by-chunk through the tunnel (never reassembled in
-    # DO memory — buffering large media is what blew the isolate memory limit),
+    # DO memory - buffering large media is what blew the isolate memory limit),
     # keeping the same content-type headers repo_blob_bytes_response used.
     assert '"content-type": repo_blob_content_type(rel_path),' in ENTRY_TEXT
     assert "response, err = await self._stream_request(" in ENTRY_TEXT
@@ -1306,7 +1794,7 @@ def test_clean_marketing_routes_target_static_pages():
 def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
     # A /:owner/:repo rule in _redirects matches real two-segment static assets
     # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
-    # applies _redirects before serving a matching static file — that 308'd those
+    # applies _redirects before serving a matching static file - that 308'd those
     # assets and broke the deploy's public-asset check. The shortcut must be
     # Worker-owned with explicit asset-prefix exceptions, so guard against the
     # redirect rule's return.

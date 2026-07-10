@@ -1,40 +1,50 @@
-      <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="w-56 shrink-0 flex flex-col border-r border-border bg-card h-full overflow-y-auto">
-        <div class="flex items-center justify-between border-b border-border px-3 py-3 lg:hidden">
-          <span class="text-xs font-semibold text-foreground">Dashboard</span>
-          <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+      <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="flex h-full flex-col overflow-y-auto border-r border-border bg-[#0C1117]">
+        <div class="flex items-center justify-between border-b border-border px-4 py-4">
+          <a class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/" aria-label="ForkMesh home">
+            <img class="h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+            <span data-sidebar-user-name>ForkMesh</span>
+          </a>
+          <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
           </button>
         </div>
 
-        <nav data-mobile-sidebar-menu class="grid gap-1 border-b border-border px-3 py-3 lg:hidden">
-          <button data-section="repos" data-nav-link aria-current="page" class="flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
+        <nav data-sidebar-main-menu class="grid gap-1 border-b border-border px-3 py-3">
+          <button data-section="home" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="home" class="h-4 w-4 text-muted-foreground"></i>
+            Dashboard
+          </button>
+          <button data-section="profile" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="user-round" class="h-4 w-4 text-muted-foreground"></i>
+            Profile
+          </button>
+          <button data-section="repos" data-nav-link aria-current="page" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
             Repositories
           </button>
-          <button data-section="network" data-nav-link class="flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <button data-section="network" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
             Network
           </button>
-          <a href="/chat" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="messages-square" class="h-4 w-4 text-muted-foreground"></i>
             Chat
           </a>
-          <a href="/docs" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/docs" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
             Docs
           </a>
-          <a href="/blog" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/blog" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="newspaper" class="h-4 w-4 text-muted-foreground"></i>
             Blog
           </a>
         </nav>
 
-        <div class="hidden min-h-0 flex-1 flex-col gap-2 px-3 py-3 lg:flex">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Repositories</span>
+        <div data-sidebar-top-repositories class="min-h-0 flex-1 px-3 py-3">
+          <div class="mb-2 flex items-center justify-between gap-2 px-1">
+            <span class="text-xs font-semibold text-muted-foreground">Top repositories</span>
             <span data-sidebar-repo-count class="rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">0</span>
           </div>
           <div data-sidebar-repo-list class="grid gap-1"></div>
         </div>
-
       </aside>
