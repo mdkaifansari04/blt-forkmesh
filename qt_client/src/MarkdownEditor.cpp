@@ -402,6 +402,7 @@ bool MarkdownEditor::pasteImageFromClipboard()
     }
     file.close();
     addImageFile(path);
+    showPreview();
     return true;
 }
 

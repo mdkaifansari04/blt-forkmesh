@@ -135,18 +135,23 @@ public:
 
     // Mutations (require canWrite()). Each writes the issue JSON (and the
     // label/milestone def files when relevant), then commits .forkmesh/issues/.
+    // createdOut, if given, receives the freshly written Issue so callers can
+    // splice it into an already-loaded list instead of paying for a full
+    // loadAll() (a per-issue-file re-read) just to redisplay the one they just
+    // created.
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
                     int priority,
                     const QStringList &assignees,
-                    const QStringList &attachmentSrcPaths, QString *error = nullptr);
+                    const QStringList &attachmentSrcPaths, QString *error = nullptr,
+                    Issue *createdOut = nullptr);
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
                     int priority,
                     const QStringList &assignees,
                     const QStringList &attachmentSrcPaths,
                     const QStringList &attachmentPlaceholders,
-                    QString *error = nullptr);
+                    QString *error = nullptr, Issue *createdOut = nullptr);
     bool addComment(int number, const QString &body,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
     bool addComment(int number, const QString &body,

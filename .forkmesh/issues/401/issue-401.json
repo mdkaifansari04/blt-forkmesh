@@ -20,6 +20,15 @@
             "title": "update notifications only keep @mentions selected by default and turn the others off",
             "ts": 1783470735104,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0ce4486e-d5d7-4b87-9bf1-66fbfdc13a33",
+            "sig": "BRKdkKp6Qb_V6vY82dJ2s3q75nWextiwl7wETdZGaQJbm8h0BW5KlI58VJvcokV2jbXor-Yu_YJbRUcoYBB-BQ",
+            "status": "closed",
+            "ts": 1783717212056,
+            "type": "status"
         }
     ],
     "labels": [
@@ -29,8 +38,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "update notifications only keep @mentions selected by default and turn the others off",
-    "updatedAt": 1783470735104,
+    "updatedAt": 1783717212056,
     "votes": 0
 }
