@@ -841,11 +841,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
         const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
-        QStringList seed;
-        seed.reserve(m_networkLog.size() - from);
+        // Render each seed line through setFooterUpdateLine() so history gets the
+        // same colored badges as live lines instead of raw plain text (adhoc #19).
         for (int i = from; i < m_networkLog.size(); ++i)
-            seed << m_networkLog.at(i);
-        m_footerUpdateLog->setPlainText(seed.join(QLatin1Char('\n')));
+            setFooterUpdateLine(m_networkLog.at(i));
         m_footerUpdateLog->verticalScrollBar()->setValue(
             m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {
