@@ -33,6 +33,23 @@ def _load_decoder():
 decode_git_request_body = _load_decoder()
 
 
+def _load_git_http_func(name):
+    """Load a stdlib-only helper from git_http.py without the Workers JS deps."""
+    tree = ast.parse(GIT_HTTP.read_text(encoding="utf-8"), filename=str(GIT_HTTP))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    namespace = {}
+    exec(compile(module, str(GIT_HTTP), "exec"), namespace)
+    return namespace[name]
+
+
+git_advert_cache_key = _load_git_http_func("git_advert_cache_key")
+
+
 def test_plain_git_request_is_unchanged():
     payload = b"0032want deadbeef\n0000"
     assert decode_git_request_body(payload, "") == payload
@@ -83,6 +100,65 @@ def test_upload_pack_reply_streams_instead_of_buffering():
     assert "_stream_request" in src
     # The buffered leg is unreachable for upload-pack: it's the info-refs tail.
     assert "advertised_refs_canonical" in src
+
+
+def test_git_advert_cache_key_rotates_with_the_state_hash():
+    # The clone-handshake edge-cache key embeds the repo's attested state hash so
+    # a push (which republishes a new hash) rotates the key and forces a fresh
+    # fetch, while an unchanged state reuses the same key (a colo cache hit).
+    a = git_advert_cache_key("Forkmesh", "Forkmesh", "ABC123")
+    assert a == "https://forkmesh.internal/git-advert/forkmesh/forkmesh/git-upload-pack/abc123"
+    # Case-insensitive and stable for the same logical (owner, repo, state).
+    assert git_advert_cache_key("forkmesh", "forkmesh", "abc123") == a
+    # A changed state hash yields a different key.
+    assert git_advert_cache_key("forkmesh", "forkmesh", "def456") != a
+    # The service is part of the key so upload-pack and receive-pack never alias.
+    assert git_advert_cache_key(
+        "forkmesh", "forkmesh", "abc123", "git-receive-pack") != a
+
+
+def test_git_advert_cache_key_is_none_without_a_state_hash():
+    # No attested state (never-published / legacy repo) => uncacheable, serve live.
+    assert git_advert_cache_key("forkmesh", "forkmesh", "") is None
+    assert git_advert_cache_key("forkmesh", "forkmesh", None) is None
+    assert git_advert_cache_key("", "forkmesh", "abc123") is None
+    assert git_advert_cache_key("forkmesh", "", "abc123") is None
+
+
+def test_clone_handshake_is_edge_cached_only_on_a_stable_source_state():
+    # The info/refs upload-pack ref advertisement is served from the colo edge
+    # cache keyed on the repo's own attested state hash, but ONLY when this
+    # namespace is the working-copy holder (source == local-node) and its host is
+    # live — so a mirror's (possibly older) refs are never cached under the
+    # source's current-state key, and private repos are never cached.
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+
+    def _default_method(name):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and item.name == name):
+                        return ast.unparse(item)
+        raise AssertionError("%s not found in entry.py" % name)
+
+    # The upload-pack info/refs branch routes through the caching wrapper.
+    route = _default_method("_route")
+    assert "_git_advert_cached(" in route
+
+    wrapper = _default_method("_git_advert_cached")
+    assert "git_advert_cache_get(cache_key)" in wrapper
+    assert "git_advert_cache_put(cache_key, response)" in wrapper
+    # Store only a healthy (200) advertisement served by a live source.
+    assert "int(response.status) == 200" in wrapper
+    assert "_source_has_live_host(owner, repo)" in wrapper
+    # A miss still runs the full serving path (fallback + integrity gate).
+    assert "self._git_host(request, owner_raw, repo_raw)" in wrapper
+
+    keyer = _default_method("_clone_advert_cache_key")
+    assert "is_private" in keyer                       # private repos: no cache
+    assert "'local-node'" in keyer                     # only the source of truth
+    assert "git_advert_cache_key(owner, repo, rec.get('stateHash'))" in keyer
 
 
 def test_release_and_raw_blobs_stream_too():

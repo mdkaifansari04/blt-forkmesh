@@ -293,6 +293,7 @@ from git_http import (  # noqa: E402
     REPO_BLOB_CONTENT_TYPES,
     advertised_refs_canonical,
     decode_git_request_body,
+    git_advert_cache_key,
     pkt_line,
     repo_blob_content_type,
     repo_blob_filename,
@@ -600,6 +601,63 @@ async def edge_cache_put(cache_key, response):
 async def edge_cache_delete(cache_key):
     try:
         await js_caches.default.delete(cache_key)
+    except Exception:
+        pass
+
+
+# Seconds a clone ref-advertisement (info/refs) is held in the colo edge cache.
+# The cache key already carries the repo's attested state hash, so an entry
+# self-invalidates the instant the refs change (its key stops being requested);
+# this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
+# ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
+GIT_ADVERT_CACHE_TTL = 300
+
+
+async def git_advert_cache_get(cache_key):
+    # Return a cached clone advertisement as a fresh no-cache response. git must
+    # re-validate info/refs on every fetch, so the bytes handed to the client
+    # keep git's own no-store semantics even though the edge copy is reused.
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        ctype = hit.headers.get("content-type")
+    except Exception:
+        ctype = None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": ctype or "application/x-git-upload-pack-advertisement",
+            "cache-control": "no-cache, max-age=0, must-revalidate",
+        },
+    }))
+
+
+async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
+    # Store a cacheable clone of the advertisement. The live response carries
+    # git's "no-cache, max-age=0" headers, which the Cache API refuses to store,
+    # so the stored copy is rebuilt with a public max-age; the original response
+    # is returned to the client untouched. Best-effort — a cache failure must not
+    # fail the clone.
+    try:
+        js_resp = getattr(response, "js_object", None) or response
+        clone = js_resp.clone()
+        try:
+            ctype = clone.headers.get("content-type")
+        except Exception:
+            ctype = None
+        cacheable = JsResponse.new(clone.body, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": ctype
+                or "application/x-git-upload-pack-advertisement",
+                "cache-control": "public, max-age=%d" % ttl,
+            },
+        }))
+        await js_caches.default.put(cache_key, cacheable)
     except Exception:
         pass
 
@@ -13079,7 +13137,7 @@ class Default(WorkerEntrypoint):
         if git_info:
             service = parse_qs(url.query).get("service", [""])[0]
             if service == "git-upload-pack":
-                return await self._git_host(
+                return await self._git_advert_cached(
                     request, git_info.group(1), git_info.group(2))
             if service == "git-receive-pack":
                 return await self._git_push(
@@ -13827,6 +13885,61 @@ class Default(WorkerEntrypoint):
             return candidates[0] if candidates else None
         except Exception:
             return None
+
+    async def _clone_advert_cache_key(self, owner, repo):
+        # Edge-cache tag for a public clone's ref advertisement: the requesting
+        # namespace's OWN source-attested state hash, and only when this
+        # namespace is itself the working-copy holder (source == local-node).
+        # That hash is republished on every push, so the key rotates exactly when
+        # the served refs change — a cache hit is byte-identical to the last live
+        # handshake. A mirror or source-forwarded clone is served live (its
+        # authoritative state can lag this record, so it must not be keyed on it),
+        # and private repos are never cached (their advertisement is auth-varying).
+        # Best-effort: any failure returns None → serve live.
+        try:
+            await ensure_schema(self.env)
+            key_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT data, is_private FROM repositories WHERE key_bi=?",
+                key_bi)
+            if not row or int(row.get("is_private") or 0):
+                return None
+            rec = await decrypt_row(self.env, row.get("data"))
+            if not rec or str(rec.get("source") or "local-node") != "local-node":
+                return None
+            return git_advert_cache_key(owner, repo, rec.get("stateHash"))
+        except Exception:
+            return None
+
+    async def _git_advert_cached(self, request, owner_raw, repo_raw):
+        # Serve the clone handshake (info/refs upload-pack ref advertisement) from
+        # the colo edge cache when nothing has changed. The handshake is a small,
+        # side-effect-free GET whose bytes are fixed for a given ref state; keying
+        # the cache on the repo's attested state hash means every clone after the
+        # first reuses it WITHOUT waking the host tunnel, and a live fetch reaches
+        # the mirror again only once a push rotates that hash. Wraps _git_host so
+        # every existing fallback/integrity path still runs on a cache miss. The
+        # store is gated on a live source so a mirror's (possibly older) refs are
+        # never cached under the source's current-state key.
+        owner = safe_segment(owner_raw)
+        repo = safe_segment(repo_raw)
+        cache_key = None
+        if owner and repo and method_name(request) == "GET":
+            cache_key = await self._clone_advert_cache_key(owner, repo)
+            if cache_key is not None:
+                hit = await git_advert_cache_get(cache_key)
+                if hit is not None:
+                    return hit
+        response = await self._git_host(request, owner_raw, repo_raw)
+        if cache_key is not None:
+            try:
+                cacheable = int(response.status) == 200
+            except Exception:
+                cacheable = False
+            if cacheable and await self._source_has_live_host(owner, repo):
+                await git_advert_cache_put(cache_key, response)
+        return response
 
     async def _git_host(self, request, owner_raw, repo_raw):
         owner = safe_segment(owner_raw)
