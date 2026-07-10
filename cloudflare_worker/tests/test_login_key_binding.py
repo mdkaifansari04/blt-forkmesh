@@ -130,6 +130,9 @@ def _login_harness(rec):
             "hasPayoutAddress": bool(solana),
         }
 
+    def _account_session_token(_env, name):
+        return "session-token-for-" + str(name or "")
+
     class _Date:
         @staticmethod
         def now():
@@ -153,6 +156,7 @@ def _login_harness(rec):
             "_save_account": _save_account,
             "_is_admin": _is_admin,
             "_account_public_payload": _account_public_payload,
+            "_account_session_token": _account_session_token,
             "_admin_session_cookie": lambda _env, _name: "admin-session",
             "_clear_admin_session_cookie": lambda: "forkmesh_admin=; Path=/; Max-Age=0",
             "json_response": _json_response,

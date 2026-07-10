@@ -315,6 +315,17 @@ SCHEMA_STATEMENTS = [
         user_agent TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_feedback_ts ON feedback(ts)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_source_vote ON feedback(source, vote, ts)",
+    """CREATE TABLE IF NOT EXISTS profile_follows (
+        follower_bi TEXT NOT NULL,
+        target_bi TEXT NOT NULL,
+        follower_name TEXT NOT NULL,
+        target_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (follower_bi, target_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_profile_follows_target "
+    "ON profile_follows(target_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_profile_follows_follower "
+    "ON profile_follows(follower_bi, created_at)",
     # Public /status page (30-day history per system). A per-minute cron folds
     # one health check per system into today's UTC-day bucket; checks/failures
     # let the page compute an uptime percentage per day without storing every
