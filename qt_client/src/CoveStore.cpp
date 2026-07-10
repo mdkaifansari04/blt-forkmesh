@@ -11,12 +11,22 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QUuid>
 
 namespace {
 
 constexpr int kGitTimeoutMs = 10000;
-constexpr int kCoveVersion = 1;
+constexpr int kCoveVersion = 2;
+constexpr int kContentKeyBytes = 32;
+// Grant slots are padded to a multiple of this (minimum one block) with random
+// decoys, so a locked envelope reveals neither its access mode nor how many
+// accounts were invited.
+constexpr int kGrantSlotBlock = 4;
+// AES-GCM nonce/tag sizes, mirrored from CoveCrypto so decoy slots are
+// byte-for-byte indistinguishable from real key wraps.
+constexpr int kGrantNonceBytes = 12;
+constexpr int kGrantTagBytes = 16;
 
 // Run git in `dir`, capturing stdout. Mirrors IssueStore's local helper.
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
@@ -70,7 +80,10 @@ QStringList normalizedAccounts(const QStringList &accounts)
     return out;
 }
 
-QString accountCoveSecret(const Cove &cove)
+// Legacy (v1) account-cove secret: derived from envelope fields that used to be
+// stored in plaintext. Kept only so coves written before v2 still unlock; every
+// save rewrites them as v2 (random content key + per-account key wraps).
+QString accountCoveSecretV1(const Cove &cove)
 {
     if (!cove.accountScoped())
         return {};
@@ -88,21 +101,42 @@ QString accountCoveSecret(const Cove &cove)
             .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
 }
 
-bool decryptCoveWithSecret(Cove &cove, const QString &secret)
+// The per-account secret a v2 grant's wrapping key is derived from. Contains no
+// list of members, so knowing one account name proves nothing about the others.
+QString grantSecret(const QString &coveId, const QString &account)
 {
-    CoveCrypto crypto(secret, cove.salt, cove.rounds);
-    if (!crypto.isValid())
-        return false;
-    const QByteArray plain = crypto.decrypt(cove.cipher);
-    if (plain.isEmpty())
-        return false; // wrong secret (GCM tag mismatch) or corrupt payload
+    return QStringLiteral("forkmesh-cove-grant-v2\n%1\n%2")
+        .arg(coveId, normalizedAccount(account));
+}
+
+// Parse a decrypted payload into the cove. Everything identifying — name, access
+// mode, creator pubkey/account, invitees, notify flag, creation time — lives in
+// here (v2) rather than in the plaintext envelope; missing keys (legacy v1
+// payloads) leave whatever the envelope provided.
+bool applyCovePayload(Cove &cove, const QByteArray &plain)
+{
     const QJsonDocument doc = QJsonDocument::fromJson(plain);
     if (!doc.isObject())
         return false;
     const QJsonObject payload = doc.object();
-    // The name lives in the encrypted payload (kept out of the repo). Fall back to
-    // any plaintext envelope name for coves written before this change.
     cove.name = payload.value("name").toString(cove.name);
+    cove.accessMode = payload.value("mode").toString(
+        cove.accessMode.isEmpty() ? QStringLiteral("password") : cove.accessMode);
+    cove.creator = payload.value("creator").toString(cove.creator);
+    cove.creatorAccount = normalizedAccount(
+        payload.value("creatorAccount").toString(cove.creatorAccount));
+    if (payload.contains(QStringLiteral("invitedAccounts"))) {
+        cove.invitedAccounts.clear();
+        for (const QJsonValue &v : payload.value("invitedAccounts").toArray()) {
+            const QString account = normalizedAccount(v.toString());
+            if (!account.isEmpty() && !cove.invitedAccounts.contains(account))
+                cove.invitedAccounts << account;
+        }
+    }
+    if (payload.contains(QStringLiteral("notifyOnOpen")))
+        cove.notifyOnOpen = payload.value("notifyOnOpen").toBool();
+    if (payload.contains(QStringLiteral("createdAtMs")))
+        cove.createdAtMs = qint64(payload.value("createdAtMs").toDouble());
     cove.documents.clear();
     for (const QJsonValue &v : payload.value("documents").toArray())
         cove.documents << CoveDocument::fromJson(v.toObject());
@@ -113,6 +147,28 @@ bool decryptCoveWithSecret(Cove &cove, const QString &secret)
     return true;
 }
 
+bool decryptCoveWithSecret(Cove &cove, const QString &secret)
+{
+    CoveCrypto crypto(secret, cove.salt, cove.rounds);
+    if (!crypto.isValid())
+        return false;
+    const QByteArray plain = crypto.decrypt(cove.cipher);
+    if (plain.isEmpty())
+        return false; // wrong secret (GCM tag mismatch) or corrupt payload
+    return applyCovePayload(cove, plain);
+}
+
+bool decryptCoveWithKey(Cove &cove, const QByteArray &contentKey)
+{
+    const CoveCrypto crypto = CoveCrypto::withKey(contentKey);
+    if (!crypto.isValid())
+        return false;
+    const QByteArray plain = crypto.decrypt(cove.cipher);
+    if (plain.isEmpty())
+        return false;
+    return applyCovePayload(cove, plain);
+}
+
 QByteArray covePayload(const Cove &cove)
 {
     QJsonArray docs;
@@ -121,38 +177,87 @@ QByteArray covePayload(const Cove &cove)
     QJsonArray log;
     for (const CoveAccessEntry &e : cove.accessLog)
         log.append(e.toJson());
-    // The name rides inside the ciphertext (not the envelope) so it never appears
-    // in the repo's tree, file contents or history.
-    return QJsonDocument(
-               QJsonObject{{"name", cove.name}, {"documents", docs}, {"accessLog", log}})
-        .toJson(QJsonDocument::Compact);
-}
-
-// Build the on-disk envelope JSON for a cove whose cipher is already computed.
-// The human-readable name is deliberately NOT stored here: it lives inside the
-// encrypted payload so the repo never reveals what a cove is about. The file is
-// identified on disk only by an obscure random slug.
-QJsonObject toEnvelope(const Cove &cove)
-{
     QJsonArray invited;
     for (const QString &account : normalizedAccounts(cove.invitedAccounts))
         invited.append(account);
-    QJsonObject access{{"mode", cove.accessMode}};
+    // Everything a reader of the repo could use to identify the cove or its
+    // people rides inside the ciphertext, never in the envelope.
+    QJsonObject payload{{"name", cove.name},
+                        {"mode", cove.accessMode},
+                        {"creator", cove.creator},
+                        {"notifyOnOpen", cove.notifyOnOpen},
+                        {"createdAtMs", double(cove.createdAtMs)},
+                        {"documents", docs},
+                        {"accessLog", log}};
     if (cove.accountScoped()) {
-        access.insert(QStringLiteral("creatorAccount"),
-                      normalizedAccount(cove.creatorAccount));
-        access.insert(QStringLiteral("invitedAccounts"), invited);
+        payload.insert(QStringLiteral("creatorAccount"),
+                       normalizedAccount(cove.creatorAccount));
+        payload.insert(QStringLiteral("invitedAccounts"), invited);
     }
+    return QJsonDocument(payload).toJson(QJsonDocument::Compact);
+}
+
+// A decoy grant slot: random bytes shaped exactly like a real AES-GCM key wrap
+// (12-byte nonce, 16-byte tag, 32-byte body), so an observer cannot tell decoys
+// from real grants — and therefore cannot tell a password cove from an account
+// cove, nor count its members.
+QJsonObject decoyGrant()
+{
+    return {{"nonce", QString::fromLatin1(
+                 CoveCrypto::randomBytes(kGrantNonceBytes).toBase64())},
+            {"tag", QString::fromLatin1(
+                 CoveCrypto::randomBytes(kGrantTagBytes).toBase64())},
+            {"body", QString::fromLatin1(
+                 CoveCrypto::randomBytes(kContentKeyBytes).toBase64())}};
+}
+
+// Wrap the content key once per allowed account, pad with decoys to a multiple
+// of kGrantSlotBlock, and shuffle so slot order reveals nothing. Password coves
+// get a block of pure decoys. Returns an empty array only on failure.
+QJsonArray buildGrants(const Cove &cove, const QByteArray &contentKey)
+{
+    QList<QJsonObject> slotList; // "slots" itself would collide with Qt's macro
+    if (cove.accountScoped()) {
+        QStringList accounts = normalizedAccounts(cove.invitedAccounts);
+        const QString creator = normalizedAccount(cove.creatorAccount);
+        if (!creator.isEmpty() && !accounts.contains(creator))
+            accounts << creator;
+        for (const QString &account : std::as_const(accounts)) {
+            CoveCrypto kek(grantSecret(cove.id, account), cove.salt, cove.rounds);
+            if (!kek.isValid())
+                return {};
+            const QJsonObject wrap = kek.encrypt(contentKey);
+            if (wrap.isEmpty())
+                return {};
+            slotList << wrap;
+        }
+    }
+    int target = qMax(int(slotList.size()), 1);
+    target = ((target + kGrantSlotBlock - 1) / kGrantSlotBlock) * kGrantSlotBlock;
+    while (slotList.size() < target)
+        slotList << decoyGrant();
+    for (int i = int(slotList.size()) - 1; i > 0; --i)
+        slotList.swapItemsAt(i, int(QRandomGenerator::global()->bounded(i + 1)));
+    QJsonArray out;
+    for (const QJsonObject &grant : std::as_const(slotList))
+        out.append(grant);
+    return out;
+}
+
+// Build the on-disk envelope JSON for a cove whose cipher + grants are already
+// computed. Deliberately anonymous: no name, no creator, no accounts, no access
+// mode, no timestamps — just an opaque id, the KDF parameters, uniform grant
+// slots and the ciphertext. The file is identified on disk only by an obscure
+// random slug.
+QJsonObject toEnvelope(const Cove &cove)
+{
     return {{"kind", "cove"},
             {"v", kCoveVersion},
             {"id", cove.id},
-            {"creator", cove.creator},
-            {"access", access},
-            {"createdAtMs", double(cove.createdAtMs)},
-            {"notifyOnOpen", cove.notifyOnOpen},
             {"kdf", QJsonObject{{"algo", "pbkdf2-sha256"},
                                 {"rounds", cove.rounds},
                                 {"salt", QString::fromLatin1(cove.salt.toBase64())}}},
+            {"grants", cove.grants},
             {"cipher", cove.cipher}};
 }
 
@@ -167,12 +272,15 @@ bool fromEnvelope(const QByteArray &bytes, Cove &out)
     if (obj.value("kind").toString() != "cove")
         return false;
     out.id = obj.value("id").toString();
-    // Legacy coves stored the name in plaintext here; newer ones keep it inside
-    // the encrypted payload (recovered by unlock()). Read it for back-compat.
+    out.version = obj.value("v").toInt(1);
+    // v2 envelopes are anonymous: all of the fields below live inside the
+    // ciphertext and stay empty until unlock. Legacy v1 envelopes stored them in
+    // plaintext; keep reading them so old coves still list and unlock.
     out.name = obj.value("name").toString();
     out.creator = obj.value("creator").toString();
     const QJsonObject access = obj.value("access").toObject();
-    out.accessMode = access.value("mode").toString(QStringLiteral("password"));
+    out.accessMode = access.value("mode").toString(
+        out.version >= 2 ? QString() : QStringLiteral("password"));
     out.creatorAccount = normalizedAccount(access.value("creatorAccount").toString());
     out.invitedAccounts.clear();
     for (const QJsonValue &v : access.value("invitedAccounts").toArray()) {
@@ -182,6 +290,7 @@ bool fromEnvelope(const QByteArray &bytes, Cove &out)
     }
     out.createdAtMs = qint64(obj.value("createdAtMs").toDouble());
     out.notifyOnOpen = obj.value("notifyOnOpen").toBool();
+    out.grants = obj.value("grants").toArray();
     const QJsonObject kdf = obj.value("kdf").toObject();
     out.salt = QByteArray::fromBase64(kdf.value("salt").toString().toLatin1());
     out.rounds = kdf.value("rounds").toInt();
@@ -368,9 +477,31 @@ bool CoveStore::accountCanAccess(const Cove &cove, const QString &accountName)
 
 bool CoveStore::unlockForAccount(Cove &cove, const QString &accountName)
 {
-    if (!accountCanAccess(cove, accountName))
+    const QString account = normalizedAccount(accountName);
+    if (account.isEmpty() || cove.salt.isEmpty() || cove.rounds <= 0)
         return false;
-    return decryptCoveWithSecret(cove, accountCoveSecret(cove));
+    if (!cove.grants.isEmpty()) {
+        // v2: prove membership by unwrapping a key grant with a secret only this
+        // account can derive. Decoys and other accounts' grants fail the GCM tag.
+        CoveCrypto kek(grantSecret(cove.id, account), cove.salt, cove.rounds);
+        if (!kek.isValid())
+            return false;
+        for (const QJsonValue &slot : std::as_const(cove.grants)) {
+            const QByteArray key = kek.decrypt(slot.toObject());
+            if (key.size() != kContentKeyBytes)
+                continue;
+            if (!decryptCoveWithKey(cove, key))
+                return false; // unwrapped a grant but the body is corrupt
+            cove.contentKey = key;
+            return true;
+        }
+        return false;
+    }
+    // Legacy v1: the ACL (and the secret derived from it) sit in the plaintext
+    // envelope. Still honored so pre-v2 coves open; the next save rewrites them.
+    if (!accountCanAccess(cove, account))
+        return false;
+    return decryptCoveWithSecret(cove, accountCoveSecretV1(cove));
 }
 
 void CoveStore::appendAccess(Cove &cove, const CoveAccessEntry &entry)
@@ -462,6 +593,7 @@ bool CoveStore::createAccountCove(const QString &name, const QString &creatorAcc
     cove.notifyOnOpen = notifyOnOpen;
     cove.salt = CoveCrypto::randomSalt();
     cove.rounds = CoveCrypto::defaultRounds();
+    cove.contentKey = CoveCrypto::randomKey();
     cove.documents = documents;
     cove.unlocked = true;
 
@@ -479,6 +611,12 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
             *error = QStringLiteral("No local working tree to save the cove to.");
         return false;
     }
+    if (cove.accountScoped()) {
+        if (error)
+            *error = QStringLiteral("Account-scoped coves are saved without a "
+                                    "password.");
+        return false;
+    }
     if (cove.relPath.isEmpty() || cove.salt.isEmpty() || cove.rounds <= 0) {
         if (error)
             *error = QStringLiteral("The cove is missing its encryption parameters.");
@@ -492,10 +630,20 @@ bool CoveStore::save(const Cove &cove, const QString &password, QString *error)
         return false;
     }
     Cove sealed = cove;
-    sealed.cipher = crypto.encrypt(covePayload(cove));
+    if (sealed.accessMode.isEmpty())
+        sealed.accessMode = QStringLiteral("password");
+    sealed.cipher = crypto.encrypt(covePayload(sealed));
     if (sealed.cipher.isEmpty()) {
         if (error)
             *error = QStringLiteral("Could not encrypt the cove.");
+        return false;
+    }
+    // Password coves still carry a (pure-decoy) grants block, so the envelope
+    // shape never betrays which access mode a cove uses.
+    sealed.grants = buildGrants(sealed, QByteArray());
+    if (sealed.grants.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not seal the cove's access grants.");
         return false;
     }
 
@@ -536,20 +684,29 @@ bool CoveStore::saveAccountCove(const Cove &cove, QString *error)
             *error = QStringLiteral("The cove is missing its encryption parameters.");
         return false;
     }
-    const QString secret = accountCoveSecret(cove);
-    CoveCrypto crypto(secret, cove.salt, cove.rounds);
+    Cove sealed = cove;
+    sealed.invitedAccounts = normalizedAccounts(sealed.invitedAccounts);
+    sealed.creatorAccount = normalizedAccount(sealed.creatorAccount);
+    // Coves opened via the legacy v1 secret have no content key yet; minting one
+    // here upgrades them to the anonymous v2 envelope on their next save.
+    if (sealed.contentKey.size() != kContentKeyBytes)
+        sealed.contentKey = CoveCrypto::randomKey();
+    const CoveCrypto crypto = CoveCrypto::withKey(sealed.contentKey);
     if (!crypto.isValid()) {
         if (error)
             *error = crypto.errorString();
         return false;
     }
-    Cove sealed = cove;
-    sealed.invitedAccounts = normalizedAccounts(sealed.invitedAccounts);
-    sealed.creatorAccount = normalizedAccount(sealed.creatorAccount);
-    sealed.cipher = crypto.encrypt(covePayload(cove));
+    sealed.cipher = crypto.encrypt(covePayload(sealed));
     if (sealed.cipher.isEmpty()) {
         if (error)
             *error = QStringLiteral("Could not encrypt the cove.");
+        return false;
+    }
+    sealed.grants = buildGrants(sealed, sealed.contentKey);
+    if (sealed.grants.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not seal the cove's access grants.");
         return false;
     }
 
@@ -575,7 +732,12 @@ bool CoveStore::commit(const QString &message, const QString &relPath, QString *
             *error = "git add failed: " + err;
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", message, "--", relPath}, nullptr, &err)) {
+    // Author/committer are neutralized: the repo's configured git identity would
+    // name whoever created or edited the cove, defeating the anonymous envelope.
+    if (!runGit(m_workTree,
+                {"-c", "user.name=forkmesh", "-c", "user.email=coves@forkmesh.invalid",
+                 "commit", "-m", message, "--", relPath},
+                nullptr, &err)) {
         if (err.contains("nothing to commit") || err.isEmpty())
             return true; // no change to persist — not an error
         if (error)

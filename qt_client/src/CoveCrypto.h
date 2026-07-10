@@ -20,9 +20,16 @@ public:
     static int defaultRounds();
     // A fresh random salt for a new cove (16 bytes).
     static QByteArray randomSalt();
+    // A fresh random 256-bit content key (32 bytes) for account-scoped coves.
+    static QByteArray randomKey();
+    // Cryptographically random bytes (used for decoy grant slots).
+    static QByteArray randomBytes(int count);
 
     // Derive the AES key from a password, the cove's salt, and its stored rounds.
     CoveCrypto(const QString &password, const QByteArray &salt, int rounds);
+    // Use a full-entropy 32-byte key directly, skipping the KDF. Used for cove
+    // bodies sealed under a random content key that is itself wrapped per-account.
+    static CoveCrypto withKey(const QByteArray &key);
 
     bool isValid() const { return !m_key.isEmpty(); }
     QString errorString() const { return m_error; }
@@ -36,6 +43,8 @@ public:
     QByteArray decrypt(const QJsonObject &cipher) const;
 
 private:
+    CoveCrypto() = default;
+
     QByteArray m_key;
     QString m_error;
 };
