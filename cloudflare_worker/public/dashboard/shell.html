@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ForkMesh Dashboard</title>
-    <meta name="description" content="Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard." />
+    <title><!--#page title--></title>
+    <meta name="description" content="<!--#page description-->" />
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
@@ -461,8 +461,8 @@
     <script src="/dashboard.js?v=github-settings-tabs" defer></script>
     <script src="/dashboard-chat.js" defer></script>
   </head>
-  <body class="bg-background text-foreground">
-    <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+  <body class="bg-background text-foreground" data-page="<!--#page id-->">
+    <div data-dashboard-root data-dashboard-section="<!--#page section-->" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
 <!--#include partial="header"-->
 
       <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
@@ -586,25 +586,6 @@
         }
       }
 
-      function setSection(section) {
-        const dashboardRoot = document.querySelector("[data-dashboard-root]");
-        if (dashboardRoot) dashboardRoot.dataset.dashboardSection = section;
-        document.querySelectorAll("[data-view]").forEach((view) => {
-          view.classList.toggle("active", view.dataset.view === section);
-        });
-        document.querySelectorAll("[data-nav-link]").forEach((button) => {
-          const active = button.dataset.section === section;
-          button.setAttribute("aria-current", active ? "page" : "false");
-          button.classList.toggle("text-foreground", active);
-          button.classList.toggle("text-muted-foreground", !active);
-          button.classList.toggle("hover:text-foreground", !active);
-        });
-      }
-
-      document.querySelectorAll("[data-section]").forEach((button) => {
-        button.addEventListener("click", () => setSection(button.dataset.section));
-      });
-
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") setProfilePopoverOpen(false);
       });
@@ -619,7 +600,8 @@
       }
 
       function repoQuery() {
-        return document.getElementById("repoSearch").value.trim().toLowerCase();
+        // The search box only exists on the repos page document.
+        return document.getElementById("repoSearch")?.value.trim().toLowerCase() || "";
       }
 
       function filteredRepoCards() {
@@ -660,7 +642,9 @@
       }
 
       function applyRepoVisibility() {
+        // Repo cards + pagination only exist on the repos page document.
         const list = document.getElementById("repoList");
+        if (!list) return;
         const cards = repoCards();
         const matchedCards = filteredRepoCards();
         const totalPages = Math.max(1, Math.ceil(matchedCards.length / repoPageSize));
@@ -711,7 +695,7 @@
         }, 220);
       }
 
-      document.getElementById("repoSearch").addEventListener("input", () => {
+      document.getElementById("repoSearch")?.addEventListener("input", () => {
         window.clearTimeout(repoFetchTimer);
         repoCurrentPage = 1;
         repoIsFetching = false;

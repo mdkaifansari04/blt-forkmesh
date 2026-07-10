@@ -1,0 +1,81 @@
+          <section data-view="profile-overview" class="view active h-full overflow-y-auto">
+            <div data-profile-header-band class="border-b border-border bg-background px-4">
+              <div data-profile-tabs-inner class="w-full">
+                <nav data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm">
+                  <a href="/dashboard/profile" class="inline-flex items-center gap-2 border-b-2 border-[#f78166] px-2 pb-3 pt-3 font-semibold text-foreground">
+                    <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+                    Overview
+                  </a>
+                  <a href="/dashboard/profile/repositories" class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+                    Repositories
+                    <span data-profile-repo-count class="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">0</span>
+                  </a>
+                  <a href="/dashboard/network" class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+                    Network
+                  </a>
+                </nav>
+              </div>
+            </div>
+            <div class="w-full px-4 py-6 sm:px-6 lg:px-8">
+              <div class="mx-auto max-w-[1432px]">
+                <div data-profile-overview-layout class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]">
+                  <aside data-profile-sidebar-slot data-profile-sidebar-context="overview" class="min-w-0"></aside>
+                  <div class="grid min-w-0 content-start gap-6">
+                    <section data-profile-about-panel class="overflow-hidden rounded-md border border-border bg-card">
+                      <div class="flex items-center justify-between gap-3 px-4 py-3">
+                        <h2 class="min-w-0 truncate text-sm font-semibold text-muted-foreground"><span data-profile-about-owner>forkmesh</span> / About yourself</h2>
+                        <button data-profile-about-edit type="button" aria-label="Edit about yourself" class="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground">
+                          <i data-lucide="pencil" class="h-4 w-4"></i>
+                        </button>
+                      </div>
+                      <div data-profile-about-body class="grid gap-4 border-t border-border p-5 text-sm leading-6 text-foreground md:p-6">
+                        <p class="text-2xl font-semibold">Hi, this is your ForkMesh profile.</p>
+                        <p class="text-muted-foreground">Pinned profile content and public activity will live here.</p>
+                      </div>
+                    </section>
+                    <div data-profile-contribution-timeline-layout class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_9rem] xl:items-start">
+                      <div data-profile-contribution-main class="grid min-w-0 gap-6">
+                        <section data-profile-contribution-grid class="grid gap-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <h2 data-profile-contribution-summary class="text-xl font-semibold leading-7 text-foreground">0 contributions in the last year</h2>
+                            <button type="button" class="hidden items-center gap-1 text-sm text-muted-foreground hover:text-foreground sm:inline-flex">
+                              <span>Contribution settings</span>
+                              <i data-lucide="chevron-down" class="h-4 w-4"></i>
+                            </button>
+                          </div>
+                          <div data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5">
+                            <div class="min-w-[880px]">
+                              <div data-contribution-months class="grid text-xs text-muted-foreground"></div>
+                              <div data-contribution-cells class="mt-1 grid text-xs text-muted-foreground" aria-label="Contribution activity calendar"></div>
+                              <div class="mt-4 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+                                <a href="/docs/contributions" class="hover:text-accent hover:underline">Learn how we count contributions</a>
+                                <span data-contribution-legend class="inline-flex items-center gap-1.5"></span>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                        <section data-profile-activity-list class="grid gap-6">
+                          <h2 class="text-xl font-semibold leading-7 text-foreground">Contribution activity</h2>
+                          <div data-profile-activity-items class="grid gap-6"></div>
+                          <p data-profile-activity-empty class="text-sm text-muted-foreground">No contribution activity found for this year yet.</p>
+                        </section>
+                        <footer data-profile-contribution-footer class="hidden items-center gap-5 pt-10 text-xs text-muted-foreground lg:flex">
+                          <i data-lucide="github" class="h-6 w-6 shrink-0"></i>
+                          <span>© 2026 ForkMesh, Inc.</span>
+                          <a href="/terms" class="hover:text-accent hover:underline">Terms</a>
+                          <a href="/privacy" class="hover:text-accent hover:underline">Privacy</a>
+                          <a href="/security" class="hover:text-accent hover:underline">Security</a>
+                          <a href="/status" class="hover:text-accent hover:underline">Status</a>
+                          <a href="/docs" class="hover:text-accent hover:underline">Docs</a>
+                        </footer>
+                      </div>
+                      <aside data-profile-contribution-years class="hidden gap-2 text-sm xl:grid">
+                      </aside>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>

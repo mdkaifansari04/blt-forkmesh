@@ -10,23 +10,23 @@
         </div>
 
         <nav data-sidebar-main-menu class="grid gap-1 border-b border-border px-3 py-3">
-          <button data-section="home" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a data-nav="home" data-nav-link href="/dashboard" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="home" class="h-4 w-4 text-muted-foreground"></i>
             Dashboard
-          </button>
-          <button data-section="profile" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          </a>
+          <a data-nav="profile" data-nav-link href="/dashboard/profile" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="user-round" class="h-4 w-4 text-muted-foreground"></i>
             Profile
-          </button>
-          <button data-section="repos" data-nav-link aria-current="page" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          </a>
+          <a data-nav="repos" data-nav-link href="/dashboard/repos" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
             Repositories
-          </button>
-          <button data-section="network" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          </a>
+          <a data-nav="network" data-nav-link href="/dashboard/network" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
             Network
-          </button>
-          <a href="/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          </a>
+          <a data-nav="chat" data-nav-link href="/dashboard/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="messages-square" class="h-4 w-4 text-muted-foreground"></i>
             Chat
           </a>
