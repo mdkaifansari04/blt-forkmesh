@@ -19,6 +19,15 @@
             "title": "use AI in the forkbot to detect when someone is giving issue context",
             "ts": 1783475474856,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1c106d09-8038-4c80-822f-9f1dd4274df9",
+            "sig": "MGMFx_xsxnZ1oo3rhKj2ZfYoucTZKFGN1LxUi3NMnLpUYPgFUf8j3GVRQrVIpNYh86Gj0D2wOgNg3kAQjRXsBA",
+            "status": "closed",
+            "ts": 1783717115032,
+            "type": "status"
         }
     ],
     "labels": [
@@ -29,8 +38,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "use AI in the forkbot to detect when someone is giving issue context",
-    "updatedAt": 1783475474856,
+    "updatedAt": 1783717115032,
     "votes": 0
 }
