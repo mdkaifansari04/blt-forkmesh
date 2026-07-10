@@ -23,3 +23,14 @@ Test Plan:
 
 Note:
 - Built from local origin/main because fetch from forkmesh.com returned a repository integrity-check failure.
+
+Maintenance update (forkmesh node, resolve conflicts):
+- The original commit was authored from a stale/corrupted local checkout and
+  its diff silently reverted unrelated code that exists on main (sync_handler
+  dispatch, ForkBot AI helpers, the system_status_minute / issue_seq /
+  schema_meta tables, and an _account_rotate security check).
+- changes.patch/commits.mbox have been regenerated against current main,
+  reapplying only the genuine follow-feature additions with none of that
+  regression. Full worker test suite (718 tests) passes.
+- This invalidates the signature above for the new patch bytes, same as prior
+  "resolve conflicts" updates to this repo's native pulls.
