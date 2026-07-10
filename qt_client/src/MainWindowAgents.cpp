@@ -5676,6 +5676,23 @@ void MainWindow::onExternalClaudeTick()
 {
     if (!m_agentStore)
         return;
+    // External Claude Code sessions are excluded by default (adhoc): surface
+    // another process's transcripts only if the user opts in via Settings.
+    if (QSettings().value(kExcludeExternalClaudeSetting, true).toBool()) {
+        if (!m_externalClaude.isEmpty() || !m_externalSurfaced.isEmpty()) {
+            m_externalClaude.clear();
+            m_externalSurfaced.clear();
+            m_externalSurfacedRepo.clear();
+            m_externalReadOffset.clear();
+            m_externalSig.clear();
+            if (isExternalSession(m_selectedAgentSessionId))
+                m_selectedAgentSessionId = -1;
+            injectExternalSessions();
+            refreshAgentTable();
+            updateAgentsTabIndicator();
+        }
+        return;
+    }
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         if (!m_externalClaude.isEmpty()) {
             m_externalClaude.clear();
