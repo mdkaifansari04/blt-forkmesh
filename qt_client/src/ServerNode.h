@@ -34,6 +34,10 @@ public:
                const QUrl &serverUrl,
                const QString &roomName,
                const QString &solanaAddress,
+               // Shared room key fetched from the relay (server-derived from
+               // DATA_KEY). Empty keeps the legacy baked-in app key as a fallback
+               // so chat still works before/if the key fetch fails.
+               const QString &roomPassphrase = QString(),
                QObject *parent = nullptr);
 
     bool start();

@@ -2492,6 +2492,12 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // a manual click. Default on; can be disabled in Settings.
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
+// Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
+// itself, detected by scanning the repo's Claude Code project files) from the
+// Agents tab. Default on: external sessions are excluded unless the user
+// opts in, since they surface another process's transcripts unprompted.
+const QString kExcludeExternalClaudeSetting =
+    QStringLiteral("agents/excludeExternalClaude");
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");

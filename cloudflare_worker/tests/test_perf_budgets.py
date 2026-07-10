@@ -180,7 +180,7 @@ def test_catalog_get_stays_within_budget_at_scale():
 def _run_blobs_fetch(n_paths, per_blob_delay_s):
     calls = []
 
-    async def tunnel_result(self, op, path, ref):
+    async def tunnel_result(self, op, path, ref, ua):
         calls.append(path)
         await asyncio.sleep(per_blob_delay_s)
         return {"ok": True, "path": path}
@@ -203,6 +203,7 @@ def _run_blobs_fetch(n_paths, per_blob_delay_s):
                 r"([0-9a-f]{64})$"),
             "safe_segment": (lambda v, *a: v),
             "json_response": json_response,
+            "clean_string": _load("clean_string")["clean_string"],
         },
     )
 
@@ -211,9 +212,10 @@ def _run_blobs_fetch(n_paths, per_blob_delay_s):
         _rate_ok=lambda: True,
         _mark_present=(lambda path=None: _noop()),
     )
-    # `self._tunnel_result(op, path, ref)` is a plain attribute lookup on
+    # `self._tunnel_result(op, path, ref, ua)` is a plain attribute lookup on
     # `host` (not a real bound method), so the stub takes exactly those args.
-    host._tunnel_result = lambda op, path, ref: tunnel_result(host, op, path, ref)
+    host._tunnel_result = (
+        lambda op, path, ref, ua: tunnel_result(host, op, path, ref, ua))
 
     paths = ["dir/file%d.md" % i for i in range(n_paths)]
     query = "&".join("path=" + p for p in paths)
