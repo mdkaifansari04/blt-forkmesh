@@ -10,16 +10,20 @@ entry.py via ast, and stub the handful of I/O primitives they call
 
 Covered:
  - POST /agents (desktop push, ts+sig signed) stores sessions; a follow-up
-   POST /agents/list (owner account, adhoc #225: no password) returns them.
+   POST /agents/list (owner, proven by a signed account session token) returns
+   them.
  - POST /agents with a bad/missing signature -> 401.
  - POST /agents/list from a non-owner account -> 403, no data leaked.
- - POST /agents/<id>/prompt (owner account) enqueues a prompt; a subsequent
+ - POST /agents/<id>/prompt (owner session) enqueues a prompt; a subsequent
    GET /agents (desktop drain, ts+sig) returns and clears it.
- - A non-owner account still fails list/prompt with 403 not_authorized.
+ - A non-owner session still fails list/prompt with 403 not_authorized, and a
+   self-asserted ownerAccount with no valid session token is rejected.
 """
 
 import ast
 import asyncio
+import hmac
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -39,6 +43,11 @@ FUNCS = {
     "_clean_agent_session", "_authorize_owner",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
+    # Session-based owner authorization (agents tab): the caller proves identity
+    # with a signed session token, not a self-asserted ownerAccount string.
+    "_account_session_record", "_account_session_token",
+    "_account_session_token_name", "_account_session_signature",
+    "_account_session_secret", "_account_kind", "valid_node_name",
 }
 
 
@@ -60,11 +69,20 @@ def _load_functions(extra_globals):
 CORRECT_PASSWORD = "correct horse battery staple"
 
 
+class _Headers:
+    # _account_session_record reads request.headers.get("authorization") only
+    # when the body carries no sessionToken; return empty so it falls through.
+    @staticmethod
+    def get(_name, default=None):
+        return default
+
+
 class _Request:
     def __init__(self, method="GET", url="https://forkmesh.test/x", body=None):
         self.method = method
         self.url = url
         self._body = body
+        self.headers = _Headers()
 
     async def json(self):
         if self._body is None:
@@ -102,7 +120,13 @@ def _harness(accounts):
     async def _account_row(_env, name):
         key = str(name or "").strip().lower()
         rec = accounts.get(key)
-        return "bi:" + key, (dict(rec) if rec is not None else None)
+        if rec is None:
+            return "bi:" + key, None
+        # Real decrypted account records carry their own "name"; the fixtures key
+        # by name, so mirror that so session-name resolution matches production.
+        rec = dict(rec)
+        rec.setdefault("name", key)
+        return "bi:" + key, rec
 
     async def verify_password(password, _salt, _hash):
         return password == CORRECT_PASSWORD
@@ -214,6 +238,11 @@ def _harness(accounts):
         "MAX_AGENT_PROMPT_TEXT": 8000,
         "MAX_PENDING_AGENT_PROMPTS": 50,
         "MAX_AGENT_TRANSCRIPT": 16000,
+        # Session-token proof (agents-tab owner authorization).
+        "hmac": hmac,
+        "NODE_NAME_RE": re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"),
+        "MAX_NODE_NAME": 63,
+        "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
     })
     ns["_now"] = now
     return ns
@@ -254,6 +283,7 @@ def test_post_agents_valid_signature_stores_sessions_visible_via_list():
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
             "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
         }),
         "alice", "proj",
     ))
@@ -286,6 +316,7 @@ def test_post_agents_duplicate_ids_in_one_push_deduped_not_500():
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
             "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
         }),
         "alice", "proj",
     ))
@@ -332,6 +363,7 @@ def test_agents_list_non_owner_403_forbidden():
     resp = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
             "ownerAccount": "mallory",
+            "sessionToken": ns["_account_session_token"](env, "mallory"),
         }),
         "alice", "proj",
     ))
@@ -349,6 +381,7 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
     sent = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
             "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
             "text": "please continue",
         }),
         "alice", "proj", "42",
@@ -370,6 +403,37 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
     assert drained_again["data"]["prompts"] == []
 
 
+def test_self_asserted_owner_without_session_is_rejected():
+    # The security fix: authorization requires a signed account session token, so
+    # an attacker who merely claims to be the owner (as the pre-fix client did,
+    # ownerAccount only) cannot list agents or inject a prompt into the owner's
+    # running coding agent. A forged/garbage token must also fail.
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+
+    asyncio.run(ns["agents_handler"](
+        env, _Request("POST", _push_url(), {"sessions": [_session()]}),
+        "alice", "proj",
+    ))
+
+    no_token = asyncio.run(ns["agents_list_handler"](
+        env, _Request("POST", body={"ownerAccount": "alice"}),
+        "alice", "proj",
+    ))
+    assert no_token == {"status": 403, "data": {"error": "not_authorized"}}
+
+    forged = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": "alice.9999999999999.deadbeef",
+            "text": "exfiltrate secrets",
+        }),
+        "alice", "proj", "42",
+    ))
+    assert forged == {"status": 403, "data": {"error": "not_authorized"}}
+
+
 def test_non_owner_forbidden_even_without_password():
     accounts = {
         "alice": _owner_account(),
@@ -382,6 +446,7 @@ def test_non_owner_forbidden_even_without_password():
     list_resp = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
             "ownerAccount": "mallory",
+            "sessionToken": ns["_account_session_token"](env, "mallory"),
         }),
         "alice", "proj",
     ))
@@ -390,6 +455,7 @@ def test_non_owner_forbidden_even_without_password():
     prompt_resp = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
             "ownerAccount": "mallory",
+            "sessionToken": ns["_account_session_token"](env, "mallory"),
             "text": "hijack",
         }),
         "alice", "proj", "42",
@@ -414,6 +480,7 @@ def test_admin_account_may_list_and_prompt_a_non_owned_repo():
     listed = asyncio.run(ns["agents_list_handler"](
         env, _Request("POST", body={
             "ownerAccount": "root-admin",
+            "sessionToken": ns["_account_session_token"](env, "root-admin"),
         }),
         "alice", "proj",
     ))
@@ -428,7 +495,8 @@ def test_prompt_validates_text_and_queue_cap():
 
     empty = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
-            "ownerAccount": "alice", "text": "   ",
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"), "text": "   ",
         }),
         "alice", "proj", "42",
     ))
@@ -437,6 +505,7 @@ def test_prompt_validates_text_and_queue_cap():
     too_long = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
             "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
             "text": "x" * 8001,
         }),
         "alice", "proj", "42",
@@ -447,6 +516,7 @@ def test_prompt_validates_text_and_queue_cap():
         ok = asyncio.run(ns["agents_prompt_handler"](
             env, _Request("POST", body={
                 "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
                 "text": "msg %d" % i,
             }),
             "alice", "proj", "42",
@@ -455,6 +525,7 @@ def test_prompt_validates_text_and_queue_cap():
     full = asyncio.run(ns["agents_prompt_handler"](
         env, _Request("POST", body={
             "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
             "text": "one too many",
         }),
         "alice", "proj", "42",
@@ -478,14 +549,16 @@ def test_transcript_pushed_stripped_from_list_but_served_by_detail_endpoint():
     ))
 
     listed = asyncio.run(ns["agents_list_handler"](
-        env, _Request("POST", body={"ownerAccount": "alice"}),
+        env, _Request("POST", body={"ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice")}),
         "alice", "proj",
     ))
     assert listed["status"] == 200
     assert "transcript" not in listed["data"]["agents"][0]
 
     transcript = asyncio.run(ns["agents_transcript_handler"](
-        env, _Request("POST", body={"ownerAccount": "alice"}),
+        env, _Request("POST", body={"ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice")}),
         "alice", "proj", "42",
     ))
     assert transcript["status"] == 200
@@ -508,14 +581,16 @@ def test_transcript_non_owner_403_and_missing_agent_404():
     ))
 
     forbidden = asyncio.run(ns["agents_transcript_handler"](
-        env, _Request("POST", body={"ownerAccount": "mallory"}),
+        env, _Request("POST", body={"ownerAccount": "mallory",
+            "sessionToken": ns["_account_session_token"](env, "mallory")}),
         "alice", "proj", "42",
     ))
     assert forbidden == {"status": 403, "data": {"error": "not_authorized"}}
     assert "secret" not in str(forbidden["data"])
 
     missing = asyncio.run(ns["agents_transcript_handler"](
-        env, _Request("POST", body={"ownerAccount": "alice"}),
+        env, _Request("POST", body={"ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice")}),
         "alice", "proj", "999",
     ))
     assert missing == {"status": 404, "data": {"error": "not_found"}}
@@ -537,8 +612,9 @@ def test_worker_wires_up_all_three_agent_routes():
 
 
 def test_issues_handler_wants_agent_uses_authorization_helper():
-    # adhoc #225 changed wantsAgent from password verification to just checking
-    # ownership via _authorize_owner_account (same as agents_list/prompt).
+    # wantsAgent is gated by _authorize_owner_account (same as agents_list/prompt),
+    # which now authorizes via the caller's signed session token rather than a
+    # self-asserted ownerAccount string, so request is threaded through.
     start = ENTRY_TEXT.index('if meta_in.get("wantsAgent"):')
     wants_agent_body = ENTRY_TEXT[start:ENTRY_TEXT.index("meta = {", start)]
-    assert "_authorize_owner_account(env, owner, data)" in wants_agent_body
+    assert "_authorize_owner_account(env, owner, data, request)" in wants_agent_body

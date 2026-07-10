@@ -113,6 +113,11 @@ def main():
     check("read_file", not err and text == "hello mesh\n")
     _, err = call("read_file", {"path": "../escape"})
     check("read_file blocks traversal", err)
+    # Absolute paths must not escape the repo: Path(repo) / "/etc/passwd"
+    # collapses to "/etc/passwd", so a ".."-only guard would leak any file
+    # (including the node's Ed25519 identity key).
+    _, err = call("read_file", {"path": "/etc/passwd"})
+    check("read_file blocks absolute path", err)
 
     # create_issue -> signed + verifiable
     text, err = call("create_issue", {"title": "First bug", "body": "it broke",

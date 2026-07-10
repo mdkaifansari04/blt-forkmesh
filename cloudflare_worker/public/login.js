@@ -20,7 +20,18 @@
     try {
       value = new URLSearchParams(location.search).get("next") || "";
     } catch (_) {}
-    return value.startsWith("/") && !value.startsWith("//") ? value : "";
+    // Must be a same-origin path. Reject "//host" and "/\host" (browsers
+    // normalize the backslash to "/", so "/\evil.com" resolves off-origin) and
+    // confirm the resolved origin matches ours before honoring it.
+    if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) {
+      return "";
+    }
+    try {
+      if (new URL(value, location.origin).origin !== location.origin) return "";
+    } catch (_) {
+      return "";
+    }
+    return value;
   }
 
   function demoLoginAllowed() {

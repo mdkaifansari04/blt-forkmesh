@@ -41,6 +41,9 @@ Future<void> main() async {
       performanceMonitor: performanceMonitor,
     ),
   );
+  // Let API calls carry the logged-in account's session token so per-account
+  // endpoints authorize this account rather than a self-asserted node name.
+  api.sessionTokenProvider = () => auth.session?.sessionToken ?? '';
   final inbox = InboxService(
     settings,
     identity,

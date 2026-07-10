@@ -258,6 +258,9 @@ from urls import (  # noqa: E402
 # such as /login.html stay non-public.
 from static_routes import (  # noqa: E402
     BLOCKED_STATIC_HTML_PATHS,
+    DASHBOARD_PAGE_ASSETS,
+    DASHBOARD_REPO_ASSET,
+    dashboard_section_redirect,
     looks_like_repo_route,
 )
 
@@ -2908,8 +2911,11 @@ async def repo_about_handler(env, request, owner, repo):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    actor = clean_string(data.get("ownerAccount", ""), 120).lower()
-    if actor != str(owner or "").lower():
+    # Only the repo owner (proven by their session token, not a self-asserted
+    # ownerAccount string) or a network admin may edit repo metadata.
+    actor = await _authed_account_name(env, request, data)
+    if not actor or (actor != str(owner or "").lower()
+                     and not await _is_admin(env, actor)):
         return json_response({"error": "not_authorized"}, status=403)
     if not await _owner_pubkey(env, owner):
         return json_response({"error": "account_required"}, status=403)
@@ -2938,11 +2944,13 @@ async def repo_about_handler(env, request, owner, repo):
     if not updated:
         return json_response({"error": "not_found"}, status=404)
     await purge_catalog_related_caches()
+    # Return only the fields the caller just set — never the full decrypted
+    # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
     return json_response({
         "ok": True,
         "description": description,
         "updated": updated,
-        "repository": first,
+        "isPrivate": bool(first and first.get("visibility") == "private"),
     })
 
 
@@ -4338,6 +4346,17 @@ async def _account_session_record(env, request, data=None):
     if not rec or rec.get("status") != "active" or _account_kind(rec) != "user":
         return "", None
     return name_bi, rec
+
+
+async def _authed_account_name(env, request, data=None):
+    # The account name proven by a valid session token — the POST-body
+    # `sessionToken` field or an `Authorization: Bearer` header — lowercased, or
+    # "" when there is no valid session. Endpoints that act on a per-account
+    # resource (notifications, the poll digest, repo metadata) use this so they
+    # authorize on a signed session, never on a self-asserted `node`/`ownerAccount`
+    # string a caller can set to anyone's name.
+    _, rec = await _account_session_record(env, request, data)
+    return (rec.get("name", "") if rec else "").strip().lower()
 
 
 # A bare reservation only holds the name while a signup is genuinely in flight:
@@ -8295,15 +8314,22 @@ async def _authorize_owner(env, request, owner):
     return await ed25519_verify(owner_pub, sig, canonical)
 
 
-async def _authorize_owner_account(env, owner, data):
-    # Checks if the named account is the repo owner or a network admin, without
-    # requiring password verification. Used for agents tab on website (adhoc #225).
+async def _authorize_owner_account(env, owner, data, request=None):
+    # Authorize the caller as the repo owner (or a network admin) via their
+    # logged-in account SESSION — not a self-asserted name. Used for the website
+    # agents tab (adhoc #225). This gate protects immediate, unreviewed side
+    # effects: queuing a prompt into a running coding agent on the owner's
+    # machine, and reading an agent's transcript / session list. The earlier
+    # version trusted data["ownerAccount"] verbatim, so anyone who knew a public
+    # owner/repo name could drive those owner-only actions (agent hijack / private
+    # data disclosure). The sessionToken (POST body or bearer) must now resolve to
+    # the owner account itself or a network admin.
     # Returns (True, None) on success, or (False, error_json_response) on failure.
-    actor = clean_string(data.get("ownerAccount", "") or owner, 120)
+    _, rec = await _account_session_record(env, request, data)
+    actor = (rec.get("name", "") if rec else "").strip().lower()
     if not actor:
         return False, json_response({"error": "not_authorized"}, status=403)
-    if actor.lower() != str(owner or "").lower() \
-            and not await _is_admin(env, actor):
+    if actor != str(owner or "").lower() and not await _is_admin(env, actor):
         return False, json_response({"error": "not_authorized"}, status=403)
     return True, None
 
@@ -8598,6 +8624,10 @@ async def notifications_handler(env, request):
         node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
+        # A notification inbox is private to its owner: only the account itself,
+        # proven by its session token (bearer header on this GET), may read it.
+        if await _authed_account_name(env, request) != node:
+            return json_response({"error": "unauthorized"}, status=401)
         try:
             limit = int(params.get("limit", ["40"])[0])
         except (TypeError, ValueError):
@@ -8638,6 +8668,10 @@ async def notifications_handler(env, request):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
+        # Marking notifications read mutates the owner's inbox: same session gate
+        # as the GET (token from the POST body or an Authorization: Bearer header).
+        if await _authed_account_name(env, request, data) != node:
+            return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
         now = int(Date.now())
         if data.get("all"):
@@ -8987,6 +9021,11 @@ async def poll_handler(env, request):
     node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
     out = {"ok": True, "rev": _build_rev(env)}
     if not valid_node_name(node):
+        return json_response(out)
+    # The digest exposes the account's own profile-change token and unread count,
+    # so it is returned only to the account itself (session bearer token). Anyone
+    # else — or an anonymous poll — gets just the build rev, no per-account data.
+    if await _authed_account_name(env, request) != node:
         return json_response(out)
     name_bi, rec = await _account_row(env, node)
     if rec:
@@ -10147,7 +10186,7 @@ async def issues_handler(env, request, owner, repo):
             agent_model = ""
             agent_provider = ""
             if meta_in.get("wantsAgent"):
-                ok, err = await _authorize_owner_account(env, owner, data)
+                ok, err = await _authorize_owner_account(env, owner, data, request)
                 if not ok:
                     return err
                 wants_agent = True
@@ -10691,7 +10730,7 @@ async def agents_list_handler(env, request, owner, repo):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data)
+    ok, err = await _authorize_owner_account(env, owner, data, request)
     if not ok:
         return err
     repo_bi = await blind_index(env, owner + "/" + repo)
@@ -10716,7 +10755,7 @@ async def agents_transcript_handler(env, request, owner, repo, agent_id):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data)
+    ok, err = await _authorize_owner_account(env, owner, data, request)
     if not ok:
         return err
     repo_bi = await blind_index(env, owner + "/" + repo)
@@ -10742,7 +10781,7 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         data = await request.json()
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    ok, err = await _authorize_owner_account(env, owner, data)
+    ok, err = await _authorize_owner_account(env, owner, data, request)
     if not ok:
         return err
     text = str(data.get("text", "") or "").strip()
@@ -12928,6 +12967,20 @@ class Default(WorkerEntrypoint):
         if git_recv and method_name(request) == "POST":
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
+        if url.path == "/" and method_name(request) in ("GET", "HEAD"):
+            # Logged-in visitors go straight to the dashboard: a server-side
+            # 302 keyed off the forkmesh_session presence cookie (value "1",
+            # set by login/signup JS, cleared on logout — a hint, never a
+            # credential). This replaces the old inline localStorage redirect
+            # in index.html that visibly painted the homepage first. no-store
+            # so a logout never replays a cached redirect.
+            if _cookie_value(request, "forkmesh_session") == "1":
+                return Response("", status=302, headers={
+                    "location": "/dashboard",
+                    "cache-control": "no-store, max-age=0, must-revalidate",
+                })
+            return await self._serve_homepage(url)
+
         if url.path in BLOCKED_STATIC_HTML_PATHS:
             return await self._serve_not_found_page(url)
 
@@ -13393,14 +13446,34 @@ class Default(WorkerEntrypoint):
                 self.env, request, url.path, last_error)
             return json_response({"error": "unavailable"}, status=503)
 
-        # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
-        # not real files. Serve the prebuilt static shell from ASSETS instead of
-        # composing partials in Python on every hot dashboard request.
+        # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
+        # serve the prebuilt repo-detail page; its JS resolves the path.
         if looks_like_repo_route(url.path):
-            return await self._serve_dashboard_shell(url)
+            return await self._serve_dashboard_asset(url, DASHBOARD_REPO_ASSET)
 
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
-            return await self._serve_dashboard_shell(url)
+            # Legacy /dashboard?section=X links 308 to the per-page paths.
+            target = dashboard_section_redirect(url.path, url.query)
+            if target:
+                return Response("", status=308, headers={"location": target})
+            # /dashboard/repos/ -> /dashboard/repos (canonical, no trailing /).
+            normalized = url.path.rstrip("/") or "/dashboard"
+            if normalized != url.path and normalized in DASHBOARD_PAGE_ASSETS:
+                return Response("", status=308, headers={"location": normalized})
+            asset = DASHBOARD_PAGE_ASSETS.get(url.path)
+            if asset:
+                return await self._serve_dashboard_asset(url, asset)
+            # Settings sub-tabs (/dashboard/settings/<tab>) share the settings
+            # document; the client restores the tab from the path.
+            if url.path.startswith("/dashboard/settings/"):
+                return await self._serve_dashboard_asset(
+                    url, DASHBOARD_PAGE_ASSETS["/dashboard/settings"])
+            # Old bounced deep links (/dashboard/owner/repo[...]) move to the
+            # clean repo path.
+            rest = url.path[len("/dashboard"):]
+            if looks_like_repo_route(rest):
+                return Response("", status=308, headers={"location": rest})
+            return await self._serve_not_found_page(url)
 
         return json_response({"error": "not_found"}, status=404)
 

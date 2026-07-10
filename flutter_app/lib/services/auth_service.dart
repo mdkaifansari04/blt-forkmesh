@@ -28,6 +28,7 @@ class AuthSession {
     this.desktopCapable = false,
     this.capabilities = const [],
     this.devices = const [],
+    this.sessionToken = '',
   });
 
   final String nodeName;
@@ -47,6 +48,11 @@ class AuthSession {
   final bool desktopCapable;
   final List<String> capabilities;
   final List<AccountDevice> devices;
+  // Signed account session token returned by the Worker on login/signup. Sent
+  // as an `Authorization: Bearer` header so per-account endpoints (notifications,
+  // agent list/prompt, repo metadata) authorize this account rather than a
+  // self-asserted node name. Persisted with the rest of the session.
+  final String sessionToken;
 
   bool get canSubmitIssue => capabilities.contains('submit_issue');
   bool get canSubmitPr => capabilities.contains('submit_pr');
@@ -84,6 +90,7 @@ class AuthSession {
               )
               .toList()
         : const [],
+    sessionToken: '${json['sessionToken'] ?? ''}',
   );
 
   Map<String, dynamic> toJson() => {
@@ -104,6 +111,7 @@ class AuthSession {
     'desktopCapable': desktopCapable,
     'capabilities': capabilities,
     'devices': devices.map((device) => device.toJson()).toList(),
+    'sessionToken': sessionToken,
   };
 
   static int _asInt(dynamic value) {

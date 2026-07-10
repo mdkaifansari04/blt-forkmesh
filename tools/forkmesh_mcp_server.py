@@ -420,7 +420,11 @@ def tool_list_repos(_args):
 def tool_read_file(args):
     repo = resolve_repo(args.get("repo"))
     path = args["path"]
-    if ".." in Path(path).parts:
+    # Reject traversal (".."), absolute paths, and symlink escapes. An absolute
+    # right-hand operand silently discards the repo prefix (Path("/repo") / "/etc/
+    # passwd" == Path("/etc/passwd")), so a "\x00".isabs() / resolve-and-contain
+    # check is required, not just a ".." component filter.
+    if Path(path).is_absolute() or ".." in Path(path).parts:
         raise ValueError("path must stay within the repo")
     ref = args.get("ref")
     if ref:
@@ -428,7 +432,10 @@ def tool_read_file(args):
         if r.returncode != 0:
             raise ValueError(r.stderr.strip() or f"{path} not found at {ref}")
         return r.stdout
-    f = Path(repo) / path
+    repo_root = Path(repo).resolve()
+    f = (repo_root / path).resolve()
+    if repo_root != f and repo_root not in f.parents:
+        raise ValueError("path must stay within the repo")
     if not f.is_file():
         raise ValueError(f"{path} not found")
     return f.read_text(errors="replace")

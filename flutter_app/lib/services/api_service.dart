@@ -19,6 +19,18 @@ class ApiService {
 
   final SettingsService _settings;
   final PerformanceMonitorService? _performanceMonitor;
+
+  // Supplies the logged-in account's signed session token, or "" when logged
+  // out. Wired to AuthService.session in main.dart. When present it is sent as
+  // an `Authorization: Bearer` header so per-account endpoints (notifications,
+  // agent list/prompt) authorize this account instead of a self-asserted name.
+  String Function()? sessionTokenProvider;
+
+  Map<String, String> _withAuth(Map<String, String> headers) {
+    final token = sessionTokenProvider?.call() ?? '';
+    if (token.isEmpty) return headers;
+    return {...headers, 'Authorization': 'Bearer $token'};
+  }
   _CacheEntry<List<Repository>>? _repositoriesCache;
   _CacheEntry<NetworkStats>? _networkStatsCache;
   _CacheEntry<NetworkLeaderboards>? _networkLeaderboardsCache;
@@ -888,7 +900,7 @@ class ApiService {
       http.Response? resp;
       for (var attempt = 0; attempt < 2; attempt++) {
         resp = await http
-            .get(uri, headers: {'Accept': 'application/json'})
+            .get(uri, headers: _withAuth({'Accept': 'application/json'}))
             .timeout(
               Duration(seconds: uri.path.contains('/api/repo/') ? 8 : 12),
             );
@@ -919,10 +931,10 @@ class ApiService {
       final resp = await http
           .post(
             uri,
-            headers: {
+            headers: _withAuth({
               'Accept': 'application/json',
               'Content-Type': 'application/json',
-            },
+            }),
             body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 12));
