@@ -238,6 +238,7 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
                        const QUrl &serverUrl,
                        const QString &roomName,
                        const QString &solanaAddress,
+                       const QString &roomPassphrase,
                        QObject *parent)
     : ChatBackend(parent),
       m_userName(userName),
@@ -251,6 +252,13 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
       m_nodeId(stableOrRandomNodeId(stableNodeId)),
       m_crypto(m_roomName)
 {
+    // m_crypto was seeded with the legacy baked-in app key. When the relay's
+    // server-held shared key is available, re-key with it (via the passphrase
+    // constructor) so the room key is no longer a public constant. Empty keeps
+    // the fallback so chat still works if the key fetch hasn't completed yet.
+    if (!roomPassphrase.isEmpty())
+        m_crypto = RoomCrypto(m_roomName, roomPassphrase);
+
     const QByteArray material = m_url.toString().toUtf8() + '\n' +
                                 m_roomName.toUtf8();
     m_rosterStorageKey =

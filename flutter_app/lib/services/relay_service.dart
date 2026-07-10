@@ -31,6 +31,12 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   final Identity _identity;
   final PerformanceMonitorService? _performanceMonitor;
 
+  // Supplies the shared room-chat passphrase (fetched server-side from the relay,
+  // derived from DATA_KEY) for passphrase-free "shared" rooms, replacing the old
+  // public app constant. Wired to ApiService.roomChatPassphrase in main.dart.
+  Future<String> Function()? roomPassphraseProvider;
+  String _sharedPassphrase = '';
+
   // Presence cadence + staleness window (matches the ServerNode fix: peers not
   // heard from within the window are dropped so stale nodes don't show online).
   static const _presenceInterval = Duration(seconds: 60);
@@ -192,9 +198,22 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _openUntracked() async {
     await _teardownSocket();
     _setState(RelayConnectionState.connecting);
-    _crypto = _settings.passphrase.isEmpty
-        ? await RoomCrypto.shared(_settings.room)
-        : await RoomCrypto.withPassphrase(_settings.room, _settings.passphrase);
+    if (_settings.passphrase.isNotEmpty) {
+      // Explicit per-room passphrase (a secret only participants share).
+      _crypto = await RoomCrypto.withPassphrase(
+          _settings.room, _settings.passphrase);
+    } else {
+      // Shared room: fetch the server-held key once (cached), no longer a public
+      // constant. Fail closed so we never silently fall back to a weaker key.
+      if (_sharedPassphrase.isEmpty && roomPassphraseProvider != null) {
+        _sharedPassphrase = await roomPassphraseProvider!();
+      }
+      if (_sharedPassphrase.isEmpty) {
+        throw Exception('Sign in to join chat — room key unavailable.');
+      }
+      _crypto = await RoomCrypto.withPassphrase(
+          _settings.room, _sharedPassphrase);
+    }
     try {
       final uri = Uri.parse(_settings.serverUrl);
       final channel = WebSocketChannel.connect(uri);

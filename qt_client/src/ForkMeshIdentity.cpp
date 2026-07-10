@@ -90,7 +90,15 @@ bool ForkMeshIdentity::generate(const QString &keyPath)
         m_error = "Could not write the Ed25519 identity key.";
         return false;
     }
-    QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner);
+    if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
+        // Best-effort hardening: on a filesystem without POSIX permissions this
+        // can fail, which would leave the private identity key group/world
+        // readable. Warn loudly rather than fail identity creation (which some
+        // network-mounted home directories would otherwise trip on).
+        qWarning("ForkMesh: could not restrict permissions on identity key %s; "
+                 "it may be readable by other users on this machine.",
+                 qUtf8Printable(keyPath));
+    }
     return true;
 }
 
@@ -349,7 +357,15 @@ bool ForkMeshIdentity::installRawSeed(const QByteArray &seed)
         m_error = "Could not write the imported identity key.";
         return false;
     }
-    QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner);
+    if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
+        // Best-effort hardening: on a filesystem without POSIX permissions this
+        // can fail, which would leave the private identity key group/world
+        // readable. Warn loudly rather than fail identity creation (which some
+        // network-mounted home directories would otherwise trip on).
+        qWarning("ForkMesh: could not restrict permissions on identity key %s; "
+                 "it may be readable by other users on this machine.",
+                 qUtf8Printable(keyPath));
+    }
     m_keyDir = dir;
     // A restored key is, by definition, one the user already holds a backup of.
     markBackedUp();
