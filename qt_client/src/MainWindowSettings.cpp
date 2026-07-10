@@ -2862,6 +2862,16 @@ QString MainWindow::logBadgeFor(const QString &storedLine) const
     return networkLogStyleFor(message).badge;
 }
 
+QString MainWindow::logAccentFor(const QString &storedLine) const
+{
+    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
+    const QString message =
+        (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
+            ? storedLine.mid(21)
+            : storedLine;
+    return networkLogStyleFor(message).accent;
+}
+
 void MainWindow::rebuildLogFilterButtons()
 {
     if (!m_logFilterRow)
