@@ -115,7 +115,8 @@
     state.session = nextSession;
     try {
       localStorage.setItem("forkmesh.session", JSON.stringify(nextSession));
-      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax";
+      document.cookie = "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax"
+        + (location.protocol === "https:" ? "; Secure" : "");
     } catch (_) {}
   }
 

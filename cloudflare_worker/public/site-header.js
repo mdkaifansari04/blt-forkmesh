@@ -70,6 +70,10 @@
     try {
       localStorage.removeItem("forkmesh.session");
     } catch (_) {}
+    // Clear the presence cookie too — the Worker 302s / to the dashboard while
+    // it is set, so a logout from a marketing page must drop it or the
+    // homepage would keep redirecting.
+    document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     location.reload();
   }
 
@@ -108,7 +112,7 @@
       profile.href = "/@" + encodeURIComponent(name.toLowerCase());
       profile.textContent = "Public profile (@" + name + ")";
       const edit = document.createElement("a");
-      edit.href = "/dashboard?section=profile";
+      edit.href = "/dashboard/settings";
       edit.textContent = "Edit profile";
       const out = document.createElement("button");
       out.type = "button";
@@ -142,7 +146,7 @@
     profile.href = "/@" + encodeURIComponent(name.toLowerCase());
     profile.textContent = "Public profile";
     const edit = document.createElement("a");
-    edit.href = "/dashboard?section=profile";
+    edit.href = "/dashboard/settings";
     edit.textContent = "Edit profile";
     const out = document.createElement("button");
     out.type = "button";

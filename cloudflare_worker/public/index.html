@@ -42,18 +42,10 @@
       type="application/xml"
       href="https://forkmesh.com/sitemap.xml"
     />
-    <script>
-      (() => {
-        try {
-          const session = JSON.parse(
-            localStorage.getItem("forkmesh.session") || "null",
-          );
-          if (session && session.nodeName) {
-            location.replace("/dashboard");
-          }
-        } catch (_) {}
-      })();
-    </script>
+    <!-- Logged-in visitors never see this page: the Worker answers / with an
+         instant 302 to /dashboard keyed off the forkmesh_session presence
+         cookie (see entry.py), replacing the old inline localStorage redirect
+         that painted the homepage first and then swapped. -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://forkmesh.com/" />
     <meta property="og:site_name" content="ForkMesh" />
