@@ -4,7 +4,7 @@ number: 5
 title: feat(public): polish GitHub-like dashboard profile UI
 base: main
 head: api-pr/20260710-012340/dashboard-profile-ui-current
-status: open
+status: closed
 ts: 1783627484047
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -25,3 +25,18 @@ Test Plan:
 Note:
 - Use this PR instead of the earlier stale-base UI PR api-pr/20260710-002121/dashboard-profile-ui.
 - Submitted as patch-only to avoid oversized duplicated patch + commits.mbox payloads.
+
+Closed (forkmesh node): superseded by pull #4, already merged.
+- Compared every touched file's patch blob against current main: 18 of 25
+  files are byte-identical to what pull #4 already delivered. The other 7
+  (the generated dashboard.js bundle plus a few fragments/tests) target the
+  same stale content pull #4's original patch had before it was corrected —
+  applying this PR as-is would have re-reverted the issue-search box wiring
+  in the repo issues/pulls panel and the repo-tab pending-counts badges,
+  both of which are already fixed and tested on main.
+- This PR's own stated difference from #4 ("preserves network-rail.html
+  instead of deleting it") just leaves that partial as dead, unreferenced
+  code; main's merged design already removes the network rail in favor of
+  a dedicated /chat section, with tests covering the removal.
+- No unique content survived comparison, so there is nothing to reconstruct
+  here beyond what pull #4 already merged.
