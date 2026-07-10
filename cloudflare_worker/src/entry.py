@@ -2964,7 +2964,20 @@ async def catalog_handler(env, request):
                      "\n" + ts).encode()
         if not await ed25519_verify(owner_pub, sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
+        # Deleting a single repo must purge it as completely as the
+        # whole-account teardown does, or leftover scoped state (inboxes,
+        # host presence, agent state, bounties, chat history) keeps the repo
+        # alive in practice even though its catalog row is gone.
+        await _delete_repo_scoped_state(env, key_bi)
         await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
+        await _delete_bounties_namespace(env, owner, name)
+        await d1_run(
+            env, "DELETE FROM chat_history WHERE room_key LIKE ?",
+            "repo:" + owner + "/" + name + ":room:%")
+        await d1_run(
+            env,
+            "DELETE FROM funds_received WHERE scope='project' AND key=?",
+            owner + "/" + name)
         await purge_catalog_related_caches()
         return json_response({"ok": True, "deleted": True})
 
