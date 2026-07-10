@@ -56,6 +56,15 @@
             "sig": "Sv5j3oe20_suI5jBByVllZasYSpm2DXJbPay77XlHZj_at0_lTCvH69_bzoVoC7CoOpJCkmTjFsxFWGxXEMJCA",
             "ts": 1783720507508,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9ab4f6e1-3157-4dca-ae50-fac914f06e08",
+            "sig": "5F7-_apVjQKPZGniFXYBCHQ_hJhema1XN85-fQzL1W2hqFyEF0KQkKe66vp_Jkc8XDoc1qKQCcziwIPzYbTDCA",
+            "status": "closed",
+            "ts": 1783720507566,
+            "type": "status"
         }
     ],
     "labels": [
@@ -65,8 +74,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "make it so that when we paste an image into an issue it shows right away",
-    "updatedAt": 1783720507508,
+    "updatedAt": 1783720507566,
     "votes": 0
 }
