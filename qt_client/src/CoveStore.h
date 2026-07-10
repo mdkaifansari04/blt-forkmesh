@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -35,15 +36,22 @@ struct CoveAccessEntry {
     static CoveAccessEntry fromJson(const QJsonObject &obj);
 };
 
-// A cove: plaintext envelope metadata (readable while locked) plus the decrypted
-// payload (documents + access log), present only after a successful unlock().
+// A cove: an anonymous on-disk envelope (nothing identifying is readable while
+// locked) plus the decrypted payload, present only after a successful unlock().
+//
+// v2 envelopes carry only {id, kdf, grants, cipher}: the name, creator pubkey,
+// access mode, creator/invited accounts, notify flag and creation time all live
+// inside the ciphertext. Access-identity fields below are therefore empty until
+// unlock() succeeds (legacy v1 envelopes stored them in plaintext and still
+// populate them on load, for back-compat).
 struct Cove {
     QString id;
     QString name;        // human-readable; kept inside the ciphertext, not the repo
     QString slug;        // obscure file stem — reveals nothing about the cove
     QString relPath;     // .forkmesh/coves/<slug>.cove (repo-relative)
+    int version = 1;     // envelope version read from disk (new coves save as v2)
     QString creator;     // creator pubkey (base64url) — routes open-notifications
-    QString accessMode = "password"; // password | account
+    QString accessMode = "password"; // password | account (empty while a v2 cove is locked)
     QString creatorAccount;          // account-scoped owner username
     QStringList invitedAccounts;     // account-scoped viewers/editors
     qint64 createdAtMs = 0;
@@ -51,9 +59,11 @@ struct Cove {
     QByteArray salt;     // KDF salt (raw bytes)
     int rounds = 0;      // KDF rounds
     QJsonObject cipher;  // {nonce,tag,body} base64
+    QJsonArray grants;   // v2: per-account key wraps + decoy slots (opaque)
 
     // Populated by unlock():
     bool unlocked = false;
+    QByteArray contentKey; // v2 account coves: the unwrapped 32-byte body key
     QList<CoveDocument> documents;
     QList<CoveAccessEntry> accessLog;
 
@@ -81,9 +91,13 @@ public:
     // Decrypt a cove with a password. On success fills documents/accessLog and
     // sets unlocked. Returns false (cove untouched) when the password is wrong.
     static bool unlock(Cove &cove, const QString &password);
-    // Account-scoped coves are hidden from the Cove Explorer unless the current
-    // verified account is explicitly listed in the envelope ACL.
+    // Whether an account is on the cove's ACL. For v2 envelopes the ACL is
+    // encrypted, so this only answers from in-memory fields (unlocked coves and
+    // legacy v1 plaintext envelopes) — membership of a locked v2 cove is proven
+    // by unlockForAccount() unwrapping one of its key grants.
     static bool accountCanAccess(const Cove &cove, const QString &accountName);
+    // Try to open the cove as the given account. Returns false (cove untouched)
+    // when the account holds no grant — indistinguishable from a password cove.
     static bool unlockForAccount(Cove &cove, const QString &accountName);
 
     // Create a new cove, encrypt it, write the .cove file and commit it.

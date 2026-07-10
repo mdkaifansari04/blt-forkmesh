@@ -20,6 +20,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
@@ -1644,6 +1645,18 @@ int main(int argc, char *argv[])
               "the committed cove never leaks the plaintext document body");
         check(!onDisk.contains("Launch plans"),
               "the committed cove never leaks the cove's name");
+        check(!onDisk.contains(identity.publicKey().toUtf8()),
+              "the committed cove never leaks the creator's public key");
+        check(!onDisk.contains("\"creator\"") && !onDisk.contains("\"access\"") &&
+                  !onDisk.contains("\"notifyOnOpen\"") &&
+                  !onDisk.contains("\"createdAtMs\""),
+              "the committed envelope carries no identifying metadata keys");
+        check(onDisk.contains("\"grants\""),
+              "the committed envelope carries uniform grant slots");
+        const QByteArray coveLog = gitOutput(
+            {"log", "-1", "--format=%an <%ae>", "--", created.relPath});
+        check(coveLog.trimmed() == "forkmesh <coves@forkmesh.invalid>",
+              "cove commits use a neutral git author, not the creator's identity");
         check(!created.slug.contains("launch", Qt::CaseInsensitive) &&
                   !created.relPath.contains("launch", Qt::CaseInsensitive),
               "the cove's repo filename is an obscure slug, not its name");
@@ -1655,7 +1668,10 @@ int main(int argc, char *argv[])
               "a reloaded cove starts locked with no decrypted documents");
         check(reloaded.name.isEmpty(),
               "a locked cove envelope exposes no name (it is encrypted)");
-        check(reloaded.notifyOnOpen, "the notify-on-open flag round-trips in the envelope");
+        check(reloaded.creator.isEmpty() && reloaded.creatorAccount.isEmpty() &&
+                  reloaded.invitedAccounts.isEmpty() && reloaded.accessMode.isEmpty() &&
+                  !reloaded.notifyOnOpen && reloaded.createdAtMs == 0,
+              "a locked cove envelope exposes no creator, accounts, mode or times");
         check(!CoveStore::unlock(reloaded, "WRONG-password"),
               "unlock rejects the wrong cove password");
         check(CoveStore::unlock(reloaded, "team-shared-password"),
@@ -1665,6 +1681,9 @@ int main(int argc, char *argv[])
               "the unlocked cove yields the original document");
         check(reloaded.name == "Launch plans",
               "unlock recovers the cove's name from the encrypted payload");
+        check(reloaded.creator == identity.publicKey() && reloaded.notifyOnOpen &&
+                  reloaded.accessMode == "password" && reloaded.createdAtMs > 0,
+              "unlock recovers the creator, mode and notify flag from the payload");
 
         // Appending an access entry and saving carries the trail in the payload.
         CoveAccessEntry visit;
@@ -1685,6 +1704,125 @@ int main(int argc, char *argv[])
         const QList<Cove> listed = coves.listCoves();
         check(listed.size() == 1 && listed.first().name.isEmpty(),
               "listCoves enumerates envelopes without leaking the cove name");
+
+        // --- Account-scoped coves: anonymous v2 envelopes -----------------
+        // The ACL lives inside the ciphertext; access is granted by unwrapping a
+        // per-account key grant, and the envelope reveals no accounts, no mode
+        // and no member count (grant slots are padded with decoys).
+        Cove teamCove;
+        check(coves.createAccountCove("Team plans", "Alice", {"bob"}, false,
+                                      {cdoc}, &teamCove, &err),
+              "createAccountCove encrypts, writes and commits a .cove file");
+
+        const QByteArray teamDisk =
+            gitOutput({"show", QStringLiteral("HEAD:") + teamCove.relPath});
+        check(!teamDisk.contains("alice") && !teamDisk.contains("Alice") &&
+                  !teamDisk.contains("bob"),
+              "the committed account cove never leaks creator or invitee names");
+        check(!teamDisk.contains("account") && !teamDisk.contains("\"access\"") &&
+                  !teamDisk.contains(identity.publicKey().toUtf8()),
+              "the committed account cove reveals neither its mode nor its creator");
+        check(!teamDisk.contains("hunter2") && !teamDisk.contains("Team plans"),
+              "the committed account cove keeps its body and name encrypted");
+
+        Cove teamLoaded;
+        check(coves.loadEnvelope(teamCove.relPath, teamLoaded, &err) &&
+                  teamLoaded.grants.size() == 4,
+              "account grant slots are padded with decoys to hide the member count");
+        Cove asMallory = teamLoaded;
+        check(!CoveStore::unlockForAccount(asMallory, "mallory"),
+              "an uninvited account cannot unlock an account cove");
+        Cove asBob = teamLoaded;
+        check(CoveStore::unlockForAccount(asBob, "BOB"),
+              "an invited account unlocks the cove (case-insensitively)");
+        check(asBob.name == "Team plans" && asBob.accessMode == "account" &&
+                  asBob.creatorAccount == "alice" &&
+                  asBob.invitedAccounts.contains("bob") &&
+                  asBob.documents.size() == 1 &&
+                  asBob.documents.first().body == "DB_PASSWORD=hunter2",
+              "unlockForAccount recovers the encrypted ACL, name and documents");
+        check(CoveStore::accountCanAccess(asBob, "alice") &&
+                  !CoveStore::accountCanAccess(asBob, "mallory"),
+              "the decrypted ACL answers accountCanAccess after unlock");
+
+        // Inviting another account re-wraps the content key; the newcomer can
+        // then unlock while the envelope still names nobody.
+        asBob.invitedAccounts << "carol";
+        check(coves.saveAccountCove(asBob, &err),
+              "saving an account cove with a new invitee succeeds");
+        Cove asCarol;
+        check(coves.loadEnvelope(teamCove.relPath, asCarol, &err) &&
+                  CoveStore::unlockForAccount(asCarol, "carol"),
+              "a newly invited account can unlock the re-sealed cove");
+        check(!gitOutput({"show", QStringLiteral("HEAD:") + teamCove.relPath})
+                   .contains("carol"),
+              "the re-sealed envelope still never names the invited accounts");
+
+        // --- Legacy v1 account coves still unlock (and upgrade on save) ---
+        // v1 stored the ACL in plaintext and derived the secret from it; write
+        // one by hand and confirm the modern reader still opens it.
+        {
+            const QString coveId = "11111111-2222-3333-4444-555555555555";
+            const QByteArray salt = CoveCrypto::randomSalt();
+            const int rounds = 2048; // keep the test fast; v1 honors stored rounds
+            const QByteArray material =
+                QStringLiteral("forkmesh-account-cove-v1\n%1\n%2\n%3\n%4")
+                    .arg(coveId, identity.publicKey(), "alice", "alice\nbob")
+                    .toUtf8();
+            const QString secret = QString::fromLatin1(
+                QCryptographicHash::hash(material, QCryptographicHash::Sha256)
+                    .toBase64(QByteArray::Base64UrlEncoding |
+                              QByteArray::OmitTrailingEquals));
+            CoveCrypto legacyCrypto(secret, salt, rounds);
+            const QJsonObject legacyCipher = legacyCrypto.encrypt(
+                QJsonDocument(QJsonObject{{"name", "Old team cove"},
+                                          {"documents", QJsonArray{}},
+                                          {"accessLog", QJsonArray{}}})
+                    .toJson(QJsonDocument::Compact));
+            const QJsonObject legacyEnvelope{
+                {"kind", "cove"},
+                {"v", 1},
+                {"id", coveId},
+                {"creator", identity.publicKey()},
+                {"access", QJsonObject{{"mode", "account"},
+                                       {"creatorAccount", "alice"},
+                                       {"invitedAccounts", QJsonArray{"alice", "bob"}}}},
+                {"kdf", QJsonObject{{"algo", "pbkdf2-sha256"},
+                                    {"rounds", rounds},
+                                    {"salt", QString::fromLatin1(salt.toBase64())}}},
+                {"cipher", legacyCipher}};
+            const QString legacyRel = CoveStore::covesDirRel() + "/legacyv1.cove";
+            QDir().mkpath(tmp.path() + "/" + CoveStore::covesDirRel());
+            QFile legacyFile(tmp.path() + "/" + legacyRel);
+            check(legacyFile.open(QIODevice::WriteOnly) &&
+                      legacyFile.write(QJsonDocument(legacyEnvelope).toJson()) > 0,
+                  "a legacy v1 account cove envelope writes to the coves dir");
+            legacyFile.close();
+
+            Cove legacy;
+            check(coves.loadEnvelope(legacyRel, legacy, &err) &&
+                      legacy.creatorAccount == "alice" &&
+                      CoveStore::accountCanAccess(legacy, "bob"),
+                  "a legacy v1 envelope still exposes its plaintext ACL on load");
+            check(!CoveStore::unlockForAccount(legacy, "mallory"),
+                  "a legacy v1 cove still rejects uninvited accounts");
+            check(CoveStore::unlockForAccount(legacy, "bob") &&
+                      legacy.name == "Old team cove",
+                  "a legacy v1 cove still unlocks via the v1 derived secret");
+            check(coves.saveAccountCove(legacy, &err),
+                  "saving a legacy cove upgrades it to a v2 envelope");
+            const QByteArray upgraded =
+                gitOutput({"show", QStringLiteral("HEAD:") + legacyRel});
+            check(!upgraded.contains("alice") && !upgraded.contains("bob") &&
+                      !upgraded.contains("account") &&
+                      !upgraded.contains(identity.publicKey().toUtf8()),
+                  "the upgraded envelope no longer names accounts, mode or creator");
+            Cove upgradedCove;
+            check(coves.loadEnvelope(legacyRel, upgradedCove, &err) &&
+                      CoveStore::unlockForAccount(upgradedCove, "bob") &&
+                      upgradedCove.name == "Old team cove",
+                  "the upgraded cove still unlocks for its invited accounts");
+        }
     }
 
     // AgentStore persists a Claude Code session's stream-json transcript so it
