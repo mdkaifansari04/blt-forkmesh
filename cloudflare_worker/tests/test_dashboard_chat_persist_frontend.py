@@ -16,7 +16,7 @@ from pathlib import Path
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
 CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
-DASHBOARD_HTML = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
+DASHBOARD_HTML = (PUBLIC / "dashboard" / "chat" / "index.html").read_text(encoding="utf-8")
 PUBLIC_CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 

@@ -874,12 +874,10 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     assert "redeemLinkGrant" in dashboard_js
 
     # The browser side asks for one explicit "Authenticate & link" click; the
-    # confirm row exists in both prebuilt dashboard HTML copies.
-    index_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
-                  "index.html").read_text(encoding="utf-8")
-    dashboard_html = (ROOT / "cloudflare_worker" / "public" /
-                      "dashboard.html").read_text(encoding="utf-8")
-    assert index_html == dashboard_html
+    # confirm row ships in the prebuilt settings page document.
+    settings_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
+                     "settings" / "index.html").read_text(encoding="utf-8")
+    assert "data-link-grant-row" in settings_html
     composed = assembled_dashboard()
     assert "data-link-grant-row" in composed
     assert "data-link-grant-confirm" in composed
@@ -901,13 +899,11 @@ def test_dashboard_exposes_a_claim_node_panel():
                    "data-claim-node-input", "data-claim-code-input"):
         assert marker in dashboard_js
 
-    index_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
-                 "index.html").read_text(encoding="utf-8")
-    dashboard_html = (ROOT / "cloudflare_worker" / "public" / "dashboard.html").read_text(
-        encoding="utf-8")
-    # The claim panel lives in a shell partial and is present in the prebuilt
-    # dashboard HTML assets.
-    assert index_html == dashboard_html
+    settings_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
+                     "settings" / "index.html").read_text(encoding="utf-8")
+    # The claim panel lives in the settings view and is present in the prebuilt
+    # settings page document.
+    assert "data-claim-node-input" in settings_html
     composed = assembled_dashboard()
     assert "data-claim-node-input" in composed
     assert "data-claim-code-confirm" in composed
