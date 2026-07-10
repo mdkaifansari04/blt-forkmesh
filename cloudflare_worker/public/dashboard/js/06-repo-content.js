@@ -72,12 +72,13 @@
         const childPath = repoChildPath(path, entry.name);
         const isTree = entry.type === "tree";
         const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
+        const date = formatDate(entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
               <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
               <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
               <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
-              <span class="shrink-0 text-xs text-muted-foreground font-mono">${isTree ? "dir" : escapeHtml(formatSize(entry.size))}</span>
+              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
             </button>`;
       }).join("");
       navigateHistory(repoPathUrl(repo, "tree", path));
@@ -415,22 +416,32 @@
     const pageItems = ["issues", "pulls"].includes(kind)
       ? items.slice(start, end)
       : items;
-    return pageItems.map((item) => `
-      <button type="button" data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.pending ? item.localId : item.number)}" class="grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors hover:bg-secondary/40">
-        <i data-lucide="${config.icon}" class="mt-0.5 h-4 w-4 ${config.tone}"></i>
-        <span class="min-w-0">
-          <span class="flex min-w-0 flex-wrap items-center gap-2">
-            <span class="font-mono text-xs text-muted-foreground">${item.pending ? "pending" : `#${formatCount(item.number)}`}</span>
-            <span class="min-w-0 truncate text-sm font-medium text-foreground">${escapeHtml(item.title)}</span>
+    return pageItems.map((item) => {
+      const numberLabel = item.pending ? "pending" : `#${formatCount(item.number)}`;
+      const stateLabel = item.pending ? "syncing..." : (item.state || "open");
+      const labelParts = String(item.meta || "")
+        .split(" · ")
+        .map((part) => part.trim())
+        .filter((part) => part && part !== stateLabel)
+        .slice(0, 3);
+      return `
+        <button type="button" data-repo-record-kind="${escapeHtml(kind)}" data-repo-record-number="${escapeHtml(item.pending ? item.localId : item.number)}" class="grid w-full grid-cols-[1rem_1.25rem_minmax(0,1fr)_auto] gap-3 border-t border-border px-4 py-3 text-left transition-colors hover:bg-secondary/40">
+          <span aria-hidden="true" class="mt-0.5 h-4 w-4 rounded border border-border bg-background"></span>
+          <i data-lucide="${config.icon}" class="mt-0.5 h-4 w-4 ${config.tone}"></i>
+          <span class="min-w-0">
+            <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span class="min-w-0 truncate text-sm font-semibold text-foreground">${escapeHtml(item.title)}</span>
+              ${labelParts.map((label) => `<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">${escapeHtml(label)}</span>`).join("")}
+            </span>
+            <span class="mt-1 block truncate text-xs text-muted-foreground">${escapeHtml(numberLabel)} opened by ${escapeHtml(item.author)} ${escapeHtml(item.date)}${item.body ? ` - ${escapeHtml(item.body).slice(0, 140)}` : ""}</span>
           </span>
-          <span class="mt-1 line-clamp-2 text-xs text-muted-foreground">${escapeHtml(item.body || `${item.author} opened this signed ${config.itemLabel}`)}</span>
-          <span class="mt-1 block truncate text-[10px] font-mono text-muted-foreground">${escapeHtml(item.author)} · ${escapeHtml(item.date)}${item.meta ? ` · ${escapeHtml(item.meta)}` : ""}</span>
-        </span>
-        <span class="self-start shrink-0 flex items-center gap-2">
-          ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
-          <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(item.pending ? "syncing…" : (item.state || "open"))}</span>
-        </span>
-      </button>`).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
+          <span class="self-start shrink-0 flex items-center gap-3">
+            ${item.wantsAgent ? '<i data-lucide="zap" class="h-4 w-4 text-yellow-500" title="Assigned to agent"></i>' : ''}
+            <span class="hidden items-center gap-1 text-xs text-muted-foreground sm:inline-flex"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>0</span>
+            <span data-repo-record-state class="self-start rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(stateLabel)}</span>
+          </span>
+        </button>`;
+    }).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
   // Shared unified-diff parser used by both the commit diff and the pull
@@ -753,20 +764,22 @@
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
     const recordLabel = options.pending ? "pending" : `#${escapeHtml(number)}`;
+    const isPulls = kind === "pulls";
+    const isDiscussions = kind === "discussions";
+    const baseBranch = values.base || "main";
+    const headBranch = values.head || "contributor:branch";
+    const labels = kind === "issues"
+      ? parseFrontMatterList(values.labels)
+      : parseFrontMatterList(values.labels || values.reviewLabels);
+    const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
-    const pullConversationSection = kind === "pulls" ? `
-        <section class="overflow-hidden rounded-lg border border-border">
-          <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
-            <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Conversation</span>
-            <span class="font-mono text-[10px] text-muted-foreground">${formatCount(pullConversation.length)} ${pullConversation.length === 1 ? "event" : "events"}</span>
-          </div>
-          <div data-repo-pull-conversation>${renderRepoPullConversation(pullConversation)}</div>
-        </section>` : "";
-    const pullFilesSection = kind === "pulls" ? `
-        <section class="overflow-hidden rounded-lg border border-border">
+    const pullConversationSection = isPulls ? `
+          <div data-repo-pull-conversation class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>` : "";
+    const pullFilesSection = isPulls ? `
+        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-files-panel>
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>Files changed</span>
             <span class="font-mono text-[10px] text-muted-foreground">${formatCount(pullPatch.files.length)} files</span>
@@ -778,8 +791,8 @@
           ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
         </section>` : "";
     const discussionConversation = parsed.discussionConversation || [];
-    const discussionConversationSection = kind === "discussions" ? `
-        <section class="overflow-hidden rounded-lg border border-border">
+    const discussionConversationSection = isDiscussions ? `
+        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-conversation>
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-primary"></i>Replies</span>
             <span class="font-mono text-[10px] text-muted-foreground">${formatCount(discussionConversation.length)} ${discussionConversation.length === 1 ? "reply" : "replies"}</span>
@@ -787,31 +800,63 @@
           <div data-repo-discussion-conversation data-empty="${discussionConversation.length ? "false" : "true"}">${renderRepoDiscussionConversation(discussionConversation)}</div>
           ${renderDiscussionReplyForm(number)}
         </section>` : "";
+    const recordTabs = isPulls ? `
+        <nav class="flex min-w-0 overflow-x-auto border-b border-border" aria-label="Pull request sections">
+          <button type="button" data-repo-record-tab="conversation" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
+          <button type="button" data-repo-record-tab="commits" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
+          <button type="button" data-repo-record-tab="checks" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="badge-check" class="h-3.5 w-3.5"></i>Checks<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">0</span></button>
+          <button type="button" data-repo-record-tab="files" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
+        </nav>` : "";
+    const sidebarSection = (label, value) => `
+      <div class="border-t border-border py-4 first:border-t-0 first:pt-0">
+        <h4 class="text-xs font-semibold text-muted-foreground">${label}</h4>
+        <p class="mt-2 text-xs text-foreground">${value}</p>
+      </div>`;
+    const labelValue = labels.length
+      ? labels.map((label) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(label)}</span>`).join("")
+      : "No labels";
     return `
-      <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-4 border-t border-border bg-background p-4">
+      <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
           <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
         </div>
         ${pendingNotice}
-        <header class="rounded-lg border border-border bg-secondary/30 p-4">
-          <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <i data-lucide="${config.icon}" class="h-4 w-4 ${config.tone}"></i>
-            <h3 class="min-w-0 text-base font-semibold text-foreground">${escapeHtml(title)}</h3>
-            <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(state)}</span>
-          </div>
-          <p class="mt-2 text-xs text-muted-foreground">${escapeHtml(author)} · ${escapeHtml(date)}</p>
-          <dl class="mt-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-            ${recordDetailMeta(kind, values).map(([label, value]) => `<div><dt class="font-semibold text-foreground">${escapeHtml(label)}</dt><dd class="font-mono">${escapeHtml(value)}</dd></div>`).join("")}
-          </dl>
+        <header data-repo-record-hero class="grid gap-3">
+          <h2 class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          <p class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(state)}</span>
+            <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge 1 commit into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
+          </p>
+          ${recordTabs}
         </header>
-        <section class="overflow-hidden rounded-lg border border-border">
-          <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="file-text" class="h-3.5 w-3.5 text-primary"></i>Body</div>
-          <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
-        </section>
-        ${pullConversationSection}
-        ${pullFilesSection}
-        ${discussionConversationSection}
+        <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div class="grid min-w-0 gap-4">
+            ${isDiscussions ? discussionConversationSection : `
+              <section data-repo-record-conversation class="overflow-hidden rounded-lg border border-border">
+                <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
+                  <span class="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="font-semibold text-foreground">${escapeHtml(author)}</span> commented ${escapeHtml(date)}</span>
+                  <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
+                </div>
+                <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                ${pullConversationSection}
+              </section>`}
+            ${pullFilesSection}
+          </div>
+          <aside data-repo-record-sidebar class="min-w-0 text-xs">
+            ${isPulls ? sidebarSection("Reviewers", "No reviews") : ""}
+            ${sidebarSection("Assignees", "No one assigned")}
+            ${sidebarSection("Labels", labelValue)}
+            ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
+            ${sidebarSection("Fields", "No fields configured")}
+            ${sidebarSection("Projects", "No projects")}
+            ${sidebarSection("Milestone", metadata.find(([label]) => label === "Milestone")?.[1] || "No milestone")}
+            ${sidebarSection("Relationships", "None yet")}
+            ${sidebarSection("Development", isPulls ? "Successfully merging this pull request may close these issues." : "No branches or pull requests")}
+            ${sidebarSection("Notifications", '<button type="button" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground"><i data-lucide="bell" class="h-3.5 w-3.5"></i>Subscribe</button>')}
+            ${sidebarSection("Participants", `1 participant - ${escapeHtml(author)}`)}
+          </aside>
+        </div>
       </article>`;
   }
 
@@ -820,7 +865,7 @@
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
     // Issues just submitted from this session sit in the maintainer's inbox
-    // until drained, so there's nothing to fetch from the mirror yet — render
+    // until drained, so there's nothing to fetch from the mirror yet - render
     // the detail straight from the local placeholder instead.
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
@@ -1024,7 +1069,7 @@
     }
   }
 
-  // True when the logged-in account is the node that owns (hosts) this repo —
+  // True when the logged-in account is the node that owns (hosts) this repo -
   // the only account whose node can actually pick an "assign to agent" issue up
   // and run a coding agent on it.
   function sessionOwnsRepo(repo) {
@@ -1219,7 +1264,7 @@
           <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
         </form>
         <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>`
-          : '<div class="text-[11px] text-muted-foreground">This session has finished — you can no longer send it messages.</div>'}
+          : '<div class="text-[11px] text-muted-foreground">This session has finished - you can no longer send it messages.</div>'}
       </div>`;
   }
 
@@ -1231,7 +1276,7 @@
     return `
       <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
         <form data-repo-agent-new-form class="flex flex-col gap-2 bg-secondary/30 px-4 py-3">
-          <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent — enter a prompt" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
+          <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
           <div class="flex items-center gap-2">
             <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
               ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
@@ -1297,14 +1342,14 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-      // Only touch the pane if it's still the open agent — a slow response that
+      // Only touch the pane if it's still the open agent - a slow response that
       // lands after the user navigated away must not clobber the new view.
       if (String(state.agentsView.selectedAgentId ?? "") !== String(agentId)) return;
       const current = $("[data-repo-agent-transcript]");
       if (!current) return;
       const atBottom = current.scrollHeight - current.scrollTop - current.clientHeight < 24;
       const text = String(data.transcript || "");
-      current.textContent = text || "No transcript yet — waiting for the agent to produce output.";
+      current.textContent = text || "No transcript yet - waiting for the agent to produce output.";
       if (atBottom) current.scrollTop = current.scrollHeight;
       const statusEl = $("[data-repo-agent-status]");
       if (statusEl && data.status) {
@@ -1395,7 +1440,7 @@
       setHint(
         code === "text_required" ? "Write a message before sending."
           : code === "text_too_long" ? "Message is too long."
-          : code === "prompt_queue_full" ? "Too many pending messages for this repository — try again shortly."
+          : code === "prompt_queue_full" ? "Too many pending messages for this repository - try again shortly."
           : code === "not_authorized" ? "You don't have permission to send messages."
             : "Could not send the message. Please try again.",
         "bad");
@@ -1441,14 +1486,14 @@
         throw new Error(data.error || `HTTP ${response.status}`);
       }
       if (input) input.value = "";
-      setHint("Sent — the node will start a new agent shortly.", "good");
+      setHint("Sent - the node will start a new agent shortly.", "good");
       if (state.activeRepoTab === "agents") loadRepoAgents(repo);
     } catch (error) {
       const code = String(error?.message || "");
       setHint(
         code === "text_required" ? "Enter a prompt to start an agent."
           : code === "text_too_long" ? "Prompt is too long."
-          : code === "prompt_queue_full" ? "Too many pending prompts for this repository — try again shortly."
+          : code === "prompt_queue_full" ? "Too many pending prompts for this repository - try again shortly."
           : code === "not_authorized" ? "You don't have permission to start agents."
             : "Could not start the agent. Please try again.",
         "bad");

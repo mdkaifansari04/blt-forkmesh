@@ -35,7 +35,7 @@
         theme: {
           extend: {
             fontFamily: {
-              sans: ["ForkMesh Helvetica", "Helvetica Neue", "Helvetica", "Arial", "sans-serif"],
+              sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
               mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
             },
             colors: {
@@ -65,46 +65,6 @@
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     <style>
       @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueLight.otf") format("opentype");
-        font-weight: 300;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype");
-        font-weight: 400;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueMedium.otf") format("opentype");
-        font-weight: 500;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype");
-        font-weight: 600 700;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueHeavy.otf") format("opentype");
-        font-weight: 800;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
         font-family: "ForkMesh Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
         font-weight: 400 500;
@@ -123,38 +83,41 @@
       :root,
       [data-dashboard-theme="dark"] {
         --font-size: 15px;
-        --dashboard-background-rgb: 9 9 11;
-        --dashboard-foreground-rgb: 244 244 245;
-        --dashboard-card-rgb: 17 17 19;
-        --dashboard-card-foreground-rgb: 244 244 245;
-        --dashboard-popover-rgb: 24 24 27;
-        --dashboard-popover-foreground-rgb: 244 244 245;
-        --dashboard-primary-rgb: 74 222 128;
-        --dashboard-primary-foreground-rgb: 5 46 22;
-        --dashboard-secondary-rgb: 28 28 31;
-        --dashboard-secondary-foreground-rgb: 161 161 170;
-        --dashboard-muted-rgb: 28 28 31;
-        --dashboard-muted-foreground-rgb: 113 113 122;
-        --dashboard-accent-rgb: 74 222 128;
-        --dashboard-accent-foreground-rgb: 5 46 22;
-        --dashboard-destructive-rgb: 239 68 68;
-        --dashboard-border-rgb: 39 39 42;
-        --dashboard-ring-rgb: 244 244 245;
-        --dashboard-scrollbar-rgb: 255 255 255;
+        --dashboard-header-rgb: 1 4 9;
+        --dashboard-sidebar-rgb: 12 17 23;
+        --dashboard-background-rgb: 1 4 9;
+        --dashboard-foreground-rgb: 240 246 252;
+        --dashboard-card-rgb: 13 17 23;
+        --dashboard-card-foreground-rgb: 240 246 252;
+        --dashboard-popover-rgb: 22 27 34;
+        --dashboard-popover-foreground-rgb: 240 246 252;
+        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 33 38 45;
+        --dashboard-secondary-foreground-rgb: 201 209 217;
+        --dashboard-muted-rgb: 22 27 34;
+        --dashboard-muted-foreground-rgb: 139 148 158;
+        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 248 81 73;
+        --dashboard-border-rgb: 48 54 61;
+        --dashboard-ring-rgb: 88 166 255;
+        --dashboard-scrollbar-rgb: 139 148 158;
         --dashboard-link: #58a6ff;
         --dashboard-link-hover: #79c0ff;
-        --background: #09090b;
-        --foreground: #f4f4f5;
-        --card: #111113;
-        --primary: #4ade80;
-        --primary-foreground: #052e16;
-        --secondary: #1c1c1f;
-        --muted-foreground: #71717a;
+        --background: #010409;
+        --foreground: #f0f6fc;
+        --card: #0d1117;
+        --primary: #238636;
+        --primary-foreground: #ffffff;
+        --secondary: #21262d;
+        --muted-foreground: #8b949e;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: dark;
       }
 
       [data-dashboard-theme="light"] {
+        --dashboard-sidebar-rgb: 255 255 255;
         --dashboard-background-rgb: 246 248 251;
         --dashboard-foreground-rgb: 15 23 42;
         --dashboard-card-rgb: 255 255 255;
@@ -167,7 +130,7 @@
         --dashboard-secondary-foreground-rgb: 51 65 85;
         --dashboard-muted-rgb: 241 245 249;
         --dashboard-muted-foreground-rgb: 100 116 139;
-        --dashboard-accent-rgb: 22 163 74;
+        --dashboard-accent-rgb: 9 105 218;
         --dashboard-accent-foreground-rgb: 255 255 255;
         --dashboard-destructive-rgb: 220 38 38;
         --dashboard-border-rgb: 226 232 240;
@@ -199,7 +162,7 @@
         margin: 0;
         background: var(--background);
         color: var(--foreground);
-        font-family: "ForkMesh Helvetica", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       }
 
       button,
@@ -309,7 +272,7 @@
 
       .repo-list.grid-mode {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
         gap: 0.75rem;
         padding: 0.75rem;
       }
@@ -335,29 +298,62 @@
         min-width: 1px;
       }
 
-	      .network-toggle-open {
-	        display: none;
-	      }
-
-      [data-mobile-menu-toggle],
-      [data-mobile-network-toggle],
       [data-mobile-sidebar-backdrop],
-      [data-mobile-network-backdrop],
-      [data-mobile-drawer-close],
-      [data-mobile-network-close] {
+      [data-mobile-drawer-close] {
         display: none;
       }
 
-      .network-rail-collapsed #networkRail {
-        display: none;
+      [data-mobile-menu-toggle] {
+        display: inline-flex;
       }
 
-      .network-rail-collapsed .network-toggle-open {
+      [data-app-header] {
+        background: rgb(var(--dashboard-header-rgb));
+      }
+
+      [data-dashboard-root][data-dashboard-section="home"] [data-app-header] {
+        border-bottom: 1px solid var(--border);
+      }
+
+      body.dashboard-sidebar-open {
+        overflow: hidden;
+      }
+
+      [data-dashboard-shell] {
+        position: relative;
+      }
+
+      [data-dashboard-sidebar] {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 70;
+        width: min(20rem, calc(100vw - 2rem)) !important;
+        max-width: calc(100vw - 2rem) !important;
+        height: 100dvh;
+        background-color: #0C1117 !important;
+        transform: translateX(-100%);
+        transition: transform 180ms ease;
+        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+      }
+
+      body.dashboard-sidebar-open [data-dashboard-sidebar] {
+        transform: translateX(0);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        position: fixed;
+        inset: 0;
+        display: none;
+        background: rgb(0 0 0 / 0.62);
+        backdrop-filter: blur(6px);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        z-index: 60;
+      }
+
+      body.dashboard-sidebar-open [data-mobile-sidebar-backdrop] {
         display: block;
-      }
-
-      .network-rail-collapsed .network-toggle-close {
-        display: none;
       }
 
       [data-dashboard-theme="light"] .text-zinc-200,
@@ -399,11 +395,6 @@
       }
 
       @media (max-width: 1023px) {
-        body.dashboard-sidebar-open,
-        body.network-drawer-open {
-          overflow: hidden;
-        }
-
         [data-dashboard-root] {
           height: 100dvh;
         }
@@ -420,76 +411,8 @@
         }
 
         [data-mobile-menu-toggle],
-        [data-mobile-network-toggle],
-        [data-mobile-drawer-close],
-        [data-mobile-network-close] {
+        [data-mobile-drawer-close] {
           display: inline-flex;
-        }
-
-        [data-dashboard-shell] {
-          position: relative;
-        }
-
-        [data-dashboard-sidebar] {
-          position: fixed;
-          inset: 0 auto 0 0;
-          z-index: 70;
-          width: min(22rem, calc(100vw - 2rem)) !important;
-          max-width: calc(100vw - 2rem) !important;
-          height: 100dvh;
-          transform: translateX(-100%);
-          transition: transform 180ms ease;
-          box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
-        }
-
-        body.dashboard-sidebar-open [data-dashboard-sidebar] {
-          transform: translateX(0);
-        }
-
-        [data-mobile-sidebar-backdrop],
-        [data-mobile-network-backdrop] {
-          position: fixed;
-          inset: 0;
-          display: none;
-          background: rgb(0 0 0 / 0.62);
-          backdrop-filter: blur(6px);
-        }
-
-        [data-mobile-sidebar-backdrop] {
-          z-index: 60;
-        }
-
-        [data-mobile-network-backdrop] {
-          z-index: 75;
-        }
-
-        body.dashboard-sidebar-open [data-mobile-sidebar-backdrop],
-        body.network-drawer-open [data-mobile-network-backdrop] {
-          display: block;
-        }
-
-        .network-rail-collapsed #networkRail,
-        #networkRail {
-          display: flex !important;
-          position: fixed;
-          left: 0.5rem;
-          right: 0.5rem;
-          bottom: 0;
-          z-index: 80;
-          width: auto;
-          height: min(82dvh, 42rem);
-          max-height: calc(100dvh - 3.5rem);
-          overflow: hidden;
-          border: 1px solid var(--border);
-          border-bottom: 0;
-          border-radius: 1rem 1rem 0 0;
-          box-shadow: 0 -24px 80px rgb(0 0 0 / 0.5);
-          transform: translateY(calc(100% + 1rem));
-          transition: transform 180ms ease;
-        }
-
-        body.network-drawer-open #networkRail {
-          transform: translateY(0);
         }
 
         [data-repo-toolbar] {
@@ -509,7 +432,7 @@
       }
 
       ::selection {
-        background: rgb(74 222 128 / 0.28);
+        background: rgb(88 166 255 / 0.28);
       }
 
       ::-webkit-scrollbar {
@@ -533,22 +456,19 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js" defer></script>
+    <script src="/dashboard.js?v=github-settings-tabs" defer></script>
     <script src="/dashboard-chat.js" defer></script>
   </head>
   <body class="bg-background text-foreground">
-    <div data-dashboard-root class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+    <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
 <!--#include partial="header"-->
 
       <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
-      <button data-mobile-network-backdrop type="button" aria-label="Close network drawer"></button>
 
       <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
 <!--#include partial="sidebar"-->
 
 <!--#include partial="main"-->
-
-<!--#include partial="network-rail"-->
 	    </div>
 	    </div>
 
@@ -665,6 +585,8 @@
       }
 
       function setSection(section) {
+        const dashboardRoot = document.querySelector("[data-dashboard-root]");
+        if (dashboardRoot) dashboardRoot.dataset.dashboardSection = section;
         document.querySelectorAll("[data-view]").forEach((view) => {
           view.classList.toggle("active", view.dataset.view === section);
         });
@@ -677,22 +599,8 @@
         });
       }
 
-      function setNetworkRail(open) {
-        document.body.classList.toggle("network-rail-collapsed", !open);
-        document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
-          button.setAttribute("aria-expanded", open ? "true" : "false");
-          button.setAttribute("aria-label", open ? "Close network panel" : "Open network panel");
-        });
-      }
-
       document.querySelectorAll("[data-section]").forEach((button) => {
         button.addEventListener("click", () => setSection(button.dataset.section));
-      });
-
-      document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
-        button.addEventListener("click", () => {
-          setNetworkRail(document.body.classList.contains("network-rail-collapsed"));
-        });
       });
 
       document.addEventListener("keydown", (event) => {

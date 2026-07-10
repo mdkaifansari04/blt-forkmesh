@@ -35,7 +35,7 @@
         theme: {
           extend: {
             fontFamily: {
-              sans: ["ForkMesh Helvetica", "Helvetica Neue", "Helvetica", "Arial", "sans-serif"],
+              sans: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans", "Helvetica", "Arial", "sans-serif"],
               mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"],
             },
             colors: {
@@ -65,46 +65,6 @@
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     <style>
       @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueLight.otf") format("opentype");
-        font-weight: 300;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype");
-        font-weight: 400;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueMedium.otf") format("opentype");
-        font-weight: 500;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype");
-        font-weight: 600 700;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "ForkMesh Helvetica";
-        src: url("/assets/fonts/HelveticaNeueHeavy.otf") format("opentype");
-        font-weight: 800;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
         font-family: "ForkMesh Dashboard Mono";
         src: url("/assets/fonts/DejaVuSansMono.ttf") format("truetype");
         font-weight: 400 500;
@@ -123,38 +83,41 @@
       :root,
       [data-dashboard-theme="dark"] {
         --font-size: 15px;
-        --dashboard-background-rgb: 9 9 11;
-        --dashboard-foreground-rgb: 244 244 245;
-        --dashboard-card-rgb: 17 17 19;
-        --dashboard-card-foreground-rgb: 244 244 245;
-        --dashboard-popover-rgb: 24 24 27;
-        --dashboard-popover-foreground-rgb: 244 244 245;
-        --dashboard-primary-rgb: 74 222 128;
-        --dashboard-primary-foreground-rgb: 5 46 22;
-        --dashboard-secondary-rgb: 28 28 31;
-        --dashboard-secondary-foreground-rgb: 161 161 170;
-        --dashboard-muted-rgb: 28 28 31;
-        --dashboard-muted-foreground-rgb: 113 113 122;
-        --dashboard-accent-rgb: 74 222 128;
-        --dashboard-accent-foreground-rgb: 5 46 22;
-        --dashboard-destructive-rgb: 239 68 68;
-        --dashboard-border-rgb: 39 39 42;
-        --dashboard-ring-rgb: 244 244 245;
-        --dashboard-scrollbar-rgb: 255 255 255;
+        --dashboard-header-rgb: 1 4 9;
+        --dashboard-sidebar-rgb: 12 17 23;
+        --dashboard-background-rgb: 1 4 9;
+        --dashboard-foreground-rgb: 240 246 252;
+        --dashboard-card-rgb: 13 17 23;
+        --dashboard-card-foreground-rgb: 240 246 252;
+        --dashboard-popover-rgb: 22 27 34;
+        --dashboard-popover-foreground-rgb: 240 246 252;
+        --dashboard-primary-rgb: 35 134 54;
+        --dashboard-primary-foreground-rgb: 255 255 255;
+        --dashboard-secondary-rgb: 33 38 45;
+        --dashboard-secondary-foreground-rgb: 201 209 217;
+        --dashboard-muted-rgb: 22 27 34;
+        --dashboard-muted-foreground-rgb: 139 148 158;
+        --dashboard-accent-rgb: 88 166 255;
+        --dashboard-accent-foreground-rgb: 255 255 255;
+        --dashboard-destructive-rgb: 248 81 73;
+        --dashboard-border-rgb: 48 54 61;
+        --dashboard-ring-rgb: 88 166 255;
+        --dashboard-scrollbar-rgb: 139 148 158;
         --dashboard-link: #58a6ff;
         --dashboard-link-hover: #79c0ff;
-        --background: #09090b;
-        --foreground: #f4f4f5;
-        --card: #111113;
-        --primary: #4ade80;
-        --primary-foreground: #052e16;
-        --secondary: #1c1c1f;
-        --muted-foreground: #71717a;
+        --background: #010409;
+        --foreground: #f0f6fc;
+        --card: #0d1117;
+        --primary: #238636;
+        --primary-foreground: #ffffff;
+        --secondary: #21262d;
+        --muted-foreground: #8b949e;
         --border: rgb(var(--dashboard-border-rgb));
         color-scheme: dark;
       }
 
       [data-dashboard-theme="light"] {
+        --dashboard-sidebar-rgb: 255 255 255;
         --dashboard-background-rgb: 246 248 251;
         --dashboard-foreground-rgb: 15 23 42;
         --dashboard-card-rgb: 255 255 255;
@@ -167,7 +130,7 @@
         --dashboard-secondary-foreground-rgb: 51 65 85;
         --dashboard-muted-rgb: 241 245 249;
         --dashboard-muted-foreground-rgb: 100 116 139;
-        --dashboard-accent-rgb: 22 163 74;
+        --dashboard-accent-rgb: 9 105 218;
         --dashboard-accent-foreground-rgb: 255 255 255;
         --dashboard-destructive-rgb: 220 38 38;
         --dashboard-border-rgb: 226 232 240;
@@ -199,7 +162,7 @@
         margin: 0;
         background: var(--background);
         color: var(--foreground);
-        font-family: "ForkMesh Helvetica", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       }
 
       button,
@@ -309,7 +272,7 @@
 
       .repo-list.grid-mode {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
         gap: 0.75rem;
         padding: 0.75rem;
       }
@@ -335,29 +298,62 @@
         min-width: 1px;
       }
 
-	      .network-toggle-open {
-	        display: none;
-	      }
-
-      [data-mobile-menu-toggle],
-      [data-mobile-network-toggle],
       [data-mobile-sidebar-backdrop],
-      [data-mobile-network-backdrop],
-      [data-mobile-drawer-close],
-      [data-mobile-network-close] {
+      [data-mobile-drawer-close] {
         display: none;
       }
 
-      .network-rail-collapsed #networkRail {
-        display: none;
+      [data-mobile-menu-toggle] {
+        display: inline-flex;
       }
 
-      .network-rail-collapsed .network-toggle-open {
+      [data-app-header] {
+        background: rgb(var(--dashboard-header-rgb));
+      }
+
+      [data-dashboard-root][data-dashboard-section="home"] [data-app-header] {
+        border-bottom: 1px solid var(--border);
+      }
+
+      body.dashboard-sidebar-open {
+        overflow: hidden;
+      }
+
+      [data-dashboard-shell] {
+        position: relative;
+      }
+
+      [data-dashboard-sidebar] {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 70;
+        width: min(20rem, calc(100vw - 2rem)) !important;
+        max-width: calc(100vw - 2rem) !important;
+        height: 100dvh;
+        background-color: #0C1117 !important;
+        transform: translateX(-100%);
+        transition: transform 180ms ease;
+        box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
+      }
+
+      body.dashboard-sidebar-open [data-dashboard-sidebar] {
+        transform: translateX(0);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        position: fixed;
+        inset: 0;
+        display: none;
+        background: rgb(0 0 0 / 0.62);
+        backdrop-filter: blur(6px);
+      }
+
+      [data-mobile-sidebar-backdrop] {
+        z-index: 60;
+      }
+
+      body.dashboard-sidebar-open [data-mobile-sidebar-backdrop] {
         display: block;
-      }
-
-      .network-rail-collapsed .network-toggle-close {
-        display: none;
       }
 
       [data-dashboard-theme="light"] .text-zinc-200,
@@ -399,11 +395,6 @@
       }
 
       @media (max-width: 1023px) {
-        body.dashboard-sidebar-open,
-        body.network-drawer-open {
-          overflow: hidden;
-        }
-
         [data-dashboard-root] {
           height: 100dvh;
         }
@@ -420,76 +411,8 @@
         }
 
         [data-mobile-menu-toggle],
-        [data-mobile-network-toggle],
-        [data-mobile-drawer-close],
-        [data-mobile-network-close] {
+        [data-mobile-drawer-close] {
           display: inline-flex;
-        }
-
-        [data-dashboard-shell] {
-          position: relative;
-        }
-
-        [data-dashboard-sidebar] {
-          position: fixed;
-          inset: 0 auto 0 0;
-          z-index: 70;
-          width: min(22rem, calc(100vw - 2rem)) !important;
-          max-width: calc(100vw - 2rem) !important;
-          height: 100dvh;
-          transform: translateX(-100%);
-          transition: transform 180ms ease;
-          box-shadow: 24px 0 80px rgb(0 0 0 / 0.46);
-        }
-
-        body.dashboard-sidebar-open [data-dashboard-sidebar] {
-          transform: translateX(0);
-        }
-
-        [data-mobile-sidebar-backdrop],
-        [data-mobile-network-backdrop] {
-          position: fixed;
-          inset: 0;
-          display: none;
-          background: rgb(0 0 0 / 0.62);
-          backdrop-filter: blur(6px);
-        }
-
-        [data-mobile-sidebar-backdrop] {
-          z-index: 60;
-        }
-
-        [data-mobile-network-backdrop] {
-          z-index: 75;
-        }
-
-        body.dashboard-sidebar-open [data-mobile-sidebar-backdrop],
-        body.network-drawer-open [data-mobile-network-backdrop] {
-          display: block;
-        }
-
-        .network-rail-collapsed #networkRail,
-        #networkRail {
-          display: flex !important;
-          position: fixed;
-          left: 0.5rem;
-          right: 0.5rem;
-          bottom: 0;
-          z-index: 80;
-          width: auto;
-          height: min(82dvh, 42rem);
-          max-height: calc(100dvh - 3.5rem);
-          overflow: hidden;
-          border: 1px solid var(--border);
-          border-bottom: 0;
-          border-radius: 1rem 1rem 0 0;
-          box-shadow: 0 -24px 80px rgb(0 0 0 / 0.5);
-          transform: translateY(calc(100% + 1rem));
-          transition: transform 180ms ease;
-        }
-
-        body.network-drawer-open #networkRail {
-          transform: translateY(0);
         }
 
         [data-repo-toolbar] {
@@ -509,7 +432,7 @@
       }
 
       ::selection {
-        background: rgb(74 222 128 / 0.28);
+        background: rgb(88 166 255 / 0.28);
       }
 
       ::-webkit-scrollbar {
@@ -533,88 +456,84 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js" defer></script>
+    <script src="/dashboard.js?v=github-settings-tabs" defer></script>
     <script src="/dashboard-chat.js" defer></script>
   </head>
   <body class="bg-background text-foreground">
-    <div data-dashboard-root class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
-      <header data-app-header class="relative h-14 border-b border-border bg-card flex items-center gap-6 px-4 shrink-0">
+    <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+      <header data-app-header class="relative h-14 flex items-center gap-3 px-4 shrink-0">
         <button
           data-mobile-menu-toggle
           type="button"
           aria-label="Open dashboard menu"
           aria-controls="dashboardSidebar"
           aria-expanded="false"
-          class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+          class="items-center justify-center rounded-md border border-border bg-background p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
         >
           <i data-lucide="menu" class="h-4 w-4"></i>
         </button>
-        <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+
+        <a class="brand flex items-center gap-2 shrink-0" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
           <span
             data-app-version
-            class="hidden font-mono text-[10px] leading-none text-muted-foreground"
+            class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
             title="ForkMesh version"
           ></span>
         </a>
 
-        <nav data-top-nav class="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0 lg:flex">
-          <!-- Home dashboard tab is intentionally hidden until the activity feed is functional.
-          <button data-section="home" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Home
-          </button>
-          -->
-          <button data-section="repos" data-nav-link aria-current="page" class="inline-flex text-sm text-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Repositories
-          </button>
-          <button data-section="network" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Network
-          </button>
-          <a href="/chat" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Chat
-          </a>
-          <a href="/docs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Docs
-          </a>
-          <!-- Desktop Client is intentionally hidden until that flow is ready.
-          <a href="/desktop" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Desktop Client
-          </a>
-          -->
-          <a href="/blog" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Blog
-          </a>
-        </nav>
+        <div class="hidden min-w-0 items-center gap-2 text-sm font-semibold text-foreground sm:flex">
+          <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+        </div>
 
-        <div class="ml-auto flex items-center gap-2">
-          <button
-            data-mobile-network-toggle
-            type="button"
-            aria-label="Open network drawer"
-            aria-controls="networkRail"
+        <div data-global-search-shell class="relative ml-auto hidden h-9 w-full max-w-sm min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground lg:flex">
+          <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+          <input
+            data-global-search
+            id="globalSearchInput"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Type / to search"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="globalSearchResults"
             aria-expanded="false"
-            class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+            aria-keyshortcuts="/"
+            class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          />
+          <span data-global-search-shortcut class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">/</span>
+          <div
+            data-global-search-panel
+            id="globalSearchResults"
+            role="listbox"
+            class="hidden absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl shadow-background/50"
           >
-            <i data-lucide="activity" class="h-4 w-4"></i>
-          </button>
+            <div data-global-search-results class="max-h-96 overflow-y-auto py-1"></div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5">
           <a
             href="/mirror-payouts"
-            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            class="hidden h-9 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
             title="Get paid to mirror code"
+            aria-label="Get paid to mirror code"
           >
             <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-3.5 w-3.5 shrink-0 rounded-full object-contain" />
             <span class="hidden sm:inline">Get paid to mirror</span>
           </a>
+
           <div class="relative">
             <button
               id="notificationToggle"
               type="button"
               aria-label="Open notifications"
               aria-expanded="false"
-              class="relative p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors"
+              class="relative flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
               <i data-lucide="bell" class="w-4 h-4"></i>
-              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary"></span>
+              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent"></span>
             </button>
             <div
               id="notificationDropdown"
@@ -632,22 +551,13 @@
               </div>
             </div>
           </div>
-          <button
-            id="networkRailToggle"
-            data-network-rail-toggle
-            type="button"
-            aria-label="Close network panel"
-            aria-expanded="true"
-            class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors hidden lg:inline-flex"
-          >
-            <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
-            <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
-          </button>
+
           <a
             data-guest-auth-link
             href="/signup"
             class="hidden ml-0.5 items-center whitespace-nowrap rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
           >Sign Up / Log In</a>
+
           <a
             data-admin-button
             href="#"
@@ -657,17 +567,18 @@
             <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
             <span>Admin</span>
           </a>
+
           <button
             data-profile-settings-button
             type="button"
-            aria-label="Open profile"
-            title="Profile"
+            aria-label="Open profile settings"
+            title="Profile settings"
             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
           >
             <span
               data-dashboard-profile-avatar
               class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
-              style="width: 28px; height: 28px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 10.5px"
+              style="width: 32px; height: 32px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 11px"
             >
               <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
               <span data-avatar-initial>Y</span>
@@ -679,308 +590,170 @@
 
 
       <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
-      <button data-mobile-network-backdrop type="button" aria-label="Close network drawer"></button>
 
       <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
-      <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="w-56 shrink-0 flex flex-col border-r border-border bg-card h-full overflow-y-auto">
-        <div class="flex items-center justify-between border-b border-border px-3 py-3 lg:hidden">
-          <span class="text-xs font-semibold text-foreground">Dashboard</span>
-          <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+      <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="flex h-full flex-col overflow-y-auto border-r border-border bg-[#0C1117]">
+        <div class="flex items-center justify-between border-b border-border px-4 py-4">
+          <a class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/" aria-label="ForkMesh home">
+            <img class="h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+            <span data-sidebar-user-name>ForkMesh</span>
+          </a>
+          <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
           </button>
         </div>
 
-        <nav data-mobile-sidebar-menu class="grid gap-1 border-b border-border px-3 py-3 lg:hidden">
-          <button data-section="repos" data-nav-link aria-current="page" class="flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
+        <nav data-sidebar-main-menu class="grid gap-1 border-b border-border px-3 py-3">
+          <button data-section="home" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="home" class="h-4 w-4 text-muted-foreground"></i>
+            Dashboard
+          </button>
+          <button data-section="profile" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="user-round" class="h-4 w-4 text-muted-foreground"></i>
+            Profile
+          </button>
+          <button data-section="repos" data-nav-link aria-current="page" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
             Repositories
           </button>
-          <button data-section="network" data-nav-link class="flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <button data-section="network" data-nav-link class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
             Network
           </button>
-          <a href="/chat" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/chat" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="messages-square" class="h-4 w-4 text-muted-foreground"></i>
             Chat
           </a>
-          <a href="/docs" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/docs" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
             Docs
           </a>
-          <a href="/blog" class="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <a href="/blog" class="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="newspaper" class="h-4 w-4 text-muted-foreground"></i>
             Blog
           </a>
         </nav>
 
-        <div class="hidden min-h-0 flex-1 flex-col gap-2 px-3 py-3 lg:flex">
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Repositories</span>
+        <div data-sidebar-top-repositories class="min-h-0 flex-1 px-3 py-3">
+          <div class="mb-2 flex items-center justify-between gap-2 px-1">
+            <span class="text-xs font-semibold text-muted-foreground">Top repositories</span>
             <span data-sidebar-repo-count class="rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">0</span>
           </div>
           <div data-sidebar-repo-list class="grid gap-1"></div>
         </div>
-
       </aside>
 
 
       <main data-dashboard-main class="flex-1 min-w-0 flex flex-col overflow-hidden">
         <div id="content" class="flex-1 min-h-0 overflow-hidden">
-	          <!-- Home dashboard view is intentionally hidden until the activity feed is functional.
           <section data-view="home" class="view active h-full overflow-y-auto">
-	            <div class="p-6 max-w-5xl mx-auto">
-	              <div class="flex items-center justify-between mb-6">
-	                  <h1 class="text-base font-semibold text-foreground">Home</h1>
-	                  <button class="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-md px-3 py-1.5 hover:bg-secondary transition-colors">
-	                    <i data-lucide="filter" class="w-3 h-3"></i>
-	                    Filter
-	                  </button>
+            <div class="grid min-h-full lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,48rem)_20rem] 2xl:grid-cols-[20rem_minmax(0,52rem)_22rem]">
+              <aside data-home-left-rail class="min-w-0 border-b border-border bg-[#0d1117] px-4 py-6 sm:px-6 lg:min-h-full lg:border-b-0 lg:border-r lg:px-8 lg:py-10">
+                <div class="mb-7 flex min-w-0 items-center gap-3">
+                  <div data-home-user-avatar class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">
+                    <img class="hidden h-full w-full object-cover" alt="" />
+                    <span data-avatar-initial class="text-[10px] font-semibold text-muted-foreground">F</span>
+                  </div>
+                  <button data-section="profile-overview" data-nav-link class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></button>
+                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
                 </div>
 
-                <div class="mb-3 flex items-center justify-between">
-                  <span class="text-xs font-medium text-foreground">Activity feed</span>
-                  <span class="text-xs text-muted-foreground font-mono">last 7 days</span>
-                </div>
-
-                <div class="flex flex-col gap-1">
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
-                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">you</span> <span class="text-muted-foreground">3 commits to main</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 2h ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #fbbf2412; border: 1px solid #fbbf2425">
-                    <i data-lucide="star" class="w-3.5 h-3.5" style="color: #fbbf24"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">starred your repo</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 4h ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
-                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">alice-node</span> <span class="text-muted-foreground">1 commit to feat/relay-v2</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">alice-node/forkmesh &middot; 6h ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #38bdf812; border: 1px solid #38bdf825">
-                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5" style="color: #38bdf8"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">devbox-kr</span> <span class="text-muted-foreground">started mirroring your node</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">devbox-kr/fmesh-py &middot; 12h ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #f472b612; border: 1px solid #f472b625">
-                    <i data-lucide="git-pull-request" class="w-3.5 h-3.5" style="color: #f472b6"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">sysop-eu</span> <span class="text-muted-foreground">opened PR #14 - fix tunnel keepalive</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 1d ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #818cf812; border: 1px solid #818cf825">
-                    <i data-lucide="git-fork" class="w-3.5 h-3.5" style="color: #818cf8"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">infra-wg</span> <span class="text-muted-foreground">forked to infra-wg/mesh-ui</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 2d ago</p>
-                  </div>
-                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-                </div>
-                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
-                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm text-foreground leading-snug"><span class="font-medium">relay-eu-1</span> <span class="text-muted-foreground">tagged v0.4.1</span></p>
-                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">relay-eu-1/relay-monitor &middot; 3d ago</p>
-	                  </div>
-	                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-	                </div>
-	                </div>
-
-		              <section data-home-contributions class="mt-10">
-	                <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_7rem]">
-	                  <div class="min-w-0">
-	                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <h2 class="text-base font-semibold text-foreground">
-                        <span data-contribution-count>1,563</span> contributions in the last year
-                      </h2>
-                      <button class="inline-flex items-center gap-1.5 self-start text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        Contribution settings
-                        <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
-                      </button>
-                    </div>
-
-                    <div class="mt-3 rounded-lg border border-border bg-card p-4">
-                      <div class="overflow-x-auto pb-1">
-                        <div class="min-w-[720px]">
-                          <div class="ml-10 grid grid-cols-12 gap-3 text-xs text-foreground">
-                            <span>Jun</span>
-                            <span>Jul</span>
-                            <span>Aug</span>
-                            <span>Sep</span>
-                            <span>Oct</span>
-                            <span>Nov</span>
-                            <span>Dec</span>
-                            <span>Jan</span>
-                            <span>Feb</span>
-                            <span>Mar</span>
-                            <span>Apr</span>
-                            <span>May</span>
-                          </div>
-
-                          <div class="mt-2 flex gap-3">
-                            <div class="grid grid-rows-7 gap-1 text-xs text-foreground shrink-0" style="grid-template-rows: repeat(7, 10px)">
-                              <span></span>
-                              <span class="leading-[10px]">Mon</span>
-                              <span></span>
-                              <span class="leading-[10px]">Wed</span>
-                              <span></span>
-                              <span class="leading-[10px]">Fri</span>
-                              <span></span>
-                            </div>
-                            <div
-                              data-contribution-grid
-                              role="img"
-                              aria-label="Contribution activity heatmap"
-                              class="shrink-0"
-                              style="display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 10px); grid-auto-columns: 10px; gap: 4px"
-                            ></div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <button class="text-xs text-muted-foreground hover:text-primary transition-colors self-start">Learn how we count contributions</button>
-                        <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span>Less</span>
-                          <span class="h-2.5 w-2.5 rounded-[2px] bg-secondary"></span>
-                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #14532d"></span>
-                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #166534"></span>
-                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #22c55e"></span>
-                          <span class="h-2.5 w-2.5 rounded-[2px]" style="background: #4ade80"></span>
-                          <span>More</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-visible">
-                    <button data-contribution-year="2026" data-count="1,563" class="shrink-0 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors">2026</button>
-                    <button data-contribution-year="2025" data-count="1,102" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2025</button>
-                    <button data-contribution-year="2024" data-count="842" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2024</button>
-                    <button data-contribution-year="2023" data-count="519" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2023</button>
-                    <button data-contribution-year="2022" data-count="286" class="shrink-0 rounded-md px-4 py-2.5 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">2022</button>
-                  </div>
-                </div>
-
-                <div class="mt-8">
-                  <h2 class="text-base font-semibold text-foreground">Contribution activity</h2>
-
-                  <div class="mt-6 flex items-center gap-4">
-                    <span class="shrink-0 text-sm font-semibold text-foreground">June 2026</span>
-                    <span class="h-px flex-1 bg-border"></span>
-                  </div>
-
-                  <div class="relative mt-5 pl-12">
-                    <span class="absolute left-5 top-0 bottom-0 w-px bg-border"></span>
-
-                    <div class="relative grid gap-8">
-                      <article class="relative">
-                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
-                          <i data-lucide="git-commit" class="w-4 h-4"></i>
-                        </span>
-                        <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
-                          <div class="min-w-0">
-                            <h3 class="text-base font-semibold text-foreground">Created 8 commits in 2 repositories</h3>
-                            <div class="mt-3 grid gap-2 text-sm">
-                              <div class="flex flex-wrap items-center gap-2">
-                                <button class="text-primary hover:underline">you/meshcore</button>
-                                <span class="text-xs text-muted-foreground">7 commits</span>
-                              </div>
-                              <div class="flex flex-wrap items-center gap-2">
-                                <button class="text-primary hover:underline">you/mesh-ui</button>
-                                <span class="text-xs text-muted-foreground">1 commit</span>
-                              </div>
-                            </div>
-                          </div>
-                          <div class="grid content-center gap-3">
-                            <span class="h-2 rounded-full bg-primary/50 w-full"></span>
-                            <span class="h-2 rounded-full bg-primary/70 w-8"></span>
-                          </div>
-                        </div>
-                      </article>
-
-                      <article class="relative">
-                        <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
-                          <i data-lucide="git-branch" class="w-4 h-4"></i>
-                        </span>
-                        <h3 class="text-base font-semibold text-foreground">Created 2 repositories</h3>
-                        <div class="mt-4 grid gap-3">
-                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
-                            <div class="flex items-center gap-2 min-w-0">
-                              <i data-lucide="lock" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
-                              <button class="truncate text-primary hover:underline">you/forkmesh-landing</button>
-                            </div>
-                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
-                            <span class="text-xs text-muted-foreground sm:text-right">Jun 19</span>
-                          </div>
-                          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_4rem] sm:items-center">
-                            <div class="flex items-center gap-2 min-w-0">
-                              <i data-lucide="git-branch" class="w-4 h-4 shrink-0 text-muted-foreground"></i>
-                              <button class="truncate text-primary hover:underline">you/pi</button>
-                            </div>
-                            <span class="flex items-center gap-1.5 text-xs text-muted-foreground"><span class="h-2 w-2 rounded-full" style="background: #3178c6"></span>TypeScript</span>
-                            <span class="text-xs text-muted-foreground sm:text-right">Jun 14</span>
-                          </div>
-                        </div>
-                      </article>
-
-                      <div data-more-activity class="hidden grid gap-8">
-                        <article class="relative">
-                          <span class="absolute -left-[3.1rem] top-0 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground">
-                            <i data-lucide="star" class="w-4 h-4"></i>
-                          </span>
-                          <h3 class="text-base font-semibold text-foreground">Maintained 3 mirrored projects</h3>
-                          <p class="mt-2 text-sm text-muted-foreground">meshcore, mesh-ui, and relay-monitor stayed active across local nodes.</p>
-                        </article>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button data-show-more-activity class="mt-8 w-full rounded-md border border-border bg-card px-4 py-3 text-sm font-semibold text-primary hover:bg-secondary transition-colors">
-                    Show more activity
+                <div class="mb-3 flex items-center justify-between gap-3">
+                  <h2 class="text-sm font-semibold text-foreground">Top repositories</h2>
+                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                    <i data-lucide="book-marked" class="h-3.5 w-3.5"></i>
+                    New
                   </button>
+                </div>
+                <label class="mb-3 flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground">
+                  <i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i>
+                  <input data-home-repo-search type="search" placeholder="Find a repository..." class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" />
+                </label>
+                <div data-home-top-repositories class="grid gap-1">
+                  <div class="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">Loading repositories...</div>
+                </div>
+                <button type="button" class="mt-4 text-xs font-medium text-muted-foreground hover:text-accent">Show more</button>
+              </aside>
 
-                  <p class="mt-6 text-sm text-muted-foreground">
-                    Seeing something unexpected? Take a look at the
-                    <button class="text-primary hover:underline">ForkMesh profile guide.</button>
-                  </p>
+              <section data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8">
+                <h1 class="mb-5 text-2xl font-semibold tracking-normal text-foreground">Home</h1>
+
+                <div data-home-action-panel class="overflow-hidden rounded-lg border border-border bg-card">
+                  <textarea
+                    data-home-agent-input
+                    rows="3"
+                    maxlength="4000"
+                    placeholder="Ask ForkBot to create an issue, for example: forkbot create an issue to document mirror failover"
+                    class="block min-h-24 w-full resize-y bg-transparent px-4 py-4 text-base text-foreground outline-none placeholder:text-muted-foreground"
+                  ></textarea>
+                  <div class="flex min-w-0 flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-3">
+                    <div class="flex min-w-0 flex-wrap items-center gap-2">
+                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>ForkBot</button>
+                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>All repositories<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
+                      <button type="button" aria-label="Add context" class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="plus" class="h-4 w-4"></i></button>
+                    </div>
+                    <div class="flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
+                      <span data-home-agent-status class="min-w-0 truncate">Creates signed issue inbox entries with Cloudflare AI.</span>
+                      <span class="h-5 w-px bg-border"></span>
+                      <button data-home-agent-submit type="button" aria-label="Send prompt" class="text-muted-foreground hover:text-accent"><i data-lucide="send" class="h-4 w-4"></i></button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mt-4 flex min-w-0 flex-wrap justify-center gap-2">
+                  <button data-home-agent-sample="forkbot create an issue to document mirror failover behavior" type="button" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="cloud" class="h-4 w-4 text-muted-foreground"></i>Agent</button>
+                  <button data-home-agent-sample="forkbot create an issue to improve the repository README" type="button" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="circle-dashed" class="h-4 w-4 text-muted-foreground"></i>Create issue</button>
+                  <a href="/blog/parallel-agents/" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="sparkles" class="h-4 w-4 text-muted-foreground"></i>Parallel agents</a>
+                  <button data-section="repos" type="button" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="git-branch" class="h-4 w-4 text-muted-foreground"></i>Repositories</button>
+                  <a href="/blog/signed-patch-pull-requests/" class="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-secondary"><i data-lucide="git-pull-request" class="h-4 w-4 text-muted-foreground"></i>Pull requests</a>
+                </div>
+
+                <div class="mt-6 mb-3 flex items-center justify-between gap-3">
+                  <h2 class="text-sm font-semibold text-foreground">Feed</h2>
+                  <button type="button" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground hover:bg-card"><i data-lucide="list-filter" class="h-4 w-4 text-muted-foreground"></i>Filter</button>
+                </div>
+
+                <div data-home-feed class="grid gap-4">
+                  <div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">Loading dashboard activity...</div>
                 </div>
               </section>
+
+              <aside data-home-right-rail class="min-w-0 px-4 pb-6 sm:px-6 xl:sticky xl:top-6 xl:self-start xl:px-0 xl:py-6">
+                <section data-home-ad-card class="overflow-hidden rounded-lg border border-border bg-card">
+                  <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+                    <h2 class="text-sm font-semibold text-foreground">ForkMesh field notes</h2>
+                    <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">AD</span>
+                  </div>
+                  <a href="/blog/parallel-agents/" class="block border-b border-border bg-secondary/60 px-4 py-5 hover:bg-secondary">
+                    <p class="text-lg font-semibold leading-tight text-foreground">Run multiple coding agents without a queue.</p>
+                    <p class="mt-2 text-sm leading-5 text-muted-foreground">How ForkMesh coordinates parallel agents across issues and pull requests.</p>
+                  </a>
+                  <div class="grid gap-0 divide-y divide-border">
+                    <a href="/blog/live-clone-routing/" class="block px-4 py-3 hover:bg-secondary">
+                      <span class="text-sm font-semibold text-accent hover:underline">Live clone routing</span>
+                      <span class="mt-1 block text-xs text-muted-foreground">Clone from online desktop hosts through the relay.</span>
+                    </a>
+                    <a href="/blog/web-contribution-inbox/" class="block px-4 py-3 hover:bg-secondary">
+                      <span class="text-sm font-semibold text-accent hover:underline">Web contribution inbox</span>
+                      <span class="mt-1 block text-xs text-muted-foreground">Accept signed issues and patches while offline.</span>
+                    </a>
+                  </div>
+                </section>
+
+                <section data-home-changelog-card class="mt-4 rounded-lg border border-border bg-card p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-foreground">Latest from the changelog</h2>
+                    <a href="/changelog" class="shrink-0 text-xs font-medium text-accent hover:underline">View all</a>
+                  </div>
+                  <div data-home-changelog-list class="mt-4 grid gap-4 border-l border-border pl-4">
+                    <div class="text-sm text-muted-foreground">Loading release notes...</div>
+                  </div>
+                </section>
+              </aside>
             </div>
           </section>
 
-          -->
-
-          <section data-view="repos" class="view active h-full overflow-y-auto">
+          <section data-view="repos" class="view h-full overflow-y-auto">
             <div class="p-3 sm:p-6 w-full">
               <div data-repo-panel class="w-full rounded-lg border border-border bg-card overflow-hidden">
                 <div class="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
@@ -1048,320 +821,550 @@
             </div>
           </section>
 
-          <section data-view="profile" class="view h-full overflow-y-auto">
-            <div class="p-3 sm:p-6 w-full max-w-5xl mx-auto">
-              <div class="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h1 class="text-base font-semibold text-foreground">Profile settings</h1>
-                  <p class="mt-1 text-sm text-muted-foreground">Manage your public node identity, verification, and payout details.</p>
+          <section data-view="profile-overview" class="view h-full overflow-y-auto">
+            <div data-profile-header-band class="border-b border-border bg-background px-4">
+              <div data-profile-tabs-inner class="w-full">
+                <nav data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm">
+                  <button data-section="profile-overview" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-[#f78166] px-2 pb-3 pt-3 font-semibold text-foreground">
+                    <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+                    Overview
+                  </button>
+                  <button data-section="profile-repositories" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+                    Repositories
+                    <span data-profile-repo-count class="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">0</span>
+                  </button>
+                  <button data-section="network" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+                    Network
+                  </button>
+                </nav>
+              </div>
+            </div>
+            <div class="w-full px-4 py-6 sm:px-6 lg:px-8">
+              <div class="mx-auto max-w-[1432px]">
+                <template data-profile-sidebar-template>
+                  <div class="flex items-start gap-4 lg:block">
+                    <span data-profile-page-avatar class="relative flex h-72 w-72 max-h-28 max-w-28 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary text-4xl font-semibold text-foreground font-mono sm:max-h-36 sm:max-w-36 lg:max-h-none lg:max-w-none">
+                      <img data-profile-page-avatar-image class="hidden h-full w-full object-cover" alt="" />
+                      <span data-avatar-initial>F</span>
+                    </span>
+                    <div class="min-w-0 pt-1 lg:pt-4">
+                      <h1 data-profile-page-node-name class="truncate text-2xl font-semibold leading-tight text-foreground">My Profile</h1>
+                      <p data-profile-page-email class="truncate text-xl font-normal leading-6 text-muted-foreground">Sign in to view email</p>
+                    </div>
+                  </div>
+                  <p data-profile-bio class="mt-4 text-base leading-6 text-foreground">No bio yet.</p>
+                  <div class="mt-4 grid gap-2">
+                    <button data-section="profile" class="w-full rounded-md border border-border bg-secondary px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-background">Edit profile</button>
+                  </div>
+                  <div data-profile-followers class="mt-4 flex items-center gap-1 text-sm text-muted-foreground">
+                    <i data-lucide="users" class="h-4 w-4"></i>
+                    <span data-profile-followers-count class="font-semibold text-foreground">0</span> followers · <span data-profile-following class="inline-flex items-center gap-1"><span data-profile-following-count class="font-semibold text-foreground">0</span> following</span> · <span data-profile-mirrors class="inline-flex items-center gap-1"><span data-profile-mirrors-count class="font-semibold text-foreground">0</span> mirrors</span>
+                  </div>
+                  <ul class="mt-4 grid gap-2 text-sm text-foreground">
+                    <li data-profile-location class="flex items-center gap-2">
+                      <i data-lucide="map-pin" class="h-4 w-4 text-muted-foreground"></i>
+                      <span data-profile-location-text>No location</span>
+                    </li>
+                    <li data-profile-timezone class="flex items-center gap-2">
+                      <i data-lucide="clock-3" class="h-4 w-4 text-muted-foreground"></i>
+                      <span data-profile-local-time>18:21 (UTC +05:30)</span>
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <i data-lucide="link" class="h-4 w-4 text-muted-foreground"></i>
+                      <a data-profile-website href="https://forkmesh.com" class="min-w-0 truncate text-foreground hover:text-accent hover:underline">https://forkmesh.com</a>
+                    </li>
+                  </ul>
+                </template>
+                <div data-profile-overview-layout class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]">
+                  <aside data-profile-sidebar-slot data-profile-sidebar-context="overview" class="min-w-0"></aside>
+                  <div class="grid min-w-0 content-start gap-6">
+                    <section data-profile-about-panel class="overflow-hidden rounded-md border border-border bg-card">
+                      <div class="flex items-center justify-between gap-3 px-4 py-3">
+                        <h2 class="min-w-0 truncate text-sm font-semibold text-muted-foreground"><span data-profile-about-owner>forkmesh</span> / About yourself</h2>
+                        <button data-profile-about-edit type="button" aria-label="Edit about yourself" class="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground">
+                          <i data-lucide="pencil" class="h-4 w-4"></i>
+                        </button>
+                      </div>
+                      <div data-profile-about-body class="grid gap-4 border-t border-border p-5 text-sm leading-6 text-foreground md:p-6">
+                        <p class="text-2xl font-semibold">Hi, this is your ForkMesh profile.</p>
+                        <p class="text-muted-foreground">Pinned profile content and public activity will live here.</p>
+                      </div>
+                    </section>
+                    <div data-profile-contribution-timeline-layout class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_9rem] xl:items-start">
+                      <div data-profile-contribution-main class="grid min-w-0 gap-6">
+                        <section data-profile-contribution-grid class="grid gap-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <h2 data-profile-contribution-summary class="text-xl font-semibold leading-7 text-foreground">0 contributions in the last year</h2>
+                            <button type="button" class="hidden items-center gap-1 text-sm text-muted-foreground hover:text-foreground sm:inline-flex">
+                              <span>Contribution settings</span>
+                              <i data-lucide="chevron-down" class="h-4 w-4"></i>
+                            </button>
+                          </div>
+                          <div data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5">
+                            <div class="min-w-[880px]">
+                              <div data-contribution-months class="grid text-xs text-muted-foreground"></div>
+                              <div data-contribution-cells class="mt-1 grid text-xs text-muted-foreground" aria-label="Contribution activity calendar"></div>
+                              <div class="mt-4 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+                                <a href="/docs/contributions" class="hover:text-accent hover:underline">Learn how we count contributions</a>
+                                <span data-contribution-legend class="inline-flex items-center gap-1.5"></span>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                        <section data-profile-activity-list class="grid gap-6">
+                          <h2 class="text-xl font-semibold leading-7 text-foreground">Contribution activity</h2>
+                          <div data-profile-activity-items class="grid gap-6"></div>
+                          <p data-profile-activity-empty class="text-sm text-muted-foreground">No contribution activity found for this year yet.</p>
+                        </section>
+                        <footer data-profile-contribution-footer class="hidden items-center gap-5 pt-10 text-xs text-muted-foreground lg:flex">
+                          <i data-lucide="github" class="h-6 w-6 shrink-0"></i>
+                          <span>© 2026 ForkMesh, Inc.</span>
+                          <a href="/terms" class="hover:text-accent hover:underline">Terms</a>
+                          <a href="/privacy" class="hover:text-accent hover:underline">Privacy</a>
+                          <a href="/security" class="hover:text-accent hover:underline">Security</a>
+                          <a href="/status" class="hover:text-accent hover:underline">Status</a>
+                          <a href="/docs" class="hover:text-accent hover:underline">Docs</a>
+                        </footer>
+                      </div>
+                      <aside data-profile-contribution-years class="hidden gap-2 text-sm xl:grid">
+                      </aside>
+                    </div>
+                  </div>
                 </div>
-                <button
-                  data-logout-button
-                  type="button"
-                  class="inline-flex h-9 w-fit shrink-0 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
-                >
-                  <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
-                  Logout
-                </button>
+              </div>
+            </div>
+          </section>
+
+          <section data-view="profile-repositories" class="view h-full overflow-y-auto">
+            <div data-profile-header-band class="border-b border-border bg-background px-4">
+              <div data-profile-tabs-inner class="w-full">
+                <nav data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm">
+                  <button data-section="profile-overview" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+                    Overview
+                  </button>
+                  <button data-section="profile-repositories" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-[#f78166] px-2 pb-3 pt-3 font-semibold text-foreground">
+                    <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+                    Repositories
+                    <span data-profile-repo-count class="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">0</span>
+                  </button>
+                  <button data-section="network" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+                    Network
+                  </button>
+                </nav>
+              </div>
+            </div>
+            <div class="w-full px-4 py-6 sm:px-6 lg:px-8">
+              <div class="mx-auto max-w-[1432px]">
+              <div class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]">
+                <aside data-profile-sidebar-slot data-profile-sidebar-context="repositories" class="min-w-0"></aside>
+                <section class="min-w-0">
+                  <div class="mb-4 flex flex-col gap-2 md:flex-row">
+                    <input data-profile-repo-search type="search" placeholder="Find a repository..." class="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" />
+                    <button data-profile-repo-type-filter class="h-9 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground">Type</button>
+                    <button data-profile-repo-language-filter class="h-9 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground">Language</button>
+                    <button data-profile-repo-sort-filter class="h-9 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground">Sort</button>
+                  </div>
+                  <div data-profile-repo-list class="divide-y divide-border rounded-lg border border-border bg-card">
+                    <div class="px-4 py-8 text-sm text-muted-foreground">Loading repositories...</div>
+                  </div>
+                </section>
+              </div>
+              </div>
+            </div>
+          </section>
+
+          <section data-view="profile" class="view h-full overflow-y-auto bg-background">
+            <div data-settings-layout class="mx-auto w-full max-w-[1360px] px-6 py-8">
+              <div data-settings-account-header class="mb-7 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div class="flex min-w-0 items-center gap-4">
+                  <span
+                    data-profile-page-avatar
+                    class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary text-xl font-semibold text-foreground font-mono"
+                  >
+                    <img data-profile-page-avatar-image class="hidden h-full w-full object-cover" alt="" />
+                    <span data-avatar-initial>F</span>
+                  </span>
+                  <div class="min-w-0">
+                    <h1 class="truncate text-2xl font-semibold leading-7 text-foreground">
+                      <span data-profile-page-node-name>My Profile</span>
+                    </h1>
+                    <p data-profile-page-email class="mt-1 truncate text-base font-medium text-muted-foreground">Sign in to view email</p>
+                    <p class="mt-1 text-sm text-muted-foreground">Your personal account</p>
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+                  <a href="/dashboard?section=profile" class="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground hover:bg-muted">
+                    <i data-lucide="shuffle" class="h-4 w-4 text-muted-foreground"></i>
+                    Go to settings page
+                    <i data-lucide="chevron-down" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                  </a>
+                  <a href="/dashboard?section=profile-overview" class="inline-flex h-9 items-center rounded-md border border-border bg-secondary px-3 text-sm font-semibold text-foreground hover:bg-muted">
+                    Go to your personal profile
+                  </a>
+                  <button
+                    data-logout-button
+                    type="button"
+                    class="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-semibold text-foreground hover:bg-secondary"
+                  >
+                    <i data-lucide="log-out" class="h-4 w-4 text-muted-foreground"></i>
+                    Logout
+                  </button>
+                </div>
               </div>
 
-              <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
-                <div class="grid gap-5 min-w-0">
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Account</h2>
-                    </div>
-                    <div class="p-4">
-                      <div class="flex items-start gap-3">
-                        <span
-                          data-profile-page-avatar
-                          class="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border border-primary/30 bg-primary/10 text-sm font-semibold text-primary font-mono"
-                        >
-                          <img data-profile-page-avatar-image class="hidden h-full w-full object-cover" alt="" />
-                          <span data-avatar-initial>F</span>
-                        </span>
-                        <div class="min-w-0 flex-1">
-                          <p data-profile-page-node-name class="truncate text-sm font-semibold text-foreground">My Profile</p>
-                          <p data-profile-page-email class="mt-1 truncate text-xs text-muted-foreground">Sign in to view email</p>
-                          <div class="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-                            <div class="rounded-md border border-border bg-background px-3 py-2">
-                              <p class="text-muted-foreground">Account status</p>
-                              <p data-profile-page-account-status class="mt-1 font-mono text-foreground">active</p>
+              <div class="grid gap-8 lg:grid-cols-[23rem_minmax(0,1fr)]">
+                <aside data-settings-sidebar class="min-w-0">
+                  <nav class="grid gap-1 text-sm font-medium text-foreground" aria-label="Settings sections">
+                    <button data-settings-section-link="public-profile" type="button" aria-current="page" class="relative flex h-10 items-center gap-3 rounded-md bg-secondary px-3 pl-4 text-left font-semibold text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="user" class="h-5 w-5 text-muted-foreground"></i>
+                      Public profile
+                    </button>
+                    <button data-settings-section-link="account" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="settings" class="h-5 w-5"></i>
+                      Account
+                    </button>
+                    <button data-settings-section-link="appearance" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="paintbrush" class="h-5 w-5"></i>
+                      Appearance
+                    </button>
+                    <button data-settings-section-link="notifications" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="bell" class="h-5 w-5"></i>
+                      Notifications
+                    </button>
+                    <button data-settings-section-link="payout" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="wallet-cards" class="h-5 w-5"></i>
+                      Verification and payout
+                    </button>
+                    <button data-settings-section-link="nodes" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="radio-tower" class="h-5 w-5"></i>
+                      Nodes
+                    </button>
+                    <button data-settings-section-link="danger" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="circle-alert" class="h-5 w-5"></i>
+                      Danger zone
+                    </button>
+                  </nav>
+                </aside>
+
+                <main data-settings-main class="min-w-0 pb-16">
+                  <section id="settings-public-profile" data-settings-section="public-profile" class="pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Public profile</h2>
+                    <div class="mt-5 grid gap-10 xl:grid-cols-[minmax(0,42rem)_20rem]">
+                      <div class="grid min-w-0 content-start gap-5">
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Name
+                          <span data-profile-page-node-name class="flex h-10 items-center rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground">My Profile</span>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your node name appears around ForkMesh where you contribute or are mentioned.</span>
+                        </label>
+
+                        <label id="settings-email" class="grid gap-2 text-sm font-semibold text-foreground">
+                          Public email
+                          <select disabled class="h-10 w-fit max-w-full cursor-not-allowed rounded-md border border-border bg-secondary px-3 text-sm font-normal text-muted-foreground">
+                            <option>Select a verified email to display</option>
+                          </select>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Email privacy is managed by account verification.</span>
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Bio
+                          <textarea data-profile-page-bio maxlength="500" rows="4" placeholder="Short bio" class="min-h-24 resize-y rounded-md border border-border bg-card px-3 py-2 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]"></textarea>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">You can @mention other users and organizations to link to them.</span>
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Pronouns
+                          <select disabled class="h-10 rounded-md border border-border bg-secondary px-3 text-sm font-normal text-muted-foreground">
+                            <option>Prefer not to say</option>
+                          </select>
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          URL
+                          <span data-profile-public-url class="flex h-10 items-center rounded-md border border-border bg-secondary px-3 font-mono text-sm font-normal text-muted-foreground">/@username</span>
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Location
+                          <input data-profile-page-location type="text" maxlength="120" autocomplete="off" placeholder="City, country, or region" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Time zone
+                          <select data-profile-page-timezone class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]">
+                            <option value="">Use browser time zone</option>
+                          </select>
+                        </label>
+
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Mastodon handle
+                          <input data-profile-page-mastodon type="text" inputmode="latin" autocomplete="off" placeholder="@you@mastodon.social" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+
+                        <div class="grid gap-2">
+                          <div class="flex items-center justify-between gap-3">
+                            <label class="text-sm font-semibold text-foreground">Social accounts</label>
+                            <p class="text-xs text-muted-foreground">TXT: <span data-profile-txt-value class="font-mono">forkmesh-profile=username</span></p>
+                          </div>
+                          <div data-profile-links-editor class="grid gap-2">
+                            <div data-profile-link-row class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                              <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <p data-profile-link-status class="sm:col-span-2 text-xs text-muted-foreground"></p>
                             </div>
-                            <div class="rounded-md border border-border bg-background px-3 py-2">
-                              <p class="text-muted-foreground">Payout address</p>
-                              <p data-profile-page-payout-status class="mt-1 font-mono text-foreground">Not configured</p>
+                            <div data-profile-link-row class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                              <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Link to social profile 2" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <p data-profile-link-status class="sm:col-span-2 text-xs text-muted-foreground"></p>
                             </div>
-                            <div class="rounded-md border border-border bg-background px-3 py-2">
-                              <p class="text-muted-foreground">Admin access</p>
-                              <p data-profile-page-admin-status class="mt-1 font-mono text-foreground">No</p>
+                            <div data-profile-link-row class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                              <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Link to social profile 3" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <p data-profile-link-status class="sm:col-span-2 text-xs text-muted-foreground"></p>
+                            </div>
+                            <div data-profile-link-row class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+                              <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Link to social profile 4" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-10 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                              <p data-profile-link-status class="sm:col-span-2 text-xs text-muted-foreground"></p>
                             </div>
                           </div>
                         </div>
+
+                        <label class="flex items-start gap-2 rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
+                          <input data-profile-page-private type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border bg-background" />
+                          <span>
+                            <span class="block font-semibold text-foreground">Private profile</span>
+                            <span class="mt-1 block leading-5">When enabled, your <span class="font-mono">/@username</span> page returns 404.</span>
+                          </span>
+                        </label>
+
+                        <p data-profile-public-hint class="min-h-4 text-xs text-muted-foreground"></p>
+                        <button data-profile-public-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                          Save public profile
+                        </button>
                       </div>
-                    </div>
-                  </section>
 
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Public profile</h2>
-                      <p class="mt-1 text-xs text-muted-foreground">Shown at <span data-profile-public-url class="font-mono">/@username</span> unless private.</p>
-                    </div>
-                    <div class="grid gap-4 p-4">
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Bio
-                        <textarea data-profile-page-bio maxlength="500" rows="4" placeholder="Short bio" class="min-h-24 resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"></textarea>
-                      </label>
-
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Mastodon handle
-                        <input data-profile-page-mastodon type="text" inputmode="latin" autocomplete="off" placeholder="@you@mastodon.social" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                      </label>
-
-                      <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                        <input data-profile-page-private type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                        <span>
-                          <span class="block font-medium text-foreground">Private profile</span>
-                          <span class="mt-1 block leading-4">When enabled, your <span class="font-mono">/@username</span> page returns 404.</span>
-                        </span>
-                      </label>
-
-                      <div class="grid gap-2">
-                        <div class="flex items-center justify-between gap-3">
-                          <p class="text-xs font-medium text-foreground">Links</p>
-                          <p class="text-[11px] text-muted-foreground">TXT: <span data-profile-txt-value class="font-mono">forkmesh-profile=username</span></p>
-                        </div>
-                        <div data-profile-links-editor class="grid gap-2">
-                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
-                          </div>
-                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
-                          </div>
-                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
-                          </div>
-                          <div data-profile-link-row class="grid gap-2 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-                            <input data-profile-link-label type="text" maxlength="60" autocomplete="off" placeholder="Label" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <input data-profile-link-url type="url" maxlength="300" autocomplete="off" placeholder="https://example.com" class="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                            <p data-profile-link-status class="sm:col-span-2 text-[11px] text-muted-foreground"></p>
-                          </div>
-                        </div>
-                      </div>
-
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Current password
-                        <input data-profile-public-password type="password" autocomplete="current-password" placeholder="Required for profile changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                      </label>
-
-                      <p data-profile-public-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-profile-public-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
-                        Save public profile
-                      </button>
-                    </div>
-                  </section>
-
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Verification and payout</h2>
-                    </div>
-                    <div class="grid gap-4 p-4">
-                      <div class="rounded-lg border border-border bg-background p-3">
-                        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div class="min-w-0">
-                            <p class="text-xs font-medium text-foreground">Email verification</p>
-                            <p data-profile-page-email-status class="mt-1 text-xs text-muted-foreground">Sign in to view email status.</p>
-                          </div>
-                          <button data-profile-page-verify-email type="button" class="shrink-0 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
-                            Send link
+                      <aside data-settings-profile-picture class="min-w-0">
+                        <h3 class="mb-4 text-sm font-semibold text-foreground">Profile picture</h3>
+                        <div class="relative w-64 max-w-full">
+                          <span
+                            data-profile-page-avatar
+                            class="flex aspect-square w-full items-center justify-center overflow-hidden rounded-full border border-border bg-secondary text-6xl font-semibold text-foreground font-mono"
+                          >
+                            <img data-profile-page-avatar-image class="hidden h-full w-full object-cover" alt="" />
+                            <span data-avatar-initial>F</span>
+                          </span>
+                          <button type="button" class="absolute bottom-6 left-4 inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-semibold text-foreground shadow-sm hover:bg-secondary">
+                            <i data-lucide="pencil" class="h-4 w-4"></i>
+                            Edit
                           </button>
                         </div>
-                      </div>
-
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Solana payout address
-                        <input data-profile-page-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                        <span class="text-[11px] leading-4 text-muted-foreground">Used for mirror rewards and bounty payouts. Leave it empty until you need payouts.</span>
-                      </label>
-
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Current password
-                        <input data-profile-page-password type="password" autocomplete="current-password" placeholder="Required for profile changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                      </label>
-
-                      <p data-profile-page-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-profile-page-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
-                        Save payout address
-                      </button>
+                      </aside>
                     </div>
                   </section>
 
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Email notifications</h2>
-                      <p class="mt-1 text-xs text-muted-foreground">Applies to this account and linked nodes.</p>
+                  <section id="settings-payout" data-settings-section="payout" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Verification and payout</h2>
+                    <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,42rem)_20rem]">
+                      <div class="grid gap-4">
+                        <div class="rounded-md border border-border bg-card p-4">
+                          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div class="min-w-0">
+                              <p class="text-sm font-semibold text-foreground">Email verification</p>
+                              <p data-profile-page-email-status class="mt-1 text-sm text-muted-foreground">Sign in to view email status.</p>
+                            </div>
+                            <button data-profile-page-verify-email type="button" class="shrink-0 rounded-md border border-border bg-secondary px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-muted transition-colors">
+                              Send link
+                            </button>
+                          </div>
+                        </div>
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Solana payout address
+                          <input data-profile-page-solana type="text" inputmode="latin" autocomplete="off" placeholder="Your public Solana address" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Used for mirror rewards and bounty payouts. Leave it empty until you need payouts.</span>
+                        </label>
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Current password
+                          <input data-profile-page-password type="password" autocomplete="current-password" placeholder="Required for payout changes" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+                        <p data-profile-page-hint class="min-h-4 text-xs text-muted-foreground"></p>
+                        <button data-profile-page-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
+                          Save payout address
+                        </button>
+                      </div>
+                      <div class="grid content-start gap-3 text-sm">
+                        <div class="rounded-md border border-border bg-card px-4 py-3">
+                          <p class="text-muted-foreground">Account status</p>
+                          <p data-profile-page-account-status class="mt-1 font-mono text-foreground">active</p>
+                        </div>
+                        <div class="rounded-md border border-border bg-card px-4 py-3">
+                          <p class="text-muted-foreground">Payout address</p>
+                          <p data-profile-page-payout-status class="mt-1 font-mono text-foreground">Not configured</p>
+                        </div>
+                        <div class="rounded-md border border-border bg-card px-4 py-3">
+                          <p class="text-muted-foreground">Admin access</p>
+                          <p data-profile-page-admin-status class="mt-1 font-mono text-foreground">No</p>
+                        </div>
+                      </div>
                     </div>
-                    <div class="grid gap-4 p-4">
-                      <div data-notification-preferences class="grid gap-2 sm:grid-cols-2">
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="mention" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Mentions</span><span class="mt-1 block leading-4">Email when someone mentions you.</span></span>
+                  </section>
+
+                  <section id="settings-notifications" data-settings-section="notifications" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Notifications</h2>
+                    <p class="mt-1 text-sm text-muted-foreground">Applies to this account and linked nodes.</p>
+                    <div class="mt-5 grid gap-4">
+                      <div data-notification-preferences class="grid overflow-hidden rounded-md border border-border bg-card">
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="mention" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Mentions</span><span class="mt-1 block leading-5">Email when someone mentions you.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="subscribed" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Subscribed threads</span><span class="mt-1 block leading-4">Email replies on watched issues and pull requests.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="subscribed" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Subscribed threads</span><span class="mt-1 block leading-5">Email replies on watched issues and pull requests.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="pull_submitted" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Pull requests</span><span class="mt-1 block leading-4">Email when a pull request is submitted.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="pull_submitted" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Pull requests</span><span class="mt-1 block leading-5">Email when a pull request is submitted.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="issue_assigned" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Assignments</span><span class="mt-1 block leading-4">Email when an issue is assigned to you.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="issue_assigned" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Assignments</span><span class="mt-1 block leading-5">Email when an issue is assigned to you.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="repo_shared" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Shared repositories</span><span class="mt-1 block leading-4">Email when a private repo is shared with you.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="repo_shared" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Shared repositories</span><span class="mt-1 block leading-5">Email when a private repo is shared with you.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="pending_inbox" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Pending inbox</span><span class="mt-1 block leading-4">Email when signed submissions are waiting.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="pending_inbox" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Pending inbox</span><span class="mt-1 block leading-5">Email when signed submissions are waiting.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="release_published" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Releases</span><span class="mt-1 block leading-4">Email when a release is published.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="release_published" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Releases</span><span class="mt-1 block leading-5">Email when a release is published.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="credits_refilled" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Credits refilled</span><span class="mt-1 block leading-4">Email when a node reports Claude Code credits refilled.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="credits_refilled" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Credits refilled</span><span class="mt-1 block leading-5">Email when a node reports Claude Code credits refilled.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="bounty_funded" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Bounty funded</span><span class="mt-1 block leading-4">Email when a bounty is funded.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="bounty_funded" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Bounty funded</span><span class="mt-1 block leading-5">Email when a bounty is funded.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="bounty_paid" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Bounty paid</span><span class="mt-1 block leading-4">Email when a bounty is paid.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="bounty_paid" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Bounty paid</span><span class="mt-1 block leading-5">Email when a bounty is paid.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="general_chat" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Daily #general digest</span><span class="mt-1 block leading-4">Email a daily count of encrypted #general messages.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="general_chat" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Daily #general digest</span><span class="mt-1 block leading-5">Email a daily count of encrypted #general messages.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                          <input data-notification-pref="host_online" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">Host reachable</span><span class="mt-1 block leading-4">Email when a desktop host is reachable.</span></span>
+                        <label class="flex items-start gap-3 border-b border-border p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="host_online" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">Host reachable</span><span class="mt-1 block leading-5">Email when a desktop host is reachable.</span></span>
                         </label>
-                        <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground sm:col-span-2">
-                          <input data-notification-pref="host_offline" type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
-                          <span><span class="block font-medium text-foreground">No live host checked in</span><span class="mt-1 block leading-4">Email when no live host has checked in recently.</span></span>
+                        <label class="flex items-start gap-3 p-4 text-sm text-muted-foreground">
+                          <input data-notification-pref="host_offline" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
+                          <span><span class="block font-semibold text-foreground">No live host checked in</span><span class="mt-1 block leading-5">Email when no live host has checked in recently.</span></span>
                         </label>
                       </div>
-
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                      <label class="grid max-w-2xl gap-2 text-sm font-semibold text-foreground">
                         Current password
-                        <input data-notification-preferences-password type="password" autocomplete="current-password" placeholder="Required for notification changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                        <input data-notification-preferences-password type="password" autocomplete="current-password" placeholder="Required for notification changes" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                       </label>
-
                       <p data-notification-preferences-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-notification-preferences-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                      <button data-notification-preferences-save type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
                         Save notifications
                       </button>
                     </div>
                   </section>
 
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Node name</h2>
-                    </div>
-                    <div class="grid gap-4 p-4">
-                      <p class="text-sm leading-6 text-muted-foreground">
-                        Your node name is your public account and repository namespace. Renaming it moves owned repository URLs to the new namespace.
-                      </p>
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                  <section id="settings-account" data-settings-section="account" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
+                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Renaming it moves owned repository URLs to the new namespace.</p>
+                    <div class="mt-5 grid max-w-2xl gap-4">
+                      <label class="grid gap-2 text-sm font-semibold text-foreground">
                         New node name
-                        <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-node-name" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                        <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-node-name" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                       </label>
                       <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new node name to check availability.</p>
-                      <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-secondary/80 transition-colors">
+                      <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
                         Update node name
                       </button>
                     </div>
                   </section>
 
-                  <section class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Nodes</h2>
-                    </div>
-                    <div class="grid gap-4 p-4">
-                      <div data-link-grant-row class="hidden grid gap-3 rounded-md border border-primary/40 bg-secondary/40 p-3">
+                  <section id="settings-nodes" data-settings-section="nodes" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Nodes</h2>
+                    <div class="mt-5 grid max-w-2xl gap-4">
+                      <div data-link-grant-row class="hidden grid gap-3 rounded-md border border-[#2f81f7]/50 bg-[#2f81f7]/10 p-4">
                         <p data-link-grant-text class="text-sm leading-6 text-foreground"></p>
-                        <button data-link-grant-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                        <button data-link-grant-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
                           Authenticate &amp; link
                         </button>
                       </div>
                       <p class="text-sm leading-6 text-muted-foreground">
-                        Claim ownership of a node (e.g. a headless mirror you installed) by entering its node ID below — either its node name or the public key shown on that node's profile. A confirmation code will appear on that node — enter it here to finish linking it to your account. Tip: clicking “Link this node to your account” in a node's own app links it here with no code at all.
+                        Claim ownership of a node (e.g. a headless mirror you installed) by entering its node ID below - either its node name or the public key shown on that node's profile. A confirmation code will appear on that node - enter it here to finish linking it to your account. Tip: clicking "Link this node to your account" in a node's own app links it here with no code at all.
                       </p>
-                      <ul data-claim-node-list class="grid gap-1.5 text-xs text-foreground">
+                      <ul data-claim-node-list class="grid gap-1.5 text-sm text-foreground">
                         <li class="text-muted-foreground">No linked nodes yet.</li>
                       </ul>
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                      <label class="grid gap-2 text-sm font-semibold text-foreground">
                         Node ID
-                        <input data-claim-node-input type="text" inputmode="latin" autocomplete="off" placeholder="node-name" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                        <input data-claim-node-input type="text" inputmode="latin" autocomplete="off" placeholder="node-name" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                       </label>
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
+                      <label class="grid gap-2 text-sm font-semibold text-foreground">
                         Current password
-                        <input data-claim-node-password type="password" autocomplete="current-password" placeholder="Required to claim a node" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                        <input data-claim-node-password type="password" autocomplete="current-password" placeholder="Required to claim a node" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                       </label>
                       <p data-claim-node-status class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-claim-node-send type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground hover:bg-secondary/80 transition-colors">
+                      <button data-claim-node-send type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground hover:bg-muted transition-colors">
                         Send claim code
                       </button>
                       <div data-claim-code-row class="hidden grid gap-3 border-t border-border pt-4">
-                        <label class="grid gap-1.5 text-xs text-muted-foreground">
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
                           Confirmation code (shown on the node)
-                          <input data-claim-code-input type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                          <input data-claim-code-input type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="123456" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
                         </label>
-                        <button data-claim-code-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+                        <button data-claim-code-confirm type="button" class="inline-flex h-9 w-fit items-center justify-center rounded-md bg-[#238636] px-4 text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors">
                           Link node
                         </button>
                       </div>
                     </div>
                   </section>
-                </div>
 
-                <aside class="grid gap-5 content-start min-w-0">
-                  <section data-profile-appearance-panel class="rounded-lg border border-border bg-card overflow-hidden">
-                    <div class="border-b border-border px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Appearance</h2>
-                      <p class="mt-1 text-xs text-muted-foreground">Choose the dashboard theme for this device.</p>
-                    </div>
-                    <div class="grid gap-3 p-4">
-                      <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Dashboard theme">
+                  <section id="settings-appearance" data-settings-section="appearance" data-profile-appearance-panel class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Appearance</h2>
+                    <p class="mt-1 text-sm text-muted-foreground">Choose the dashboard theme for this device.</p>
+                    <div class="mt-5 grid max-w-3xl gap-4">
+                      <div class="grid grid-cols-2 gap-3" role="radiogroup" aria-label="Dashboard theme">
                         <button
                           data-appearance-theme="dark"
                           type="button"
                           role="radio"
                           aria-checked="true"
-                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+                          class="grid min-h-24 gap-3 rounded-md border border-border bg-card p-3 text-left transition-colors hover:bg-secondary"
                         >
                           <span class="flex items-center justify-between gap-2">
-                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
-                              <i data-lucide="moon" class="h-3.5 w-3.5"></i>
+                            <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+                              <i data-lucide="moon" class="h-4 w-4"></i>
                               Dark
                             </span>
-                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+                            <i data-lucide="check" class="hidden h-4 w-4 text-[#2f81f7]" data-appearance-check></i>
                           </span>
                           <span class="grid gap-1.5">
                             <span class="h-2 rounded-full bg-secondary"></span>
                             <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
-                            <span class="h-6 rounded-md border border-border bg-card"></span>
+                            <span class="h-6 rounded-md border border-border bg-background"></span>
                           </span>
                         </button>
                         <button
@@ -1369,55 +1372,57 @@
                           type="button"
                           role="radio"
                           aria-checked="false"
-                          class="grid min-h-24 gap-3 rounded-lg border border-border bg-background p-3 text-left transition-colors hover:bg-secondary"
+                          class="grid min-h-24 gap-3 rounded-md border border-border bg-card p-3 text-left transition-colors hover:bg-secondary"
                         >
                           <span class="flex items-center justify-between gap-2">
-                            <span class="inline-flex items-center gap-2 text-xs font-semibold text-foreground">
-                              <i data-lucide="sun" class="h-3.5 w-3.5"></i>
+                            <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+                              <i data-lucide="sun" class="h-4 w-4"></i>
                               Light
                             </span>
-                            <i data-lucide="check" class="hidden h-4 w-4 text-primary" data-appearance-check></i>
+                            <i data-lucide="check" class="hidden h-4 w-4 text-[#2f81f7]" data-appearance-check></i>
                           </span>
                           <span class="grid gap-1.5">
                             <span class="h-2 rounded-full bg-secondary"></span>
                             <span class="h-2 w-4/5 rounded-full bg-muted-foreground/40"></span>
-                            <span class="h-6 rounded-md border border-border bg-card"></span>
+                            <span class="h-6 rounded-md border border-border bg-background"></span>
                           </span>
                         </button>
                       </div>
                       <p data-appearance-theme-status aria-live="polite" class="min-h-4 text-xs text-muted-foreground">Dark mode is active.</p>
-                      <label class="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
-                        <input data-long-diff-toggle type="checkbox" class="mt-0.5 h-3.5 w-3.5 rounded border-border" />
+                      <label class="flex items-start gap-3 rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
+                        <input data-long-diff-toggle type="checkbox" class="mt-0.5 h-4 w-4 rounded border-border" />
                         <span>
-                          <span class="block font-medium text-foreground">Render long diffs automatically</span>
-                          <span class="mt-1 block leading-4">Off by default so commit and PR pages stay snappy. Hidden diffs still include a Show full diff button.</span>
-                          <span data-long-diff-status class="mt-1 block text-[11px] text-muted-foreground">Large diffs stay collapsed until you open them.</span>
+                          <span class="block font-semibold text-foreground">Render long diffs automatically</span>
+                          <span class="mt-1 block leading-5">Off by default so commit and PR pages stay snappy. Hidden diffs still include a Show full diff button.</span>
+                          <span data-long-diff-status class="mt-1 block text-xs text-muted-foreground">Large diffs stay collapsed until you open them.</span>
                         </span>
                       </label>
                     </div>
                   </section>
 
-                  <section class="rounded-lg border border-destructive/30 bg-card overflow-hidden">
-                    <div class="border-b border-destructive/30 px-4 py-3">
-                      <h2 class="text-sm font-semibold text-foreground">Danger zone</h2>
-                    </div>
-                    <div class="grid gap-3 p-4">
-                      <p class="text-xs leading-5 text-muted-foreground">Deleting your account removes your login, public profile, owned repository records, and active dashboard session. You can register again later with the same node name or email.</p>
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Current password
-                        <input data-profile-delete-password type="password" autocomplete="current-password" placeholder="Required to delete account" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                      </label>
-                      <label class="grid gap-1.5 text-xs text-muted-foreground">
-                        Confirmation
-                        <input data-profile-delete-confirm type="text" autocomplete="off" placeholder="Type DELETE" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                      </label>
-                      <p data-profile-delete-hint class="min-h-4 text-xs text-muted-foreground"></p>
-                      <button data-profile-delete-account type="button" disabled class="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-4 text-sm font-semibold text-destructive opacity-40 hover:bg-destructive/10 transition-colors">
-                        Delete account
-                      </button>
+                  <section id="settings-danger" data-settings-section="danger" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-[#f85149]">Danger zone</h2>
+                    <div class="mt-5 grid max-w-2xl overflow-hidden rounded-md border border-destructive/40 bg-card">
+                      <div class="grid gap-4 border-b border-destructive/30 p-4">
+                        <p class="text-sm leading-6 text-muted-foreground">Deleting your account removes your login, public profile, owned repository records, and active dashboard session. You can register again later with the same node name or email.</p>
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Current password
+                          <input data-profile-delete-password type="password" autocomplete="current-password" placeholder="Required to delete account" class="h-10 rounded-md border border-border bg-background px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+                          Confirmation
+                          <input data-profile-delete-confirm type="text" autocomplete="off" placeholder="Type DELETE" class="h-10 rounded-md border border-border bg-background px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                        </label>
+                        <p data-profile-delete-hint class="min-h-4 text-xs text-muted-foreground"></p>
+                      </div>
+                      <div class="flex justify-end bg-background px-4 py-3">
+                        <button data-profile-delete-account type="button" disabled class="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-4 text-sm font-semibold text-destructive opacity-40 hover:bg-destructive/10 transition-colors">
+                          Delete account
+                        </button>
+                      </div>
                     </div>
                   </section>
-                </aside>
+                </main>
               </div>
             </div>
           </section>
@@ -1458,63 +1463,89 @@
           </section>
 
           <section data-view="network" class="view h-full overflow-y-auto">
-            <div data-network-page-inner class="p-3 sm:p-6 max-w-5xl mx-auto">
-              <div class="flex items-center justify-between mb-6">
-                <h1 class="text-base font-semibold text-foreground">Network</h1>
-	                <span class="flex items-center gap-1.5 text-xs text-foreground font-mono">
-	                  <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
-	                  relay healthy
-                </span>
+            <div data-profile-header-band class="border-b border-border bg-background px-4">
+              <div data-profile-tabs-inner class="w-full">
+                <nav data-profile-tabs class="flex min-w-0 gap-2 overflow-x-auto text-sm">
+                  <button data-section="profile-overview" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-open" class="h-4 w-4 text-muted-foreground"></i>
+                    Overview
+                  </button>
+                  <button data-section="profile-repositories" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-transparent px-2 pb-3 pt-3 text-muted-foreground hover:text-foreground">
+                    <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
+                    Repositories
+                    <span data-profile-repo-count class="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">0</span>
+                  </button>
+                  <button data-section="network" data-nav-link class="inline-flex items-center gap-2 border-b-2 border-[#f78166] px-2 pb-3 pt-3 font-semibold text-foreground">
+                    <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>
+                    Network
+                  </button>
+                </nav>
               </div>
+            </div>
+            <div data-network-page-inner class="w-full px-4 py-6 sm:px-6 lg:px-8">
+              <div class="mx-auto max-w-[1432px]">
+                <div data-network-layout class="grid gap-8 lg:grid-cols-[296px_minmax(0,1fr)]">
+                  <aside data-profile-sidebar-slot data-profile-sidebar-context="network" class="min-w-0"></aside>
+                  <section class="min-w-0">
+                    <div class="flex items-center justify-between mb-6">
+                      <h1 class="text-base font-semibold text-foreground">Network</h1>
+                      <span class="flex items-center gap-1.5 text-xs text-foreground font-mono">
+                        <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
+                        relay healthy
+                      </span>
+                    </div>
 
-              <div data-network-summary class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
-                <div class="rounded-lg border border-border bg-card p-4">
-                  <p data-network-hosts class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
-                  <p class="text-xs text-muted-foreground">Nodes</p>
-                </div>
-                <div class="rounded-lg border border-border bg-card p-4">
-                  <p data-network-repos class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
-                  <p class="text-xs text-muted-foreground">Repos mirrored</p>
-                </div>
-                <div class="rounded-lg border border-border bg-card p-4">
-                  <p data-network-clients class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
-                  <p class="text-xs text-muted-foreground">Active relays</p>
-                </div>
-                <div class="rounded-lg border border-border bg-card p-4">
-                  <p data-network-uptime class="text-xl font-semibold text-foreground mb-1 font-mono">Live</p>
-                  <p class="text-xs text-muted-foreground">Relay uptime</p>
-                </div>
-              </div>
+                    <div data-network-summary class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
+                      <div class="rounded-lg border border-border bg-card p-4">
+                        <p data-network-hosts class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
+                        <p class="text-xs text-muted-foreground">Nodes</p>
+                      </div>
+                      <div class="rounded-lg border border-border bg-card p-4">
+                        <p data-network-repos class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
+                        <p class="text-xs text-muted-foreground">Repos mirrored</p>
+                      </div>
+                      <div class="rounded-lg border border-border bg-card p-4">
+                        <p data-network-clients class="text-xl font-semibold text-foreground mb-1 font-mono">...</p>
+                        <p class="text-xs text-muted-foreground">Active relays</p>
+                      </div>
+                      <div class="rounded-lg border border-border bg-card p-4">
+                        <p data-network-uptime class="text-xl font-semibold text-foreground mb-1 font-mono">Live</p>
+                        <p class="text-xs text-muted-foreground">Relay uptime</p>
+                      </div>
+                    </div>
 
-              <div class="rounded-lg border border-border bg-card overflow-hidden mb-6">
-                <div class="px-4 py-3 border-b border-border flex items-center justify-between">
-                  <span class="text-xs font-medium text-foreground">Connected nodes</span>
-                  <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
-                </div>
-                <div data-network-node-list class="divide-y divide-border">
-                  <div class="px-4 py-3 text-sm text-muted-foreground">Loading recent network...</div>
-                </div>
-              </div>
+                    <div class="rounded-lg border border-border bg-card overflow-hidden mb-6">
+                      <div class="px-4 py-3 border-b border-border flex items-center justify-between">
+                        <span class="text-xs font-medium text-foreground">Connected nodes</span>
+                        <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
+                      </div>
+                      <div data-network-node-list class="divide-y divide-border">
+                        <div class="px-4 py-3 text-sm text-muted-foreground">Loading recent network...</div>
+                      </div>
+                    </div>
 
-              <div class="rounded-lg border border-border bg-card p-5">
-                <h3 class="text-xs font-medium text-foreground mb-4">Protocol</h3>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div class="flex items-center gap-2.5">
-                    <i data-lucide="shield" class="w-3.5 h-3.5 text-primary shrink-0"></i>
-                    <span class="text-xs text-muted-foreground">Relay role: Control plane</span>
-                  </div>
-                  <div class="flex items-center gap-2.5">
-                    <i data-lucide="zap" class="w-3.5 h-3.5 text-primary shrink-0"></i>
-                    <span class="text-xs text-muted-foreground">Data plane: Live host tunnel</span>
-                  </div>
-                  <div class="flex items-center gap-2.5">
-                    <i data-lucide="lock" class="w-3.5 h-3.5 text-primary shrink-0"></i>
-                    <span class="text-xs text-muted-foreground">All traffic encrypted E2E</span>
-                  </div>
-                  <div class="flex items-center gap-2.5">
-                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-primary shrink-0"></i>
-                    <span class="text-xs text-muted-foreground">Git upload-pack via relay</span>
-                  </div>
+                    <div class="rounded-lg border border-border bg-card p-5">
+                      <h3 class="text-xs font-medium text-foreground mb-4">Protocol</h3>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="flex items-center gap-2.5">
+                          <i data-lucide="shield" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
+                          <span class="text-xs text-muted-foreground">Relay role: Control plane</span>
+                        </div>
+                        <div class="flex items-center gap-2.5">
+                          <i data-lucide="zap" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
+                          <span class="text-xs text-muted-foreground">Data plane: Live host tunnel</span>
+                        </div>
+                        <div class="flex items-center gap-2.5">
+                          <i data-lucide="lock" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
+                          <span class="text-xs text-muted-foreground">All traffic encrypted E2E</span>
+                        </div>
+                        <div class="flex items-center gap-2.5">
+                          <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-muted-foreground shrink-0"></i>
+                          <span class="text-xs text-muted-foreground">Git upload-pack via relay</span>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
                 </div>
               </div>
             </div>
@@ -1566,49 +1597,6 @@
         </div>
       </main>
 
-
-      <aside id="networkRail" data-dashboard-network-rail aria-label="Chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
-        <div class="flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
-          <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
-            <i data-lucide="message-circle" class="h-3.5 w-3.5 text-primary"></i>
-            Chat
-          </span>
-          <div class="flex items-center gap-3">
-            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
-              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
-              live
-            </span>
-            <button data-mobile-network-close type="button" aria-label="Close network drawer" class="items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
-              <i data-lucide="x" class="h-4 w-4"></i>
-            </button>
-          </div>
-        </div>
-        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
-          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
-            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
-            general
-          </span>
-          <div class="flex items-center gap-1.5">
-            <i data-lucide="lock" class="w-3 h-3 text-muted-foreground"></i>
-            <button data-section="chat" class="nav-jump text-xs text-primary hover:underline">expand</button>
-          </div>
-        </div>
-
-        <div id="sideChatMessages" class="flex-1 overflow-y-scroll px-3 py-2 flex flex-col gap-0.5 min-h-0"></div>
-
-        <div class="px-3 pb-3 pt-2 shrink-0">
-          <div class="flex items-center gap-2 bg-background border border-border rounded-lg px-3 py-2 focus-within:ring-1 focus-within:ring-foreground/20 transition">
-            <input
-              id="sideChatInput"
-              class="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
-              placeholder="Message #general..."
-            />
-            <button id="sideChatSend" class="shrink-0">
-              <i data-lucide="send" class="w-3 h-3 text-muted-foreground hover:text-primary transition-colors"></i>
-            </button>
-          </div>
-        </div>
-	      </aside>
 	    </div>
 	    </div>
 
@@ -1651,7 +1639,7 @@
 
           <label class="grid gap-1.5 text-xs text-muted-foreground">
             Current password
-            <input data-profile-password type="password" autocomplete="current-password" placeholder="Required to save profile changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+            <input data-profile-password type="password" autocomplete="current-password" placeholder="Required to save payout changes" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20" />
           </label>
 
           <p data-profile-hint class="min-h-4 text-xs text-muted-foreground"></p>
@@ -1660,7 +1648,39 @@
           </button>
 	        </div>
 	      </div>
-	    </div>
+    </div>
+
+    <div
+      data-profile-about-modal
+      class="hidden fixed inset-0 z-[95] items-center justify-center bg-background/80 px-4 py-6 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="profileAboutModalTitle"
+    >
+      <button data-profile-about-modal-backdrop type="button" aria-label="Close about editor" class="absolute inset-0 cursor-default"></button>
+      <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
+        <div class="flex items-center justify-between border-b border-border px-4 py-3">
+          <div class="min-w-0">
+            <h2 id="profileAboutModalTitle" class="text-sm font-semibold text-foreground">Edit about yourself</h2>
+            <p class="mt-0.5 text-xs text-muted-foreground">Markdown shown on your ForkMesh profile overview.</p>
+          </div>
+          <button data-profile-about-modal-close type="button" aria-label="Close about editor" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="x" class="h-4 w-4"></i>
+          </button>
+        </div>
+        <div class="grid min-h-0 gap-4 overflow-y-auto p-4">
+          <label class="grid gap-2 text-xs font-medium text-muted-foreground">
+            About yourself
+            <textarea data-profile-about-textarea rows="14" maxlength="32000" spellcheck="true" class="min-h-72 resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:border-ring" placeholder="# Hi, I'm ..."></textarea>
+          </label>
+          <p data-profile-about-hint class="min-h-4 text-xs text-muted-foreground"></p>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <button data-profile-about-cancel type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-semibold text-foreground hover:bg-secondary">Cancel</button>
+          <button data-profile-about-save type="button" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90">Save about</button>
+        </div>
+      </div>
+    </div>
 
     <div
       id="notificationModal"
@@ -1687,6 +1707,7 @@
         </div>
       </div>
     </div>
+
 
 	    <script>
       const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
@@ -1799,6 +1820,8 @@
       }
 
       function setSection(section) {
+        const dashboardRoot = document.querySelector("[data-dashboard-root]");
+        if (dashboardRoot) dashboardRoot.dataset.dashboardSection = section;
         document.querySelectorAll("[data-view]").forEach((view) => {
           view.classList.toggle("active", view.dataset.view === section);
         });
@@ -1811,22 +1834,8 @@
         });
       }
 
-      function setNetworkRail(open) {
-        document.body.classList.toggle("network-rail-collapsed", !open);
-        document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
-          button.setAttribute("aria-expanded", open ? "true" : "false");
-          button.setAttribute("aria-label", open ? "Close network panel" : "Open network panel");
-        });
-      }
-
       document.querySelectorAll("[data-section]").forEach((button) => {
         button.addEventListener("click", () => setSection(button.dataset.section));
-      });
-
-      document.querySelectorAll("[data-network-rail-toggle]").forEach((button) => {
-        button.addEventListener("click", () => {
-          setNetworkRail(document.body.classList.contains("network-rail-collapsed"));
-        });
       });
 
       document.addEventListener("keydown", (event) => {

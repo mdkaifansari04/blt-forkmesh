@@ -71,7 +71,6 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
     transformed = DASHBOARD_JS.replace(
         "  applyDashboardTheme(readDashboardTheme());\n"
         "  renderLongDiffPreference();\n"
-        "  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });\n"
         "  init();",
         """  globalThis.__dashboardExports = {
     state,

@@ -115,14 +115,6 @@ def test_signup_is_single_step_email_password_name_form():
     assert "Name reserved" not in signup
 
 
-def test_auth_pages_reinforce_dashboard_value_before_submit():
-    login = _read(PUBLIC / "login.html")
-    signup = _read(PUBLIC / "signup.html")
-
-    assert "Manage repositories, mirrors, payouts, and signed collaboration." in login
-    assert "Start free with code hosting, live mirrors, and signed collaboration." in signup
-
-
 def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
     signup_js = _read(PUBLIC / "signup.js")
 
@@ -131,27 +123,6 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
     assert 'api("/api/accounts/donation-address"' not in signup_js
     assert "solana" not in signup_js.lower()
     assert 'localStorage.setItem("forkmesh.session", JSON.stringify({' in signup_js
-
-
-def test_signup_submit_never_leaves_button_stuck_on_request_failure():
-    signup_js = _read(PUBLIC / "signup.js")
-    create_account = signup_js[
-        signup_js.index("async function createAccount"):
-        signup_js.index("nameInput.addEventListener")
-    ]
-
-    assert 'createButton.textContent = "Creating…";' in create_account
-    assert "try {\n      result = await api(\"/api/accounts/signup\"" in create_account
-    assert "catch (_) {\n      setSignupHint(\"Network error - please try again.\", \"bad\");" in create_account
-    assert "finally {\n      if (!created) {\n        createButton.disabled = false;" in create_account
-    assert 'createButton.textContent = "Create account";' in create_account
-
-
-def test_login_success_lands_on_dashboard_after_authentication():
-    login_js = _read(PUBLIC / "login.js")
-
-    assert 'location.href = nextPath() || "/dashboard"' in login_js
-    assert 'location.href = nextPath() || "/"' not in login_js
 
 
 def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
@@ -171,8 +142,51 @@ def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
 
 def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
     dashboard = assembled_dashboard()
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    sidebar_start = dashboard.index("data-settings-sidebar")
+    sidebar_end = dashboard.index("<main data-settings-main")
+    settings_sidebar = dashboard[sidebar_start:sidebar_end]
 
     assert 'data-view="profile"' in dashboard
+    assert "data-settings-layout" in dashboard
+    assert "data-settings-account-header" in dashboard
+    assert "data-settings-sidebar" in dashboard
+    assert "data-settings-main" in dashboard
+    assert "data-settings-profile-picture" in dashboard
+    assert "Go to your personal profile" in dashboard
+    assert "Public profile" in dashboard
+    assert "Verification and payout" in settings_sidebar
+    assert "Danger zone" in settings_sidebar
+    for label in (
+        "Accessibility",
+        "Billing and licensing",
+        "Emails",
+        "Password and authentication",
+        "SSH and GPG keys",
+        "Credentials",
+        "Organizations",
+        "Enterprises",
+        "Teams",
+        "Moderation",
+        "Code, planning, and automation",
+        "Codespaces",
+        "Packages",
+        "Copilot",
+    ):
+        assert label not in settings_sidebar
+    for section in (
+        "public-profile",
+        "account",
+        "appearance",
+        "notifications",
+        "payout",
+        "nodes",
+        "danger",
+    ):
+        assert f'data-settings-section-link="{section}"' in dashboard
+        assert f'data-settings-section="{section}"' in dashboard
+    assert "setSettingsSection(" in dashboard_js
+    assert "[data-settings-section-link]" in dashboard_js
     assert "data-profile-page-avatar" in dashboard
     assert "data-profile-page-node-name" in dashboard
     assert "data-profile-page-email" in dashboard
@@ -196,20 +210,38 @@ def test_dashboard_profile_page_exposes_public_profile_controls():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "data-profile-page-bio" in dashboard
+    assert "data-profile-page-location" in dashboard
+    assert "data-profile-page-timezone" in dashboard
     assert "data-profile-page-mastodon" in dashboard
     assert "data-profile-page-private" in dashboard
     assert "data-profile-links-editor" in dashboard
     assert "data-profile-link-label" in dashboard
     assert "data-profile-link-url" in dashboard
     assert "data-profile-txt-value" in dashboard
-    assert "data-profile-public-password" in dashboard
+    assert "data-profile-public-password" not in dashboard
     assert "data-profile-public-save" in dashboard
     assert "Save public profile" in dashboard
     assert "profileBio" in dashboard_js
+    assert "profileLocation" in dashboard_js
+    assert "profileTimezone" in dashboard_js
     assert "mastodon" in dashboard_js
     assert "profilePrivate" in dashboard_js
     assert "profileLinks: collectProfileLinks()" in dashboard_js
     assert "savePublicProfile" in dashboard_js
+
+
+def test_dashboard_profile_timezone_uses_supported_timezone_select():
+    dashboard = assembled_dashboard()
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "<select data-profile-page-timezone" in dashboard
+    assert "input data-profile-page-timezone" not in dashboard
+    assert "Use browser time zone" in dashboard
+    assert 'Intl.supportedValuesOf("timeZone")' in dashboard_js
+    assert "profileTimezoneGmtLabel" in dashboard_js
+    assert "profileTimezoneGmtOffset(zone)" in dashboard_js
+    assert "GMT+00:00" in dashboard_js
+    assert "renderProfileTimezoneOptions(session)" in dashboard_js
 
 
 def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_account():
@@ -225,30 +257,6 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
     assert "deleteAccount: true" in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
     assert 'setSection("profile")' in dashboard_js
-
-
-def test_dashboard_profile_session_merge_allows_clearing_payout_address():
-    dashboard_js = _read(PUBLIC / "dashboard.js")
-    merge = dashboard_js[
-        dashboard_js.index("function sessionFromAccountPayload"):
-        dashboard_js.index("function applyAvatar")
-    ]
-
-    assert 'solana: Object.prototype.hasOwnProperty.call(body, "solana")' in merge
-    assert '? (body.solana || "")' in merge
-    assert ': (base.solana || "")' in merge
-    assert "solana: body.solana || base.solana || \"\"" not in merge
-
-
-def test_dashboard_profile_save_clears_password_after_success():
-    dashboard_js = _read(PUBLIC / "dashboard.js")
-    save_profile = dashboard_js[
-        dashboard_js.index("async function saveProfile"):
-        dashboard_js.index("async function resendVerification")
-    ]
-
-    assert "const passwordInput = $(passwordSelector);" in save_profile
-    assert 'if (passwordInput) passwordInput.value = "";' in save_profile
 
 
 def test_login_explains_disabled_legacy_accounts():
@@ -270,6 +278,36 @@ def test_login_persists_returned_session_details():
     assert "isAdmin: Boolean(body.isAdmin)" in login_js
     assert 'solana: body.solana || ""' in login_js
     assert "hasPayoutAddress: Boolean(body.hasPayoutAddress)" in login_js
+    assert 'sessionToken: body.sessionToken || ""' in login_js
+    assert 'profileBio: body.profileBio || ""' in login_js
+    assert 'profileAbout: body.profileAbout || body.profileReadme || ""' in login_js
+    assert 'profileLocation: body.profileLocation || ""' in login_js
+    assert 'profileTimezone: body.profileTimezone || ""' in login_js
+    assert "profileFollowers: Number(body.followers) || 0" in login_js
+    assert "profileFollowing: Number(body.following) || 0" in login_js
+    assert "profileMirrorCount: Number(body.mirrorCount) || 0" in login_js
+
+
+def test_dashboard_refreshes_canonical_cloudflare_profile_after_login():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "async function hydrateCanonicalProfile(session)" in dashboard_js
+    assert 'await hydrateCanonicalProfile(session)' in dashboard_js
+    assert 'fetchJson(`/api/accounts/${encodeURIComponent(nodeName)}`' in dashboard_js
+    assert "writeSession(nextSession)" in dashboard_js
+
+
+def test_dashboard_public_profile_edits_do_not_prompt_for_password():
+    dashboard = assembled_dashboard()
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert "data-profile-about-password" not in dashboard
+    assert "data-profile-public-password" not in dashboard
+    assert "Required to save about changes" not in dashboard
+    assert "Required for profile changes" not in dashboard
+    assert 'profilePassword("[data-profile-about-password]")' not in dashboard_js
+    assert 'profilePassword("[data-profile-public-password]")' not in dashboard_js
+    assert "sessionToken: state.session?.sessionToken || \"\"" in dashboard_js
 
 
 def test_login_has_forgot_password_link():

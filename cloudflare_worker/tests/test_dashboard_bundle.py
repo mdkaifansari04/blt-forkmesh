@@ -76,4 +76,4 @@ def test_dashboard_js_is_served_as_a_static_asset():
 
 def test_shell_still_references_dashboard_js():
     shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    assert 'src="/dashboard.js"' in shell
+    assert 'src="/dashboard.js?v=github-settings-tabs"' in shell
