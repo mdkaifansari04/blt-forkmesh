@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
     "authorName": "mdkaifansari04",
@@ -42,6 +43,17 @@
             "sig": "RaXNBDSRERx7ZTWpqecs7yamg4pcuDlVfwek4otd2RIzZKK4WMRA4MO7nI4l9-awoOMoCdlkSakq-Z5n3h0FCA",
             "ts": 1783717057933,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3a2dbd45-c471-4c1e-87bd-edc939c43a49",
+            "sig": "UlFcUdGiK5Enyu9rMMjJLUJFAhj09HMSiZiP2k1MOWdakk6nkhPDE8oc_nzNpuYLLDPTFQix4nVEytHQAfxjBA",
+            "ts": 1783717057996,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -53,6 +65,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "BUG: after creating issue, there is redirect to the issue tab, which feels like very laggy, this needs to be fixed.",
-    "updatedAt": 1783717057933,
+    "updatedAt": 1783717057996,
     "votes": 0
 }
