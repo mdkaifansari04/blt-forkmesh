@@ -1288,23 +1288,27 @@ void MainWindow::deleteCurrentMirror()
                                  : QDir::cleanPath(rawWorktree);
 
     QString message = QStringLiteral(
-        "Delete the local mirror for %1/%2?\n\nMirror: %3")
+        "Delete repository %1/%2 from this node?\n\nMirror: %3")
                           .arg(repo.owner, repo.name,
                                path.isEmpty() ? QStringLiteral("not created") : path);
     if (!repo.localPath.isEmpty())
-        message += QStringLiteral("\n\nYour working directory will be kept:\n%1")
+        message += QStringLiteral("\n\nYour working directory will be kept on disk "
+                                  "but no longer tracked by ForkMesh:\n%1")
                        .arg(repo.localPath);
     if (!repo.previewOnly && repo.publishToNetwork)
         message += QStringLiteral("\n\nThe repository will also be removed from "
                                   "the public ForkMesh catalog.");
-    if (QMessageBox::warning(this, "Delete mirror", message,
+    message += QStringLiteral(
+        "\n\nThis frees up the name so you can create a new repository "
+        "called \"%1\" again.").arg(repo.name);
+    if (QMessageBox::warning(this, "Delete repository", message,
                              QMessageBox::Yes | QMessageBox::Cancel,
                              QMessageBox::Cancel) != QMessageBox::Yes)
         return;
 
     if (!path.isEmpty() && path == worktree) {
         QMessageBox::warning(
-            this, "Delete mirror",
+            this, "Delete repository",
             "The mirror path matches the working directory, so nothing was deleted.");
         return;
     }
@@ -1312,44 +1316,28 @@ void MainWindow::deleteCurrentMirror()
     stopRepoHosts();
     if (!path.isEmpty() && QDir(path).exists() && !QDir(path).removeRecursively()) {
         startRepoHosts();
-        QMessageBox::warning(this, "Delete mirror",
+        QMessageBox::warning(this, "Delete repository",
                              "Could not delete the mirror at:\n" + path);
         return;
     }
     if (!repo.previewOnly && repo.publishToNetwork)
         deleteCatalogRepository(catalogOwner(repo), repo.name);
-    const bool canKeepLocalRecord = !repo.localPath.trimmed().isEmpty() ||
-                                    !repo.cloneUrl.trimmed().isEmpty();
-    if (!repo.previewOnly && canKeepLocalRecord) {
-        // Delete the mirror, not the source checkout. Keep the repository in
-        // the app as local-only so Mirror > Create mirror can publish it again.
-        RepositoryRecord &local = m_repositories[index];
-        local.publishToNetwork = false;
-        local.publishedAtMs = 0;
-        local.lastSyncMs = 0;
-    } else {
-        // A preview or independent bare-only fork has no separate source left
-        // after its mirror is deleted, so its transient record goes too.
-        m_repositories.removeAt(index);
-    }
+    // Deleting a repository must remove it completely from this node so its
+    // name is free to reuse. The working directory on disk is left alone
+    // (only the bare mirror above is removed), but the app no longer keeps a
+    // record of it — leaving a stale local-only record behind used to block
+    // creating a new repository with the same owner/name indefinitely.
+    m_repositories.removeAt(index);
     saveRepositories();
     startRepoHosts();
     refreshRepositoryList();
-    if (!repo.previewOnly && canKeepLocalRecord) {
-        m_repoDetailIndex = index;
-        updateRepoDetailStatus();
-        updateRepoActionMenus();
-    } else {
-        m_repoDetailIndex = -1;
-        if (!m_repositories.isEmpty())
-            openRepoDetail(qMin(index, m_repositories.size() - 1));
-        else if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(0); // Code (empty)
-    }
-    logSystem("Deleted local mirror for " + repo.owner + "/" + repo.name + ".");
-    setRepoDetailNotice(canKeepLocalRecord
-                            ? "Deleted mirror. The working directory was kept."
-                            : "Deleted mirror.");
+    m_repoDetailIndex = -1;
+    if (!m_repositories.isEmpty())
+        openRepoDetail(qMin(index, m_repositories.size() - 1));
+    else if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0); // Code (empty)
+    logSystem("Deleted repository " + repo.owner + "/" + repo.name + ".");
+    setRepoDetailNotice("Deleted repository.");
 }
 
 // Per-repo Settings tab: flip visibility (public/private) and delete the repo.
@@ -1627,10 +1615,10 @@ QWidget *MainWindow::buildRepoSettingsTab()
     outer->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
-        "Delete this node's mirror of the repository. If you have a local "
-        "working directory it is kept and the repo stays as local-only; "
-        "otherwise the repository is removed from this node. Published repos "
-        "are also removed from the public ForkMesh catalog.");
+        "Delete this repository from this node completely. Your working "
+        "directory, if any, is kept on disk but no longer tracked by "
+        "ForkMesh. Published repos are also removed from the public "
+        "ForkMesh catalog, freeing up the name for reuse.");
     deleteHint->setObjectName("statusLine");
     deleteHint->setWordWrap(true);
     outer->addWidget(deleteHint);

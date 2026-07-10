@@ -4,7 +4,10 @@
 
 (() => {
   const ROOM_NAME = "general";
-  const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
+  // The room key is fetched from the relay (derived server-side from DATA_KEY)
+  // rather than baked in as a public constant; see chat.js for the rationale.
+  const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
+  let roomPassphrase = null;
   const CHANNEL = "#general";
   const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
@@ -99,14 +102,29 @@
     }
   }
 
+  async function fetchRoomPassphrase() {
+    if (roomPassphrase) return roomPassphrase;
+    const session = readSession();
+    const token = session && session.sessionToken;
+    const headers = { accept: "application/json" };
+    if (token) headers.authorization = "Bearer " + token;
+    const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
+    if (!res.ok) throw new Error("Sign in to join chat — room key unavailable.");
+    const data = await res.json().catch(() => ({}));
+    if (!data || !data.passphrase) throw new Error("Room key unavailable.");
+    roomPassphrase = String(data.passphrase);
+    return roomPassphrase;
+  }
+
   async function deriveRoomKey() {
+    const passphrase = await fetchRoomPassphrase();
     const saltDigest = new Uint8Array(
       await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
     );
     const salt = saltDigest.slice(0, 16);
     const baseKey = await crypto.subtle.importKey(
       "raw",
-      enc.encode(ROOM_PASSPHRASE),
+      enc.encode(passphrase),
       "PBKDF2",
       false,
       ["deriveKey"]

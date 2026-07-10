@@ -182,6 +182,18 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSwitchToAgentSetting, enabled);
     });
 
+    auto *excludeExternalClaudeCheck =
+        new QCheckBox("Exclude external Claude Code agents from the Agents tab");
+    excludeExternalClaudeCheck->setChecked(
+        QSettings().value(kExcludeExternalClaudeSetting, true).toBool());
+    excludeExternalClaudeCheck->setToolTip(
+        "Don't detect or list `claude` CLI sessions running outside ForkMesh "
+        "(started directly in a terminal) in a repository's Agents tab. On by "
+        "default so another process's transcripts aren't surfaced unprompted.");
+    connect(excludeExternalClaudeCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kExcludeExternalClaudeSetting, enabled);
+    });
+
     // Screenshot: an inline calibration target for the region screenshot tool. It
     // shows a square with corner brackets and a centre crosshair right here in
     // Settings — grab it with the screenshot button and confirm the captured
@@ -1388,6 +1400,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
+    generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);

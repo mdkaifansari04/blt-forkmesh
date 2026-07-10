@@ -43,6 +43,26 @@
             "sig": "AOhC7cP4R4QiVwfyhrgAfsK6HJmkIbjSijt6lTb4O0eCRFFZ_sg4zvTXXRhEdAqR6zg-GZuFXDloUxrUwtucCA",
             "ts": 1783717075784,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-392-bug-repo-delete-feature-not-working\".",
+            "id": "2a85530a-b668-4557-9628-384004179321",
+            "sig": "8txebg6_JxJN20xp0jVLlS7U4t2duTocHeYbgDrHmvc9k2byFqrD-1ndaoeRcXGlr89bpzVAGm8bH1Dx6IMaAA",
+            "ts": 1783720734676,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "d1ed0368-49be-4c80-b8f8-d97d52c40bd3",
+            "sig": "MnN7vnv1xR81IhLE_7lst9gXx6aRPknaH5Fxm6NZfrVayfCiWNGKNyx8uxRxQLc0mF4QeDHwpe9PYqLT_aGuDA",
+            "status": "closed",
+            "ts": 1783720734731,
+            "type": "status"
         }
     ],
     "labels": [
@@ -52,8 +72,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "BUG: repo delete feature not working",
-    "updatedAt": 1783717075784,
+    "updatedAt": 1783720734731,
     "votes": 0
 }
