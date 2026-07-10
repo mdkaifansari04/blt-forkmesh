@@ -4,7 +4,7 @@ number: 3
 title: feat(worker): add public profile follow metadata
 base: main
 head: api-pr/20260710-002121/profile-follow-api-updated
-status: open
+status: merged
 ts: 1783623320946
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
