@@ -964,8 +964,15 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = QStringLiteral("download release asset %1").arg(path);
     else
         action = op.isEmpty() ? QStringLiteral("request") : op;
-    emit log(QStringLiteral("Host: served %1 for %2/%3.")
-                 .arg(action, m_owner, m_name));
+    // The relay forwards the requester's User-Agent (worker-truncated to 256
+    // chars) so the operator can tell a real git client/browser from a bot or
+    // scraper straight from the node log, without the worker storing it.
+    const QString userAgent = request.value("ua").toString().left(200);
+    emit log(userAgent.isEmpty()
+                 ? QStringLiteral("Host: served %1 for %2/%3.")
+                       .arg(action, m_owner, m_name)
+                 : QStringLiteral("Host: served %1 for %2/%3. [User-Agent: %4]")
+                       .arg(action, m_owner, m_name, userAgent));
 
     // A clone is two requests: info/refs (ref advertisement) then the
     // git-upload-pack POST that negotiates `want <oid>` against those refs. On a

@@ -199,5 +199,5 @@ def test_blobs_batch_endpoint_reads_many_files_in_one_request():
     assert "MAX_BLOB_BATCH" in entry
     assert "asyncio.gather" in entry
     src = _method_source("ForkMeshHost", "fetch")
-    assert "_tunnel_result('blob', p, ref)" in src
+    assert "_tunnel_result('blob', p, ref, ua)" in src
     assert "503 if 503 in stats else 504 if 504 in stats else 502" in src
