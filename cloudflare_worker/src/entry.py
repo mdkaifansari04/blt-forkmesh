@@ -413,6 +413,11 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+# Per-source-IP account-creation throttle: at most SIGNUP_MAX_PER_IP new accounts
+# from one IP per rolling SIGNUP_RATE_WINDOW_MS, to blunt mass signup / name
+# squatting. Login has its own lockout; catalog writes have their own cooldown.
+SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000
+SIGNUP_MAX_PER_IP = 5
 ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 # How long a password-reset link stays valid after it is emailed.
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
@@ -2302,6 +2307,7 @@ _stale_node_purge = {"ts": 0}
 # keyed by the current secret so a secret rotation still takes effect.
 _data_key_cache = {"secret": None, "key": None}
 _hmac_key_cache = {"secret": None, "key": None}
+_room_key_cache = {"secret": None, "value": None}
 
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -2482,6 +2488,65 @@ async def _hmac_key(env):
     return key
 
 
+async def _room_chat_passphrase(env):
+    # The shared room-chat key, derived ONE-WAY from DATA_KEY with its own domain
+    # separation (same pattern as the blind-index HMAC key). Returned as a hex
+    # string that every client feeds into the existing PBKDF2(passphrase, room
+    # salt) room-key derivation, so it drops in for the old public app constant
+    # ("forkmesh-shared-room-key-v1") without changing the wire crypto.
+    #
+    # Why this is a real improvement: the key is no longer a constant anyone can
+    # read straight out of the open-source client — only an authenticated
+    # ForkMesh account can fetch it. It is NOT confidentiality from the relay:
+    # the relay operator holds DATA_KEY and can derive this too (as they always
+    # could derive the old constant). SHA-256 is preimage-resistant, so exposing
+    # this passphrase never exposes DATA_KEY or the custody seeds it also guards.
+    secret = _require_data_secret(env) + ":room-chat-passphrase-v1"
+    if _room_key_cache["secret"] == secret and _room_key_cache["value"]:
+        return _room_key_cache["value"]
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    value = bytes(Uint8Array.new(digest).to_py()).hex()
+    _room_key_cache["secret"] = secret
+    _room_key_cache["value"] = value
+    return value
+
+
+async def _room_key_authorized(env, request):
+    # Any registered ForkMesh account may fetch the shared room-chat key: prove it
+    # with a web/mobile account session token (bearer/body), or — for a desktop
+    # node that authenticates with its Ed25519 key rather than a session — a fresh
+    # ts + signature over "forkmesh-room-key-v1\n<node>\n<ts>" verified against the
+    # node's registered pubkey.
+    if await _authed_account_name(env, request):
+        return True
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-room-key-v1\n" + node + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def chat_room_key_handler(env, request):
+    # Serve the shared room-chat passphrase to authenticated clients only. This is
+    # what lets the room key live server-side (derived from DATA_KEY) instead of
+    # as a public constant baked into every client build.
+    await ensure_schema(env)
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _room_key_authorized(env, request):
+        return json_response({"error": "unauthorized"}, status=401)
+    return json_response(
+        {"ok": True, "passphrase": await _room_chat_passphrase(env)},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 async def blind_index(env, value):
     # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
     key = await _hmac_key(env)
@@ -2589,6 +2654,44 @@ async def catalog_rate_check(env, owner_bi):
         "INSERT INTO catalog_rate (owner_bi, ts) VALUES (?,?) "
         "ON CONFLICT(owner_bi) DO UPDATE SET ts=excluded.ts",
         owner_bi, now,
+    )
+    return None
+
+
+async def signup_rate_check(env, ip_bi):
+    # Throttle account creation per source IP: at most SIGNUP_MAX_PER_IP within a
+    # rolling SIGNUP_RATE_WINDOW_MS. Returns a 429 response when over the limit,
+    # else None (and records this creation). A missing IP (local/dev, or a proxy
+    # path with no CF header) is not throttled — we only rate-limit what we can
+    # attribute — so genuine tests and self-hosting stay unaffected.
+    if not ip_bi:
+        return None
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT count, window_start_ts FROM signup_rate WHERE ip_bi=?", ip_bi)
+    count = 0
+    window_start = now
+    if row:
+        try:
+            window_start = int(row.get("window_start_ts") or 0)
+            count = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            window_start, count = now, 0
+        if now - window_start >= SIGNUP_RATE_WINDOW_MS:
+            window_start, count = now, 0  # window elapsed; start a fresh count
+    if count >= SIGNUP_MAX_PER_IP:
+        retry_ms = max(1000, SIGNUP_RATE_WINDOW_MS - (now - window_start))
+        return json_response(
+            {"error": "rate_limited", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={"Retry-After": str(max(1, (retry_ms + 999) // 1000))},
+        )
+    new_count = count + 1
+    await d1_run(
+        env,
+        "INSERT INTO signup_rate (ip_bi, count, window_start_ts) VALUES (?,?,?) "
+        "ON CONFLICT(ip_bi) DO UPDATE SET count=?, window_start_ts=?",
+        ip_bi, new_count, window_start, new_count, window_start,
     )
     return None
 
@@ -4396,6 +4499,14 @@ async def _account_signup(env, request):
     dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
+
+    # Per-IP account-creation throttle (checked only once the name/email are
+    # otherwise creatable, so a rejected duplicate doesn't burn the quota).
+    signup_ip = (_signup_metadata(request).get("ip") or "").strip()
+    throttled = await signup_rate_check(
+        env, await blind_index(env, signup_ip) if signup_ip else None)
+    if throttled is not None:
+        return throttled
 
     salt, phash = await hash_password(password)
     rec = existing or {}
@@ -13079,6 +13190,11 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/poll", "/api/poll/"):
             return await poll_handler(self.env, request)
 
+        # Shared room-chat key, derived server-side from DATA_KEY and handed only
+        # to authenticated clients — replaces the old public app-wide constant.
+        if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
+            return await chat_room_key_handler(self.env, request)
+
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
         # records and returns a bot reply for the encrypted room.
@@ -14392,6 +14508,10 @@ class ForkMeshHost(DurableObject):
         path = url.path
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
+        # Forwarded to the host so its operator log line (issue #297) can show
+        # who a clone/browse request came from — a git client, a browser, or a
+        # scraper/bot — without the worker ever storing it server-side.
+        ua = clean_string(request.headers.get("user-agent") or "", 256)
 
         # Rate-limit the request-serving paths (not the host's own WS upgrade,
         # which is already gated by a signed token in _route).
@@ -14467,13 +14587,14 @@ class ForkMeshHost(DurableObject):
         if release_blob_match:
             await self._mark_present(path)
             repo_bi = await self._repo_blind_index(path)
-            return await self._release_blob(release_blob_match.group(3), repo_bi)
+            return await self._release_blob(
+                release_blob_match.group(3), repo_bi, ua)
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()
         if action == "raw":
             await self._mark_present(path)
-            return await self._raw_blob(rel_path, ref)
+            return await self._raw_blob(rel_path, ref, ua)
         if action == "blobs":
             # Batched blob read: one HTTP request returns up to MAX_BLOB_BATCH
             # files (repeated ?path= params), fanned out over the live tunnel
@@ -14487,7 +14608,7 @@ class ForkMeshHost(DurableObject):
             if not paths:
                 return json_response({"error": "path_required"}, status=400)
             results = await asyncio.gather(
-                *[self._tunnel_result("blob", p, ref) for p in paths])
+                *[self._tunnel_result("blob", p, ref, ua) for p in paths])
             if results and all(not r.get("ok") for r in results):
                 # Nothing could be served (host gone / tunnel dead). Surface it
                 # as the request's status so the router's mirror fallback sees
@@ -14519,7 +14640,7 @@ class ForkMeshHost(DurableObject):
                     {"ok": False, "error": "query_too_short"}, status=400)
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel("search", query, ref, served_by)
+            return await self._tunnel("search", query, ref, served_by, ua)
         if action in ("tree", "blob", "history", "commit", "branches"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
@@ -14529,7 +14650,7 @@ class ForkMeshHost(DurableObject):
             # the website which node served it.
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel(op, rel_path, ref, served_by)
+            return await self._tunnel(op, rel_path, ref, served_by, ua)
         return json_response({"error": "not_found"}, status=404)
 
     def _host_count(self):
@@ -14707,7 +14828,7 @@ class ForkMeshHost(DurableObject):
                 best, best_score = ws, score
         return best
 
-    async def _tunnel_result(self, op, rel_path, ref=""):
+    async def _tunnel_result(self, op, rel_path, ref="", ua=""):
         # One request over the live tunnel, returned as a payload dict rather
         # than a Response so callers can batch several reads into one HTTP
         # response (see the /blobs action). Failures carry the HTTP status
@@ -14726,7 +14847,7 @@ class ForkMeshHost(DurableObject):
         try:
             host.send(
                 json.dumps({"type": "request", "reqId": req_id, "op": op,
-                            "path": rel_path, "ref": ref})
+                            "path": rel_path, "ref": ref, "ua": ua})
             )
         except Exception:
             self.pending.pop(req_id, None)
@@ -14752,8 +14873,8 @@ class ForkMeshHost(DurableObject):
         payload["ok"] = True
         return payload
 
-    async def _tunnel(self, op, rel_path, ref="", served_by=""):
-        result = await self._tunnel_result(op, rel_path, ref)
+    async def _tunnel(self, op, rel_path, ref="", served_by="", ua=""):
+        result = await self._tunnel_result(op, rel_path, ref, ua)
         status = int(result.pop("_status", 200) or 200)
         if not result.get("ok"):
             return json_response(result, status=status)
@@ -14916,7 +15037,7 @@ class ForkMeshHost(DurableObject):
                     }))
         host.send(json.dumps({"type": "git-req-end", "reqId": req_id}))
 
-    async def _release_blob(self, sha256, repo_bi=None):
+    async def _release_blob(self, sha256, repo_bi=None, ua=""):
         # Stream a content-addressed release asset from a serving node: each
         # chunk flows straight to the client (see _stream_request), so
         # arbitrarily large binaries download without the 4 MB inline /blob cap
@@ -14935,7 +15056,7 @@ class ForkMeshHost(DurableObject):
         response, err = await self._stream_request(
             host,
             {"type": "request", "reqId": req_id,
-             "op": "release-blob", "path": sha256.lower()},
+             "op": "release-blob", "path": sha256.lower(), "ua": ua},
             {
                 "content-type": "application/octet-stream",
                 "cache-control": "public, max-age=31536000, immutable",
@@ -14954,7 +15075,7 @@ class ForkMeshHost(DurableObject):
             "not_found", "bad_hash") else 502
         return Response("Release asset unavailable.", status=status)
 
-    async def _raw_blob(self, rel_path, ref=""):
+    async def _raw_blob(self, rel_path, ref="", ua=""):
         # Stream a repository blob from git as bytes so browser-native previews
         # can load media without the capped JSON/base64 /blob response — chunk
         # by chunk (see _stream_request), so a large asset never sits whole in
@@ -14970,7 +15091,7 @@ class ForkMeshHost(DurableObject):
         response, err = await self._stream_request(
             host,
             {"type": "request", "reqId": req_id,
-             "op": "raw-blob", "path": rel_path, "ref": ref},
+             "op": "raw-blob", "path": rel_path, "ref": ref, "ua": ua},
             {
                 "content-type": repo_blob_content_type(rel_path),
                 "cache-control": "no-cache, max-age=0, must-revalidate",
@@ -15108,7 +15229,8 @@ class ForkMeshHost(DurableObject):
 
         self.counter += 1
         req_id = "g%d" % self.counter
-        message = {"type": "request", "reqId": req_id, "op": op}
+        ua = clean_string(request.headers.get("user-agent") or "", 256)
+        message = {"type": "request", "reqId": req_id, "op": op, "ua": ua}
         if body:
             message["body"] = base64.b64encode(body).decode()
 
