@@ -1327,6 +1327,26 @@ void MainWindow::reloadIssues()
     updateRepoIssueCount();
 }
 
+void MainWindow::appendCreatedIssue(const IssueStore &store, const Issue &issue)
+{
+    // We already have the exact Issue createIssue() just wrote to disk, so
+    // splice it into the live list rather than calling reloadIssues(), which
+    // would re-read and re-parse every issue file in the repo just to surface
+    // this one new issue.
+    m_currentIssues.append(issue);
+    std::sort(m_currentIssues.begin(), m_currentIssues.end(),
+              [](const Issue &a, const Issue &b) { return a.number < b.number; });
+    // Keep the cheap reload-skip signature in sync with what we just wrote so a
+    // later background reload (e.g. from a push notification) doesn't redo
+    // this work for nothing.
+    const QString sig = store.contentSignature();
+    if (!sig.isEmpty())
+        m_issuesLoadedSig = sig;
+    refreshIssueList();
+    updateIssueActionState();
+    updateRepoIssueCount();
+}
+
 QWidget *MainWindow::makeIssueRow(const Issue &issue,
                                   const QHash<QString, QString> &labelColors) const
 {
@@ -3451,11 +3471,12 @@ void MainWindow::promptNewIssue()
         }
 
         QString error;
+        Issue created;
         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
                                              milestone, priority, assignees,
                                              bodyEdit->pendingAttachments(),
                                              bodyEdit->pendingAttachmentPlaceholders(),
-                                             &error);
+                                             &error, &created);
         if (number < 0) {
             setPageNotice(error.isEmpty() ? "Could not create the issue." : error,
                           true);
@@ -3464,7 +3485,7 @@ void MainWindow::promptNewIssue()
         m_currentIssueNumber = number;
         const bool more = createMore->isChecked();
         removeIssueComposePage();
-        reloadIssues();
+        appendCreatedIssue(store, created);
         propagateRepoUpdate(issuesRepoIndex());
         setIssueInlineNotice("Issue created.");
         if (more)
@@ -3563,9 +3584,10 @@ void MainWindow::quickAddIssue()
         return;
     }
     QString error;
+    Issue created;
     // Any queued images ride along as the new issue's attachments (issue #79).
     const int number = store.createIssue(title, QString(), {}, QString(), 0, {},
-                                         m_quickAddImages, &error);
+                                         m_quickAddImages, &error, &created);
     if (number < 0) {
         setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
                              true);
@@ -3574,7 +3596,7 @@ void MainWindow::quickAddIssue()
     m_issueQuickAdd->clear();
     clearQuickAddImages();
     m_currentIssueNumber = number;
-    reloadIssues();
+    appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
     // A more descriptive confirmation than the old bare "Issue created." — names
     // the number and title so the toast says exactly what landed (issue #299).
