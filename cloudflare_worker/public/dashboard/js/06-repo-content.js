@@ -609,6 +609,33 @@
     return { label: "comment", tone: neutral };
   }
 
+  // Approve/request-changes/comment state per reviewer, derived the same way
+  // the desktop's PullStore::reviewSummary() does: the *last* review event
+  // per author wins.
+  function pullReviewSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    const byAuthor = new Map();
+    for (const ev of rows) {
+      if (ev.type !== "review" || !ev.state) continue;
+      const key = ev.author || ev.authorName || "";
+      if (!key) continue;
+      byAuthor.set(key, { authorName: ev.authorName || ev.author || "unknown", state: ev.state });
+    }
+    return Array.from(byAuthor.values());
+  }
+
+  function renderPullReviewers(events) {
+    const reviewers = pullReviewSummary(events);
+    if (!reviewers.length) return "No reviews";
+    // sidebarSection wraps this in a <p>, so rows must stay phrasing content
+    // (span, not div) or the browser silently closes the paragraph early.
+    return reviewers.map((reviewer) => {
+      const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
+      const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
+      return `<span class="mt-1.5 flex items-center justify-between gap-2 first:mt-0"><span class="truncate font-medium text-foreground">${escapeHtml(reviewer.authorName)}</span><span class="shrink-0 text-[10px] font-semibold ${tone}">${escapeHtml(label)}</span></span>`;
+    }).join("");
+  }
+
   function pullEventAnchorLabel(ev) {
     if (!ev.path) return "";
     if (ev.lineStart) {
@@ -730,6 +757,92 @@
       </form>`;
   }
 
+  function renderPullReviewForm(number) {
+    if (!state.session?.nodeName) {
+      return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
+    }
+    const who = escapeHtml(state.session.nodeName);
+    return `
+      <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Review
+          <textarea data-repo-pull-review-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Reviewing as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="submit" data-repo-pull-review-action="changes_requested" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-x" class="h-4 w-4"></i>Request changes</button>
+            <button type="submit" data-repo-pull-review-action="approved" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Approve</button>
+            <button type="submit" data-repo-pull-review-action="comment" class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          </div>
+        </div>
+      </form>`;
+  }
+
+  async function handlePullReviewSubmit(repo, form, action) {
+    if (!repo || !form) return;
+    const number = Number(form.dataset.repoPullReviewNumber || 0);
+    const bodyInput = form.querySelector("[data-repo-pull-review-body]");
+    const buttons = form.querySelectorAll("[data-repo-pull-review-action]");
+    const hint = form.querySelector("[data-repo-pull-review-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const body = String(bodyInput?.value || "").trim();
+    if (!number) {
+      setHint("This pull request hasn't finished loading yet.", "bad");
+      return;
+    }
+    const isReview = action === "approved" || action === "changes_requested";
+    if (!isReview && !body) {
+      setHint("Write a comment before sending.", "bad");
+      bodyInput?.focus();
+      return;
+    }
+    buttons.forEach((button) => { button.disabled = true; });
+    setHint("Signing and sending…");
+    try {
+      if (isReview) {
+        await submitWebPullReview(repo, number, action, body);
+      } else {
+        await submitWebPullComment(repo, number, body);
+      }
+      const newEvent = {
+        type: isReview ? "review" : "comment",
+        state: isReview ? action : "",
+        authorName: state.session?.nodeName || "you",
+        author: state.session?.nodeName || "",
+        ts: Math.floor(Date.now() / 1000),
+        body,
+      };
+      const list = form.parentElement?.querySelector("[data-repo-pull-conversation]");
+      if (list) {
+        if (list.dataset.empty === "true") list.innerHTML = "";
+        list.dataset.empty = "false";
+        list.insertAdjacentHTML("beforeend", renderPullConversationEvent(newEvent));
+      }
+      if (state.repoRecordDetail?.kind === "pulls" && String(state.repoRecordDetail.number) === String(number)) {
+        const conversation = [...(state.repoRecordDetail.parsed.pullConversation || []), newEvent];
+        state.repoRecordDetail.parsed.pullConversation = conversation;
+        const reviewers = document.querySelector("[data-repo-pull-reviewers]");
+        if (reviewers) reviewers.innerHTML = renderPullReviewers(conversation);
+      }
+      if (bodyInput) bodyInput.value = "";
+      buttons.forEach((button) => { button.disabled = false; });
+      setHint(isReview ? "Review sent to the maintainer's inbox for review." : "Comment sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      buttons.forEach((button) => { button.disabled = false; });
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "event_too_large" ? "The comment is too large - please shorten it."
+          : code === "bad_signature" ? "Could not verify the review's signature."
+          : "Could not send the review. Please try again.",
+        "bad");
+    }
+  }
+
   function recordDetailMeta(kind, values) {
     if (kind === "pulls") {
       return [
@@ -777,7 +890,8 @@
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = isPulls ? `
-          <div data-repo-pull-conversation class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>` : "";
+          <div data-repo-pull-conversation data-empty="${pullConversation.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>
+          ${renderPullReviewForm(number)}` : "";
     const pullFilesSection = isPulls ? `
         <section class="overflow-hidden rounded-lg border border-border" data-repo-record-files-panel>
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
@@ -844,7 +958,7 @@
             ${pullFilesSection}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
-            ${isPulls ? sidebarSection("Reviewers", "No reviews") : ""}
+            ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation)}</span>`) : ""}
             ${sidebarSection("Assignees", "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
