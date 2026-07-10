@@ -7033,13 +7033,16 @@ async def _admin_verify_email(env, request):
 MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 
 
-async def _send_email(env, to_email, subject, text, html=None):
+async def _send_email(env, to_email, subject, text, html=None,
+                      from_email=None, from_name=None):
     from js import fetch as js_fetch
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
-    sender = (getattr(env, "MAILTRAP_SENDER", "") or "no-reply@forkmesh.com").strip()
-    sender_name = (getattr(env, "MAILTRAP_SENDER_NAME", "") or "ForkMesh").strip()
+    sender = (from_email or getattr(env, "MAILTRAP_SENDER", "")
+              or "no-reply@forkmesh.com").strip()
+    sender_name = (from_name or getattr(env, "MAILTRAP_SENDER_NAME", "")
+                   or "ForkMesh").strip()
     url = (getattr(env, "MAILTRAP_API_URL", "") or MAILTRAP_SEND_URL).strip()
     payload = {
         "from": {"email": sender, "name": sender_name},
@@ -7177,6 +7180,241 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
         "If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
     return await _send_email(env, email, subject, text, html)
+
+
+# --- Founders outreach console (/outreach) -----------------------------------
+# A small "outreach team" can send one-off emails (sponsorship / partnership
+# asks and other outreach) from the shared founders address through the same
+# Mailtrap sender the transactional mail uses. Admin accounts are always
+# allowed; anyone else must be added to the outreach_team roster by an admin.
+# Every send is written to outreach_log (recipient + subject encrypted at
+# rest) and per-sender daily volume is capped, so a leaked session can't
+# quietly turn the founders address into a spam cannon.
+OUTREACH_FROM_EMAIL = "founders@forkmesh.com"
+OUTREACH_FROM_NAME = "ForkMesh Founders"
+OUTREACH_DAILY_LIMIT = 50
+OUTREACH_MAX_SUBJECT = 200
+OUTREACH_MAX_BODY = 10000
+OUTREACH_LOG_LIST_LIMIT = 50
+
+# Starting points the compose form offers; [bracketed] placeholders are filled
+# in by the sender before sending. Plain text only — outreach mail should read
+# like a person wrote it, not like a marketing blast.
+OUTREACH_TEMPLATES = [
+    {
+        "key": "blank",
+        "label": "Blank email",
+        "subject": "",
+        "body": "",
+    },
+    {
+        "key": "sponsorship",
+        "label": "Sponsorship ask",
+        "subject": "Sponsoring ForkMesh — decentralized code hosting",
+        "body": (
+            "Hi [name],\n\n"
+            "I'm [your name], one of the founders of ForkMesh "
+            "(https://forkmesh.com) — an open-source, peer-to-peer network "
+            "for hosting and mirroring Git repositories, where nodes earn a "
+            "share of the network's funding for keeping projects online.\n\n"
+            "We're looking for sponsors to help fund the relay "
+            "infrastructure and node payouts, and I thought [company] would "
+            "be a great fit because [reason].\n\n"
+            "Sponsors get their name and logo on forkmesh.com, a mention in "
+            "our release notes and blog, and a direct line to the founding "
+            "team as the network grows.\n\n"
+            "Would you be open to a short call in the next couple of weeks?\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+    {
+        "key": "partnership",
+        "label": "Partnership / integration",
+        "subject": "Partnering with ForkMesh",
+        "body": (
+            "Hi [name],\n\n"
+            "I'm [your name], one of the founders of ForkMesh "
+            "(https://forkmesh.com) — an open-source, peer-to-peer network "
+            "for hosting and mirroring Git repositories.\n\n"
+            "We think [company] and ForkMesh could work well together: "
+            "[what the partnership or integration would look like].\n\n"
+            "Happy to share more about the network and where it's heading — "
+            "would a short intro call work for you?\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+    {
+        "key": "followup",
+        "label": "Follow-up nudge",
+        "subject": "Re: ForkMesh",
+        "body": (
+            "Hi [name],\n\n"
+            "Just floating this back to the top of your inbox — I reached "
+            "out about [topic] and would still love to hear your thoughts. "
+            "No worries if the timing isn't right; happy to reconnect "
+            "whenever works.\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+]
+
+
+def _outreach_from(env):
+    email = (getattr(env, "OUTREACH_SENDER", "") or OUTREACH_FROM_EMAIL).strip()
+    name = (getattr(env, "OUTREACH_SENDER_NAME", "") or OUTREACH_FROM_NAME).strip()
+    return email, name
+
+
+async def _outreach_member(env, name):
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    name_bi = await blind_index(env, name)
+    row = await d1_first(
+        env, "SELECT name FROM outreach_team WHERE name_bi=?", name_bi)
+    return bool(row)
+
+
+async def _outreach_team_list(env):
+    rows = await d1_all(
+        env, "SELECT name, added_by, added_at FROM outreach_team ORDER BY added_at")
+    return [{"name": str(r.get("name", "") or ""),
+             "addedBy": str(r.get("added_by", "") or ""),
+             "addedAt": int(r.get("added_at", 0) or 0)}
+            for r in (rows or [])]
+
+
+async def _outreach_sent_today(env, sender):
+    day_ago = int(Date.now()) - 24 * 60 * 60 * 1000
+    row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM outreach_log WHERE sender=? AND ts>=?",
+        sender, day_ago)
+    return int((row or {}).get("n", 0) or 0)
+
+
+async def _outreach_access(env, name, is_admin, allowed):
+    from_email, from_name = _outreach_from(env)
+    payload = {
+        "ok": True, "name": name, "isAdmin": is_admin, "allowed": allowed,
+        "fromEmail": from_email, "fromName": from_name,
+        "dailyLimit": OUTREACH_DAILY_LIMIT,
+        "configured": bool((getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()),
+    }
+    if not allowed:
+        # Non-members learn only that they lack access — not the templates,
+        # roster, or send history.
+        return json_response(payload)
+    payload["templates"] = OUTREACH_TEMPLATES
+    payload["sentToday"] = await _outreach_sent_today(env, name)
+    rows = await d1_all(
+        env, "SELECT ts, sender, ok, data FROM outreach_log "
+             "ORDER BY ts DESC LIMIT ?", OUTREACH_LOG_LIST_LIMIT)
+    recent = []
+    for r in (rows or []):
+        rec = await decrypt_row(env, r.get("data")) or {}
+        recent.append({
+            "ts": int(r.get("ts", 0) or 0),
+            "sender": str(r.get("sender", "") or ""),
+            "ok": bool(int(r.get("ok", 0) or 0)),
+            "to": rec.get("to", ""),
+            "subject": rec.get("subject", ""),
+            "template": rec.get("template", ""),
+        })
+    payload["recent"] = recent
+    if is_admin:
+        payload["members"] = await _outreach_team_list(env)
+    return json_response(payload)
+
+
+async def _outreach_send(env, sender, data):
+    to_email = clean_string(data.get("to", ""), 254).strip().lower()
+    subject = clean_string(data.get("subject", ""), OUTREACH_MAX_SUBJECT).strip()
+    body = str(data.get("body", "") or "")[:OUTREACH_MAX_BODY].strip()
+    template = clean_string(data.get("template", ""), 40).strip()
+    if "@" not in to_email or len(to_email) < 3:
+        return json_response({"error": "valid_email_required"}, status=400)
+    if not subject:
+        return json_response({"error": "subject_required"}, status=400)
+    if not body:
+        return json_response({"error": "body_required"}, status=400)
+    sent_today = await _outreach_sent_today(env, sender)
+    if sent_today >= OUTREACH_DAILY_LIMIT:
+        return json_response(
+            {"error": "daily_limit_reached", "dailyLimit": OUTREACH_DAILY_LIMIT},
+            status=429)
+    from_email, from_name = _outreach_from(env)
+    ok = await _send_email(env, to_email, subject, body,
+                           from_email=from_email, from_name=from_name)
+    blob = await encrypt_row(env, {
+        "sender": sender, "to": to_email, "subject": subject,
+        "template": template, "ok": bool(ok)})
+    await d1_run(
+        env, "INSERT INTO outreach_log (ts, sender, ok, data) VALUES (?,?,?,?)",
+        int(Date.now()), sender, 1 if ok else 0, blob)
+    if not ok:
+        return json_response(
+            {"error": "send_failed",
+             "detail": "The email provider rejected the send (or "
+                       "MAILTRAP_API_TOKEN is not configured)."},
+            status=502)
+    return json_response({"ok": True, "to": to_email, "from": from_email,
+                          "sentToday": sent_today + 1,
+                          "dailyLimit": OUTREACH_DAILY_LIMIT})
+
+
+async def _outreach_team_update(env, admin, data):
+    action = clean_string(data.get("action", ""), 16).strip().lower()
+    target = clean_string(data.get("name", ""), MAX_NODE_NAME).strip().lower()
+    if action not in ("add", "remove"):
+        return json_response({"error": "invalid_action"}, status=400)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_account_name"}, status=400)
+    target_bi, rec = await _account_row(env, target)
+    if action == "add":
+        if not rec or rec.get("status") != "active":
+            return json_response({"error": "no_such_account"}, status=404)
+        await d1_run(
+            env,
+            "INSERT INTO outreach_team (name_bi, name, added_by, added_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(name_bi) DO NOTHING",
+            target_bi, rec.get("name", target), admin, int(Date.now()))
+    else:
+        await d1_run(env, "DELETE FROM outreach_team WHERE name_bi=?", target_bi)
+    return json_response({"ok": True, "members": await _outreach_team_list(env)})
+
+
+async def outreach_handler(env, request):
+    await ensure_schema(env)
+    url = urlparse(request.url)
+    method = method_name(request)
+    path = url.path.rstrip("/") or url.path
+    data = None
+    if method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+    # Every outreach route needs a logged-in account session (bearer token or
+    # sessionToken in the POST body); membership/admin gates layer on top.
+    _, rec = await _account_session_record(env, request, data)
+    if not rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    name = (rec.get("name", "") or "").strip().lower()
+    is_admin = await _is_admin(env, name)
+    allowed = is_admin or await _outreach_member(env, name)
+    if path == "/api/outreach" and method in ("GET", "POST"):
+        return await _outreach_access(env, name, is_admin, allowed)
+    if path == "/api/outreach/send" and method == "POST":
+        if not allowed:
+            return json_response({"error": "forbidden"}, status=403)
+        return await _outreach_send(env, name, data)
+    if path == "/api/outreach/team" and method == "POST":
+        if not is_admin:
+            return json_response({"error": "admin_required"}, status=403)
+        return await _outreach_team_update(env, name, data)
+    return json_response({"error": "not_found"}, status=404)
 
 
 # Step 1 of a password reset: a user who forgot their password gives their email
@@ -12804,6 +13042,11 @@ class Default(WorkerEntrypoint):
 
         if url.path.startswith("/api/accounts/"):
             return await accounts_handler(self.env, request)
+
+        # Founders-outreach email console (/outreach): admins plus the
+        # admin-managed outreach_team roster send from the founders address.
+        if url.path == "/api/outreach" or url.path.startswith("/api/outreach/"):
+            return await outreach_handler(self.env, request)
 
         # Match the profile route on the percent-decoded, case-folded path:
         # links pasted from address bars / other apps often arrive as /%40name
