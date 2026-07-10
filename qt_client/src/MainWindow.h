@@ -592,6 +592,10 @@ private:
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
+    // Fetch the shared room-chat key (server-derived from DATA_KEY) so it is no
+    // longer a public constant baked into the client. Cached in m_roomPassphrase
+    // and passed to ServerNode; empty falls back to the legacy app key.
+    void fetchRoomPassphrase();
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -4761,6 +4765,9 @@ private:
     bool m_isAdmin = false;
     QTimer *m_adminPollTimer = nullptr;
     QStringList m_seenPendingUsers;
+    // Shared room-chat key fetched from the relay (server-derived from DATA_KEY),
+    // replacing the old public app-wide constant. Empty until fetched.
+    QString m_roomPassphrase;
     // Last website-claim confirmation code already shown (adhoc #53), so the
     // per-minute heartbeat doesn't reopen the popup for the same claim.
     QString m_lastClaimCodeShown;

@@ -225,6 +225,33 @@ def test_worker_public_profile_exposes_follow_and_mirror_counts():
     assert "await _public_profile_payload(env, rec, request)" in public_handler
 
 
+def test_public_profile_html_template_formats_without_error():
+    # Regression: the inline CSS uses color-mix(... 40%, ...) percentages, and
+    # the whole page is emitted with a trailing `% (...)` format op. Any literal
+    # `%` that is not doubled to `%%` makes Python read it as a format spec and
+    # raises ValueError at render time -> Cloudflare "Worker threw exception"
+    # (Error 1101) on every /@name profile view. Extract the template literal
+    # and actually run the `%` formatting to prove it no longer explodes.
+    import ast
+
+    module = ast.parse(ENTRY_TEXT)
+    func = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "_public_profile_html"
+    )
+    template = next(
+        node.value
+        for node in ast.walk(func)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.lstrip().startswith("<!doctype")
+    )
+    placeholders = template.count("%s")
+    # Must not raise ValueError on the literal CSS percentages.
+    rendered = template % tuple(["x"] * placeholders)
+    assert "color-mix(in srgb, var(--accent) 40%, var(--border))" in rendered
+
+
 def test_worker_serves_public_at_profiles_and_private_profiles_404():
     assert "async def public_profile_handler" in ENTRY_TEXT
     route_body = ENTRY_TEXT[
