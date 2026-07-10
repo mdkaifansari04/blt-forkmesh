@@ -54,6 +54,15 @@
             "sig": "vWEJ9gSlIRkLmokDRqjRJqJl2TJbExC0746jH0nqA_IzCV-7p7ZNxH0uPn5WnaP2X9rTC8SPr0JLPA5cBEniAQ",
             "ts": 1783720085700,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "18bc8eee-a846-4be0-9e16-d1898948b3f3",
+            "sig": "yCGCXqccRZ-9JF0_J6pkflJPOCeKqBCF2FqALuV1wKZXih4ST2RFxgL2jDw1zpE_lRcgfE9Bisg6zHvkgHelAQ",
+            "status": "closed",
+            "ts": 1783720085757,
+            "type": "status"
         }
     ],
     "labels": [
@@ -63,8 +72,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "users should comment on issues as the username and not the nodename",
-    "updatedAt": 1783720085700,
+    "updatedAt": 1783720085757,
     "votes": 0
 }
