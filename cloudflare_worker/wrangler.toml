@@ -38,6 +38,7 @@ run_worker_first = [
   "/forgot-password.html",
   "/reset-password.html",
   "/mirror-payouts.html",
+  "/outreach.html",
   "/security-report.html",
   "/docs.html",
   "/network.html",

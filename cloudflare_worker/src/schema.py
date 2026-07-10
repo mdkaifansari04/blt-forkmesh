@@ -357,6 +357,22 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # Founders-outreach team: accounts an admin has authorized to send email
+    # from the shared founders address via /outreach. `name` is the public
+    # account name in plaintext (like accounts.name) so the roster is listable
+    # without decryption; name_bi is the usual blind index of it.
+    """CREATE TABLE IF NOT EXISTS outreach_team (
+        name_bi TEXT PRIMARY KEY, name TEXT NOT NULL,
+        added_by TEXT, added_at INTEGER NOT NULL)""",
+    # Audit log of outreach sends. `sender` (public account name) and ts stay
+    # plaintext so the per-sender daily cap is one COUNT query; the recipient
+    # address + subject are PII, so they live only in the encrypted blob
+    # ({sender, to, subject, template, ok}).
+    """CREATE TABLE IF NOT EXISTS outreach_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        sender TEXT NOT NULL, ok INTEGER NOT NULL DEFAULT 1,
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_outreach_log_sender_ts ON outreach_log(sender, ts)",
     # Per-repo issue-number allocator for issues the relay files on a user's
     # behalf (ForkBot). Desktop nodes own the real numbering (nextNumber() =
     # highest issue dir + 1), so a relay-created issue can only be given a

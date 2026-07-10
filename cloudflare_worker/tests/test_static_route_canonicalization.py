@@ -27,6 +27,7 @@ CANONICAL_PAGE_ROUTES = {
     "/forgot-password": "/forgot-password.html",
     "/reset-password": "/reset-password.html",
     "/mirror-payouts": "/mirror-payouts.html",
+    "/outreach": "/outreach.html",
     "/security-report": "/security-report.html",
     "/docs": "/docs/index.html",
     "/network": "/network.html",
@@ -52,6 +53,7 @@ BLOCKED_HTML_ALIASES = {
     "/forgot-password.html",
     "/reset-password.html",
     "/mirror-payouts.html",
+    "/outreach.html",
     "/security-report.html",
     "/docs.html",
     "/network.html",
@@ -73,6 +75,12 @@ BLOG_POST_REDIRECT_RULES = {
     ("/blog/:slug/", "/blog/:slug/index.html", "200"),
 }
 
+# Docs sections are directory indexes served the same way blog posts are.
+DOCS_PAGE_REDIRECT_RULES = {
+    ("/docs/:slug", "/docs/:slug/", "308"),
+    ("/docs/:slug/", "/docs/:slug/index.html", "200"),
+}
+
 NON_ROUTED_HTML_ASSETS = {
     # Served by Cloudflare only for misses, not a navigable product route.
     "404.html",
@@ -88,6 +96,11 @@ NON_ROUTED_HTML_ASSETS = {
     # directory indexes, while /blog itself is the canonical listing route.
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "blog").glob("*/index.html")
+} | {
+    # Docs sections live under /docs/<slug>/ and are served the same way,
+    # while /docs itself is the canonical listing route.
+    path.relative_to(PUBLIC).as_posix()
+    for path in (PUBLIC / "docs").glob("*/index.html")
 }
 
 
@@ -106,6 +119,7 @@ def test_public_redirects_have_one_canonical_route_per_public_html_page():
     rules = _redirect_rules()
     assert len({source for source, _, _ in rules}) == len(rules)
     assert BLOG_POST_REDIRECT_RULES <= set(rules)
+    assert DOCS_PAGE_REDIRECT_RULES <= set(rules)
 
     html_200_rules = {
         source: target
@@ -113,7 +127,8 @@ def test_public_redirects_have_one_canonical_route_per_public_html_page():
         if (
             status == "200"
             and target.endswith(".html")
-            and (source, target, status) not in BLOG_POST_REDIRECT_RULES
+            and (source, target, status)
+            not in BLOG_POST_REDIRECT_RULES | DOCS_PAGE_REDIRECT_RULES
         )
     }
 
