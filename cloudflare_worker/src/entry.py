@@ -14392,6 +14392,10 @@ class ForkMeshHost(DurableObject):
         path = url.path
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
+        # Forwarded to the host so its operator log line (issue #297) can show
+        # who a clone/browse request came from — a git client, a browser, or a
+        # scraper/bot — without the worker ever storing it server-side.
+        ua = clean_string(request.headers.get("user-agent") or "", 256)
 
         # Rate-limit the request-serving paths (not the host's own WS upgrade,
         # which is already gated by a signed token in _route).
@@ -14467,13 +14471,14 @@ class ForkMeshHost(DurableObject):
         if release_blob_match:
             await self._mark_present(path)
             repo_bi = await self._repo_blind_index(path)
-            return await self._release_blob(release_blob_match.group(3), repo_bi)
+            return await self._release_blob(
+                release_blob_match.group(3), repo_bi, ua)
 
         rel_path = (parse_qs(url.query).get("path", [""])[0] or "").strip()
         ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()
         if action == "raw":
             await self._mark_present(path)
-            return await self._raw_blob(rel_path, ref)
+            return await self._raw_blob(rel_path, ref, ua)
         if action == "blobs":
             # Batched blob read: one HTTP request returns up to MAX_BLOB_BATCH
             # files (repeated ?path= params), fanned out over the live tunnel
@@ -14487,7 +14492,7 @@ class ForkMeshHost(DurableObject):
             if not paths:
                 return json_response({"error": "path_required"}, status=400)
             results = await asyncio.gather(
-                *[self._tunnel_result("blob", p, ref) for p in paths])
+                *[self._tunnel_result("blob", p, ref, ua) for p in paths])
             if results and all(not r.get("ok") for r in results):
                 # Nothing could be served (host gone / tunnel dead). Surface it
                 # as the request's status so the router's mirror fallback sees
@@ -14519,7 +14524,7 @@ class ForkMeshHost(DurableObject):
                     {"ok": False, "error": "query_too_short"}, status=400)
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel("search", query, ref, served_by)
+            return await self._tunnel("search", query, ref, served_by, ua)
         if action in ("tree", "blob", "history", "commit", "branches"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
@@ -14529,7 +14534,7 @@ class ForkMeshHost(DurableObject):
             # the website which node served it.
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
-            return await self._tunnel(op, rel_path, ref, served_by)
+            return await self._tunnel(op, rel_path, ref, served_by, ua)
         return json_response({"error": "not_found"}, status=404)
 
     def _host_count(self):
@@ -14707,7 +14712,7 @@ class ForkMeshHost(DurableObject):
                 best, best_score = ws, score
         return best
 
-    async def _tunnel_result(self, op, rel_path, ref=""):
+    async def _tunnel_result(self, op, rel_path, ref="", ua=""):
         # One request over the live tunnel, returned as a payload dict rather
         # than a Response so callers can batch several reads into one HTTP
         # response (see the /blobs action). Failures carry the HTTP status
@@ -14726,7 +14731,7 @@ class ForkMeshHost(DurableObject):
         try:
             host.send(
                 json.dumps({"type": "request", "reqId": req_id, "op": op,
-                            "path": rel_path, "ref": ref})
+                            "path": rel_path, "ref": ref, "ua": ua})
             )
         except Exception:
             self.pending.pop(req_id, None)
@@ -14752,8 +14757,8 @@ class ForkMeshHost(DurableObject):
         payload["ok"] = True
         return payload
 
-    async def _tunnel(self, op, rel_path, ref="", served_by=""):
-        result = await self._tunnel_result(op, rel_path, ref)
+    async def _tunnel(self, op, rel_path, ref="", served_by="", ua=""):
+        result = await self._tunnel_result(op, rel_path, ref, ua)
         status = int(result.pop("_status", 200) or 200)
         if not result.get("ok"):
             return json_response(result, status=status)
@@ -14916,7 +14921,7 @@ class ForkMeshHost(DurableObject):
                     }))
         host.send(json.dumps({"type": "git-req-end", "reqId": req_id}))
 
-    async def _release_blob(self, sha256, repo_bi=None):
+    async def _release_blob(self, sha256, repo_bi=None, ua=""):
         # Stream a content-addressed release asset from a serving node: each
         # chunk flows straight to the client (see _stream_request), so
         # arbitrarily large binaries download without the 4 MB inline /blob cap
@@ -14935,7 +14940,7 @@ class ForkMeshHost(DurableObject):
         response, err = await self._stream_request(
             host,
             {"type": "request", "reqId": req_id,
-             "op": "release-blob", "path": sha256.lower()},
+             "op": "release-blob", "path": sha256.lower(), "ua": ua},
             {
                 "content-type": "application/octet-stream",
                 "cache-control": "public, max-age=31536000, immutable",
@@ -14954,7 +14959,7 @@ class ForkMeshHost(DurableObject):
             "not_found", "bad_hash") else 502
         return Response("Release asset unavailable.", status=status)
 
-    async def _raw_blob(self, rel_path, ref=""):
+    async def _raw_blob(self, rel_path, ref="", ua=""):
         # Stream a repository blob from git as bytes so browser-native previews
         # can load media without the capped JSON/base64 /blob response — chunk
         # by chunk (see _stream_request), so a large asset never sits whole in
@@ -14970,7 +14975,7 @@ class ForkMeshHost(DurableObject):
         response, err = await self._stream_request(
             host,
             {"type": "request", "reqId": req_id,
-             "op": "raw-blob", "path": rel_path, "ref": ref},
+             "op": "raw-blob", "path": rel_path, "ref": ref, "ua": ua},
             {
                 "content-type": repo_blob_content_type(rel_path),
                 "cache-control": "no-cache, max-age=0, must-revalidate",
@@ -15108,7 +15113,8 @@ class ForkMeshHost(DurableObject):
 
         self.counter += 1
         req_id = "g%d" % self.counter
-        message = {"type": "request", "reqId": req_id, "op": op}
+        ua = clean_string(request.headers.get("user-agent") or "", 256)
+        message = {"type": "request", "reqId": req_id, "op": op, "ua": ua}
         if body:
             message["body"] = base64.b64encode(body).decode()
 

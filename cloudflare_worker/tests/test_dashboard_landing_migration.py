@@ -1694,7 +1694,7 @@ def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
     assert 'if action == "raw":' in ENTRY_TEXT
-    assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
+    assert 'return await self._raw_blob(rel_path, ref, ua)' in ENTRY_TEXT
     assert 'op": "raw-blob"' in ENTRY_TEXT
     # Raw blobs stream chunk-by-chunk through the tunnel (never reassembled in
     # DO memory - buffering large media is what blew the isolate memory limit),
@@ -1711,7 +1711,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
         'if action in ("tree", "blob", "history", "commit", "branches"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
-        'return await self._tunnel(op, rel_path, ref, served_by)',
+        'return await self._tunnel(op, rel_path, ref, served_by, ua)',
         '"ref": ref',
     ):
         assert marker in ENTRY_TEXT
