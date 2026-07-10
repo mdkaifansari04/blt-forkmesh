@@ -6908,6 +6908,16 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         QString provider; // empty = node default (adhoc #234)
     };
     QList<AgentRequest> agentRequests;
+    // Agent requests on EXISTING issues (ForkBot's "start an agent on issue
+    // #N" from chat): a comment event whose meta carries wantsAgent. Unlike a
+    // new open event, the issue number is already authoritative, so these
+    // match by number after the merge.
+    struct CommentAgentRequest {
+        int number = 0;
+        QString model;
+        QString provider;
+    };
+    QList<CommentAgentRequest> commentAgentRequests;
     for (const QJsonValue &value : pending) {
         const QJsonObject item = value.toObject();
         const int number = item.value("number").toInt();
@@ -6935,6 +6945,9 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                 lastCommentAuthor = who;
                 lastCommentNumber = number;
                 lastCommentBody = ev.body.simplified();
+                if (meta.wantsAgent && number > 0)
+                    commentAgentRequests << CommentAgentRequest{
+                        number, meta.wantsAgentModel, meta.wantsAgentProvider};
             } else if (ev.type == QLatin1String("open")) {
                 ++newIssues;
                 lastIssueAuthor = who;
@@ -6962,8 +6975,32 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
     // (see agentRequests above) to get the real, post-merge issue number.
     // repoHint keeps this pointed at repo/store above regardless of what the
     // Issues tab currently shows (adhoc #105).
-    if (!agentRequests.isEmpty()) {
+    if (!agentRequests.isEmpty() || !commentAgentRequests.isEmpty()) {
         const QList<Issue> mergedIssues = store.loadAll();
+        // A redelivered inbox item (e.g. the previous drain's ack delete
+        // failed after a successful merge) would otherwise start a second
+        // agent on the same issue — skip any issue that already has one.
+        const auto issueHasAgent = [](const Issue &issue) {
+            for (const IssueEvent &e : issue.events) {
+                if (e.type == QLatin1String("agent") && e.agentSessionId > 0)
+                    return true;
+            }
+            return false;
+        };
+        for (const auto &request : std::as_const(commentAgentRequests)) {
+            const QString provider = request.provider.trimmed().isEmpty()
+                                         ? defaultAgentProvider()
+                                         : request.provider.trimmed();
+            for (const Issue &candidate : mergedIssues) {
+                if (candidate.number != request.number || candidate.isDeleted())
+                    continue;
+                if (!issueHasAgent(candidate))
+                    startAgentForIssue(candidate, provider,
+                                       /*createPr=*/true, /*quiet=*/true,
+                                       request.model, &repo);
+                break;
+            }
+        }
         for (const auto &request : std::as_const(agentRequests)) {
             const IssueEvent &wanted = request.event;
             const QString &wantedModel = request.model;
@@ -6990,18 +7027,7 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                     }
                 }
                 if (matched) {
-                    // A redelivered inbox item (e.g. the previous drain's ack
-                    // delete failed after a successful merge) would otherwise
-                    // start a second agent on the same issue — skip if one is
-                    // already recorded on it.
-                    bool alreadyAssigned = false;
-                    for (const IssueEvent &e : candidate.events) {
-                        if (e.type == QLatin1String("agent") && e.agentSessionId > 0) {
-                            alreadyAssigned = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyAssigned)
+                    if (!issueHasAgent(candidate))
                         startAgentForIssue(candidate, wantedProvider,
                                            /*createPr=*/true, /*quiet=*/true,
                                            wantedModel, &repo);

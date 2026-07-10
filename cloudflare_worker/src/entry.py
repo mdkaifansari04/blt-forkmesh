@@ -145,6 +145,18 @@ FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
 # the one @forkbot line. Bounded so a client can't blow the AI prompt budget.
 FORKBOT_CONTEXT_MAX_MESSAGES = 12
 FORKBOT_CONTEXT_MAX_CHARS = 600
+# Issue listing from chat ("forkbot list the last N issues"): default when the
+# user gives no count, and a hard cap so one chat line can't request a page-size
+# blob fan-out over the live tunnel.
+FORKBOT_LIST_DEFAULT = 5
+FORKBOT_LIST_MAX = 20
+# How many search hits ForkBot echoes into the chat (the host's git-grep reply
+# is already capped much higher; chat just wants the top of it).
+FORKBOT_SEARCH_MAX = 5
+# Internal fetch to the repo's host Durable Object (tree/blobs/search over the
+# live tunnel). Longer than HOST_COUNT_TIMEOUT_MS because the host runs real
+# git commands (git grep is allowed 8s host-side).
+FORKBOT_HOST_TIMEOUT_MS = 10000
 # Notification inbox: Worker indexes public-safe notification state while the
 # canonical issue/PR/discussion/release records remain in signed repo files or
 # pending inboxes. Stored rows are encrypted and bounded per recipient.
@@ -8818,6 +8830,130 @@ def _forkbot_command_hints_issue(command):
         clean_string(command, FORKBOT_MAX_COMMAND)))
 
 
+def _forkbot_polite_prefix():
+    # Shared lead-in the offline parsers strip: "please can you ..." etc.
+    return (r"(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
+            r"pls\s+|plz\s+)*")
+
+
+def _forkbot_parse_list_command(command):
+    """Offline fast path for "list the last N issues" phrasings. Mirrors the
+    create-issue fast path: a miss is NOT a rejection (the AI classifier still
+    gets a shot at natural wording), a hit spares the AI round trip and keeps
+    the feature working when AI is off. Returns {"count": n} or None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:list|show(?:\s+me)?|display|give\s+me|what\s+are)\s+"
+        r"(?:the\s+)?(?:last|latest|most\s+recent|recent|newest)?\s*"
+        r"(\d{1,3})?\s*(?:few\s+)?issues\b",
+        text,
+    )
+    if not match:
+        return None
+    try:
+        count = int(match.group(1) or FORKBOT_LIST_DEFAULT)
+    except (TypeError, ValueError):
+        count = FORKBOT_LIST_DEFAULT
+    return {"count": max(1, min(count, FORKBOT_LIST_MAX))}
+
+
+def _forkbot_parse_search_command(command):
+    """Offline fast path for "search issues for X" phrasings. Requires the
+    word issue(s) so a bare "find the bug" still flows to the create/AI paths.
+    Returns {"query": text} or None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:search|find|look\s+(?:for|up)|grep)\s+"
+        r"(?:the\s+|any\s+|all\s+)?(?:open\s+|closed\s+)?issues?\b\s*"
+        r"(?:(?:for|about|regarding|matching|mentioning|containing|on|with)"
+        r"\s+)?[:\-]?\s*(.+)$",
+        text,
+    )
+    if not match:
+        return None
+    query = re.sub(r"\s+", " ", match.group(1)).strip(" .:-\"'")
+    if len(query) < 2:
+        return None
+    return {"query": query[:100]}
+
+
+def _forkbot_parse_agent_command(command):
+    """Offline fast path for "start an agent on the latest issue / issue #N".
+    Returns {"issueNumber": n} (0 = the most recent issue) or None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:start|run|launch|kick\s+off|spin\s+up|put|assign|set|sic)\s+"
+        r"(?:an?\s+)?(?:coding\s+|code\s+)?agent\s+"
+        r"(?:on|to|at|for|onto|against)?\s*(?:the\s+)?"
+        r"(?:most\s+recent|latest|newest|last|recent)?\s*"
+        r"issue\s*(?:#\s*)?(\d+)?",
+        text,
+    )
+    if not match:
+        return None
+    try:
+        number = int(match.group(1) or 0)
+    except (TypeError, ValueError):
+        number = 0
+    return {"issueNumber": number}
+
+
+def _forkbot_parse_show_command(command):
+    """Offline fast path for "show issue #N" / "show the latest issue".
+    "open issue ..." intentionally stays with the create-issue parser (there
+    "open" is the filing verb). Returns {"issueNumber": n} (0 = latest) or
+    None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:show(?:\s+me)?|view|describe|summarize|"
+        r"what(?:'s|\s+is)\s+(?:in|the\s+status\s+of))\s+"
+        r"(?:the\s+)?(?:most\s+recent\s+|latest\s+|newest\s+|last\s+)?"
+        r"issue\s*(?:#\s*)?(\d+)?\s*$",
+        text,
+    )
+    if not match:
+        return None
+    try:
+        number = int(match.group(1) or 0)
+    except (TypeError, ValueError):
+        number = 0
+    return {"issueNumber": number}
+
+
+def _forkbot_parse_help_command(command):
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip().lower()
+    if not text:
+        return False
+    return bool(re.match(
+        r"^(?:help|\?+|what\s+can\s+you\s+do|what\s+do\s+you\s+do|"
+        r"commands|usage)\s*[!.?]*$", text))
+
+
+def _forkbot_help_message():
+    # Also the fallback reply for anything ForkBot could not map to an action,
+    # so it doubles as discoverable usage text.
+    return (
+        "I can open an issue from the conversation (\"forkbot open an issue "
+        "for the flaky login test\"), list recent issues (\"forkbot list the "
+        "last 5 issues\" - up to %d), search issues (\"forkbot search issues "
+        "for relay retries\"), show one issue (\"forkbot show issue #12\"), "
+        "and - for the repo owner - start a coding agent (\"forkbot start an "
+        "agent on the latest issue\")." % FORKBOT_LIST_MAX
+    )
+
+
 def _forkbot_context_text(context):
     """Flatten the recent conversation the client forwarded into a short,
     plain-text transcript for the AI. Each entry is {sender, text}; the client
@@ -8975,9 +9111,14 @@ FORKBOT_ISSUE_FIELDS_SCHEMA = {
 FORKBOT_INTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {"type": "string", "enum": ["create_issue", "none"]},
+        "intent": {"type": "string", "enum": [
+            "create_issue", "list_issues", "search_issues", "show_issue",
+            "start_agent", "help", "none"]},
         "title": {"type": "string"},
         "body": {"type": "string"},
+        "count": {"type": "integer"},
+        "query": {"type": "string"},
+        "issueNumber": {"type": "integer"},
     },
     "required": ["intent"],
 }
@@ -9006,28 +9147,42 @@ async def _forkbot_ai_issue_fields(env, description, context_text=""):
 
 
 async def _forkbot_ai_interpret(env, command, context_text=""):
-    """Decide from meaning (not fixed phrasing) whether the user is asking to
-    open an issue, and if so draft it — pulling the subject from the recent
-    conversation when the mention itself is only a pointer ("forkbot log that").
+    """Decide from meaning (not fixed phrasing) which ForkBot action the user
+    wants — pulling the subject from the recent conversation when the mention
+    itself is only a pointer ("forkbot log that").
 
-    Returns {"intent": "create_issue", "title", "body"} when an issue is
-    wanted, {"intent": "none"} when the model decided it clearly is not, or
-    None when the model is unavailable/unparseable — callers treat None as
+    Returns one of:
+      {"intent": "create_issue", "title", "body"}
+      {"intent": "list_issues", "count"}
+      {"intent": "search_issues", "query"}
+      {"intent": "show_issue", "issueNumber"}   (0 = the most recent issue)
+      {"intent": "start_agent", "issueNumber"}  (0 = the most recent issue)
+      {"intent": "help"} / {"intent": "none"}
+    or None when the model is unavailable/unparseable — callers treat None as
     "AI could not decide" and fall back to a heuristic, NOT as a refusal."""
     system_prompt = (
-        "You are ForkBot, an assistant in a ForkMesh chat room. Decide whether "
-        "the user wants a bug, task, feature, or improvement recorded as an "
-        "issue. They may phrase it any way at all (\"issue to ...\", \"can you "
-        "sort this out\", \"we should track that\"), or refer to something "
-        "discussed earlier in the conversation instead of restating it. When "
-        "in doubt and the message describes a problem, task, or request, "
-        "treat it as an issue. Respond with ONLY one JSON object, no other "
-        'text. Issue wanted: {"intent":"create_issue","title":"short '
-        'summary","body":"the problem or task, with detail from the '
-        'conversation"}. Not an issue (a greeting, a question about ForkMesh, '
-        'small talk): {"intent":"none"}. Examples: "issue to add dark mode" '
-        '-> {"intent":"create_issue","title":"Add dark mode","body":"Add dark '
-        'mode."}; "hello!" -> {"intent":"none"}.'
+        "You are ForkBot, an assistant in a ForkMesh chat room. Classify what "
+        "the user wants and respond with ONLY one JSON object, no other text. "
+        "Actions: record a bug/task/feature as an issue -> "
+        '{"intent":"create_issue","title":"short summary","body":"the problem '
+        'or task, with detail from the conversation"}; list recent issues -> '
+        '{"intent":"list_issues","count":N} (how many they asked for, 5 if '
+        "unspecified); search existing issues for a topic -> "
+        '{"intent":"search_issues","query":"the search words"}; show one '
+        'existing issue -> {"intent":"show_issue","issueNumber":N} (0 for the '
+        "most recent); start a coding agent working on an issue -> "
+        '{"intent":"start_agent","issueNumber":N} (0 for the most recent); '
+        'asking what ForkBot can do -> {"intent":"help"}. When in doubt and '
+        "the message describes a problem, task, or request, treat it as "
+        "create_issue; a greeting or small talk is "
+        '{"intent":"none"}. Examples: "issue to add dark mode" -> '
+        '{"intent":"create_issue","title":"Add dark mode","body":"Add dark '
+        'mode."}; "what came in this week?" -> '
+        '{"intent":"list_issues","count":5}; "anything about relay retries?" '
+        '-> {"intent":"search_issues","query":"relay retries"}; "get an '
+        'agent going on that new issue" -> '
+        '{"intent":"start_agent","issueNumber":0}; "hello!" -> '
+        '{"intent":"none"}.'
     )
     user_prompt = command
     if context_text:
@@ -9043,6 +9198,27 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
     if not isinstance(parsed, dict):
         return None
     intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
+    if intent == "list_issues":
+        try:
+            count = int(parsed.get("count", FORKBOT_LIST_DEFAULT)
+                        or FORKBOT_LIST_DEFAULT)
+        except (TypeError, ValueError):
+            count = FORKBOT_LIST_DEFAULT
+        return {"intent": "list_issues",
+                "count": max(1, min(count, FORKBOT_LIST_MAX))}
+    if intent == "search_issues":
+        query = clean_string(parsed.get("query", ""), 100).strip()
+        if not query:
+            return None
+        return {"intent": "search_issues", "query": query}
+    if intent in ("show_issue", "start_agent"):
+        try:
+            number = int(parsed.get("issueNumber", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        return {"intent": intent, "issueNumber": max(0, number)}
+    if intent == "help":
+        return {"intent": "help"}
     if intent not in ("create_issue", "none"):
         # Some models omit the field but still return title/body when they
         # decided to draft an issue; treat a usable draft as create_issue.
@@ -9057,6 +9233,173 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         return None
     return {"intent": "create_issue", "title": fields["title"],
             "body": fields["body"]}
+
+
+async def _forkbot_repo_host_json(env, owner, repo, action_query):
+    """Internal fetch to the repo's host Durable Object (the same tunnel the
+    website's issue list uses): tree/blobs/search served by the live desktop
+    host. Returns the parsed JSON dict, or None when no host is reachable —
+    callers phrase that as "no live host", never as an empty repo."""
+    try:
+        host_id = env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
+        host_object = env.FORKMESH_HOST.get(host_id)
+        response = await asyncio.wait_for(
+            host_object.fetch(
+                "https://forkmesh.internal/api/repo/%s/%s/%s"
+                % (owner, repo, action_query)),
+            timeout=FORKBOT_HOST_TIMEOUT_MS / 1000,
+        )
+        data = await response.json()
+        if hasattr(data, "to_py"):
+            data = data.to_py()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _forkbot_missing_tree(data):
+    # The host answers "that folder isn't in git yet" in a few git-flavored
+    # ways (same set the dashboard's isMissingMirrorFolder knows); all of them
+    # mean "no issues filed", not "host unreachable".
+    error = str((data or {}).get("error", "")).lower()
+    return any(marker in error for marker in (
+        "not_found", "not a valid object name", "pathspec",
+        "does not exist", "unknown revision"))
+
+
+def _forkbot_issue_json_path(number):
+    return ".forkmesh/issues/%d/issue-%d.json" % (int(number), int(number))
+
+
+def _forkbot_blob_text(blob):
+    if not isinstance(blob, dict) or not blob.get("ok"):
+        return ""
+    content = blob.get("content", "")
+    if not isinstance(content, str):
+        return ""
+    if blob.get("encoding") == "base64":
+        try:
+            return base64.b64decode(content).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    return content
+
+
+def _forkbot_parse_issue_record(text, number):
+    """Reduce one .forkmesh/issues/<N>/issue-<N>.json blob to the fields a chat
+    line needs. Tolerant of junk: a malformed record still yields a usable
+    "#N" stub rather than dropping the issue from the list."""
+    try:
+        parsed = json.loads(text or "{}")
+    except Exception:
+        parsed = None
+    if not isinstance(parsed, dict):
+        parsed = {}
+    events = parsed.get("events")
+    open_event = {}
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, dict) and event.get("type") == "open":
+                open_event = event
+                break
+    title = clean_string(
+        parsed.get("title") or open_event.get("title") or "", 240).strip()
+    return {
+        "number": int(parsed.get("number") or number or 0),
+        "title": title or ("issue #%d" % int(number or 0)),
+        "status": clean_string(
+            parsed.get("status") or parsed.get("state") or "open", 40),
+        "author": clean_string(
+            parsed.get("authorName") or open_event.get("authorName") or
+            parsed.get("author") or open_event.get("author") or "unknown",
+            MAX_NODE_NAME),
+        "body": clean_string(
+            open_event.get("body") or parsed.get("body") or "", 600).strip(),
+    }
+
+
+async def _forkbot_recent_issue_numbers(env, owner, repo):
+    """Issue numbers committed to the live mirror, newest first. Returns None
+    when no host could serve the tree (offline), [] when the repo simply has
+    no issues folder yet."""
+    tree = await _forkbot_repo_host_json(
+        env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
+    if tree is None:
+        return None
+    entries = tree.get("entries")
+    if not isinstance(entries, list):
+        return [] if _forkbot_missing_tree(tree) else None
+    numbers = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type") != "tree":
+            continue
+        name = str(entry.get("name", ""))
+        if name.isdigit():
+            numbers.add(int(name))
+    return sorted(numbers, reverse=True)
+
+
+async def _forkbot_load_issue_records(env, owner, repo, numbers):
+    """Batched read of the given issues' JSON records over the live tunnel
+    (one /blobs round trip, like the website's issue list). Unreadable issues
+    are skipped; returns records in the order requested."""
+    numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
+    if not numbers:
+        return []
+    query = "&".join(
+        "path=" + quote(_forkbot_issue_json_path(n), safe="") for n in numbers)
+    data = await _forkbot_repo_host_json(env, owner, repo, "blobs?" + query)
+    blobs = data.get("blobs") if isinstance(data, dict) else None
+    if not isinstance(blobs, dict):
+        return []
+    records = []
+    for number in numbers:
+        text = _forkbot_blob_text(blobs.get(_forkbot_issue_json_path(number)))
+        if not text:
+            continue
+        records.append(_forkbot_parse_issue_record(text, number))
+    return records
+
+
+async def _forkbot_search_issues(env, owner, repo, query):
+    """One host-side git grep over the mirror (the /search tunnel op, issue
+    #360); ForkBot only reads the issues bucket. Returns the matches, or None
+    when no host answered."""
+    data = await _forkbot_repo_host_json(
+        env, owner, repo, "search?q=" + quote(query, safe=""))
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    issues = data.get("issues")
+    if not isinstance(issues, list):
+        return []
+    matches = []
+    for hit in issues:
+        if not isinstance(hit, dict):
+            continue
+        try:
+            number = int(hit.get("number", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0:
+            continue
+        matches.append({
+            "number": number,
+            "title": clean_string(hit.get("title", ""), 240).strip()
+            or ("issue #%d" % number),
+            "snippet": clean_string(hit.get("snippet", ""), 200).strip(),
+        })
+    return matches
+
+
+def _forkbot_issue_lines(records):
+    lines = []
+    for record in records:
+        line = "#%d %s (%s" % (
+            record["number"], record["title"], record["status"])
+        if record.get("author") and record["author"] != "unknown":
+            line += ", by " + record["author"]
+        lines.append(line + ")")
+    return "\n".join(lines)
 
 
 async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
@@ -9173,6 +9516,234 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
     return True, item
 
 
+async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
+    """Queue a "start a coding agent on issue #number" request through the
+    same signed-inbox channel as everything else: a ForkBot comment event on
+    the existing issue whose meta carries wantsAgent. The owner's desktop node
+    starts the agent when it merges the inbox — the relay never runs anything
+    itself. Caller has already verified the requester is the repo owner/admin
+    (the same privilege gate issues_handler applies to wantsAgent)."""
+    await ensure_schema(env)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi)
+    if count and int(count.get("c", 0) or 0) >= MAX_PENDING_ISSUES:
+        return False, "inbox_full"
+    submitter_bi = await blind_index(env, FORKBOT_AUTHOR)
+    if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
+        return False, "author_quota"
+
+    now = int(Date.now())
+    actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
+    event = {
+        "type": "comment",
+        "id": "forkbot-agent-%d" % now,
+        "author": FORKBOT_AUTHOR,
+        "authorName": FORKBOT_NAME,
+        "ts": now,
+        "body": "@%s asked ForkBot to start a coding agent on this issue."
+                % actor,
+        "attachments": [],
+        "sig": "",
+    }
+    item = {
+        "number": int(number),
+        "titleIfNew": "",
+        "event": event,
+        "meta": {
+            "labels": [],
+            "milestone": "",
+            "priority": 0,
+            "assignees": [],
+            "wantsAgent": True,
+            "model": "",
+            "provider": "",
+        },
+        "submitter": FORKBOT_AUTHOR,
+        "submittedAt": now,
+        "source": "forkbot",
+        "requestedBy": actor,
+    }
+    await d1_run(
+        env,
+        "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
+        repo_bi, await encrypt_row(env, item), submitter_bi,
+    )
+    await _best_effort_inbox_side_effect(
+        notify_pending_inbox(
+            env, owner, repo, "issue", FORKBOT_AUTHOR,
+            "agent request for issue #%d" % int(number), int(number)))
+    return True, item
+
+
+def _forkbot_host_offline_reply(owner, repo):
+    return json_response({
+        "ok": True,
+        "action": "issues_unavailable",
+        "botMessage": (
+            "I couldn't reach a live host for %s/%s — issues are served from "
+            "the owner's desktop node. Try again once it's back online."
+        ) % (owner, repo),
+    })
+
+
+async def _forkbot_action_list(env, owner, repo, count):
+    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
+    if numbers is None:
+        return _forkbot_host_offline_reply(owner, repo)
+    issue_url = repo_web_href(owner, repo) + "/issues"
+    if not numbers:
+        return json_response({
+            "ok": True, "action": "issues_listed", "issues": [],
+            "botMessage": "No issues have been filed in %s/%s yet."
+                          % (owner, repo),
+        })
+    records = await _forkbot_load_issue_records(env, owner, repo,
+                                                numbers[:count])
+    if not records:
+        return _forkbot_host_offline_reply(owner, repo)
+    lines = _forkbot_issue_lines(records)
+    header = "Last %d issue%s in %s/%s:" % (
+        len(records), "" if len(records) == 1 else "s", owner, repo)
+    footer = "Full list: " + issue_url
+    if len(numbers) > len(records):
+        footer = ("Say \"list the last N issues\" for more (up to %d). "
+                  % FORKBOT_LIST_MAX) + footer
+    return json_response({
+        "ok": True,
+        "action": "issues_listed",
+        "owner": owner,
+        "repo": repo,
+        "issues": records,
+        "botMessage": header + "\n" + lines + "\n" + footer,
+    })
+
+
+async def _forkbot_action_search(env, owner, repo, query):
+    matches = await _forkbot_search_issues(env, owner, repo, query)
+    if matches is None:
+        return _forkbot_host_offline_reply(owner, repo)
+    if not matches:
+        return json_response({
+            "ok": True, "action": "issues_searched", "query": query,
+            "issues": [],
+            "botMessage": "No issues matching \"%s\" in %s/%s."
+                          % (query, owner, repo),
+        })
+    top = matches[:FORKBOT_SEARCH_MAX]
+    lines = []
+    for hit in top:
+        line = "#%d %s" % (hit["number"], hit["title"])
+        if hit.get("snippet"):
+            line += " — " + hit["snippet"]
+        lines.append(line)
+    header = "Issues matching \"%s\" in %s/%s:" % (query, owner, repo)
+    if len(matches) > len(top):
+        header = "Top %d of %d issues matching \"%s\" in %s/%s:" % (
+            len(top), len(matches), query, owner, repo)
+    return json_response({
+        "ok": True,
+        "action": "issues_searched",
+        "owner": owner,
+        "repo": repo,
+        "query": query,
+        "issues": top,
+        "botMessage": header + "\n" + "\n".join(lines),
+    })
+
+
+async def _forkbot_action_show(env, owner, repo, number):
+    if number <= 0:
+        numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
+        if numbers is None:
+            return _forkbot_host_offline_reply(owner, repo)
+        if not numbers:
+            return json_response({
+                "ok": True, "action": "issue_shown", "issue": None,
+                "botMessage": "No issues have been filed in %s/%s yet."
+                              % (owner, repo),
+            })
+        number = numbers[0]
+    records = await _forkbot_load_issue_records(env, owner, repo, [number])
+    if not records:
+        return json_response({
+            "ok": True, "action": "issue_shown", "issue": None,
+            "botMessage": (
+                "I couldn't read issue #%d from a live %s/%s host — it may "
+                "not exist, or the owner's node is offline."
+            ) % (number, owner, repo),
+        })
+    record = records[0]
+    bot_message = "#%d %s (%s, opened by %s)." % (
+        record["number"], record["title"], record["status"], record["author"])
+    if record.get("body"):
+        bot_message += " " + record["body"]
+    return json_response({
+        "ok": True,
+        "action": "issue_shown",
+        "owner": owner,
+        "repo": repo,
+        "issue": record,
+        "botMessage": bot_message,
+    })
+
+
+async def _forkbot_action_start_agent(env, owner, repo, number, sender):
+    # Starting a coding agent on the owner's machine is an immediate,
+    # unreviewed side effect, so it keeps the same privilege gate the web
+    # issue form's wantsAgent has (adhoc #225): the repo owner's account or a
+    # network admin. Chat sender names are client-claimed, matching the trust
+    # model of the web form's ownerAccount field.
+    requester = clean_string(sender, MAX_NODE_NAME).strip().lower()
+    authorized = bool(requester) and (
+        requester == owner.lower() or await _is_admin(env, requester))
+    if not authorized:
+        return json_response({
+            "ok": True,
+            "action": "agent_denied",
+            "botMessage": (
+                "Starting a coding agent is limited to the repo owner (or a "
+                "network admin) — ask %s to kick it off."
+            ) % owner,
+        })
+    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
+    if numbers is None:
+        return _forkbot_host_offline_reply(owner, repo)
+    if not numbers:
+        return json_response({
+            "ok": True, "action": "agent_denied",
+            "botMessage": "There are no issues in %s/%s to start an agent on."
+                          % (owner, repo),
+        })
+    if number <= 0:
+        number = numbers[0]
+    elif number not in numbers:
+        return json_response({
+            "ok": True, "action": "agent_denied",
+            "botMessage": "Issue #%d isn't in the %s/%s mirror."
+                          % (number, owner, repo),
+        })
+    records = await _forkbot_load_issue_records(env, owner, repo, [number])
+    title = records[0]["title"] if records else ""
+    ok, result = await _forkbot_enqueue_agent_request(
+        env, owner, repo, number, requester)
+    if not ok:
+        return json_response({"error": result}, status=429)
+    bot_message = (
+        "Queued a coding agent for issue #%d%s in %s/%s. The owner's node "
+        "will start it when it next syncs the inbox."
+    ) % (number, (": " + title) if title else "", owner, repo)
+    return json_response({
+        "ok": True,
+        "action": "agent_requested",
+        "owner": owner,
+        "repo": repo,
+        "issueNumber": number,
+        "title": title,
+        "botMessage": bot_message,
+    }, status=201)
+
+
 async def forkbot_chat_handler(env, request):
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -9191,45 +9762,75 @@ async def forkbot_chat_handler(env, request):
     # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
     # resolve "that bug" / "the issue we discussed" instead of only the one line.
     context_text = _forkbot_context_text(data.get("context"))
+    sender = clean_string(data.get("sender", ""), MAX_NODE_NAME)
+    owner = FORKBOT_DEFAULT_OWNER
+    repo = FORKBOT_DEFAULT_REPO
 
-    # Decide intent and draft the issue. Prefer meaning over fixed wording:
-    #  1. The cheap regex catches an explicitly phrased command offline.
+    # Decide the action. Prefer meaning over fixed wording:
+    #  1. Cheap regexes catch explicitly phrased commands offline (list /
+    #     search / start-agent / show / help / create), sparing an AI round
+    #     trip and keeping every command working when AI is off.
     #  2. Otherwise the AI classifier reads the command + conversation and
-    #     decides whether an issue is wanted (and drafts it).
+    #     picks the intent (drafting the issue when one is wanted).
     #  3. AI unreachable (None — distinct from a confident "none") but the
     #     message plainly talks about issues/bugs/tracking: file the raw text
     #     rather than refusing. Only a confident "none" or a message with no
     #     work-recording signal at all gets the help hint.
-    fields = None
-    parsed = _forkbot_parse_issue_command(command)
-    if parsed:
-        fields = await _forkbot_ai_issue_fields(
-            env, parsed["description"], context_text)
-        if not fields:
-            fields = _forkbot_fallback_issue_fields(parsed["description"])
-    else:
-        interpreted = await _forkbot_ai_interpret(env, command, context_text)
-        if interpreted and interpreted.get("intent") == "create_issue":
-            fields = {"title": interpreted["title"], "body": interpreted["body"]}
-        elif interpreted is None and _forkbot_command_hints_issue(command):
-            fields = _forkbot_fallback_issue_fields(command)
+    action = None
+    for intent_name, parser in (
+            ("list_issues", _forkbot_parse_list_command),
+            ("search_issues", _forkbot_parse_search_command),
+            ("start_agent", _forkbot_parse_agent_command),
+            ("show_issue", _forkbot_parse_show_command)):
+        parsed_intent = parser(command)
+        if parsed_intent:
+            action = {"intent": intent_name, **parsed_intent}
+            break
+    if action is None and _forkbot_parse_help_command(command):
+        action = {"intent": "help"}
 
-    if not fields or not fields.get("body"):
+    fields = None
+    if action is None:
+        parsed = _forkbot_parse_issue_command(command)
+        if parsed:
+            action = {"intent": "create_issue"}
+            fields = await _forkbot_ai_issue_fields(
+                env, parsed["description"], context_text)
+            if not fields:
+                fields = _forkbot_fallback_issue_fields(parsed["description"])
+        else:
+            interpreted = await _forkbot_ai_interpret(env, command, context_text)
+            if interpreted and interpreted.get("intent") == "create_issue":
+                action = {"intent": "create_issue"}
+                fields = {"title": interpreted["title"],
+                          "body": interpreted["body"]}
+            elif interpreted and interpreted.get("intent") != "none":
+                action = interpreted
+            elif interpreted is None and _forkbot_command_hints_issue(command):
+                action = {"intent": "create_issue"}
+                fields = _forkbot_fallback_issue_fields(command)
+
+    intent = (action or {}).get("intent", "")
+    if intent == "list_issues":
+        return await _forkbot_action_list(env, owner, repo, action["count"])
+    if intent == "search_issues":
+        return await _forkbot_action_search(env, owner, repo, action["query"])
+    if intent == "show_issue":
+        return await _forkbot_action_show(
+            env, owner, repo, int(action.get("issueNumber", 0) or 0))
+    if intent == "start_agent":
+        return await _forkbot_action_start_agent(
+            env, owner, repo, int(action.get("issueNumber", 0) or 0), sender)
+
+    if intent != "create_issue" or not fields or not fields.get("body"):
         return json_response({
             "ok": True,
             "action": "help",
-            "botMessage": (
-                "I can open issues from the conversation — just tell me what's "
-                "wrong or what needs doing (e.g. \"forkbot open an issue for "
-                "the flaky login test\")."
-            ),
+            "botMessage": _forkbot_help_message(),
         })
 
-    owner = FORKBOT_DEFAULT_OWNER
-    repo = FORKBOT_DEFAULT_REPO
     ok, result = await _forkbot_enqueue_issue(
-        env, owner, repo, fields["title"], fields["body"],
-        clean_string(data.get("sender", ""), MAX_NODE_NAME))
+        env, owner, repo, fields["title"], fields["body"], sender)
     if not ok:
         return json_response({"error": result}, status=429)
     title = result.get("titleIfNew", fields["title"])
