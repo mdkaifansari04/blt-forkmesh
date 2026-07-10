@@ -1,6 +1,6 @@
 # ForkMesh
 
-**Code hosting that lives on the network — not in someone else's data center.** test
+**Code hosting that lives on the network — not in someone else's data center.**
 
 ForkMesh is a peer-to-peer developer platform: host, mirror, browse, discuss,
 and *ship* software without handing your code, your identity, or your community
@@ -17,6 +17,10 @@ bounties, and a live public website — all running on the network right now.
 > repositories they preserve, and get their nodes on the leaderboards before the
 > mesh fills up. Build a node, mirror a project you care about, and you're
 > already part of it.
+
+**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec,
+desktop/relay/mobile/IDE build notes, and the
+[changelog](https://forkmesh.com/changelog).
 
 ---
 
@@ -74,7 +78,7 @@ ForkMesh is well past "prototype." Here's what you can do right now:
 
 The mesh currently runs on a Cloudflare Python Worker relay (Durable Objects,
 no npm/TypeScript project dependencies in the repo) and a Qt 6 desktop node —
-see the [CHANGELOG](CHANGELOG.md) for the full release-by-release story.
+see the [changelog](https://forkmesh.com/changelog) for the full release-by-release story.
 
 ---
 
@@ -167,8 +171,10 @@ forkmesh/
   issues/             In-repo, signed issue tracker (the live roadmap)
   releases/           Release metadata and artifacts
   tools/              Standalone helpers (MCP server, PR review)
-  CHANGELOG.md        Human-readable, release-by-release history
 ```
+
+Developer docs (protocol spec, per-project build notes, changelog) live on the
+website at [forkmesh.com/docs](https://forkmesh.com/docs), not in this repo.
 
 ### MCP server
 
@@ -279,8 +285,11 @@ bugs don't reach users, and when the network hiccups it heals itself.
 
 Table stakes to be a daily driver, not just a mirror network:
 
-- **`git push`** over the relay (receive-pack gated by signed identity) —
-  the single biggest missing primitive.
+- **Collaborator `git push`**: owner push over the relay already works
+  (`git-receive-pack` gated by a signed `push` token, see the
+  [protocol spec](https://forkmesh.com/docs/protocol#git-smart-http)) —
+  delegated write access for collaborators (not just the repo owner) is the
+  remaining gap.
 - **Code review that holds up**: inline comments, review states, and
   re-review flows on pull requests.
 - **Search** across code, issues, and PRs on the mesh.

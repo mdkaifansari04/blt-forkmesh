@@ -26,7 +26,7 @@
             <button type="button" data-resize-cancel class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Cancel</button>
           </div>
           <div class="grid gap-3 overflow-auto p-4">
-            <p class="text-xs text-muted-foreground">Drag on the image to crop it, then it's auto-compressed to fit. Attached images share the issue's size limit — redraw a smaller crop if it still doesn't fit.</p>
+            <p class="text-xs text-muted-foreground">Drag on the image to crop it, then it's auto-compressed to fit. Attached images share the issue's size limit - redraw a smaller crop if it still doesn't fit.</p>
             <div data-resize-stage class="relative mx-auto inline-block max-h-[24rem] max-w-full touch-none select-none overflow-hidden rounded-md border border-border bg-secondary/30">
               <img data-resize-image src="${objectUrl}" class="block max-h-[24rem] max-w-full select-none" alt="" draggable="false" />
               <div data-resize-crop class="absolute hidden border-2 border-primary bg-primary/10"></div>
@@ -110,7 +110,7 @@
             if (blob && blob.size <= maxBytes) {
               pendingBlob = blob;
               status.className = "text-primary";
-              status.textContent = `Ready — ${formatSize(blob.size)} (fits under ${formatSize(maxBytes)}).`;
+              status.textContent = `Ready - ${formatSize(blob.size)} (fits under ${formatSize(maxBytes)}).`;
               addButton.disabled = false;
               return;
             }
@@ -118,7 +118,7 @@
           scale *= 0.65;
         }
         status.className = "text-destructive";
-        status.textContent = "Still too large after compressing — drag to crop a smaller area and it'll retry.";
+        status.textContent = "Still too large after compressing - drag to crop a smaller area and it'll retry.";
       };
 
       stage.addEventListener("pointerdown", (event) => {
@@ -249,7 +249,7 @@
 
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
   // reply body) and the desktop's discussion inbox POST (verify_discussion_event
-  // in the worker). Replies are signed against the discussion's real number —
+  // in the worker). Replies are signed against the discussion's real number -
   // unlike a new discussion's "open" event, they don't use the placeholder 0.
   async function submitWebDiscussionComment(repo, number, body) {
     const { privateKey, pub } = await getWebIssueKey();
@@ -343,15 +343,21 @@
         ? Boolean(body.isAdmin)
         : Boolean(base.isAdmin),
       adminUrl: body.adminUrl || base.adminUrl || "",
-      solana: Object.prototype.hasOwnProperty.call(body, "solana")
-        ? (body.solana || "")
-        : (base.solana || ""),
+      solana: body.solana || base.solana || "",
       hasPayoutAddress: Object.prototype.hasOwnProperty.call(body, "hasPayoutAddress")
         ? Boolean(body.hasPayoutAddress)
         : Boolean(base.hasPayoutAddress),
+      sessionToken: body.sessionToken ?? base.sessionToken ?? "",
       avatarPng: body.avatarPng || "",
       avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
       profileBio: body.profileBio ?? base.profileBio ?? "",
+      profileAbout: body.profileAbout ?? body.profileReadme ?? base.profileAbout ?? base.profileReadme ?? "",
+      profileReadme: body.profileReadme ?? body.profileAbout ?? base.profileReadme ?? base.profileAbout ?? "",
+      profileLocation: body.profileLocation ?? base.profileLocation ?? "",
+      profileTimezone: body.profileTimezone ?? base.profileTimezone ?? "",
+      profileFollowers: Number(body.followers ?? body.profileFollowers ?? base.profileFollowers ?? 0) || 0,
+      profileFollowing: Number(body.following ?? body.profileFollowing ?? base.profileFollowing ?? 0) || 0,
+      profileMirrorCount: Number(body.mirrorCount ?? body.profileMirrorCount ?? base.profileMirrorCount ?? 0) || 0,
       profilePrivate: Object.prototype.hasOwnProperty.call(body, "profilePrivate")
         ? Boolean(body.profilePrivate)
         : Boolean(base.profilePrivate),
@@ -407,6 +413,10 @@
   }
 
   async function refreshPublicProfile(session = state.session) {
+    return hydrateCanonicalProfile(session);
+  }
+
+  async function hydrateCanonicalProfile(session) {
     const nodeName = String(session?.nodeName || "").trim().toLowerCase();
     if (!validNodeName(nodeName)) return session;
     try {

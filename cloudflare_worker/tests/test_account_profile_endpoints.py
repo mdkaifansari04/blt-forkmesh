@@ -10,6 +10,11 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+SCHEMA = ENTRY.parent / "schema.py"
+SCHEMA_TEXT = SCHEMA.read_text(encoding="utf-8")
+PROFILE_FOLLOW_MIGRATION = (
+    Path(__file__).resolve().parents[1] / "migrations" / "0027_profile_follows.sql"
+)
 # MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
@@ -103,6 +108,121 @@ def test_worker_profile_contract_includes_bio_links_mastodon_and_privacy():
     assert '"profileLinks" in data' in profile_body
     assert "cloudflare-dns.com/dns-query" in ENTRY_TEXT
     assert "**_account_profile_fields(rec)" in public_lookup_body
+
+
+def test_worker_profile_contract_includes_editable_profile_readme():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _account_claim_node")
+    ]
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+
+    assert "MAX_PROFILE_README = 32000" in ENTRY_TEXT
+    assert '"profileReadme": readme' in ENTRY_TEXT
+    assert '"profileReadme" in data' in profile_body
+    assert 'rec["profile_readme"] = readme' in profile_body
+    assert "**_account_profile_fields(rec)" in public_lookup_body
+
+
+def test_worker_profile_contract_includes_about_location_timezone_and_counts():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _account_claim_node")
+    ]
+    public_payload_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_public_payload"):
+        ENTRY_TEXT.index("def _account_chat_user_payload")
+    ]
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+
+    assert "MAX_PROFILE_ABOUT = 32000" in ENTRY_TEXT
+    assert "MAX_PROFILE_LOCATION = 120" in ENTRY_TEXT
+    assert "MAX_PROFILE_TIMEZONE = 80" in ENTRY_TEXT
+    assert '"profileAbout": about' in ENTRY_TEXT
+    assert '"profileLocation": location' in ENTRY_TEXT
+    assert '"profileTimezone": timezone' in ENTRY_TEXT
+    assert '"profileAbout" in data' in profile_body
+    assert '"profileLocation" in data' in profile_body
+    assert '"profileTimezone" in data' in profile_body
+    assert 'rec["profile_about"] = about' in profile_body
+    assert 'rec["profile_location"] = location' in profile_body
+    assert 'rec["profile_timezone"] = timezone' in profile_body
+    assert 'await _account_social_counts(env, name)' in public_payload_body
+    assert 'await _account_social_counts(env, rec.get("name", name))' in public_lookup_body
+
+
+def test_worker_profile_follow_schema_routes_and_cleanup_exist():
+    assert "CREATE TABLE IF NOT EXISTS profile_follows" in SCHEMA_TEXT
+    assert "follower_bi TEXT NOT NULL" in SCHEMA_TEXT
+    assert "target_bi TEXT NOT NULL" in SCHEMA_TEXT
+    assert "PRIMARY KEY (follower_bi, target_bi)" in SCHEMA_TEXT
+    assert "CREATE INDEX IF NOT EXISTS idx_profile_follows_target" in SCHEMA_TEXT
+    assert PROFILE_FOLLOW_MIGRATION.is_file()
+    migration = PROFILE_FOLLOW_MIGRATION.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS profile_follows" in migration
+    assert "CREATE INDEX IF NOT EXISTS idx_profile_follows_target" in migration
+
+    assert "ACCOUNT_FOLLOW_RE" in ENTRY_TEXT
+    assert "async def _account_follow" in ENTRY_TEXT
+    assert 'ACCOUNT_FOLLOW_RE.match(url.path)' in ENTRY_TEXT
+    assert 'method in ("POST", "DELETE")' in ENTRY_TEXT
+    assert 'return await _account_follow(env, request, follow_match.group(1), method)' in ENTRY_TEXT
+    assert 'DELETE FROM profile_follows WHERE follower_bi=? OR target_bi=?' in ENTRY_TEXT
+
+
+def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
+    profile_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_profile"):
+        ENTRY_TEXT.index("async def _account_claim_node")
+    ]
+    follow_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_follow"):
+        ENTRY_TEXT.index("# Step 1 of the funnel")
+    ]
+    login_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _account_login"):
+        ENTRY_TEXT.index("async def _account_logout")
+    ]
+
+    assert "def _account_session_token(env, name)" in ENTRY_TEXT
+    assert "async def _account_session_record(env, request, data=None)" in ENTRY_TEXT
+    assert '"sessionToken": _account_session_token(env, name)' in ENTRY_TEXT
+    assert '"sessionToken": _account_session_token(env, rec.get("name", ""))' in login_body
+    assert 'await _account_session_record(env, request, data)' in profile_body
+    assert 'await _account_session_record(env, request, data)' in follow_body
+    public_edit_block = profile_body[
+        profile_body.index('if "profileBio" in data:'):
+        profile_body.index('if "emailNotifications" in data:')
+    ]
+    assert "verify_password" not in public_edit_block
+    assert 'data.get("password", "")' not in public_edit_block
+
+
+def test_worker_public_profile_exposes_follow_and_mirror_counts():
+    profile_html = ENTRY_TEXT[
+        ENTRY_TEXT.index("def _public_profile_html"):
+        ENTRY_TEXT.index("async def public_profile_handler")
+    ]
+    public_handler = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def public_profile_handler"):
+        ENTRY_TEXT.index("def _donation_expiry_fields")
+    ]
+
+    assert "social = profile.get(\"social\", {})" in profile_html
+    assert "mirror_count = int(social.get(\"mirrorCount\", 0) or 0)" in profile_html
+    assert "followers" in profile_html
+    assert "following" in profile_html
+    assert "mirrors" in profile_html
+    assert "Follow" in profile_html
+    assert "await _public_profile_payload(env, rec, request)" in public_handler
 
 
 def test_worker_serves_public_at_profiles_and_private_profiles_404():

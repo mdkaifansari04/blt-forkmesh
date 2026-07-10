@@ -39,13 +39,26 @@
     repoServedBy: null,
     // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
     // no password required. selectedAgentId (adhoc #259) is the id of the agent
-    // whose detail page — live transcript + prompt — is currently open, or null
+    // whose detail page - live transcript + prompt - is currently open, or null
     // for the session list.
     agentsView: { agents: [], selectedAgentId: null },
     longDiffOverrides: {},
     repoCommitDetail: null,
     repoRecordDetail: null,
-    repositoryViewMode: "list",
+    profileContributions: {
+      year: new Date().getFullYear(),
+      liveHistory: {},
+      loading: false,
+      loadedYears: {},
+    },
+    settingsView: {
+      section: "public-profile",
+    },
+    globalSearch: {
+      open: false,
+      selectedIndex: 0,
+      results: [],
+    },
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -55,5 +68,4 @@
   const REPO_COLLECTION_PAGE_SIZE = 5;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
   const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
-  const DASHBOARD_REPO_VIEW_KEY = "forkmesh.dashboard.repoView";
   const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;

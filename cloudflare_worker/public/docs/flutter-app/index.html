@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mobile app · ForkMesh Docs</title>
+    <meta
+      name="description"
+      content="The ForkMesh Flutter client for iOS and Android: encrypted chat, repository/issue/PR reads, and signed write paths that interoperate with the Qt desktop client and the relay protocol."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/static-page.js" defer></script>
+    <style>
+      .doc-wrap { max-width: 860px; margin: 0 auto; padding: 42px 20px 80px; }
+      .doc-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .doc-intro { color: var(--muted); max-width: 68ch; font-size: 17px; margin: 0 0 8px; line-height: 1.6; }
+      .doc-crumbs { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+      .doc-crumbs a { color: var(--muted); }
+      .doc-crumbs a:hover { color: var(--foreground); }
+      .doc-toc { margin: 28px 0 8px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; }
+      .doc-toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+      .doc-toc ol { margin: 0; padding-left: 18px; columns: 2; column-gap: 24px; }
+      .doc-toc li { margin: 4px 0; break-inside: avoid; }
+      .doc-toc a { color: var(--foreground); text-decoration: none; }
+      .doc-toc a:hover { text-decoration: underline; }
+      .doc-body { margin-top: 32px; }
+      .doc-body h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
+      .doc-body h2:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .doc-body h3 { font-size: 19px; margin: 28px 0 10px; }
+      .doc-body p { color: var(--muted); line-height: 1.65; margin: 0 0 14px; }
+      .doc-body p strong, .doc-body li strong { color: var(--foreground); }
+      .doc-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+      .doc-body ul, .doc-body ol { padding-left: 22px; margin: 0 0 14px; color: var(--muted); }
+      .doc-body li { margin: 6px 0; line-height: 1.6; }
+      .doc-body code { font-family: "ForkMesh Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; background: rgba(127,127,127,0.14); border-radius: 4px; padding: 0.12em 0.4em; }
+      .doc-body pre { background: rgba(127,127,127,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 18px; }
+      .doc-body pre code { background: none; padding: 0; font-size: 0.86em; line-height: 1.55; }
+      .doc-body blockquote { margin: 0 0 16px; padding: 4px 16px; border-left: 3px solid var(--border); color: var(--muted); }
+      .doc-body table { width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 0.93em; }
+      .doc-body th, .doc-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .doc-body th { color: var(--foreground); font-weight: 700; }
+      .doc-body hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+      .doc-siblings { margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--border); }
+      .doc-siblings h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+      .doc-siblings ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); }
+      .doc-siblings a { font-weight: 600; color: var(--foreground); text-decoration: none; }
+      .doc-siblings a:hover { text-decoration: underline; }
+    </style>
+    <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+
+    <main class="doc-wrap">
+      <p class="doc-crumbs"><a href="/docs">Docs</a> / Mobile app</p>
+      <p class="eyebrow">Developer docs</p>
+      <h1>ForkMesh — Flutter client (iOS / Android)</h1>
+      <p class="doc-intro">
+        A mobile Flutter client for the ForkMesh network. It speaks the
+        <strong>same encrypted relay protocol</strong> and
+        <strong>same signed inbox format</strong> as the Qt client
+        (<code>qt_client/</code>), so it shares chat rooms, reads the same
+        catalog/issue/PR data, and submits issues/PRs/votes that the relay
+        accepts — a real peer, not a mock.
+      </p>
+
+      <div class="doc-body">
+        <blockquote>
+          <p>
+            Platforms: <strong>iOS and Android only.</strong> (No desktop/web
+            targets.) Status: core read + chat + <strong>signed write
+            paths</strong>. The Qt client is ~35k lines; the heavy local-git /
+            agents / wallet subsystems are scoped under &quot;Remaining&quot;.
+          </p>
+        </blockquote>
+
+        <h2 id="run">Run</h2>
+        <pre><code>cd flutter_app
+flutter pub get
+flutter run                 # on a connected iOS/Android device or emulator
+flutter build apk           # Android (needs Android SDK)
+flutter build ipa           # iOS (needs macOS + Xcode)</code></pre>
+
+        <h2 id="architecture">Architecture</h2>
+        <pre><code>lib/
+  main.dart                 entry, provider wiring, auto-connect
+  theme.dart                GitHub-Primer dark theme (ported from qt Theme.h)
+  models/models.dart        Member, ChatMessage, Repository, Issue, PullRequest, NetworkStats
+  services/
+    room_crypto.dart        AES-256-GCM + PBKDF2-HMAC-SHA256 — byte-compatible with RoomCrypto.cpp
+    identity.dart           Ed25519 node identity; base64url pubkey = node id / inbox author
+    relay_service.dart      WebSocket relay client (ServerNode equivalent): connect,
+                            presence heartbeat + stale-peer reaping, roster, chat
+    api_service.dart        worker REST reads: repositories, issues, pulls, commits, network stats
+    inbox_service.dart      signed write paths (issues/PRs/votes/comments/reviews)
+    settings_service.dart   persisted profile / relay / token settings
+  screens/                  home_shell, chat, repos (+ repo detail), notifications, settings
+  widgets/connection_dot.dart  avatar + presence dot</code></pre>
+        <p>
+          State: <code>provider</code> (ChangeNotifier services). No code
+          generation.
+        </p>
+
+        <h2 id="interoperability">Interoperability</h2>
+        <ul>
+          <li>
+            <strong>Crypto</strong> ports <code>RoomCrypto.cpp</code>:
+            AES-256-GCM (12-byte nonce, 16-byte tag), key =
+            PBKDF2-HMAC-SHA256(passphrase|app key, SHA256(&quot;ForkMesh
+            room:&quot;+room)[:16], 210000 rounds, 32 bytes); envelope
+            {kind:&quot;cipher&quot;,v:1,nonce,tag,body} (base64).
+          </li>
+          <li>
+            <strong>Identity</strong>: Ed25519; the base64url (no padding)
+            public key is the node id and the <code>author</code> on signed
+            events — matching ForkMeshIdentity and the worker's
+            <code>ed25519_verify</code> (raw 32-byte key, raw 64-byte sig,
+            base64url).
+          </li>
+          <li>
+            <strong>Transport</strong>: WebSocket to the relay (default
+            wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws).
+          </li>
+        </ul>
+
+        <h3 id="signed-write-paths-inbox">Signed write paths (inbox)</h3>
+        <p>
+          <code>inbox_service.dart</code> builds canonical strings
+          byte-identical to <code>cloudflare_worker/src/entry.py</code> and
+          signs them, then POSTs to the repo inbox:
+        </p>
+        <table>
+          <thead>
+            <tr><th>Action</th><th>endpoint</th><th>canonical prefix</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>New issue (<code>open</code>)</td><td><code>POST /api/repo/{o}/{n}/issues</code></td><td><code>forkmesh-issue-event-v1</code></td></tr>
+            <tr><td>Issue comment / vote / status</td><td><code>POST …/issues</code></td><td><code>forkmesh-issue-event-v1</code></td></tr>
+            <tr><td>New PR</td><td><code>POST …/pulls</code> (<code>pull</code>)</td><td><code>forkmesh-pull-event-v1</code></td></tr>
+            <tr><td>PR comment / review</td><td><code>POST …/pulls</code> (<code>event</code>)</td><td><code>forkmesh-pull-comment-v1</code></td></tr>
+          </tbody>
+        </table>
+        <p>
+          Content is SHA-256-hex of the NUL-joined, type-specific fields (see
+          <code>_issueContent</code> / <code>_pullCommentContent</code>).
+          Submissions land in the relay inbox; the <strong>repo owner</strong>
+          drains, applies, commits and syncs back (owner-side, still the Qt
+          client) — so a submitted item shows up after the owner merges it,
+          which the UI states (&quot;pending the repo owner applying
+          it&quot;).
+        </p>
+
+        <h2 id="implemented">Implemented</h2>
+        <ul>
+          <li>
+            Encrypted chat on the live room: channels, DMs, roster +
+            presence, optimistic send, unread badges, stale-peer reaping.
+          </li>
+          <li>
+            Repository catalog + repo detail (About, Commits, Issues, Pull
+            requests) reads.
+          </li>
+          <li>
+            <strong>Signed writes</strong>: open issue, comment, vote,
+            open/close; open PR, comment, approve / request changes.
+          </li>
+          <li>
+            Network stats + connection/activity log. Settings (profile,
+            Solana address, relay, GitHub/GitLab tokens). Persistent Ed25519
+            identity; GitHub-style theme.
+          </li>
+        </ul>
+
+        <h2 id="remaining-parity-work-roadmap">Remaining parity work (roadmap)</h2>
+        <ol>
+          <li>
+            <strong>Inbox drain/apply (owner side)</strong> — applying
+            submissions to the git mirror + sync-back. Needs git; stays on
+            the owner's full client for now.
+          </li>
+          <li>
+            <strong>Repo file browsing</strong> — tree/blob, README render,
+            last-commit + size bars.
+          </li>
+          <li>
+            <strong>Local repos &amp; git</strong> —
+            clone/mirror/host/publish/push (native git or a server-side
+            helper on mobile).
+          </li>
+          <li>
+            <strong>Solana wallet</strong> — balance (SOL/USD/INR),
+            deposit-to-verify banner, payouts, bounty escrow QR.
+          </li>
+          <li>
+            <strong>Agents (OpenAI/Claude) and Actions (.forkmesh
+            CI)</strong> — shell out locally in Qt; mobile needs a different
+            execution model.
+          </li>
+          <li><strong>Account/auth</strong> — signup/login, TOTP, email verification, heartbeat.</li>
+          <li>System notifications; light-theme toggle (palette ready in theme.dart).</li>
+        </ol>
+
+        <h2 id="notes">Notes</h2>
+        <p>
+          Inbox signing is verified against
+          <code>cloudflare_worker/src/entry.py</code> (verify_issue_event /
+          verify_pull_event / verify_pull_comment_event). If those canonical
+          strings change, update <code>inbox_service.dart</code> in
+          lockstep.
+        </p>
+      </div>
+
+      <nav class="doc-siblings" aria-label="Other developer docs">
+        <h2>More developer docs</h2>
+        <ul>
+          <li><a href="/docs/protocol">Protocol spec</a> — identity, signatures, HTTP API, self-hosting a mainnode</li>
+          <li><a href="/docs/cloudflare-worker">Relay &amp; website</a> — the Cloudflare Worker</li>
+          <li><a href="/docs/qt-client">Desktop client</a> — the Qt 6 node</li>
+          <li><a href="/docs/ide-extension">IDE extension</a> — editor integration</li>
+          <li><a href="/docs/ide-extension-protocol">IDE extension protocol</a> — the desktop handshake</li>
+          <li><a href="/changelog">Changelog</a> — release-by-release history</li>
+        </ul>
+      </nav>
+    </main>
+
+    <div data-forkmesh-footer="standard"></div>
+  </body>
+</html>

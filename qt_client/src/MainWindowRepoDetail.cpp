@@ -17,7 +17,7 @@ using namespace forkmesh::ui;
 
 // ---- IDE extension integration --------------------------------------------
 // The contract with the VS Code / Codeium extension lives under
-// ~/.forkmesh/ide/ (see ide_extension/PROTOCOL.md). The extension heartbeats a
+// ~/.forkmesh/ide/ (see https://forkmesh.com/docs/ide-extension-protocol). The extension heartbeats a
 // registration file we poll, and watches a requests/ dir we drop tasks into.
 
 static QString ideRegistryDir()
@@ -2267,8 +2267,8 @@ void MainWindow::loadCoveExplorer()
     QString err;
     const QList<Cove> envelopes = store.listCoves(&err);
     for (Cove cove : envelopes) {
-        if (!cove.accountScoped() || !CoveStore::accountCanAccess(cove, account))
-            continue;
+        // A locked v2 envelope is anonymous — no mode, no ACL — so membership
+        // can only be proven by attempting the unlock itself.
         if (!CoveStore::unlockForAccount(cove, account))
             continue;
         if (cove.name.trimmed().isEmpty())

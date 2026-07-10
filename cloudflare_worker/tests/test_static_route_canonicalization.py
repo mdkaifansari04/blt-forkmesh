@@ -73,6 +73,11 @@ BLOG_POST_REDIRECT_RULES = {
     ("/blog/:slug/", "/blog/:slug/index.html", "200"),
 }
 
+DOCS_PAGE_REDIRECT_RULES = {
+    ("/docs/:slug", "/docs/:slug/", "308"),
+    ("/docs/:slug/", "/docs/:slug/index.html", "200"),
+}
+
 NON_ROUTED_HTML_ASSETS = {
     # Served by Cloudflare only for misses, not a navigable product route.
     "404.html",
@@ -88,6 +93,11 @@ NON_ROUTED_HTML_ASSETS = {
     # directory indexes, while /blog itself is the canonical listing route.
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "blog").glob("*/index.html")
+} | {
+    # Docs pages live under /docs/<slug>/ and are served as static
+    # directory indexes, while /docs itself is the canonical listing route.
+    path.relative_to(PUBLIC).as_posix()
+    for path in (PUBLIC / "docs").glob("*/index.html")
 }
 
 
@@ -106,6 +116,7 @@ def test_public_redirects_have_one_canonical_route_per_public_html_page():
     rules = _redirect_rules()
     assert len({source for source, _, _ in rules}) == len(rules)
     assert BLOG_POST_REDIRECT_RULES <= set(rules)
+    assert DOCS_PAGE_REDIRECT_RULES <= set(rules)
 
     html_200_rules = {
         source: target
@@ -114,6 +125,7 @@ def test_public_redirects_have_one_canonical_route_per_public_html_page():
             status == "200"
             and target.endswith(".html")
             and (source, target, status) not in BLOG_POST_REDIRECT_RULES
+            and (source, target, status) not in DOCS_PAGE_REDIRECT_RULES
         )
     }
 

@@ -77,3 +77,5 @@ GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
 # Account API: reserve/finalize/login and GET /api/accounts/{name} are all
 # single-segment, so this one pattern gates the whole accounts_handler dispatch.
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
+# Follow/unfollow a public profile: /api/accounts/{name}/follow
+ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
