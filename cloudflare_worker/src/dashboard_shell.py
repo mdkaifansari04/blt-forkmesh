@@ -1,15 +1,22 @@
-"""Composition of the dashboard SPA shell from HTML partials.
+"""Composition of the per-page dashboard documents from HTML partials.
 
-The dashboard's static chrome used to be one ~1800-line ``dashboard/index.html``.
-It is now split into individual partial ``.html`` files under
-``public/dashboard/partials/`` (header, sidebar, main repos view, modals).
-``dashboard/shell.html`` keeps only the ``<head>`` and the outer body
-scaffold, pulling each section back in with an
+The dashboard used to be one SPA shell: every ``/dashboard*`` URL served the
+same ``dashboard/index.html`` with all views stacked as hidden ``[data-view]``
+sections, and dashboard.js swapped them client-side after boot (a visible
+flash-then-swap on deep links). It is now a set of true separate pages: one
+document per page, each containing the shared chrome (header, sidebar, modals)
+plus exactly one view from ``public/dashboard/partials/views/``.
 
-    <!--#include partial="name"-->
+``dashboard/shell.html`` keeps the ``<head>`` and outer body scaffold with
 
-placeholder. ``tools/build_dashboard_assets.py`` stitches them together before
-deploy so Cloudflare can serve ``dashboard/index.html`` as a static asset.
+    <!--#include partial="name"-->      pulls in a shared partial
+    <!--#include view-->                (inside the "main" partial) pulls in
+                                        the page's single view file
+    <!--#page token-->                  per-page metadata substitution
+                                        (id, title, description, section)
+
+``tools/build_dashboard_assets.py`` composes one document per ``PAGES`` entry
+before deploy so Cloudflare can serve them as static assets.
 
 This module is intentionally js-free — no ``js``/``workers`` imports — so both
 the Worker (on Cloudflare) and the test suite can import it directly, the same
@@ -22,10 +29,103 @@ import re
 # Placeholder the shell uses to pull in a partial: <!--#include partial="name"-->
 INCLUDE_RE = re.compile(r'<!--#include partial="([a-z0-9-]+)"-->')
 
+# Placeholder inside the "main" partial for the page's single view.
+VIEW_INCLUDE_RE = re.compile(r"<!--#include view-->")
+
+# Per-page metadata tokens in the shell: <!--#page id-->, <!--#page title-->, ...
+PAGE_TOKEN_RE = re.compile(r"<!--#page ([a-z]+)-->")
+
+# The dashboard's pages. Keys are page ids (also the <body data-page> value the
+# JS boot dispatch keys off). "view" names the partials/views/<view>.html file;
+# "section" is the legacy data-dashboard-section name (CSS hooks + old JS state
+# names); "nav" is the sidebar data-nav link to mark active (None = no sidebar
+# item); "route" is the public clean URL (None = worker-only, the repo detail
+# document is fetched by the Worker for every /owner/repo[...] path); "asset"
+# is the built public/-relative file.
+PAGES = {
+    "home": {
+        "view": "home",
+        "section": "home",
+        "nav": "home",
+        "route": "/dashboard",
+        "asset": "dashboard/index.html",
+        "title": "ForkMesh Dashboard",
+        "description": "Manage ForkMesh repositories, mirrors, signed collaboration, and account activity from your dashboard.",
+    },
+    "repos": {
+        "view": "repos",
+        "section": "repos",
+        "nav": "repos",
+        "route": "/dashboard/repos",
+        "asset": "dashboard/repos/index.html",
+        "title": "Repositories - ForkMesh",
+        "description": "Browse repositories mirrored by ForkMesh desktop nodes and open them live from their hosts.",
+    },
+    "network": {
+        "view": "network",
+        "section": "network",
+        "nav": "network",
+        "route": "/dashboard/network",
+        "asset": "dashboard/network/index.html",
+        "title": "Network - ForkMesh",
+        "description": "Relay health, connected nodes, and live network activity on ForkMesh.",
+    },
+    "chat": {
+        "view": "chat",
+        "section": "chat",
+        "nav": "chat",
+        "route": "/dashboard/chat",
+        "asset": "dashboard/chat/index.html",
+        "title": "Chat - ForkMesh",
+        "description": "Encrypted #general chat relayed through ForkMesh - messages are encrypted in your browser.",
+    },
+    "settings": {
+        "view": "settings",
+        "section": "profile",
+        "nav": None,
+        "route": "/dashboard/settings",
+        "asset": "dashboard/settings/index.html",
+        "title": "Settings - ForkMesh",
+        "description": "Manage your ForkMesh account: public profile, appearance, notifications, payout, and linked nodes.",
+    },
+    "profile": {
+        "view": "profile-overview",
+        "section": "profile-overview",
+        "nav": "profile",
+        "route": "/dashboard/profile",
+        "asset": "dashboard/profile/index.html",
+        "title": "Profile - ForkMesh",
+        "description": "Your public ForkMesh profile overview and contribution activity.",
+    },
+    "profile-repositories": {
+        "view": "profile-repositories",
+        "section": "profile-repositories",
+        "nav": "profile",
+        "route": "/dashboard/profile/repositories",
+        "asset": "dashboard/profile/repositories/index.html",
+        "title": "Your repositories - ForkMesh",
+        "description": "Repositories on your public ForkMesh profile.",
+    },
+    "repo": {
+        "view": "repo",
+        "section": "explore",
+        "nav": "repos",
+        "route": None,
+        "asset": "dashboard/repo.html",
+        "title": "Repository - ForkMesh",
+        "description": "Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors.",
+    },
+}
+
 
 def partial_path(name):
     """public/-relative path to a partial by its include name."""
     return "dashboard/partials/%s.html" % name
+
+
+def view_path(name):
+    """public/-relative path to a per-page view partial."""
+    return "dashboard/partials/views/%s.html" % name
 
 
 def included_partials(shell):
@@ -47,13 +147,43 @@ def assemble_shell(shell, partials):
     return INCLUDE_RE.sub(lambda m: partials[m.group(1)], shell)
 
 
-def compose_from_reader(read):
-    """Assemble the dashboard shell using ``read(public_relative_path) -> str``.
+def mark_active_nav(html, page_id):
+    """Bake the active sidebar link for ``page_id`` into the composed page.
 
-    Shared by the Worker (``read`` fetches from the ASSETS binding) and the test
-    suite (``read`` loads files off disk). Reads the shell, then each partial it
-    references, and returns the fully composed HTML.
+    Zero JS and zero flash: the right link carries ``aria-current="page"`` and
+    active text color at parse time. Pages without a sidebar item (settings)
+    are returned unchanged.
     """
-    shell = read("dashboard/shell.html")
+    nav = PAGES[page_id].get("nav")
+    if not nav:
+        return html
+    tag_re = re.compile(r'<a data-nav="%s"[^>]*>' % re.escape(nav))
+
+    def _activate(match):
+        tag = match.group(0)
+        tag = tag.replace("data-nav-link", 'data-nav-link aria-current="page"', 1)
+        return tag.replace("text-muted-foreground", "text-foreground", 1)
+
+    return tag_re.sub(_activate, html)
+
+
+def compose_page_from_reader(read, page_id):
+    """Assemble one page document using ``read(public_relative_path) -> str``.
+
+    Shared by the build tool and the test suite (``read`` loads files off
+    disk). Reads the shell, substitutes the page tokens, pulls in each shared
+    partial, injects the page's single view, and marks the active sidebar link.
+    A bad page id or token raises ``KeyError`` loudly.
+    """
+    meta = PAGES[page_id]
+    tokens = {
+        "id": page_id,
+        "title": meta["title"],
+        "description": meta["description"],
+        "section": meta["section"],
+    }
+    shell = PAGE_TOKEN_RE.sub(lambda m: tokens[m.group(1)], read("dashboard/shell.html"))
     partials = {name: read(partial_path(name)) for name in included_partials(shell)}
-    return assemble_shell(shell, partials)
+    partials["main"] = VIEW_INCLUDE_RE.sub(
+        lambda m: read(view_path(meta["view"])), partials["main"])
+    return mark_active_nav(assemble_shell(shell, partials), page_id)

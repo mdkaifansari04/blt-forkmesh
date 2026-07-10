@@ -37,16 +37,18 @@ def _write_if_changed(rel, text):
 
 
 def main():
-    shell = dashboard_shell.compose_from_reader(_read)
-    script = dashboard_bundle.compose_from_reader(_read)
-    changed = []
-    for rel, text in (
-        ("dashboard/index.html", shell),
-        ("dashboard.html", shell),
-        ("dashboard.js", script),
-    ):
-        if _write_if_changed(rel, text):
-            changed.append(rel)
+    outputs = {
+        meta["asset"]: dashboard_shell.compose_page_from_reader(_read, page_id)
+        for page_id, meta in dashboard_shell.PAGES.items()
+    }
+    outputs["dashboard.js"] = dashboard_bundle.compose_from_reader(_read)
+    changed = [rel for rel, text in sorted(outputs.items()) if _write_if_changed(rel, text)]
+    # The pre-split SPA duplicate: /dashboard.html routes are gone, the per-page
+    # documents replace it. Drop a stale copy left by older builds.
+    legacy = PUBLIC / "dashboard.html"
+    if legacy.exists():
+        legacy.unlink()
+        changed.append("dashboard.html (removed)")
     if changed:
         print("Built dashboard assets: " + ", ".join(changed))
     else:
