@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
@@ -21,6 +22,29 @@
             "title": "make it so that when we paste an image into an issue it shows right away",
             "ts": 1783470769538,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 15,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d371cc26-f593-40fe-a6b2-5e6914947dce",
+            "sig": "AxEjtjjDN3r3uZGN4k8c-rsuiuUAXn99vi85ym-eR2IytwIomaT3jASETCNMBks2KhC2leK8iK0GZTd65Qp3CA",
+            "ts": 1783717218080,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e11771c7-42f6-47ef-8675-439c86716777",
+            "sig": "Tzt1GpsH-RbD-nlv2H3hxDtt5aNbRD99CpizwTiRgoG7AICwJWPJW9YayKE57VBQcp43s3-qI34dCURs6QM2Cw",
+            "ts": 1783717218138,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -32,6 +56,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "make it so that when we paste an image into an issue it shows right away",
-    "updatedAt": 1783470769538,
+    "updatedAt": 1783717218138,
     "votes": 0
 }
