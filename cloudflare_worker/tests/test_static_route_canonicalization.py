@@ -21,6 +21,12 @@ import static_routes  # noqa: E402
 CANONICAL_PAGE_ROUTES = {
     "/": "/index.html",
     "/dashboard": "/dashboard/index.html",
+    "/dashboard/repos": "/dashboard/repos/index.html",
+    "/dashboard/network": "/dashboard/network/index.html",
+    "/dashboard/chat": "/dashboard/chat/index.html",
+    "/dashboard/settings": "/dashboard/settings/index.html",
+    "/dashboard/profile": "/dashboard/profile/index.html",
+    "/dashboard/profile/repositories": "/dashboard/profile/repositories/index.html",
     "/blog": "/blog.html",
     "/login": "/login.html",
     "/signup": "/signup.html",
@@ -86,9 +92,11 @@ NON_ROUTED_HTML_ASSETS = {
     # Authored dashboard source; the generated dashboard/index.html asset is the
     # public route target.
     "dashboard/shell.html",
-    # Duplicate static copies kept for compatibility or source parity; their
-    # public routes are canonicalized to the index-backed routes above.
-    "dashboard.html",
+    # The repo-detail document: fetched by the Worker for every /owner/repo
+    # route, never a navigable asset path of its own.
+    "dashboard/repo.html",
+    # Duplicate static copy kept for source parity; its public route is
+    # canonicalized to the index-backed route above.
     "docs.html",
 } | {
     # Blog posts live under /blog/<slug>/ and are served as static
@@ -207,11 +215,17 @@ def test_internal_links_and_redirects_do_not_point_at_html_routes():
 def test_worker_does_not_own_static_page_alias_routes():
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
 
-    for route in ("/blog", "/blogs", "/blog.html", "/dashboard", "/dashboard.js", "/docs", "/docs.html", "/network", "/network.html"):
+    for route in ("/blog", "/blogs", "/blog.html", "/dashboard.js", "/docs", "/docs.html", "/network", "/network.html"):
         if route.endswith(".html"):
             assert route in run_worker_first
         else:
             assert route not in run_worker_first
+
+    # / and /dashboard ARE worker-owned: / must vary on the login presence
+    # cookie (302 vs homepage) and /dashboard must see the query string to 308
+    # legacy ?section= URLs — _redirects cannot match either.
+    assert "/" in run_worker_first
+    assert "/dashboard" in run_worker_first
 
     assert 'if url.path == "/blog.html":' not in ENTRY_TEXT
     assert 'headers={"location": "/docs/"}' not in ENTRY_TEXT

@@ -124,10 +124,11 @@ def test_public_pages_use_shared_favicon_metadata():
                 missing.append(f"{rel_path}: link {expected}")
         for name, content in REQUIRED_HEAD_META.items():
             # The dashboard ships a light/dark theme toggle, so it legitimately
-            # advertises both schemes instead of the dark-only default.
+            # advertises both schemes instead of the dark-only default. Every
+            # per-page dashboard document is built from the same shell.
             if (
                 name == "color-scheme"
-                and rel_path in ("dashboard.html", "dashboard/index.html", "dashboard/shell.html")
+                and rel_path.startswith("dashboard/")
                 and parser.meta.get(name) == "light dark"
             ):
                 continue
