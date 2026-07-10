@@ -63,6 +63,18 @@
             "status": "closed",
             "ts": 1783720085757,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "983f0191-27a8-4241-a29a-3d3f66be1d08",
+            "sig": "d8nGRoc60XbNUGWjO9HBACIZ6SV-8XoGoc1-sqSucX4AJEFD4eDmpq_YNxSlHjVge7XiZSZDbbHVdnm4VseJAQ",
+            "ts": 1783721095492,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -74,6 +86,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "closed",
     "title": "users should comment on issues as the username and not the nodename",
-    "updatedAt": 1783720085757,
+    "updatedAt": 1783721095492,
     "votes": 0
 }
