@@ -2267,8 +2267,8 @@ void MainWindow::loadCoveExplorer()
     QString err;
     const QList<Cove> envelopes = store.listCoves(&err);
     for (Cove cove : envelopes) {
-        if (!cove.accountScoped() || !CoveStore::accountCanAccess(cove, account))
-            continue;
+        // A locked v2 envelope is anonymous — no mode, no ACL — so membership
+        // can only be proven by attempting the unlock itself.
         if (!CoveStore::unlockForAccount(cove, account))
             continue;
         if (cove.name.trimmed().isEmpty())
