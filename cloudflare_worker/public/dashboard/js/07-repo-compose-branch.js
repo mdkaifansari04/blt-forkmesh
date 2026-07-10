@@ -225,6 +225,103 @@
     }
   }
 
+  // Branch-referencing web pull requests: no client-side diff computation
+  // (deliberately - that duplicates what git already does correctly). The
+  // desktop client reconstructs the patch from base/head on drain, same as any
+  // other branch-backed pull request (see renderRepoPullPatch's "Branch-backed
+  // PRs are reconstructed by the desktop client" copy).
+  function openPullCompose(repo) {
+    const container = $("[data-repo-pulls]");
+    if (!container || !repo) return;
+    const who = escapeHtml(state.session?.nodeName || "you");
+    const branches = repoBranchList(repo);
+    const defaultBranch = repoDefaultBranch(repo);
+    const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
+    const headDefault = branches.find((branch) => branch.name !== defaultBranch)?.name || defaultBranch;
+    container.innerHTML = `
+      <form data-repo-pull-new-form class="grid gap-3 border-t border-border bg-background p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="git-pull-request" class="h-4 w-4 text-primary"></i>New pull request</span>
+          <button type="button" data-repo-pull-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to pull requests</button>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Base
+            <select data-repo-pull-base class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary">${branchOptions}</select>
+          </label>
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Head
+            <select data-repo-pull-head class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary">${branchOptions}</select>
+          </label>
+        </div>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Title
+          <input data-repo-pull-title type="text" required maxlength="240" placeholder="Short, descriptive title" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
+          <textarea data-repo-pull-body rows="6" placeholder="Describe the change. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
+        </label>
+        <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
+        </div>
+      </form>`;
+    window.lucide?.createIcons();
+    const baseSelect = container.querySelector("[data-repo-pull-base]");
+    const headSelect = container.querySelector("[data-repo-pull-head]");
+    if (baseSelect) baseSelect.value = defaultBranch;
+    if (headSelect) headSelect.value = headDefault;
+    container.querySelector("[data-repo-pull-title]")?.focus();
+  }
+
+  async function handlePullComposeSubmit(repo, form) {
+    if (!repo || !form) return;
+    const titleInput = form.querySelector("[data-repo-pull-title]");
+    const bodyInput = form.querySelector("[data-repo-pull-body]");
+    const baseSelect = form.querySelector("[data-repo-pull-base]");
+    const headSelect = form.querySelector("[data-repo-pull-head]");
+    const submit = form.querySelector("[data-repo-pull-submit]");
+    const hint = form.querySelector("[data-repo-pull-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    const title = String(titleInput?.value || "").trim();
+    const base = String(baseSelect?.value || "").trim();
+    const head = String(headSelect?.value || "").trim();
+    if (!title) {
+      setHint("Enter a title for the pull request.", "bad");
+      titleInput?.focus();
+      return;
+    }
+    if (!base || !head) {
+      setHint("Choose a base and head branch.", "bad");
+      return;
+    }
+    if (base === head) {
+      setHint("Base and head must be different branches.", "bad");
+      return;
+    }
+    const body = String(bodyInput?.value || "");
+    if (submit) submit.disabled = true;
+    setHint("Signing and sending…");
+    try {
+      await submitWebPullOpen(repo, title, body, base, head);
+      if (titleInput) titleInput.value = "";
+      if (bodyInput) bodyInput.value = "";
+      if (submit) submit.disabled = false;
+      setHint("Pull request sent to the maintainer's inbox for review.", "good");
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      const code = String(error?.message || "");
+      setHint(
+        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+          : code === "author_quota" ? "You've reached the submission limit for this repository."
+          : code === "pull_too_large" ? "The submission is too large."
+          : code === "bad_signature" ? "Could not verify the pull request's signature."
+          : "Could not send the pull request. Please try again.",
+        "bad");
+    }
+  }
+
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
@@ -901,7 +998,7 @@
                 </span>
               </label>
               ${isPulls
-                ? `<button type="button" disabled aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground opacity-70"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
+                ? `<button type="button" data-repo-pull-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
                 : `<button type="button" data-repo-issue-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`}
               <div class="flex min-w-0 flex-wrap items-center gap-2 lg:col-span-3">
                 ${filters.map(([label, options]) => renderRepoCollectionFilter(label, options)).join("")}
