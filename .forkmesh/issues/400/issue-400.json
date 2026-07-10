@@ -19,6 +19,18 @@
             "title": "allow for deleting a comment from an issue",
             "ts": 1783463046778,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 14,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e3536336-0738-4d41-a2a9-052d5e8d5ad9",
+            "sig": "Q4p9DPuAthjHwKWADXZ2ryYhFpx25FpVyW1YkoXWwRzTpYW_Jrm4VR9_Hm6CR1JkjXYE1--yOmIeJREEx_dKAg",
+            "ts": 1783717199422,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -30,6 +42,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "allow for deleting a comment from an issue",
-    "updatedAt": 1783463046778,
+    "updatedAt": 1783717199422,
     "votes": 0
 }
