@@ -72,12 +72,12 @@ def test_all_public_html_pages_use_logo_in_brand_link():
     missing = []
     for page in html_pages:
         rel = page.relative_to(PUBLIC_DIR).as_posix()
-        # The dashboard shell's brand link lives in its header partial; parse the
-        # composed document the Worker actually serves.
-        if rel in ("dashboard/index.html", "dashboard.html", "dashboard/shell.html"):
-            html = assembled_dashboard()
-        else:
-            html = page.read_text(encoding="utf-8")
+        # dashboard/shell.html is the authored scaffold; its brand link lives
+        # in the header partial and every BUILT page document (parsed directly
+        # below) carries it inline.
+        if rel == "dashboard/shell.html":
+            continue
+        html = page.read_text(encoding="utf-8")
         if '<div data-forkmesh-header="simple"></div>' in html:
             header_js = (PUBLIC_DIR / "site-header.js").read_text(encoding="utf-8")
             if (
@@ -116,9 +116,9 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
 
 
 def test_dashboard_assets_are_root_relative_for_deep_links():
-    html = (PUBLIC_DIR / "dashboard.html").read_text(encoding="utf-8")
+    html = (PUBLIC_DIR / "dashboard" / "index.html").read_text(encoding="utf-8")
 
-    assert 'src="/dashboard.js?v=github-settings-tabs"' in html
+    assert 'src="/dashboard.js?v=separate-pages"' in html
     assert 'href="styles.css"' not in html
     assert 'src="dashboard.js"' not in html
 
@@ -146,10 +146,9 @@ def test_dark_pages_do_not_wrap_logo_in_light_circle():
     )
     for page in html_pages:
         rel = page.relative_to(PUBLIC_DIR).as_posix()
-        if rel in ("dashboard/index.html", "dashboard.html", "dashboard/shell.html"):
-            html = assembled_dashboard()
-        else:
-            html = page.read_text(encoding="utf-8")
+        if rel == "dashboard/shell.html":
+            continue
+        html = page.read_text(encoding="utf-8")
 
         is_dark = (
             'class="dark' in html

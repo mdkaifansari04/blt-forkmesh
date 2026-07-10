@@ -113,9 +113,8 @@ def test_worker_indexes_notifications_from_existing_event_sources():
 
 
 def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
-    # The two prebuilt shell files stay byte-identical; the markers live in the
-    # composed document (header + modals partials).
-    assert _read(PUBLIC / "dashboard" / "index.html") == _read(PUBLIC / "dashboard.html")
+    # The markers live in the shared chrome (header + modals partials), so
+    # they ship on every composed page document.
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 

@@ -54,9 +54,10 @@ def test_composed_bundle_is_the_single_iife():
     assert js.startswith("(() => {")
     assert js.rstrip().endswith("})();")
     assert js.count("(() => {") >= 1
-    assert "\n  init();\n" in js
+    assert "\n  if (initSharedChrome()) {\n" in js
+    assert "PAGE_INITS[currentPage()]" in js
     # A couple of load-bearing symbols that must survive the split intact.
-    for marker in ("const state = {", "function renderRepoDetail(", "async function init("):
+    for marker in ("const state = {", "function renderRepoDetail(", "function initSharedChrome("):
         assert marker in js
 
 
@@ -76,4 +77,4 @@ def test_dashboard_js_is_served_as_a_static_asset():
 
 def test_shell_still_references_dashboard_js():
     shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    assert 'src="/dashboard.js?v=github-settings-tabs"' in shell
+    assert 'src="/dashboard.js?v=separate-pages"' in shell

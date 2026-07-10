@@ -107,7 +107,7 @@ def test_universal_header_is_session_aware():
     assert ">Dashboard<" not in js  # user data is DOM-built, never innerHTML
     assert 'dash.textContent = "Dashboard"' in js
     assert 'profile.textContent = "Public profile"' in js
-    assert 'edit.href = "/dashboard?section=profile"' in js
+    assert 'edit.href = "/dashboard/settings"' in js
     assert 'edit.textContent = "Edit profile"' in js
     assert 'out.textContent = "Log out"' in js
     assert 'href="/signup">Sign Up</a>' in js

@@ -256,7 +256,9 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
     assert "deleteAccount" in dashboard_js
     assert "deleteAccount: true" in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
-    assert 'setSection("profile")' in dashboard_js
+    # Reaching settings is a real navigation now; the account panels are
+    # settings sub-tabs restored from the URL.
+    assert 'setSettingsSection(settingsSectionFromPath(), { scroll: false })' in dashboard_js
 
 
 def test_login_explains_disabled_legacy_accounts():
@@ -292,7 +294,7 @@ def test_dashboard_refreshes_canonical_cloudflare_profile_after_login():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "async function hydrateCanonicalProfile(session)" in dashboard_js
-    assert 'await hydrateCanonicalProfile(session)' in dashboard_js
+    assert 'hydrateCanonicalProfile(session).then(() => loadNotifications())' in dashboard_js
     assert 'fetchJson(`/api/accounts/${encodeURIComponent(nodeName)}`' in dashboard_js
     assert "writeSession(nextSession)" in dashboard_js
 
