@@ -2201,6 +2201,11 @@ private:
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
+    // Splice a just-created issue into m_currentIssues and redisplay it, without
+    // the full loadAll() reloadIssues() would do — that re-reads every issue
+    // file in the repo, which is what made the redirect to the new issue feel
+    // laggy on repos with a lot of issues.
+    void appendCreatedIssue(const IssueStore &store, const Issue &issue);
     void refreshIssueList();    // apply filters into the list widget
     void resetIssueFilters();   // clear status/label/milestone/search filters
     // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels, 3 Board)
