@@ -19,6 +19,15 @@
             "title": "fix the login / signup header on chat please",
             "ts": 1783610271320,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e0d585fd-afc2-4d65-8b1b-5ce1dc26f88e",
+            "sig": "p9G4gufL_8t79JUfHxcBCh8P6cq36BfgdfVCUZEL-7xObsLAT9-ccnXWKQpvYw8nrolfd0k04EyQ0GBZ_5ItBg",
+            "status": "closed",
+            "ts": 1783717134960,
+            "type": "status"
         }
     ],
     "labels": [
@@ -29,8 +38,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "fix the login / signup header on chat please",
-    "updatedAt": 1783610271320,
+    "updatedAt": 1783717134960,
     "votes": 0
 }
