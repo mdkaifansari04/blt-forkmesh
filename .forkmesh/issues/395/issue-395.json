@@ -1,32 +1,47 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 395,
-  "title": "when issues are created from the web the timestamp is wrong",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783435822515,
-  "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
-  "authorName": "forkmesh",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-395",
-      "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
-      "authorName": "forkmesh",
-      "ts": 1783435822515,
-      "title": "when issues are created from the web the timestamp is wrong",
-      "body": "",
-      "attachments": [],
-      "sig": "u1klBuy39FjCu6IdiT5BCN7ge1SMiZKcO8PBnB1NXPWg-D6Uoa4xyDvRrexh-VSFbGlqvpXGr7mlOLN-mH0XDA"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783435822515
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783435822515,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-395",
+            "sig": "u1klBuy39FjCu6IdiT5BCN7ge1SMiZKcO8PBnB1NXPWg-D6Uoa4xyDvRrexh-VSFbGlqvpXGr7mlOLN-mH0XDA",
+            "title": "when issues are created from the web the timestamp is wrong",
+            "ts": 1783435822515,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 13,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "536d1182-a067-41fc-98b1-4872f04b310f",
+            "sig": "F0LPfeQQaP5t-gfIPy0LTgGuur5eORpb8_CvEAB_HpbbChTexXfZgaPQnqJA7ZWdX-kd_IPE8B_YIJ1fBzI7BA",
+            "ts": 1783717185313,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 395,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "when issues are created from the web the timestamp is wrong",
+    "updatedAt": 1783717185313,
+    "votes": 0
 }
