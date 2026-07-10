@@ -740,7 +740,6 @@ QWidget *MainWindow::buildAgentsTab()
                         {QStringLiteral("tool_use_id"), toolUseId},
                         {QStringLiteral("text"), answer}});
                 s->sendToolResult(toolUseId, answer);
-                bumpClaudeCodeUsage();
                 if (AgentSession *as = findAgentSession(sid);
                     as && as->status != AgentStatus::Running) {
                     as->status = AgentStatus::Running;
@@ -1111,12 +1110,11 @@ QWidget *MainWindow::buildAgentsTab()
     // Issue #290 used to re-pull the OAuth usage endpoint on a steady one-minute
     // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
     // even with no agent running. That meant a network round trip every minute
-    // for the lifetime of the app. Polling is gone: the gauge now renders from
-    // the last cached figures on launch (restored in buildBreadcrumb) and only
-    // hits the network when there's a reason to believe usage moved — right
-    // after a prompt is sent (bumpClaudeCodeUsage) or when the user hovers the
-    // chart to check the current numbers (see the TokenUsageMiniChart::onHover
-    // wiring in buildBreadcrumb).
+    // for the lifetime of the app. Polling is gone, and adhoc #20 removed every
+    // other trigger too: the gauge now renders from the last cached figures on
+    // launch (restored in buildBreadcrumb) and only hits the network when the
+    // user hovers the chart to check the current numbers (see the
+    // TokenUsageMiniChart::onHover wiring in buildBreadcrumb).
 
     // adhoc #178 removed the composer frame that used to hold just the
     // Continue button (adhoc #139 had already stripped it down to that) — the
@@ -1223,10 +1221,6 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
                          {QStringLiteral("text"), prompt}};
         applyTranscriptEvent(sid, turn);
         s->sendUserText(prompt);
-        // Issue #84: a new prompt nudges our rolling-window usage, so re-poll
-        // it now (and once more shortly after) to keep the top-bar chart +
-        // hover stats current rather than waiting for the next minute tick.
-        bumpClaudeCodeUsage();
         // Replying puts the agent back to work — clear "Waiting", or the
         // Failed left by an error result whose process stayed alive, so the
         // list shows the session running again.
@@ -2055,18 +2049,6 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
     static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
         ->setReset(weekly, remaining > 0 ? humanizeRemaining(remaining)
                                          : QString());
-}
-
-void MainWindow::bumpClaudeCodeUsage()
-{
-    // A just-started agent (or a freshly sent prompt) hasn't consumed anything
-    // yet, so refreshing only at that instant leaves the top-bar gauge showing
-    // the pre-start figure — which reads as "not updating". Refresh now for any
-    // usage already on the clock, then once more after the first turn has had
-    // time to land, so the gauge moves promptly. This (plus hovering the chart)
-    // is the only thing that hits the usage endpoint now — no background timer.
-    refreshClaudeCodeUsage();
-    QTimer::singleShot(10 * 1000, this, &MainWindow::refreshClaudeCodeUsage);
 }
 
 void MainWindow::refreshClaudeCodeUsage()
@@ -5279,11 +5261,6 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                 launchEnv << QStringLiteral("MAX_THINKING_TOKENS=0");
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
                         resumeId, chosenModel, effort, fallback);
-            // Issue #84: launching with an initial prompt is a send too — refresh
-            // the top-bar usage chart + hover stats. Bump (now + a short
-            // follow-up) so the first turn's usage shows without waiting for the
-            // next minute tick.
-            bumpClaudeCodeUsage();
         };
         if (claudeModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
