@@ -63,6 +63,18 @@
             "status": "closed",
             "ts": 1783720494585,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "a6487441-d563-4664-9931-3cb2b70b41ea",
+            "sig": "q1H1dU9qsqmw4rNKeH7V4fnev693LA4Zl-CgE4gJU67NRESm2mvZYGjD439S48_-s8wh2IBhBVVFtE7_CD7FAA",
+            "ts": 1783721094839,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -74,6 +86,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "closed",
     "title": "allow for deleting a comment from an issue",
-    "updatedAt": 1783720494585,
+    "updatedAt": 1783721094839,
     "votes": 0
 }
