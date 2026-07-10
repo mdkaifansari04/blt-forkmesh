@@ -1200,9 +1200,9 @@ IssueStore MainWindow::issueStoreForCurrentRepo() const
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
-        return IssueStore(QString(), QString(), &m_profileIdentity, m_userName);
+        return IssueStore(QString(), QString(), &m_profileIdentity, chatDisplayName());
     const RepositoryRecord &repo = writableRecordFor(m_repositories.at(idx));
-    return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+    return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, chatDisplayName());
 }
 
 void MainWindow::refreshIssuesRepoCombo()
