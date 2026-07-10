@@ -4238,8 +4238,8 @@ def _public_profile_html(profile, host):
     body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { width:min(46rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
     header { display:flex; gap:16px; align-items:center; }
-    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); }
-    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
+    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%%, var(--border)); }
+    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
     h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
     .handle, .bio, small { color:var(--muted); }
     .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
@@ -4251,15 +4251,15 @@ def _public_profile_html(profile, host):
     .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
     .links { display:grid; gap:10px; margin-top:24px; }
     .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%, var(--border)); }
+    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%%, var(--border)); }
     .profile-link span { display:grid; min-width:0; }
     .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
-    .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
+    .verified { border-color:color-mix(in srgb, var(--accent) 45%%, var(--border)); color:var(--accent); }
     .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
     .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
     input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
-    button { border:1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
+    button { border:1px solid color-mix(in srgb, var(--accent) 48%%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
     footer { margin-top:24px; color:var(--muted); font-size:12px; }
     footer a { color:var(--muted); }
   </style>
