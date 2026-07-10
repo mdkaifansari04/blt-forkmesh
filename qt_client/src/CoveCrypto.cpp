@@ -18,7 +18,14 @@ constexpr int kDefaultRounds = 600000;
 // would carry alongside the repo.
 constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
 
-QByteArray randomBytes(int count)
+} // namespace
+
+int CoveCrypto::defaultRounds()
+{
+    return kDefaultRounds;
+}
+
+QByteArray CoveCrypto::randomBytes(int count)
 {
     QByteArray out(count, Qt::Uninitialized);
     if (RAND_bytes(reinterpret_cast<unsigned char *>(out.data()), count) != 1) {
@@ -28,16 +35,24 @@ QByteArray randomBytes(int count)
     return out;
 }
 
-} // namespace
-
-int CoveCrypto::defaultRounds()
-{
-    return kDefaultRounds;
-}
-
 QByteArray CoveCrypto::randomSalt()
 {
     return randomBytes(kSaltBytes);
+}
+
+QByteArray CoveCrypto::randomKey()
+{
+    return randomBytes(kKeyBytes);
+}
+
+CoveCrypto CoveCrypto::withKey(const QByteArray &key)
+{
+    CoveCrypto crypto;
+    if (key.size() == kKeyBytes)
+        crypto.m_key = key;
+    else
+        crypto.m_error = "A cove content key must be exactly 32 bytes.";
+    return crypto;
 }
 
 CoveCrypto::CoveCrypto(const QString &password, const QByteArray &salt, int rounds)
