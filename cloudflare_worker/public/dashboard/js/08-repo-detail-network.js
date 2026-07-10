@@ -251,7 +251,6 @@
           </aside>
         </div>
       </div>`;
-    setSection("explore");
     window.lucide?.createIcons();
     // Restore whichever tab the URL points at (e.g. a refresh on
     // /owner/repo/issues) instead of always defaulting back to Code.
@@ -273,6 +272,19 @@
       }
     }
     return null;
+  }
+
+  // Opening a repo from any list/search control is a real page navigation now
+  // (repo pages are their own documents). Prefer the canonical origin's clean
+  // URL when the catalog already resolved the key (alias groups), falling back
+  // to the raw owner/name path — the repo page resolves it again on boot.
+  function openRepoPage(key) {
+    const wanted = String(key || "").trim();
+    if (!wanted) return;
+    const repo = findRepository(wanted);
+    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    closeMobileDrawers();
+    location.assign(url);
   }
 
   // A node's dot is only filled green when it is online *right now*; historical
@@ -570,7 +582,10 @@
       await fetch("/api/notifications", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ node, ids, all }),
+        body: JSON.stringify({
+          node, ids, all,
+          sessionToken: state.session?.sessionToken || "",
+        }),
       });
     } catch (_) {}
     await loadNotifications();
@@ -673,18 +688,97 @@
     }
   }
 
-  async function init() {
+  // Each page is its own document (marked <body data-page="...">). Boot runs
+  // the shared chrome first, then that page's init — the page's own markup is
+  // already visible at parse time, so there is no flash-then-swap.
+  function currentPage() {
+    return document.body?.dataset?.page || "home";
+  }
+
+  // Clean path per legacy ?section= name — links from old builds and the
+  // desktop app still arrive as /dashboard?section=X. The Worker 308s these
+  // too; this client shim is belt-and-braces for cached home documents.
+  const SECTION_PATHS = {
+    home: "/dashboard",
+    repos: "/dashboard/repos",
+    network: "/dashboard/network",
+    chat: "/dashboard/chat",
+    profile: "/dashboard/settings",
+    "profile-overview": "/dashboard/profile",
+    "profile-repositories": "/dashboard/profile/repositories",
+  };
+
+  function legacyRedirectTarget() {
+    if (location.pathname !== "/dashboard") return "";
+    const params = new URLSearchParams(location.search);
+    const section = (params.get("section") || "").trim();
+    if (section && SECTION_PATHS[section]) {
+      params.delete("section");
+      const rest = params.toString();
+      return SECTION_PATHS[section] + (rest ? `?${rest}` : "");
+    }
+    const repo = (params.get("repo") || "").trim();
+    if (repo.includes("/")) {
+      return "/" + repo.split("/").map(encodeURIComponent).join("/");
+    }
+    return "";
+  }
+
+  // Fetches the repository catalog once and fans it out to whatever containers
+  // exist on this page (sidebar list is chrome on every page; the repos list,
+  // home feed, and profile views fill in when present). Never awaited before
+  // first paint — each page shows its own skeleton immediately. The repo page
+  // awaits this promise before resolving its /owner/repo path.
+  let repositoriesReady = null;
+
+  async function loadRepositories({ fresh = true } = {}) {
+    if (dashboardMockRepositoriesEnabled()) {
+      renderRepositories(dashboardMockRepositories(), state.session);
+      return;
+    }
+    try {
+      const data = await fetchJson("/api/repositories", { fresh });
+      renderRepositories(data.repositories, state.session);
+    } catch (_) {
+      state.repositoriesLoading = false;
+      const list = $("#repoList");
+      const count = $("[data-repo-count]");
+      if (count) count.textContent = "Unavailable";
+      if (list) {
+        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
+      }
+      renderSidebarRepositories(state.session);
+      renderHomeFeed();
+    }
+  }
+
+  // Returns false when boot is aborting into a redirect (login bounce, legacy
+  // URL shim) so the page init doesn't race the navigation.
+  function initSharedChrome() {
     const session = readSession();
     state.session = session;
     renderAppVersion();
+
     const grant = pendingLinkGrant();
     if (grant && !session?.nodeName) {
       // A link grant arrived but nobody is logged in: bounce through login and
       // come straight back with the grant intact so the link completes then.
       location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
-      return;
+      return false;
     }
-    const requested = requestedRepoKey();
+    if (grant && currentPage() !== "settings") {
+      // The desktop app hard-codes /dashboard?link_node=... — the Nodes panel
+      // lives on the settings document now. Carry the grant params over
+      // untouched; offerLinkGrant strips them there.
+      location.replace("/dashboard/settings" + location.search);
+      return false;
+    }
+    const legacyTarget = legacyRedirectTarget();
+    if (legacyTarget) {
+      location.replace(legacyTarget);
+      return false;
+    }
+
     // Guests can browse repositories without an account: instead of bouncing
     // signed-out visitors back to the landing page, the header swaps the
     // profile/notification controls for a Sign Up / Log In link.
@@ -697,52 +791,72 @@
       }
       $("[data-profile-settings-button]")?.classList.add("hidden");
       $("#notificationToggle")?.classList.add("hidden");
+      // Keep the presence cookie honest: localStorage says logged out, so the
+      // Worker must stop 302ing / to the dashboard.
+      document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     }
 
     renderProfile(session || { nodeName: "guest" });
-    renderHomeChangelog();
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      await hydrateCanonicalProfile(session);
-      await loadNotifications();
+      hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
     }
-    if (dashboardMockRepositoriesEnabled()) {
-      renderRepositories(dashboardMockRepositories(), session);
-      if (requested) {
-        const repo = findRepository(requested);
-        if (repo) renderRepoDetail(repo);
-        else showSection(requestedSection() || "home", { push: false });
-      } else {
-        showSection(requestedSection() || "repos", { push: false });
-      }
-      renderNetwork();
+    repositoriesReady = loadRepositories();
+    return true;
+  }
+
+  function initHomePage() {
+    renderHomeChangelog();
+    // Feed + top repositories fill in when loadRepositories()/loadNotifications()
+    // resolve — both re-render the home containers.
+  }
+
+  function initReposPage() {
+    // The catalog fetch from initSharedChrome() owns this page's content; the
+    // baked markup already shows the loading state.
+  }
+
+  function initNetworkPage() {
+    renderNetwork();
+  }
+
+  function initChatPage() {
+    // dashboard-chat.js self-boots off the #fullChatMessages markup.
+  }
+
+  function initProfileOverviewPage() {
+    renderProfilePage(state.session);
+    refreshPublicProfile(state.session);
+  }
+
+  function initSettingsPage() {
+    renderProfilePage(state.session);
+    refreshPublicProfile(state.session);
+    setSettingsSection(settingsSectionFromPath(), { scroll: false });
+  }
+
+  async function initRepoPage() {
+    const requested = requestedRepoKey();
+    const detail = $("[data-repo-detail]");
+    const crumb = $("[data-repo-detail-crumb]");
+    if (crumb && requested) crumb.textContent = requested;
+    if (detail && requested) {
+      detail.innerHTML = '<p class="text-sm text-muted-foreground">Loading repository…</p>';
+    }
+    // findRepository needs the catalog (alias/canonical grouping), so this page
+    // does wait on the shared fetch before rendering the detail body.
+    await (repositoriesReady || loadRepositories());
+    const repo = requested ? findRepository(requested) : null;
+    if (repo) {
+      renderRepoDetail(repo);
       return;
     }
-    try {
-      const data = await fetchJson("/api/repositories", { fresh: true });
-      renderRepositories(data.repositories, session);
-      if (requested) {
-        const repo = findRepository(requested);
-        if (repo) renderRepoDetail(repo);
-        else showSection(requestedSection() || "home", { push: false });
-      } else {
-        // Refresh landed on a section URL (?section=network/profile/...) -
-        // restore it instead of falling back to the repos list.
-        showSection(requestedSection() || "home", { push: false });
-      }
-    } catch (_) {
-      state.repositoriesLoading = false;
-      const list = $("#repoList");
-      const count = $("[data-repo-count]");
-      if (count) count.textContent = "Unavailable";
-      if (list) {
-        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
-      }
-      renderSidebarRepositories(session);
-      renderHomeFeed();
-      renderHomeChangelog();
+    if (detail) {
+      detail.innerHTML =
+        '<p class="text-sm text-muted-foreground">Repository ' +
+        `<span class="font-mono text-foreground">${escapeHtml(requested || "")}</span>` +
+        ' was not found. <a class="dashboard-accent-link hover:underline" href="/dashboard/repos">Back to repositories</a>.</p>';
     }
-    renderNetwork();
   }
 
   document.addEventListener("click", async (event) => {
@@ -808,19 +922,9 @@
       return;
     }
 
-    const profileSettings = event.target.closest("[data-profile-settings-button]");
-    if (profileSettings) {
-      $("[data-profile-popover]")?.classList.add("hidden");
-      $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
-      setProfileHint("", "");
-      showSection("profile");
-      closeMobileDrawers();
-      return;
-    }
-
     const settingsSectionButton = event.target.closest("[data-settings-section-link]");
     if (settingsSectionButton) {
-      setSettingsSection(settingsSectionButton.dataset.settingsSectionLink || "public-profile");
+      setSettingsSection(settingsSectionButton.dataset.settingsSectionLink || "public-profile", { push: true });
       return;
     }
 
@@ -965,21 +1069,6 @@
       closeGlobalSearch();
     }
 
-    const sectionButton = event.target.closest("[data-section]");
-    if (sectionButton) {
-      const targetSection = sectionButton.dataset.section;
-      // Each section gets its own address-bar entry (?section=network, ...) so
-      // Back returns to the repo/prior page instead of exiting the app AND a
-      // refresh keeps you here. "explore" is the repo-detail view, addressed by
-      // its /owner/repo path, so it manages its own URL.
-      if (targetSection !== "explore") {
-        showSection(targetSection);
-      } else {
-        setSection(targetSection);
-      }
-      closeMobileDrawers();
-    }
-
     const pageButton = event.target.closest("[data-dashboard-repo-page]");
     if (pageButton) {
       state.page = Number(pageButton.dataset.dashboardRepoPage) || 1;
@@ -1000,11 +1089,8 @@
           return;
         }
         event.preventDefault();
-        const repo = findRepository(openButton.dataset.dashboardOpenRepo);
-        if (repo) {
-          closeMobileDrawers();
-          renderRepoDetail(repo);
-        }
+        // Repo pages are real documents now: opening one is a real navigation.
+        openRepoPage(openButton.dataset.dashboardOpenRepo);
         return;
       }
 
@@ -1339,21 +1425,9 @@
     updateRepositoryPagination();
   });
 
-	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
-	    event.stopPropagation();
-	    $("[data-profile-popover]")?.classList.add("hidden");
-	    $("[data-profile-toggle]")?.setAttribute("aria-expanded", "false");
-	    setProfileHint("", "");
-	    showSection("profile");
-	    closeMobileDrawers();
-	  });
-  $$("[data-settings-section-link]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setSettingsSection(button.dataset.settingsSectionLink || "public-profile");
-    });
-  });
+  // [data-profile-settings-button] is a real link to /dashboard/settings now,
+  // and [data-settings-section-link] clicks are handled by the delegated
+  // document click handler above (with push: true for URL reflection).
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
@@ -1411,11 +1485,7 @@
     const openCard = event.target?.closest?.("[data-dashboard-open-repo][role='link']");
     if (!typingTarget && openCard && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
-      const repo = findRepository(openCard.dataset.dashboardOpenRepo);
-      if (repo) {
-        closeMobileDrawers();
-        renderRepoDetail(repo);
-      }
+      openRepoPage(openCard.dataset.dashboardOpenRepo);
       return;
     }
     if (fileFinderOpen()) {
@@ -1441,37 +1511,43 @@
     }
   });
 
-  window.addEventListener("popstate", () => {
-    const requested = requestedRepoKey();
-    const repo = requested ? findRepository(requested) : null;
-    if (!repo) {
-      state.selectedRepo = null;
-      // Restore whichever section the URL points at (Back out of a repo into
-      // Network/Profile, or forward into one) rather than snapping to repos.
-      showSection(requestedSection() || "home", { push: false });
+  // History handling is page-scoped now: only the repo page (tabs/tree/blob)
+  // and the settings page (sub-tabs) push same-document states. Back/Forward
+  // across pages is native navigation between real documents.
+  function initPageHistory() {
+    const page = currentPage();
+    if (page === "settings") {
+      window.addEventListener("popstate", () => {
+        setSettingsSection(settingsSectionFromPath(), { scroll: false });
+      });
       return;
     }
-    if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-      // Same repo; restore the path/tab from the URL instead of tearing down
-      // and rebuilding the whole detail view.
-      const parts = repoRouteParts();
-      const kind = parts[2];
-      const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
-      if (repoTabRoutesFor(repo).includes(kind)) {
-        // Feature tab (issues, pulls, etc.): restore without re-loading
-        // records since they cache in state.
-        setRepoTab(kind);
-      } else if (kind === "blob" && path) {
-        loadRepositoryBlob(repo, path);
-      } else {
-        loadRepositoryTree(repo, kind === "tree" ? path : "");
+    if (page !== "repo") return;
+    window.addEventListener("popstate", () => {
+      const requested = requestedRepoKey();
+      const repo = requested ? findRepository(requested) : null;
+      if (!repo) {
+        // The entry points outside this repo document — a real navigation.
+        location.reload();
+        return;
       }
-      return;
-    }
-    renderRepoDetail(repo);
-  });
-
-  applyDashboardTheme(readDashboardTheme());
-  renderLongDiffPreference();
-  init();
-})();
+      if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
+        // Same repo; restore the path/tab from the URL instead of tearing down
+        // and rebuilding the whole detail view.
+        const parts = repoRouteParts();
+        const kind = parts[2];
+        const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
+        if (repoTabRoutesFor(repo).includes(kind)) {
+          // Feature tab (issues, pulls, etc.): restore without re-loading
+          // records since they cache in state.
+          setRepoTab(kind);
+        } else if (kind === "blob" && path) {
+          loadRepositoryBlob(repo, path);
+        } else {
+          loadRepositoryTree(repo, kind === "tree" ? path : "");
+        }
+        return;
+      }
+      renderRepoDetail(repo);
+    });
+  }

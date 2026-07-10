@@ -111,11 +111,9 @@
   function selectGlobalSearchResult(key = "") {
     const selected = $('[data-global-search-result][aria-selected="true"]') || $("[data-global-search-result]");
     const wanted = key || selected?.dataset?.dashboardOpenRepo || repoKey(state.globalSearch.results[state.globalSearch.selectedIndex] || {});
-    const repo = findRepository(wanted);
-    if (!repo) return;
+    if (!wanted) return;
     closeGlobalSearch({ clear: true });
-    closeMobileDrawers();
-    renderRepoDetail(repo);
+    openRepoPage(wanted);
   }
 
   function focusGlobalSearch() {
@@ -303,7 +301,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="min-w-0 text-left">
+      <a href="${escapeHtml(repoPathUrl(repo))}" class="block min-w-0 text-left">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
           <span class="min-w-0 truncate text-lg font-semibold text-accent hover:underline">${escapeHtml(repo.name || "repository")}</span>
           <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${escapeHtml(visibility)}</span>
@@ -315,7 +313,7 @@
           <span class="inline-flex items-center gap-1.5"><i data-lucide="scale" class="h-3.5 w-3.5"></i>${escapeHtml(license)}</span>
           <span>Updated ${escapeHtml(formatDate(repo.updatedAt || repo.lastSync))}</span>
         </span>
-      </button>
+      </a>
       <div class="grid content-center gap-3">
         <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
           <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
@@ -414,10 +412,10 @@
       const key = repoKey(repo);
       const live = repoIsLive(repo);
       return `
-        <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" role="link" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+        <a href="${escapeHtml(repoPathUrl(repo))}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
           <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
-        </button>`;
+        </a>`;
     }).join("");
   }
 
@@ -433,10 +431,10 @@
         ? `<div class="grid gap-1">${groups.map((group) => {
             const repo = sourceOfTruth(group);
             const key = repoKey(repo);
-            return `<button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
+            return `<a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
               <i data-lucide="book-marked" class="h-3.5 w-3.5 shrink-0"></i>
               <span class="min-w-0 truncate">${escapeHtml(key)}</span>
-            </button>`;
+            </a>`;
           }).join("")}</div>`
         : '<div class="px-2 py-3 text-sm text-muted-foreground">No repositories match this filter.</div>'}
     `;
@@ -478,7 +476,7 @@
           </span>
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <button type="button" data-dashboard-open-repo="${escapeHtml(key)}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</button>
+              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>

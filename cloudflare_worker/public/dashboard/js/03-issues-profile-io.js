@@ -230,10 +230,12 @@
       event,
       meta: { labels: [], milestone: "", priority: 0, assignees: [], wantsAgent: Boolean(assignAgent), model: assignAgent ? String(agentModel || "") : "", provider: assignAgent ? String(agentProvider || "") : "" },
     };
-    // When assignAgent is true, include ownerAccount so the server verifies
-    // it's the repo owner or an admin (adhoc #225).
+    // When assignAgent is true, include the account session so the server can
+    // verify the caller really is the repo owner or an admin (adhoc #225). The
+    // session token is the proof; ownerAccount stays only as a display hint.
     if (assignAgent) {
       payload.ownerAccount = state.session?.nodeName || "";
+      payload.sessionToken = state.session?.sessionToken || "";
     }
     const response = await fetch(`${repoApiBase(repo)}/issues`, {
       method: "POST",

@@ -452,11 +452,17 @@
 
     const pending = (async () => {
       const noStore = fresh || !ttl;
+      // Attach the account session as a bearer token when logged in. Endpoints
+      // that expose per-account data (e.g. /api/notifications) require it;
+      // public endpoints simply ignore it. Same-origin only.
+      const token = state.session?.sessionToken || "";
+      const headers = noStore
+        ? { accept: "application/json", "cache-control": "no-cache" }
+        : { accept: "application/json" };
+      if (token) headers.authorization = "Bearer " + token;
       const response = await fetch(requestPath, {
         cache: noStore ? "no-store" : "default",
-        headers: noStore
-          ? { accept: "application/json", "cache-control": "no-cache" }
-          : { accept: "application/json" },
+        headers,
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
