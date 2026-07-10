@@ -1,18 +1,31 @@
 {
-    "access": {
-        "creatorAccount": "newnewnode",
-        "invitedAccounts": [
-            "newnewnode"
-        ],
-        "mode": "account"
-    },
     "cipher": {
-        "body": "1BBueVxg4PclWlw1rHk1CQkElMPowznKUUSA6a8OEqg59kJlG7A5QDddE4/nLiwKuQdJRR44R+/dcuzfbByIsd3rxyVACLDsZhiMgeOSgRRuy2XA7LPdb9oLzQsAHC3I5knc12YtiQB9ZVJvcxsFpO4zx5YIDW8gOCmPGVNgfynVhV6dA/Xj6ygzpzmaliykxr0PnJfbEd6hFJNWV2ahZY6slu78wy6OTCafoE0ZUYd1UOH8mw1IsXHzORtkp+6I7JsRgtTWK8x1xtai2aKzYp0GH2G5AsyPn058OFU4ZvcVSP16Ohv0m/Ut12xT5VqKNPkhktB0UB6TxByurbPx2aE1ZjbB0VatqbfmvOn1+VWtajih6GlE/11Wln+eHVfmSGdNuXFSRnQBkRAiL/lREUHbwrpbwG3GZ/DI8g06rRoS/TrilO/8LDeSQCckIq3nqjv3r1p1grY76dvamzReSBRcyzNCKa8JzchIptjrKduqX5NdJyCkFhZ0UATLzzkH4BpKDAm5VykHOQ39W73jeIwqpmfZh8oAQ+b57vWbCE9oRWHxYRtBFgS3AmNd9QP3Q3spQ+3mjcgzeU3lLHgyG9t0TdtiJuyzor84tAb31wqWap0k5Ci3xkX3KhzkPJqyV+cmVflLVZ8hg1UgDvM44+GKIs3nnu8ujE+GAzJem8cK6ytiuAyBpbABtADexJG7zCtCa4Nj+OAcgCfPezrVudbdH0V4HfJPgmniuhAbRowmhtLjTEWNcA/cPr1fK7cxRMmPuA==",
-        "nonce": "cHRSABGVXNACZEdl",
-        "tag": "+WudGRS3PhQAiJozFKyVyQ=="
+        "body": "ALe0RPzSi9NqtEOP9//zqiDg0c1o6t1d96TQLB35XCxA0N0uklJjL5h9LhiPiw3moR8wiTkKsv9ml5Jek+srkNefsYrTJ8ufrw6Q+NF+5MMHktx18QxARWn7TLUo1kuKcTiWADvNO8TovfnpeKmkcUR7wC5G/GrHo+znsa4yKqJwQcl1RE13fusF43Pe/PuXh7wpqBqxL8/gzn3ZpABYMQUHhuCL+jDalm2rt7FrRy0U5l+Ni/OV/+rcLEEfXuuUk1RW8/ifHLuZbIqxNvV0WrblOU9FjBsSHo7eTzQJmdDA8EB+z+YYw+UJvGVtRUWgB0orRWlk1vI/aqOcF+v6Zq8hIgfdncLUI6d4TUZw2aYW0PnxnYMhQWMP9eDKgxXEq4CrQsWPMoBu4lFhhIEN2HUn9bljZ+rglUWlCWAgZ0O8inL4tGKJzf0QsQ3KX1ApbXffu0C+EA7q2HIWVooJwpAwRVP8zZIH+o0RM6feXnAeWomrJQgBypUeqylPoI1+c+9DXdAIgsZ6bfx+JD9DlcaMeO2tfM48Mz+yZE7TIFJou8448pJBwTWVlKp1ycNw1mcc/zz+WtB144urdg2tcseXb8fHPhez5wRz9ZVKEakg8LhulDG2e/yl8UzYOYjwhpifaJGYmnWRAICvpFFdokS79HCWl6jUTbimMaakvKWYFvLCs8bkjfNsZUQ6wE2RfM93g6vo0iz4OByhs21jJXw4NEM0nqi/3Ibgxbkj7mQFgKdm5PKYt1CMuWsUnGVNpDPE3pFeLLBzrcTOvAhPPv5sp4Kb43FZbUN6sgNTrkoVCoH//EsHVWBl1N7p2/h4V2y8esC8OZ5qy1h4I8bZVQlTIG039Xxv1/8ltH88plqgqKGCG3sZeKu1XxBY+yc+Oqr0hnbXB7bnmmERSqtOAhA+s3DiwQdr7Ouu7iqHqehtVkW3rjwTPk73xJj6g5kaK5yP+O0JXlRoRx2qkvPmU9GIurRSPrm9bwWbp+7AasbL1sfTi6HLe6CO9fwa",
+        "nonce": "I2XNsZBMy805TXAp",
+        "tag": "JFF0Ya2Ig9vBkTDmtux02w=="
     },
-    "createdAtMs": 1783206094546,
-    "creator": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "grants": [
+        {
+            "body": "19/aT8RqRmam6JkphNLkYv3UxvAH7BiBlLasYsQ/VDM=",
+            "nonce": "N+Hqe79nAc4lIlhC",
+            "tag": "fhgijGngOh7Vfa9zQUol1w=="
+        },
+        {
+            "body": "4gfqZBW8yrTFAbJ65A2hLiO+woPYGIPVjKoXKQFaY4I=",
+            "nonce": "wlz6ZcNBvoYlrrll",
+            "tag": "2KsbwnPCS8CkQJ0l8rC2Eg=="
+        },
+        {
+            "body": "Hkq9mhSd/+iAJVLHxwPWCxZqGbK6FpkLtBfOX0yxGNQ=",
+            "nonce": "0qQZqlzHJzf+Qxdt",
+            "tag": "B3AXVwYDlo1xqMjfm/P7TA=="
+        },
+        {
+            "body": "mXhnkcSyMmoQ1N7LoAUt1DY+o/qGnXW49fuGWq1NGnQ=",
+            "nonce": "ftkxXKPSbopZ0Gr9",
+            "tag": "ZPsHpGqxc/FxoHTIHWvtmA=="
+        }
+    ],
     "id": "01c671b5-73dc-4b5a-a183-2f35249971ad",
     "kdf": {
         "algo": "pbkdf2-sha256",
@@ -20,6 +33,5 @@
         "salt": "k9Uk+dgT+uuPFgkE53RFNw=="
     },
     "kind": "cove",
-    "notifyOnOpen": false,
-    "v": 1
+    "v": 2
 }
