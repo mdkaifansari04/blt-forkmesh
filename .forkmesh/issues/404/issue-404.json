@@ -19,6 +19,15 @@
             "title": "make the chats listed by timestamp on the website with most recent at the bottom",
             "ts": 1783475233252,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "fff1c139-e22c-40a3-a92e-4f0a389b6c65",
+            "sig": "97ZoY3tNJJgQ2yoaaxsLg6DLzGtmBfkkfZL4Mxkj_F4nkoclBpeYzZdkplwG_99Zsvoil8Aey8P8HQpjG8Q4CQ",
+            "status": "closed",
+            "ts": 1783717092282,
+            "type": "status"
         }
     ],
     "labels": [
@@ -29,8 +38,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "make the chats listed by timestamp on the website with most recent at the bottom",
-    "updatedAt": 1783475233252,
+    "updatedAt": 1783717092282,
     "votes": 0
 }
