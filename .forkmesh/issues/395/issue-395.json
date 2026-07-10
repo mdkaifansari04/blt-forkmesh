@@ -55,6 +55,15 @@
             "sig": "1mZtsQVGGZiUzOOk06j7sEouETPpDpl1Vw01gE_KJkIBFpLuAriXQbUyj7t_7bKixYo2Kud6E6iJAhJqCxCdCQ",
             "ts": 1783721095134,
             "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "13515439-1a9b-447e-b107-3ee5cc5dbf01",
+            "sig": "znMXZ-VvkWK9S9fgaiiQCg1lKYUS2ZkVQyI4h9lBgkD_yuONXfUsUEOyJjr1TSd_BcAz-1HTQaWxzGvN06HjAg",
+            "status": "closed",
+            "ts": 1783721095429,
+            "type": "status"
         }
     ],
     "labels": [
@@ -64,8 +73,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "when issues are created from the web the timestamp is wrong",
-    "updatedAt": 1783721095134,
+    "updatedAt": 1783721095429,
     "votes": 0
 }
