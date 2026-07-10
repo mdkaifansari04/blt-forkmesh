@@ -1,15 +1,26 @@
-From d0a06383e98de1570f76b8c3edc0626d747dac8b Mon Sep 17 00:00:00 2001
+From acd5e8e305959743cae372a82aac93158a76c523 Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
-Date: Fri, 10 Jul 2026 00:23:24 +0530
+Date: Fri, 10 Jul 2026 09:30:33 -0400
 Subject: [PATCH] feat(worker): add public profile follow metadata
 
+Adds profile follow storage and account/profile follow metadata, profile
+about/location/timezone fields, public profile social counts, and
+follow/unfollow API routing.
+
+Rebuilt against current main: the original PR commit was authored from a
+stale/corrupted local checkout and silently reverted unrelated code
+(sync_handler dispatch, ForkBot AI helpers, the system_status_minute /
+issue_seq / schema_meta tables, and an _account_rotate security check).
+This commit reapplies only the genuine follow-feature additions on top of
+main, with none of that regression.
 ---
- .../migrations/0027_profile_follows.sql       |   17 +
- cloudflare_worker/src/entry.py                | 1279 +++++++----------
- cloudflare_worker/src/schema.py               |   39 +-
- cloudflare_worker/src/urls.py                 |    1 +
- .../tests/test_account_profile_endpoints.py   |  120 ++
- 5 files changed, 708 insertions(+), 748 deletions(-)
+ .../migrations/0027_profile_follows.sql       |  17 +
+ cloudflare_worker/src/entry.py                | 443 ++++++++++++++++--
+ cloudflare_worker/src/schema.py               |  11 +
+ cloudflare_worker/src/urls.py                 |   2 +
+ .../tests/test_account_profile_endpoints.py   | 120 +++++
+ .../tests/test_login_key_binding.py           |   4 +
+ 6 files changed, 558 insertions(+), 39 deletions(-)
  create mode 100644 cloudflare_worker/migrations/0027_profile_follows.sql
 
 diff --git a/cloudflare_worker/migrations/0027_profile_follows.sql b/cloudflare_worker/migrations/0027_profile_follows.sql
@@ -36,18 +47,10 @@ index 00000000..803867a6
 +CREATE INDEX IF NOT EXISTS idx_profile_follows_follower
 +    ON profile_follows(follower_bi, created_at);
 diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index dd2ae0fa..0e162297 100644
+index 77d8b01b..b63995e5 100644
 --- a/cloudflare_worker/src/entry.py
 +++ b/cloudflare_worker/src/entry.py
-@@ -1,7 +1,6 @@
- import asyncio
- import base64
- import gzip
--import hashlib
- import hmac
- import io
- import json
-@@ -94,6 +93,10 @@ FEEDBACK_MAX_USER_AGENT = 300
+@@ -94,6 +94,10 @@ FEEDBACK_MAX_USER_AGENT = 300
  FEEDBACK_SOURCES = frozenset({"docs"})
  FEEDBACK_VOTES = frozenset({"like", "dislike"})
  MAX_PROFILE_BIO = 500
@@ -58,19 +61,7 @@ index dd2ae0fa..0e162297 100644
  MAX_PROFILE_LINKS = 4
  MAX_PROFILE_LINK_LABEL = 60
  MAX_PROFILE_LINK_URL = 300
-@@ -136,11 +139,6 @@ FORKBOT_DEFAULT_OWNER = "forkmesh"
- FORKBOT_DEFAULT_REPO = "forkmesh"
- FORKBOT_MAX_COMMAND = 4000
- FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
--# Recent conversation the client forwards with a ForkBot mention so ForkBot can
--# resolve references like "that bug" / "the thing above" instead of only seeing
--# the one @forkbot line. Bounded so a client can't blow the AI prompt budget.
--FORKBOT_CONTEXT_MAX_MESSAGES = 12
--FORKBOT_CONTEXT_MAX_CHARS = 600
- # Notification inbox: Worker indexes public-safe notification state while the
- # canonical issue/PR/discussion/release records remain in signed repo files or
- # pending inboxes. Stored rows are encrypted and bounded per recipient.
-@@ -233,6 +231,7 @@ from urls import (  # noqa: E402
+@@ -234,6 +238,7 @@ from urls import (  # noqa: E402
      GIT_PACK_RE,
      GIT_RECEIVE_RE,
      ACCOUNTS_RE,
@@ -78,340 +69,7 @@ index dd2ae0fa..0e162297 100644
  )
  
  # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
-@@ -982,33 +981,24 @@ async def record_online_sample(env):
-         "ON CONFLICT(hour_ts) DO UPDATE SET node_minutes = node_minutes + ?",
-         hour_ts, online, online,
-     )
--    if nodes:
--        # One multi-row upsert for every online node instead of a statement per
--        # node — each awaited D1 round trip counts against the cron tick's
--        # per-invocation limits (see record_status_sample).
--        node_args = []
--        for node_key, label in nodes.items():
--            node_args.extend([hour_ts, node_key, label])
-+    for node_key, label in nodes.items():
-         await d1_run(
-             env,
--            "INSERT INTO online_hourly_nodes "
--            "(hour_ts, node_key, label, node_minutes) VALUES " +
--            ", ".join(["(?, ?, ?, 1)"] * len(nodes)) + " "
--            "ON CONFLICT(hour_ts, node_key) DO UPDATE SET "
--            "node_minutes = node_minutes + 1, "
--            "label = excluded.label",
--            *node_args,
--        )
--    # Retention prunes only need to run occasionally: first sample of each hour.
--    if now - hour_ts < 60 * 1000:
--        await d1_run(
--            env, "DELETE FROM online_hourly WHERE hour_ts < ?",
--            hour_ts - ONLINE_HISTORY_RETAIN_MS,
--        )
--        await d1_run(
--            env, "DELETE FROM online_hourly_nodes WHERE hour_ts < ?",
--            hour_ts - ONLINE_HISTORY_RETAIN_MS,
-+            """INSERT INTO online_hourly_nodes
-+                 (hour_ts, node_key, label, node_minutes) VALUES (?, ?, ?, 1)
-+               ON CONFLICT(hour_ts, node_key) DO UPDATE SET
-+                 node_minutes = node_minutes + 1,
-+                 label = excluded.label""",
-+            hour_ts, node_key, label,
-         )
-+    await d1_run(
-+        env, "DELETE FROM online_hourly WHERE hour_ts < ?",
-+        hour_ts - ONLINE_HISTORY_RETAIN_MS,
-+    )
-+    await d1_run(
-+        env, "DELETE FROM online_hourly_nodes WHERE hour_ts < ?",
-+        hour_ts - ONLINE_HISTORY_RETAIN_MS,
-+    )
- 
- 
- async def online_history(env):
-@@ -1121,10 +1111,6 @@ STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
- STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
- STATUS_HOUR_MS = 60 * 60 * 1000
- STATUS_DAY_MS = 24 * STATUS_HOUR_MS
--STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
--# Kept a little past what's shown so a slow reader's page load always has a
--# full 60 buckets to render even a few minutes after the newest cron tick.
--STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
- 
- 
- def _status_expected_checks_for_hour(hour_ts, now):
-@@ -1178,31 +1164,6 @@ def _status_effective_hour(hour_ts, now, row):
-     }
- 
- 
--def _status_minute(minute_ts, current_minute_ts, row):
--    """Status of a single 60-second bucket for the /status minute strip.
--
--    Unlike an hour, a minute has no finer subdivision to average over: it's
--    either sampled ok, sampled failing, or (if it's the in-progress minute)
--    not sampled yet — no "degraded" state is possible at this granularity.
--    """
--    minute_ts = int(minute_ts)
--    if minute_ts >= current_minute_ts and row is None:
--        # This minute's cron tick hasn't landed yet (the common case for the
--        # newest bucket) — not evidence of an outage, just not elapsed.
--        return {"minuteTs": minute_ts, "status": "future", "reason": None}
--    if row is None:
--        return {
--            "minuteTs": minute_ts, "status": "down",
--            "reason": "No status sample recorded for this minute; treated as downtime.",
--        }
--    ok = bool(row.get("ok"))
--    return {
--        "minuteTs": minute_ts,
--        "status": "operational" if ok else "down",
--        "reason": None if ok else (row.get("reason") or None),
--    }
--
--
- async def record_status_sample(env):
-     # Called once a minute by the scheduled (cron) handler. Best-effort per
-     # system so one failing check can't blank the rest of the page.
-@@ -1210,7 +1171,6 @@ async def record_status_sample(env):
-     now = int(Date.now())
-     day_ts = (now // 86400000) * 86400000
-     hour_ts = (now // 3600000) * 3600000
--    minute_ts = (now // 60000) * 60000
-     ok = {}
-     reason = {}
- 
-@@ -1243,21 +1203,6 @@ async def record_status_sample(env):
-         hit_count = {"website": 0, "api": 0, "realtime": 0}
-         for row in rows:
-             path = str(row.get("path") or "")
--            try:
--                row_status = int(row.get("status") or 0)
--            except (TypeError, ValueError):
--                row_status = 0
--            # 502/503/504 on a host-tunnel content path (release blob, repo
--            # browse, git clone) means the one desktop node holding that
--            # content is unreachable — node availability, which host_presence
--            # (the git_hosting signal) already tracks. It is not evidence the
--            # worker/API is down, and a single offline node's blob being
--            # re-requested every few minutes used to paint the whole "api"
--            # system red on /status. A 500 on the same path still counts.
--            if row_status in (502, 503, 504) and (
--                    RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
--                    GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
--                continue
-             if (ROOM_RE.match(path) or REPO_ROOM_RE.match(path) or
-                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
-                 bucket = "realtime"
-@@ -1286,69 +1231,36 @@ async def record_status_sample(env):
-         # fabricate a false incident from it.
-         ok["website"] = ok["api"] = ok["realtime"] = True
- 
--    # One multi-row upsert per table (3 statements total) instead of the old
--    # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
--    # worker where every awaited D1 round trip counts against tight per-
--    # invocation limits — blowing them killed the whole tick and the /status
--    # page recorded the missing sample as downtime.
--    daily_args = []
--    hourly_args = []
--    minute_args = []
-     for system_id, _label in STATUS_SYSTEMS:
-         failure = 0 if ok.get(system_id, True) else 1
--        daily_args.extend([day_ts, system_id, failure])
-+        await d1_run(
-+            env,
-+            "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
-+            "VALUES (?, ?, 1, ?) "
-+            "ON CONFLICT(day_ts, system) DO UPDATE SET "
-+            "checks = checks + 1, failures = failures + ?",
-+            day_ts, system_id, failure, failure,
-+        )
-         # reason is only set when this sample failed; on success it's left NULL
-         # so the COALESCE below keeps whatever failure reason was last recorded
-         # this hour, rather than blanking it out.
--        hourly_args.extend([hour_ts, system_id, failure, reason.get(system_id)])
--        # A minute is the raw sample itself (not a counter): one cron tick per
--        # minute per system, so ON CONFLICT just overwrites in the rare case a
--        # tick somehow re-fires for the same minute.
--        minute_args.extend(
--            [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
--    n = len(STATUS_SYSTEMS)
--    await d1_run(
--        env,
--        "INSERT INTO system_status_daily (day_ts, system, checks, failures) "
--        "VALUES " + ", ".join(["(?, ?, 1, ?)"] * n) + " "
--        "ON CONFLICT(day_ts, system) DO UPDATE SET "
--        "checks = checks + excluded.checks, "
--        "failures = failures + excluded.failures",
--        *daily_args,
--    )
-+        await d1_run(
-+            env,
-+            "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
-+            "VALUES (?, ?, 1, ?, ?) "
-+            "ON CONFLICT(hour_ts, system) DO UPDATE SET "
-+            "checks = checks + 1, failures = failures + ?, "
-+            "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
-+            hour_ts, system_id, failure, reason.get(system_id), failure,
-+        )
-     await d1_run(
--        env,
--        "INSERT INTO system_status_hourly (hour_ts, system, checks, failures, reason) "
--        "VALUES " + ", ".join(["(?, ?, 1, ?, ?)"] * n) + " "
--        "ON CONFLICT(hour_ts, system) DO UPDATE SET "
--        "checks = checks + excluded.checks, "
--        "failures = failures + excluded.failures, "
--        "reason = COALESCE(excluded.reason, system_status_hourly.reason)",
--        *hourly_args,
-+        env, "DELETE FROM system_status_daily WHERE day_ts < ?",
-+        day_ts - STATUS_HISTORY_RETAIN_MS,
-     )
-     await d1_run(
--        env,
--        "INSERT INTO system_status_minute (minute_ts, system, ok, reason) "
--        "VALUES " + ", ".join(["(?, ?, ?, ?)"] * n) + " "
--        "ON CONFLICT(minute_ts, system) DO UPDATE SET "
--        "ok = excluded.ok, reason = excluded.reason",
--        *minute_args,
-+        env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
-+        day_ts - STATUS_HISTORY_RETAIN_MS,
-     )
--    # Retention prunes only need to run occasionally, not 60x/hour: sweep on
--    # the first sample of each hour.
--    if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
--        await d1_run(
--            env, "DELETE FROM system_status_daily WHERE day_ts < ?",
--            day_ts - STATUS_HISTORY_RETAIN_MS,
--        )
--        await d1_run(
--            env, "DELETE FROM system_status_hourly WHERE hour_ts < ?",
--            day_ts - STATUS_HISTORY_RETAIN_MS,
--        )
--        await d1_run(
--            env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
--            minute_ts - STATUS_MINUTE_RETAIN_MS,
--        )
- 
- 
- async def status_history(env):
-@@ -1475,18 +1387,10 @@ async def status_history(env):
-             )
-             if total_24h_expected else None
-         )
--        minutes = [
--            _status_minute(
--                minute_start + i * 60000, current_minute,
--                by_system_minute.get(system_id, {}).get(minute_start + i * 60000),
--            )
--            for i in range(STATUS_MINUTES_SHOWN)
--        ]
--
-         systems.append({
-             "id": system_id, "label": label, "status": status,
-             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
--            "days": days, "minutes": minutes,
-+            "days": days,
-             "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
-             "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
-         })
-@@ -2283,60 +2187,38 @@ _data_key_cache = {"secret": None, "key": None}
- _hmac_key_cache = {"secret": None, "key": None}
- 
- 
--# Post-CREATE column additions for tables that predate them. Idempotent: a
--# re-run raises "duplicate column name", which the applier swallows.
--SCHEMA_ALTER_STATEMENTS = [
--    # Private repos flag (won't be added by CREATE TABLE IF NOT EXISTS).
--    "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0",
--    # Plaintext blind index of the (signature-verified) submitter on each inbox
--    # row, so a per-author quota can be enforced with a COUNT instead of
--    # decrypting every pending row.
--    "ALTER TABLE issue_inbox ADD COLUMN submitter_bi TEXT",
--    "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
--    "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
--    "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
--    # Blind index of the signup IP for duplicate-signup detection (migration 0015).
--    "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
--]
--
--# Fingerprint of the DDL this build would apply. Stored in schema_meta after a
--# full apply so later cold isolates can skip the replay with one SELECT.
--_SCHEMA_FINGERPRINT = hashlib.sha256(
--    "\n".join(SCHEMA_STATEMENTS + SCHEMA_ALTER_STATEMENTS).encode("utf-8")
--).hexdigest()
--
--
- async def ensure_schema(env):
-     global _schema_ready
-     if _schema_ready:
-         return
--    # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
--    # records the applied DDL's fingerprint. One SELECT replaces the ~90
--    # sequential statements below — which, replayed on every cold isolate, were
--    # the dominant startup cost for both requests and the per-minute cron (the
--    # cron routinely blew its resource limits and the /status page recorded the
--    # missing samples as downtime).
--    try:
--        row = await d1_first(
--            env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
--        if row and row.get("v") == _SCHEMA_FINGERPRINT:
--            _schema_ready = True
--            return
--    except Exception:
--        pass  # schema_meta doesn't exist yet — first run against this DB
-     for sql in SCHEMA_STATEMENTS:
-         await env.DB.prepare(sql).run()
--    for sql in SCHEMA_ALTER_STATEMENTS:
-+    # CREATE TABLE IF NOT EXISTS above won't add a column to a repositories table
-+    # that predates private repos, so add it separately. Idempotent: a second run
-+    # raises "duplicate column name", which we swallow.
-+    try:
-+        await env.DB.prepare(
-+            "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0"
-+        ).run()
-+    except Exception:
-+        pass
-+    # Plaintext blind index of the (signature-verified) submitter on each inbox
-+    # row, so a per-author quota can be enforced with a COUNT instead of
-+    # decrypting every pending row. Added separately for tables predating it.
-+    for _tbl in ("issue_inbox", "pull_inbox", "commit_inbox", "discussion_inbox"):
-         try:
--            await env.DB.prepare(sql).run()
-+            await env.DB.prepare(
-+                "ALTER TABLE " + _tbl + " ADD COLUMN submitter_bi TEXT").run()
-         except Exception:
-             pass
--    await d1_run(
--        env,
--        "INSERT INTO schema_meta (k, v) VALUES ('fingerprint', ?) "
--        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
--        _SCHEMA_FINGERPRINT,
--    )
-+    # Blind index of the signup IP for duplicate-signup detection (migration 0015);
-+    # added separately for accounts tables that predate it. Idempotent — a second
-+    # run raises "duplicate column name", which we swallow.
-+    try:
-+        await env.DB.prepare(
-+            "ALTER TABLE accounts ADD COLUMN ip_bi TEXT").run()
-+    except Exception:
-+        pass
-     _schema_ready = True
- 
- 
-@@ -2675,10 +2557,11 @@ async def catalog_handler(env, request):
-             rec["cloneOnline"] = repo_clone_online(rec, served)
-         repos.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
-         payload = {"ok": True, "repositories": repos[:MAX_CATALOG_REPOS]}
--        # Per-viewer responses (with private repos) must never touch the shared
--        # public cache — and must say no-store themselves so no downstream cache
--        # holds them either; only the public-only list is cacheable.
--        if authed_viewer or bypass_cache:
-+        # Per-viewer responses (with private repos) must not be cached at the shared
-+        # edge; only the public-only list is cacheable.
-+        if authed_viewer:
-+            return json_response(payload)
-+        if bypass_cache:
-             return json_response(
-                 payload,
-                 cache_control="no-store, max-age=0, must-revalidate")
-@@ -3635,6 +3518,12 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
+@@ -3636,6 +3641,12 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
      await d1_run(
          env, "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",
          new_name_bi, name_bi)
@@ -424,7 +82,7 @@ index dd2ae0fa..0e162297 100644
      await d1_run(
          env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
          new_name_bi, name_bi)
-@@ -3701,6 +3590,7 @@ async def _delete_account_namespace(env, name_bi, rec):
+@@ -3702,6 +3713,7 @@ async def _delete_account_namespace(env, name_bi, rec):
      await d1_run(env, "DELETE FROM account_presence WHERE name_bi=?", name_bi)
      await d1_run(env, "DELETE FROM pending_verifications WHERE name_bi=?", name_bi)
      await d1_run(env, "DELETE FROM notifications WHERE recipient_bi=?", name_bi)
@@ -432,7 +90,7 @@ index dd2ae0fa..0e162297 100644
      await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", name_bi)
      if email:
          email_bi = await blind_index(env, email)
-@@ -3717,6 +3607,76 @@ def _owned_nodes(rec):
+@@ -3718,6 +3730,76 @@ def _owned_nodes(rec):
      return [n for n in nodes if isinstance(n, str) and n]
  
  
@@ -509,7 +167,7 @@ index dd2ae0fa..0e162297 100644
  def _profile_txt_value(name):
      return PROFILE_TXT_PREFIX + clean_string(name, MAX_NODE_NAME).lower()
  
-@@ -3789,9 +3749,21 @@ def _profile_links_public(rec):
+@@ -3790,9 +3872,21 @@ def _profile_links_public(rec):
  
  def _account_profile_fields(rec):
      bio = clean_string(rec.get("profile_bio", ""), MAX_PROFILE_BIO).strip()
@@ -531,7 +189,7 @@ index dd2ae0fa..0e162297 100644
          "profilePrivate": bool(rec.get("profile_private")),
          "mastodon": mastodon,
          "mastodonUrl": _mastodon_url(mastodon),
-@@ -3874,6 +3846,7 @@ async def _account_public_payload(env, rec):
+@@ -3875,6 +3969,7 @@ async def _account_public_payload(env, rec):
      solana = (rec.get("solana") or "").strip()
      has_payout = bool(solana and SOLANA_RE.match(solana))
      is_admin = await _is_admin(env, name)
@@ -539,7 +197,7 @@ index dd2ae0fa..0e162297 100644
      payload = {
          "ok": True,
          "nodeName": name,
-@@ -3884,6 +3857,7 @@ async def _account_public_payload(env, rec):
+@@ -3885,6 +3980,7 @@ async def _account_public_payload(env, rec):
          "isAdmin": is_admin,
          "solana": solana if has_payout else "",
          "hasPayoutAddress": has_payout,
@@ -547,7 +205,7 @@ index dd2ae0fa..0e162297 100644
          "avatarPng": rec.get("avatar_png", ""),
          "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
          "kind": _account_kind(rec),
-@@ -3891,7 +3865,9 @@ async def _account_public_payload(env, rec):
+@@ -3892,7 +3988,9 @@ async def _account_public_payload(env, rec):
          "nodes": _owned_nodes(rec),
          "emailNotifications": rec.get("email_notifications") is not False,
          "notificationPreferences": notification_email_preferences(rec),
@@ -557,7 +215,7 @@ index dd2ae0fa..0e162297 100644
      payload.update(_account_profile_fields(rec))
      if is_admin:
          admin_path = _admin_path(env)
-@@ -3952,14 +3928,20 @@ async def _account_users_directory(env, request):
+@@ -3953,14 +4051,20 @@ async def _account_users_directory(env, request):
      return json_response({"ok": True, "users": out})
  
  
@@ -586,7 +244,7 @@ index dd2ae0fa..0e162297 100644
      initial = (name[:1] or "F").upper()
      link_rows = []
      for link in links:
-@@ -3987,6 +3969,16 @@ def _public_profile_html(rec, host):
+@@ -3988,6 +4092,16 @@ def _public_profile_html(rec, host):
          if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
      )
      canonical = "https://" + host + "/@" + quote(name)
@@ -603,7 +261,7 @@ index dd2ae0fa..0e162297 100644
      return """<!doctype html>
  <html lang="en">
  <head>
-@@ -3998,13 +3990,18 @@ def _public_profile_html(rec, host):
+@@ -3999,13 +4113,18 @@ def _public_profile_html(rec, host):
      :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
      @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
      body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -623,7 +281,7 @@ index dd2ae0fa..0e162297 100644
      .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
      .links { display:grid; gap:10px; margin-top:24px; }
      .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-@@ -4013,6 +4010,10 @@ def _public_profile_html(rec, host):
+@@ -4014,6 +4133,10 @@ def _public_profile_html(rec, host):
      .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
      .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
      .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
@@ -634,7 +292,7 @@ index dd2ae0fa..0e162297 100644
      footer { margin-top:24px; color:var(--muted); font-size:12px; }
      footer a { color:var(--muted); }
    </style>
-@@ -4020,19 +4021,75 @@ def _public_profile_html(rec, host):
+@@ -4021,19 +4144,75 @@ def _public_profile_html(rec, host):
  <body>
    <main>
      <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
@@ -710,7 +368,7 @@ index dd2ae0fa..0e162297 100644
  async def public_profile_handler(env, request, username):
      name = clean_string(username, MAX_NODE_NAME).lower()
      if not valid_node_name(name):
-@@ -4042,8 +4099,9 @@ async def public_profile_handler(env, request, username):
+@@ -4043,8 +4222,9 @@ async def public_profile_handler(env, request, username):
              _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
          return json_response({"error": "not_found"}, status=404)
      host = clean_string(urlparse(request.url).netloc, 253)
@@ -721,7 +379,7 @@ index dd2ae0fa..0e162297 100644
          status=200,
          headers={
              "content-type": "text/html; charset=utf-8",
-@@ -4096,6 +4154,57 @@ def _clear_donation_address(rec):
+@@ -4097,6 +4277,57 @@ def _clear_donation_address(rec):
          rec["status"] = "reserved"
  
  
@@ -779,7 +437,7 @@ index dd2ae0fa..0e162297 100644
  # A bare reservation only holds the name while a signup is genuinely in flight:
  # the holder has an open, unpaid, unexpired donation request. Once that lapses
  # (or never existed) the reservation is abandoned and the name is free again.
-@@ -4157,6 +4266,73 @@ async def _account_signup(env, request):
+@@ -4158,6 +4389,73 @@ async def _account_signup(env, request):
      return json_response(await _account_public_payload(env, rec), status=201)
  
  
@@ -853,7 +511,7 @@ index dd2ae0fa..0e162297 100644
  # Step 1 of the funnel: claim a public node name. The desktop client signs the
  # claim with its Ed25519 identity (binding the name to a key); the website may
  # reserve without a key. A name is only "taken" once it is finalized/paid.
-@@ -4689,29 +4865,39 @@ async def _account_profile(env, request):
+@@ -4690,29 +4988,39 @@ async def _account_profile(env, request):
          data = await request.json()
      except Exception:
          return json_response({"error": "invalid_json"}, status=400)
@@ -916,7 +574,7 @@ index dd2ae0fa..0e162297 100644
  
      if data.get("deleteAccount") or data.get("disableAccount"):
          await _delete_account_namespace(env, name_bi, rec)
-@@ -4754,6 +4940,53 @@ async def _account_profile(env, request):
+@@ -4755,6 +5063,53 @@ async def _account_profile(env, request):
                  rec.pop("profile_bio", None)
              changed = True
  
@@ -970,7 +628,7 @@ index dd2ae0fa..0e162297 100644
      if "profilePrivate" in data:
          profile_private = bool(data.get("profilePrivate"))
          if bool(rec.get("profile_private")) != profile_private:
-@@ -5479,7 +5712,10 @@ async def _account_login(env, request):
+@@ -5480,7 +5835,10 @@ async def _account_login(env, request):
          enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
          desktop_capable = enabled and "owner_sign" in caps
          device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
@@ -982,7 +640,7 @@ index dd2ae0fa..0e162297 100644
          payload = _with_session_capabilities(
              payload, session_kind="desktop_node", device_kind=device_kind,
              key_matched=True, desktop_capable=desktop_capable, capabilities=caps)
-@@ -5490,7 +5726,10 @@ async def _account_login(env, request):
+@@ -5491,7 +5849,10 @@ async def _account_login(env, request):
                             else _clear_admin_session_cookie()},
          )
  
@@ -994,141 +652,7 @@ index dd2ae0fa..0e162297 100644
      payload = _with_session_capabilities(
          payload, session_kind="account", device_kind="web_or_mobile",
          key_matched=False, desktop_capable=False)
-@@ -5502,95 +5741,59 @@ async def _account_login(env, request):
-     )
- 
- 
--async def _account_rotate(env, request):
--    """Rotate an active account's bound Ed25519 key after old-key approval.
-+async def _account_logout(env, request):
-+    return json_response(
-+        {"ok": True},
-+        extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
-+        cache_control="no-store, max-age=0, must-revalidate",
-+    )
- 
--    The desktop client may omit nodeName in its rotation record; in that case
--    the relay resolves the account by oldPubkey, or treats an already-finished
--    newPubkey binding plus prev_pubkeys entry as an idempotent retry.
--    """
-+
-+async def _account_rotate(env, request):
-+    # Rebind an account/node identity to a successor Ed25519 key. The currently
-+    # bound key must sign the rotation so a fresh installer cannot seize an
-+    # existing name unless it controls the old key.
-     try:
-         data = await request.json()
-     except Exception:
-         return json_response({"error": "invalid_json"}, status=400)
--
-     name = clean_string(data.get("nodeName", ""), MAX_NODE_NAME).lower()
-     old_pubkey = clean_string(data.get("oldPubkey", ""), 120)
-     new_pubkey = clean_string(data.get("newPubkey", ""), 120)
-     ts = clean_string(data.get("ts", ""), 20)
--    signature = clean_string(data.get("signature") or data.get("sig", ""), 200)
--
--    if name:
--        if not valid_node_name(name):
--            return json_response({"error": "invalid_node_id"}, status=400)
-+    signature = clean_string(data.get("sig", ""), 200)
-+    if not valid_node_name(name):
-+        return json_response({"error": "invalid_node_id"}, status=400)
-     if not valid_node_pubkey(old_pubkey) or not valid_node_pubkey(new_pubkey):
--        return json_response({"error": "invalid_pubkey"}, status=400)
-+        return json_response({"error": "bad_pubkey"}, status=400)
-     if not _ts_ok(ts):
-         return json_response({"error": "stale_request"}, status=401)
--    canonical = ("forkmesh-rotate-v1\n" + old_pubkey + "\n" +
--                 new_pubkey + "\n" + str(ts)).encode()
--
--    if name:
--        name_bi, rec = await _account_row(env, name)
--    else:
--        name_bi, rec = await _account_row_by_pubkey(env, old_pubkey)
--        if not rec:
--            _, next_rec = await _account_row_by_pubkey(env, new_pubkey)
--            next_name = clean_string(
--                (next_rec or {}).get("name", ""), MAX_NODE_NAME).lower()
--            next_current_pubkey = clean_string(
--                (next_rec or {}).get("pubkey", ""), 120)
--            next_prev_pubkeys = (next_rec or {}).get("prev_pubkeys")
--            if (next_rec and next_rec.get("status") == "active" and
--                    next_current_pubkey == new_pubkey and
--                    isinstance(next_prev_pubkeys, list) and
--                    old_pubkey in next_prev_pubkeys):
--                if not valid_node_name(next_name):
--                    return json_response({"error": "invalid_node_id"}, status=400)
--                if not await ed25519_verify(old_pubkey, signature, canonical):
--                    return json_response({"error": "bad_signature"}, status=401)
--                return json_response(
--                    {"ok": True, "nodeName": next_name, "pubkey": new_pubkey})
--        if rec:
--            name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
--            if not valid_node_name(name):
--                return json_response({"error": "invalid_node_id"}, status=400)
-+    name_bi, rec = await _account_row(env, name)
-     if not rec or rec.get("status") != "active":
-         return json_response({"error": "no_account"}, status=404)
--
--    current_pubkey = clean_string(rec.get("pubkey", ""), 120)
--    if current_pubkey == new_pubkey:
-+    bound = clean_string(rec.get("pubkey", ""), 120)
-+    if bound == new_pubkey:
-         return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
--    if current_pubkey != old_pubkey:
-+    if bound != old_pubkey:
-         return json_response({"error": "not_bound"}, status=403)
--
-+    canonical = (
-+        "forkmesh-key-rotate-v1\n" + name + "\n" + old_pubkey + "\n" +
-+        new_pubkey + "\n" + ts
-+    ).encode()
-     if not await ed25519_verify(old_pubkey, signature, canonical):
-         return json_response({"error": "bad_signature"}, status=401)
--
--    existing_bi, _ = await _account_row_by_pubkey(env, new_pubkey)
--    if existing_bi and existing_bi != name_bi:
--        return json_response({"error": "pubkey_taken"}, status=409)
--
--    prev_pubkeys = rec.get("prev_pubkeys")
--    if not isinstance(prev_pubkeys, list):
--        prev_pubkeys = []
--    if old_pubkey not in prev_pubkeys:
--        prev_pubkeys.append(old_pubkey)
-+    prev = rec.get("prev_pubkeys")
-+    if not isinstance(prev, list):
-+        prev = []
-+    if old_pubkey not in prev:
-+        prev.append(old_pubkey)
-     rec["pubkey"] = new_pubkey
--    rec["prev_pubkeys"] = prev_pubkeys
-+    rec["prev_pubkeys"] = prev[-8:]
-     rec["rotated_at"] = int(Date.now())
-     await _save_account(env, name_bi, rec)
-     return json_response({"ok": True, "nodeName": name, "pubkey": new_pubkey})
- 
- 
--async def _account_logout(env, request):
--    return json_response(
--        {"ok": True},
--        extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
--        cache_control="no-store, max-age=0, must-revalidate",
--    )
--
--
- def _random_bytes(n):
-     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
- 
-@@ -7596,8 +7799,6 @@ async def accounts_handler(env, request):
-         return await _account_ownership_transfer_confirm(env, request)
-     if url.path == "/api/accounts/login" and method == "POST":
-         return await _account_login(env, request)
--    if url.path == "/api/accounts/rotate" and method == "POST":
--        return await _account_rotate(env, request)
-     if url.path == "/api/accounts/logout" and method == "POST":
-         return await _account_logout(env, request)
-     if url.path == "/api/accounts/rotate" and method == "POST":
-@@ -7620,6 +7821,9 @@ async def accounts_handler(env, request):
+@@ -7621,6 +7982,9 @@ async def accounts_handler(env, request):
          return await _account_link_grant(env, request)
      if url.path == "/api/accounts/users" and method == "GET":
          return await _account_users_directory(env, request)
@@ -1138,7 +662,7 @@ index dd2ae0fa..0e162297 100644
      match = ACCOUNTS_RE.match(url.path)
      if match and method == "GET":
          name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-@@ -7652,6 +7856,8 @@ async def accounts_handler(env, request):
+@@ -7653,6 +8017,8 @@ async def accounts_handler(env, request):
                     "kind": _account_kind(rec),
                     "owner": rec.get("owner", ""),
                     "nodes": _owned_nodes(rec)}
@@ -1147,554 +671,7 @@ index dd2ae0fa..0e162297 100644
          payload = {**payload, **_account_profile_fields(rec)}
          return json_response(payload)
      return json_response({"error": "not_found"}, status=404)
-@@ -8409,25 +8615,13 @@ def _forkbot_extract_mention_command(message):
- 
- 
- def _forkbot_parse_issue_command(command):
--    # Fast, offline path for an explicitly phrased request ("create an issue
--    # to ..."). A miss here is NOT a rejection: the handler falls back to the
--    # AI intent classifier (_forkbot_ai_interpret), which recognises the same
--    # intent from natural phrasing ("forkbot can you track the flaky login
--    # test?") and from the surrounding conversation. This regex just spares an
--    # AI round trip for the obvious wording and still works when AI is off.
-     text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
-     if not text:
-         return None
--    # Verb-first ("create an issue to ...") or noun-first ("issue to ...",
--    # "bug: ...") — both common phrasings, both answerable offline.
-     match = re.match(
--        r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
--        r"pls\s+|plz\s+)*"
--        r"(?:(?:create|open|file|make|report|log|raise|add|track|submit)\s+)?"
--        r"(?:an?\s+|a\s+new\s+)?"
--        r"(?:issue|bug|ticket|task|feature\s+request)\b"
--        r"\s*(?:(?:to|for|about|that|saying|called|titled|re|regarding)\s+|"
--        r"[:\-]\s*)?"
-+        r"(?is)^(?:please\s+)?"
-+        r"(?:create|open|file|make|report)\s+(?:an?\s+)?issue\b"
-+        r"\s*(?:(?:to|for|about|that|saying|called|titled)\s+|[:\-]\s*)?"
-         r"(.+)$",
-         text,
-     )
-@@ -8439,37 +8633,6 @@ def _forkbot_parse_issue_command(command):
-     return {"description": description}
- 
- 
--def _forkbot_command_hints_issue(command):
--    """Cheap offline signal that a ForkBot mention is about recording work —
--    used ONLY when the AI classifier is unreachable, so an unreachable model
--    degrades to filing the raw request instead of refusing with the help hint
--    (that refusal is exactly what users saw while the AI binding was silently
--    failing)."""
--    return bool(re.search(
--        r"(?i)\b(issues?|bugs?|tickets?|tasks?|todo|feature\s+request|"
--        r"create|open|file|track|log|report)\b",
--        clean_string(command, FORKBOT_MAX_COMMAND)))
--
--
--def _forkbot_context_text(context):
--    """Flatten the recent conversation the client forwarded into a short,
--    plain-text transcript for the AI. Each entry is {sender, text}; the client
--    already excludes ForkBot's own lines and caps the count, but we bound it
--    again here so a hostile client can't blow the prompt budget."""
--    if not isinstance(context, list):
--        return ""
--    lines = []
--    for entry in context[-FORKBOT_CONTEXT_MAX_MESSAGES:]:
--        if not isinstance(entry, dict):
--            continue
--        sender = clean_string(entry.get("sender", ""), MAX_NODE_NAME).strip() or "user"
--        text = clean_string(entry.get("text", ""), FORKBOT_CONTEXT_MAX_CHARS).strip()
--        if not text:
--            continue
--        lines.append("%s: %s" % (sender, text))
--    return "\n".join(lines)
--
--
- def _forkbot_issue_title(description):
-     text = re.sub(r"\s+", " ", clean_string(description, 240)).strip(" .:-")
-     if not text:
-@@ -8522,223 +8685,52 @@ def _forkbot_clean_ai_issue_fields(parsed):
-     return {"title": _forkbot_issue_title(title), "body": body}
- 
- 
--async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
--    """Run the Workers AI chat model and return the raw response text/object
--    (or None). Shared by the issue-drafting and intent-classification helpers.
--
--    When `schema` is given, the first attempt requests Workers AI JSON mode
--    (response_format json_schema) so a supporting model MUST return valid
--    JSON; models/plans without JSON mode fall back to a plain prompt-only
--    attempt. Every failure path logs the reason — the original implementation
--    swallowed all exceptions, which left ForkBot silently degraded (raw-echo
--    issue titles, natural requests answered with the help hint) with nothing
--    in the logs to say why."""
-+async def _forkbot_ai_issue_fields(env, description):
-     ai = getattr(env, "AI", None)
--    if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
--        _console_error("ForkBot AI unavailable: env.AI binding is missing")
-+    if ai is None or not hasattr(ai, "run"):
-         return None
-     model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
-         FORKBOT_AI_DEFAULT_MODEL
--    base_payload = {
-+    payload = {
-         "messages": [
--            {"role": "system", "content": system_prompt},
--            {"role": "user", "content": user_prompt},
-+            {
-+                "role": "system",
-+                "content": (
-+                    "You turn a chat request into a ForkMesh issue. Return only "
-+                    "compact JSON with title and body string fields. Do not add "
-+                    "markdown fences."
-+                ),
-+            },
-+            {
-+                "role": "user",
-+                "content": clean_string(description, FORKBOT_MAX_COMMAND),
-+            },
-         ],
-         "max_tokens": 512,
-     }
--    attempts = []
--    if schema:
--        with_format = dict(base_payload)
--        with_format["response_format"] = {
--            "type": "json_schema", "json_schema": schema,
--        }
--        attempts.append(with_format)
--    attempts.append(base_payload)
--    result = None
--    ran = False
--    last_error = None
--    for payload in attempts:
-+    try:
-         try:
-             result = await ai.run(model, to_js(payload))
--            ran = True
--            break
--        except Exception as error:
--            last_error = error
--            continue
--    if not ran:
--        _console_error(
--            "ForkBot AI call failed (%s): %s"
--            % (model, _safe_error_text(last_error)[:300]))
-+        except TypeError:
-+            result = await ai.run(model, payload)
-+    except Exception:
-         return None
-     try:
-         if hasattr(result, "to_py"):
-             result = result.to_py()
-     except Exception:
-         pass
-+    text = ""
-     if isinstance(result, dict):
-         for key in ("response", "text", "output"):
--            value = result.get(key)
--            if isinstance(value, str):
--                return value
--            # JSON mode returns the parsed object under "response".
--            if isinstance(value, dict):
--                return value
--        # Some bindings return the parsed object directly rather than a text
--        # field; hand the dict back so the caller can read fields off it.
--        return result
--    if isinstance(result, str):
--        return result
--    _console_error(
--        "ForkBot AI returned an unusable %s response (%s)"
--        % (type(result).__name__, model))
--    return None
--
--
--# JSON schemas for Workers AI JSON mode: a supporting model is FORCED to emit
--# exactly these shapes, eliminating the markdown-fence / chatty-preamble
--# failure modes small instruct models are prone to.
--FORKBOT_ISSUE_FIELDS_SCHEMA = {
--    "type": "object",
--    "properties": {
--        "title": {"type": "string"},
--        "body": {"type": "string"},
--    },
--    "required": ["title", "body"],
--}
--FORKBOT_INTENT_SCHEMA = {
--    "type": "object",
--    "properties": {
--        "intent": {"type": "string", "enum": ["create_issue", "none"]},
--        "title": {"type": "string"},
--        "body": {"type": "string"},
--    },
--    "required": ["intent"],
--}
--
--
--async def _forkbot_ai_issue_fields(env, description, context_text=""):
--    system_prompt = (
--        "You turn a chat request into a ForkMesh issue. Use the conversation "
--        "context to resolve what the user is referring to. Respond with ONLY "
--        'one JSON object, no other text: {"title":"short summary",'
--        '"body":"what is wrong or what needs doing, with detail from the '
--        'conversation"}.'
--    )
--    user_prompt = clean_string(description, FORKBOT_MAX_COMMAND)
--    if context_text:
--        user_prompt = (
--            "Recent conversation:\n" + context_text +
--            "\n\nRequest: " + user_prompt)
--    result = await _forkbot_run_ai(
--        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA)
--    if result is None:
--        return None
--    if isinstance(result, dict):
--        return _forkbot_clean_ai_issue_fields(result)
--    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(result))
--
--
--async def _forkbot_ai_interpret(env, command, context_text=""):
--    """Decide from meaning (not fixed phrasing) whether the user is asking to
--    open an issue, and if so draft it — pulling the subject from the recent
--    conversation when the mention itself is only a pointer ("forkbot log that").
--
--    Returns {"intent": "create_issue", "title", "body"} when an issue is
--    wanted, {"intent": "none"} when the model decided it clearly is not, or
--    None when the model is unavailable/unparseable — callers treat None as
--    "AI could not decide" and fall back to a heuristic, NOT as a refusal."""
--    system_prompt = (
--        "You are ForkBot, an assistant in a ForkMesh chat room. Decide whether "
--        "the user wants a bug, task, feature, or improvement recorded as an "
--        "issue. They may phrase it any way at all (\"issue to ...\", \"can you "
--        "sort this out\", \"we should track that\"), or refer to something "
--        "discussed earlier in the conversation instead of restating it. When "
--        "in doubt and the message describes a problem, task, or request, "
--        "treat it as an issue. Respond with ONLY one JSON object, no other "
--        'text. Issue wanted: {"intent":"create_issue","title":"short '
--        'summary","body":"the problem or task, with detail from the '
--        'conversation"}. Not an issue (a greeting, a question about ForkMesh, '
--        'small talk): {"intent":"none"}. Examples: "issue to add dark mode" '
--        '-> {"intent":"create_issue","title":"Add dark mode","body":"Add dark '
--        'mode."}; "hello!" -> {"intent":"none"}.'
--    )
--    user_prompt = command
--    if context_text:
--        user_prompt = (
--            "Recent conversation:\n" + context_text +
--            "\n\nMessage to ForkBot: " + command)
--    result = await _forkbot_run_ai(
--        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA)
--    if result is None:
--        return None
--    parsed = result if isinstance(result, dict) else \
--        _forkbot_json_object_from_text(result)
--    if not isinstance(parsed, dict):
--        return None
--    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
--    if intent not in ("create_issue", "none"):
--        # Some models omit the field but still return title/body when they
--        # decided to draft an issue; treat a usable draft as create_issue.
--        intent = "create_issue" if (parsed.get("title") or parsed.get("body")) \
--            else "none"
--    if intent != "create_issue":
--        return {"intent": "none"}
--    fields = _forkbot_clean_ai_issue_fields(parsed)
--    if not fields:
--        # The model wanted an issue but produced no usable draft — let the
--        # caller's heuristic take over instead of refusing.
--        return None
--    return {"intent": "create_issue", "title": fields["title"],
--            "body": fields["body"]}
--
--
--async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
--    """Allocate a proposed issue number for a ForkBot-created issue.
--
--    Desktop nodes assign the authoritative number when they merge the inbox
--    (nextNumber() = highest issue dir + 1) and keep a proposed number when its
--    slot is free, so the goal here is to propose the same number the desktop
--    would — and never propose one twice. We seed/re-anchor a persisted per-repo
--    counter from the catalog's published issueMaxNumber (the desktop's real max
--    at its last publish), then hand out the next value and advance. Best-effort:
--    on any storage hiccup we fall back to 0 (the desktop assigns and the reply
--    just omits a number) rather than failing the issue creation."""
--    seed_next = 1
--    try:
--        row = await d1_first(
--            env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
--        rec = await decrypt_row(env, row.get("data")) if row else None
--        if rec:
--            for key in ("issueMaxNumber", "issueCount"):
--                value = rec.get(key)
--                if value in (None, ""):
--                    continue
--                try:
--                    seed_next = max(seed_next, int(value) + 1)
--                    break
--                except (TypeError, ValueError):
--                    continue
--    except Exception:
--        pass
--    try:
--        # Seed on first use / re-anchor upward to the catalog max, never
--        # backward (MAX keeps already-handed-out numbers monotonic).
--        await d1_run(
--            env,
--            "INSERT INTO issue_seq (repo_bi, next_number) VALUES (?, ?) "
--            "ON CONFLICT(repo_bi) DO UPDATE SET "
--            "next_number = MAX(issue_seq.next_number, ?)",
--            repo_bi, seed_next, seed_next,
--        )
--        seq_row = await d1_first(
--            env, "SELECT next_number FROM issue_seq WHERE repo_bi=?", repo_bi)
--        number = int((seq_row or {}).get("next_number", seed_next) or seed_next)
--        await d1_run(
--            env, "UPDATE issue_seq SET next_number=? WHERE repo_bi=?",
--            number + 1, repo_bi)
--        return number
--    except Exception:
--        return 0
-+            if isinstance(result.get(key), str):
-+                text = result.get(key)
-+                break
-+        if not text:
-+            return _forkbot_clean_ai_issue_fields(result)
-+    elif isinstance(result, str):
-+        text = result
-+    return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(text))
- 
- 
- async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
-@@ -8754,10 +8746,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
- 
-     now = int(Date.now())
-     actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
--    # Proposed number the desktop honors when the slot is free (0 = let the
--    # desktop assign). Allocated before the insert so it lands in the stored
--    # item and can be echoed straight back to the chat.
--    number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
-     event = {
-         "type": "open",
-         "id": "forkbot-%d" % now,
-@@ -8770,7 +8758,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
-         "sig": "",
-     }
-     item = {
--        "number": number,
-+        "number": 0,
-         "titleIfNew": event["title"],
-         "event": event,
-         "meta": {
-@@ -8786,7 +8774,6 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
-         "submittedAt": now,
-         "source": "forkbot",
-         "requestedBy": actor,
--        "issueNumber": number,
-     }
-     await d1_run(
-         env,
-@@ -8820,44 +8807,23 @@ async def forkbot_chat_handler(env, request):
-     command = _forkbot_extract_mention_command(message)
-     if not command:
-         return json_response({"ok": True, "ignored": True})
--
--    # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
--    # resolve "that bug" / "the issue we discussed" instead of only the one line.
--    context_text = _forkbot_context_text(data.get("context"))
--
--    # Decide intent and draft the issue. Prefer meaning over fixed wording:
--    #  1. The cheap regex catches an explicitly phrased command offline.
--    #  2. Otherwise the AI classifier reads the command + conversation and
--    #     decides whether an issue is wanted (and drafts it).
--    #  3. AI unreachable (None — distinct from a confident "none") but the
--    #     message plainly talks about issues/bugs/tracking: file the raw text
--    #     rather than refusing. Only a confident "none" or a message with no
--    #     work-recording signal at all gets the help hint.
--    fields = None
-     parsed = _forkbot_parse_issue_command(command)
--    if parsed:
--        fields = await _forkbot_ai_issue_fields(
--            env, parsed["description"], context_text)
--        if not fields:
--            fields = _forkbot_fallback_issue_fields(parsed["description"])
--    else:
--        interpreted = await _forkbot_ai_interpret(env, command, context_text)
--        if interpreted and interpreted.get("intent") == "create_issue":
--            fields = {"title": interpreted["title"], "body": interpreted["body"]}
--        elif interpreted is None and _forkbot_command_hints_issue(command):
--            fields = _forkbot_fallback_issue_fields(command)
--
--    if not fields or not fields.get("body"):
-+    if not parsed:
-         return json_response({
-             "ok": True,
-             "action": "help",
-             "botMessage": (
--                "I can open issues from the conversation — just tell me what's "
--                "wrong or what needs doing (e.g. \"forkbot open an issue for "
--                "the flaky login test\")."
-+                "I can create issues. Try: forkbot create an issue to describe "
-+                "the bug or task."
-             ),
-         })
- 
-+    fields = await _forkbot_ai_issue_fields(env, parsed["description"])
-+    if not fields:
-+        fields = _forkbot_fallback_issue_fields(parsed["description"])
-+    if not fields.get("body"):
-+        return json_response({"error": "issue_required"}, status=400)
-+
-     owner = FORKBOT_DEFAULT_OWNER
-     repo = FORKBOT_DEFAULT_REPO
-     ok, result = await _forkbot_enqueue_issue(
-@@ -8866,29 +8832,16 @@ async def forkbot_chat_handler(env, request):
-     if not ok:
-         return json_response({"error": result}, status=429)
-     title = result.get("titleIfNew", fields["title"])
--    number = int(result.get("issueNumber", 0) or 0)
--    # /owner/repo/issues is the web route for the repo's issue list; the number
--    # is the proposed one the desktop honors when it merges the inbox.
--    issue_url = repo_web_href(owner, repo) + "/issues"
--    if number > 0:
--        bot_message = (
--            "Opened issue #%d in %s/%s: %s. It'll show at %s once the owner "
--            "node syncs the inbox."
--        ) % (number, owner, repo, title, issue_url)
--    else:
--        bot_message = (
--            "Opened an issue in %s/%s: %s. It'll show at %s once the owner "
--            "node syncs the inbox."
--        ) % (owner, repo, title, issue_url)
-     return json_response({
-         "ok": True,
-         "action": "issue_created",
-         "owner": owner,
-         "repo": repo,
-         "title": title,
--        "issueNumber": number,
--        "issueUrl": issue_url,
--        "botMessage": bot_message,
-+        "botMessage": (
-+            "Created an issue in %s/%s: %s. It will appear after the owner "
-+            "node syncs the issue inbox."
-+        ) % (owner, repo, title),
-     }, status=201)
- 
- 
-@@ -9277,70 +9230,6 @@ async def discussions_handler(env, request, owner, repo):
-     return json_response({"error": "method_not_allowed"}, status=405)
- 
- 
--async def sync_handler(env, request):
--    # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
--    # everything the owner's desktop node needs across ALL of its repos:
--    # pending issue/pull/discussion/commit inbox items, queued agent prompts
--    # (drained on read, same semantics as GET /agents), and the relay's pinned
--    # repo state. This replaces the node's old fast polling (4 inbox GETs per
--    # repo every 60s + agents every 30s + catalog list for pin checks): the
--    # node now calls this once whenever a minimal "event" frame arrives on its
--    # host tunnel socket (see notify_repo_host), plus a slow safety-net poll.
--    # Auth reuses the forkmesh-issues-pull-v1 drain token (_authorize_owner).
--    await ensure_schema(env)
--    if method_name(request) != "GET":
--        return json_response({"error": "method_not_allowed"}, status=405)
--    params = parse_qs(urlparse(request.url).query)
--    owner = safe_segment(params.get("owner", [""])[0])
--    if not await _authorize_owner(env, request, owner):
--        return json_response({"error": "unauthorized"}, status=401)
--    owner_bi = await blind_index(env, owner)
--    rows = await d1_all(
--        env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
--    repos = []
--    for row in rows:
--        rec = await decrypt_row(env, row["data"])
--        if not rec:
--            continue
--        repo_bi = row["key_bi"]
--        entry = {
--            "name": clean_string(rec.get("name", ""), 120),
--            "owner": clean_string(rec.get("owner", owner), 120),
--            # The relay's currently pinned state, so the node can detect pin
--            # drift without fetching the whole catalog list.
--            "stateHash": rec.get("stateHash", ""),
--            "updatedAt": rec.get("updatedAt", ""),
--            "source": rec.get("source", ""),
--        }
--        # Table names are fixed literals, safe to interpolate (same convention
--        # as _inbox_author_over_quota). Inbox items are NOT deleted here — the
--        # node still acknowledges a merged inbox with its per-repo DELETE.
--        for topic, table in (("issues", "issue_inbox"),
--                             ("pulls", "pull_inbox"),
--                             ("discussions", "discussion_inbox"),
--                             ("commits", "commit_inbox")):
--            inbox_rows = await d1_all(
--                env, f"SELECT data FROM {table} WHERE repo_bi=? ORDER BY id ASC",
--                repo_bi)
--            entry[topic] = [
--                x for x in
--                [await decrypt_row(env, r["data"]) for r in inbox_rows] if x]
--        prompt_rows = await d1_all(
--            env,
--            "SELECT data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
--            repo_bi)
--        prompts = [
--            x for x in
--            [await decrypt_row(env, r["data"]) for r in prompt_rows] if x]
--        if prompts:
--            await d1_run(
--                env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
--        entry["agentPrompts"] = prompts
--        repos.append(entry)
--    return json_response(
--        {"ok": True, "serverTime": int(Date.now()), "repos": repos})
--
--
- # --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
- #
- # The desktop app runs Claude Code coding "agent" sessions per repo/issue.
-@@ -10002,18 +9891,6 @@ def _html_escape(value):
-     )
- 
- 
--def _is_tunnel_content_path(path):
--    """Host-tunnel content routes whose 502/503/504s mean 'that node is
--    offline', not 'the worker failed': release blobs, repo browse, git
--    clone/push. Room paths are deliberately NOT included — a room 5xx is the
--    worker's own Durable Object failing, which must stay visible."""
--    path = str(path or "")
--    return bool(
--        RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
--        GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path) or
--        GIT_RECEIVE_RE.match(path))
--
--
- async def log_error(env, status, method, path, message, ray="", request=None,
-                     error=None):
-     """Record a 5xx / unhandled error. Best-effort: never raises."""
-@@ -11504,15 +11381,6 @@ class Default(WorkerEntrypoint):
-         except Exception:
-             status = 200
-         if status >= 500:
--            # An offline node's content being re-requested (502/503/504 on a
--            # tunnel path) is expected in a P2P network — host_presence and
--            # the /status git_hosting signal already reflect it. Logging every
--            # hit cost a blocking Sentry call + a D1 write per response (a
--            # single offline node's release blob generated hundreds of noise
--            # rows a day and drowned out real failures). A 500 on the same
--            # path is a real worker bug and still logs.
--            if status in (502, 503, 504) and _is_tunnel_content_path(url.path):
--                return response
-             await log_error(
-                 self.env, status, method_name(request), url.path,
-                 "response status %d" % status, request.headers.get("cf-ray") or "",
-@@ -11791,19 +11659,15 @@ class Default(WorkerEntrypoint):
-         # Chat-triggered Cloudflare AI interface. Clients forward explicit
-         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
-         # records and returns a bot reply for the encrypted room.
--        if url.path in ("/api/sync", "/api/sync/"):
--            return await sync_handler(self.env, request)
--
+@@ -11830,13 +12196,12 @@ class Default(WorkerEntrypoint):
          if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
              return await forkbot_chat_handler(self.env, request)
  
@@ -1711,79 +688,8 @@ index dd2ae0fa..0e162297 100644
              return await accounts_handler(self.env, request)
  
          # Match the profile route on the percent-decoded, case-folded path:
-@@ -12120,28 +11984,22 @@ class Default(WorkerEntrypoint):
-         room = room_key_from_path(url.path)
-         if room:
-             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
--            # The platform can abort a room DO mid-request — the free-tier
--            # duration cap kills long-lived requests, and any co-located DO
--            # blowing the isolate's limits resets every in-flight request with
--            # a generic "internal error". Both are transient: a fresh stub
--            # lands on a replacement isolate, so retry once before failing.
--            # Room requests carry no body (GET snapshot / WebSocket upgrade),
--            # so re-driving durable_object_request is safe. Without this
--            # guard the abort would escape Default.fetch as a Worker Error
--            # 1101; with it, a persistent failure is recorded (the /status
--            # page counts these) and answered with a retryable 503 that
--            # leaks no exception detail to the client.
--            last_error = None
--            for _attempt in range(2):
--                room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
--                try:
--                    return await room_object.fetch(
--                        await durable_object_request(request))
--                except Exception as error:
--                    last_error = error
--            await log_durable_object_abort(
--                self.env, request, url.path, last_error)
--            return json_response({"error": "unavailable"}, status=503)
-+            room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
-+            try:
-+                return await room_object.fetch(
-+                    await durable_object_request(request))
-+            except Exception as error:
-+                # The platform can abort a room DO mid-request — on the free
-+                # tier a long-lived room request that outlives the allowed
-+                # duration dies with pyodide.http.AbortError("Exceeded allowed
-+                # duration in Durable Objects free tier."), and without this
-+                # guard that abort escapes Default.fetch as a Worker Error
-+                # 1101. Record the real cause (the /status page counts these)
-+                # and answer with a generic retryable 503 so no exception
-+                # detail reaches the client.
-+                await log_durable_object_abort(
-+                    self.env, request, url.path, error)
-+                return json_response({"error": "unavailable"}, status=503)
- 
-         # Dashboard SPA deep links and repo shortcut URLs are client-side routes,
-         # not real files. Serve the prebuilt static shell from ASSETS instead of
-@@ -13102,25 +12960,6 @@ class ForkMeshHost(DurableObject):
-                 None, to_js({"status": 101, "webSocket": client})
-             )
- 
--        if action == "notify":
--            # Internal-only (the public router never forwards this action):
--            # relay a minimal event frame to every connected host socket so the
--            # desktop node knows to run one /api/sync instead of fast-polling.
--            topic = clean_string(parse_qs(url.query).get("topic", [""])[0], 40)
--            frame = json.dumps({"type": "event", "topic": topic})
--            delivered = 0
--            try:
--                hosts = self.ctx.getWebSockets("host")
--            except Exception:
--                hosts = []
--            for host in hosts:
--                try:
--                    host.send(frame)
--                    delivered += 1
--                except Exception:
--                    pass
--            return json_response({"ok": True, "delivered": delivered})
--
-         release_blob_match = RELEASE_BLOB_RE.match(path)
-         if release_blob_match:
-             await self._mark_present(path)
 diff --git a/cloudflare_worker/src/schema.py b/cloudflare_worker/src/schema.py
-index 0ee87e42..ff56f1bd 100644
+index 0ee87e42..4f84976d 100644
 --- a/cloudflare_worker/src/schema.py
 +++ b/cloudflare_worker/src/schema.py
 @@ -315,6 +315,17 @@ SCHEMA_STATEMENTS = [
@@ -1804,47 +710,15 @@ index 0ee87e42..ff56f1bd 100644
      # Public /status page (30-day history per system). A per-minute cron folds
      # one health check per system into today's UTC-day bucket; checks/failures
      # let the page compute an uptime percentage per day without storing every
-@@ -334,32 +345,4 @@ SCHEMA_STATEMENTS = [
-         reason TEXT,
-         PRIMARY KEY (hour_ts, system))""",
-     "CREATE INDEX IF NOT EXISTS idx_system_status_hourly_hour ON system_status_hourly(hour_ts)",
--    # Per-minute detail backing the /status page's 60-minute strip. Unlike the
--    # daily/hourly rollups above (which only ever store a checks/failures
--    # counter, never the individual samples), a minute IS the individual
--    # sample, so this is one row per system per minute: ok=1/0 plus the same
--    # short failure reason. Short-retention (pruned well under an hour of
--    # slack past what the page displays) since nothing else needs history
--    # this granular once it has aged out of the visible window.
--    """CREATE TABLE IF NOT EXISTS system_status_minute (
--        minute_ts INTEGER NOT NULL, system TEXT NOT NULL,
--        ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
--        PRIMARY KEY (minute_ts, system))""",
--    "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
--    # Per-repo issue-number allocator for issues the relay files on a user's
--    # behalf (ForkBot). Desktop nodes own the real numbering (nextNumber() =
--    # highest issue dir + 1), so a relay-created issue can only be given a
--    # *proposed* number the desktop honors when the slot is free. Persisting
--    # the allocation here lets ForkBot answer with the number immediately and
--    # keeps successive ForkBot issues from proposing the same one; it is
--    # re-anchored to each catalog publish's issueMaxNumber so it tracks the
--    # desktop's real count over time.
--    """CREATE TABLE IF NOT EXISTS issue_seq (
--        repo_bi TEXT PRIMARY KEY, next_number INTEGER NOT NULL)""",
--    # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
--    # the DDL that has already been applied to this database. A cold isolate
--    # reads this one row instead of replaying all ~90 statements above — the
--    # full replay only happens when the fingerprint (i.e. this file) changed.
--    """CREATE TABLE IF NOT EXISTS schema_meta (
--        k TEXT PRIMARY KEY, v TEXT NOT NULL)""",
- ]
 diff --git a/cloudflare_worker/src/urls.py b/cloudflare_worker/src/urls.py
-index 6e3b6016..e4d81e95 100644
+index 5823ddcc..c26c2387 100644
 --- a/cloudflare_worker/src/urls.py
 +++ b/cloudflare_worker/src/urls.py
-@@ -73,3 +73,4 @@ GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
+@@ -77,3 +77,5 @@ GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
  # Account API: reserve/finalize/login and GET /api/accounts/{name} are all
  # single-segment, so this one pattern gates the whole accounts_handler dispatch.
  ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
++# Follow/unfollow a public profile: /api/accounts/{name}/follow
 +ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
 diff --git a/cloudflare_worker/tests/test_account_profile_endpoints.py b/cloudflare_worker/tests/test_account_profile_endpoints.py
 index efb56c0d..bd8e39b5 100644
@@ -1984,6 +858,28 @@ index efb56c0d..bd8e39b5 100644
  def test_worker_serves_public_at_profiles_and_private_profiles_404():
      assert "async def public_profile_handler" in ENTRY_TEXT
      route_body = ENTRY_TEXT[
+diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
+index 98484603..9c5ba6ea 100644
+--- a/cloudflare_worker/tests/test_login_key_binding.py
++++ b/cloudflare_worker/tests/test_login_key_binding.py
+@@ -130,6 +130,9 @@ def _login_harness(rec):
+             "hasPayoutAddress": bool(solana),
+         }
+ 
++    def _account_session_token(_env, name):
++        return "session-token-for-" + str(name or "")
++
+     class _Date:
+         @staticmethod
+         def now():
+@@ -153,6 +156,7 @@ def _login_harness(rec):
+             "_save_account": _save_account,
+             "_is_admin": _is_admin,
+             "_account_public_payload": _account_public_payload,
++            "_account_session_token": _account_session_token,
+             "_admin_session_cookie": lambda _env, _name: "admin-session",
+             "_clear_admin_session_cookie": lambda: "forkmesh_admin=; Path=/; Max-Age=0",
+             "json_response": _json_response,
 -- 
 2.47.3
 
