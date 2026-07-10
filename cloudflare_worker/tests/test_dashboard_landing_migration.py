@@ -5,12 +5,14 @@ from pathlib import Path
 import re
 import tomllib
 
-from _dashboard_shell import assembled_dashboard
+from _dashboard_shell import assembled_dashboard, assembled_dashboard_page
 from _dashboard_bundle import assembled_dashboard_js
+from dashboard_shell import PAGES
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC = ROOT / "public"
+VIEWS = PUBLIC / "dashboard" / "partials" / "views"
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
 URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
@@ -29,8 +31,6 @@ def _read(path: Path) -> str:
 
 def test_dashboard_shell_is_split_into_composable_partials():
     source_shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    built_index = (PUBLIC / "dashboard" / "index.html").read_text(encoding="utf-8")
-    built_dupe = (PUBLIC / "dashboard.html").read_text(encoding="utf-8")
 
     # The authored shell stays split - it references partials rather than
     # inlining the chrome.
@@ -40,31 +40,42 @@ def test_dashboard_shell_is_split_into_composable_partials():
         assert ('<!--#include partial="%s"-->' % name) in source_shell
     assert '<!--#include partial="network-rail"-->' not in source_shell
 
-    # The served files are prebuilt static assets, with no runtime include pass.
-    composed = assembled_dashboard()
-    assert "<!--#include" not in composed
-    assert built_index == composed
-    assert built_dupe == composed
+    # One prebuilt static document per PAGES entry, each carrying its page id
+    # and exactly one view, with no runtime include pass. The old single-shell
+    # public/dashboard.html duplicate is gone.
+    for page_id, meta in PAGES.items():
+        built = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
+        assert built == assembled_dashboard_page(page_id)
+        assert "<!--#include" not in built
+        assert ('<body class="bg-background text-foreground" data-page="%s">' % page_id) in built
+        assert built.count("<section data-view=") == 1
+    assert not (PUBLIC / "dashboard.html").exists()
     assert "self.env.ASSETS.fetch(" in ENTRY_TEXT
     assert "assemble_shell(" not in ENTRY_TEXT
     assert "tools/build_dashboard_assets.py" in ENTRY_TEXT
 
 
-def test_feature_landing_is_promoted_to_index_with_signed_in_redirect():
+def test_feature_landing_is_promoted_to_index_with_worker_owned_signed_in_redirect():
     index = _read(PUBLIC / "index.html")
 
     assert "Never lose the code that matters" in index
-    assert "forkmesh.session" in index
-    assert 'location.replace("/dashboard")' in index
-    assert 'location.replace("/dashboard.html")' not in index
     assert "Code hosting that lives on the network." not in index
+    # The old inline localStorage redirect (paint the homepage, then swap) is
+    # gone: the Worker answers / with an instant server-side 302 keyed off the
+    # forkmesh_session presence cookie.
+    assert "forkmesh.session" not in index
+    assert 'location.replace("/dashboard")' not in index
+    assert 'location.replace("/dashboard.html")' not in index
+    assert "/" in WRANGLER["assets"]["run_worker_first"]
+    assert 'if url.path == "/" and method_name(request) in ("GET", "HEAD"):' in ENTRY_TEXT
+    assert 'if _cookie_value(request, "forkmesh_session") == "1":' in ENTRY_TEXT
+    assert '"location": "/dashboard",' in ENTRY_TEXT
 
 
 def test_dashboard_exposes_live_hydration_targets():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard()
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
-    assert 'src="/dashboard.js?v=github-settings-tabs"' in dashboard
+    assert 'src="/dashboard.js?v=' in dashboard
     assert 'src="/dashboard-chat.js"' in dashboard
     for marker in (
         "data-dashboard-profile-name",
@@ -93,9 +104,9 @@ def test_dashboard_exposes_live_hydration_targets():
 
 
 def test_dashboard_get_paid_button_uses_small_sol_logo():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    # The button lives in the shared header partial, so any composed page has it.
+    dashboard = assembled_dashboard_page("home")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert 'href="/mirror-payouts"' in dashboard
     assert 'src="/assets/sol.png"' in dashboard
     assert 'alt="" aria-hidden="true"' in dashboard
@@ -104,26 +115,28 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
 
 
 def test_dashboard_home_hides_unready_sponsorship_target_list():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard()
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert "Sponsorship target list" not in dashboard
     for sponsor in ("DigitalOcean", "Tailscale", "Sentry", "Supabase"):
         assert sponsor not in dashboard
 
 
-def test_dashboard_nav_links_to_web_chat():
+def test_dashboard_nav_links_to_chat_page():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     drawer_nav = dashboard.split('data-sidebar-main-menu', 1)[1].split(
         "</nav>", 1)[0]
     assert drawer_nav.index("Repositories") < drawer_nav.index("Network")
-    assert drawer_nav.index("Network") < drawer_nav.index('href="/chat"')
-    assert drawer_nav.index('href="/chat"') < drawer_nav.index('href="/docs"')
+    assert drawer_nav.index("Network") < drawer_nav.index('href="/dashboard/chat"')
+    assert drawer_nav.index('href="/dashboard/chat"') < drawer_nav.index('href="/docs"')
     assert "Chat" in drawer_nav
-    assert 'href="/chat"' in drawer_nav
+    assert 'data-nav="chat" data-nav-link href="/dashboard/chat"' in drawer_nav
     assert 'data-lucide="messages-square"' in drawer_nav
+    # Sidebar entries are real page links now - no client-router buttons.
+    assert "<button" not in drawer_nav
+    assert "data-section=" not in drawer_nav
+    assert 'href="/chat"' not in drawer_nav
 
 
 def test_dashboard_uses_github_system_font_without_affecting_code_or_site_fonts():
@@ -131,7 +144,6 @@ def test_dashboard_uses_github_system_font_without_affecting_code_or_site_fonts(
     dashboard_js = _read(PUBLIC / "dashboard.js")
     site_css = _read(PUBLIC / "styles.css")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert 'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif' in dashboard
     assert 'src: url("/assets/fonts/HelveticaNeueRoman.otf") format("opentype")' not in dashboard
     assert 'src: url("/assets/fonts/HelveticaNeueBold.otf") format("opentype")' not in dashboard
@@ -173,7 +185,7 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
 
 
 def test_dashboard_repository_list_has_loading_state_before_empty_filter():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard_page("repos")
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "Loading repositories from an online node..." in dashboard
@@ -186,11 +198,10 @@ def test_dashboard_repository_list_has_loading_state_before_empty_filter():
 
 
 def test_dashboard_profile_page_removes_secondary_profile_picture_card():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
     login_js = _read(PUBLIC / "login.js")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert "A generated placeholder is shown for now" not in dashboard
     assert ">IMG<" not in dashboard
     assert "data-profile-page-avatar-image" in dashboard
@@ -211,8 +222,9 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
 def test_dashboard_loads_profile_once_without_periodic_polling():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert "await hydrateCanonicalProfile(session);" in dashboard_js
-    assert "await loadNotifications();" in dashboard_js
+    # Boot hydrates the canonical profile once and chains the notification
+    # load off it - no periodic re-fetch.
+    assert "hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});" in dashboard_js
     assert "function startProfileSync()" not in dashboard_js
     assert "async function pollStatus(" not in dashboard_js
     assert "window.setInterval" not in dashboard_js
@@ -220,46 +232,63 @@ def test_dashboard_loads_profile_once_without_periodic_polling():
 
 
 def test_dashboard_defaults_to_home_and_keeps_repositories_available():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    home = _read(PUBLIC / "dashboard" / "index.html")
+    repos = assembled_dashboard_page("repos")
 
-    assert 'data-section="repos" data-nav-link aria-current="page"' in dashboard
-    visible = _strip_html_comments(dashboard)
+    # /dashboard is the home document: the home view is baked active and the
+    # home sidebar link carries aria-current at build time (no JS pass).
+    assert 'data-page="home"' in home
+    assert 'data-nav="home" data-nav-link aria-current="page"' in home
+    assert 'data-nav="repos" data-nav-link aria-current="page"' not in home
+    visible = _strip_html_comments(home)
     assert 'data-view="home" class="view active' in visible
-    assert 'data-view="repos" class="view active' not in visible
-    assert 'data-sidebar-main-menu' in dashboard
+    assert 'data-view="repos"' not in visible
+    assert 'data-sidebar-main-menu' in home
+    # Repositories stay one real link away: /dashboard/repos is its own page
+    # document with its own baked-active nav state.
+    assert 'href="/dashboard/repos"' in home
+    assert 'data-page="repos"' in repos
+    assert 'data-nav="repos" data-nav-link aria-current="page"' in repos
+    assert 'data-view="repos" class="view active' in _strip_html_comments(repos)
 
 
-def test_dashboard_defaults_to_home_and_exposes_profile_overview_repositories():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+def test_dashboard_profile_views_are_own_pages_and_client_section_router_is_gone():
+    home = _read(PUBLIC / "dashboard" / "index.html")
+    profile = assembled_dashboard_page("profile")
+    profile_repositories = assembled_dashboard_page("profile-repositories")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    visible = _strip_html_comments(dashboard)
+    visible = _strip_html_comments(home)
 
     assert 'data-view="home" class="view active' in visible
-    assert 'data-view="repos" class="view active' not in visible
-    assert 'data-view="profile-overview"' in dashboard
-    assert 'data-view="profile-repositories"' in dashboard
-    assert 'data-profile-tabs' in dashboard
-    assert 'data-profile-repo-search' in dashboard
-    assert 'data-home-feed' in dashboard
-    assert 'data-home-top-repositories' in dashboard
-    assert 'data-home-right-rail' in dashboard
-    assert 'data-home-left-rail' in dashboard
-    assert 'data-home-user-avatar' in dashboard
-    assert 'data-home-user-name' in dashboard
-    assert 'data-home-action-panel' in dashboard
-    assert 'data-home-agent-input' in dashboard
-    assert 'data-home-changelog-card' in dashboard
+    assert 'data-view="profile-overview"' in profile
+    assert 'data-view="profile-repositories"' in profile_repositories
+    assert 'data-profile-tabs' in profile
+    assert 'data-profile-repo-search' in profile_repositories
+    assert 'data-home-feed' in home
+    assert 'data-home-top-repositories' in home
+    assert 'data-home-right-rail' in home
+    assert 'data-home-left-rail' in home
+    assert 'data-home-user-avatar' in home
+    assert 'data-home-user-name' in home
+    assert 'data-home-action-panel' in home
+    assert 'data-home-agent-input' in home
+    assert 'data-home-changelog-card' in home
     assert 'data-home-contributions' not in visible
-    assert 'const SECTION_ROUTES = ["home", "profile-overview", "profile-repositories", "repos", "network", "profile", "chat"]' in dashboard_js
-    assert 'showSection(requestedSection() || "home", { push: false })' in dashboard_js
+    # The client-side section router is deleted: boot dispatches per page via
+    # PAGE_INITS keyed off <body data-page>.
+    for removed in ("SECTION_ROUTES", "showSection(", "requestedSection(", "sectionUrl("):
+        assert removed not in dashboard_js
+    assert "const PAGE_INITS = {" in dashboard_js
+    assert "(PAGE_INITS[currentPage()] || initHomePage)();" in dashboard_js
+    # Legacy /dashboard?section=X URLs 308 in the Worker, with a client shim
+    # for cached home documents.
+    assert "target = dashboard_section_redirect(url.path, url.query)" in ENTRY_TEXT
+    assert "function legacyRedirectTarget()" in dashboard_js
+    assert "location.replace(legacyTarget);" in dashboard_js
 
 
 def test_dashboard_home_left_rail_uses_theme_aware_panel_background():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
-    home = dashboard[
-        dashboard.index('data-view="home"')
-        : dashboard.index('data-view="repos"')
-    ]
+    home = _read(VIEWS / "home.html")
 
     # bg-card (not a hardcoded dark hex) so the rail switches with the
     # dashboard's light/dark theme instead of always rendering dark.
@@ -271,12 +300,11 @@ def test_dashboard_home_left_rail_uses_theme_aware_panel_background():
 
 
 def test_dashboard_profile_about_is_editable_for_logged_in_user():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    # The about modal lives in the shared modals partial; the panel is in the
+    # profile-overview view, which is the profile page's only view.
+    dashboard = assembled_dashboard_page("profile")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    profile = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
+    profile = _read(VIEWS / "profile-overview.html")
 
     for marker in (
         "data-profile-about-panel",
@@ -308,12 +336,10 @@ def test_dashboard_profile_about_is_editable_for_logged_in_user():
 
 
 def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    profile = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
+    # The whole composed profile page: the overview view plus the shared
+    # profile-sidebar template (which moved into the main.html wrapper).
+    profile = assembled_dashboard_page("profile")
 
     assert "data-profile-overview-layout" in profile
     assert "data-profile-overview-card" not in profile
@@ -344,12 +370,8 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
 
 
 def test_dashboard_profile_contribution_graph_matches_github_density():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    profile = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
+    profile = _read(VIEWS / "profile-overview.html")
 
     for marker in (
         "data-profile-contribution-timeline-layout",
@@ -398,22 +420,16 @@ def test_dashboard_profile_contribution_graph_matches_github_density():
 
 
 def test_dashboard_profile_tabs_are_unified_with_app_header():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    header = dashboard[
-        dashboard.index("data-app-header") - 80:
-        dashboard.index("data-app-header") + 260
-    ]
-    overview = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
-    repositories = dashboard[
-        dashboard.index('data-view="profile-repositories"')
-        : dashboard.index('data-view="profile"')
-    ]
+    overview = assembled_dashboard_page("profile")
+    repositories = assembled_dashboard_page("profile-repositories")
 
     for profile in (overview, repositories):
+        header = profile[
+            profile.index("data-app-header") - 80:
+            profile.index("data-app-header") + 260
+        ]
+        assert "border-b border-border" not in header
         assert "data-profile-header-band" in profile
         assert "data-profile-tabs-inner" in profile
         assert 'data-profile-header-band class="border-b border-border bg-background px-4"' in profile
@@ -424,42 +440,37 @@ def test_dashboard_profile_tabs_are_unified_with_app_header():
         assert "mb-8 flex min-w-0 gap-2 overflow-x-auto border-b border-border text-sm" not in profile
         assert "mb-5 flex min-w-0 gap-4 overflow-x-auto border-b border-border text-sm" not in profile
 
-    assert "border-b border-border" not in header
-    assert 'data-dashboard-root data-dashboard-section="home"' in dashboard
-    assert '[data-dashboard-section="home"] [data-app-header]' in dashboard
-    assert 'dashboardRoot.dataset.dashboardSection = section;' in dashboard_js
+    # The legacy section name is baked per page at build time; there is no JS
+    # pass mutating the root's section any more.
+    assert 'data-dashboard-root data-dashboard-section="home"' in assembled_dashboard_page("home")
+    assert 'data-dashboard-root data-dashboard-section="profile-overview"' in overview
+    assert '[data-dashboard-section="home"] [data-app-header]' in overview
+    assert "dashboardRoot.dataset.dashboardSection" not in dashboard_js
     assert overview.index("data-profile-header-band") < overview.index("data-profile-overview-layout")
     assert repositories.index("data-profile-header-band") < repositories.index("data-profile-repo-search")
-    assert 'data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>' in dashboard
+    assert 'data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>' in overview
     assert 'const headerContext = $("[data-dashboard-header-context]")' in dashboard_js
     assert 'const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();' in dashboard_js
     assert 'function renderHeaderContext(section = currentSection())' in dashboard_js
-    assert 'renderHeaderContext(section);' in dashboard_js
+    assert 'renderHeaderContext();' in dashboard_js
 
 
 def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
-    overview = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
-    repositories = dashboard[
-        dashboard.index('data-view="profile-repositories"')
-        : dashboard.index('data-view="profile"')
-    ]
-    network = dashboard[
-        dashboard.index('data-view="network"')
-        : dashboard.index('data-view="explore"')
-    ]
+    overview = _read(VIEWS / "profile-overview.html")
+    repositories = _read(VIEWS / "profile-repositories.html")
+    network = _read(VIEWS / "network.html")
 
-    for profile in (overview, repositories):
+    for profile in (overview, repositories, network):
         tabs = profile[
             profile.index("data-profile-tabs")
             : profile.index("</nav>", profile.index("data-profile-tabs"))
         ]
-        assert 'data-section="profile-overview"' in tabs
-        assert 'data-section="profile-repositories"' in tabs
-        assert 'data-section="network"' in tabs
+        # Tabs are real page links now, not client-router buttons.
+        assert 'href="/dashboard/profile"' in tabs
+        assert 'href="/dashboard/profile/repositories"' in tabs
+        assert 'href="/dashboard/network"' in tabs
+        assert "data-section=" not in tabs
+        assert "<button" not in tabs
         assert tabs.index("Overview") < tabs.index("Repositories")
         assert tabs.index("Repositories") < tabs.index("Network")
         assert "Projects" not in tabs
@@ -467,15 +478,10 @@ def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
         assert "Stars" not in tabs
         assert ">40<" not in tabs
 
-    network_tabs = network[
-        network.index("data-profile-tabs")
-        : network.index("</nav>", network.index("data-profile-tabs"))
-    ]
-    assert 'data-section="network"' in network_tabs
-    assert 'border-b-2 border-[#f78166]' in network_tabs[
-        network_tabs.index('data-section="network"')
-        : network_tabs.index("</button>", network_tabs.index('data-section="network"'))
-    ]
+    # The active tab underline is baked into each page's own view.
+    assert 'href="/dashboard/profile" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in overview
+    assert 'href="/dashboard/profile/repositories" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in repositories
+    assert 'href="/dashboard/network" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in network
     assert 'data-network-page-inner class="w-full px-4 py-6 sm:px-6 lg:px-8"' in network
     assert "mx-auto max-w-[1432px]" in network
     for icon in ("shield", "zap", "lock", "refresh-cw"):
@@ -490,21 +496,15 @@ def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
 
 
 def test_dashboard_profile_repositories_reuses_overview_sidebar_component():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    overview = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
-    repositories = dashboard[
-        dashboard.index('data-view="profile-repositories"')
-        : dashboard.index('data-view="profile"')
-    ]
-    network = dashboard[
-        dashboard.index('data-view="network"')
-        : dashboard.index('data-view="explore"')
-    ]
+    overview = _read(VIEWS / "profile-overview.html")
+    repositories = _read(VIEWS / "profile-repositories.html")
+    network = _read(VIEWS / "network.html")
 
+    # The sidebar template ships in the shared main.html wrapper so every page
+    # document can render it into its slot.
+    assert "data-profile-sidebar-template" in _read(
+        PUBLIC / "dashboard" / "partials" / "main.html")
     assert 'data-profile-sidebar-slot data-profile-sidebar-context="overview"' in overview
     assert 'data-profile-sidebar-slot data-profile-sidebar-context="repositories"' in repositories
     assert 'data-profile-sidebar-slot data-profile-sidebar-context="network"' in network
@@ -522,16 +522,9 @@ def test_dashboard_profile_repositories_reuses_overview_sidebar_component():
 
 
 def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    overview = dashboard[
-        dashboard.index('data-view="profile-overview"')
-        : dashboard.index('data-view="profile-repositories"')
-    ]
-    repositories = dashboard[
-        dashboard.index('data-view="profile-repositories"')
-        : dashboard.index('data-view="profile"')
-    ]
+    overview = _read(VIEWS / "profile-overview.html")
+    repositories = _read(VIEWS / "profile-repositories.html")
 
     assert 'data-profile-repo-count' in overview
     assert 'data-profile-repo-count' in repositories
@@ -546,10 +539,7 @@ def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
 def test_dashboard_home_uses_github_dark_typography_and_blue_links():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    home = dashboard[
-        dashboard.index('data-view="home"')
-        : dashboard.index('data-view="repos"')
-    ]
+    home = _read(VIEWS / "home.html")
 
     assert '--dashboard-background-rgb: 1 4 9' in dashboard
     assert '--dashboard-card-rgb: 13 17 23' in dashboard
@@ -562,12 +552,8 @@ def test_dashboard_home_uses_github_dark_typography_and_blue_links():
 
 
 def test_dashboard_home_widgets_are_wired_to_real_data_and_actions():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    home = dashboard[
-        dashboard.index('data-view="home"')
-        : dashboard.index('data-view="repos"')
-    ]
+    home = _read(VIEWS / "home.html")
 
     assert "Update your 2FA" not in home
     assert "to see dashboard activity within ForkMesh" not in home
@@ -602,7 +588,6 @@ def test_dashboard_has_mobile_responsive_navigation_drawers():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     for marker in (
         "data-dashboard-shell",
         "data-mobile-menu-toggle",
@@ -659,7 +644,6 @@ def test_dashboard_uses_github_like_global_shell_and_hamburger_drawer():
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     assert "--dashboard-background-rgb: 1 4 9" in dashboard
     assert "--dashboard-header-rgb: 1 4 9" in dashboard
     assert "--dashboard-sidebar-rgb: 12 17 23" in dashboard
@@ -707,12 +691,11 @@ def test_dashboard_global_header_search_has_keyboard_backed_repo_results():
 
 
 def test_dashboard_has_scoped_light_dark_appearance_controls():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
     landing = _read(PUBLIC / "index.html")
     login = _read(PUBLIC / "login.html")
 
-    assert dashboard == _read(PUBLIC / "dashboard.html")
     for marker in (
         'data-dashboard-theme',
         'meta name="color-scheme" content="light dark"',
@@ -723,16 +706,12 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
     ):
         assert marker in dashboard
 
-    profile_view = dashboard[
-        dashboard.index('data-view="profile"') : dashboard.index('data-view="chat"')
-    ]
-    assert "data-profile-appearance-panel" in profile_view
-    assert "data-appearance-theme" in profile_view
-
-    profile_popover = dashboard[
-        dashboard.index("data-profile-popover") : dashboard.index("data-profile-toggle")
-    ]
-    assert "data-appearance-settings-button" not in profile_popover
+    # The appearance panel lives on the settings page's view (and nowhere else
+    # is a popover shortcut needed).
+    settings_view = _read(VIEWS / "settings.html")
+    assert "data-profile-appearance-panel" in settings_view
+    assert "data-appearance-theme" in settings_view
+    assert "data-appearance-settings-button" not in dashboard
 
     for marker in (
         "function readDashboardTheme()",
@@ -770,7 +749,6 @@ def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
     # (font-size is the one deliberate exception: it's theme-independent and
     # lives on the shared :root/dark selector).
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
-    assert dashboard == _read(PUBLIC / "dashboard.html")
 
     dark_block = dashboard[
         dashboard.index('[data-dashboard-theme="dark"] {'):
@@ -819,7 +797,9 @@ def _strip_html_comments(html: str) -> str:
 
 
 def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    # The repos list and the worker-served repo detail are separate page
+    # documents now; assert across every composed page.
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     for marker in (
@@ -888,7 +868,7 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
 
 
 def test_repository_cards_and_profile_rows_match_github_repository_lists():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "function profileRepositoryRow(group)" in dashboard_js
@@ -913,8 +893,8 @@ def test_dashboard_can_seed_mock_repositories_for_ui_testing_by_query_param():
     assert 'name: "mobile-mirror-client"' in dashboard_js
     assert 'name: "security-review-lab"' in dashboard_js
     assert "if (dashboardMockRepositoriesEnabled())" in dashboard_js
-    assert "renderRepositories(dashboardMockRepositories(), session);" in dashboard_js
-    assert "mockRepos" not in _read(PUBLIC / "dashboard" / "index.html")
+    assert "renderRepositories(dashboardMockRepositories(), state.session);" in dashboard_js
+    assert "mockRepos" not in assembled_dashboard()
 
 
 def test_dashboard_repository_detail_uses_github_like_inner_layout():
@@ -1003,7 +983,9 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
-    for path in (PUBLIC / "dashboard.html", PUBLIC / "dashboard" / "index.html"):
+    # The explore view lives on the worker-served repo page document (built
+    # from the repo view partial).
+    for path in (PUBLIC / "dashboard" / "repo.html", VIEWS / "repo.html"):
         dashboard = _read(path)
         explore = dashboard[
             dashboard.index('data-view="explore"')
@@ -1290,7 +1272,7 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert "rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground" not in records
     assert 'number === page ? "bg-secondary text-foreground border-border"' in pagination
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
-    assert 'data-dashboard-open-repo="${escapeHtml(key)}" role="link"' in dashboard_js
+    assert 'data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
     # The Clone availability chip keys off the group-liveness verdict (`live`,
     # which folds in an online mirror serving in place - adhoc #61) but keeps the
@@ -1828,6 +1810,12 @@ def test_dashboard_deep_link_assets_binding_is_wired_up():
 def test_clean_marketing_routes_target_static_pages():
     for redirect in (
         "/dashboard /dashboard/index.html 200",
+        "/dashboard/repos /dashboard/repos/index.html 200",
+        "/dashboard/network /dashboard/network/index.html 200",
+        "/dashboard/chat /dashboard/chat/index.html 200",
+        "/dashboard/settings /dashboard/settings/index.html 200",
+        "/dashboard/profile /dashboard/profile/index.html 200",
+        "/dashboard/profile/repositories /dashboard/profile/repositories/index.html 200",
         "/desktop /desktop.html 200",
         "/docs /docs/index.html 200",
         "/docs/ /docs 308",
@@ -1840,10 +1828,20 @@ def test_clean_marketing_routes_target_static_pages():
         assert redirect in REDIRECTS
 
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
-    for route in ("/dashboard", "/dashboard.js", "/blog", "/blogs", "/docs", "/network", "/desktop"):
+    for route in ("/dashboard.js", "/blog", "/blogs", "/docs", "/network", "/desktop"):
         assert route not in run_worker_first
-    for route in ("/dashboard.html", "/docs.html", "/network.html"):
+    for route in ("/docs.html", "/network.html"):
         assert route in run_worker_first
+    # / and /dashboard are worker-owned now: / for the session-cookie 302,
+    # /dashboard for legacy ?section= 308s (query strings never match in
+    # _redirects). The per-page documents are excluded so they stay static
+    # assets, and the deleted single-shell dashboard.html has no entry.
+    assert "/" in run_worker_first
+    assert "/dashboard" in run_worker_first
+    assert "/dashboard/*" in run_worker_first
+    for page in ("repos", "network", "chat", "settings", "profile", "profile/repositories"):
+        assert ("!/dashboard/" + page) in run_worker_first
+    assert "/dashboard.html" not in run_worker_first
 
 
 def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
