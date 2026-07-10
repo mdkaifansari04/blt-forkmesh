@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
@@ -31,6 +32,17 @@
             "sig": "F0LPfeQQaP5t-gfIPy0LTgGuur5eORpb8_CvEAB_HpbbChTexXfZgaPQnqJA7ZWdX-kd_IPE8B_YIJ1fBzI7BA",
             "ts": 1783717185313,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "39a9ad4d-e617-433d-bc79-b2c131ac7e52",
+            "sig": "s9tkndCOKzN3oNRkgWJxTEcqfan37AApmVF7guedAHp5kn4tNXmP0PNg6GmTFdAJ-EXE69DT_Ovs6iaz9qMCDg",
+            "ts": 1783717185360,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -42,6 +54,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "when issues are created from the web the timestamp is wrong",
-    "updatedAt": 1783717185313,
+    "updatedAt": 1783717185360,
     "votes": 0
 }
