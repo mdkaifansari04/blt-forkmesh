@@ -841,11 +841,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // event onto it. Keep the full dated lines so timestamps show.
     if (!m_networkLog.isEmpty()) {
         const int from = qMax(0, m_networkLog.size() - kFooterLogSeedLines);
-        QStringList seed;
-        seed.reserve(m_networkLog.size() - from);
+        // Render each seed line through setFooterUpdateLine() so history gets the
+        // same colored badges as live lines instead of raw plain text (adhoc #19).
         for (int i = from; i < m_networkLog.size(); ++i)
-            seed << m_networkLog.at(i);
-        m_footerUpdateLog->setPlainText(seed.join(QLatin1Char('\n')));
+            setFooterUpdateLine(m_networkLog.at(i));
         m_footerUpdateLog->verticalScrollBar()->setValue(
             m_footerUpdateLog->verticalScrollBar()->maximum());
     } else {
@@ -2576,10 +2575,9 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // Tiny Claude Code usage chart that rides beside the earnings/avatar (issue
     // #266): a 5-hour and a weekly horizontal gauge. Seed it from the last cached
-    // utilisation so it renders immediately; from there it only updates when a
-    // prompt is sent (bumpClaudeCodeUsage) or live rate-limit events land — plus
-    // an on-demand refresh when the user hovers the chart to check it, since
-    // there's no background poll keeping it current between those.
+    // utilisation so it renders immediately; from there it only updates when the
+    // user hovers the chart to check it (adhoc #20) — no background poll and no
+    // other trigger keeps it current between those.
     auto *tokenUsage = new TokenUsageMiniChart;
     m_navTokenUsage = tokenUsage;
     tokenUsage->onHover = [this] { refreshClaudeCodeUsage(); };
@@ -2613,7 +2611,6 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navCodexUsage = codexUsage;
     codexUsage->onHover = [this] { refreshCodexUsageRemaining(); };
     refreshCodexUsageRemaining();
-    QTimer::singleShot(0, this, &MainWindow::refreshClaudeCodeUsage);
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;

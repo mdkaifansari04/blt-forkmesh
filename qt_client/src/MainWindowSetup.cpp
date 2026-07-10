@@ -2845,17 +2845,14 @@ void MainWindow::styleFooterUpdateLog()
 {
     if (!m_footerUpdateLog)
         return;
-    // Theme-aware so the strip reads on either canvas (it carries its own inline
-    // sheet, not the global one).
-    const bool dark = currentThemeIsDark();
-    const QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
-    const QString border = dark ? QStringLiteral("#21262d") : QStringLiteral("#d0d7de");
-    const QString canvas = dark ? QStringLiteral("#0d1117") : QStringLiteral("#f6f8fa");
+    // Always a white canvas with near-black ink so the live strip reads like the
+    // Log view regardless of theme (adhoc #19). Per-line severity/category colour
+    // comes from the HTML badge that setFooterUpdateLine() renders; the base text
+    // stays black so plain messages don't wash out on white.
     m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:%1;border:none;"
-                       "border-right:1px solid %2;background:%3;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}")
-            .arg(colour, border, canvas));
+        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:#1f2328;border:none;"
+                       "border-right:1px solid #d0d7de;background:#ffffff;"
+                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
 }
 
 void MainWindow::setFooterUpdateLine(const QString &line)
@@ -2865,12 +2862,33 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     const QString clean = line.trimmed();
     if (clean.isEmpty())
         return;
+    // Render the same colored category badge the Log view uses so the always-on
+    // strip reads at a glance instead of as a wall of grey text (adhoc #19). The
+    // canvas is forced white with black body text by styleFooterUpdateLog(); only
+    // the badge carries colour. Lines from logSystem() arrive fully dated
+    // ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
+    QString time, message = clean;
+    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
+        time = clean.mid(11, 8);
+        message = clean.mid(21);
+    }
+    const QString badge = logBadgeFor(clean);
+    const QString accent = logAccentFor(clean);
+    QString html;
+    if (!time.isEmpty())
+        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
+                    .arg(time);
+    html += QStringLiteral(
+                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
+                "<span style='color:#1f2328'>%3</span>")
+                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                     message.toHtmlEscaped());
     // Only auto-scroll to the new line if the view was already at (or very near)
     // the bottom — otherwise a user who scrolled up to search back through
     // history would get yanked back down by every new event.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
-    m_footerUpdateLog->appendPlainText(clean);
+    m_footerUpdateLog->appendHtml(html);
     if (wasAtBottom && bar)
         bar->setValue(bar->maximum());
 }

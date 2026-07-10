@@ -1240,16 +1240,25 @@ class RepoCommitDetail {
 }
 
 class RepoBranch {
-  RepoBranch({required this.name, this.sha = '', this.isDefault = false});
+  RepoBranch({
+    required this.name,
+    this.sha = '',
+    this.isDefault = false,
+    this.worktreePath = '',
+  });
 
   final String name;
   final String sha;
   final bool isDefault;
+  final String worktreePath;
+
+  bool get hasWorktree => worktreePath.isNotEmpty;
 
   factory RepoBranch.fromJson(Map<String, dynamic> j) => RepoBranch(
     name: (j['name'] ?? j['branch'] ?? '').toString(),
     sha: (j['sha'] ?? j['hash'] ?? j['commit'] ?? '').toString(),
     isDefault: j['default'] == true || j['isDefault'] == true,
+    worktreePath: (j['worktree'] ?? j['worktreePath'] ?? '').toString(),
   );
 }
 
