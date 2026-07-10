@@ -45,7 +45,10 @@ Security-relevant areas of ForkMesh include:
   repository, issue, and pull-request metadata.
 - **Relay chat** — payloads are encrypted client-side with AES-256-GCM; the
   Cloudflare relay only sees ciphertext envelopes and does not persist message
-  bodies.
+  bodies. Default per-repository rooms derive their key from a shared, app-wide
+  constant, so they are not confidential *between* users — a room passphrase
+  (shared out of band) is required for participant-only confidentiality. Coves
+  and encrypted mirrors use per-object secret keys and are confidential.
 - **Mirroring** — bare Git mirrors fetched from remotes and served on demand.
 - **Donations** — Solana donation addresses published on profiles and
   repositories.

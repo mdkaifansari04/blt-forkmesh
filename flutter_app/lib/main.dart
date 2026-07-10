@@ -44,6 +44,9 @@ Future<void> main() async {
   // Let API calls carry the logged-in account's session token so per-account
   // endpoints authorize this account rather than a self-asserted node name.
   api.sessionTokenProvider = () => auth.session?.sessionToken ?? '';
+  // Shared chat rooms fetch their key from the relay (server-derived from
+  // DATA_KEY) instead of a baked-in constant.
+  relay.roomPassphraseProvider = () => api.roomChatPassphrase();
   final inbox = InboxService(
     settings,
     identity,

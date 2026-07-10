@@ -76,6 +76,19 @@ detect_os_arch() {
   asset_arch="${n##*-}"; n="${n%-*}"; asset_os="${n##*-}"
 }
 
+# Escape a value for embedding in a JSON string. Filenames/tags are operator
+# supplied, but one containing a double quote or backslash would otherwise
+# corrupt (or inject fields into) the emitted manifest JSON.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"    # backslash first so later escapes aren't re-escaped
+  s="${s//\"/\\\"}"    # double quote
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
 sums_file="${meta_dir}/SHASUMS256.txt"
 : > "${sums_file}.tmp"
 assets_json=""
@@ -95,7 +108,8 @@ for bin in "${bins[@]}"; do
 
   printf '%s  %s\n' "$hash" "$name" >> "${sums_file}.tmp"
   assets_json="${assets_json}${assets_json:+,}$(printf '{"name":"%s","blob_sha256":"%s","size":%s,"os":"%s","arch":"%s"}' \
-    "$name" "$hash" "$size" "$asset_os" "$asset_arch")"
+    "$(json_escape "$name")" "$hash" "$size" \
+    "$(json_escape "$asset_os")" "$(json_escape "$asset_arch")")"
   echo "Staged $name ($size bytes) -> ${blob}"
 done
 
@@ -109,10 +123,10 @@ rm -f "${sums_file}.tmp"
 {
   printf '{\n'
   printf '  "schema": "forkmesh-release-v1",\n'
-  printf '  "repo": "%s",\n' "$repo"
-  printf '  "tag": "%s",\n' "$tag"
-  printf '  "tag_commit": "%s",\n' "$tag_commit"
-  printf '  "channel": "%s",\n' "$channel"
+  printf '  "repo": "%s",\n' "$(json_escape "$repo")"
+  printf '  "tag": "%s",\n' "$(json_escape "$tag")"
+  printf '  "tag_commit": "%s",\n' "$(json_escape "$tag_commit")"
+  printf '  "channel": "%s",\n' "$(json_escape "$channel")"
   printf '  "created_at": %s,\n' "$(date +%s)000"
   printf '  "assets": [%s]\n' "$assets_json"
   printf '}\n'
