@@ -1,3 +1,4 @@
+#include "ForkMeshVersion.h"
 #include "ClaudeIdeBridge.h"
 
 #include <QCoreApplication>

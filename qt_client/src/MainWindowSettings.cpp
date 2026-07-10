@@ -5,6 +5,7 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
+#include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "QrCode.h"
