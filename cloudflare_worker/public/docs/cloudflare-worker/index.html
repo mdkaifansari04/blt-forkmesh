@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay &amp; website · ForkMesh Docs</title>
+    <meta
+      name="description"
+      content="How the ForkMesh Cloudflare Python Worker serves the public website, hosts encrypted mainnode rooms, and publishes the repository catalog, plus how to run and deploy it."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/static-page.js" defer></script>
+    <style>
+      .doc-wrap { max-width: 860px; margin: 0 auto; padding: 42px 20px 80px; }
+      .doc-wrap h1 { font-size: clamp(32px, 5vw, 48px); margin: 0 0 12px; }
+      .doc-intro { color: var(--muted); max-width: 68ch; font-size: 17px; margin: 0 0 8px; line-height: 1.6; }
+      .doc-crumbs { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+      .doc-crumbs a { color: var(--muted); }
+      .doc-crumbs a:hover { color: var(--foreground); }
+      .doc-toc { margin: 28px 0 8px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; }
+      .doc-toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+      .doc-toc ol { margin: 0; padding-left: 18px; columns: 2; column-gap: 24px; }
+      .doc-toc li { margin: 4px 0; break-inside: avoid; }
+      .doc-toc a { color: var(--foreground); text-decoration: none; }
+      .doc-toc a:hover { text-decoration: underline; }
+      .doc-body { margin-top: 32px; }
+      .doc-body h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
+      .doc-body h2:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .doc-body h3 { font-size: 19px; margin: 28px 0 10px; }
+      .doc-body p { color: var(--muted); line-height: 1.65; margin: 0 0 14px; }
+      .doc-body p strong, .doc-body li strong { color: var(--foreground); }
+      .doc-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+      .doc-body ul, .doc-body ol { padding-left: 22px; margin: 0 0 14px; color: var(--muted); }
+      .doc-body li { margin: 6px 0; line-height: 1.6; }
+      .doc-body code { font-family: "ForkMesh Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; background: rgba(127,127,127,0.14); border-radius: 4px; padding: 0.12em 0.4em; }
+      .doc-body pre { background: rgba(127,127,127,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 18px; }
+      .doc-body pre code { background: none; padding: 0; font-size: 0.86em; line-height: 1.55; }
+      .doc-body blockquote { margin: 0 0 16px; padding: 4px 16px; border-left: 3px solid var(--border); color: var(--muted); }
+      .doc-body table { width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 0.93em; }
+      .doc-body th, .doc-body td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .doc-body th { color: var(--foreground); font-weight: 700; }
+      .doc-body hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+      .doc-siblings { margin-top: 44px; padding-top: 24px; border-top: 1px solid var(--border); }
+      .doc-siblings h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+      .doc-siblings ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); }
+      .doc-siblings a { font-weight: 600; color: var(--foreground); text-decoration: none; }
+      .doc-siblings a:hover { text-decoration: underline; }
+    </style>
+    <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js" defer></script>
+    <link rel="stylesheet" href="/site-header.css" />
+    <script src="/site-header.js" defer></script>
+  </head>
+  <body>
+    <div data-forkmesh-header="simple"></div>
+
+    <main class="doc-wrap">
+      <p class="doc-crumbs"><a href="/docs">Docs</a> / Relay &amp; website</p>
+      <p class="eyebrow">Developer docs</p>
+      <h1>ForkMesh Cloudflare Python Relay</h1>
+      <p class="doc-intro">
+        This Python Worker serves the ForkMesh public site from
+        <code>public/</code> and hosts encrypted ForkMesh mainnode rooms at:
+      </p>
+
+      <div class="doc-body">
+        <pre><code>/api/repo/{owner}/{repo}/rooms/{room}/ws</code></pre>
+        <p>
+          The older <code>/api/room/{room}/ws</code> path remains as a
+          temporary compatibility endpoint.
+        </p>
+        <p>
+          The static site is deployed with Cloudflare Workers Static Assets.
+          API and health routes run through the Python Worker first, while
+          <code>/</code> is served from <code>public/index.html</code>.
+        </p>
+        <p>
+          Selected desktop mirrors are published to a Durable Object
+          repository catalog at:
+        </p>
+        <pre><code>/api/repositories</code></pre>
+        <p>
+          The public website fetches this endpoint and renders the network
+          repository list. The catalog stores signed metadata only, not
+          local filesystem paths or Git object data.
+        </p>
+        <p>
+          The desktop client encrypts every room payload with AES-256-GCM
+          before it leaves the machine. The Durable Object only sees
+          ciphertext envelopes and keeps them ephemeral: each text frame is
+          broadcast to currently connected clients and is not written to
+          storage.
+        </p>
+        <p>
+          There are no npm, npx, TypeScript, or package-lock dependencies in
+          this worker project.
+        </p>
+
+        <h2 id="local-development">Local Development</h2>
+        <pre><code>uvx --from workers-py pywrangler dev</code></pre>
+        <p>Then use this server URL in the Qt client:</p>
+        <pre><code>ws://127.0.0.1:8787/api/repo/mainnode/forkmesh/rooms/general/ws</code></pre>
+        <p>The deployed mainnode URL is:</p>
+        <pre><code>wss://forkmesh.com/api/repo/mainnode/forkmesh/rooms/general/ws</code></pre>
+
+        <h2 id="deploy">Deploy</h2>
+        <p>
+          The website (static assets in <code>public/</code>) and the relay
+          Worker ship together in one deploy:
+        </p>
+        <pre><code>./deploy.sh            # deploy to production
+./deploy.sh dry-run    # validate without uploading</code></pre>
+        <p>
+          Deploys use <code>pywrangler</code>. If neither uv nor
+          <code>pywrangler</code> is on PATH, the script installs
+          <code>workers-py</code> into a local <code>.pywrangler/</code>
+          venv and runs that copy automatically.
+        </p>
+        <p>
+          Set <code>NODE_NAME</code> and <code>NODE_SOLANA_ADDRESS</code> in
+          <code>wrangler.toml</code> or as dashboard environment variables
+          for the health response.
+        </p>
+
+        <h2 id="mainnode-binding">Mainnode Binding</h2>
+        <p>
+          The Durable Object binding is
+          <code>FORKMESH_MAINNODE_ROOM</code>. Each object is keyed by
+          repository and room:
+        </p>
+        <pre><code>repo:{owner}/{repo}:room:{room}</code></pre>
+        <p>
+          The repository catalog binding is <code>FORKMESH_CATALOG</code>;
+          it stores the public catalog records shown on the website.
+        </p>
+      </div>
+
+      <nav class="doc-siblings" aria-label="Other developer docs">
+        <h2>More developer docs</h2>
+        <ul>
+          <li><a href="/docs/protocol">Protocol spec</a> — identity, signatures, HTTP API, self-hosting a mainnode</li>
+          <li><a href="/docs/qt-client">Desktop client</a> — the Qt 6 node</li>
+          <li><a href="/docs/flutter-app">Mobile app</a> — the Flutter client</li>
+          <li><a href="/docs/ide-extension">IDE extension</a> — editor integration</li>
+          <li><a href="/docs/ide-extension-protocol">IDE extension protocol</a> — the desktop handshake</li>
+          <li><a href="/changelog">Changelog</a> — release-by-release history</li>
+        </ul>
+      </nav>
+    </main>
+
+    <div data-forkmesh-footer="standard"></div>
+  </body>
+</html>

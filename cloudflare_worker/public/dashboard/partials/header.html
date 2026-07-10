@@ -1,80 +1,76 @@
-      <header data-app-header class="relative h-14 border-b border-border bg-card flex items-center gap-6 px-4 shrink-0">
+      <header data-app-header class="relative h-14 flex items-center gap-3 px-4 shrink-0">
         <button
           data-mobile-menu-toggle
           type="button"
           aria-label="Open dashboard menu"
           aria-controls="dashboardSidebar"
           aria-expanded="false"
-          class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+          class="items-center justify-center rounded-md border border-border bg-background p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
         >
           <i data-lucide="menu" class="h-4 w-4"></i>
         </button>
-        <a class="brand flex items-center gap-2.5 shrink-0" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark w-7 h-7 rounded-md object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+
+        <a class="brand flex items-center gap-2 shrink-0" href="/" aria-label="ForkMesh home">
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
           <span
             data-app-version
-            class="hidden font-mono text-[10px] leading-none text-muted-foreground"
+            class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
             title="ForkMesh version"
           ></span>
         </a>
 
-        <nav data-top-nav class="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-5 min-w-0 lg:flex">
-          <!-- Home dashboard tab is intentionally hidden until the activity feed is functional.
-          <button data-section="home" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Home
-          </button>
-          -->
-          <button data-section="repos" data-nav-link aria-current="page" class="inline-flex text-sm text-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Repositories
-          </button>
-          <button data-section="network" data-nav-link class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Network
-          </button>
-          <a href="/chat" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Chat
-          </a>
-          <a href="/docs" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Docs
-          </a>
-          <!-- Desktop Client is intentionally hidden until that flow is ready.
-          <a href="/desktop" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Desktop Client
-          </a>
-          -->
-          <a href="/blog" class="inline-flex text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap">
-            Blog
-          </a>
-        </nav>
+        <div class="hidden min-w-0 items-center gap-2 text-sm font-semibold text-foreground sm:flex">
+          <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+        </div>
 
-        <div class="ml-auto flex items-center gap-2">
-          <button
-            data-mobile-network-toggle
-            type="button"
-            aria-label="Open network drawer"
-            aria-controls="networkRail"
+        <div data-global-search-shell class="relative ml-auto hidden h-9 w-full max-w-sm min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground lg:flex">
+          <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+          <input
+            data-global-search
+            id="globalSearchInput"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Type / to search"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="globalSearchResults"
             aria-expanded="false"
-            class="items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors lg:hidden"
+            aria-keyshortcuts="/"
+            class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          />
+          <span data-global-search-shortcut class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">/</span>
+          <div
+            data-global-search-panel
+            id="globalSearchResults"
+            role="listbox"
+            class="hidden absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl shadow-background/50"
           >
-            <i data-lucide="activity" class="h-4 w-4"></i>
-          </button>
+            <div data-global-search-results class="max-h-96 overflow-y-auto py-1"></div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5">
           <a
             href="/mirror-payouts"
-            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            class="hidden h-9 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors sm:inline-flex"
             title="Get paid to mirror code"
+            aria-label="Get paid to mirror code"
           >
             <img src="/assets/sol.png" alt="" aria-hidden="true" class="h-3.5 w-3.5 shrink-0 rounded-full object-contain" />
             <span class="hidden sm:inline">Get paid to mirror</span>
           </a>
+
           <div class="relative">
             <button
               id="notificationToggle"
               type="button"
               aria-label="Open notifications"
               aria-expanded="false"
-              class="relative p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors"
+              class="relative flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
               <i data-lucide="bell" class="w-4 h-4"></i>
-              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary"></span>
+              <span data-notification-badge class="hidden absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent"></span>
             </button>
             <div
               id="notificationDropdown"
@@ -92,22 +88,13 @@
               </div>
             </div>
           </div>
-          <button
-            id="networkRailToggle"
-            data-network-rail-toggle
-            type="button"
-            aria-label="Close network panel"
-            aria-expanded="true"
-            class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-secondary transition-colors hidden lg:inline-flex"
-          >
-            <i data-lucide="panel-right-open" class="network-toggle-open w-4 h-4"></i>
-            <i data-lucide="panel-right-close" class="network-toggle-close w-4 h-4"></i>
-          </button>
+
           <a
             data-guest-auth-link
             href="/signup"
             class="hidden ml-0.5 items-center whitespace-nowrap rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
           >Sign Up / Log In</a>
+
           <a
             data-admin-button
             href="#"
@@ -117,17 +104,18 @@
             <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
             <span>Admin</span>
           </a>
+
           <button
             data-profile-settings-button
             type="button"
-            aria-label="Open profile"
-            title="Profile"
+            aria-label="Open profile settings"
+            title="Profile settings"
             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
           >
             <span
               data-dashboard-profile-avatar
               class="avatar flex items-center justify-center rounded-full border shrink-0 font-mono font-semibold"
-              style="width: 28px; height: 28px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 10.5px"
+              style="width: 32px; height: 32px; background: #818cf822; border-color: #818cf850; color: #818cf8; font-size: 11px"
             >
               <img data-dashboard-profile-avatar-image class="hidden h-full w-full rounded-full object-cover" alt="" />
               <span data-avatar-initial>Y</span>

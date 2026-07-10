@@ -39,8 +39,18 @@
         adminUrl: body.adminUrl || "",
         solana: body.solana || "",
         hasPayoutAddress: Boolean(body.hasPayoutAddress),
+        sessionToken: body.sessionToken || "",
         avatarPng: body.avatarPng || "",
         avatarUpdatedAt: Number(body.avatarUpdatedAt) || 0,
+        profileBio: body.profileBio || "",
+        profileAbout: body.profileAbout || body.profileReadme || "",
+        profileReadme: body.profileReadme || body.profileAbout || "",
+        profileLocation: body.profileLocation || "",
+        profileTimezone: body.profileTimezone || "",
+        profileLinks: Array.isArray(body.profileLinks) ? body.profileLinks : [],
+        profileFollowers: Number(body.followers) || 0,
+        profileFollowing: Number(body.following) || 0,
+        profileMirrorCount: Number(body.mirrorCount) || 0,
         kind: body.kind || "",
         owner: body.owner || "",
         nodes: Array.isArray(body.nodes) ? body.nodes : [],
@@ -97,7 +107,7 @@
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
       // Persist a minimal, non-secret session marker for the static site.
       storeSession(body);
-      setTimeout(() => (location.href = nextPath() || "/dashboard"), 700);
+      setTimeout(() => (location.href = nextPath() || "/"), 700);
       return;
     }
     if (body.error === "bad_totp") {
