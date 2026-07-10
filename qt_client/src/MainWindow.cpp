@@ -1,3 +1,4 @@
+#include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"

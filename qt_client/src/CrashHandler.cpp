@@ -1,3 +1,4 @@
+#include "ForkMeshVersion.h"
 #include "CrashHandler.h"
 
 #include <QByteArray>
