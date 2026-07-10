@@ -1,5 +1,5 @@
 diff --git a/cloudflare_worker/public/dashboard.html b/cloudflare_worker/public/dashboard.html
-index be42b088..5d3fd03b 100644
+index e6c60118..5d3fd03b 100644
 --- a/cloudflare_worker/public/dashboard.html
 +++ b/cloudflare_worker/public/dashboard.html
 @@ -35,7 +35,7 @@
@@ -615,7 +615,9 @@ index be42b088..5d3fd03b 100644
 -                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 2h ago</p>
 -                  </div>
 -                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
--                </div>
++                  <button data-section="profile-overview" data-nav-link class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></button>
++                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                 </div>
 -                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
 -                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #fbbf2412; border: 1px solid #fbbf2425">
 -                    <i data-lucide="star" class="w-3.5 h-3.5" style="color: #fbbf24"></i>
@@ -625,9 +627,7 @@ index be42b088..5d3fd03b 100644
 -                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 4h ago</p>
 -                  </div>
 -                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-+                  <button data-section="profile-overview" data-nav-link class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></button>
-+                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                 </div>
+-                </div>
 -                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
 -                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
 -                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
@@ -1934,16 +1934,16 @@ index be42b088..5d3fd03b 100644
                  </div>
                </div>
              </div>
-@@ -1566,85 +1597,6 @@
+@@ -1566,49 +1597,6 @@
          </div>
        </main>
  
 -
--      <aside id="networkRail" data-dashboard-network-rail aria-label="Network and chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
+-      <aside id="networkRail" data-dashboard-network-rail aria-label="Chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
 -        <div class="flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
 -          <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
--            <i data-lucide="activity" class="h-3.5 w-3.5 text-primary"></i>
--            Network
+-            <i data-lucide="message-circle" class="h-3.5 w-3.5 text-primary"></i>
+-            Chat
 -          </span>
 -          <div class="flex items-center gap-3">
 -            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
@@ -1955,42 +1955,6 @@ index be42b088..5d3fd03b 100644
 -            </button>
 -          </div>
 -        </div>
--        <div class="border-b border-border px-4 py-3 shrink-0">
--          <div class="hidden items-center justify-between mb-3 lg:flex">
--            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
--              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
--              Network
--            </span>
--            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
--              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
--              live
--            </span>
--          </div>
--
--          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
--            </div>
--          </div>
--
--          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
--            <div class="text-xs text-muted-foreground">Loading recent network...</div>
--          </div>
--        </div>
--
 -        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
 -          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
 -            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
@@ -2020,7 +1984,7 @@ index be42b088..5d3fd03b 100644
  	    </div>
  	    </div>
  
-@@ -1687,7 +1639,7 @@
+@@ -1651,7 +1639,7 @@
  
            <label class="grid gap-1.5 text-xs text-muted-foreground">
              Current password
@@ -2029,7 +1993,7 @@ index be42b088..5d3fd03b 100644
            </label>
  
            <p data-profile-hint class="min-h-4 text-xs text-muted-foreground"></p>
-@@ -1696,7 +1648,39 @@
+@@ -1660,7 +1648,39 @@
            </button>
  	        </div>
  	      </div>
@@ -2070,7 +2034,7 @@ index be42b088..5d3fd03b 100644
  
      <div
        id="notificationModal"
-@@ -1724,6 +1708,7 @@
+@@ -1688,6 +1708,7 @@
        </div>
      </div>
  
@@ -2078,7 +2042,7 @@ index be42b088..5d3fd03b 100644
  	    <script>
        const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
  
-@@ -1835,6 +1820,8 @@
+@@ -1799,6 +1820,8 @@
        }
  
        function setSection(section) {
@@ -2087,7 +2051,7 @@ index be42b088..5d3fd03b 100644
          document.querySelectorAll("[data-view]").forEach((view) => {
            view.classList.toggle("active", view.dataset.view === section);
          });
-@@ -1847,24 +1834,10 @@
+@@ -1811,24 +1834,10 @@
          });
        }
  
@@ -2113,7 +2077,7 @@ index be42b088..5d3fd03b 100644
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
 diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
-index 0d295cd8..e74f8ba3 100644
+index 481d5eb9..beddb381 100644
 --- a/cloudflare_worker/public/dashboard.js
 +++ b/cloudflare_worker/public/dashboard.js
 @@ -39,13 +39,26 @@
@@ -4038,7 +4002,7 @@ index 0d295cd8..e74f8ba3 100644
      // the detail straight from the local placeholder instead.
      const pendingItem = kind === "issues"
        ? state.issuesView.items.find((item) => item.pending && item.localId === number)
-@@ -4006,7 +5166,7 @@
+@@ -4061,7 +5221,7 @@
      }
    }
  
@@ -4047,7 +4011,7 @@ index 0d295cd8..e74f8ba3 100644
    // the only account whose node can actually pick an "assign to agent" issue up
    // and run a coding agent on it.
    function sessionOwnsRepo(repo) {
-@@ -4201,7 +5361,7 @@
+@@ -4256,7 +5416,7 @@
            <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
          </form>
          <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>`
@@ -4056,7 +4020,7 @@ index 0d295cd8..e74f8ba3 100644
        </div>`;
    }
  
-@@ -4213,7 +5373,7 @@
+@@ -4268,7 +5428,7 @@
      return `
        <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
          <form data-repo-agent-new-form class="flex flex-col gap-2 bg-secondary/30 px-4 py-3">
@@ -4065,7 +4029,7 @@ index 0d295cd8..e74f8ba3 100644
            <div class="flex items-center gap-2">
              <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
                ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-@@ -4279,14 +5439,14 @@
+@@ -4334,14 +5494,14 @@
        });
        const data = await response.json().catch(() => ({}));
        if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
@@ -4082,7 +4046,7 @@ index 0d295cd8..e74f8ba3 100644
        if (atBottom) current.scrollTop = current.scrollHeight;
        const statusEl = $("[data-repo-agent-status]");
        if (statusEl && data.status) {
-@@ -4377,7 +5537,7 @@
+@@ -4432,7 +5592,7 @@
        setHint(
          code === "text_required" ? "Write a message before sending."
            : code === "text_too_long" ? "Message is too long."
@@ -4091,7 +4055,7 @@ index 0d295cd8..e74f8ba3 100644
            : code === "not_authorized" ? "You don't have permission to send messages."
              : "Could not send the message. Please try again.",
          "bad");
-@@ -4423,14 +5583,14 @@
+@@ -4478,14 +5638,14 @@
          throw new Error(data.error || `HTTP ${response.status}`);
        }
        if (input) input.value = "";
@@ -4108,7 +4072,7 @@ index 0d295cd8..e74f8ba3 100644
            : code === "not_authorized" ? "You don't have permission to start agents."
              : "Could not start the agent. Please try again.",
          "bad");
-@@ -4467,7 +5627,7 @@
+@@ -4522,7 +5682,7 @@
          <div class="grid gap-2">
            <label class="flex items-center gap-2 text-xs text-muted-foreground">
              <input type="checkbox" data-repo-issue-assign-agent class="h-3.5 w-3.5 rounded border-border" />
@@ -4117,7 +4081,7 @@ index 0d295cd8..e74f8ba3 100644
            </label>
            <div class="ml-5 flex flex-wrap items-center gap-4">
              <label class="flex items-center gap-2 text-xs text-muted-foreground">
-@@ -4556,7 +5716,7 @@
+@@ -4611,7 +5771,7 @@
            const total = images.reduce((sum, img) => sum + img.size, 0);
            const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
            if (budget <= 0) {
@@ -4126,7 +4090,7 @@ index 0d295cd8..e74f8ba3 100644
              continue;
            }
            let dataUrl;
-@@ -4570,7 +5730,7 @@
+@@ -4625,7 +5785,7 @@
                continue;
              }
            } else {
@@ -4135,7 +4099,7 @@ index 0d295cd8..e74f8ba3 100644
              const result = await openImageResizeModal(file, budget);
              if (!result) {
                setAttachHint("");
-@@ -4621,7 +5781,7 @@
+@@ -4676,7 +5836,7 @@
      const agentModel = assignAgent ? String(agentModelInput?.value || "") : "";
      const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
      // Swap each attached image's short placeholder back out for its real
@@ -4144,7 +4108,7 @@ index 0d295cd8..e74f8ba3 100644
      // cover exactly what gets sent.
      let body = String(bodyInput?.value || "");
      const images = form._pendingIssueImages || [];
-@@ -4631,7 +5791,7 @@
+@@ -4686,7 +5846,7 @@
      try {
        await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider);
        // Submissions land in the maintainer's inbox, not the public mirror, so it
@@ -4153,7 +4117,7 @@ index 0d295cd8..e74f8ba3 100644
        // top of this session's issue list, so the submitter sees it right away.
        state.issuesView.items = [{
          number: null,
-@@ -5268,6 +6428,36 @@
+@@ -5323,6 +6483,36 @@
        </label>`;
    }
  
@@ -4190,7 +4154,7 @@ index 0d295cd8..e74f8ba3 100644
    function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
      const isPulls = kind === "pulls";
      const config = repoCollectionConfig[kind];
-@@ -5285,39 +6475,48 @@
+@@ -5340,39 +6530,48 @@
  
      return `
        <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
@@ -4209,7 +4173,7 @@ index 0d295cd8..e74f8ba3 100644
 -              </span>
 -              <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
 -                <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
--                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
+-                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
 -              </span>
 -            </label>
 -            <div class="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
@@ -4236,7 +4200,7 @@ index 0d295cd8..e74f8ba3 100644
 +                </span>
 +                <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
 +                  <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-+                  <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
++                  <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
 +                </span>
 +              </label>
 +              ${isPulls
@@ -4269,7 +4233,7 @@ index 0d295cd8..e74f8ba3 100644
            </div>
          </div>
        </section>`;
-@@ -5339,7 +6538,7 @@
+@@ -5399,7 +6598,7 @@
      // the /dashboard/owner/name... path that 404.html bounces refreshed repo
      // links (including /owner/name/issues etc.) to. Carry over whatever tab or
      // tree/blob suffix the incoming URL already pointed at instead of
@@ -4278,7 +4242,7 @@ index 0d295cd8..e74f8ba3 100644
      // tab would lose its place and land back on Code. Only trust that suffix
      // when the URL is actually addressing THIS repo already (a fresh open from
      // the repo list/sidebar while some other repo's tab URL is showing should
-@@ -5383,9 +6582,13 @@
+@@ -5443,9 +6642,13 @@
        agents: { label: "Agents", icon: "bot", count: "" },
      };
      const canSeeAgentsTab = sessionCanAssignAgent(repo);
@@ -4293,7 +4257,7 @@ index 0d295cd8..e74f8ba3 100644
            <div class="grid gap-4 border-b border-border p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
              <div class="min-w-0">
                <div class="flex min-w-0 flex-wrap items-center gap-2">
-@@ -5397,6 +6600,24 @@
+@@ -5457,6 +6660,24 @@
                <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
              </div>
              <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
@@ -4318,7 +4282,7 @@ index 0d295cd8..e74f8ba3 100644
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
-@@ -5418,10 +6639,11 @@
+@@ -5484,10 +6705,11 @@
  	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
  		          <div class="min-w-0">
  		            <section data-dashboard-repo-tab-panel="code">
@@ -4332,7 +4296,7 @@ index 0d295cd8..e74f8ba3 100644
  		              </div>
  		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
  			                <div class="flex min-w-0 items-center gap-2">
-@@ -5430,11 +6652,12 @@
+@@ -5496,11 +6718,12 @@
  			                </div>
  		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
  		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
@@ -4347,7 +4311,7 @@ index 0d295cd8..e74f8ba3 100644
  		                  <div class="flex h-11 items-center gap-2 border-b border-border bg-secondary/40 px-3 text-sm font-semibold text-foreground">
  		                    <i data-lucide="panel-left" class="h-3.5 w-3.5 text-muted-foreground"></i>
  		                    Files
-@@ -5446,7 +6669,7 @@
+@@ -5512,7 +6735,7 @@
  		                  <div data-repo-explorer-tree class="max-h-[35rem] overflow-auto py-2"></div>
  		                </aside>
  		                <div data-repo-code-main class="min-w-0">
@@ -4356,7 +4320,7 @@ index 0d295cd8..e74f8ba3 100644
  	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
  	                      <div class="flex min-w-0 items-center gap-2">
  	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
-@@ -5461,7 +6684,7 @@
+@@ -5527,7 +6750,7 @@
  	                      <span></span>
  	                      <span>Name</span>
  	                      <span class="hidden sm:block">Last commit message</span>
@@ -4365,7 +4329,7 @@ index 0d295cd8..e74f8ba3 100644
  	                    </div>
  	                    <div data-repo-tree></div>
  	                  </div>
-@@ -5496,7 +6719,7 @@
+@@ -5562,7 +6785,7 @@
              <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
              ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
            </div>
@@ -4374,7 +4338,7 @@ index 0d295cd8..e74f8ba3 100644
              <div class="flex items-center justify-between gap-3">
                <h3 class="text-sm font-semibold text-foreground">About</h3>
                ${canEditAbout
-@@ -5610,14 +6833,13 @@
+@@ -5677,14 +6900,13 @@
        .map(([label, value]) => `
          <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono">
            <span class="text-muted-foreground">${escapeHtml(label)}</span>
@@ -4390,7 +4354,7 @@ index 0d295cd8..e74f8ba3 100644
      const count = $("[data-network-node-count]");
      const recent = rows.slice(0, 6);
      const onlineCount = rows.filter((row) => row.online).length;
-@@ -5639,18 +6861,6 @@
+@@ -5706,18 +6928,6 @@
          `).join("")
          : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
      }
@@ -4409,7 +4373,7 @@ index 0d295cd8..e74f8ba3 100644
    }
  
    async function renderNetwork() {
-@@ -5681,10 +6891,6 @@
+@@ -5748,10 +6958,6 @@
        $("[data-network-repos]") && ($("[data-network-repos]").textContent = formatCount(repos));
        $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
        $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
@@ -4420,7 +4384,7 @@ index 0d295cd8..e74f8ba3 100644
  
        // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
        // that are online right now. Online nodes sort first and always appear even
-@@ -5725,8 +6931,6 @@
+@@ -5792,8 +6998,6 @@
      } catch (_) {
        $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
          '<div class="px-4 py-3 text-sm text-muted-foreground">Network data is unavailable right now.</div>');
@@ -4429,7 +4393,7 @@ index 0d295cd8..e74f8ba3 100644
      } finally {
        window.lucide?.createIcons();
      }
-@@ -5839,6 +7043,7 @@
+@@ -5906,6 +7110,7 @@
        state.notifications = [];
        state.notificationUnread = 0;
        renderNotificationPreview();
@@ -4437,7 +4401,7 @@ index 0d295cd8..e74f8ba3 100644
        return;
      }
      try {
-@@ -5851,6 +7056,7 @@
+@@ -5918,6 +7123,7 @@
      }
      renderNotificationPreview();
      renderNotificationModal();
@@ -4445,7 +4409,7 @@ index 0d295cd8..e74f8ba3 100644
    }
  
    function setNotificationDropdownOpen(open) {
-@@ -5891,7 +7097,7 @@
+@@ -5958,7 +7164,7 @@
    }
  
    async function renderAppVersion() {
@@ -4454,7 +4418,7 @@ index 0d295cd8..e74f8ba3 100644
      // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
      // var) next to the logo. Best-effort: stay hidden if the endpoint or version
      // is unavailable so the header never shows a broken "v".
-@@ -5908,6 +7114,76 @@
+@@ -5975,6 +7181,76 @@
      }
    }
  
@@ -4531,7 +4495,7 @@ index 0d295cd8..e74f8ba3 100644
    async function init() {
      const session = readSession();
      state.session = session;
-@@ -5935,22 +7211,35 @@
+@@ -6002,22 +7278,35 @@
      }
  
      renderProfile(session || { nodeName: "guest" });
@@ -4571,7 +4535,7 @@ index 0d295cd8..e74f8ba3 100644
        }
      } catch (_) {
        state.repositoriesLoading = false;
-@@ -5961,6 +7250,8 @@
+@@ -6028,6 +7317,8 @@
          list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
        }
        renderSidebarRepositories(session);
@@ -4580,7 +4544,7 @@ index 0d295cd8..e74f8ba3 100644
      }
      renderNetwork();
    }
-@@ -5972,19 +7263,24 @@
+@@ -6039,19 +7330,24 @@
        return;
      }
  
@@ -4612,7 +4576,7 @@ index 0d295cd8..e74f8ba3 100644
        return;
      }
  
-@@ -6033,6 +7329,12 @@
+@@ -6100,6 +7396,12 @@
        return;
      }
  
@@ -4625,7 +4589,7 @@ index 0d295cd8..e74f8ba3 100644
      const appearanceThemeButton = event.target.closest("[data-appearance-theme]");
      if (appearanceThemeButton) {
        saveDashboardTheme(appearanceThemeButton.dataset.appearanceTheme);
-@@ -6067,6 +7369,28 @@
+@@ -6134,6 +7436,28 @@
        return;
      }
  
@@ -4654,7 +4618,7 @@ index 0d295cd8..e74f8ba3 100644
      if (event.target.closest("[data-profile-save]")) {
        saveProfile();
        return;
-@@ -6148,6 +7472,9 @@
+@@ -6215,6 +7539,9 @@
      if (!event.target.closest("[data-repo-branch-control]")) {
        closeRepoBranchMenus();
      }
@@ -4664,7 +4628,7 @@ index 0d295cd8..e74f8ba3 100644
  
      const sectionButton = event.target.closest("[data-section]");
      if (sectionButton) {
-@@ -6170,6 +7497,13 @@
+@@ -6237,6 +7564,13 @@
        updateRepositoryPagination();
      }
  
@@ -4678,7 +4642,7 @@ index 0d295cd8..e74f8ba3 100644
        const openButton = event.target.closest("[data-dashboard-open-repo]");
        if (openButton) {
          const nestedControl = event.target.closest("a, button, input, textarea, select, [contenteditable='true']");
-@@ -6369,7 +7703,7 @@
+@@ -6436,7 +7770,7 @@
          return;
        }
  
@@ -4687,7 +4651,7 @@ index 0d295cd8..e74f8ba3 100644
        // Toggle: clicking a selected agent returns to the list (issue #375).
        const agentOpenButton = event.target.closest("[data-repo-agent-open]");
        if (agentOpenButton && state.selectedRepo) {
-@@ -6443,6 +7777,41 @@
+@@ -6510,6 +7844,41 @@
      state.page = 1;
      applyRepositoryFilter();
    });
@@ -4729,7 +4693,7 @@ index 0d295cd8..e74f8ba3 100644
    $("[data-repo-prev]")?.addEventListener("click", () => {
      state.page -= 1;
      updateRepositoryPagination();
-@@ -6451,11 +7820,6 @@
+@@ -6518,11 +7887,6 @@
      state.page += 1;
      updateRepositoryPagination();
    });
@@ -4741,7 +4705,7 @@ index 0d295cd8..e74f8ba3 100644
  
  	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
  	    event.stopPropagation();
-@@ -6465,6 +7829,13 @@
+@@ -6532,6 +7896,13 @@
  	    showSection("profile");
  	    closeMobileDrawers();
  	  });
@@ -4755,7 +4719,7 @@ index 0d295cd8..e74f8ba3 100644
    $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
    $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
    $("[data-profile-save]")?.addEventListener("click", saveProfile);
-@@ -6495,12 +7866,22 @@
+@@ -6567,12 +7938,22 @@
  
    document.addEventListener("keydown", (event) => {
      const typingTarget = event.target?.matches?.("input, textarea, select, [contenteditable='true']");
@@ -4778,7 +4742,7 @@ index 0d295cd8..e74f8ba3 100644
  	      closeMobileDrawers();
  	      return;
  	    }
-@@ -6544,7 +7925,7 @@
+@@ -6616,7 +7997,7 @@
        state.selectedRepo = null;
        // Restore whichever section the URL points at (Back out of a repo into
        // Network/Profile, or forward into one) rather than snapping to repos.
@@ -4787,7 +4751,7 @@ index 0d295cd8..e74f8ba3 100644
        return;
      }
      if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-@@ -6569,6 +7950,5 @@
+@@ -6641,6 +8022,5 @@
  
    applyDashboardTheme(readDashboardTheme());
    renderLongDiffPreference();
@@ -4795,7 +4759,7 @@ index 0d295cd8..e74f8ba3 100644
    init();
  })();
 diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
-index be42b088..5d3fd03b 100644
+index e6c60118..5d3fd03b 100644
 --- a/cloudflare_worker/public/dashboard/index.html
 +++ b/cloudflare_worker/public/dashboard/index.html
 @@ -35,7 +35,7 @@
@@ -5411,7 +5375,9 @@ index be42b088..5d3fd03b 100644
 -                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/meshcore &middot; 2h ago</p>
 -                  </div>
 -                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
--                </div>
++                  <button data-section="profile-overview" data-nav-link class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></button>
++                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                 </div>
 -                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
 -                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #fbbf2412; border: 1px solid #fbbf2425">
 -                    <i data-lucide="star" class="w-3.5 h-3.5" style="color: #fbbf24"></i>
@@ -5421,9 +5387,7 @@ index be42b088..5d3fd03b 100644
 -                    <p class="text-xs text-muted-foreground/60 mt-0.5 font-mono">you/mesh-ui &middot; 4h ago</p>
 -                  </div>
 -                  <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"></i>
-+                  <button data-section="profile-overview" data-nav-link class="min-w-0 truncate text-left text-sm font-semibold text-foreground hover:text-accent"><span data-home-user-name>forkmesh</span></button>
-+                  <i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-                 </div>
+-                </div>
 -                <div class="group flex items-start gap-3 px-3 py-3 rounded-lg hover:bg-secondary transition-colors cursor-pointer">
 -                  <div class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style="background: #4ade8012; border: 1px solid #4ade8025">
 -                    <i data-lucide="git-commit" class="w-3.5 h-3.5" style="color: #4ade80"></i>
@@ -6730,16 +6694,16 @@ index be42b088..5d3fd03b 100644
                  </div>
                </div>
              </div>
-@@ -1566,85 +1597,6 @@
+@@ -1566,49 +1597,6 @@
          </div>
        </main>
  
 -
--      <aside id="networkRail" data-dashboard-network-rail aria-label="Network and chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
+-      <aside id="networkRail" data-dashboard-network-rail aria-label="Chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
 -        <div class="flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
 -          <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
--            <i data-lucide="activity" class="h-3.5 w-3.5 text-primary"></i>
--            Network
+-            <i data-lucide="message-circle" class="h-3.5 w-3.5 text-primary"></i>
+-            Chat
 -          </span>
 -          <div class="flex items-center gap-3">
 -            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
@@ -6751,42 +6715,6 @@ index be42b088..5d3fd03b 100644
 -            </button>
 -          </div>
 -        </div>
--        <div class="border-b border-border px-4 py-3 shrink-0">
--          <div class="hidden items-center justify-between mb-3 lg:flex">
--            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
--              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
--              Network
--            </span>
--            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
--              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
--              live
--            </span>
--          </div>
--
--          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
--            </div>
--          </div>
--
--          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
--            <div class="text-xs text-muted-foreground">Loading recent network...</div>
--          </div>
--        </div>
--
 -        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
 -          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
 -            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
@@ -6816,7 +6744,7 @@ index be42b088..5d3fd03b 100644
  	    </div>
  	    </div>
  
-@@ -1687,7 +1639,7 @@
+@@ -1651,7 +1639,7 @@
  
            <label class="grid gap-1.5 text-xs text-muted-foreground">
              Current password
@@ -6825,7 +6753,7 @@ index be42b088..5d3fd03b 100644
            </label>
  
            <p data-profile-hint class="min-h-4 text-xs text-muted-foreground"></p>
-@@ -1696,7 +1648,39 @@
+@@ -1660,7 +1648,39 @@
            </button>
  	        </div>
  	      </div>
@@ -6866,7 +6794,7 @@ index be42b088..5d3fd03b 100644
  
      <div
        id="notificationModal"
-@@ -1724,6 +1708,7 @@
+@@ -1688,6 +1708,7 @@
        </div>
      </div>
  
@@ -6874,7 +6802,7 @@ index be42b088..5d3fd03b 100644
  	    <script>
        const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
  
-@@ -1835,6 +1820,8 @@
+@@ -1799,6 +1820,8 @@
        }
  
        function setSection(section) {
@@ -6883,7 +6811,7 @@ index be42b088..5d3fd03b 100644
          document.querySelectorAll("[data-view]").forEach((view) => {
            view.classList.toggle("active", view.dataset.view === section);
          });
-@@ -1847,24 +1834,10 @@
+@@ -1811,24 +1834,10 @@
          });
        }
  
@@ -6909,7 +6837,7 @@ index be42b088..5d3fd03b 100644
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
 diff --git a/cloudflare_worker/public/dashboard/js/01-state.js b/cloudflare_worker/public/dashboard/js/01-state.js
-index 5d819823..e2fdd988 100644
+index 363be8b9..0b64651d 100644
 --- a/cloudflare_worker/public/dashboard/js/01-state.js
 +++ b/cloudflare_worker/public/dashboard/js/01-state.js
 @@ -39,13 +39,26 @@
@@ -8649,7 +8577,7 @@ index a6f2ed71..06b6fa3c 100644
    }
  
 diff --git a/cloudflare_worker/public/dashboard/js/06-repo-content.js b/cloudflare_worker/public/dashboard/js/06-repo-content.js
-index 73522272..7567e103 100644
+index 5dae0fe5..8769c970 100644
 --- a/cloudflare_worker/public/dashboard/js/06-repo-content.js
 +++ b/cloudflare_worker/public/dashboard/js/06-repo-content.js
 @@ -72,12 +72,13 @@
@@ -8850,7 +8778,7 @@ index 73522272..7567e103 100644
      // the detail straight from the local placeholder instead.
      const pendingItem = kind === "issues"
        ? state.issuesView.items.find((item) => item.pending && item.localId === number)
-@@ -969,7 +1014,7 @@
+@@ -1024,7 +1069,7 @@
      }
    }
  
@@ -8859,7 +8787,7 @@ index 73522272..7567e103 100644
    // the only account whose node can actually pick an "assign to agent" issue up
    // and run a coding agent on it.
    function sessionOwnsRepo(repo) {
-@@ -1164,7 +1209,7 @@
+@@ -1219,7 +1264,7 @@
            <button type="submit" data-repo-agent-prompt-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-3.5 w-3.5"></i>Send</button>
          </form>
          <span data-repo-agent-prompt-hint class="text-[11px] text-muted-foreground"></span>`
@@ -8868,7 +8796,7 @@ index 73522272..7567e103 100644
        </div>`;
    }
  
-@@ -1176,7 +1221,7 @@
+@@ -1231,7 +1276,7 @@
      return `
        <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
          <form data-repo-agent-new-form class="flex flex-col gap-2 bg-secondary/30 px-4 py-3">
@@ -8877,7 +8805,7 @@ index 73522272..7567e103 100644
            <div class="flex items-center gap-2">
              <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
                ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-@@ -1242,14 +1287,14 @@
+@@ -1297,14 +1342,14 @@
        });
        const data = await response.json().catch(() => ({}));
        if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
@@ -8894,7 +8822,7 @@ index 73522272..7567e103 100644
        if (atBottom) current.scrollTop = current.scrollHeight;
        const statusEl = $("[data-repo-agent-status]");
        if (statusEl && data.status) {
-@@ -1340,7 +1385,7 @@
+@@ -1395,7 +1440,7 @@
        setHint(
          code === "text_required" ? "Write a message before sending."
            : code === "text_too_long" ? "Message is too long."
@@ -8903,7 +8831,7 @@ index 73522272..7567e103 100644
            : code === "not_authorized" ? "You don't have permission to send messages."
              : "Could not send the message. Please try again.",
          "bad");
-@@ -1386,14 +1431,14 @@
+@@ -1441,14 +1486,14 @@
          throw new Error(data.error || `HTTP ${response.status}`);
        }
        if (input) input.value = "";
@@ -8921,7 +8849,7 @@ index 73522272..7567e103 100644
              : "Could not start the agent. Please try again.",
          "bad");
 diff --git a/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js b/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
-index 480d62b9..f6eda013 100644
+index cbd528eb..7b15cbbf 100644
 --- a/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
 +++ b/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
 @@ -27,7 +27,7 @@
@@ -9025,7 +8953,7 @@ index 480d62b9..f6eda013 100644
 -              </span>
 -              <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
 -                <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
--                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
+-                <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
 -              </span>
 -            </label>
 -            <div class="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
@@ -9052,7 +8980,7 @@ index 480d62b9..f6eda013 100644
 +                </span>
 +                <span class="inline-flex min-w-0 flex-1 items-center gap-2 px-3">
 +                  <i data-lucide="search" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
-+                  <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : "is:issue is:open"}" placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
++                  <input data-repo-filter-query="${kind}" type="search" spellcheck="false" value="${isPulls ? "is:pr is:open" : escapeHtml(state.issuesView.query || "")}" placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}" class="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" />
 +                </span>
 +              </label>
 +              ${isPulls
@@ -9086,10 +9014,10 @@ index 480d62b9..f6eda013 100644
          </div>
        </section>`;
 diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-index 378ad401..f9a1f7e4 100644
+index 14a3ea02..07123e95 100644
 --- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
 +++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-@@ -15,7 +15,7 @@
+@@ -20,7 +20,7 @@
      // the /dashboard/owner/name... path that 404.html bounces refreshed repo
      // links (including /owner/name/issues etc.) to. Carry over whatever tab or
      // tree/blob suffix the incoming URL already pointed at instead of
@@ -9098,7 +9026,7 @@ index 378ad401..f9a1f7e4 100644
      // tab would lose its place and land back on Code. Only trust that suffix
      // when the URL is actually addressing THIS repo already (a fresh open from
      // the repo list/sidebar while some other repo's tab URL is showing should
-@@ -59,9 +59,13 @@
+@@ -64,9 +64,13 @@
        agents: { label: "Agents", icon: "bot", count: "" },
      };
      const canSeeAgentsTab = sessionCanAssignAgent(repo);
@@ -9113,7 +9041,7 @@ index 378ad401..f9a1f7e4 100644
            <div class="grid gap-4 border-b border-border p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
              <div class="min-w-0">
                <div class="flex min-w-0 flex-wrap items-center gap-2">
-@@ -73,6 +77,24 @@
+@@ -78,6 +82,24 @@
                <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
              </div>
              <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
@@ -9138,7 +9066,7 @@ index 378ad401..f9a1f7e4 100644
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
                <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
-@@ -94,10 +116,11 @@
+@@ -105,10 +127,11 @@
  	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
  		          <div class="min-w-0">
  		            <section data-dashboard-repo-tab-panel="code">
@@ -9152,7 +9080,7 @@ index 378ad401..f9a1f7e4 100644
  		              </div>
  		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
  			                <div class="flex min-w-0 items-center gap-2">
-@@ -106,11 +129,12 @@
+@@ -117,11 +140,12 @@
  			                </div>
  		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
  		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
@@ -9167,7 +9095,7 @@ index 378ad401..f9a1f7e4 100644
  		                  <div class="flex h-11 items-center gap-2 border-b border-border bg-secondary/40 px-3 text-sm font-semibold text-foreground">
  		                    <i data-lucide="panel-left" class="h-3.5 w-3.5 text-muted-foreground"></i>
  		                    Files
-@@ -122,7 +146,7 @@
+@@ -133,7 +157,7 @@
  		                  <div data-repo-explorer-tree class="max-h-[35rem] overflow-auto py-2"></div>
  		                </aside>
  		                <div data-repo-code-main class="min-w-0">
@@ -9176,7 +9104,7 @@ index 378ad401..f9a1f7e4 100644
  	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
  	                      <div class="flex min-w-0 items-center gap-2">
  	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
-@@ -137,7 +161,7 @@
+@@ -148,7 +172,7 @@
  	                      <span></span>
  	                      <span>Name</span>
  	                      <span class="hidden sm:block">Last commit message</span>
@@ -9185,7 +9113,7 @@ index 378ad401..f9a1f7e4 100644
  	                    </div>
  	                    <div data-repo-tree></div>
  	                  </div>
-@@ -172,7 +196,7 @@
+@@ -183,7 +207,7 @@
              <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
              ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
            </div>
@@ -9194,7 +9122,7 @@ index 378ad401..f9a1f7e4 100644
              <div class="flex items-center justify-between gap-3">
                <h3 class="text-sm font-semibold text-foreground">About</h3>
                ${canEditAbout
-@@ -286,14 +310,13 @@
+@@ -298,14 +322,13 @@
        .map(([label, value]) => `
          <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono">
            <span class="text-muted-foreground">${escapeHtml(label)}</span>
@@ -9210,7 +9138,7 @@ index 378ad401..f9a1f7e4 100644
      const count = $("[data-network-node-count]");
      const recent = rows.slice(0, 6);
      const onlineCount = rows.filter((row) => row.online).length;
-@@ -315,18 +338,6 @@
+@@ -327,18 +350,6 @@
          `).join("")
          : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
      }
@@ -9229,7 +9157,7 @@ index 378ad401..f9a1f7e4 100644
    }
  
    async function renderNetwork() {
-@@ -357,10 +368,6 @@
+@@ -369,10 +380,6 @@
        $("[data-network-repos]") && ($("[data-network-repos]").textContent = formatCount(repos));
        $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
        $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
@@ -9240,7 +9168,7 @@ index 378ad401..f9a1f7e4 100644
  
        // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
        // that are online right now. Online nodes sort first and always appear even
-@@ -401,8 +408,6 @@
+@@ -413,8 +420,6 @@
      } catch (_) {
        $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
          '<div class="px-4 py-3 text-sm text-muted-foreground">Network data is unavailable right now.</div>');
@@ -9249,7 +9177,7 @@ index 378ad401..f9a1f7e4 100644
      } finally {
        window.lucide?.createIcons();
      }
-@@ -515,6 +520,7 @@
+@@ -527,6 +532,7 @@
        state.notifications = [];
        state.notificationUnread = 0;
        renderNotificationPreview();
@@ -9257,7 +9185,7 @@ index 378ad401..f9a1f7e4 100644
        return;
      }
      try {
-@@ -527,6 +533,7 @@
+@@ -539,6 +545,7 @@
      }
      renderNotificationPreview();
      renderNotificationModal();
@@ -9265,7 +9193,7 @@ index 378ad401..f9a1f7e4 100644
    }
  
    function setNotificationDropdownOpen(open) {
-@@ -567,7 +574,7 @@
+@@ -579,7 +586,7 @@
    }
  
    async function renderAppVersion() {
@@ -9274,7 +9202,7 @@ index 378ad401..f9a1f7e4 100644
      // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
      // var) next to the logo. Best-effort: stay hidden if the endpoint or version
      // is unavailable so the header never shows a broken "v".
-@@ -584,6 +591,76 @@
+@@ -596,6 +603,76 @@
      }
    }
  
@@ -9351,7 +9279,7 @@ index 378ad401..f9a1f7e4 100644
    async function init() {
      const session = readSession();
      state.session = session;
-@@ -611,22 +688,35 @@
+@@ -623,22 +700,35 @@
      }
  
      renderProfile(session || { nodeName: "guest" });
@@ -9391,7 +9319,7 @@ index 378ad401..f9a1f7e4 100644
        }
      } catch (_) {
        state.repositoriesLoading = false;
-@@ -637,6 +727,8 @@
+@@ -649,6 +739,8 @@
          list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Repository catalog is temporarily unavailable.</div>';
        }
        renderSidebarRepositories(session);
@@ -9400,7 +9328,7 @@ index 378ad401..f9a1f7e4 100644
      }
      renderNetwork();
    }
-@@ -648,19 +740,24 @@
+@@ -660,19 +752,24 @@
        return;
      }
  
@@ -9432,7 +9360,7 @@ index 378ad401..f9a1f7e4 100644
        return;
      }
  
-@@ -709,6 +806,12 @@
+@@ -721,6 +818,12 @@
        return;
      }
  
@@ -9445,7 +9373,7 @@ index 378ad401..f9a1f7e4 100644
      const appearanceThemeButton = event.target.closest("[data-appearance-theme]");
      if (appearanceThemeButton) {
        saveDashboardTheme(appearanceThemeButton.dataset.appearanceTheme);
-@@ -743,6 +846,28 @@
+@@ -755,6 +858,28 @@
        return;
      }
  
@@ -9474,7 +9402,7 @@ index 378ad401..f9a1f7e4 100644
      if (event.target.closest("[data-profile-save]")) {
        saveProfile();
        return;
-@@ -824,6 +949,9 @@
+@@ -836,6 +961,9 @@
      if (!event.target.closest("[data-repo-branch-control]")) {
        closeRepoBranchMenus();
      }
@@ -9484,7 +9412,7 @@ index 378ad401..f9a1f7e4 100644
  
      const sectionButton = event.target.closest("[data-section]");
      if (sectionButton) {
-@@ -846,6 +974,13 @@
+@@ -858,6 +986,13 @@
        updateRepositoryPagination();
      }
  
@@ -9498,7 +9426,7 @@ index 378ad401..f9a1f7e4 100644
        const openButton = event.target.closest("[data-dashboard-open-repo]");
        if (openButton) {
          const nestedControl = event.target.closest("a, button, input, textarea, select, [contenteditable='true']");
-@@ -1045,7 +1180,7 @@
+@@ -1057,7 +1192,7 @@
          return;
        }
  
@@ -9507,7 +9435,7 @@ index 378ad401..f9a1f7e4 100644
        // Toggle: clicking a selected agent returns to the list (issue #375).
        const agentOpenButton = event.target.closest("[data-repo-agent-open]");
        if (agentOpenButton && state.selectedRepo) {
-@@ -1119,6 +1254,41 @@
+@@ -1131,6 +1266,41 @@
      state.page = 1;
      applyRepositoryFilter();
    });
@@ -9549,7 +9477,7 @@ index 378ad401..f9a1f7e4 100644
    $("[data-repo-prev]")?.addEventListener("click", () => {
      state.page -= 1;
      updateRepositoryPagination();
-@@ -1127,11 +1297,6 @@
+@@ -1139,11 +1309,6 @@
      state.page += 1;
      updateRepositoryPagination();
    });
@@ -9561,7 +9489,7 @@ index 378ad401..f9a1f7e4 100644
  
  	  $("[data-profile-settings-button]")?.addEventListener("click", (event) => {
  	    event.stopPropagation();
-@@ -1141,6 +1306,13 @@
+@@ -1153,6 +1318,13 @@
  	    showSection("profile");
  	    closeMobileDrawers();
  	  });
@@ -9575,7 +9503,7 @@ index 378ad401..f9a1f7e4 100644
    $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
    $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
    $("[data-profile-save]")?.addEventListener("click", saveProfile);
-@@ -1171,12 +1343,22 @@
+@@ -1188,12 +1360,22 @@
  
    document.addEventListener("keydown", (event) => {
      const typingTarget = event.target?.matches?.("input, textarea, select, [contenteditable='true']");
@@ -9598,7 +9526,7 @@ index 378ad401..f9a1f7e4 100644
  	      closeMobileDrawers();
  	      return;
  	    }
-@@ -1220,7 +1402,7 @@
+@@ -1237,7 +1419,7 @@
        state.selectedRepo = null;
        // Restore whichever section the URL points at (Back out of a repo into
        // Network/Profile, or forward into one) rather than snapping to repos.
@@ -9607,7 +9535,7 @@ index 378ad401..f9a1f7e4 100644
        return;
      }
      if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-@@ -1245,6 +1427,5 @@
+@@ -1262,6 +1444,5 @@
  
    applyDashboardTheme(readDashboardTheme());
    renderLongDiffPreference();
@@ -11207,15 +11135,15 @@ index 99aabf87..d193a909 100644
 +    </div>
 diff --git a/cloudflare_worker/public/dashboard/partials/network-rail.html b/cloudflare_worker/public/dashboard/partials/network-rail.html
 deleted file mode 100644
-index 51fd5a8a..00000000
+index 5479ab7c..00000000
 --- a/cloudflare_worker/public/dashboard/partials/network-rail.html
 +++ /dev/null
-@@ -1,78 +0,0 @@
--      <aside id="networkRail" data-dashboard-network-rail aria-label="Network and chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
+@@ -1,42 +0,0 @@
+-      <aside id="networkRail" data-dashboard-network-rail aria-label="Chat" class="w-72 shrink-0 border-l border-border flex-col h-full bg-card hidden lg:flex">
 -        <div class="flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
 -          <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
--            <i data-lucide="activity" class="h-3.5 w-3.5 text-primary"></i>
--            Network
+-            <i data-lucide="message-circle" class="h-3.5 w-3.5 text-primary"></i>
+-            Chat
 -          </span>
 -          <div class="flex items-center gap-3">
 -            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
@@ -11227,42 +11155,6 @@ index 51fd5a8a..00000000
 -            </button>
 -          </div>
 -        </div>
--        <div class="border-b border-border px-4 py-3 shrink-0">
--          <div class="hidden items-center justify-between mb-3 lg:flex">
--            <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
--              <i data-lucide="activity" class="w-3.5 h-3.5 text-primary"></i>
--              Network
--            </span>
--            <span class="flex items-center gap-1 text-[10px] text-primary font-mono">
--              <i data-lucide="circle" class="w-1.5 h-1.5 fill-primary animate-pulse"></i>
--              live
--            </span>
--          </div>
--
--          <div data-network-rail-summary class="grid grid-cols-2 gap-2">
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-hosts class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Nodes</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-repos class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Repos</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-clients class="text-sm font-semibold text-foreground font-mono">...</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Relays</p>
--            </div>
--            <div class="rounded-md bg-background border border-border px-3 py-2">
--              <p data-network-rail-uptime class="text-sm font-semibold text-foreground font-mono">Live</p>
--              <p class="text-[10px] text-muted-foreground mt-0.5">Uptime</p>
--            </div>
--          </div>
--
--          <div data-network-rail-nodes class="mt-3 flex flex-col gap-1.5">
--            <div class="text-xs text-muted-foreground">Loading recent network...</div>
--          </div>
--        </div>
--
 -        <div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
 -          <span class="text-xs font-medium text-foreground flex items-center gap-1.5">
 -            <i data-lucide="hash" class="w-3.5 h-3.5 text-muted-foreground"></i>
@@ -12017,7 +11909,7 @@ index 6b64424b..86d5189c 100644
 -    assert 'src="/dashboard.js"' in shell
 +    assert 'src="/dashboard.js?v=github-settings-tabs"' in shell
 diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-index 895c2921..376d37d4 100644
+index 5551ee2b..18a79571 100644
 --- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
 +++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
 @@ -31,12 +31,13 @@ def test_dashboard_shell_is_split_into_composable_partials():
@@ -12036,7 +11928,7 @@ index 895c2921..376d37d4 100644
  
      # The served files are prebuilt static assets, with no runtime include pass.
      composed = assembled_dashboard()
-@@ -62,17 +63,17 @@ def test_dashboard_exposes_live_hydration_targets():
+@@ -62,10 +63,11 @@ def test_dashboard_exposes_live_hydration_targets():
      dashboard = _read(PUBLIC / "dashboard" / "index.html")
  
      assert dashboard == _read(PUBLIC / "dashboard.html")
@@ -12049,14 +11941,23 @@ index 895c2921..376d37d4 100644
          "data-sidebar-repo-list",
          "data-sidebar-repo-count",
          "data-logout-button",
-         "data-repo-count",
-         "data-network-node-list",
-         "data-network-summary",
--        "data-network-rail-summary",
+@@ -75,11 +77,11 @@ def test_dashboard_exposes_live_hydration_targets():
      ):
          assert marker in dashboard
  
-@@ -95,32 +96,39 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
+-    # The right rail is chat-only now: its network stats duplicated what the
+-    # repo live-mirror / network section already shows, so the rail summary
+-    # block was removed and only the mini chat remains.
++    # The persistent network rail (and its mini chat widget) is gone: network
++    # stats live in the Network section and chat is now its own dashboard
++    # section/route, not a sidebar rail.
+     assert "data-network-rail-summary" not in dashboard
+-    assert 'id="sideChatMessages"' in dashboard
++    assert 'id="sideChatMessages"' not in dashboard
+ 
+     for placeholder in (
+         'data-repo="you/meshcore"',
+@@ -100,32 +102,39 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
      assert '<span class="hidden sm:inline">Get paid to mirror</span>' in dashboard
  
  
@@ -12110,7 +12011,7 @@ index 895c2921..376d37d4 100644
      assert 'font-family: "ForkMesh Dashboard Mono"' in dashboard
      assert 'mono: ["ForkMesh Dashboard Mono", "ui-monospace", "SFMono-Regular", "monospace"]' in dashboard
      assert "fonts.googleapis.com" not in dashboard
-@@ -196,7 +204,7 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
+@@ -201,7 +210,7 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
  def test_dashboard_loads_profile_once_without_periodic_polling():
      dashboard_js = _read(PUBLIC / "dashboard.js")
  
@@ -12119,7 +12020,7 @@ index 895c2921..376d37d4 100644
      assert "await loadNotifications();" in dashboard_js
      assert "function startProfileSync()" not in dashboard_js
      assert "async function pollStatus(" not in dashboard_js
-@@ -204,28 +212,380 @@ def test_dashboard_loads_profile_once_without_periodic_polling():
+@@ -209,28 +218,380 @@ def test_dashboard_loads_profile_once_without_periodic_polling():
      assert "setInterval(" not in dashboard_js
  
  
@@ -12518,7 +12419,7 @@ index 895c2921..376d37d4 100644
  
  
  def test_dashboard_has_mobile_responsive_navigation_drawers():
-@@ -238,25 +598,98 @@ def test_dashboard_has_mobile_responsive_navigation_drawers():
+@@ -243,25 +604,98 @@ def test_dashboard_has_mobile_responsive_navigation_drawers():
          "data-mobile-menu-toggle",
          "data-mobile-sidebar-backdrop",
          "data-dashboard-sidebar",
@@ -12623,7 +12524,7 @@ index 895c2921..376d37d4 100644
  
  
  def test_dashboard_has_scoped_light_dark_appearance_controls():
-@@ -393,6 +826,36 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
+@@ -398,6 +832,36 @@ def test_dashboard_repository_cards_are_clickable_metric_summaries():
      assert "Copy clone" not in card
  
  
@@ -12660,7 +12561,7 @@ index 895c2921..376d37d4 100644
  def test_dashboard_repository_detail_uses_github_like_inner_layout():
      dashboard_js = _read(PUBLIC / "dashboard.js")
      render = dashboard_js[
-@@ -415,6 +878,28 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
+@@ -420,6 +884,28 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
      assert 'icon = isPulls ? "git-pull-request" : "circle-dot"' in dashboard_js
  
  
@@ -12689,7 +12590,7 @@ index 895c2921..376d37d4 100644
  def test_dashboard_about_links_readme_activity_and_owner_edit():
      dashboard_js = _read(PUBLIC / "dashboard.js")
      render = dashboard_js[
-@@ -484,31 +969,6 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
+@@ -489,31 +975,6 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
      assert 'button.classList.toggle("bg-secondary", active);' not in tab_state
  
  
@@ -12721,7 +12622,7 @@ index 895c2921..376d37d4 100644
  def test_dashboard_repository_folder_icons_are_grey():
      dashboard_js = _read(PUBLIC / "dashboard.js")
      tree_loader = dashboard_js[
-@@ -675,7 +1135,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
+@@ -680,7 +1141,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
      assert 'entry.message || entry.commitMessage || "mirrored repository object"' not in tree_loader
  
  
@@ -12730,7 +12631,7 @@ index 895c2921..376d37d4 100644
      dashboard_js = _read(PUBLIC / "dashboard.js")
      render = dashboard_js[
          dashboard_js.index("function renderRepoDetail")
-@@ -684,10 +1144,18 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
+@@ -689,12 +1150,20 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
  
      for marker in (
          "function renderRepoCollectionPanel(kind, repo, openCount, closedCount)",
@@ -12738,7 +12639,9 @@ index 895c2921..376d37d4 100644
          'data-repo-collection-toolbar="${kind}"',
          'data-repo-filter-menu="${kind}"',
          'data-repo-filter-query="${kind}"',
-         'placeholder="${kind === "pulls" ? "is:pr is:open" : "is:issue is:open"}"',
+         # Issues actually wires the search box (pulls stays a static "is:pr
+         # is:open" placeholder; only issue search was requested).
+         'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
 +        "New issue",
 +        "New pull request",
 +        "Assigned to me",
@@ -12749,7 +12652,7 @@ index 895c2921..376d37d4 100644
          "Author",
          "Labels",
          "Projects",
-@@ -700,8 +1168,6 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
+@@ -707,8 +1176,6 @@ def test_dashboard_repository_issue_and_pull_tabs_use_filter_toolbars_without_cr
  
      assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
      assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
@@ -12758,7 +12661,7 @@ index 895c2921..376d37d4 100644
  
  
  def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom():
-@@ -764,7 +1230,7 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
+@@ -771,7 +1238,7 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
      assert 'data-dashboard-open-repo="${escapeHtml(key)}" role="link"' in dashboard_js
      assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
      # The Clone availability chip keys off the group-liveness verdict (`live`,
@@ -12767,7 +12670,7 @@ index 895c2921..376d37d4 100644
      # neutral GitHub-like foreground/muted colors, never the accent primary.
      assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
      assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
-@@ -794,6 +1260,27 @@ def test_dashboard_repository_records_open_live_markdown_detail_views():
+@@ -801,6 +1268,27 @@ def test_dashboard_repository_records_open_live_markdown_detail_views():
      assert "fetchJson(`${repoApiBase(repo)}/discussions" not in dashboard_js
  
  
@@ -12795,7 +12698,7 @@ index 895c2921..376d37d4 100644
  def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
      dashboard_js = _read(PUBLIC / "dashboard.js")
  
-@@ -918,14 +1405,14 @@ def test_worker_routes_repo_about_catalog_update_for_source_owner():
+@@ -925,14 +1413,14 @@ def test_worker_routes_repo_about_catalog_update_for_source_owner():
      ]
  
  
@@ -12812,7 +12715,7 @@ index 895c2921..376d37d4 100644
      for marker in (
          "data-repo-file-finder-open",
          "data-repo-file-finder",
-@@ -1165,7 +1652,7 @@ def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
+@@ -1172,7 +1660,7 @@ def test_worker_routes_raw_repository_blobs_through_private_gated_host_tunnel():
      assert 'return await self._raw_blob(rel_path, ref)' in ENTRY_TEXT
      assert 'op": "raw-blob"' in ENTRY_TEXT
      # Raw blobs stream chunk-by-chunk through the tunnel (never reassembled in
@@ -12821,7 +12724,7 @@ index 895c2921..376d37d4 100644
      # keeping the same content-type headers repo_blob_bytes_response used.
      assert '"content-type": repo_blob_content_type(rel_path),' in ENTRY_TEXT
      assert "response, err = await self._stream_request(" in ENTRY_TEXT
-@@ -1299,7 +1786,7 @@ def test_clean_marketing_routes_target_static_pages():
+@@ -1306,7 +1794,7 @@ def test_clean_marketing_routes_target_static_pages():
  def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
      # A /:owner/:repo rule in _redirects matches real two-segment static assets
      # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
@@ -12831,7 +12734,7 @@ index 895c2921..376d37d4 100644
      # Worker-owned with explicit asset-prefix exceptions, so guard against the
      # redirect rule's return.
 diff --git a/cloudflare_worker/tests/test_issue_filter_frontend.py b/cloudflare_worker/tests/test_issue_filter_frontend.py
-index d2e573d1..2243bd6e 100644
+index ce6dd694..2d0b346d 100644
 --- a/cloudflare_worker/tests/test_issue_filter_frontend.py
 +++ b/cloudflare_worker/tests/test_issue_filter_frontend.py
 @@ -100,9 +100,9 @@ def test_homepage_links_to_active_nodes():
@@ -12847,20 +12750,30 @@ index d2e573d1..2243bd6e 100644
      assert "async function fetchRepoBlobs(repo, paths)" in DASHBOARD_JS
      assert "/blobs?" in DASHBOARD_JS
 diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
-index 98484603..b6e798bf 100644
+index 9c5ba6ea..d61c8684 100644
 --- a/cloudflare_worker/tests/test_login_key_binding.py
 +++ b/cloudflare_worker/tests/test_login_key_binding.py
-@@ -153,8 +153,9 @@ def _login_harness(rec):
-             "_save_account": _save_account,
-             "_is_admin": _is_admin,
+@@ -158,7 +158,7 @@ def _login_harness(rec):
              "_account_public_payload": _account_public_payload,
-+            "_account_session_token": lambda _env, name: "session-token:" + str(name),
+             "_account_session_token": _account_session_token,
              "_admin_session_cookie": lambda _env, _name: "admin-session",
 -            "_clear_admin_session_cookie": lambda: "forkmesh_admin=; Path=/; Max-Age=0",
 +            "_clear_admin_session_cookie": lambda: "clear-admin-session",
              "json_response": _json_response,
              "Date": _Date,
              "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",
+diff --git a/cloudflare_worker/tests/test_mirror_serving_frontend.py b/cloudflare_worker/tests/test_mirror_serving_frontend.py
+index 85ae0f1b..6b3baa03 100644
+--- a/cloudflare_worker/tests/test_mirror_serving_frontend.py
++++ b/cloudflare_worker/tests/test_mirror_serving_frontend.py
+@@ -71,7 +71,6 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
+     transformed = DASHBOARD_JS.replace(
+         "  applyDashboardTheme(readDashboardTheme());\n"
+         "  renderLongDiffPreference();\n"
+-        "  setRepositoryViewMode(readRepositoryViewMode(), { persist: false });\n"
+         "  init();",
+         """  globalThis.__dashboardExports = {
+     state,
 diff --git a/cloudflare_worker/tests/test_poll_digest.py b/cloudflare_worker/tests/test_poll_digest.py
 index c0ef50f4..03e3dc42 100644
 --- a/cloudflare_worker/tests/test_poll_digest.py
