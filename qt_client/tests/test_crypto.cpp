@@ -484,6 +484,20 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(3, titleVec) == expectedTitle,
           "title-event canonical string matches the cross-language vector");
 
+    // "delete" event (used to delete a comment, or "self" to tombstone the
+    // whole issue): content is just the target event id. Pin it so the client
+    // and the worker's issue_event_content stay byte-identical.
+    IssueEvent deleteVec;
+    deleteVec.type = "delete";
+    deleteVec.author = "TESTPUB";
+    deleteVec.ts = 3000;
+    deleteVec.target = "comment-abc123";
+    const QByteArray expectedDelete =
+        "forkmesh-issue-event-v1\ndelete\n7\nTESTPUB\n3000\n"
+        "3f7946e4dbf24af4c78058a30f4221dcf4379c5b62dbf1a3f5f17e8039b6ea95";
+    check(IssueStore::canonicalString(7, deleteVec) == expectedDelete,
+          "delete-event canonical string matches the cross-language vector");
+
     // --- PR conversation event signing -----------------------------------
     // Pin the canonical byte format so the C++ client and the worker's
     // verify_pull_comment_event stay byte-identical. The number is bound.
@@ -985,6 +999,24 @@ int main(int argc, char *argv[])
         check(sawAgentAssign, "agent assignment event round-trips");
         check(sawAgentClear, "agent clear event round-trips");
         check(loaded.first().status == "closed", "status reflects close event");
+
+        // Deleting a comment appends a signed "delete" event targeting the
+        // comment's id; the comment event itself is left in place (folding it
+        // out of the UI is a render-time concern) so history is preserved.
+        const QString commentId = loaded.first().events.at(1).id;
+        check(repo.deleteEvent(n, commentId, &err), "deleteEvent succeeds");
+        const QList<Issue> afterCommentDelete = repo.loadAll();
+        const Issue &withDeletedComment = afterCommentDelete.first();
+        check(withDeletedComment.number == n,
+              "issue with a deleted comment still loads");
+        bool sawDeleteEvent = false;
+        for (const IssueEvent &e : withDeletedComment.events)
+            if (e.type == "delete" && e.target == commentId)
+                sawDeleteEvent = true;
+        check(sawDeleteEvent,
+              "delete event targeting the comment id round-trips from issue JSON");
+        check(!withDeletedComment.isDeleted(),
+              "deleting a single comment does not tombstone the whole issue");
 
         // Fast "regular" delete: a tombstone hides the issue from every list but
         // leaves its history intact in git (and recoverable).
