@@ -2560,6 +2560,7 @@ private:
     // history survives a restart and can be narrowed to one event type. Filter
     // chips are rebuilt as new categories appear.
     QString logBadgeFor(const QString &storedLine) const; // category of a line
+    QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
     QString networkLogPath() const; // on-disk path for the persisted log

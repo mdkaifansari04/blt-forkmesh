@@ -67,6 +67,44 @@ QString describeNewCrashes(const QString &path, qint64 seenOffset, qint64 *newSi
     return msg;
 }
 
+// ForkMesh is event-driven: every HTTP request fires in response to some
+// action/event (a relay sync frame, a catalog publish, an agent poll…). The
+// finished() choke point only sees the reply, so we recover *what drove it*
+// from the endpoint it hit — the most reliable signal available there — and
+// tag the verbose network-log line with it so the traffic reads as events
+// rather than opaque URLs (adhoc #19). Order most-specific first.
+QString networkRequestEventFor(const QUrl &url)
+{
+    const QString path = url.path();
+    struct Route {
+        const char *needle;
+        const char *event;
+    };
+    static const Route routes[] = {
+        {"/api/sync", "relay sync"},
+        {"/api/repositories", "catalog publish"},
+        {"/agents", "agent poll"},
+        {"/issues", "issue fetch"},
+        {"/pulls", "pull fetch"},
+        {"/releases", "release fetch"},
+        {"/mirrors", "mirror sync"},
+        {"/api/repo/", "repo fetch"},
+        {"/api/version", "version check"},
+        {"/api/telemetry", "telemetry"},
+        {"/api/network", "network stats"},
+        {"/api/security", "security report"},
+        {"/api/forkbot", "forkbot chat"},
+        {"/api/chat", "chat"},
+        {"/api/accounts", "account"},
+        {"/api/oauth", "account"},
+    };
+    for (const Route &r : routes) {
+        if (path.contains(QLatin1String(r.needle)))
+            return QString::fromLatin1(r.event);
+    }
+    return QStringLiteral("request");
+}
+
 } // namespace
 
 MainWindow::~MainWindow()
@@ -197,8 +235,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                     status = code.isValid() ? code.toString()
                                             : QStringLiteral("done");
                 }
-                logSystem(QStringLiteral("net %1 %2 %3")
-                              .arg(verb, status, reply->url().toString()));
+                logSystem(QStringLiteral("net %1 %2 %3 \xC2\xB7 %4")
+                              .arg(verb, status, reply->url().toString(),
+                                   networkRequestEventFor(reply->url())));
             });
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
     m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
