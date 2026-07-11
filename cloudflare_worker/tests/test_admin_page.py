@@ -68,3 +68,13 @@ def test_admin_accounts_table_can_migrate_account_kind():
     assert "elif action == \"migrate_account\":" in ENTRY_TEXT
     assert "_admin_migrate_account_kind(" in ENTRY_TEXT
     assert "event.submitter" in ENTRY_TEXT
+
+
+def test_admin_accounts_table_has_migrate_verified_users_button():
+    # One-click bulk migration of verified-email accounts into the users table.
+    assert "def _admin_migrate_verified_users" in ENTRY_TEXT
+    assert 'action="migrate_verified_users"' in ENTRY_TEXT
+    assert "elif action == \"migrate_verified_users\":" in ENTRY_TEXT
+    assert "Migrate all verified-email users into users" in ENTRY_TEXT
+    # Making a user/node drains the legacy accounts row.
+    assert "DELETE FROM accounts WHERE name_bi=?" in ENTRY_TEXT
