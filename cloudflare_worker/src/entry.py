@@ -2871,16 +2871,24 @@ async def catalog_handler(env, request):
             cached = await edge_cache_match(CATALOG_CACHE_KEY)
             if cached is not None:
                 return cached
-        # Drop any blocked phantom entries from D1 before listing (idempotent,
-        # only runs on a cache miss).
-        try:
-            await purge_blocked_catalog(env)
-        except Exception:
-            pass
-        try:
-            await purge_stale_registered_nodes(env)
-        except Exception:
-            pass
+        # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
+        # only on the cheap, edge-cached anonymous miss. The response is already
+        # correct without it — blocked entries are skipped by
+        # _is_blocked_catalog_identity and stale ones by the active-node filter
+        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # authenticated (per-viewer, never-cached) request must NOT run these:
+        # replaying a burst of DELETEs plus host-offline notifications inline on
+        # every catalog load held the single Worker event loop long enough for
+        # the runtime to cancel the request as hung ("Cannot enter into task").
+        if not authed_viewer:
+            try:
+                await purge_blocked_catalog(env)
+            except Exception:
+                pass
+            try:
+                await purge_stale_registered_nodes(env)
+            except Exception:
+                pass
         try:
             active_nodes = await active_registered_node_bis(env)
         except Exception:
@@ -16675,7 +16683,11 @@ class ForkMeshHost(DurableObject):
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
-        repo_bi = await self._repo_blind_index(path) if path else self._repo_bi
+        try:
+            repo_bi = (await self._repo_blind_index(path) if path
+                       else self._repo_bi)
+        except Exception:
+            return
         if not repo_bi:
             return
         if getattr(self, "_blocked_presence", False):
@@ -16687,6 +16699,25 @@ class ForkMeshHost(DurableObject):
             pass
 
     async def fetch(self, request):
+        # Nothing above Default.fetch's try/except sees an exception raised in
+        # here: the router awaits a DO *stub*, so the Python traceback dies
+        # inside this isolate and Cloudflare logs only a bare
+        # "outcome: exception" for the request (adhoc #17: git-upload-pack
+        # POSTs failing with no diagnostics anywhere). Capture the real stack
+        # to Sentry ourselves, then answer 503 like the router's other
+        # DO-abort paths — retryable, feeds the mirror fallback, and gives git
+        # clients a readable error instead of an Error 1101 page.
+        try:
+            return await self._fetch_inner(request)
+        except Exception as error:
+            try:
+                await capture_worker_exception(
+                    self.env, request, urlparse(request.url), error)
+            except BaseException:
+                pass
+            return Response("Host tunnel error.", status=503)
+
+    async def _fetch_inner(self, request):
         self._ensure()
         url = urlparse(request.url)
         path = url.path
