@@ -2759,6 +2759,9 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"quick update started", "#f2cc60", "SESSION"},
         {"rebuild & restart started", "#f2cc60", "SESSION"},
         {"restarting now", "#f2cc60", "SESSION"},
+        // Firewall messages mention "ForkMesh's ports" — keep above "fork" so
+        // they don't get swept into the FORK badge by that substring.
+        {"firewall", "#f2cc60", "NETWORK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -2768,6 +2771,10 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"funded", "#d29922", "BOUNTY"},
         {"mirror", "#39c5cf", "MIRROR"},
         {"sync", "#39c5cf", "SYNC"},
+        // Split the fork lifecycle the same way pull requests split into
+        // PULL (opened) vs MERGE (closed) — "forked into" (done) above the
+        // generic "fork" (in progress / location) so they read distinctly.
+        {"forked into", "#3fb950", "FORKED"},
         {"fork", "#3fb950", "FORK"},
         {"publish", "#58a6ff", "PUBLISH"},
         {"push", "#58a6ff", "GIT"},
@@ -2909,9 +2916,9 @@ void MainWindow::rebuildLogFilterButtons()
     addChip(QStringLiteral("All"), QString());
     // Show present categories in a stable, readable order.
     static const char *order[] = {
-        "SESSION", "NODE",   "FORK",  "MIRROR",   "SYNC",  "GIT",
+        "SESSION", "NODE",   "FORK",  "FORKED", "MIRROR",   "SYNC",  "GIT",
         "PUBLISH", "PULL",   "MERGE", "ISSUE",    "BOUNTY", "WALLET",
-        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "ERROR",
+        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
     };
     for (const char *b : order) {
