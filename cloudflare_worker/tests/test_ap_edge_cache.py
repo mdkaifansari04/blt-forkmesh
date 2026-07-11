@@ -334,3 +334,126 @@ def test_broadcast_actor_update_drops_cached_actor_doc():
     _run(ns["_ap_broadcast_actor_update"](
         None, _fake_request(actor_url), "user", "alice"))
     assert actor_url not in edge.store
+
+
+# --- Media endpoints (issue #416 round 3) ------------------------------------------
+# Every remote server that resolves the repo actor fetches its avatar/banner,
+# and every server receiving a Note fetches its image attachments — the last
+# unauthenticated fetch surfaces that still hit D1 on every request.
+
+class FakeJsResponse:
+    @staticmethod
+    def new(body, init):
+        return FakeResponse(body, status=200)
+
+
+def _media_globals(edge, d1_log):
+    globs = _base_globals(edge, d1_log)
+
+    async def edge_cache_match_media(key, fallback_type):
+        return edge.store.get(key)
+
+    async def decrypt_row(env, data):
+        return data
+
+    globs.update({
+        "edge_cache_match_media": edge_cache_match_media,
+        "decrypt_row": decrypt_row,
+        "JsResponse": FakeJsResponse,
+        "to_js": lambda v: v,
+        "_to_js": lambda v: v,
+        "base64": __import__("base64"),
+    })
+    return globs
+
+
+def _object_media_env(edge, d1_log):
+    import base64 as b64
+    globs = _media_globals(edge, d1_log)
+
+    async def d1_first(env, sql, *args):
+        d1_log.append(sql)
+        return {"data": {"media": [
+            {"mediaType": "image/png",
+             "data": b64.b64encode(b"png-bytes").decode()}]}}
+
+    globs["d1_first"] = d1_first
+    return _load("ap_object_media_handler", extra_globals=globs)
+
+
+def test_object_media_cold_hit_stores_and_warm_hit_skips_d1():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _object_media_env(edge, d1_log)
+    uuid = "a" * 32
+    request = _fake_request(
+        "https://forkmesh.com/ap/o/%s/media/0" % uuid)
+    first = _run(ns["ap_object_media_handler"](None, request, uuid, "0"))
+    assert first.status == 200
+    key = "https://forkmesh.com/ap/o/%s/media/0" % uuid
+    assert edge.puts == [key]
+    d1_log.clear()
+    second = _run(ns["ap_object_media_handler"](None, request, uuid, "0"))
+    assert second is first
+    assert d1_log == []
+
+
+def test_object_media_missing_index_is_not_cached():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _object_media_env(edge, d1_log)
+    uuid = "b" * 32
+    resp = _run(ns["ap_object_media_handler"](
+        None, _fake_request("https://forkmesh.com/ap/o/%s/media/5" % uuid),
+        uuid, "5"))
+    assert resp.status == 404
+    assert edge.store == {}
+
+
+def _repo_media_env(edge, d1_log, has_media=True):
+    import base64 as b64
+    globs = _media_globals(edge, d1_log)
+
+    async def _repo_is_private(env, owner, repo):
+        return False
+
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def d1_first(env, sql, *args):
+        d1_log.append(sql)
+        if not has_media:
+            return None
+        return {"data": {"png": b64.b64encode(b"logo-bytes").decode()}}
+
+    globs.update({
+        "_repo_is_private": _repo_is_private,
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+    })
+    return _load("repo_media_handler", extra_globals=globs)
+
+
+def test_repo_media_cold_hit_stores_under_versioned_url():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _repo_media_env(edge, d1_log)
+    url = "https://forkmesh.com/api/repo/forkmesh/forkmesh/media/logo.png?v=7"
+    first = _run(ns["repo_media_handler"](
+        None, _fake_request(url), "forkmesh", "forkmesh", "logo"))
+    assert first.status == 200
+    assert edge.puts == [url]  # the ?v= buster is part of the key
+    d1_log.clear()
+    second = _run(ns["repo_media_handler"](
+        None, _fake_request(url), "forkmesh", "forkmesh", "logo"))
+    assert second is first
+    assert d1_log == []
+
+
+def test_repo_media_not_found_is_not_cached():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _repo_media_env(edge, d1_log, has_media=False)
+    resp = _run(ns["repo_media_handler"](
+        None,
+        _fake_request(
+            "https://forkmesh.com/api/repo/forkmesh/forkmesh/media/logo.png"),
+        "forkmesh", "forkmesh", "logo"))
+    assert resp.status == 404
+    assert edge.store == {}
