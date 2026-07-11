@@ -7398,24 +7398,13 @@
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
               <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
             </div>
-            <div class="mt-5 border-t border-border pt-4">
-	              <h4 class="text-xs font-semibold text-foreground">Repository metadata</h4>
-	              <dl class="mt-3 grid gap-3 text-xs">
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Channel</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.channel || "general")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Source</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.source || "desktop")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Maintainer</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.maintainer || repo.owner || "unknown")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Updated</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(updatedAt)}</dd></div>
-	              </dl>
-	            </div>
-		            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
-		              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
-		              <dl class="mt-3 grid gap-3 text-xs">
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Data</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatSize(repo.sizeBytes))}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${live ? "text-foreground" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "available" : "offline"}</dd></div>
-		              </dl>
-		              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
-		            </div>
+            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
+              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
+              <dl class="mt-3 grid gap-3 text-xs">
+                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
+              </dl>
+              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
+            </div>
           </aside>
         </div>
       </div>`;
