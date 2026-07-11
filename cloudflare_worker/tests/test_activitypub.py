@@ -298,6 +298,20 @@ def test_note_and_create_activity():
     assert activity["to"] == note["to"]
 
 
+def test_note_doc_attachments_default_empty_and_pass_through():
+    bare = ap.note_doc(
+        "https://forkmesh.com/ap/o/1", "https://forkmesh.com/ap/repos/o/r",
+        "https://forkmesh.com/ap/repos/o/r/followers", "<p>hi</p>", 1000)
+    assert bare["attachment"] == []
+    note = ap.note_doc(
+        "https://forkmesh.com/ap/o/1", "https://forkmesh.com/ap/repos/o/r",
+        "https://forkmesh.com/ap/repos/o/r/followers", "<p>hi</p>", 1000,
+        attachments=[ap.image_object("https://forkmesh.com/ap/o/1/media/0")])
+    assert note["attachment"] == [
+        {"type": "Image", "mediaType": "image/png",
+         "url": "https://forkmesh.com/ap/o/1/media/0"}]
+
+
 def test_accept_activity_is_deterministic():
     follow = {"id": "https://mastodon.social/x/follow/1", "type": "Follow",
               "actor": "https://mastodon.social/users/bob",
@@ -397,6 +411,35 @@ def test_event_note_text_truncates_body():
         "", "https://x", max_body=100)
     assert "…" in text
     assert len(text) < 400
+
+
+def test_extract_body_images_pulls_data_url_and_strips_markdown():
+    body = "See this:\n![shot](data:image/png;base64,%s)\nthanks" % ("A" * 40)
+    text, images = ap.extract_body_images(body)
+    assert "data:" not in text
+    assert "![shot]" not in text
+    assert text == "See this:\n\nthanks"
+    assert images == [{"mediaType": "image/png", "data": "A" * 40}]
+
+
+def test_extract_body_images_leaves_non_data_images_and_plain_text():
+    body = "before ![ext](https://example.com/x.png) after, no images here"
+    text, images = ap.extract_body_images(body)
+    assert text == body
+    assert images == []
+
+
+def test_extract_body_images_caps_count_and_rejects_bad_payloads():
+    good = "data:image/png;base64,%s" % ("A" * 40)
+    body = "\n".join("![n](%s)" % good for _ in range(6))
+    text, images = ap.extract_body_images(body, max_images=4)
+    assert len(images) == 4
+    assert text.strip() == ""
+    # Malformed base64 and non-image mediaType are both dropped, not stored.
+    bad_body = "![a](data:image/png;base64,not-base64!!) ![b](data:text/plain;base64,QQ==)"
+    text, images = ap.extract_body_images(bad_body)
+    assert images == []
+    assert "data:" not in text
 
 
 # --- Domain blocklist ----------------------------------------------------------
