@@ -142,7 +142,9 @@ def _run_sample(error_paths=(), host_online=True, db_ok=True, error_rows=None):
 
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_host():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
-    assert set(results) == {"website", "api", "database", "git_hosting", "realtime"}
+    assert set(results) == {
+        "website", "api", "database", "git_hosting", "realtime", "durable_objects",
+    }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
 
@@ -189,6 +191,22 @@ def test_git_clone_and_room_errors_are_bucketed_as_realtime():
     assert results["website"] == 0
     assert results["api"] == 0
     assert "info/refs" in reasons["realtime"]
+
+
+def test_do_duration_abort_fails_its_own_bucket_and_realtime():
+    # A free-tier DO duration abort is a real room failure (still counts
+    # toward "realtime"), but must also have its own dedicated bucket so it's
+    # visible as its own row on /status instead of hiding among other
+    # realtime incidents.
+    results, reasons, _minutes = _run_sample(error_rows=[
+        {"path": "/api/repo/mainnode/forkmesh/rooms/general/ws", "status": 503,
+         "message": "durable object aborted: Exceeded allowed duration in "
+                     "Durable Objects free tier."},
+    ])
+    assert results["durable_objects"] == 1
+    assert results["realtime"] == 1
+    assert results["api"] == 0
+    assert "Exceeded allowed duration" in reasons["durable_objects"]
 
 
 def test_reason_includes_status_and_message_and_extra_count():
@@ -863,7 +881,7 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 5
+    assert len(out["systems"]) == 6
 
 
 def test_status_page_renders_current_state_grid():

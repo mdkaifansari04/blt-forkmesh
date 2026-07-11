@@ -258,6 +258,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_MEDIA_RE,
 )
 
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
@@ -452,6 +453,11 @@ LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+# Repo branding (fediverse actor avatar/header). Each image lives in its own
+# encrypted repo_media row, so the caps only need to keep ONE image (b64 +
+# AES-GCM + b64 again ≈ 1.8x raw) under D1's 2 MB per-value limit.
+MAX_REPO_LOGO_BYTES = 256 * 1024
+MAX_REPO_BANNER_BYTES = 1024 * 1024
 
 
 def valid_node_name(value):
@@ -1207,12 +1213,17 @@ async def network_overview(env):
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
+#   - durable_objects: room requests killed by Cloudflare's free-tier DO
+#     duration cap (log_durable_object_abort), tracked separately from the
+#     rest of "realtime" so plan-limit aborts have their own visible history
+#     instead of being buried in general realtime noise.
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
+    ("durable_objects", "Durable Objects (free-tier duration limit)"),
 ]
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
@@ -1336,15 +1347,29 @@ async def record_status_sample(env):
             env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
             now - STATUS_SAMPLE_WINDOW_MS,
         )
-        failed = {"website": False, "api": False, "realtime": False}
-        first_hit = {"website": None, "api": None, "realtime": None}
-        hit_count = {"website": 0, "api": 0, "realtime": 0}
+        failed = {"website": False, "api": False, "realtime": False, "durable_objects": False}
+        first_hit = {"website": None, "api": None, "realtime": None, "durable_objects": None}
+        hit_count = {"website": 0, "api": 0, "realtime": 0, "durable_objects": 0}
         for row in rows:
             path = str(row.get("path") or "")
+            message = str(row.get("message") or "")
             try:
                 row_status = int(row.get("status") or 0)
             except (TypeError, ValueError):
                 row_status = 0
+            # A DO duration-cap abort is a real room failure, so it still
+            # counts toward "realtime" below — but it also gets its own
+            # bucket so free-tier plan-limit aborts have a dedicated, visible
+            # history instead of being buried among other realtime incidents.
+            # Matches both the tagged 503s log_durable_object_abort records
+            # and the raw AbortError tracebacks capture_worker_exception logs
+            # for DO calls that aren't wrapped in a retry (same substring the
+            # doDurationAborts24h snapshot below keys on).
+            if "Exceeded allowed duration" in message:
+                failed["durable_objects"] = True
+                hit_count["durable_objects"] += 1
+                if first_hit["durable_objects"] is None:
+                    first_hit["durable_objects"] = (row.get("status"), path, message.strip())
             # 502/503/504 on a host-tunnel content path (release blob, repo
             # browse, git clone) means the one desktop node holding that
             # content is unreachable — node availability, which host_presence
@@ -1366,11 +1391,12 @@ async def record_status_sample(env):
             failed[bucket] = True
             hit_count[bucket] += 1
             if first_hit[bucket] is None:
-                first_hit[bucket] = (row.get("status"), path, str(row.get("message") or "").strip())
+                first_hit[bucket] = (row.get("status"), path, message.strip())
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["realtime"] = not failed["realtime"]
-        for bucket in ("website", "api", "realtime"):
+        ok["durable_objects"] = not failed["durable_objects"]
+        for bucket in ("website", "api", "realtime", "durable_objects"):
             if failed[bucket] and first_hit[bucket]:
                 status_code, path, message = first_hit[bucket]
                 text = (str(status_code) + " on " + path) if status_code else path
@@ -1382,7 +1408,7 @@ async def record_status_sample(env):
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
-        ok["website"] = ok["api"] = ok["realtime"] = True
+        ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -2183,6 +2209,29 @@ def room_key_from_path(pathname):
         "room": room,
         "compat": True,
     }
+
+
+def clean_media_png(value, max_bytes):
+    """clean_avatar_png generalized for repo branding: accepts a bare-base64 or
+    data-URL PNG up to max_bytes raw, returns (normalized_b64, error)."""
+    if not isinstance(value, str):
+        return "", "bad_image"
+    image = value.strip()
+    if image.startswith("data:image/png;base64,"):
+        image = image.split(",", 1)[1].strip()
+    if not image:
+        return "", ""
+    if len(image) > 4 * ((max_bytes + 2) // 3):
+        return "", "image_too_large"
+    try:
+        raw = base64.b64decode(image, validate=True)
+    except Exception:
+        return "", "bad_image"
+    if len(raw) > max_bytes:
+        return "", "image_too_large"
+    if not raw.startswith(PNG_HEADER):
+        return "", "bad_image"
+    return base64.b64encode(raw).decode(), ""
 
 
 def clean_avatar_png(value):
@@ -3113,6 +3162,20 @@ async def repo_about_handler(env, request, owner, repo):
         return json_response({"error": "account_required"}, status=403)
 
     description = clean_string(data.get("description", ""), 240)
+    # Optional repo branding for the fediverse actor (and anything else that
+    # wants it): PNG logo (avatar) + banner (profile header). Absent field =
+    # leave unchanged; empty string = remove. Validated before any write so a
+    # bad image never half-applies the About edit.
+    media_updates = {}
+    for field, kind, cap in (("logoPng", "logo", MAX_REPO_LOGO_BYTES),
+                             ("bannerPng", "banner", MAX_REPO_BANNER_BYTES)):
+        if field not in data:
+            continue
+        png_b64, media_error = clean_media_png(data.get(field), cap)
+        if media_error:
+            return json_response({"error": media_error, "field": field},
+                                 status=400)
+        media_updates[kind] = png_b64
     rows = await d1_all(
         env, "SELECT key_bi, data, is_private FROM repositories")
     updated = 0
@@ -3135,13 +3198,39 @@ async def repo_about_handler(env, request, owner, repo):
             first = record
     if not updated:
         return json_response({"error": "not_found"}, status=404)
+    media_bi = await blind_index(env, str(owner).lower() + "/" + repo)
+    for kind, png_b64 in media_updates.items():
+        if not png_b64:
+            await d1_run(
+                env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
+                media_bi, kind)
+            continue
+        await d1_run(
+            env,
+            "INSERT INTO repo_media (repo_bi, kind, data, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(repo_bi, kind) DO UPDATE SET data=excluded.data,"
+            " updated_at=excluded.updated_at",
+            media_bi, kind, await encrypt_row(env, {"png": png_b64}),
+            int(Date.now()))
     await purge_catalog_related_caches()
+    # Tell existing fediverse followers the profile changed (Update activity),
+    # so the new logo/banner/description shows up on remote servers now, not
+    # whenever their actor cache happens to expire.
+    await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+        env, request, AP_ACTOR_REPO,
+        ap.repo_handle(str(owner).lower(), str(repo).lower())))
     # Return only the fields the caller just set — never the full decrypted
     # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
+    media_rows = await d1_all(
+        env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
+    media_kinds = {r.get("kind") for r in (media_rows or [])}
     return json_response({
         "ok": True,
         "description": description,
         "updated": updated,
+        "hasLogo": "logo" in media_kinds,
+        "hasBanner": "banner" in media_kinds,
         "isPrivate": bool(first and first.get("visibility") == "private"),
     })
 
@@ -5455,6 +5544,11 @@ async def _account_profile(env, request):
 
     if changed:
         await _save_account(env, name_bi, rec)
+        # Fediverse followers of this profile get an Update(Person) so bio
+        # changes propagate to remote servers immediately.
+        await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+            env, request, AP_ACTOR_USER,
+            clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
     payload = await _account_public_payload(env, rec)
     payload["verificationSent"] = bool(verification_sent)
     payload["verificationQueued"] = bool(verification_queued)
@@ -8613,6 +8707,10 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
+# Brand images served from Static Assets, shown as every actor's avatar and
+# profile header on Mastodon-compatible servers.
+AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
+AP_BANNER_PATH = "/assets/fediverse-banner.png"
 
 _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
@@ -8763,14 +8861,17 @@ async def _ap_local_actor(env, kind, handle, create=False):
 
 
 async def _ap_user_federates(env, name):
-    # Mirror the public-profile/follow rules: only active, public user accounts
-    # are visible to the fediverse.
+    # Any active, non-private account federates as a Person — node-owner
+    # accounts included, not just login ("user"-kind) accounts: the node name
+    # is the public authoring identity on issues/PRs, so it is what fediverse
+    # followers expect to find at @name@<domain>. (The web follow API stays
+    # stricter — user-kind targets only — but that gates a login feature, not
+    # public visibility.)
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
     _, rec = await _account_row(env, name)
     return bool(rec and rec.get("status") == "active"
-                and _account_kind(rec) == "user"
                 and not rec.get("profile_private"))
 
 
@@ -8838,6 +8939,69 @@ async def ap_nodeinfo_handler(env, request, index):
     return json_response(doc, cache_seconds=3600)
 
 
+async def _ap_build_actor_doc(env, origin, kind, handle, rec):
+    """The actor document, shared by the GET endpoint and the Update
+    broadcast (profile/branding changes). Returns None when the actor does
+    not federate (missing/private/blocked account or repo)."""
+    # Brand defaults; repos with uploaded branding override below.
+    icon_url = origin + AP_AVATAR_PATH
+    image_url = origin + AP_BANNER_PATH
+    if kind == AP_ACTOR_INSTANCE:
+        return ap.instance_actor_doc(
+            origin, _ap_domain_of(origin), rec["pubkeyPem"],
+            icon_url=icon_url, image_url=image_url)
+    if kind == AP_ACTOR_USER:
+        if not await _ap_user_federates(env, handle):
+            return None
+        actor_type, display = "Person", handle
+        profile_url = origin + "/@" + handle
+        # Surface the account's own bio as the fediverse summary so the
+        # Mastodon profile card mirrors the /@name page.
+        _, account_rec = await _account_row(env, handle)
+        bio = clean_string(
+            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
+        summary = (ap.note_html_from_text(bio) if bio
+                   else "ForkMesh profile of @%s." % handle)
+    else:
+        owner, _, repo = handle.partition(".")
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
+            return None
+        actor_type, display = "Group", owner + "/" + repo
+        profile_url = origin + repo_web_href(owner, repo)
+        # Owner-set About description becomes the fediverse bio.
+        catalog_rec = await decrypt_row(env, repo_row.get("data"))
+        description = clean_string(
+            (catalog_rec or {}).get("description", "") or "", 240).strip()
+        summary = (ap.note_html_from_text(description) if description
+                   else ("ForkMesh repository %s/%s. Follow for new issues, "
+                         "pull requests, discussions and releases.")
+                   % (owner, repo))
+        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
+        # header. updated_at rides along as a cache-buster so Mastodon
+        # refetches when the image changes.
+        media_rows = await d1_all(
+            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
+                origin, quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
+    return ap.actor_doc(
+        _ap_actor_url(origin, kind, handle), actor_type, handle, display,
+        summary, profile_url, rec["pubkeyPem"],
+        shared_inbox=origin + "/ap/inbox",
+        published_ms=rec.get("createdAt"),
+        icon_url=icon_url, image_url=image_url)
+
+
 async def _ap_actor_doc_response(env, request, kind, handle):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -8845,34 +9009,61 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     origin = _ap_origin(env, request)
-    if kind == AP_ACTOR_USER:
-        if not await _ap_user_federates(env, handle):
+    if kind != AP_ACTOR_INSTANCE:
+        # Cheap federation gate before minting keys for a 404.
+        parsed = await _ap_resolve_local_target(
+            env, origin, _ap_actor_url(origin, kind, handle))
+        if not parsed:
             return json_response({"error": "not_found"}, status=404)
-        actor_type, display = "Person", handle
-        profile_url = origin + "/@" + handle
-        summary = "ForkMesh profile of @%s." % handle
-    elif kind == AP_ACTOR_REPO:
-        owner, _, repo = handle.partition(".")
-        if not await _ap_repo_federates(env, owner, repo):
-            return json_response({"error": "not_found"}, status=404)
-        actor_type, display = "Group", owner + "/" + repo
-        profile_url = origin + repo_web_href(owner, repo)
-        summary = ("ForkMesh repository %s/%s. Follow for new issues, pull "
-                   "requests, discussions and releases.") % (owner, repo)
     rec = await _ap_local_actor(env, kind, handle, create=True)
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
-    if kind == AP_ACTOR_INSTANCE:
-        doc = ap.instance_actor_doc(
-            origin, _ap_domain_of(origin), rec["pubkeyPem"])
-    else:
-        doc = ap.actor_doc(
-            _ap_actor_url(origin, kind, handle), actor_type, handle, display,
-            summary, profile_url, rec["pubkeyPem"],
-            shared_inbox=origin + "/ap/inbox",
-            published_ms=rec.get("createdAt"))
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return json_response({"error": "not_found"}, status=404)
     return json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
+
+
+async def _ap_broadcast_actor_update(env, request, kind, handle):
+    """Push an Update(actor) to every follower so remote servers refetch the
+    profile (avatar/banner/bio) immediately instead of waiting out their
+    cache — this is how a repo's uploaded logo actually appears on Mastodon
+    next to existing followers' timelines."""
+    if not await _ap_enabled(env):
+        return
+    actor_bi = await _ap_actor_bi(env, kind, handle)
+    rec = await _ap_local_actor(env, kind, handle)
+    if not rec:
+        return  # never followed / fetched — nothing to update
+    followers = await d1_all(
+        env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    if not followers:
+        return
+    origin = _ap_origin(env, request)
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return
+    actor_url = _ap_actor_url(origin, kind, handle)
+    now = int(Date.now())
+    body_str = json.dumps(ap.update_activity(actor_url, doc, now))
+    out_data = await encrypt_row(env, {
+        "body": body_str, "actorKind": kind, "actorHandle": handle,
+        "actorUrl": actor_url})
+    seen = set()
+    for follower in followers:
+        inbox = ((follower.get("shared_inbox") or "").strip()
+                 or (follower.get("inbox") or "").strip())
+        if not inbox or inbox in seen:
+            continue
+        seen.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+            " created_at) VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+    await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
 async def ap_collection_handler(env, request, kind, handle, which):
@@ -9416,6 +9607,38 @@ async def ap_inbox_handler(env, request):
 
 
 # --- Client-facing endpoints ----------------------------------------------------
+
+async def repo_media_handler(env, request, owner, repo, media_kind):
+    # Owner-uploaded repo branding, served publicly (it is the repo's fediverse
+    # avatar/header, fetched by every remote server). Same visibility gate as
+    # the actor itself.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+        repo_bi, media_kind)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    png_b64 = (rec or {}).get("png", "")
+    if not png_b64:
+        return json_response({"error": "not_found"}, status=404)
+    try:
+        raw = base64.b64decode(png_b64)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    # The actor document busts caches via ?v=<updated_at>, so long edge/browser
+    # caching here is safe.
+    return JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+        },
+    }))
+
 
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
@@ -14630,6 +14853,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        repo_media_match = REPO_MEDIA_RE.match(url.path)
+        if repo_media_match:
+            owner = safe_segment(repo_media_match.group(1))
+            repo = safe_segment(repo_media_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_media_handler(
+                self.env, request, owner, repo, repo_media_match.group(3))
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:
