@@ -235,6 +235,28 @@ def test_actor_doc_shape():
     assert doc["manuallyApprovesFollowers"] is False
 
 
+def test_actor_doc_attachments_and_property_value():
+    # Profile metadata rows: PropertyValue anchors carrying rel="me" so the
+    # linked page can reciprocate and earn Mastodon's verified check.
+    pv = ap.property_value("Repository", "https://f.c/o/r")
+    assert pv["type"] == "PropertyValue" and pv["name"] == "Repository"
+    assert 'href="https://f.c/o/r"' in pv["value"]
+    assert 'rel="me' in pv["value"]
+    assert ">f.c/o/r</a>" in pv["value"]  # scheme-stripped display label
+    doc = ap.actor_doc(
+        "https://f.c/ap/repos/o/r", "Group", "o.r", "o/r", "",
+        "https://f.c/o/r", "PEM",
+        attachments=[pv, ap.property_value("Relay", "https://f.c")])
+    assert [a["name"] for a in doc["attachment"]] == ["Repository", "Relay"]
+    # No attachments -> no empty attachment key.
+    bare = ap.actor_doc("https://f.c/ap/users/a", "Person", "a", "a", "",
+                        "https://f.c/@a", "PEM")
+    assert "attachment" not in bare
+    # The instance actor advertises its relay too.
+    inst = ap.instance_actor_doc("https://f.c", "f.c", "PEM")
+    assert inst["attachment"][0]["name"] == "Relay"
+
+
 def test_actor_doc_icon_and_banner():
     doc = ap.actor_doc(
         "https://f.c/ap/repos/o/r", "Group", "o.r", "o/r", "", "https://f.c/o/r",

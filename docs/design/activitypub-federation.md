@@ -87,6 +87,14 @@ Every actor ships an avatar (`icon`) and profile header (`image`):
   with a `?v=<updated_at>` cache-buster in the actor document. The About
   `description` doubles as the repo actor's fediverse bio, and a user actor's
   bio comes from their profile `profile_bio`.
+* Profile metadata (verified links): every actor ships `attachment`
+  PropertyValue rows — the canonical page (`Repository` for repo actors,
+  `Profile` for users) and the `Relay` it lives on (origin-derived, so
+  self-hosted relays advertise their own domain). The repo/profile link is
+  Mastodon-verifiable: the served page carries a reciprocal
+  `<link rel="me">` (injected per-repo at serve time by `_serve_repo_page`,
+  and baked into `_public_profile_html`), and since it equals the actor's
+  `url`, Mastodon's link verifier marks the row green.
 * Change propagation: saving the repo About (or a user profile) broadcasts an
   `Update(actor)` activity to all existing followers, so remote servers
   refetch the avatar/header/bio immediately instead of waiting out their
