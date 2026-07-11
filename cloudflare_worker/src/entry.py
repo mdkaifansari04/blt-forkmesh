@@ -16772,7 +16772,11 @@ class ForkMeshHost(DurableObject):
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
-        repo_bi = await self._repo_blind_index(path) if path else self._repo_bi
+        try:
+            repo_bi = (await self._repo_blind_index(path) if path
+                       else self._repo_bi)
+        except Exception:
+            return
         if not repo_bi:
             return
         if getattr(self, "_blocked_presence", False):
@@ -16784,6 +16788,25 @@ class ForkMeshHost(DurableObject):
             pass
 
     async def fetch(self, request):
+        # Nothing above Default.fetch's try/except sees an exception raised in
+        # here: the router awaits a DO *stub*, so the Python traceback dies
+        # inside this isolate and Cloudflare logs only a bare
+        # "outcome: exception" for the request (adhoc #17: git-upload-pack
+        # POSTs failing with no diagnostics anywhere). Capture the real stack
+        # to Sentry ourselves, then answer 503 like the router's other
+        # DO-abort paths — retryable, feeds the mirror fallback, and gives git
+        # clients a readable error instead of an Error 1101 page.
+        try:
+            return await self._fetch_inner(request)
+        except Exception as error:
+            try:
+                await capture_worker_exception(
+                    self.env, request, urlparse(request.url), error)
+            except BaseException:
+                pass
+            return Response("Host tunnel error.", status=503)
+
+    async def _fetch_inner(self, request):
         self._ensure()
         url = urlparse(request.url)
         path = url.path
