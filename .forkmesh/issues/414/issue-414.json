@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783736416,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783736416",
+            "sig": "XrJS7wByz9-5tZUQAGNravqBOgtDRSS_OeO3_jY4mfuArcweIpTi4O_VaSYLRdW9QR0sp12uBRtaWZnhu2S0Dg",
+            "title": "new issue from website to test fediverse",
+            "ts": 1783736416,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 414,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "new issue from website to test fediverse",
+    "updatedAt": 1783736416,
+    "votes": 0
+}

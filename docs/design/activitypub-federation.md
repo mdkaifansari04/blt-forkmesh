@@ -73,6 +73,33 @@ Cost while unused is near zero: actor rows are minted lazily on the first
 WebFinger lookup, so an unfollowed repo's publish path is two indexed
 SELECT misses.
 
+## Branding
+
+Every actor ships an avatar (`icon`) and profile header (`image`):
+
+* Defaults: the brand images at `/assets/fediverse-avatar.png` (400×400) and
+  `/assets/fediverse-banner.png` (1500×500 — Mastodon's exact header size).
+* Per-repo overrides: the repo owner uploads `logoPng` / `bannerPng` (base64
+  PNG, ≤256 KB / ≤1 MB) through the existing About endpoint
+  (`POST /api/repo/{o}/{r}/about`, session-auth, `""` clears). They are stored
+  encrypted in `repo_media` (one row per image so a banner never nears D1's
+  2 MB value cap) and served at `/api/repo/{o}/{r}/media/{logo|banner}.png`
+  with a `?v=<updated_at>` cache-buster in the actor document. The About
+  `description` doubles as the repo actor's fediverse bio, and a user actor's
+  bio comes from their profile `profile_bio`.
+* Change propagation: saving the repo About (or a user profile) broadcasts an
+  `Update(actor)` activity to all existing followers, so remote servers
+  refetch the avatar/header/bio immediately instead of waiting out their
+  actor-cache TTL.
+* Web surface: `GET /api/repo/{o}/{r}/about` (public) returns the description,
+  logo/banner URLs and `{handle, followers}` for the repo actor. The dashboard
+  repo page uses it for the social badge header above About and the Watch
+  button, whose count IS the fediverse follower count (the button opens a
+  follow-from-Mastodon card with the copyable handle). The gear editor
+  uploads/removes the logo and banner and edits the description; the page's
+  displayed About text prefers the repo's committed `.forkmesh/info.json`
+  (about + website), matching the desktop app.
+
 ## Configuration
 
 Operator config is admin-managed (signed admin API, same gate as the relay
