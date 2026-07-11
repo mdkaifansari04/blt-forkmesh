@@ -7602,13 +7602,20 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
             "\".\n\nOpen this link to choose a new password:\n" + link +
             "\n\nThis link expires in 1 hour. If you didn't request a reset, "
             "you can ignore this email — your password won't change.")
-    html = (
-        "<p>A password reset was requested for your ForkMesh node "
-        "<strong>" + name + "</strong>.</p>"
-        "<p><a href=\"" + link + "\">Choose a new password</a></p>"
-        "<p style=\"color:#888;font-size:13px\">This link expires in 1 hour. "
-        "If you didn't request a reset, you can ignore this email — your "
+    safe_name = _html_escape(name or "")
+    safe_link = _html_escape(link)
+    intro = ("A password reset was requested for your ForkMesh node "
+              "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name + "</strong>.")
+    body_html = (
+        "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
+        "style=\"display:inline-block;background:#4ade80;color:#052e16;"
+        "text-decoration:none;border-radius:8px;padding:10px 14px;"
+        "font-size:14px;font-weight:800\">Choose a new password</a></p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">This link "
+        "expires in 1 hour. If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
+    html = _forkmesh_email_card_html("Reset your password", intro, body_html, footer_html)
     return await _send_email(env, email, subject, text, html)
 
 
