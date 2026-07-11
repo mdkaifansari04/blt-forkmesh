@@ -3415,23 +3415,11 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // Only the code tab's root/README view goes full-width (see
-    // setRepoContentFullWidth); every other tab keeps the two-column layout
-    // with the About sidebar. Switching tabs doesn't re-run the tree/blob
-    // loaders that would otherwise restore this, so reset it here.
-    if (tab !== "code") setRepoContentFullWidth(false);
-  }
-
-  // Widens the code tab's content grid to a single column (About sidebar
-  // drops below, full width) while the repository README is showing at the
-  // root of the tree - the README is the thing worth reading, and squeezing
-  // it into a ~1fr column next to the About rail made it cramped.
-  function setRepoContentFullWidth(active) {
-    const detail = $("[data-repo-detail]");
-    const contentGrid = detail?.querySelector("[data-repo-content-grid]");
-    if (!contentGrid) return;
-    contentGrid.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", !active);
-    contentGrid.classList.toggle("xl:grid-cols-1", active);
+    // Every tab keeps the two-column layout with the About sidebar on the
+    // right. (An earlier "full-width README" mode collapsed the code tab's
+    // root view to one column, dropping the About rail below the README —
+    // owner decision 2026-07-11: the rail is a permanent right-hand column;
+    // only the explorer focus mode, which HIDES the rail, may collapse it.)
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
@@ -3598,8 +3586,10 @@
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
-    contentGrid?.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", !active);
-    contentGrid?.classList.toggle("xl:grid-cols-1", active);
+    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
+    // legitimate here because focus mode hides the About rail entirely.
+    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
+    contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
     workspace?.classList.toggle("lg:grid-cols-[13rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("xl:grid-cols-[14rem_minmax(0,1fr)]", active);
@@ -4433,10 +4423,9 @@
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
     setRepoExplorerFocusMode(Boolean(path));
-    // Browsing into a subdirectory already goes full-width via focus mode
-    // above; only the root/README view needs to override its two-column
-    // default separately.
-    if (!path) setRepoContentFullWidth(true);
+    // The root/README view keeps the two-column layout: the About rail is a
+    // permanent right-hand column (the old full-width README override that
+    // dropped it below the content was removed, owner decision 2026-07-11).
     renderRepoBreadcrumb(repo, path);
 
     treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
