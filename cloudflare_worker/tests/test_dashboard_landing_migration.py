@@ -1169,7 +1169,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
     for marker in (
         "QJsonObject commitSummaryForPath",
         '"log", "-1", "--date=format:%Y-%m-%d"',
-        '"--format=%H%x1f%an%x1f%ad%x1f%s"',
+        '"--format=%H%x1f%an%x1f%cd%x1f%s"',
         'args << "--" << path;',
         'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',
         'entry.insert(QStringLiteral("commitMessage"),',
