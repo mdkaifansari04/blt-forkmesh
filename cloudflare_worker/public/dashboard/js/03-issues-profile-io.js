@@ -484,6 +484,9 @@
         : (base.notificationPreferences || {}),
       kind: body.kind || base.kind || "",
       owner: body.owner ?? base.owner ?? "",
+      online: Object.prototype.hasOwnProperty.call(body, "online")
+        ? Boolean(body.online)
+        : Boolean(base.online),
       nodes: Array.isArray(body.nodes) ? body.nodes : (base.nodes || []),
       at: Date.now(),
     };

@@ -256,6 +256,7 @@ from urls import (  # noqa: E402
     AP_REPO_RE,
     AP_REPO_SUB_RE,
     AP_OBJECT_RE,
+    AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
     REPO_MEDIA_RE,
@@ -7601,13 +7602,20 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
             "\".\n\nOpen this link to choose a new password:\n" + link +
             "\n\nThis link expires in 1 hour. If you didn't request a reset, "
             "you can ignore this email — your password won't change.")
-    html = (
-        "<p>A password reset was requested for your ForkMesh node "
-        "<strong>" + name + "</strong>.</p>"
-        "<p><a href=\"" + link + "\">Choose a new password</a></p>"
-        "<p style=\"color:#888;font-size:13px\">This link expires in 1 hour. "
-        "If you didn't request a reset, you can ignore this email — your "
+    safe_name = _html_escape(name or "")
+    safe_link = _html_escape(link)
+    intro = ("A password reset was requested for your ForkMesh node "
+              "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name + "</strong>.")
+    body_html = (
+        "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
+        "style=\"display:inline-block;background:#4ade80;color:#052e16;"
+        "text-decoration:none;border-radius:8px;padding:10px 14px;"
+        "font-size:14px;font-weight:800\">Choose a new password</a></p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">This link "
+        "expires in 1 hour. If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
+    html = _forkmesh_email_card_html("Reset your password", intro, body_html, footer_html)
     return await _send_email(env, email, subject, text, html)
 
 
@@ -8698,7 +8706,7 @@ async def accounts_handler(env, request):
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-        _, rec = await _account_row(env, name)
+        name_bi, rec = await _account_row(env, name)
         if not rec:
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
@@ -8716,6 +8724,16 @@ async def accounts_handler(env, request):
         # periodic self-profile poll (refreshPublicProfile, which reuses this
         # same lookup) can pick up a verification that happened in another
         # tab instead of showing "verify your email" forever (issue #320).
+        kind = _account_kind(rec)
+        online = False
+        if kind == "node":
+            # account_presence is the same heartbeat table the network page
+            # uses for online/offline; the /@name node page shows it as
+            # node-specific info the way a user page shows followers.
+            presence = await d1_first(
+                env, "SELECT ts FROM account_presence WHERE name_bi=?", name_bi)
+            online = bool(presence and int(presence.get("ts") or 0) >=
+                          int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS)
         payload = {"ok": True, "exists": True, "available": not taken,
                    "name": rec.get("name", name), "status": rec.get("status", ""),
                    "pubkey": rec.get("pubkey", ""),
@@ -8724,7 +8742,8 @@ async def accounts_handler(env, request):
                    "avatarPng": rec.get("avatar_png", ""),
                    "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
                    "createdAt": rec.get("created_at", 0),
-                   "kind": _account_kind(rec),
+                   "kind": kind,
+                   "online": online,
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec)}
         # viewer=<name> lets the public-profile page show the caller's own
@@ -8957,12 +8976,20 @@ async def _ap_repo_federates(env, owner, repo):
     return bool(row) and not int(row.get("is_private") or 0)
 
 
+# The unauthenticated ActivityPub read endpoints (webfinger, nodeinfo, actor
+# docs, collections, objects) are what fediverse servers and crawlers hammer
+# in bursts — every server that sees a federated post resolves the actor and
+# its collections, and each of those hits used to reach D1. Under a burst
+# that pressure is what pushed the free-plan worker/D1 into "Too many
+# requests" (issue #416, round two of adhoc #9). They already sent public
+# max-age headers, but dynamic Worker responses are never edge-cached
+# implicitly, so store them in the colo cache explicitly: a burst collapses
+# to one origin computation per colo per TTL. Keyed by the canonical public
+# URL; only successful (200) documents are stored.
+
 async def ap_webfinger_handler(env, request):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
-    await ensure_schema(env)
-    if not await _ap_enabled(env):
-        return _ap_disabled_response()
     params = parse_qs(urlparse(request.url).query)
     handle, domain = ap.parse_acct_resource(params.get("resource", [""])[0])
     if not handle:
@@ -8971,6 +8998,16 @@ async def ap_webfinger_handler(env, request):
     our_domain = _ap_domain_of(origin)
     if domain != our_domain:
         return json_response({"error": "not_found"}, status=404)
+    # Key on the parsed acct (already lowercase-normalized), so the many
+    # spellings of the same resource share one cache entry.
+    cache_key = ("%s/.well-known/webfinger?resource=acct:%s@%s"
+                 % (origin, handle, domain))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
     if handle == our_domain:
         kind, actor_handle, acct_name = (
             AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, our_domain)
@@ -8990,10 +9027,12 @@ async def ap_webfinger_handler(env, request):
             acct_name = actor_handle
     actor_url = _ap_actor_url(origin, kind, actor_handle)
     doc = ap.webfinger_doc(acct_name + "@" + our_domain, actor_url)
-    return json_response(doc, cache_seconds=3600, extra_headers={
+    resp = json_response(doc, cache_seconds=3600, extra_headers={
         "content-type": ap.JRD_CONTENT_TYPE,
         "access-control-allow-origin": "*",
     })
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 # NodeInfo usage counts, cached per isolate. Every fediverse server that hears
@@ -9005,12 +9044,18 @@ NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
 
 
 async def ap_nodeinfo_handler(env, request, index):
+    origin = _ap_origin(env, request)
+    cache_key = origin + ("/.well-known/nodeinfo" if index else "/nodeinfo/2.1")
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
-    origin = _ap_origin(env, request)
     if index:
-        return json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
+        resp = json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
+        await edge_cache_put(cache_key, resp)
+        return resp
     now = int(Date.now())
     if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
         users = await d1_first(env, "SELECT COUNT(*) AS c FROM accounts")
@@ -9023,7 +9068,9 @@ async def ap_nodeinfo_handler(env, request, index):
     doc = ap.nodeinfo_doc(
         _build_rev(env)[:12], _NODEINFO_CACHE["users"],
         _NODEINFO_CACHE["posts"])
-    return json_response(doc, cache_seconds=3600)
+    resp = json_response(doc, cache_seconds=3600)
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 async def _ap_build_actor_doc(env, origin, kind, handle, rec):
@@ -9103,10 +9150,17 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
 async def _ap_actor_doc_response(env, request, kind, handle):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    # Keyed on the canonical actor URL so every route shape that serves this
+    # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
+    # shares one edge entry.
+    cache_key = _ap_actor_url(origin, kind, handle)
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
-    origin = _ap_origin(env, request)
     if kind != AP_ACTOR_INSTANCE:
         # Cheap federation gate before minting keys for a 404.
         parsed = await _ap_resolve_local_target(
@@ -9119,8 +9173,10 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
     if not doc:
         return json_response({"error": "not_found"}, status=404)
-    return json_response(doc, cache_seconds=300, extra_headers={
+    resp = json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 async def _ap_broadcast_actor_update(env, request, kind, handle):
@@ -9134,16 +9190,20 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
     rec = await _ap_local_actor(env, kind, handle)
     if not rec:
         return  # never followed / fetched — nothing to update
+    origin = _ap_origin(env, request)
+    actor_url = _ap_actor_url(origin, kind, handle)
+    # Drop the edge-cached actor doc so refetches see the new profile — even
+    # with no followers to notify, a remote server may hold the URL and poll
+    # it (best-effort: other colos age out within the TTL).
+    await edge_cache_delete(actor_url)
     followers = await d1_all(
         env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
         actor_bi)
     if not followers:
         return
-    origin = _ap_origin(env, request)
     doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
     if not doc:
         return
-    actor_url = _ap_actor_url(origin, kind, handle)
     now = int(Date.now())
     body_str = json.dumps(ap.update_activity(actor_url, doc, now))
     out_data = await encrypt_row(env, {
@@ -9167,10 +9227,14 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
 async def ap_collection_handler(env, request, kind, handle, which):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
+    cached = await edge_cache_match(collection_url)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
-    origin = _ap_origin(env, request)
     if kind == AP_ACTOR_USER and not await _ap_user_federates(env, handle):
         return json_response({"error": "not_found"}, status=404)
     if kind == AP_ACTOR_REPO:
@@ -9189,15 +9253,20 @@ async def ap_collection_handler(env, request, kind, handle, which):
             env, "SELECT COUNT(*) AS c FROM ap_objects WHERE actor_bi=?",
             actor_bi)
         total = (row or {}).get("c", 0) or 0
-    collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
-    return json_response(
+    resp = json_response(
         ap.collection_doc(collection_url, total), cache_seconds=300,
         extra_headers={"content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(collection_url, resp)
+    return resp
 
 
 async def ap_object_handler(env, request, object_uuid):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    cache_key = _ap_origin(env, request) + "/ap/o/" + object_uuid
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -9208,8 +9277,40 @@ async def ap_object_handler(env, request, object_uuid):
         return json_response({"error": "not_found"}, status=404)
     doc = dict(rec["note"])
     doc["@context"] = ap.AS_CONTEXT
-    return json_response(doc, cache_seconds=300, extra_headers={
+    resp = json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def ap_object_media_handler(env, request, object_uuid, index):
+    # Re-serves one image that was embedded as a "data:" URL in the source
+    # issue/comment body, at a real URL — remote servers fetch a Note's
+    # attachment URLs directly and can't resolve a data: URI.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    row = await d1_first(
+        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    media = (rec or {}).get("media") or []
+    idx = int(index)
+    if idx < 0 or idx >= len(media):
+        return json_response({"error": "not_found"}, status=404)
+    item = media[idx]
+    try:
+        raw = base64.b64decode(item.get("data", ""), validate=True)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    return JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": item.get("mediaType", "image/png"),
+            "cache-control": "public, max-age=31536000, immutable",
+        },
+    }))
 
 
 # --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
@@ -9382,9 +9483,13 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     candidates = [(AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower()))]
     if author and valid_node_name(author):
         candidates.append((AP_ACTOR_USER, author))
+    # Attached issue/comment images travel as inline "![name](data:...)"
+    # markdown (there's no separate upload channel); pull them out so they
+    # federate as real Image attachments instead of unrenderable base64 text.
+    clean_body, images = ap.extract_body_images(body or "")
     text = ap.event_note_text(
         kind, event_type, owner, repo, ref, clean_string(title, 240),
-        body or "", author, web_url)
+        clean_body, author, web_url)
     content_html = ap.note_html_from_text(text)
     ckey = ap.context_key(owner, repo, kind, ref)
     context_bi = await blind_index(env, "ap-context:" + ckey)
@@ -9404,12 +9509,19 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
             continue
         actor_url = _ap_actor_url(origin, actor_kind, handle)
         object_uuid = _ap_uuid()
+        attachments = [
+            ap.image_object(
+                "%s/ap/o/%s/media/%d" % (origin, object_uuid, i),
+                media_type=img["mediaType"])
+            for i, img in enumerate(images)]
         note = ap.note_doc(
             origin + "/ap/o/" + object_uuid, actor_url,
-            actor_url + "/followers", content_html, now, web_url=web_url)
+            actor_url + "/followers", content_html, now, web_url=web_url,
+            attachments=attachments)
         rec = {"note": note,
                "context": {"owner": owner, "repo": repo, "kind": kind,
-                           "ref": str(ref), "key": ckey}}
+                           "ref": str(ref), "key": ckey},
+               "media": images}
         await d1_run(
             env,
             "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
@@ -10537,32 +10649,22 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # The card design below is dark-by-default (inline styles), with a
-    # prefers-color-scheme:light override layer applied via classes +
-    # !important so mail clients that honor CSS media queries (Apple Mail,
-    # iOS/Android Gmail, Outlook.com, Fastmail, ...) repaint it to match the
-    # recipient's OS/client theme instead of always forcing a dark card.
-    # Clients that ignore <style> fall back to the inline dark styles,
-    # matching the prior (dark-only) behavior.
-    scheme_style = (
-        "@media (prefers-color-scheme: light){"
-        ".fm-bg{background:#f4f4f5 !important}"
-        ".fm-card{background:#ffffff !important;border-color:#e4e4e7 !important}"
-        ".fm-item{background:#f4f4f5 !important;border-color:#e4e4e7 !important}"
-        ".fm-border{border-color:#e4e4e7 !important}"
-        ".fm-brand,.fm-muted{color:#71717a !important}"
-        ".fm-h1,.fm-strong,.fm-item-title{color:#111114 !important}"
-        ".fm-text,.fm-item-body{color:#3f3f46 !important}"
-        ".fm-link{color:#15803d !important}"
-        "}"
-    )
+    # The card is dark, always. It is painted with inline dark styles AND
+    # declares itself dark-only via <meta name="color-scheme" content="dark">,
+    # so mail clients neither auto-invert it (the way they darken plain light
+    # emails in dark mode) nor repaint it to a light theme. An earlier version
+    # advertised "light dark" with a prefers-color-scheme:light override, but
+    # that override fired in readers whose dark theme doesn't set the OS
+    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
+    # glaringly white while every other email showed dark. Forcing dark keeps
+    # the brand card consistent with the rest of a dark inbox.
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
-        "<style>" + scheme_style + "</style></head>"
-        "<body style=\"margin:0;padding:0\">"
+        "<meta name=\"color-scheme\" content=\"dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "</head>"
+        "<body style=\"margin:0;padding:0;background:#090909\">"
         "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
         "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
@@ -15121,6 +15223,11 @@ class Default(WorkerEntrypoint):
                 self.env, request, AP_ACTOR_REPO,
                 ap.repo_handle(ap_owner.lower(), ap_repo_name.lower()),
                 ap_repo_sub.group(3))
+        ap_object_media_match = AP_OBJECT_MEDIA_RE.match(url.path)
+        if ap_object_media_match:
+            return await ap_object_media_handler(
+                self.env, request, ap_object_media_match.group(1),
+                ap_object_media_match.group(2))
         ap_object_match = AP_OBJECT_RE.match(url.path)
         if ap_object_match:
             return await ap_object_handler(
