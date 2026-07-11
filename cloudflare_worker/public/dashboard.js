@@ -5479,7 +5479,9 @@
     });
   }
 
-  async function saveRepoAboutFromWeb(repo, description) {
+  async function saveRepoAboutFromWeb(repo, description, media = {}) {
+    // media may carry logoPng / bannerPng (data-URL PNG, "" = remove). Only
+    // keys actually present are sent, so an untouched image stays unchanged.
     const response = await fetch(`${repoApiBase(repo)}/about`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5487,6 +5489,7 @@
         ownerAccount: state.session?.nodeName || "",
         sessionToken: state.session?.sessionToken || "",
         description,
+        ...media,
       }),
     });
     const body = await response.json().catch(() => ({}));
@@ -5494,6 +5497,236 @@
       throw new Error(body?.error || "about_update_failed");
     }
     return body;
+  }
+
+  // --- About rail: fediverse badge + desktop-parity sections ---------------
+  //
+  // The desktop app's About panel shows the repo's canonical info from
+  // .forkmesh/info.json plus latest release / languages / files /
+  // contributors it computes from the local git mirror. The website mirrors
+  // all of it from data it can already reach: the live-mirror tunnel (blob,
+  // tree, history) and the relay's public GET /about (branding + fediverse
+  // follower count). Every section is best-effort and independent — a dead
+  // host must not blank the whole rail.
+
+  const REPO_LANGUAGE_EXTENSIONS = {
+    c: "C", h: "C++", cc: "C++", cpp: "C++", cxx: "C++", hpp: "C++",
+    py: "Python", js: "JavaScript", mjs: "JavaScript", jsx: "JavaScript",
+    ts: "TypeScript", tsx: "TypeScript", html: "HTML", htm: "HTML",
+    css: "CSS", json: "JSON", md: "Markdown", yml: "YAML", yaml: "YAML",
+    sh: "Shell", bash: "Shell", dart: "Dart", java: "Java", kt: "Kotlin",
+    rs: "Rust", go: "Go", rb: "Ruby", php: "PHP", swift: "Swift",
+    m: "Objective-C", mm: "Objective-C", qml: "QML", cmake: "CMake",
+    toml: "TOML", sql: "SQL", proto: "Protobuf", svg: "SVG",
+  };
+  const REPO_LANGUAGE_COLORS = {
+    "C": "#555555", "C++": "#f34b7d", Python: "#3572A5",
+    JavaScript: "#f1e05a", TypeScript: "#3178c6", HTML: "#e34c26",
+    CSS: "#563d7c", JSON: "#8a8a8a", Markdown: "#083fa1", YAML: "#cb171e",
+    Shell: "#89e051", Dart: "#00B4AB", Java: "#b07219", Kotlin: "#A97BFF",
+    Rust: "#dea584", Go: "#00ADD8", Ruby: "#701516", PHP: "#4F5D95",
+    Swift: "#F05138", "Objective-C": "#438eff", QML: "#44a51c",
+    CMake: "#DA3434", TOML: "#9c4221", SQL: "#e38c00", Protobuf: "#4a76c6",
+    SVG: "#ff9900",
+  };
+
+  function repoAboutStillCurrent(repo) {
+    return state.selectedRepo
+      && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase();
+  }
+
+  function relativeTimeLabel(ms) {
+    const ts = Number(ms) || 0;
+    if (!ts) return "";
+    const delta = Math.max(0, Date.now() - ts);
+    const minutes = Math.floor(delta / 60000);
+    if (minutes < 60) return `${Math.max(1, minutes)} minute${minutes === 1 ? "" : "s"} ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 60) return `${days} days ago`;
+    return formatDate(ts);
+  }
+
+  async function loadRepoFediverse(repo) {
+    // Public branding + follower count from the relay (GET /about). Fills the
+    // Watch button count, the popover, and the social badge header.
+    try {
+      const body = await fetchJson(`${repoApiBase(repo)}/about`);
+      if (!repoAboutStillCurrent(repo) || !body?.ok) return;
+      const followers = Number(body.fediverse?.followers || 0);
+      $$("[data-repo-watch-count], [data-repo-watch-followers], [data-repo-social-followers]").forEach((el) => {
+        el.textContent = formatCount(followers);
+      });
+      const handle = String(body.fediverse?.handle || "");
+      if (handle) {
+        const handleEl = $("[data-repo-watch-handle]");
+        if (handleEl) handleEl.textContent = handle;
+        const copyButton = $("[data-repo-watch-wrap] [data-dashboard-copy]");
+        if (copyButton) copyButton.setAttribute("data-dashboard-copy", handle);
+        const badgeHandle = $("[data-repo-social-handle]");
+        if (badgeHandle) { badgeHandle.textContent = handle; badgeHandle.title = handle; }
+      }
+      const logo = $("[data-repo-social-logo]");
+      if (logo) logo.src = body.logoUrl || body.defaultLogoUrl || "/assets/fediverse-avatar.png";
+      const banner = $("[data-repo-social-banner]");
+      if (banner) {
+        const url = body.bannerUrl || body.defaultBannerUrl || "/assets/fediverse-banner.png";
+        banner.style.backgroundImage = `url('${url.replace(/'/g, "%27")}')`;
+      }
+      if (body.description && !repo.description) {
+        applyRepoAboutDescription(repo, body.description);
+      }
+    } catch (_) { /* fediverse card is an adornment, never an error */ }
+  }
+
+  async function loadRepoAboutInfo(repo) {
+    // .forkmesh/info.json is the repo's own committed About (what the desktop
+    // shows); when present it wins over the relay catalog description.
+    try {
+      const blobs = await fetchRepoBlobs(repo, [".forkmesh/info.json"]);
+      const blob = blobs[".forkmesh/info.json"];
+      if (!blob || !repoAboutStillCurrent(repo)) return;
+      let info;
+      try { info = JSON.parse(blobText(blob)); } catch (_) { return; }
+      const about = String(info?.about || "").trim();
+      if (about) {
+        $$("[data-repo-about-description]").forEach((el) => { el.textContent = about; });
+      }
+      const website = String(info?.website || "").trim();
+      if (website && /^https?:\/\//i.test(website)) {
+        const link = $("[data-repo-about-website]");
+        const label = $("[data-repo-about-website-label]");
+        if (link && label) {
+          link.href = website;
+          label.textContent = website.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+          link.classList.remove("hidden");
+          link.classList.add("inline-flex");
+        }
+      }
+    } catch (_) { /* host offline — keep catalog description */ }
+  }
+
+  async function loadRepoAboutRelease(repo) {
+    try {
+      let tree;
+      try {
+        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+      } catch (_) { return; }
+      const channels = (Array.isArray(tree?.entries) ? tree.entries : [])
+        .filter((entry) => entry.type === "tree" && entry.name)
+        .map((entry) => String(entry.name));
+      if (!channels.length) return;
+      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const blobs = await fetchRepoBlobs(repo, paths);
+      let latest = null;
+      paths.forEach((path) => {
+        const blob = blobs[path];
+        if (!blob) return;
+        let manifest;
+        try { manifest = JSON.parse(blobText(blob)); } catch (_) { return; }
+        if (manifest?.tag &&
+            (!latest || Number(manifest.published_at || 0) > Number(latest.published_at || 0))) {
+          latest = manifest;
+        }
+      });
+      if (!latest || !repoAboutStillCurrent(repo)) return;
+      const section = $("[data-repo-about-release]");
+      const body = $("[data-repo-about-release-body]");
+      if (!section || !body) return;
+      const when = relativeTimeLabel(Number(latest.published_at || 0));
+      body.innerHTML = `
+        <span class="inline-flex items-center gap-1.5 rounded-md bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary"><i data-lucide="tag" class="h-3 w-3"></i>${escapeHtml(String(latest.tag))}</span>
+        ${when ? `<p class="mt-1.5">released ${escapeHtml(when)}</p>` : ""}`;
+      section.classList.remove("hidden");
+      window.lucide?.createIcons();
+    } catch (_) { /* no releases — section stays hidden */ }
+  }
+
+  async function loadRepoAboutFilesAndLanguages(repo) {
+    try {
+      const files = await buildRepoFileIndex(repo);
+      if (!files.length || !repoAboutStillCurrent(repo)) return;
+      const partial = Boolean(state.repoFileFinder?.partial);
+      const filesSection = $("[data-repo-about-files]");
+      const filesCount = $("[data-repo-about-files-count]");
+      if (filesSection && filesCount) {
+        filesCount.textContent = `${files.length.toLocaleString()}${partial ? "+" : ""} files`;
+        filesSection.classList.remove("hidden");
+      }
+      const tally = {};
+      let categorized = 0;
+      files.forEach((path) => {
+        const name = String(path).split("/").pop() || "";
+        const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+        const language = REPO_LANGUAGE_EXTENSIONS[ext];
+        if (!language) return;
+        tally[language] = (tally[language] || 0) + 1;
+        categorized += 1;
+      });
+      const ranked = Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6);
+      if (!ranked.length || !categorized) return;
+      const bar = $("[data-repo-about-langs-bar]");
+      const legend = $("[data-repo-about-langs-legend]");
+      const section = $("[data-repo-about-langs]");
+      if (!bar || !legend || !section) return;
+      bar.innerHTML = ranked.map(([language, count]) => {
+        const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
+        const pct = (count / categorized) * 100;
+        return `<span title="${escapeHtml(language)}" style="width:${pct.toFixed(1)}%;background-color:${color}"></span>`;
+      }).join("");
+      legend.innerHTML = ranked.map(([language, count]) => {
+        const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
+        const pct = ((count / categorized) * 100).toFixed(1);
+        return `<span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" style="background-color:${color}"></span><span class="font-medium text-foreground">${escapeHtml(language)}</span> ${pct}%</span>`;
+      }).join("");
+      section.classList.remove("hidden");
+    } catch (_) { /* host offline — sections stay hidden */ }
+  }
+
+  async function loadRepoAboutContributors(repo) {
+    try {
+      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const commits = Array.isArray(data?.commits) ? data.commits : [];
+      if (!commits.length || !repoAboutStillCurrent(repo)) return;
+      const tally = {};
+      commits.forEach((commit) => {
+        const author = String(commit.author || "").trim();
+        if (author) tally[author] = (tally[author] || 0) + 1;
+      });
+      const ranked = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+      if (!ranked.length) return;
+      const section = $("[data-repo-about-contribs]");
+      const count = $("[data-repo-about-contribs-count]");
+      const list = $("[data-repo-about-contribs-list]");
+      if (!section || !count || !list) return;
+      count.textContent = String(ranked.length);
+      list.innerHTML = ranked.slice(0, 14).map(([author, commitCount]) => {
+        // Deterministic hue per author so avatars are stable across loads.
+        let hash = 0;
+        for (let i = 0; i < author.length; i += 1) hash = (hash * 31 + author.charCodeAt(i)) >>> 0;
+        const hue = hash % 360;
+        const initial = (author[0] || "?").toUpperCase();
+        return `<span title="${escapeHtml(author)} — ${commitCount} commit${commitCount === 1 ? "" : "s"}" class="flex h-8 w-8 items-center justify-center rounded-full border border-background font-mono text-[11px] font-semibold text-white shadow-sm" style="background-color:hsl(${hue} 55% 42%)">${escapeHtml(initial)}</span>`;
+      }).join("");
+      section.classList.remove("hidden");
+    } catch (_) { /* host offline — section stays hidden */ }
+  }
+
+  function loadRepoAboutRail(repo) {
+    if (!repo || repo.isPrivate) {
+      // Private repos have no fediverse presence; live sections still apply.
+      loadRepoAboutInfo(repo);
+      loadRepoAboutRelease(repo);
+      loadRepoAboutFilesAndLanguages(repo);
+      loadRepoAboutContributors(repo);
+      return;
+    }
+    loadRepoFediverse(repo);
+    loadRepoAboutInfo(repo);
+    loadRepoAboutRelease(repo);
+    loadRepoAboutFilesAndLanguages(repo);
+    loadRepoAboutContributors(repo);
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
@@ -6948,9 +7181,11 @@
     };
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
     const actionSeed = repoKey(repo);
-    const watchCount = stableMockNumber(`${actionSeed}:watch`, 0, 18);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
     const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
+    // Watch is real: it is the repo's fediverse follower count (see
+    // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
+    const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
@@ -6965,12 +7200,23 @@
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
             <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
-              <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Watch
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(watchCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-              </button>
+              <div data-repo-watch-wrap class="relative">
+                <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                  <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                  Watch
+                  <span data-repo-watch-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">–</span>
+                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+                </button>
+                <div data-repo-watch-menu class="absolute right-0 z-30 mt-1 hidden w-72 rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
+                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
+                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                </div>
+              </div>
               <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
                 <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
                 Fork
@@ -7091,6 +7337,17 @@
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
+            ${repo.isPrivate ? "" : `
+            <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div class="flex items-end gap-3 px-4 pb-3">
+                <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
+                <div class="min-w-0 pb-0.5">
+                  <div data-repo-social-handle title="${escapeHtml(fediHandle)}" class="min-w-0 truncate font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</div>
+                  <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>
+                </div>
+              </div>
+            </div>`}
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
               ${canEditAbout
@@ -7098,8 +7355,19 @@
                 : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
+                <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
+                <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
+              </span>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
                 <span class="inline-flex items-center gap-2">
@@ -7112,6 +7380,23 @@
               <a href="${escapeHtml(cloneUrl(repo))}" class="dashboard-accent-link inline-flex min-w-0 items-center gap-2 hover:underline"><i data-lucide="link" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Open clean URL</span></a>
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
+            </div>
+            <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
+              <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-langs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Languages</h4>
+              <div data-repo-about-langs-bar class="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-secondary"></div>
+              <div data-repo-about-langs-legend class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-files class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
+              <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+            </div>
+            <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
+              <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
             </div>
             <div class="mt-5 border-t border-border pt-4">
 	              <h4 class="text-xs font-semibold text-foreground">Repository metadata</h4>
@@ -7142,6 +7427,7 @@
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
     loadRepoPendingCounts(repo);
+    loadRepoAboutRail(repo);
   }
 
   function findRepository(key) {
@@ -7990,6 +8276,17 @@
         return;
       }
 
+      // Watch popover: the button shows the repo's fediverse follower count
+      // and opens the follow-from-Mastodon card; any click outside closes it.
+      const watchButton = event.target.closest("[data-repo-action-watch]");
+      if (watchButton) {
+        $("[data-repo-watch-menu]")?.classList.toggle("hidden");
+        return;
+      }
+      if (!event.target.closest("[data-repo-watch-wrap]")) {
+        $("[data-repo-watch-menu]")?.classList.add("hidden");
+      }
+
       const aboutEditButton = event.target.closest("[data-repo-about-edit]");
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
         setRepoAboutStatus("");
@@ -8206,15 +8503,40 @@
       if (submit) submit.disabled = true;
       setRepoAboutStatus("Saving...");
       try {
-        const body = await saveRepoAboutFromWeb(state.selectedRepo, description);
+        // Optional branding uploads ride along with the description: a chosen
+        // file becomes a data-URL PNG, a checked "Remove" sends "" (clear),
+        // and an untouched image is simply omitted (left unchanged).
+        const media = {};
+        const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("image_read_failed"));
+          reader.readAsDataURL(file);
+        });
+        const logoFile = aboutForm.querySelector("[data-repo-about-logo]")?.files?.[0];
+        const bannerFile = aboutForm.querySelector("[data-repo-about-banner]")?.files?.[0];
+        if (logoFile && logoFile.size > 256 * 1024) throw new Error("logo_too_large");
+        if (bannerFile && bannerFile.size > 1024 * 1024) throw new Error("banner_too_large");
+        if (aboutForm.querySelector("[data-repo-about-logo-clear]")?.checked) media.logoPng = "";
+        else if (logoFile) media.logoPng = await readAsDataUrl(logoFile);
+        if (aboutForm.querySelector("[data-repo-about-banner-clear]")?.checked) media.bannerPng = "";
+        else if (bannerFile) media.bannerPng = await readAsDataUrl(bannerFile);
+        const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
+        // Refresh the badge header + watch count so the new logo/banner (and
+        // the ?v= cache-buster) show immediately.
+        loadRepoFediverse(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
         setRepoAboutStatus(
           code === "not_authorized" ? "Only the source node owner can edit About."
             : code === "account_required" ? "Sign in as the source node owner first."
+            : code === "logo_too_large" ? "Logo must be a PNG up to 256 KB."
+            : code === "banner_too_large" ? "Banner must be a PNG up to 1 MB."
+            : code === "image_too_large" ? "Image too large (logo ≤256 KB, banner ≤1 MB)."
+            : code === "bad_image" ? "Images must be PNG files."
             : "Could not save About.",
           "bad");
       } finally {
