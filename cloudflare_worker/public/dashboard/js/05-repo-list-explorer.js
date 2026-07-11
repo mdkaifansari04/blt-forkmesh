@@ -583,6 +583,23 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
+    // Only the code tab's root/README view goes full-width (see
+    // setRepoContentFullWidth); every other tab keeps the two-column layout
+    // with the About sidebar. Switching tabs doesn't re-run the tree/blob
+    // loaders that would otherwise restore this, so reset it here.
+    if (tab !== "code") setRepoContentFullWidth(false);
+  }
+
+  // Widens the code tab's content grid to a single column (About sidebar
+  // drops below, full width) while the repository README is showing at the
+  // root of the tree - the README is the thing worth reading, and squeezing
+  // it into a ~1fr column next to the About rail made it cramped.
+  function setRepoContentFullWidth(active) {
+    const detail = $("[data-repo-detail]");
+    const contentGrid = detail?.querySelector("[data-repo-content-grid]");
+    if (!contentGrid) return;
+    contentGrid.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", !active);
+    contentGrid.classList.toggle("xl:grid-cols-1", active);
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,

@@ -3387,6 +3387,23 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
+    // Only the code tab's root/README view goes full-width (see
+    // setRepoContentFullWidth); every other tab keeps the two-column layout
+    // with the About sidebar. Switching tabs doesn't re-run the tree/blob
+    // loaders that would otherwise restore this, so reset it here.
+    if (tab !== "code") setRepoContentFullWidth(false);
+  }
+
+  // Widens the code tab's content grid to a single column (About sidebar
+  // drops below, full width) while the repository README is showing at the
+  // root of the tree - the README is the thing worth reading, and squeezing
+  // it into a ~1fr column next to the About rail made it cramped.
+  function setRepoContentFullWidth(active) {
+    const detail = $("[data-repo-detail]");
+    const contentGrid = detail?.querySelector("[data-repo-content-grid]");
+    if (!contentGrid) return;
+    contentGrid.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", !active);
+    contentGrid.classList.toggle("xl:grid-cols-1", active);
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
@@ -4273,6 +4290,107 @@
     if (dateNode) dateNode.textContent = formatDate(date);
   }
 
+  function mdSafeUrl(url) {
+    const trimmed = String(url || "").trim();
+    if (/^(https?:|mailto:|#|\/)/i.test(trimmed)) return trimmed;
+    if (/^[a-z0-9][a-z0-9+.-]*:/i.test(trimmed)) return "#";
+    return trimmed;
+  }
+
+  // Operates on already-`escapeHtml`d text so the captured groups (urls,
+  // labels, code) are safe to splice back into HTML without re-escaping.
+  function renderMarkdownInline(escapedText) {
+    return escapedText
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) =>
+        `<img src="${mdSafeUrl(url)}" alt="${alt}" class="my-2 max-w-full rounded-md border border-border" loading="lazy" />`)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, url) =>
+        `<a href="${mdSafeUrl(url)}" class="dashboard-accent-link underline underline-offset-2 hover:text-foreground" target="_blank" rel="noopener noreferrer nofollow ugc">${label}</a>`)
+      .replace(/(\*\*|__)(.+?)\1/g, "<strong>$2</strong>")
+      .replace(/(^|[^\w*])\*(?!\*)([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w_])_(?!_)([^_]+)_(?!_)/g, "$1<em>$2</em>")
+      .replace(/`([^`]+)`/g, (_, code) => `<code class="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">${code}</code>`);
+  }
+
+  // Small, dependency-free markdown renderer: headings, fenced code blocks,
+  // block quotes, ordered/unordered lists, hr, and paragraphs, with basic
+  // inline formatting, links and images. Not a full CommonMark
+  // implementation - readmes just need to look reasonable, not pixel-match
+  // GitHub.
+  function renderMarkdown(raw) {
+    const lines = String(raw ?? "").replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let list = null;
+    const closeList = () => {
+      if (!list) return;
+      const tag = list.type;
+      out.push(`<${tag} class="${tag === "ol" ? "list-decimal" : "list-disc"} my-2 ml-5 space-y-1">${list.items.join("")}</${tag}>`);
+      list = null;
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = line.match(/^```(.*)$/);
+      if (fence) {
+        closeList();
+        const code = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) { code.push(lines[i]); i++; }
+        i++;
+        out.push(`<pre class="my-3 overflow-auto rounded-md border border-border bg-secondary/40 p-3 text-xs"><code class="font-mono">${escapeHtml(code.join("\n"))}</code></pre>`);
+        continue;
+      }
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        closeList();
+        const level = heading[1].length;
+        const size = { 1: "text-2xl", 2: "text-xl", 3: "text-lg", 4: "text-base", 5: "text-sm", 6: "text-xs" }[level];
+        out.push(`<h${level} class="${size} font-semibold text-foreground mt-5 mb-2 first:mt-0">${renderMarkdownInline(escapeHtml(heading[2]))}</h${level}>`);
+        i++;
+        continue;
+      }
+      if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        closeList();
+        out.push('<hr class="my-4 border-border" />');
+        i++;
+        continue;
+      }
+      if (/^>\s?/.test(line)) {
+        closeList();
+        const quote = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) { quote.push(lines[i].replace(/^>\s?/, "")); i++; }
+        out.push(`<blockquote class="my-3 border-l-2 border-border pl-3 text-muted-foreground">${renderMarkdownInline(escapeHtml(quote.join(" ")))}</blockquote>`);
+        continue;
+      }
+      const unordered = line.match(/^\s*[-*+]\s+(.*)$/);
+      const ordered = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (unordered || ordered) {
+        const type = ordered ? "ol" : "ul";
+        if (!list || list.type !== type) { closeList(); list = { type, items: [] }; }
+        list.items.push(`<li>${renderMarkdownInline(escapeHtml((unordered || ordered)[1]))}</li>`);
+        i++;
+        continue;
+      }
+      if (!line.trim()) {
+        closeList();
+        i++;
+        continue;
+      }
+      closeList();
+      const para = [line];
+      i++;
+      while (i < lines.length && lines[i].trim()
+        && !/^(#{1,6})\s+/.test(lines[i]) && !/^```/.test(lines[i]) && !/^>\s?/.test(lines[i])
+        && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])
+        && !/^(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
+        para.push(lines[i]);
+        i++;
+      }
+      out.push(`<p class="my-2 leading-6">${renderMarkdownInline(escapeHtml(para.join(" ")))}</p>`);
+    }
+    closeList();
+    return out.join("");
+  }
+
   async function loadRepositoryTree(repo, path = "") {
     const detail = $("[data-repo-detail]");
     if (!detail) return;
@@ -4287,6 +4405,10 @@
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
     setRepoExplorerFocusMode(Boolean(path));
+    // Browsing into a subdirectory already goes full-width via focus mode
+    // above; only the root/README view needs to override its two-column
+    // default separately.
+    if (!path) setRepoContentFullWidth(true);
     renderRepoBreadcrumb(repo, path);
 
     treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
@@ -4340,8 +4462,13 @@
             try {
               const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: readmeEntry.name }));
               const text = blobText(blob);
-              readmeBody.className = "whitespace-pre-wrap p-4 font-mono text-xs leading-5 text-foreground overflow-auto max-h-[40rem]";
-              readmeBody.textContent = text;
+              if (/\.(txt)$/i.test(readmeEntry.name)) {
+                readmeBody.className = "whitespace-pre-wrap p-4 font-mono text-xs leading-5 text-foreground";
+                readmeBody.textContent = text;
+              } else {
+                readmeBody.className = "p-4 text-sm text-foreground";
+                readmeBody.innerHTML = renderMarkdown(text);
+              }
             } catch (_) {
               readmeBody.className = "p-4 text-sm leading-6 text-muted-foreground";
               readmeBody.innerHTML = `<p class="mt-1">${escapeHtml(repo.description || "This repository has not published a README preview yet.")}</p>`;
