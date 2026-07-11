@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+    "authorName": "static-rack-9818",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783808095761,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+            "authorName": "static-rack-9818",
+            "body": "",
+            "id": "open-417",
+            "sig": "Wi_5VC2Bm5SqcKUcAx9GKLF4APG-Tx8Y8P8h9muAuC7YTe0Mfb7Wgv0euLszXajCkrzPtQGuI90qiBODp-u1CA",
+            "title": "folder icons are not showing on a new install",
+            "ts": 1783808095761,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 417,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "folder icons are not showing on a new install",
+    "updatedAt": 1783808095761,
+    "votes": 0
+}
