@@ -13862,7 +13862,11 @@ def _admin_href(admin_query, **params):
 ADMIN_STYLE = """
  /* Palette: GitHub-dark by default, GitHub-light when the site theme engine
     (site-header.js, shared localStorage keys + OS preference) stamps
-    html.light. All rules below use only these variables. */
+    html.light. All rules below use only these variables.
+    Every element rule is scoped under .ab-root: the universal site header
+    (site-header.js) injects its own bare <header>/<nav>/<button> markup, and
+    unscoped admin rules used to clobber it (and styles.css's centered
+    max-width `main` clobbered the admin layout right back). */
  :root{color-scheme:dark;
    --ab-bg:#0d1117;--ab-fg:#c9d1d9;--ab-muted:#8b949e;--ab-border:#21262d;
    --ab-border-2:#30363d;--ab-card:#161b22;--ab-link:#58a6ff;
@@ -13875,56 +13879,65 @@ ADMIN_STYLE = """
    --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}
  *{box-sizing:border-box}
  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:var(--ab-bg);color:var(--ab-fg)}
- header{padding:16px 24px;border-bottom:1px solid var(--ab-border)}
- h1{font-size:18px;margin:0}
- .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
- a{color:var(--ab-link);text-decoration:none}
- a:hover{text-decoration:underline}
- .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px 0}
- .card{background:var(--ab-card);border:1px solid var(--ab-border);border-radius:8px;padding:12px 18px;min-width:120px}
- .card .n{font-size:24px;font-weight:600}
- .card .l{color:var(--ab-muted);font-size:12px;margin-top:2px}
- .card.warn .n{color:var(--ab-danger)}
- .tools{padding:12px 24px;display:flex;gap:12px;align-items:center}
- button{background:var(--ab-btn);color:var(--ab-btn-fg);border:1px solid var(--ab-btn-hover);border-radius:6px;
-        padding:8px 14px;font:600 13px system-ui;cursor:pointer}
- button:hover{background:var(--ab-btn-hover)}
- button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
- .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
+ .ab-root header{padding:12px 24px;border-bottom:1px solid var(--ab-border)}
+ .ab-root h1{font-size:18px;margin:0}
+ .ab-root .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
+ .ab-root a{color:var(--ab-link);text-decoration:none}
+ .ab-root a:hover{text-decoration:underline}
+ .ab-root .cards{display:flex;gap:12px;flex-wrap:wrap;padding:12px 24px 0}
+ .ab-root .card{background:var(--ab-card);border:1px solid var(--ab-border);border-radius:8px;padding:10px 16px;min-width:110px}
+ .ab-root .card .n{font-size:22px;font-weight:600}
+ .ab-root .card .l{color:var(--ab-muted);font-size:12px;margin-top:2px}
+ .ab-root .card.warn .n{color:var(--ab-danger)}
+ .ab-root .tools{padding:10px 24px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+ .ab-root button{background:var(--ab-btn);color:var(--ab-btn-fg);border:1px solid var(--ab-btn-hover);border-radius:6px;
+        padding:6px 12px;font:600 13px system-ui;cursor:pointer}
+ .ab-root button:hover{background:var(--ab-btn-hover)}
+ .ab-root button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
+ .ab-root input[type=text],.ab-root input[type=password]{background:var(--ab-bg);color:var(--ab-fg);
+        border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
+ .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
          background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
- .layout{display:flex;align-items:flex-start}
- nav{width:220px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
- nav a{display:block;padding:7px 20px;color:var(--ab-fg)}
- nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
- nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
- nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
- main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
- table{border-collapse:collapse;width:100%}
- th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--ab-border);vertical-align:top}
- th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600}
- td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
- .s5{color:var(--ab-danger);font-weight:600}
- tr:hover{background:var(--ab-card)}
- .empty{padding:32px 24px;color:var(--ab-muted)}
- .title{padding:14px 24px 4px;font-weight:600}
- .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
- .navlink{color:var(--ab-link)}
- nav a .navcount{float:right}
- .rowform{padding:8px 24px;max-width:760px}
- .rowfield{display:block;margin:10px 0}
- .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
- .rowfield input,.rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
+ .ab-root .layout{display:flex;align-items:flex-start;width:100%}
+ .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
+ .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
+ .ab-root nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
+ .ab-root nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ .ab-root nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
+ .ab-root main{flex:1;min-width:0;max-width:none;margin:0;overflow-x:auto;padding:4px 0 40px}
+ .ab-root table{border-collapse:collapse;width:100%}
+ .ab-root th,.ab-root td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--ab-border);vertical-align:top}
+ .ab-root th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600;
+        font-size:12px;white-space:nowrap;z-index:1}
+ .ab-root th.jcol{font-style:italic;font-weight:500}
+ .ab-root td{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
+ .ab-root table.compact td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        word-break:normal;max-width:240px}
+ .ab-root table.compact td[title]{cursor:help;text-decoration:underline dotted var(--ab-muted);
+        text-underline-offset:3px}
+ .ab-root .jsoncell{color:var(--ab-muted)}
+ .ab-root .s5{color:var(--ab-danger);font-weight:600}
+ .ab-root tbody tr:hover{background:var(--ab-card)}
+ .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
+ .ab-root .title{padding:12px 24px 4px;font-weight:600}
+ .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
+ .ab-root .navlink{color:var(--ab-link)}
+ .ab-root nav a .navcount{float:right}
+ .ab-root .rowform{padding:8px 24px;max-width:760px}
+ .ab-root .rowfield{display:block;margin:10px 0}
+ .ab-root .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
+ .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
- .tools .navlink{padding:8px 4px}
- .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:180px}
- .account-kind button{padding:4px 8px;font-size:12px}
- .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:3px 8px;
+ .ab-root .tools .navlink{padding:8px 4px}
+ .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+ .ab-root .account-kind button{padding:3px 8px;font-size:12px}
+ .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
- .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
- .diagcol{min-width:240px}
- .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
- .diagcol table{width:auto;min-width:220px}
+ .ab-root .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
+ .ab-root .diagcol{min-width:240px}
+ .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
+ .ab-root .diagcol table{width:auto;min-width:220px}
 """
 
 # Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
@@ -13941,11 +13954,42 @@ async def _admin_list_tables(env):
             if r.get("name") and r.get("name") not in ADMIN_HIDDEN_TABLES]
 
 
-def _admin_cell(column, value, env_unused=None):
-    text = "" if value is None else str(value)
-    if len(text) > 4000:
-        text = text[:4000] + "…"
-    return _html_escape(text)
+# Generic-table cells render on a single compact line (CSS ellipsizes long
+# values); anything longer than the preview rides in a hover tooltip so rows
+# stay one line tall.
+ADMIN_CELL_PREVIEW = 120
+ADMIN_CELL_TOOLTIP_MAX = 4000
+# Cap on extra columns expanded from the decrypted `data` JSON blob.
+ADMIN_MAX_JSON_COLS = 24
+
+
+def _admin_compact_cell(value, extra_class=""):
+    if value is None or value == "":
+        return "<td></td>"
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, sort_keys=True)
+    else:
+        text = str(value)
+    if len(text) > ADMIN_CELL_TOOLTIP_MAX:
+        text = text[:ADMIN_CELL_TOOLTIP_MAX] + "…"
+    shown = text
+    if len(shown) > ADMIN_CELL_PREVIEW:
+        shown = shown[:ADMIN_CELL_PREVIEW] + "…"
+    title = (' title="%s"' % _html_escape(text)) if shown != text else ""
+    cls = (' class="%s"' % extra_class) if extra_class else ""
+    return "<td%s%s>%s</td>" % (cls, title, _html_escape(shown))
+
+
+def _admin_json_cell(decoded):
+    # Collapse the decrypted `data` JSON to a small marker; the full pretty
+    # JSON shows in the hover tooltip.
+    pretty = json.dumps(decoded, indent=2, sort_keys=True)
+    if len(pretty) > ADMIN_CELL_TOOLTIP_MAX:
+        pretty = pretty[:ADMIN_CELL_TOOLTIP_MAX] + "…"
+    return ('<td class="jsoncell" title="%s">{…} %d key(s)</td>'
+            % (_html_escape(pretty), len(decoded)))
 
 
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
@@ -14331,12 +14375,27 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             if k != "_rowid_" and k not in columns:
                 columns.append(k)
 
-    body = []
+    # Decrypt each row's `data` blob once, then promote the union of its
+    # top-level JSON keys to real table columns so rows stay one line tall.
+    # The data cell itself collapses to a marker with the pretty JSON in its
+    # hover tooltip.
+    decoded_rows = []
     for r in rows:
+        decoded = None
+        if isinstance(r.get("data"), str) and r.get("data"):
+            decoded = await decrypt_row(env, r.get("data"))
+        decoded_rows.append((r, decoded if isinstance(decoded, dict) else None))
+    json_cols = []
+    for _r, decoded in decoded_rows:
+        if decoded:
+            for k in decoded:
+                if k not in columns and k not in json_cols:
+                    json_cols.append(k)
+    json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
+
+    body = []
+    for r, decoded_data in decoded_rows:
         rid = r.get("_rowid_", "")
-        decoded_data = None
-        if table == "accounts" and isinstance(r.get("data"), str) and r.get("data"):
-            decoded_data = await decrypt_row(env, r.get("data"))
         cells = [_admin_row_checkbox(rid),
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
@@ -14344,23 +14403,27 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             cells.append(_admin_account_migration_cell(r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
-            if col == "data" and isinstance(value, str) and value:
-                decoded = decoded_data if table == "accounts" else await decrypt_row(env, value)
-                if decoded is not None:
-                    value = json.dumps(decoded, indent=2, sort_keys=True)
-            cells.append("<td>%s</td>" % _admin_cell(col, value))
+            if col == "data" and decoded_data is not None:
+                cells.append(_admin_json_cell(decoded_data))
+                continue
+            cells.append(_admin_compact_cell(value))
+        for col in json_cols:
+            cells.append(_admin_compact_cell(
+                None if decoded_data is None else decoded_data.get(col)))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
     head = (_admin_select_all_th() + "<th>Edit</th>" +
             ("<th>Kind</th>" if table == "accounts" else "")) + "".join(
-        "<th>%s</th>" % _html_escape(c) for c in columns)
+        "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
+        '<th class="jcol" title="from the data JSON">%s</th>' % _html_escape(c)
+        for c in json_cols)
     return (
         prefix
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
         + _admin_bulk_form_open(table, csrf_field, admin_query)
-        + "<table><thead><tr>" + head + "</tr></thead><tbody>"
+        + '<table class="compact"><thead><tr>' + head + "</tr></thead><tbody>"
         + "".join(body) + "</tbody></table></form>"
     )
 
@@ -14425,6 +14488,9 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<script src=\"/site-header.js\" defer></script>"
         "<style>" + ADMIN_STYLE + "</style></head><body>"
         "<div data-forkmesh-header=\"simple\"></div>"
+        # .ab-root scopes every admin style rule so they cannot leak into the
+        # injected site header above (and vice versa).
+        "<div class=\"ab-root\">"
         "<header><h1>forkmesh · admin</h1>"
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
@@ -14453,7 +14519,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         + '<div class="layout">'
         + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
-        + "</div>"
+        + "</div></div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
         "const ms=Number(el.getAttribute('data-ts'));"
         "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
