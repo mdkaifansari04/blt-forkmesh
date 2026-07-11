@@ -367,18 +367,7 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "case 1: // Commits list\n        loadCommits();" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
 
 
-def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():
-    observability = WRANGLER_DATA["observability"]
-    assert observability["enabled"] is True
-    assert observability["head_sampling_rate"] == 1
-
-    logs = observability["logs"]
-    assert logs["enabled"] is True
-    assert logs["head_sampling_rate"] == 1
-    assert logs["invocation_logs"] is True
-    assert logs["destinations"] == ["sentry-logs"]
-
-    traces = observability["traces"]
-    assert traces["enabled"] is True
-    assert traces["head_sampling_rate"] == 1
-    assert traces["destinations"] == ["sentry-traces"]
+def test_worker_observability_is_turned_off_in_wrangler():
+    # Observability is intentionally disabled; the section is commented out
+    # of wrangler.toml, so it must not appear in the parsed config.
+    assert "observability" not in WRANGLER_DATA
