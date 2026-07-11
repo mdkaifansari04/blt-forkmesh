@@ -1030,6 +1030,88 @@
     }
   }
 
+  // Star/unstar a repo (GET/POST/DELETE /api/repo/o/r/star). A star is a
+  // plain per-account preference, not part of the owner-signed catalog
+  // record, so it's fetched and toggled separately from the rest of the
+  // repo's data.
+  function setRepoStarButtonState(button, starred, count) {
+    if (!button) return;
+    button.setAttribute("aria-pressed", starred ? "true" : "false");
+    const icon = button.querySelector("[data-repo-star-icon]");
+    if (icon) {
+      icon.classList.toggle("fill-yellow-400", starred);
+      icon.classList.toggle("text-yellow-400", starred);
+      icon.classList.toggle("text-muted-foreground", !starred);
+    }
+    const label = button.querySelector("[data-repo-star-label]");
+    if (label) label.textContent = starred ? "Starred" : "Star";
+    const countEl = button.querySelector("[data-repo-star-count]");
+    if (countEl) countEl.textContent = formatCount(Number(count) || 0);
+  }
+
+  async function loadRepoStarState(repo, button) {
+    if (!button) return;
+    try {
+      const headers = { accept: "application/json" };
+      if (state.session?.sessionToken) headers.authorization = "Bearer " + state.session.sessionToken;
+      const response = await fetch(`${repoApiBase(repo)}/star`, { headers });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false || !document.body.contains(button)) return;
+      setRepoStarButtonState(button, Boolean(data.starred), data.count);
+    } catch (_) {
+      /* offline relay — star count stays at its initial placeholder */
+    }
+  }
+
+  // Hydrates every rendered star button in `root` (repo list cards, profile
+  // rows) with its real starred state + count, one request per distinct repo.
+  async function hydrateRepoStarButtons(root) {
+    const buttons = Array.from((root || document).querySelectorAll("[data-repo-star-button][data-repo-key]"));
+    const byKey = new Map();
+    buttons.forEach((button) => {
+      const key = button.dataset.repoKey || "";
+      if (!key) return;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(button);
+    });
+    await Promise.all(Array.from(byKey.entries()).map(async ([key, els]) => {
+      const repo = findRepository(key);
+      if (!repo) return;
+      await loadRepoStarState(repo, els[0]);
+      const applied = els[0] && document.body.contains(els[0])
+        ? { starred: els[0].getAttribute("aria-pressed") === "true", count: els[0].querySelector("[data-repo-star-count]")?.textContent }
+        : null;
+      if (applied) els.slice(1).forEach((el) => setRepoStarButtonState(el, applied.starred, applied.count));
+    }));
+  }
+
+  async function toggleRepoStar(button) {
+    const key = button.dataset.repoKey || "";
+    const repo = findRepository(key)
+      || (state.selectedRepo && repoKey(state.selectedRepo) === key ? state.selectedRepo : null);
+    if (!repo) return;
+    if (!state.session?.sessionToken) {
+      location.href = "/login";
+      return;
+    }
+    const nextStarred = button.getAttribute("aria-pressed") !== "true";
+    button.disabled = true;
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/star`, {
+        method: nextStarred ? "POST" : "DELETE",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ sessionToken: state.session.sessionToken }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      setRepoStarButtonState(button, Boolean(data.starred), data.count);
+    } catch (_) {
+      /* best-effort — button keeps its last known state */
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
   // fetch, not the caching fetchJson — the counts change as the owner node
   // drains its inbox and must refresh on every repo open. Best-effort: a miss

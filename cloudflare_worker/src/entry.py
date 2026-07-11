@@ -259,6 +259,7 @@ from urls import (  # noqa: E402
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
     REPO_MEDIA_RE,
+    REPO_STAR_RE,
 )
 
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
@@ -9628,6 +9629,68 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     }))
 
 
+async def repo_star_handler(env, request, owner, repo):
+    # Star/unstar a repo. A star is a plain per-account preference (not signed
+    # by the owner's key), so it lives in its own repo_stars table - the same
+    # trust model as profile_follows - rather than inside the owner-signed
+    # catalog record. GET is public (count + the caller's own state, if a
+    # session is supplied); POST/DELETE require a logged-in session, same as
+    # ACCOUNT_FOLLOW_RE.
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+
+    if method == "GET":
+        viewer_bi, viewer_rec = await _account_session_record(env, request)
+        starred = False
+        if viewer_rec:
+            row = await d1_first(
+                env,
+                "SELECT 1 AS yes FROM repo_stars WHERE repo_bi=? AND account_bi=?",
+                repo_bi, viewer_bi)
+            starred = bool(row)
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+        return json_response({
+            "ok": True,
+            "count": int((count_row or {}).get("n", 0) or 0),
+            "starred": starred,
+        })
+
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account_rec = await _account_session_record(env, request, data)
+    if not account_rec:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    if method == "POST":
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO repo_stars (repo_bi, account_bi, created_at) "
+            "VALUES (?,?,?)",
+            repo_bi, account_bi, int(Date.now()))
+        starred = True
+    else:
+        await d1_run(
+            env, "DELETE FROM repo_stars WHERE repo_bi=? AND account_bi=?",
+            repo_bi, account_bi)
+        starred = False
+
+    count_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+    return json_response({
+        "ok": True,
+        "count": int((count_row or {}).get("n", 0) or 0),
+        "starred": starred,
+    })
+
+
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
     # the Ed25519-signed event log. Public data — same visibility as the
@@ -14777,6 +14840,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_media_handler(
                 self.env, request, owner, repo, repo_media_match.group(3))
+
+        star_match = REPO_STAR_RE.match(url.path)
+        if star_match:
+            owner = safe_segment(star_match.group(1))
+            repo = safe_segment(star_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_star_handler(self.env, request, owner, repo)
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:
