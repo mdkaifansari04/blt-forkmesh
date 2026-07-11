@@ -156,7 +156,11 @@ def test_worker_profile_contract_includes_about_location_timezone_and_counts():
     assert 'rec["profile_location"] = location' in profile_body
     assert 'rec["profile_timezone"] = timezone' in profile_body
     assert 'await _account_social_counts(env, name)' in public_payload_body
-    assert 'await _account_social_counts(env, rec.get("name", name))' in public_lookup_body
+    # The public lookup passes the optional ?viewer= through so the /@name
+    # page can show the caller's own Follow/Following state (display-only).
+    assert '_account_social_counts(' in public_lookup_body
+    assert 'env, rec.get("name", name), viewer)' in public_lookup_body
+    assert '"viewer"' in public_lookup_body
 
 
 def test_worker_profile_follow_schema_routes_and_cleanup_exist():
@@ -206,69 +210,59 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
     assert 'data.get("password", "")' not in public_edit_block
 
 
-def test_worker_public_profile_exposes_follow_and_mirror_counts():
-    profile_html = ENTRY_TEXT[
-        ENTRY_TEXT.index("def _public_profile_html"):
-        ENTRY_TEXT.index("async def public_profile_handler")
+def test_worker_public_profile_page_wires_follow_and_public_mode():
+    # /@name now serves the FULL dashboard profile document; the follow
+    # control and foreign-profile rendering live in the dashboard bundle.
+    dashboard_js = (
+        Path(__file__).resolve().parents[1] / "public" / "dashboard.js"
+    ).read_text(encoding="utf-8")
+    assert "function publicProfileNameFromPath()" in dashboard_js
+    assert "function profileSubject()" in dashboard_js
+    assert "state.publicProfile" in dashboard_js
+    assert "data-profile-follow" in dashboard_js
+    assert '"/api/accounts/" + encodeURIComponent(name) + "/follow"' in dashboard_js
+    # Public mode never shows a mailbox for a foreign account.
+    assert 'profile.email = "@" + profile.nodeName' in dashboard_js
+
+
+def test_public_profile_page_injects_verified_link_tags():
+    # _serve_profile_page injects the per-user head tags into the shared
+    # prebuilt profile document: canonical + the reciprocal rel="me" (the
+    # verified half of the fediverse actor's profile link) + the ActivityPub
+    # alternate for discovery, and swaps the <title>.
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _serve_profile_page"):
+        ENTRY_TEXT.index("async def _serve_repo_page")
     ]
-    public_handler = ENTRY_TEXT[
-        ENTRY_TEXT.index("async def public_profile_handler"):
-        ENTRY_TEXT.index("def _donation_expiry_fields")
-    ]
-
-    assert "social = profile.get(\"social\", {})" in profile_html
-    assert "mirror_count = int(social.get(\"mirrorCount\", 0) or 0)" in profile_html
-    assert "followers" in profile_html
-    assert "following" in profile_html
-    assert "mirrors" in profile_html
-    assert "Follow" in profile_html
-    assert "await _public_profile_payload(env, rec, request)" in public_handler
-
-
-def test_public_profile_html_template_formats_without_error():
-    # Regression: the inline CSS uses color-mix(... 40%, ...) percentages, and
-    # the whole page is emitted with a trailing `% (...)` format op. Any literal
-    # `%` that is not doubled to `%%` makes Python read it as a format spec and
-    # raises ValueError at render time -> Cloudflare "Worker threw exception"
-    # (Error 1101) on every /@name profile view. Extract the template literal
-    # and actually run the `%` formatting to prove it no longer explodes.
-    import ast
-
-    module = ast.parse(ENTRY_TEXT)
-    func = next(
-        node for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "_public_profile_html"
-    )
-    template = next(
-        node.value
-        for node in ast.walk(func)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and node.value.lstrip().startswith("<!doctype")
-    )
-    placeholders = template.count("%s")
-    # Must not raise ValueError on the literal CSS percentages.
-    rendered = template % tuple(["x"] * placeholders)
-    assert "color-mix(in srgb, var(--accent) 40%, var(--border))" in rendered
+    assert '"/dashboard/profile/repositories" if repositories' in body
+    assert 'DASHBOARD_PAGE_ASSETS' in body
+    assert '<link rel=\\"canonical\\" href=\\"%s\\">' in body
+    assert '<link rel=\\"me\\" href=\\"%s\\">' in body
+    assert 'application/activity+json' in body
+    assert '/ap/users/%s' in body
+    assert '<title>@%s · ForkMesh</title>' in body
+    # Eligibility mirrors the fediverse actor: active + not private (node
+    # accounts included, matching _ap_user_federates).
+    assert 'rec.get("status") != "active"' in body
+    assert 'rec.get("profile_private")' in body
+    assert '_serve_not_found_page(url)' in body
 
 
 def test_worker_serves_public_at_profiles_and_private_profiles_404():
-    assert "async def public_profile_handler" in ENTRY_TEXT
+    assert "async def _serve_profile_page" in ENTRY_TEXT
     route_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _route"):
         ENTRY_TEXT.index("issues_match = REPO_ISSUES_RE.match", ENTRY_TEXT.index("async def _route"))
     ]
 
-    assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$"' in route_body
+    assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$"' in route_body
     # The route matches the percent-decoded, case-folded path: pasted links
     # often arrive as /%40name (an encoded @) or /@Name, and both used to fall
     # through to the 404 page instead of the profile.
     assert "unquote(url.path).lower()" in route_body
-    assert "public_profile_handler(" in route_body
-    assert '_account_kind(rec) != "user"' in ENTRY_TEXT
+    assert "_serve_profile_page(" in route_body
     assert 'bool(rec.get("profile_private"))' in ENTRY_TEXT
     assert 'return json_response({"error": "not_found"}, status=404)' in ENTRY_TEXT
-    assert 'rel="me noopener"' in ENTRY_TEXT
     assert "cache-control" in ENTRY_TEXT
 
 

@@ -4485,197 +4485,6 @@ async def _account_users_directory(env, request):
     return json_response({"ok": True, "users": out})
 
 
-def _public_profile_html(profile, host):
-    name = clean_string(profile.get("name", ""), MAX_NODE_NAME).lower()
-    bio = profile.get("profileBio", "")
-    about = profile.get("profileAbout", "")
-    location = profile.get("profileLocation", "")
-    timezone = profile.get("profileTimezone", "")
-    links = profile.get("profileLinks", [])
-    mastodon = profile.get("mastodon", "")
-    mastodon_url = profile.get("mastodonUrl", "")
-    avatar = profile.get("avatarPng", "")
-    social = profile.get("social", {})
-    followers = int(social.get("followers", 0) or 0)
-    following = int(social.get("following", 0) or 0)
-    mirror_count = int(social.get("mirrorCount", 0) or 0)
-    initial = (name[:1] or "F").upper()
-    link_rows = []
-    for link in links:
-        badge = (
-            '<span class="verified">Verified</span>'
-            if link.get("verified") else
-            '<span class="unverified">Unverified</span>'
-        )
-        label = link.get("label") or link.get("domain") or link.get("url")
-        link_rows.append(
-            '<a class="profile-link" href="' + _html_escape(link.get("url", "")) +
-            '" rel="me noopener" target="_blank"><span><strong>' +
-            _html_escape(label) + '</strong><small>' +
-            _html_escape(link.get("domain", "")) + '</small></span>' + badge + '</a>'
-        )
-    mastodon_html = ""
-    if mastodon and mastodon_url:
-        mastodon_html = (
-            '<a class="mastodon" href="' + _html_escape(mastodon_url) +
-            '" rel="me noopener" target="_blank">' + _html_escape(mastodon) + '</a>'
-        )
-    avatar_html = (
-        '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
-        '" alt="' + _html_escape(name) + ' avatar">'
-        if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
-    )
-    canonical = "https://" + host + "/@" + quote(name)
-    meta_rows = []
-    if location:
-        meta_rows.append('<span>' + _html_escape(location) + '</span>')
-    if timezone:
-        meta_rows.append('<span data-timezone="' + _html_escape(timezone) + '">' + _html_escape(timezone) + '</span>')
-    about_html = (
-        '<section class="about"><h2>About yourself</h2><p>' +
-        _html_escape(about).replace("\n", "<br>") + '</p></section>'
-        if about else ""
-    )
-    return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>@%s - ForkMesh</title>
-  <link rel="canonical" href="%s">
-  <link rel="me" href="%s">
-  <link rel="alternate" type="application/activity+json" href="%s">
-  <style>
-    :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
-    @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
-    body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { width:min(46rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
-    header { display:flex; gap:16px; align-items:center; }
-    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%%, var(--border)); }
-    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
-    h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
-    .handle, .bio, small { color:var(--muted); }
-    .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
-    .stats, .meta { display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; color:var(--muted); }
-    .stats strong { color:var(--fg); }
-    .about { margin-top:24px; border:1px solid var(--border); border-radius:8px; padding:16px; }
-    .about h2 { margin:0 0 10px; font-size:14px; }
-    .about p { margin:0; white-space:pre-wrap; color:var(--fg); }
-    .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
-    .links { display:grid; gap:10px; margin-top:24px; }
-    .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%%, var(--border)); }
-    .profile-link span { display:grid; min-width:0; }
-    .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
-    .verified { border-color:color-mix(in srgb, var(--accent) 45%%, var(--border)); color:var(--accent); }
-    .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
-    input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
-    button { border:1px solid color-mix(in srgb, var(--accent) 48%%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
-    footer { margin-top:24px; color:var(--muted); font-size:12px; }
-    footer a { color:var(--muted); }
-  </style>
-</head>
-<body>
-  <main>
-    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
-    <div class="stats"><span><strong>%s</strong> followers</span><span><strong>%s</strong> following</span><span><strong>%s</strong> mirrors</span></div>
-    <div class="meta">%s</div>
-    %s
-    %s
-    <section class="links">%s</section>
-    <form class="follow" data-follow-form>
-      <strong>Follow @%s</strong>
-      <div class="follow-row">
-        <button type="submit">Follow</button>
-      </div>
-      <small data-follow-status>Log in to ForkMesh to follow this profile.</small>
-    </form>
-    <footer><a href="/">ForkMesh</a></footer>
-  </main>
-  <script>
-    (() => {
-      const form = document.querySelector("[data-follow-form]");
-      const status = document.querySelector("[data-follow-status]");
-      let session = null;
-      try {
-        session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
-        if (session && session.nodeName === "%s") form.hidden = true;
-      } catch (_) {}
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!session || !session.sessionToken) {
-          status.textContent = "Log in before following this profile.";
-          return;
-        }
-        status.textContent = "Saving follow...";
-        const response = await fetch("/api/accounts/%s/follow", {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ sessionToken: session.sessionToken }),
-        });
-        const body = await response.json().catch(() => ({}));
-        status.textContent = response.ok ? "Following @" + "%s" + "." : (body.error || "Could not follow this profile.");
-      });
-    })();
-  </script>
-</body>
-</html>""" % (
-        _html_escape(name), _html_escape(canonical),
-        # rel="me": the reciprocal half of the fediverse Person actor's
-        # verified profile link (the actor's `url` is this very page); the
-        # alternate link lets fediverse software discover the actor from the
-        # page URL.
-        _html_escape(canonical),
-        _html_escape("https://" + host + "/ap/users/" + quote(name)),
-        avatar_html,
-        _html_escape(name), _html_escape(canonical), mastodon_html,
-        _html_escape(followers), _html_escape(following), _html_escape(mirror_count),
-        "".join(meta_rows),
-        ('<p class="bio">' + _html_escape(bio) + '</p>') if bio else "",
-        about_html,
-        "".join(link_rows),
-        _html_escape(name), _html_escape(name), _html_escape(quote(name)),
-        _html_escape(name),
-    )
-
-
-async def _public_profile_payload(env, rec, request):
-    url = urlparse(request.url)
-    viewer = clean_string(parse_qs(url.query).get("viewer", [""])[0], MAX_NODE_NAME).lower()
-    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-    fields = _account_profile_fields(rec)
-    social = await _account_social_counts(env, name, viewer)
-    return {
-        "name": name,
-        "avatarPng": rec.get("avatar_png", ""),
-        "social": social,
-        **social,
-        **fields,
-    }
-
-
-async def public_profile_handler(env, request, username):
-    name = clean_string(username, MAX_NODE_NAME).lower()
-    if not valid_node_name(name):
-        return json_response({"error": "not_found"}, status=404)
-    _, rec = await _account_row(env, name)
-    if (not rec or rec.get("status") != "active" or
-            _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
-        return json_response({"error": "not_found"}, status=404)
-    host = clean_string(urlparse(request.url).netloc, 253)
-    profile = await _public_profile_payload(env, rec, request)
-    return Response(
-        _public_profile_html(profile, host),
-        status=200,
-        headers={
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-        },
-    )
-
-
 def _donation_expiry_fields(rec, now):
     try:
         created = int(rec.get("donation_created_at") or rec.get("created_at") or now)
@@ -8891,7 +8700,14 @@ async def accounts_handler(env, request):
                    "kind": _account_kind(rec),
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec)}
-        social = await _account_social_counts(env, rec.get("name", name))
+        # viewer=<name> lets the public-profile page show the caller's own
+        # Follow/Following state. Display-only: a spoofed viewer can only see
+        # a wrong button label; actual follow writes are session-token gated.
+        viewer = clean_string(
+            parse_qs(urlparse(request.url).query).get("viewer", [""])[0],
+            MAX_NODE_NAME).lower()
+        social = await _account_social_counts(
+            env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
         return json_response(payload)
@@ -15296,7 +15112,7 @@ class Default(WorkerEntrypoint):
         # (an encoded @) or /@Name, and both used to fall through to the 404
         # page instead of the profile.
         public_profile = re.match(
-            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$",
+            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$",
             unquote(url.path).lower())
         if public_profile:
             # Fediverse clients resolve profile URLs with an ActivityPub
@@ -15305,11 +15121,9 @@ class Default(WorkerEntrypoint):
                 return await _ap_actor_doc_response(
                     self.env, request, AP_ACTOR_USER,
                     public_profile.group(1))
-            profile_response = await public_profile_handler(
-                self.env, request, public_profile.group(1))
-            if int(profile_response.status) == 404:
-                return await self._serve_not_found_page(url)
-            return profile_response
+            return await self._serve_profile_page(
+                url, public_profile.group(1),
+                repositories=bool(public_profile.group(2)))
 
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
@@ -15723,6 +15537,50 @@ class Default(WorkerEntrypoint):
             status=404,
             headers={"content-type": "text/html; charset=utf-8"},
         )
+
+    async def _serve_profile_page(self, url, name, repositories=False):
+        # /@name — the FULL public profile: the same prebuilt dashboard
+        # profile document (sidebar, contribution heatmap, activity feed,
+        # repositories tab) with per-user head tags injected at serve time.
+        # dashboard.js detects the /@name path and renders the named account's
+        # public data instead of the logged-in session (public-profile mode).
+        # Eligibility mirrors the fediverse actor: active + not private —
+        # node-owner accounts get pages too, matching _ap_user_federates.
+        await ensure_schema(self.env)
+        _, rec = await _account_row(self.env, name)
+        if (not rec or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            return await self._serve_not_found_page(url)
+        asset = DASHBOARD_PAGE_ASSETS[
+            "/dashboard/profile/repositories" if repositories
+            else "/dashboard/profile"]
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + asset)
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh</title>"
+        origin = url.scheme + "://" + url.netloc
+        canonical = "%s/@%s" % (origin, quote(name))
+        # rel="me" is the reciprocal half of the fediverse Person actor's
+        # verified profile link (the actor's `url` is this page); the
+        # alternate link lets fediverse software discover the actor from the
+        # page URL.
+        tags = (
+            "<link rel=\"canonical\" href=\"%s\">"
+            "<link rel=\"me\" href=\"%s\">"
+            "<link rel=\"alternate\" type=\"application/activity+json\" "
+            "href=\"%s/ap/users/%s\">"
+            % (canonical, canonical, origin, quote(name)))
+        if "</head>" in body:
+            body = body.replace("</head>", tags + "</head>", 1)
+        body = re.sub(r"<title>[^<]*</title>",
+                      "<title>@%s · ForkMesh</title>" % _html_escape(name),
+                      body, count=1)
+        return Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
 
     async def _serve_repo_page(self, url):
         # The shared repo-detail document, plus per-repo head tags:
