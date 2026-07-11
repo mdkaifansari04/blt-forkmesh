@@ -100,6 +100,114 @@
     headerContext.textContent = "Dashboard";
   }
 
+  // ---- Public-profile mode (/@name) ---------------------------------------
+  // The worker serves the SAME prebuilt profile documents at /@name; the
+  // profile-page machinery renders whatever profileSubject() returns, so
+  // public mode is: fetch the named account's public payload, park it in
+  // state.publicProfile, and strip the owner-only chrome.
+
+  function publicProfileNameFromPath() {
+    const match = /^\/@([a-z][a-z0-9-]{0,62})(?:\/repositories)?\/?$/
+      .exec(location.pathname.toLowerCase());
+    return match ? match[1] : "";
+  }
+
+  function profileSubject() {
+    return state.publicProfile || state.session;
+  }
+
+  // On /@name pages the profile markup belongs to the fetched PUBLIC profile;
+  // the shared-chrome boot path still calls the profile renderers with the
+  // session, which must not overwrite (or briefly flash) the wrong identity.
+  function profileMarkupOwnedByPublicProfile(session) {
+    const publicName = publicProfileNameFromPath();
+    return Boolean(publicName) && session !== state.publicProfile &&
+      publicName !== String(session?.nodeName || "").toLowerCase();
+  }
+
+  async function loadPublicProfile(name) {
+    document.body.classList.add("public-profile-mode");
+    let body;
+    try {
+      const viewer = state.session?.nodeName
+        ? "?viewer=" + encodeURIComponent(state.session.nodeName) : "";
+      body = await fetchJson("/api/accounts/" + encodeURIComponent(name) + viewer);
+    } catch (_) {
+      $$("[data-profile-page-node-name]").forEach((el) => {
+        el.textContent = "@" + name + " was not found";
+      });
+      return;
+    }
+    const profile = sessionFromAccountPayload(body, { nodeName: name });
+    profile.nodeName = profile.nodeName || name;
+    // Never show a mailbox on someone else's page — the handle is the
+    // public identity here.
+    profile.email = "@" + profile.nodeName;
+    profile.isFollowing = Boolean(body?.social?.isFollowing);
+    state.publicProfile = profile;
+    renderProfilePage(profile);
+    applyPublicProfileChrome(profile);
+    // The catalog fetch re-renders repositories + the contribution graph when
+    // it lands (renderRepositories -> renderProfileRepositories/Graph), and
+    // those all read profileSubject() now.
+    renderProfileContributionGraph();
+    renderProfileRepositories();
+  }
+
+  function applyPublicProfileChrome(profile) {
+    const name = profile.nodeName;
+    // Tabs point at the public URLs, not the session dashboard pages.
+    $$("[data-profile-tabs] a[href='/dashboard/profile']").forEach((a) => {
+      a.href = "/@" + encodeURIComponent(name);
+    });
+    $$("[data-profile-tabs] a[href='/dashboard/profile/repositories']").forEach((a) => {
+      a.href = "/@" + encodeURIComponent(name) + "/repositories";
+    });
+    // Owner-only affordances become a Follow button (or disappear).
+    $$("[data-profile-about-edit]").forEach((el) => el.classList.add("hidden"));
+    $$("[data-profile-about-owner]").forEach((el) => { el.textContent = name; });
+    $$("[data-profile-sidebar-slot] a[href='/dashboard/settings']").forEach((edit) => {
+      const wrap = edit.parentElement;
+      edit.remove();
+      if (!wrap || !state.session?.nodeName ||
+          state.session.nodeName.toLowerCase() === name) return;
+      const follow = document.createElement("button");
+      follow.type = "button";
+      follow.setAttribute("data-profile-follow", name);
+      follow.className = "flex w-full items-center justify-center rounded-md " +
+        "border border-border bg-secondary px-3 py-1.5 text-sm font-semibold " +
+        "text-foreground hover:bg-background";
+      follow.textContent = profile.isFollowing ? "Following" : "Follow";
+      follow.addEventListener("click", async () => {
+        const following = follow.textContent === "Following";
+        follow.disabled = true;
+        try {
+          const response = await fetch(
+            "/api/accounts/" + encodeURIComponent(name) + "/follow", {
+              method: following ? "DELETE" : "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + (state.session?.sessionToken || ""),
+              },
+              body: JSON.stringify({
+                sessionToken: state.session?.sessionToken || "",
+              }),
+            });
+          if (response.ok) {
+            follow.textContent = following ? "Follow" : "Following";
+            const count = $("[data-profile-followers-count]");
+            if (count) {
+              const current = parseInt(count.textContent, 10) || 0;
+              count.textContent = String(Math.max(0, current + (following ? -1 : 1)));
+            }
+          }
+        } catch (_) {}
+        follow.disabled = false;
+      });
+      wrap.append(follow);
+    });
+  }
+
   function renderProfile(session) {
     const name = session?.nodeName || session?.email || "My Profile";
     const nameEl = $("[data-dashboard-profile-name]");
@@ -262,7 +370,7 @@
     return name ? `forkmesh-profile=${name}` : "forkmesh-profile=username";
   }
 
-  function profilePublicUrl(session = state.session) {
+  function profilePublicUrl(session = profileSubject()) {
     const name = String(session?.nodeName || "").trim().toLowerCase();
     return name ? `${location.origin}/@${name}` : `${location.origin}/@username`;
   }
@@ -362,12 +470,12 @@
     select.value = current;
   }
 
-  function defaultProfileAbout(session = state.session) {
+  function defaultProfileAbout(session = profileSubject()) {
     const name = String(session?.nodeName || session?.email || "ForkMesh").trim() || "ForkMesh";
     return `# Hi, I'm ${name}\n\nPinned profile content and public activity live here.`;
   }
 
-  function profileAboutMarkdown(session = state.session) {
+  function profileAboutMarkdown(session = profileSubject()) {
     const value = String(session?.profileAbout || session?.profileReadme || "");
     return value || defaultProfileAbout(session);
   }
@@ -441,6 +549,7 @@
   }
 
   function renderProfileAbout(session) {
+    if (profileMarkupOwnedByPublicProfile(session)) return;
     const owner = $("[data-profile-about-owner]");
     const body = $("[data-profile-about-body]");
     const name = String(session?.nodeName || session?.email || "forkmesh").trim() || "forkmesh";
@@ -514,7 +623,7 @@
     return 1;
   }
 
-  function profileContributionAliases(session = state.session) {
+  function profileContributionAliases(session = profileSubject()) {
     const aliases = new Set();
     const add = (value) => {
       const text = String(value || "").trim().toLowerCase();
@@ -533,7 +642,7 @@
     return Boolean((owner && aliases.has(owner)) || (canonicalOwner && aliases.has(canonicalOwner)));
   }
 
-  function profileContributionGroups(session = state.session) {
+  function profileContributionGroups(session = profileSubject()) {
     const aliases = profileContributionAliases(session);
     return groupRepositories(state.repositories || []).filter((group) => {
       const source = sourceOfTruth(group);
@@ -631,7 +740,7 @@
     }
   }
 
-  function profileContributionData(year = state.profileContributions.year, session = state.session) {
+  function profileContributionData(year = state.profileContributions.year, session = profileSubject()) {
     const range = contributionRange(year);
     const data = {
       year,
@@ -657,7 +766,7 @@
     return data;
   }
 
-  function profileContributionYears(session = state.session) {
+  function profileContributionYears(session = profileSubject()) {
     const current = new Date().getFullYear();
     const years = new Set([current, current - 1, current - 2, current - 3, current - 4]);
     profileContributionGroups(session).forEach((group) => {
@@ -969,6 +1078,7 @@
   }
 
   function renderProfilePage(session) {
+    if (profileMarkupOwnedByPublicProfile(session)) return;
     const name = session?.nodeName || "My Profile";
     const email = session?.email || "No email on file";
     renderProfileSidebars(session);
